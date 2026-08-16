@@ -37,9 +37,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: 获取 pnpm 缓存目录
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-
       - name: 安装依赖
-        run: cd frontend && npm ci
+        run: cd frontend && pnpm install --frozen-lockfile
       - name: 构建
-        run: cd frontend && npm run build
+        run: cd frontend && pnpm build
