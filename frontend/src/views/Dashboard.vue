@@ -165,7 +165,7 @@ onMounted(async () => {
         backgroundColor: 'transparent',
         textStyle: { color: '#8b949e' },
         tooltip: { trigger: 'axis' },
-        grid: [{ left: '8%', right: '3%', top: '10%', height: '55%' }, { left: '8%', right: '3%', top: '72%', height: '20%' }],
+        grid: [{ left: '8%', right: '3%', top: '8%', height: '50%' }, { left: '8%', right: '3%', top: '62%', height: '30%' }],
         xAxis: [
           { type: 'category', data: klineData.map(d => d.date), gridIndex: 0, axisLabel: { fontSize: 10 } },
           { type: 'category', data: klineData.map(d => d.date), gridIndex: 1, axisLabel: { show: false } },
@@ -177,7 +177,7 @@ onMounted(async () => {
         dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 60, end: 100 }],
         series: [
           { name: '沪深300', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: klineData.map(d => d.close), lineStyle: { color: '#58a6ff', width: 1.5 }, symbol: 'none', areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(88,166,255,0.2)' }, { offset: 1, color: 'rgba(88,166,255,0)' }]) } },
-          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: klineData.map(d => d.volume), itemStyle: { color: '#30363d' }, barMaxWidth: 3, tooltip: { valueFormatter: (v) => (v / 1e8).toFixed(2) + '亿' } },
+          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: klineData.map(d => ({ value: d.volume, itemStyle: { color: d.volume >= 2e12 ? '#ef4444' : '#22c55e' } })), barMaxWidth: 3, tooltip: { valueFormatter: (v) => (v / 1e8).toFixed(2) + '亿' } },
         ],
       })
     }
