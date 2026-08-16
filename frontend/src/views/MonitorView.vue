@@ -15,6 +15,8 @@
         </span>
         <span class="text-muted">|</span>
         <span>微信 <span :class="status.config?.wechat_configured ? 'text-emerald-400' : 'text-muted'">{{ status.config?.wechat_configured ? '✓' : '未配置' }}</span></span>
+        <span class="text-muted">|</span>
+        <span class="text-muted" :title="'本浏览器每5分钟镜像一次服务端数据；部署清零后自动恢复'">浏览器镜像 {{ localStorage.getItem('flash_mirror_time') || '未建立' }}</span>
       </div>
       <div class="flex items-center gap-3">
         <span v-if="status.llm_usage?.today" class="text-muted" :class="{'text-amber-400': status.llm_usage.remaining_today <= 5}">
@@ -373,6 +375,8 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
+// localStorage 在模板里直接读（状态条显示镜像时间；切到本页时刷新一次）
+const localStorage = window.localStorage
 
 const tabs = [
   { key: 'diagnosis', label: '今日诊断' },

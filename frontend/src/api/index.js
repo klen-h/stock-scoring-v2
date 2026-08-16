@@ -21,6 +21,10 @@ export const triggerFlashIngest = () => http.post('/flash/ingest')
 export const getFlashStatus = () => http.get('/flash/status')
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })
 export const getFlashAudit = () => http.get('/flash/audit')
+
+// 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
+export const getFlashBackup = () => http.get('/flash/backup')
+export const restoreFlashBackup = (files, headers) => http.post('/flash/restore', { files }, { headers })
 export const getMarketRealtime = (params) => http.get('/market/realtime', { params })
 export const getIndexKline = (symbol, period = 'day') => http.get(`/market/index-kline/${symbol}`, { params: { period } })
 export const getRefreshStatus = () => http.get('/market/refresh-status')

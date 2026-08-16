@@ -89,3 +89,37 @@ app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])
 def health():
     """健康检查接口：前端/运维用它判断后端是否存活"""
     return {"status": "ok", "service": "stock-scoring-backend"}
+
+
+# ──────────────────────────────────────────────────────────────
+# 前端静态托管（单进程全栈：一个 uvicorn 同时服务 API + 页面）
+# ──────────────────────────────────────────────────────────────
+# 背景：两人小团队本机部署——后端跑在自己电脑上，另一个人用浏览器直接访问
+# 这台电脑的 8000 端口，不再需要单独跑前端服务/GitHub Pages。
+#
+# 前提：先构建前端（cd frontend && npm run build），产物在 frontend/dist/。
+# dist 不存在时（纯 API 用法/开发期用 vite dev server）自动跳过，不影响 API。
+import os
+from fastapi.responses import FileResponse
+
+FRONTEND_DIST = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+
+if os.path.isdir(FRONTEND_DIST) and os.path.exists(os.path.join(FRONTEND_DIST, "index.html")):
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str):
+        """
+        前端资源 + SPA 回退（必须注册在所有 /api 路由之后，靠注册顺序保证 API 优先）：
+          - /assets/xxx.js 等真实文件 → 直接返回文件
+          - /monitor、/stock/000001 等前端路由 → 回退 index.html（Vue Router 接管）
+        """
+        if full_path:
+            file = os.path.join(FRONTEND_DIST, full_path)
+            # 防目录穿越：解析后必须仍在 dist 内
+            if (os.path.realpath(file).startswith(os.path.realpath(FRONTEND_DIST))
+                    and os.path.isfile(file)):
+                return FileResponse(file)
+        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+else:
+    print("[main] 未找到 frontend/dist（单进程全栈模式未启用；"
+          "如需启用：cd frontend && npm run build 后重启）")

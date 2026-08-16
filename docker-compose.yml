@@ -7,11 +7,17 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app/backend # Mount for live changes during development (optional)
+      # 挂整个 backend 目录（开发热更新 + 生产持久化）：
+      # backend/data/ 里的信号跟踪/诊断历史/宏观历史随宿主机目录持久化，
+      # 容器重建不丢（data/ 已 gitignore，git pull 不冲突）
+      - ./backend:/app/backend
+    # 凭证从 backend/.env 注入（.env 不入库——部署服务器上手工创建一份，
+    # 内容参考 .env.example；本地开发用同一份文件）
+    env_file:
+      - ./backend/.env
     environment:
-      # 在这里配置后端所需的环境变量
-      # - DATABASE_URL=postgresql://user:password@db:5432/mydb
       TZ: Asia/Shanghai # 设置时区
+    restart: unless-stopped # 宿主机重启/容器崩溃后自动拉起（保证调度器常驻）
   frontend:
     build:
       context: .

@@ -1,0 +1,45 @@
+# CI：每次推送/PR 自动检查后端可编译 + 前端可构建
+# 在本地跑得起≠推上去能部署——这个 workflow 挡住低级错误（语法/导入/构建失败）
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: 后端编译检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Python 3.9 对齐生产镜像（backend/Dockerfile 用的 python:3.9-slim）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: 安装依赖
+        run: pip install -r backend/requirements.txt -q
+      - name: 全模块编译 + 导入检查
+        run: |
+          cd backend
+          python -m compileall -q app
+          # 导入 app.main 会连带导入全部路由/数据源/调度器，抓出缺失依赖和循环导入
+          python -c "import app.main; print('✅ app 导入成功, 路由数:', len(app.main.app.routes))"
+
+  frontend:
+    name: 前端构建检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安装依赖
+        run: cd frontend && npm ci
+      - name: 构建
+        run: cd frontend && npm run build

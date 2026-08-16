@@ -14,11 +14,74 @@ URL 前缀 /api/flash：
 ================================================================================
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Header
+from fastapi.responses import JSONResponse
+import os
+import uuid
+from datetime import datetime
+
 from app.flash import store, service, scheduler
 from app.signals import tracker
 
 router = APIRouter()
+
+# ── 浏览器镜像（两人小团队的临时数据持久化方案）──
+# 原理：前端定期 GET /backup 把 backend/data/ 全部内容存进浏览器 localStorage；
+# Render 免费版每次部署会清零 data/，前端发现服务端条目数比镜像少 → POST /restore
+# 自动恢复。两个用户 = 两份镜像互为备份（数据缺口 = 最后一次镜像同步之后的部分）。
+_BOOT_ID = uuid.uuid4().hex                 # 进程标识（每次重启/部署都变，仅供前端观察）
+_BACKUP_FILES = list(store.PATHS.keys())    # 参与镜像的数据文件白名单
+
+
+def _count_entries() -> int:
+    """数据条目总数——恢复判定的签名：镜像比服务端多 = 服务端数据被清过。"""
+    a = len(store._load(store.PATHS["analyses"], {"analyses": []}).get("analyses", []))
+    r = sum(len(v) for v in store._load(store.PATHS["reviews"], {}).values()
+            if isinstance(v, list))
+    tr = store._load(store.PATHS["tracking"], {})
+    t = len(tr.get("history", [])) + len(tr.get("activeSignals", []))
+    m = len(store.load_macro_history())
+    e = len(store.load_etf_close_history(30))
+    f = len(store.load_raw_items())
+    return a + r + t + m + e + f
+
+
+@router.get("/backup")
+def flash_backup():
+    """
+    导出全部运行数据（浏览器镜像用）。
+    返回 {boot_id, time, total_entries, files:{...}}。
+    files 为白名单内各数据文件的完整 JSON 内容（不含任何凭证，可安全存浏览器）。
+    """
+    files = {}
+    for key in _BACKUP_FILES:
+        data = store._load(store.PATHS[key], None)
+        if data is not None:
+            files[key] = data
+    return {"boot_id": _BOOT_ID, "time": datetime.now().isoformat(),
+            "total_entries": _count_entries(), "files": files}
+
+
+@router.post("/restore")
+def flash_restore(bundle: dict, x_backup_secret: str = Header(None)):
+    """
+    从浏览器镜像恢复数据（部署清零后的自动兜底）。
+    可选安全：设置了 BACKUP_SECRET 环境变量时，请求头 X-Backup-Secret 必须匹配
+    （防公开 URL 上被恶意覆写）；不设置则直接放行。
+    """
+    secret = os.environ.get("BACKUP_SECRET", "")
+    if secret and x_backup_secret != secret:
+        return JSONResponse(status_code=401, content={"error": "备份密钥错误"})
+    files = bundle.get("files")
+    if not isinstance(files, dict) or not files:
+        return JSONResponse(status_code=400, content={"error": "bundle 为空"})
+    restored = []
+    for key, content in files.items():
+        if key in _BACKUP_FILES and content is not None:
+            store._save(store.PATHS[key], content)   # 原子写
+            restored.append(key)
+    return {"restored": restored, "total_entries": _count_entries(),
+            "boot_id": _BOOT_ID}
 
 
 @router.get("/events")

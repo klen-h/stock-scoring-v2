@@ -1,0 +1,37 @@
+# 保活：防止 Render 免费版休眠（休眠 = 内置调度器停摆：快讯不轮询/复盘不跑）
+#
+# 原理：Render 免费版 15 分钟无访问就休眠。本 workflow 每 10 分钟 GET 一次
+# /api/health（无害的只读接口），持续重置休眠计时器，顺带保住临时磁盘上的
+# backend/data/（信号跟踪/胜率统计不被休眠清掉——但部署仍会清，持久化仍需付费盘）。
+#
+# 配置：仓库 Settings → Secrets and variables → Actions → 新增 secret
+#   RENDER_BACKEND_URL = https://你的应用名.onrender.com   （不带末尾斜杠）
+#
+# ⚠️ 两个注意：
+#   1. GitHub Actions cron 是 UTC 时间——保活只看间隔无所谓
+#   2. 私有仓库 Actions 免费额度 2000 分钟/月：10 分钟一次约 4300 分钟/月会超！
+#      → 私有仓库改用 cron-job.org（免费无额度）每 10 分钟 ping；
+#        公开仓库 Actions 完全免费，放心用
+#   3. 只 ping /api/health，不要定时调 /flash/ingest 或 /review/*/run——
+#      后端内置调度器已经在跑这些，外部再触发会导致 LLM 双跑、状态机重复入场
+
+name: Keep-Alive (Render 免费版防休眠)
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # 每 10 分钟（间隔必须 < 15 分钟休眠阈值）
+  workflow_dispatch:           # 支持手动触发测试
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health
+        run: |
+          if [ -z "${{ secrets.RENDER_BACKEND_URL }}" ]; then
+            echo "未配置 RENDER_BACKEND_URL secret，跳过（见本文件头部说明）"
+            exit 0
+          fi
+          curl -sS -m 30 -o /dev/null -w "HTTP %{http_code} in %{time_total}s\n" \
+            "${{ secrets.RENDER_BACKEND_URL }}/api/health"
+        continue-on-error: true   # 保活失败不报警（Render 冷启动首次可能超时）

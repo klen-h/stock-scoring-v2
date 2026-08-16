@@ -3,6 +3,12 @@ services:
     name: stock-scoring-backend
     env: docker
     region: singapore
+    # ⚠️ 免费版两个限制，对本项目影响很大：
+    #   1) 15 分钟无访问会休眠 → 内置调度器（快讯轮询/三段复盘/信号跟踪）停摆
+    #      → 若坚持免费版，用 cron-job.org 每 10 分钟 ping 一次 /api/health 保活
+    #   2) 文件系统临时 → 每次部署/重启 backend/data/ 清零（信号跟踪、胜率统计、
+    #      诊断历史全部丢失）→ 需要下方 disk（付费计划才支持）
+    # 本项目是常驻后台任务型应用，长期建议 starter 计划 + 磁盘。
     plan: free
     branch: main
     dockerfilePath: ./backend/Dockerfile
@@ -12,3 +18,21 @@ services:
     envVars:
       - key: TZ
         value: Asia/Shanghai
+      # 敏感变量：sync: false = 值在 Render 控制台填写，不随仓库同步。
+      # （这就是 .env 不入库的另一半：仓库只留变量名，值存平台。）
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: FLASH_COOKIE
+        sync: false
+      - key: WECHAT_WEBHOOK
+        sync: false
+    # 数据持久化（需付费计划，取消注释即可启用）：
+    # 保存 tracking.json（信号与胜率）、analyses.json（诊断全文）、macro_history.json（宏观历史）
+    # disk:
+    #   name: stock-data
+    #   mountPath: /app/backend/data
+    #   sizeGB: 1

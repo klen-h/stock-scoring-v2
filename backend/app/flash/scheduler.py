@@ -28,9 +28,11 @@ from app.flash.wechat import WECHAT_WEBHOOK
 FLASH_POLL_INTERVAL = int(os.environ.get("FLASH_POLL_INTERVAL_SEC", "300"))
 TRACK_INTERVAL = int(os.environ.get("TRACK_INTERVAL_SEC", "300"))
 REVIEW_WINDOWS = {               # 复盘窗口：任务名 → (开始分钟, 结束分钟)（北京时间）
-    "premarket":  (550, 570),    # 09:10-09:30
-    "lunchbreak": (692, 720),    # 11:32-12:00
-    "postmarket": (903, 940),    # 15:03-15:40
+    # 窗口刻意加宽以支持"错过补跑"：本机部署的电脑不是 24 小时开机，
+    # 只要当天窗口内开机（结合"当日已跑"标记），错过的复盘会自动补上。
+    "premarket":  (550, 690),    # 09:10-11:30（上午任意时刻开机都能补盘前）
+    "lunchbreak": (692, 780),    # 11:32-13:00（午休任意时刻开机都能补午盘）
+    "postmarket": (903, 1439),   # 15:03-23:59（晚上开机也能补盘后）
 }
 
 # 运行状态（/api/flash/status 读取）

@@ -45,7 +45,7 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { searchStock, getFlashNotifications } from './api'
+import { searchStock, getFlashNotifications, getFlashBackup, restoreFlashBackup } from './api'
 
 const router = useRouter()
 const route = useRoute()
@@ -120,8 +120,68 @@ async function pollNotifications() {
 onMounted(() => {
   if (notifOn.value && !('Notification' in window)) notifOn.value = false
   if (notifOn.value) notifTimer = setInterval(pollNotifications, 60 * 1000)
+  // 数据镜像：页面开着就是一台"备份机"，每 5 分钟同步一次
+  setTimeout(syncDataMirror, 5 * 1000)
+  mirrorTimer = setInterval(syncDataMirror, 5 * 60 * 1000)
 })
-onBeforeUnmount(() => { if (notifTimer) clearInterval(notifTimer) })
+onBeforeUnmount(() => {
+  if (notifTimer) clearInterval(notifTimer)
+  if (mirrorTimer) clearInterval(mirrorTimer)
+})
+
+// ──────────────────────────────────────────────────────────────
+// 浏览器数据镜像：把 backend/data 备份到 localStorage，
+// 服务端（Render 免费版）部署清零后自动恢复。
+// 判定：镜像条目数 > 服务端条目数 且镜像 7 天内 → 恢复。
+// ──────────────────────────────────────────────────────────────
+const MIRROR_KEY = 'flash_data_mirror'
+let mirrorTimer = null
+
+async function syncDataMirror() {
+  try {
+    const { data: server } = await getFlashBackup()
+    const stored = JSON.parse(localStorage.getItem(MIRROR_KEY) || 'null')
+    const saveMirror = (bundle) => {
+      try {
+        localStorage.setItem(MIRROR_KEY, JSON.stringify(bundle))
+        localStorage.setItem('flash_mirror_time',
+          new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
+      } catch (e) { console.warn('镜像写入失败（可能超出 localStorage 容量）', e) }
+    }
+
+    if (!stored || server.total_entries >= stored.total_entries) {
+      saveMirror(server)      // 服务端正常/更新 → 刷新本地镜像
+      return
+    }
+    // 服务端条目比镜像少 → 疑似部署清零 → 用镜像恢复
+    const ageHours = (Date.now() - new Date(stored.time || 0).getTime()) / 36e5
+    if (ageHours > 24 * 7) { saveMirror(server); return }   // 镜像太旧，不复活陈旧数据
+
+    const headers = {}
+    const sec = localStorage.getItem('backup_secret')
+    if (sec) headers['X-Backup-Secret'] = sec
+    let res
+    try {
+      res = await restoreFlashBackup(stored.files, headers)
+    } catch (err) {
+      if (err.response?.status === 401) {
+        const s = prompt('数据恢复需要密钥（服务端已配置 BACKUP_SECRET）')
+        if (!s) throw err
+        localStorage.setItem('backup_secret', s)
+        res = await restoreFlashBackup(stored.files, { 'X-Backup-Secret': s })
+      } else throw err
+    }
+    if ('Notification' in window && Notification.permission === 'granted' && res.data?.restored?.length) {
+      new Notification('♻️ 数据已从浏览器镜像恢复',
+        { body: `恢复 ${res.data.restored.length} 个数据文件（信号/诊断/历史）` })
+    }
+    console.log('[镜像] 已恢复:', res.data?.restored)
+    const { data: fresh } = await getFlashBackup()   // 恢复后重取作为新镜像基线
+    saveMirror(fresh)
+  } catch (e) {
+    console.error('数据镜像同步失败', e?.response?.status || e.message)
+  }
+}
 
 const keyword = ref('')
 const showSearch = ref(false)
