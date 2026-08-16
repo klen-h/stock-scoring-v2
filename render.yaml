@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: stock-scoring-backend
+    env: docker
+    region: singapore
+    plan: free
+    branch: main
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    autoDeploy: yes
+    envVars:
+      - key: TZ
+        value: Asia/Shanghai

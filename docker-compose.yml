@@ -1,0 +1,38 @@
+version: '3.8'
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: ./backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app/backend # Mount for live changes during development (optional)
+    environment:
+      # 在这里配置后端所需的环境变量
+      # - DATABASE_URL=postgresql://user:password@db:5432/mydb
+      TZ: Asia/Shanghai # 设置时区
+  frontend:
+    build:
+      context: .
+      dockerfile: ./frontend/Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    environment:
+      # VITE_APP_API_BASE_URL: http://backend:8000 # 如果前端需要通过环境变量配置API地址
+      TZ: Asia/Shanghai # 设置时区
+
+# 如果需要数据库服务，可以在这里添加
+#  db:
+#    image: postgres:13
+#    environment:
+#      - POSTGRES_DB=mydb
+#      - POSTGRES_USER=user
+#      - POSTGRES_PASSWORD=password
+#    volumes:
+#      - db_data:/var/lib/postgresql/data
+
+# volumes:
+#  db_data:

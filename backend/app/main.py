@@ -1,0 +1,91 @@
+"""
+================================================================================
+【文件作用】FastAPI 应用入口（整个后端的"主文件"）
+================================================================================
+
+类比前端：
+  - 这个文件相当于 Vue 的 main.js / React 的 App.jsx，是程序启动的起点。
+  - FastAPI 是 Python 的后端框架，地位类似 Node.js 的 Express。
+
+启动方式（见 run.py）：
+  uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+  解释：用 uvicorn（一个 ASGI 服务器，类似 nodemon + express）
+        运行 app/main.py 文件里名为 app 的对象。
+
+启动后访问：
+  - http://localhost:8000/docs          → FastAPI 自动生成的接口文档（Swagger UI）
+  - http://localhost:8000/api/health    → 健康检查
+================================================================================
+"""
+
+from dotenv import load_dotenv
+import os
+
+# 加载 .env 文件（必须在读取环境变量之前）
+load_dotenv()
+
+FLASH_COOKIE = os.environ.get("FLASH_COOKIE", "")
+print(FLASH_COOKIE)
+
+# FastAPI 是后端框架；CORSMiddleware 用于解决跨域问题（和前端联调必须）
+# 类比 Express 的 app = express() 和 cors 中间件
+from contextlib import asynccontextmanager
+import asyncio
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# 导入路由模块（每个模块负责一类业务接口）
+# from app.routers import xxx 中的 app 是 backend/app/ 目录（包）
+from app.routers import market, stock, capital, sector, scoring, macro, flash
+
+# ──────────────────────────────────────────────────────────────
+# lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
+# ──────────────────────────────────────────────────────────────
+_scheduler_tasks = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时拉起快讯/复盘/信号跟踪三个后台循环，关闭时优雅取消。"""
+    global _scheduler_tasks
+    from app.flash import scheduler
+    _scheduler_tasks = await scheduler.start()
+    yield
+    scheduler.stop(_scheduler_tasks)
+
+# 创建 FastAPI 应用实例，配置标题和版本号（会显示在 /docs 文档页）
+app = FastAPI(title="A股数据评分系统", version="1.0.0", lifespan=lifespan)
+
+# ──────────────────────────────────────────────────────────────
+# CORS 中间件：允许前端跨域访问后端
+# ──────────────────────────────────────────────────────────────
+# 前端（如 localhost:3000）访问后端（localhost:8000）属于跨域，
+# 浏览器默认会拦截，需要后端通过 CORS 头明确放行。
+# 这里 allow_origins=["*"] 表示允许任何来源（开发环境方便，生产应限制具体域名）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],       # 允许哪些前端域名访问，* 表示全部
+    allow_credentials=True,    # 允许携带 Cookie
+    allow_methods=["*"],       # 允许所有 HTTP 方法（GET/POST/PUT/DELETE...）
+    allow_headers=["*"],       # 允许所有请求头
+)
+
+# ──────────────────────────────────────────────────────────────
+# 注册路由（路由 = 一组接口的集合）
+# ──────────────────────────────────────────────────────────────
+# 类比 Express：app.use('/api/market', marketRouter)
+# prefix 是 URL 前缀；tags 用于在 /docs 文档里分组显示
+app.include_router(market.router,  prefix="/api/market",  tags=["市场行情"])  # 大盘指数、全A股列表
+app.include_router(stock.router,   prefix="/api/stock",   tags=["个股数据"])  # 个股K线、实时行情、技术指标
+app.include_router(capital.router, prefix="/api/capital", tags=["资金流向"])  # 资金流向（当前为空壳）
+app.include_router(sector.router,  prefix="/api/sector",  tags=["板块数据"])  # 行业/概念板块（当前为空壳）
+app.include_router(scoring.router, prefix="/api/score",   tags=["评分数据"])  # 股票评分（核心功能）
+app.include_router(macro.router,   prefix="/api/macro",   tags=["宏观数据"])  # 宏观面板+规则方向分
+app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])  # 快讯事件/LLM诊断/信号跟踪
+
+
+# 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL
+# 类比 Express：app.get('/api/health', (req, res) => res.json({...}))
+@app.get("/api/health")
+def health():
+    """健康检查接口：前端/运维用它判断后端是否存活"""
+    return {"status": "ok", "service": "stock-scoring-backend"}
