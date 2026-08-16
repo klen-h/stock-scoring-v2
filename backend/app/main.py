@@ -18,11 +18,11 @@
 ================================================================================
 """
 
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import os
 
 # 加载 .env 文件（必须在读取环境变量之前）
-load_dotenv()
+# load_dotenv()
 
 FLASH_COOKIE = os.environ.get("FLASH_COOKIE", "")
 print(FLASH_COOKIE)
