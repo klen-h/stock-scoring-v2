@@ -11,7 +11,7 @@ services:
     # 本项目是常驻后台任务型应用，长期建议 starter 计划 + 磁盘。
     plan: free
     branch: main
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: ./backend/Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
     autoDeploy: yes
