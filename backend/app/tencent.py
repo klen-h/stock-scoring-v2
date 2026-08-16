@@ -16,7 +16,7 @@
 ================================================================================
 """
 
-import requests, json, time, threading
+import requests, json, time, threading, os
 from datetime import datetime, timedelta
 
 # requests 是 Python 最常用的 HTTP 客户端，类似前端的 axios
@@ -128,6 +128,61 @@ _valid_codes = []  # [(prefix, code), ...] 有效代码列表
 # TTL 设为 5 分钟（盘中足够新鲜，又避免高频打爆腾讯接口）
 KLINE_CACHE = {}
 KLINE_CACHE_TTL = 300  # 秒
+
+# ── K线缓存磁盘持久化 ──
+# 后端重启（--reload）会清空内存，导致重新拉取全部K线 → 触发腾讯WAF限流。
+# 持久化到磁盘后，重启时从文件恢复缓存，大幅减少重启后的K线请求量。
+_KLINE_CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "kline_cache.json")
+_KLINE_CACHE_SAVE_INTERVAL = 60  # 磁盘写入间隔（秒），避免频繁写文件
+_kline_cache_last_save = 0
+_kline_cache_dirty = False  # 标记是否有未持久化的变更
+
+# ── WAF 全局限流状态 ──
+# 腾讯WAF触发后（HTTP 501），需要暂停所有K线请求一段时间。
+# _waf_blocked_until: 在此时间戳之前，所有K线请求直接返回缓存（或空）。
+_waf_blocked_until = 0
+_WAF_COOLDOWN = 120  # WAF触发后冷却120秒
+
+
+def _load_kline_cache():
+    """从磁盘加载K线缓存（启动时调用一次）"""
+    global KLINE_CACHE
+    try:
+        if os.path.exists(_KLINE_CACHE_FILE):
+            with open(_KLINE_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 过滤掉超过24小时的旧缓存条目
+            now = time.time()
+            KLINE_CACHE = {
+                k: v for k, v in data.items()
+                if now - v.get("ts", 0) < 86400
+            }
+            print(f"[启动] K线缓存从磁盘恢复: {len(KLINE_CACHE)} 条")
+        else:
+            print("[启动] 无K线缓存文件，将从零开始")
+    except Exception as e:
+        print(f"[启动] K线缓存加载失败: {e}，将从零开始")
+
+
+def _save_kline_cache(force=False):
+    """将K线缓存持久化到磁盘（有写入间隔控制，避免频繁IO）"""
+    global _kline_cache_last_save, _kline_cache_dirty
+    now = time.time()
+    if not force and not _kline_cache_dirty:
+        return
+    if not force and now - _kline_cache_last_save < _KLINE_CACHE_SAVE_INTERVAL:
+        return
+    try:
+        with open(_KLINE_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(KLINE_CACHE, f, ensure_ascii=False)
+        _kline_cache_last_save = now
+        _kline_cache_dirty = False
+    except Exception as e:
+        print(f"K线缓存持久化失败: {e}")
+
+
+# 模块加载时恢复K线缓存
+_load_kline_cache()
 
 
 def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
@@ -311,6 +366,8 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     返回（K线数组，每根 K线是一个 dict）：
       [{date, open, close, high, low, volume}, ...]
     """
+    global _waf_blocked_until, _kline_cache_dirty
+
     # 缓存命中判断：同一只股票同一周期 5 分钟内不重复请求
     # 这一步至关重要——评分精算 + 详情页 + 技术指标都会调 get_kline，
     # 没缓存的话短时间内对同一只票反复请求，会触发腾讯限流导致全部失败。
@@ -318,6 +375,13 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     cached = KLINE_CACHE.get(cache_key)
     if cached and time.time() - cached["ts"] < KLINE_CACHE_TTL:
         return cached["data"]
+
+    # ── WAF 全局限流保护 ──
+    # 如果腾讯WAF正在冷却中，直接返回过期缓存（好过被继续封）
+    if time.time() < _waf_blocked_until:
+        if cached:
+            return cached["data"]  # 返回过期缓存，总比空数据好
+        return []
 
     # 默认时间范围：近 2 年至今
     if not start:
@@ -340,30 +404,50 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     # 腾讯另一个接口：web.ifzq.gtimg.cn（K线专用）
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
     params = {"param": f"{prefix}{symbol},{period},{start},{end},{count},qfq"}
-    try:
-        r = _session.get(url, params=params, timeout=15)
-        d = r.json()
-        # 返回结构较深：d.data.<市场代码>.<周期key>
-        # .get(...) 链式调用，任一层缺失就返回 []
-        raw = d.get("data", {}).get(f"{prefix}{symbol}", {}).get(kline_key, [])
-        result = []
-        for item in raw:
-            # 每条 K线：[日期, 开, 收, 高, 低, 成交量, ...]
-            result.append({
-                "date": item[0],
-                "open": round(float(item[1]), 3),
-                "close": round(float(item[2]), 3),
-                "high": round(float(item[3]), 3),
-                "low": round(float(item[4]), 3),
-                "volume": float(item[5]),
-            })
-        # 只缓存有数据的结果（空结果不缓存，让下次能重试）
-        if result:
-            KLINE_CACHE[cache_key] = {"data": result, "ts": time.time()}
-        return result
-    except Exception as e:
-        print(f"K线获取失败 {symbol}: {e}")
-        return []
+
+    # ── 带WAF检测的重试逻辑（最多重试2次，间隔递增） ──
+    for attempt in range(3):
+        try:
+            r = _session.get(url, params=params, timeout=15)
+
+            # WAF检测：腾讯返回 501 表示被防火墙拦截
+            if r.status_code == 501:
+                _waf_blocked_until = time.time() + _WAF_COOLDOWN
+                print(f"[WAF] K线请求被拦截 {symbol}，全局冷却 {_WAF_COOLDOWN}s")
+                # 返回过期缓存（如果有），避免上层拿到空数据
+                if cached:
+                    return cached["data"]
+                return []
+
+            d = r.json()
+            # 返回结构较深：d.data.<市场代码>.<周期key>
+            # .get(...) 链式调用，任一层缺失就返回 []
+            raw = d.get("data", {}).get(f"{prefix}{symbol}", {}).get(kline_key, [])
+            result = []
+            for item in raw:
+                # 每条 K线：[日期, 开, 收, 高, 低, 成交量, ...]
+                result.append({
+                    "date": item[0],
+                    "open": round(float(item[1]), 3),
+                    "close": round(float(item[2]), 3),
+                    "high": round(float(item[3]), 3),
+                    "low": round(float(item[4]), 3),
+                    "volume": float(item[5]),
+                })
+            # 只缓存有数据的结果（空结果不缓存，让下次能重试）
+            if result:
+                KLINE_CACHE[cache_key] = {"data": result, "ts": time.time()}
+                _kline_cache_dirty = True
+                _save_kline_cache()  # 有写入间隔控制，不会每次都写
+            return result
+
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(1 * (attempt + 1))  # 1s, 2s 递增
+                continue
+            print(f"K线获取失败 {symbol}: {e}")
+            return []
+    return []
 
 
 def search_stocks(keyword: str) -> list:

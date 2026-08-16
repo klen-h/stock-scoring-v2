@@ -51,6 +51,13 @@ async def lifespan(app: FastAPI):
     _scheduler_tasks = await scheduler.start()
     yield
     scheduler.stop(_scheduler_tasks)
+    # 关闭时强制保存K线缓存到磁盘（下次启动可直接恢复，避免重新拉取触发WAF）
+    try:
+        from app.tencent import _save_kline_cache
+        _save_kline_cache(force=True)
+        print("[关闭] K线缓存已持久化到磁盘")
+    except Exception as e:
+        print(f"[关闭] K线缓存保存失败: {e}")
 
 # 创建 FastAPI 应用实例，配置标题和版本号（会显示在 /docs 文档页）
 app = FastAPI(title="A股数据评分系统", version="1.0.0", lifespan=lifespan)

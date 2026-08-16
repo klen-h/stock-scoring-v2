@@ -32,6 +32,19 @@ engine = ScoreEngine()
 EXCLUDE_LOSS_MAKING = True
 
 
+def _compute_buy_point_single(code: str) -> dict:
+    """
+    为单只股票计算买入时机指标（MA20偏离/布林位置/支撑位）。
+    用于 Top 5 排序后单独拉K线计算，避免批量精算时100只并发触发WAF。
+    如果K线已在缓存中（批量精算时拉过），直接复用，无需重新请求。
+    """
+    klines = get_kline(code, period="day", count=500)
+    if len(klines) >= 30:
+        tech = _calc_technical(klines)
+        return engine._calc_buy_point(tech)
+    return {}
+
+
 def _precise_score_sync(stock_info: dict) -> dict:
     """
     对单只股票执行「完整评分」的同步实现（与 /api/score/{symbol} 完全一致）。
@@ -72,6 +85,9 @@ def _precise_score_sync(stock_info: dict) -> dict:
         "signal": result.signal, "signal_level": result.signal_level,
         # 买入原因（加分因素），供 Top 50 列表展示。最多 5 个，如「均线多头排列」「量价齐升」
         "factors_up": result.factors_up,
+        # 批量模式跳过买入时机计算（避免100只股票同时拉K线触发WAF）
+        # Top 5 的 buy_point 会在排序后单独计算
+        "buy_point": {},
     }
 
 
@@ -121,8 +137,8 @@ async def _batch_with_precise_top(
     # 候选池的 stock_info 映射
     info_map = {s.get("code"): s for s in stocks}
 
-    # 限流并发精算：最多 5 个并发，避免压垮腾讯接口
-    sem = asyncio.Semaphore(5)
+    # 限流并发精算：最多 3 个并发（降低对腾讯接口的压力，避免触发WAF）
+    sem = asyncio.Semaphore(3)
 
     async def precise_one(code):
         info = info_map.get(code)
@@ -131,8 +147,11 @@ async def _batch_with_precise_top(
         async with sem:
             try:
                 # _precise_score_sync 内部是同步的 get_kline（网络IO），用 to_thread 放线程池
-                # 这样 5 个并发能真正并行等待网络，而非阻塞事件循环
-                return await asyncio.to_thread(_precise_score_sync, info)
+                # 这样 3 个并发能真正并行等待网络，而非阻塞事件循环
+                result = await asyncio.to_thread(_precise_score_sync, info)
+                # 每个请求完成后间隔 0.3s，避免突发流量触发WAF
+                await asyncio.sleep(0.3)
+                return result
             except Exception as e:
                 print(f"精算失败 {code}: {e}")
                 return None
@@ -147,11 +166,166 @@ async def _batch_with_precise_top(
             total_score=r["total_score"],
             signal=r["signal"], signal_level=r["signal_level"],
             factors_up=r.get("factors_up", []),
+            buy_point=r.get("buy_point", {}),
         )
         for r in results if r
     ]
     final.sort(key=lambda r: r.total_score, reverse=True)
+
+    # ── Top 5 单独计算买入时机 ──
+    # 批量精算时跳过了 buy_point（避免100只并发拉K线触发WAF）
+    # 排序确定后，只对 Top 5 单独拉K线计算买入时机，此时并发压力小，成功率高
+    top_n_for_buy_point = 5
+    for item in final[:top_n_for_buy_point]:
+        try:
+            bp = await asyncio.to_thread(_compute_buy_point_single, item.code)
+            item.buy_point = bp
+        except Exception as e:
+            print(f"买入时机计算失败 {item.code}: {e}")
+
     return pick_indices(final)
+
+
+@router.get("/batch-prices")
+async def batch_prices(codes: str = Query(..., description="逗号分隔的股票代码")):
+    """
+    批量获取股票当前价格（用于前端快照/胜率回查）。
+    返回：{code, name, price, change_pct} 列表。
+    """
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    if not code_list:
+        return []
+    stocks = get_stocks_batch(code_list)
+    return [{
+        "code": s.get("code", c),
+        "name": s.get("name", ""),
+        "price": s.get("price", 0),
+        "change_pct": s.get("change_pct", 0),
+    } for c, s in zip(code_list, stocks)]
+
+
+@router.get("/backtest")
+async def backtest(
+    top_n: int = Query(default=10, ge=5, le=30),
+    days: int = Query(default=60, ge=20, le=120),
+    hold_periods: str = Query(default="1,3,5,10"),
+):
+    """
+    历史回测：用过去 N 天的技术面评分模拟选股，计算持有 M 天后的收益。
+    仅基于技术面（40%权重），不含基本面（历史数据不可得）。
+    返回：各持有期的胜率、平均收益、总回测天数。
+    """
+    periods = [int(p) for p in hold_periods.split(",") if p.strip().isdigit()]
+    if not periods:
+        periods = [1, 3, 5, 10]
+
+    # 取市值前 100 只股票作为回测池
+    stocks = list(_cache.get("stocks", {}).values())
+    if len(stocks) < 20:
+        return {"error": "行情数据未就绪，请稍后再试"}
+    stocks.sort(key=lambda s: s.get("market_cap", 0) or 0, reverse=True)
+    pool = stocks[:100]
+
+    # 并发拉取 K线（限制 3 并发 + 请求间隔，避免触发WAF）
+    sem = asyncio.Semaphore(3)
+
+    async def fetch_kline(code):
+        async with sem:
+            try:
+                result = await asyncio.to_thread(get_kline, code, "day", 500)
+                await asyncio.sleep(0.3)  # 请求间隔，降低WAF风险
+                return result
+            except Exception:
+                return None
+
+    klines_map = {}
+    tasks = [fetch_kline(s["code"]) for s in pool]
+    results = await asyncio.gather(*tasks)
+    for s, kl in zip(pool, results):
+        if kl and len(kl) >= 30:
+            klines_map[s["code"]] = kl
+
+    codes = list(klines_map.keys())
+    if len(codes) < 10:
+        return {"error": "有效K线数据不足，请稍后再试"}
+
+    # 确定回测窗口
+    min_len = min(len(klines_map[c]) for c in codes)
+    bt_days = min(days, min_len - max(periods) - 35)  # 30 指标预热 + 前瞻天数
+    if bt_days < 10:
+        return {"error": "历史数据不足以完成回测"}
+    start_idx = min_len - bt_days - max(periods)
+
+    # 逐日回测
+    period_stats = {p: {"wins": 0, "total_return": 0.0, "count": 0, "returns": []}
+                    for p in periods}
+    daily_records = []
+
+    for day_offset in range(bt_days):
+        idx = start_idx + day_offset
+        day_scores = []
+
+        for code in codes:
+            kl = klines_map[code]
+            if idx >= len(kl) - 1:
+                continue
+            hist = kl[:idx + 1]
+            tech = _calc_technical(hist) if len(hist) >= 30 else hist
+            if len(tech) < 30:
+                continue
+            # 仅技术面评分（回测无基本面数据）
+            dim = engine._score_technical(tech)
+            day_scores.append({"code": code, "score": dim.score})
+
+        if len(day_scores) < top_n:
+            continue
+
+        day_scores.sort(key=lambda x: x["score"], reverse=True)
+        top = day_scores[:top_n]
+
+        # 计算各持有期收益
+        day_result = {"day": day_offset, "stocks": []}
+        for stock in top:
+            code = stock["code"]
+            kl = klines_map[code]
+            buy_price = kl[idx]["close"]
+            entry = {"code": code, "score": stock["score"], "price": buy_price}
+
+            for p in periods:
+                fwd_idx = idx + p
+                if fwd_idx < len(kl):
+                    sell_price = kl[fwd_idx]["close"]
+                    ret = round((sell_price - buy_price) / buy_price * 100, 2)
+                    entry[f"r{p}"] = ret
+                    period_stats[p]["returns"].append(ret)
+                    period_stats[p]["count"] += 1
+                    period_stats[p]["total_return"] += ret
+                    if ret > 0:
+                        period_stats[p]["wins"] += 1
+
+            day_result["stocks"].append(entry)
+        daily_records.append(day_result)
+
+    # 汇总统计
+    summary = {}
+    for p in periods:
+        s = period_stats[p]
+        if s["count"] > 0:
+            summary[p] = {
+                "win_rate": round(s["wins"] / s["count"] * 100),
+                "avg_return": round(s["total_return"] / s["count"], 2),
+                "total": s["count"],
+            }
+        else:
+            summary[p] = {"win_rate": 0, "avg_return": 0, "total": 0}
+
+    return {
+        "summary": summary,
+        "backtest_days": bt_days,
+        "stock_pool_size": len(codes),
+        "top_n": top_n,
+        "periods": periods,
+    }
 
 
 @router.get("/{symbol}")
@@ -211,6 +385,7 @@ async def score_single(symbol: str):
         "factors_up": result.factors_up,
         "factors_down": result.factors_down,
         "summary": result.summary,
+        "buy_point": result.buy_point,
     }
 
 
@@ -253,6 +428,8 @@ async def score_top(
             "signal_level": r.signal_level,
             # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
             "factors_up": getattr(r, 'factors_up', []) or [],
+            # 买入时机指标
+            "buy_point": getattr(r, 'buy_point', {}) or {},
         } for r in top],
         "total": len(valid),
         "cache_status": "ready",

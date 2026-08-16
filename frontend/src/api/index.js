@@ -42,6 +42,8 @@ export const getStockScore = (symbol) => http.get(`/score/${symbol}`)
 export const getScoreTop = (params) => http.get('/score/batch/top', { params })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params })
+export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
+export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
 
 // 资金流向
 export const getNorthboundFlow = () => http.get('/capital/northbound')

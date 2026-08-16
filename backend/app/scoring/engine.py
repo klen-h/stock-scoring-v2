@@ -73,6 +73,7 @@ class ScoreResult:
     summary: str = ""              # 人类可读的评分摘要
     factors_up: list = field(default_factory=list)    # 加分因素列表
     factors_down: list = field(default_factory=list)  # 扣分因素列表
+    buy_point: dict = field(default_factory=dict)     # 买入时机指标（MA20偏离/布林位置/支撑位）
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -153,6 +154,10 @@ class ScoreEngine:
         summary = self._build_summary(name or code, total, signal, factors_up, factors_down)
 
         # 返回结果对象（dimensions 转成 dict 列表方便 JSON 序列化给前端）
+        try:
+            buy_point = self._calc_buy_point(technical_data) if technical_data else {}
+        except Exception:
+            buy_point = {}
         return ScoreResult(
             code=code, name=name,
             total_score=total,
@@ -166,6 +171,7 @@ class ScoreEngine:
             summary=summary,
             factors_up=factors_up,
             factors_down=factors_down,
+            buy_point=buy_point,
         )
 
     def score_batch(self, stocks: list[dict], technical_cache: dict | None = None) -> list[ScoreResult]:
@@ -1056,3 +1062,54 @@ class ScoreEngine:
         if downs:
             parts.append(f"风险提示：{'、'.join(downs)}。")
         return " ".join(parts)
+
+    # ================================================================
+    #  买入时机指标（不影响评分，纯参考）
+    # ================================================================
+
+    def _calc_buy_point(self, tech_data: list) -> dict:
+        """
+        计算买入时机指标：MA20偏离度 + 布林带位置 + 支撑位。
+        返回 {ma20_deviation, boll_position, support, buy_timing}。
+        buy_timing: '适合介入' / '等回调' / '追高风险'
+        """
+        if len(tech_data) < 30:
+            return {}
+
+        latest = tech_data[-1]
+        price = latest.get("close", 0)
+        ma20 = latest.get("ma20")
+        boll_upper = latest.get("boll_upper")
+        boll_lower = latest.get("boll_lower")
+        ma60 = latest.get("ma60")
+
+        if not price or not ma20:
+            return {}
+
+        # 1. MA20 偏离度（%）
+        ma20_dev = round((price - ma20) / ma20 * 100, 2)
+
+        # 2. 布林带位置（0=下轨, 1=上轨）
+        boll_pos = None
+        if boll_upper and boll_lower:
+            bw = boll_upper - boll_lower
+            if bw > 0:
+                boll_pos = round((price - boll_lower) / bw, 2)
+
+        # 3. 支撑位参考（MA60 或 MA20）
+        support = round(ma60, 2) if ma60 else round(ma20, 2)
+
+        # 4. 买入时机判定
+        if ma20_dev > 8 or (boll_pos is not None and boll_pos > 0.95):
+            timing = "追高风险"
+        elif ma20_dev > 3 or (boll_pos is not None and boll_pos > 0.8):
+            timing = "等回调"
+        else:
+            timing = "适合介入"
+
+        return {
+            "ma20_deviation": ma20_dev,
+            "boll_position": boll_pos,
+            "support": support,
+            "buy_timing": timing,
+        }

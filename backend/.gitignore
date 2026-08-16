@@ -4,6 +4,9 @@
 # 运行时数据（快讯状态/信号跟踪/LLM输出）
 data/
 
+# K线缓存（磁盘持久化，重启时恢复，不入库）
+kline_cache.json
+
 # Python
 __pycache__/
 *.pyc
