@@ -172,12 +172,12 @@ onMounted(async () => {
         ],
         yAxis: [
           { type: 'value', gridIndex: 0, scale: true, splitLine: { lineStyle: { color: '#21262d' } } },
-          { type: 'value', gridIndex: 1, scale: true, splitLine: { show: false } },
+          { type: 'value', gridIndex: 1, scale: true, splitLine: { show: false }, axisLabel: { formatter: (v) => (v / 1e8).toFixed(1) + '亿' } },
         ],
         dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], start: 60, end: 100 }],
         series: [
           { name: '沪深300', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: klineData.map(d => d.close), lineStyle: { color: '#58a6ff', width: 1.5 }, symbol: 'none', areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(88,166,255,0.2)' }, { offset: 1, color: 'rgba(88,166,255,0)' }]) } },
-          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: klineData.map(d => d.volume), itemStyle: { color: '#30363d' }, barMaxWidth: 3 },
+          { name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: klineData.map(d => d.volume), itemStyle: { color: '#30363d' }, barMaxWidth: 3, tooltip: { valueFormatter: (v) => (v / 1e8).toFixed(2) + '亿' } },
         ],
       })
     }
