@@ -44,6 +44,10 @@ export const getScoreBottom = (params) => http.get('/score/batch/bottom', { para
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
+export const getWeightAdvice = (snapshots) => http.post('/score/weight-advice', { snapshots }, { timeout: 30000 })
+
+// 异动监控
+export const getAnomalies = (watchCodes) => http.get('/stock/anomalies', { params: { watch_codes: watchCodes } })
 
 // 资金流向
 export const getNorthboundFlow = () => http.get('/capital/northbound')

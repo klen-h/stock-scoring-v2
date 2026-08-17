@@ -18,7 +18,7 @@
 from fastapi import APIRouter, Query
 from datetime import datetime
 import numpy as np
-from app.tencent import get_stock, get_kline, search_stocks, _CODE_TO_PREFIX
+from app.tencent import get_stock, get_kline, search_stocks, _CODE_TO_PREFIX, _cache
 
 router = APIRouter()
 
@@ -232,3 +232,73 @@ async def stock_fundamental(symbol: str):
             "换手率": info.get("turnover_rate", 0),
         },
     }
+
+
+@router.get("/anomalies")
+async def stock_anomalies(
+    watch_codes: str = Query(default="", description="逗号分隔的关注代码（优先检测）"),
+):
+    """
+    异动监控：检测全市场的异常信号（放量/急涨急跌/涨停跌停）。
+    优先返回 watch_codes 中的股票（用户持仓/自选）。
+    """
+    stocks = _cache.get("stocks", {})
+    if not stocks:
+        return {"data": [], "total": 0}
+
+    watch_set = set(c.strip() for c in watch_codes.split(",") if c.strip())
+    anomalies = []
+
+    for code, s in stocks.items():
+        price = s.get("price", 0) or 0
+        change_pct = s.get("change_pct")
+        if price <= 0 or change_pct is None:
+            continue
+
+        volume = s.get("volume", 0) or 0
+        turnover_rate = s.get("turnover_rate", 0) or 0
+        amplitude = s.get("amplitude", 0) or 0
+        types = []
+
+        # 1. 急涨：涨幅 >= 5%
+        if change_pct >= 5:
+            types.append({"type": "急涨", "severity": 2 if change_pct >= 8 else 1,
+                          "desc": f"涨 {change_pct:.1f}%"})
+        # 2. 急跌：跌幅 <= -5%
+        elif change_pct <= -5:
+            types.append({"type": "急跌", "severity": 2 if change_pct <= -8 else 1,
+                          "desc": f"跌 {change_pct:.1f}%"})
+
+        # 3. 涨停（涨幅接近 10% 且 <= 10.1%）
+        if 9.8 <= change_pct <= 10.1:
+            types.append({"type": "涨停", "severity": 3, "desc": f"涨停 {change_pct:.1f}%"})
+        # 4. 跌停
+        elif -10.1 <= change_pct <= -9.8:
+            types.append({"type": "跌停", "severity": 3, "desc": f"跌停 {change_pct:.1f}%"})
+
+        # 5. 高换手（>10% 异常活跃）
+        if turnover_rate > 10:
+            types.append({"type": "高换手", "severity": 1,
+                          "desc": f"换手率 {turnover_rate:.1f}%"})
+
+        # 6. 大振幅（>8%）
+        if amplitude > 8:
+            types.append({"type": "大振幅", "severity": 1,
+                          "desc": f"振幅 {amplitude:.1f}%"})
+
+        if types:
+            max_severity = max(t["severity"] for t in types)
+            anomalies.append({
+                "code": code,
+                "name": s.get("name", ""),
+                "price": price,
+                "change_pct": round(change_pct, 2),
+                "turnover_rate": turnover_rate,
+                "signals": types,
+                "severity": max_severity,
+                "is_watched": code in watch_set,
+            })
+
+    # 排序：关注股票优先 + 严重程度降序
+    anomalies.sort(key=lambda x: (not x["is_watched"], -x["severity"], -abs(x["change_pct"])))
+    return {"data": anomalies[:100], "total": len(anomalies)}

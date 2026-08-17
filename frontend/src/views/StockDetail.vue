@@ -101,6 +101,31 @@
       <p v-if="scoreData.summary" class="mt-3 text-xs text-muted leading-relaxed">{{ scoreData.summary }}</p>
     </div>
 
+    <!-- 趋势健康度诊断 -->
+    <div v-if="scoreData.trend_health?.verdict" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold">趋势健康度诊断</h3>
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-bold"
+          :class="healthVerdictClass(scoreData.trend_health.verdict)">
+          {{ scoreData.trend_health.verdict }} {{ scoreData.trend_health.score }}/5
+        </span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-2">
+        <div v-for="d in scoreData.trend_health.details" :key="d.dim"
+          class="px-3 py-2 rounded-lg text-xs"
+          :class="d.healthy ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'">
+          <div class="flex items-center gap-1.5 mb-1">
+            <span class="w-2 h-2 rounded-full" :class="d.healthy ? 'bg-emerald-400' : 'bg-red-400'"></span>
+            <span class="font-semibold" :class="d.healthy ? 'text-emerald-400' : 'text-red-400'">{{ d.dim }}</span>
+          </div>
+          <div class="text-muted leading-tight">{{ d.desc }}</div>
+        </div>
+      </div>
+      <div class="mt-3 text-[11px] text-muted">
+        ≥4/5 趋势健康，回调大概率为洗盘，耐心持有；≤2/5 趋势恶化，真跌风险高，考虑减仓
+      </div>
+    </div>
+
     <!-- K线图 + 技术指标 -->
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex gap-2 mb-3 flex-wrap">
@@ -200,6 +225,13 @@ function dimBarColor(s) {
   if (s >= 70) return 'bg-emerald-500'
   if (s >= 45) return 'bg-amber-500'
   return 'bg-red-500'
+}
+
+function healthVerdictClass(verdict) {
+  return { '趋势健康': 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
+    '趋势偏弱': 'bg-amber-500/20 text-amber-400 border border-amber-500/30',
+    '趋势恶化': 'bg-red-500/20 text-red-400 border border-red-500/30',
+  }[verdict] || 'bg-white/5 text-muted'
 }
 
 function formatVol(v) {

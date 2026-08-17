@@ -74,6 +74,7 @@ class ScoreResult:
     factors_up: list = field(default_factory=list)    # 加分因素列表
     factors_down: list = field(default_factory=list)  # 扣分因素列表
     buy_point: dict = field(default_factory=dict)     # 买入时机指标（MA20偏离/布林位置/支撑位）
+    trend_health: dict = field(default_factory=dict)  # 趋势健康度（5维度诊断：洗盘 vs 真跌）
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
@@ -158,6 +159,10 @@ class ScoreEngine:
             buy_point = self._calc_buy_point(technical_data) if technical_data else {}
         except Exception:
             buy_point = {}
+        try:
+            trend_health = self._calc_trend_health(technical_data) if technical_data else {}
+        except Exception:
+            trend_health = {}
         return ScoreResult(
             code=code, name=name,
             total_score=total,
@@ -172,6 +177,7 @@ class ScoreEngine:
             factors_up=factors_up,
             factors_down=factors_down,
             buy_point=buy_point,
+            trend_health=trend_health,
         )
 
     def score_batch(self, stocks: list[dict], technical_cache: dict | None = None) -> list[ScoreResult]:
@@ -1069,9 +1075,13 @@ class ScoreEngine:
 
     def _calc_buy_point(self, tech_data: list) -> dict:
         """
-        计算买入时机指标：MA20偏离度 + 布林带位置 + 支撑位。
-        返回 {ma20_deviation, boll_position, support, buy_timing}。
-        buy_timing: '适合介入' / '等回调' / '追高风险'
+        计算买入时机指标：具体参考买入价位区间 + 时机判断。
+        返回:
+          buy_range: [下界, 上界] 建议买入价格区间
+          ref_price: 参考买入价（区间中轨）
+          current_price: 当前收盘价
+          supports: 各支撑位明细
+          buy_timing: '适合介入' / '等回调' / '追高风险'
         """
         if len(tech_data) < 30:
             return {}
@@ -1079,37 +1089,200 @@ class ScoreEngine:
         latest = tech_data[-1]
         price = latest.get("close", 0)
         ma20 = latest.get("ma20")
-        boll_upper = latest.get("boll_upper")
-        boll_lower = latest.get("boll_lower")
         ma60 = latest.get("ma60")
+        boll_upper = latest.get("boll_upper")
+        boll_mid = latest.get("boll_mid")
+        boll_lower = latest.get("boll_lower")
 
-        if not price or not ma20:
+        if not price:
             return {}
 
-        # 1. MA20 偏离度（%）
-        ma20_dev = round((price - ma20) / ma20 * 100, 2)
+        # ── 1. 收集所有支撑位（只取低于当前价的） ──
+        supports = []
+        if ma20 and ma20 < price:
+            supports.append({"name": "MA20", "price": round(ma20, 2)})
+        if ma60 and ma60 < price:
+            supports.append({"name": "MA60", "price": round(ma60, 2)})
+        if boll_lower and boll_lower < price:
+            supports.append({"name": "布林下轨", "price": round(boll_lower, 2)})
+        if boll_mid and boll_mid < price:
+            supports.append({"name": "布林中轨", "price": round(boll_mid, 2)})
 
-        # 2. 布林带位置（0=下轨, 1=上轨）
-        boll_pos = None
-        if boll_upper and boll_lower:
-            bw = boll_upper - boll_lower
-            if bw > 0:
-                boll_pos = round((price - boll_lower) / bw, 2)
+        # 近 20 日最低价（价格支撑）
+        recent_lows = [k.get("low", 0) for k in tech_data[-20:] if k.get("low")]
+        if recent_lows:
+            low_20 = min(recent_lows)
+            if low_20 < price:
+                supports.append({"name": "20日低点", "price": round(low_20, 2)})
 
-        # 3. 支撑位参考（MA60 或 MA20）
-        support = round(ma60, 2) if ma60 else round(ma20, 2)
+        # 按价格从高到低排序
+        supports.sort(key=lambda s: s["price"], reverse=True)
 
-        # 4. 买入时机判定
-        if ma20_dev > 8 or (boll_pos is not None and boll_pos > 0.95):
-            timing = "追高风险"
-        elif ma20_dev > 3 or (boll_pos is not None and boll_pos > 0.8):
-            timing = "等回调"
-        else:
+        # ── 2. 计算买入区间 ──
+        # 上界：最近的支撑位（离当前价最近的下方支撑）
+        # 下界：最强支撑位（MA60 或 20日低点，取较高者）
+        buy_low = None
+        buy_high = None
+
+        if supports:
+            buy_high = supports[0]["price"]  # 最近支撑（最高的下方支撑）
+            # 下界：MA60 和 20日低点中较高的（更强的支撑）
+            strong_supports = [s["price"] for s in supports if s["name"] in ("MA60", "20日低点")]
+            buy_low = max(strong_supports) if strong_supports else supports[-1]["price"]
+            # 确保下界 < 上界
+            if buy_low >= buy_high:
+                buy_low = round(buy_high * 0.97, 2)  # 下界至少比上界低 3%
+
+        # ── 3. 时机判定（基于当前价与买入区间的距离） ──
+        if buy_high is None:
+            # 没有支撑位（价格已在低位或数据不足）
             timing = "适合介入"
+            deviation = 0
+        elif price <= buy_high:
+            # 当前价已跌入买入区间内或以下
+            timing = "适合介入"
+            deviation = round((price - buy_high) / buy_high * 100, 2)
+        else:
+            deviation = round((price - buy_high) / buy_high * 100, 2)
+            if deviation <= 2:
+                timing = "适合介入"  # 离最近支撑 2% 以内，可以介入
+            elif deviation <= 6:
+                timing = "等回调"    # 离支撑还有一段距离
+            else:
+                timing = "追高风险"  # 远离所有支撑
+
+        # ── 4. 参考买入价（区间中轨） ──
+        ref_price = None
+        if buy_low is not None and buy_high is not None:
+            ref_price = round((buy_low + buy_high) / 2, 2)
 
         return {
-            "ma20_deviation": ma20_dev,
-            "boll_position": boll_pos,
-            "support": support,
+            "buy_range": [buy_low, buy_high] if buy_low and buy_high else None,
+            "ref_price": ref_price,
+            "current_price": round(price, 2),
+            "supports": supports[:5],  # 最多 5 个支撑位
+            "deviation": deviation,     # 距最近支撑的偏离度 %
             "buy_timing": timing,
+        }
+
+    def _calc_trend_health(self, tech_data: list) -> dict:
+        """
+        趋势健康度诊断：5 个维度判断当前回调是「洗盘」还是「真跌」。
+        用于持仓时帮助用户客观判断「该拿住还是该跑」。
+
+        5 个维度：
+          1. 量能：回调时缩量=健康（卖盘枯竭），放量=危险（主力出货）
+          2. 支撑：价格守住 MA20/MA60=健康，跌破=危险
+          3. 深度：回调幅度在正常范围=健康，过深=危险
+          4. 动量：MACD 的 DIF>0=健康，跌破零轴=危险
+          5. 均线：MA5>MA20=健康，死叉=危险
+
+        返回:
+          score: 0-5（健康维度数）
+          verdict: '趋势健康' / '趋势偏弱' / '趋势恶化'
+          details: 各维度明细
+        """
+        if len(tech_data) < 30:
+            return {"score": 0, "verdict": "数据不足", "details": []}
+
+        latest = tech_data[-1]
+        price = latest.get("close", 0)
+        ma5 = latest.get("ma5") or 0
+        ma20 = latest.get("ma20") or 0
+        ma60 = latest.get("ma60") or 0
+        dif = latest.get("dif") or 0
+        details = []
+
+        # ── 维度 1：量能（回调时缩量=健康）──
+        # 取近 5 日均量 vs 近 20 日均量
+        volumes = [k.get("volume", 0) for k in tech_data if k.get("volume")]
+        if len(volumes) >= 20:
+            vol_5 = sum(volumes[-5:]) / 5
+            vol_20 = sum(volumes[-20:]) / 20
+            if vol_20 > 0:
+                vol_ratio = vol_5 / vol_20
+                if vol_ratio < 0.8:
+                    details.append({"dim": "量能", "healthy": True,
+                                    "desc": f"缩量（近5日/近20日={vol_ratio:.0%}），卖盘枯竭"})
+                elif vol_ratio < 1.2:
+                    details.append({"dim": "量能", "healthy": True,
+                                    "desc": f"量能平稳（{vol_ratio:.0%}）"})
+                else:
+                    details.append({"dim": "量能", "healthy": False,
+                                    "desc": f"放量下跌（{vol_ratio:.0%}），注意出货"})
+            else:
+                details.append({"dim": "量能", "healthy": True, "desc": "量能数据平稳"})
+        else:
+            details.append({"dim": "量能", "healthy": True, "desc": "数据不足"})
+
+        # ── 维度 2：支撑位（守住 MA20 或 MA60=健康）──
+        if ma20 > 0 and ma60 > 0:
+            if price >= ma20:
+                details.append({"dim": "支撑", "healthy": True,
+                                "desc": f"价格 {price:.2f} 站稳 MA20（{ma20:.2f}）"})
+            elif price >= ma60:
+                details.append({"dim": "支撑", "healthy": True,
+                                "desc": f"回踩 MA60（{ma60:.2f}）获支撑"})
+            else:
+                details.append({"dim": "支撑", "healthy": False,
+                                "desc": f"跌破 MA20 和 MA60，支撑失守"})
+        elif ma20 > 0:
+            healthy = price >= ma20
+            details.append({"dim": "支撑", "healthy": healthy,
+                            "desc": f"价格{'站稳' if healthy else '跌破'} MA20（{ma20:.2f}）"})
+        else:
+            details.append({"dim": "支撑", "healthy": False, "desc": "均线数据不足"})
+
+        # ── 维度 3：回调深度（<8%=健康，>15%=危险）──
+        recent_highs = [k.get("high", 0) for k in tech_data[-60:] if k.get("high")]
+        if recent_highs:
+            recent_high = max(recent_highs)
+            if recent_high > 0:
+                pullback_pct = (recent_high - price) / recent_high * 100
+                if pullback_pct <= 8:
+                    details.append({"dim": "深度", "healthy": True,
+                                    "desc": f"回调 {pullback_pct:.1f}%，正常范围"})
+                elif pullback_pct <= 15:
+                    details.append({"dim": "深度", "healthy": True,
+                                    "desc": f"回调 {pullback_pct:.1f}%，偏深但可接受"})
+                else:
+                    details.append({"dim": "深度", "healthy": False,
+                                    "desc": f"回调 {pullback_pct:.1f}%，深度过大"})
+            else:
+                details.append({"dim": "深度", "healthy": True, "desc": "数据平稳"})
+        else:
+            details.append({"dim": "深度", "healthy": True, "desc": "数据不足"})
+
+        # ── 维度 4：MACD 动量（DIF>0=健康）──
+        if dif > 0:
+            details.append({"dim": "动量", "healthy": True,
+                            "desc": f"DIF={dif:.3f} > 0，多头动能仍在"})
+        else:
+            details.append({"dim": "动量", "healthy": False,
+                            "desc": f"DIF={dif:.3f} < 0，空头占优"})
+
+        # ── 维度 5：均线结构（MA5>MA20=健康）──
+        if ma5 > 0 and ma20 > 0:
+            if ma5 >= ma20:
+                details.append({"dim": "均线", "healthy": True,
+                                "desc": f"MA5({ma5:.2f}) > MA20({ma20:.2f})，短期趋势完好"})
+            else:
+                details.append({"dim": "均线", "healthy": False,
+                                "desc": f"MA5({ma5:.2f}) < MA20({ma20:.2f})，短期均线死叉"})
+        else:
+            details.append({"dim": "均线", "healthy": False, "desc": "均线数据不足"})
+
+        # ── 汇总 ──
+        healthy_count = sum(1 for d in details if d["healthy"])
+        if healthy_count >= 4:
+            verdict = "趋势健康"
+        elif healthy_count >= 3:
+            verdict = "趋势偏弱"
+        else:
+            verdict = "趋势恶化"
+
+        return {
+            "score": healthy_count,
+            "verdict": verdict,
+            "details": details,
         }

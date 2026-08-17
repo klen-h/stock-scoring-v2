@@ -12,7 +12,14 @@
 
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between flex-wrap gap-3">
-        <h2 class="text-lg font-bold">评分排行榜</h2>
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-bold">评分排行榜</h2>
+          <span class="text-xs" :class="isTradingNow ? 'text-emerald-400' : 'text-muted'"
+            :title="isTradingNow ? '交易时段，每60秒自动刷新' : '非交易时段'">
+            {{ isTradingNow ? '● 交易中' : '○ 已休市' }}
+          </span>
+          <span v-if="autoCountdown > 0 && autoCountdown < 60" class="text-xs text-muted">{{ autoCountdown }}s</span>
+        </div>
         <div class="flex gap-2 flex-wrap">
           <button v-for="tab in tabs" :key="tab.key" @click="switchTab(tab.key)"
             :class="activeTab === tab.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
@@ -53,7 +60,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -81,17 +88,19 @@
     </div>
 
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
             <th class="text-left py-2.5 px-3">排名</th>
             <th class="text-left py-2.5 px-3">代码</th>
             <th class="text-left py-2.5 px-3">名称</th>
+            <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-right py-2.5 px-3">综合评分</th>
             <th class="text-center py-2.5 px-3">信号</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">买入时机</th>
             <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">买入原因</th>
+            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -106,6 +115,10 @@
                  title="在雪球查看">{{ item.code }}</a>
             </td>
             <td class="py-2 px-3">{{ item.name }}</td>
+            <td class="py-2 px-3 text-right font-mono text-xs"
+              :class="(item.change_pct || 0) > 0 ? 'text-red-400' : (item.change_pct || 0) < 0 ? 'text-emerald-400' : 'text-muted'">
+              {{ (item.change_pct || 0) > 0 ? '+' : '' }}{{ (item.change_pct || 0).toFixed(2) }}%
+            </td>
             <td class="py-2 px-3 text-right">
               <span class="font-bold" :class="item.total_score >= 65 ? 'text-emerald-400' : item.total_score >= 45 ? 'text-amber-400' : 'text-red-400'">
                 {{ item.total_score }}
@@ -119,15 +132,25 @@
                 {{ item.signal }}
               </span>
             </td>
-            <!-- 买入时机列：仅 Top 50 显示，绿=适合介入 黄=等回调 红=追高风险 -->
+            <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
-              <span v-if="item.buy_point?.buy_timing" class="px-2 py-0.5 rounded-full text-xs font-medium"
-                :class="item.buy_point.buy_timing === '适合介入' ? 'bg-emerald-500/20 text-emerald-400' :
-                       item.buy_point.buy_timing === '等回调' ? 'bg-amber-500/20 text-amber-400' :
-                       'bg-red-500/20 text-red-400'"
-                :title="`MA20偏离${item.buy_point.ma20_deviation || 0}% · 布林位置${item.buy_point.boll_position ?? '-'} · 支撑位${item.buy_point.support || '-'}`">
-                {{ item.buy_point.buy_timing }}
-              </span>
+              <div v-if="item.buy_point?.buy_timing" class="space-y-0.5">
+                <!-- 时机标签：绿=适合介入 黄=等回调 红=追高风险 -->
+                <span class="px-2 py-0.5 rounded-full text-xs font-medium"
+                  :class="item.buy_point.buy_timing === '适合介入' ? 'bg-emerald-500/20 text-emerald-400' :
+                         item.buy_point.buy_timing === '等回调' ? 'bg-amber-500/20 text-amber-400' :
+                         'bg-red-500/20 text-red-400'">
+                  {{ item.buy_point.buy_timing }}
+                </span>
+                <!-- 具体价位：当前价 → 建议区间 -->
+                <div class="text-[11px] text-muted leading-tight">
+                  <span>现价 {{ item.buy_point.current_price }}</span>
+                  <span v-if="item.buy_point.buy_range" class="ml-1">
+                    → <span class="text-gray-300">{{ item.buy_point.buy_range[0] }}-{{ item.buy_point.buy_range[1] }}</span>
+                  </span>
+                </div>
+                <!-- Tooltip: 详细支撑位 -->
+              </div>
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入原因列：仅 Top 50 tab 显示，展示加分因素绿色小标签 -->
@@ -139,9 +162,19 @@
               </div>
               <span v-else class="text-xs text-muted">-</span>
             </td>
+            <!-- 操作列：仅 Top 50，一键添加到持仓 -->
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center" @click.stop>
+              <button v-if="!portfolioCodes?.has(item.code)"
+                @click="quickAddPosition(item)"
+                class="px-2 py-0.5 rounded text-[11px] bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
+                title="以当前价添加到持仓">
+                + 持仓
+              </button>
+              <span v-else class="text-[11px] text-muted">已持有</span>
+            </td>
           </tr>
           <tr v-if="!tableData.length">
-            <td :colspan="activeTab === 'top' ? 8 : 5" class="py-12 text-center text-muted">
+            <td :colspan="activeTab === 'top' ? 9 : 5" class="py-12 text-center text-muted">
               {{ cacheStatus === 'loading' ? '行情数据加载中，请稍后...' : '暂无数据' }}
             </td>
           </tr>
@@ -296,14 +329,191 @@
         配置参数后点击「开始回测」，验证技术面评分的历史预测力
       </div>
     </div>
+
+    <!-- 权重优化面板 -->
+    <div v-if="activeTab === 'optimize'" class="space-y-4">
+      <div class="bg-card border border-border rounded-lg p-4">
+        <h2 class="text-lg font-bold mb-2">评分权重优化分析</h2>
+        <p class="text-xs text-muted mb-4">
+          基于历史快照的实际收益表现，分析技术面/资金面/基本面三个维度的预测力，建议更优的权重分配。
+          数据越多分析越准确——建议积累 7 天以上已验证快照后再查看。
+        </p>
+        <div v-if="optLoading" class="text-center text-muted py-8">分析中...</div>
+        <div v-else-if="optResult?.error" class="text-center text-muted py-8">{{ optResult.error }}</div>
+        <div v-else-if="optResult" class="space-y-4">
+          <!-- 信号等级胜率 -->
+          <div>
+            <h3 class="text-sm font-semibold mb-2">各信号等级历史胜率</h3>
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+              <div v-for="(stats, sig) in optResult.signal_analysis" :key="sig"
+                class="p-2 rounded-lg bg-bg text-center">
+                <div class="text-xs text-muted">{{ sig }}</div>
+                <div class="text-lg font-bold mt-1" :class="stats.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+                  {{ stats.win_rate }}%
+                </div>
+                <div class="text-[10px] text-muted">{{ stats.count }}次 · 均{{ stats.avg_return >= 0 ? '+' : '' }}{{ stats.avg_return }}%</div>
+              </div>
+            </div>
+          </div>
+          <!-- 维度预测力 -->
+          <div>
+            <h3 class="text-sm font-semibold mb-2">维度预测力（与实际收益的相关性）</h3>
+            <div class="grid grid-cols-3 gap-3">
+              <div v-for="(corr, dim) in optResult.dim_correlation" :key="dim"
+                class="p-3 rounded-lg bg-bg text-center">
+                <div class="text-xs text-muted">{{ dim }}</div>
+                <div v-if="corr !== null" class="text-lg font-bold mt-1"
+                  :class="corr > 0.1 ? 'text-emerald-400' : corr < -0.1 ? 'text-red-400' : 'text-amber-400'">
+                  {{ corr >= 0 ? '+' : '' }}{{ corr }}
+                </div>
+                <div v-else class="text-sm text-muted mt-1">数据不足</div>
+              </div>
+            </div>
+            <p class="text-[10px] text-muted mt-1">相关系数 >0 表示该维度分高时实际收益好，越接近 +1 预测力越强</p>
+          </div>
+          <!-- 权重建议 -->
+          <div>
+            <h3 class="text-sm font-semibold mb-2">权重调整建议</h3>
+            <div class="grid grid-cols-3 gap-3 mb-3">
+              <div v-for="(cur, dim) in optResult.current_weights" :key="dim" class="p-3 rounded-lg bg-bg">
+                <div class="text-xs text-muted mb-1">{{ dim }}</div>
+                <div class="flex items-end gap-2">
+                  <span class="text-lg font-bold">{{ (cur * 100).toFixed(0) }}%</span>
+                  <span v-if="optResult.suggested_weights[dim] !== cur" class="text-sm text-accent mb-0.5">
+                    → {{ (optResult.suggested_weights[dim] * 100).toFixed(0) }}%
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div class="space-y-1">
+              <div v-for="(msg, i) in optResult.advice" :key="i" class="text-xs text-muted">· {{ msg }}</div>
+            </div>
+          </div>
+          <div class="text-[10px] text-muted border-t border-border pt-2">
+            样本量：{{ optResult.sample_size }} 条记录（{{ optResult.snapshot_count }} 天快照）。
+            样本 <100 条时建议仅供参考，系统用保守混合策略（70%当前+30%最优）避免过拟合。
+          </div>
+        </div>
+        <div v-else class="text-center text-muted py-8">
+          切换到此处后自动分析，基于历史已验证快照评估评分权重
+        </div>
+      </div>
+    </div>
+
+    <!-- 异动监控面板 -->
+    <div v-if="activeTab === 'anomaly'" class="space-y-4">
+      <div class="bg-card border border-border rounded-lg p-4">
+        <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <h2 class="text-lg font-bold">全市场异动监控</h2>
+            <p class="text-xs text-muted mt-1">检测急涨≥5%/急跌≤-5%/涨停/跌停/高换手>10%/大振幅>8%</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-muted">共 {{ anomalyTotal }} 条异动</span>
+            <button @click="loadAnomalies" :disabled="anomalyLoading"
+              class="px-3 py-1 rounded text-xs bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50">
+              {{ anomalyLoading ? '加载中...' : '刷新' }}
+            </button>
+          </div>
+        </div>
+        <!-- 过滤按钮 -->
+        <div class="flex gap-2 mb-3">
+          <button @click="anomalyFilter = 'all'"
+            :class="anomalyFilter === 'all' ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+            class="px-3 py-1 rounded text-xs transition-colors">全部</button>
+          <button @click="anomalyFilter = 'watched'"
+            :class="anomalyFilter === 'watched' ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+            class="px-3 py-1 rounded text-xs transition-colors">仅持仓</button>
+          <button @click="anomalyFilter = 'high'"
+            :class="anomalyFilter === 'high' ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+            class="px-3 py-1 rounded text-xs transition-colors">高严重度</button>
+        </div>
+        <!-- 异动列表 -->
+        <div v-if="anomalyLoading" class="text-center text-muted py-8">扫描全市场缓存中...</div>
+        <div v-else-if="filteredAnomalies.length" class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div v-for="a in filteredAnomalies" :key="a.code"
+            class="flex items-center justify-between px-3 py-2 rounded bg-bg hover:bg-white/3 transition-colors cursor-pointer"
+            @click="goDetail(a.code)">
+            <div class="flex items-center gap-2 min-w-0">
+              <span v-if="a.is_watched" class="px-1 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-400 flex-shrink-0">持仓</span>
+              <span class="text-sm truncate">{{ a.name }}</span>
+              <span class="text-xs text-muted font-mono">{{ a.code }}</span>
+            </div>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <!-- 异动标签 -->
+              <span v-for="tag in a.tags" :key="tag"
+                class="px-1.5 py-0.5 rounded text-[10px]"
+                :class="tag.includes('涨') || tag === '涨停' ? 'bg-red-500/20 text-red-400' :
+                       tag.includes('跌') || tag === '跌停' ? 'bg-emerald-500/20 text-emerald-400' :
+                       'bg-amber-500/20 text-amber-400'">
+                {{ tag }}
+              </span>
+              <!-- 涨跌幅 -->
+              <span class="text-xs font-mono font-bold w-16 text-right"
+                :class="(a.change_pct || 0) > 0 ? 'text-red-400' : (a.change_pct || 0) < 0 ? 'text-emerald-400' : 'text-muted'">
+                {{ (a.change_pct || 0) > 0 ? '+' : '' }}{{ (a.change_pct || 0).toFixed(2) }}%
+              </span>
+              <!-- 现价 -->
+              <span class="text-xs font-mono w-16 text-right">{{ a.price }}</span>
+            </div>
+          </div>
+        </div>
+        <div v-else class="text-center text-muted py-8">
+          暂无符合条件的异动记录
+        </div>
+      </div>
+    </div>
+
+    <!-- 板块分析面板 -->
+    <div v-if="activeTab === 'sector'" class="space-y-4">
+      <!-- 行业板块涨跌 -->
+      <div class="bg-card border border-border rounded-lg p-4">
+        <h2 class="text-lg font-bold mb-3">行业板块涨跌</h2>
+        <div v-if="sectorLoading" class="text-center text-muted py-8">加载中...</div>
+        <div v-else-if="sectorData.length" class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div v-for="(s, idx) in sectorData.slice(0, 20)" :key="idx"
+            class="flex items-center justify-between px-3 py-2 rounded bg-bg hover:bg-white/3 transition-colors">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-muted w-5">{{ idx + 1 }}</span>
+              <span class="text-sm">{{ s.name }}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs">
+              <span class="text-muted">涨{{ s.up_count || 0 }}家</span>
+              <span class="font-mono font-bold"
+                :class="(s.change_pct || 0) > 0 ? 'text-red-400' : (s.change_pct || 0) < 0 ? 'text-emerald-400' : 'text-muted'">
+                {{ (s.change_pct || 0) > 0 ? '+' : '' }}{{ (s.change_pct || 0).toFixed(2) }}%
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 行业资金流 -->
+      <div class="bg-card border border-border rounded-lg p-4">
+        <h2 class="text-lg font-bold mb-3">行业资金流向（主力净流入）</h2>
+        <div v-if="sectorFlowData.length" class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div v-for="(s, idx) in sectorFlowData.slice(0, 20)" :key="'f'+idx"
+            class="flex items-center justify-between px-3 py-2 rounded bg-bg hover:bg-white/3 transition-colors">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-muted w-5">{{ idx + 1 }}</span>
+              <span class="text-sm">{{ s.name }}</span>
+            </div>
+            <div class="text-xs font-mono font-bold"
+              :class="(s.main_net_inflow || 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+              {{ ((s.main_net_inflow || 0) / 100000000).toFixed(2) }}亿
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
+import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 
 const router = useRouter()
 
@@ -311,8 +521,11 @@ const tabs = [
   { key: 'top', label: '评分 Top 50' },
   { key: 'bottom', label: '评分 Bottom 50' },
   { key: 'signal', label: '按信号筛选' },
+  { key: 'sector', label: '板块分析' },
   { key: 'verify', label: '胜率回查' },
   { key: 'backtest', label: '历史回测' },
+  { key: 'optimize', label: '权重优化' },
+  { key: 'anomaly', label: '异动监控' },
 ]
 const signalOptions = ['强烈买入', '买入', '观望', '卖出', '强烈卖出']
 
@@ -322,6 +535,28 @@ const tableData = ref([])
 const cacheStatus = ref('loading')
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
 const temp = ref({})   // 市场环境温度（独立信号）
+
+// ── 自动刷新（盘中每60秒，非交易时段不自动刷新）──
+const autoCountdown = ref(60)
+const isTradingNow = ref(isTradingTime())
+let refreshTimer = null
+
+// ── 持仓联动 ──
+const { positions } = usePortfolio()
+const portfolioCodes = computed(() => new Set(positions.value.map(p => p.code)))
+
+function quickAddPosition(item) {
+  // 以当前价 + 默认 100 股添加到持仓
+  const price = item.buy_point?.current_price || 0
+  if (!price) return
+  addPosition({
+    code: item.code,
+    name: item.name,
+    cost: price,
+    shares: 100,
+    note: `评分${item.total_score} ${item.signal}`,
+  })
+}
 
 // ── 快照 / 胜率回查 ──
 const SNAP_KEY = 'score_snapshots'
@@ -343,6 +578,77 @@ const scoreAlerts = ref({ upgrades: [], downgrades: [] })
 const btConfig = reactive({ topN: 10, days: 60 })
 const btResult = ref(null)
 const btLoading = ref(false)
+
+// ── 权重优化 ──
+const optResult = ref(null)
+const optLoading = ref(false)
+
+async function runWeightAnalysis() {
+  optLoading.value = true
+  optResult.value = null
+  try {
+    // 取已验证的快照列表
+    const verified = snapshotList.value.filter(s => s.verified)
+    const { data } = await getWeightAdvice(verified)
+    if (data.error) {
+      optResult.value = { error: data.error }
+    } else {
+      optResult.value = data
+    }
+  } catch (e) {
+    optResult.value = { error: '分析请求失败' }
+  } finally {
+    optLoading.value = false
+  }
+}
+
+// ── 板块分析 ──
+const sectorData = ref([])
+const sectorFlowData = ref([])
+const sectorLoading = ref(false)
+
+// ── 异动监控 ──
+const anomalyData = ref([])
+const anomalyTotal = ref(0)
+const anomalyLoading = ref(false)
+const anomalyFilter = ref('all') // all / watched / high
+
+async function loadAnomalies() {
+  anomalyLoading.value = true
+  try {
+    // 把持仓代码传过去，优先显示持仓异动
+    const watchedCodes = portfolioCodes.value ? [...portfolioCodes.value].join(',') : ''
+    const { data } = await getAnomalies(watchedCodes)
+    anomalyData.value = data.data || []
+    anomalyTotal.value = data.total || 0
+  } catch (e) {
+    console.error(e)
+  } finally {
+    anomalyLoading.value = false
+  }
+}
+
+const filteredAnomalies = computed(() => {
+  if (anomalyFilter.value === 'watched') return anomalyData.value.filter(a => a.is_watched)
+  if (anomalyFilter.value === 'high') return anomalyData.value.filter(a => a.severity >= 2)
+  return anomalyData.value
+})
+
+async function loadSectorData() {
+  sectorLoading.value = true
+  try {
+    const [indRes, flowRes] = await Promise.allSettled([
+      getSectorIndustry({ limit: 50 }),
+      getIndustryFlow({ limit: 30 }),
+    ])
+    sectorData.value = indRes.status === 'fulfilled' ? (indRes.value.data?.data || []) : []
+    sectorFlowData.value = flowRes.status === 'fulfilled' ? (flowRes.value.data?.data || []) : []
+  } catch (e) {
+    console.error(e)
+  } finally {
+    sectorLoading.value = false
+  }
+}
 
 const verifySummary = computed(() => {
   const verified = snapshotList.value.filter(s => s.verified)
@@ -409,6 +715,8 @@ async function captureSnapshot() {
     stocks: freshData.map(i => ({
       code: i.code, name: i.name, score: i.total_score,
       signal: i.signal, price: priceMap[i.code] || 0,
+      // 维度分（用于权重优化分析）
+      dimensions: i.dimensions || {},
     })),
   }
   saveSnapshots()
@@ -525,7 +833,10 @@ async function loadData() {
 
 function switchTab(tab) {
   activeTab.value = tab
-  if (tab !== 'verify' && tab !== 'backtest') loadData()
+  if (tab === 'sector') loadSectorData()
+  else if (tab === 'optimize') runWeightAnalysis()
+  else if (tab === 'anomaly') loadAnomalies()
+  else if (tab !== 'verify' && tab !== 'backtest') loadData()
 }
 
 function goDetail(code) {
@@ -556,14 +867,74 @@ async function loadTemp() {
   } catch (e) { console.error(e) }
 }
 
+// ── 到价提醒：检查 Top 50 中是否有股票回调到买入区间 ──
+const alertedCodes = ref(new Set())  // 已通知过的代码（避免重复通知）
+
+async function checkPriceAlerts() {
+  if (!tableData.value.length || activeTab.value !== 'top') return
+  // 只检查有买入区间且未通知过的
+  const needCheck = tableData.value.filter(
+    i => i.buy_point?.buy_range && !alertedCodes.value.has(i.code) && !portfolioCodes.value.has(i.code)
+  )
+  if (!needCheck.length) return
+
+  const codes = needCheck.map(i => i.code)
+  let priceMap = {}
+  try {
+    const { data } = await getBatchPrices(codes)
+    priceMap = Object.fromEntries(data.map(s => [s.code, s.price]))
+  } catch { return }
+
+  for (const item of needCheck) {
+    const price = priceMap[item.code]
+    if (!price || price <= 0) continue
+    const [low, high] = item.buy_point.buy_range
+    // 当前价跌入买入区间 → 通知
+    if (price <= high && price >= low * 0.98) {
+      alertedCodes.value.add(item.code)
+      // 浏览器桌面通知
+      if (Notification.permission === 'granted') {
+        new Notification(`${item.name}(${item.code}) 进入买入区间`, {
+          body: `现价 ${price} | 建议区间 ${low}-${high} | 评分 ${item.total_score}`,
+        })
+      }
+    }
+  }
+}
+
+// ── 自动刷新定时器 ──
+function startAutoRefresh() {
+  stopAutoRefresh()
+  autoCountdown.value = 60
+  refreshTimer = setInterval(() => {
+    isTradingNow.value = isTradingTime()
+    if (!isTradingNow.value) {
+      autoCountdown.value = 0
+      return
+    }
+    autoCountdown.value--
+    if (autoCountdown.value <= 0) {
+      loadData()
+      checkPriceAlerts()
+      autoCountdown.value = 60
+    }
+  }, 1000)
+}
+
+function stopAutoRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
+}
+
 onMounted(() => {
   loadData()
   loadTemp()
   loadSnapshots()
   autoSaveTimer = setInterval(autoSaveCheck, 60000)
+  startAutoRefresh()
 })
 
 onBeforeUnmount(() => {
   if (autoSaveTimer) clearInterval(autoSaveTimer)
+  stopAutoRefresh()
 })
 </script>

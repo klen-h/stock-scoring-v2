@@ -47,7 +47,7 @@
     </div>
 
     <!-- 汇总卡片 -->
-    <div v-if="positions.length" class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <div v-if="positions.length" class="grid grid-cols-2 md:grid-cols-5 gap-3">
       <div class="bg-card border border-border rounded-lg p-3">
         <div class="text-xs text-muted">总市值</div>
         <div class="text-lg font-bold mt-1">{{ formatMoney(summary.totalMarketValue) }}</div>
@@ -66,6 +66,17 @@
         <div class="text-xs text-muted">总收益率</div>
         <div class="text-lg font-bold mt-1" :class="summary.totalProfitPct >= 0 ? 'text-rise' : 'text-fall'">
           {{ summary.totalProfitPct >= 0 ? '+' : '' }}{{ summary.totalProfitPct.toFixed(2) }}%
+        </div>
+      </div>
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="text-xs text-muted">市场温度 · 总仓位上限</div>
+        <div class="mt-1 flex items-center gap-2">
+          <span class="text-lg font-bold" :class="tempColor(marketTemp?.level)">
+            {{ marketTemp?.level || '-' }}
+          </span>
+          <span v-if="marketTemp?.level" class="text-sm text-accent font-bold">
+            {{ tempLimit(marketTemp.level) }}%
+          </span>
         </div>
       </div>
     </div>
@@ -135,7 +146,9 @@
             <th class="text-right py-2.5 px-3">市值</th>
             <th class="text-right py-2.5 px-3">浮动盈亏</th>
             <th class="text-center py-2.5 px-3">评分</th>
-            <th class="text-left py-2.5 px-3">建议操作</th>
+            <th class="text-center py-2.5 px-3">趋势健康</th>
+            <th class="text-left py-2.5 px-3">智能建议</th>
+            <th class="text-center py-2.5 px-3">建议仓位</th>
             <th class="text-center py-2.5 px-3">操作</th>
           </tr>
         </thead>
@@ -188,14 +201,36 @@
               </span>
               <span v-else class="text-muted text-xs">-</span>
             </td>
-            <!-- 建议操作 -->
-            <td class="py-2 px-3">
-              <div v-if="row.alerts.length">
-                <div v-for="(a, i) in row.alerts" :key="i" class="text-xs" :class="alertTextClass(a.level)">
-                  · {{ a.action }}
+            <!-- 趋势健康度：5 格指示器，绿色=健康维度，红色=不健康 -->
+            <td class="py-2 px-3 text-center">
+              <div v-if="row.score?.trend_health?.verdict" class="inline-flex flex-col items-center gap-1">
+                <div class="flex gap-0.5">
+                  <span v-for="i in 5" :key="i" class="w-2.5 h-2.5 rounded-full"
+                    :class="i <= (row.score.trend_health.score || 0)
+                      ? healthDotColor(row.score.trend_health.score)
+                      : 'bg-gray-700'"
+                    :title="healthDetail(row.score.trend_health)"></span>
                 </div>
+                <span class="text-[10px]" :class="healthVerdictColor(row.score.trend_health.verdict)">
+                  {{ row.score.trend_health.verdict }}
+                </span>
               </div>
-              <span v-else class="text-xs text-muted">持有</span>
+              <span v-else class="text-muted text-xs">-</span>
+            </td>
+            <!-- 智能建议：结合趋势健康+盈亏+评分 -->
+            <td class="py-2 px-3">
+              <div class="text-xs font-semibold" :class="posActionClass(row.posAction)">
+                {{ row.posAction.action }}
+              </div>
+              <div class="text-[10px] text-muted leading-tight">{{ row.posAction.reason }}</div>
+            </td>
+            <!-- 建议仓位 -->
+            <td class="py-2 px-3 text-center">
+              <div v-if="row.posSize" class="text-xs">
+                <span class="font-bold text-accent">{{ row.posSize.perStock }}%</span>
+                <div class="text-[10px] text-muted">总限{{ row.posSize.totalLimit }}%</div>
+              </div>
+              <span v-else class="text-muted text-xs">-</span>
             </td>
             <!-- 操作 -->
             <td class="py-2 px-3 text-center whitespace-nowrap">
@@ -211,15 +246,26 @@
 
     <!-- 规则说明 -->
     <div class="bg-card border border-border rounded-lg p-4 text-xs text-muted">
-      <div class="font-semibold text-gray-300 mb-2">监控规则（阈值可在源码 ALERT_CONFIG 调整）</div>
-      <ul class="space-y-1 list-disc list-inside">
-        <li><span class="text-red-400">硬止损</span>：浮亏 ≤ {{ ALERT_CONFIG.stopLossPct }}% → 建议止损卖出</li>
-        <li><span class="text-amber-400">硬止盈</span>：浮盈 ≥ +{{ ALERT_CONFIG.takeProfitPct }}% → 建议止盈清仓</li>
-        <li><span class="text-amber-400">移动止盈</span>：从持仓期高点回撤 ≥ {{ ALERT_CONFIG.trailingDrawdownPct }}%（且仍有盈利）→ 建议减仓锁利</li>
-        <li><span class="text-amber-400">评分恶化</span>：综合评分 ≤ {{ ALERT_CONFIG.scoreSellThreshold }} → 关注卖出</li>
-        <li><span class="text-muted">评分偏弱</span>：评分 {{ ALERT_CONFIG.scoreSellThreshold }}~{{ ALERT_CONFIG.scoreWeakThreshold }} → 考虑减仓</li>
-        <li><span class="text-purple-400">急涨/急跌</span>：单日涨幅 ≥ +{{ ALERT_CONFIG.surgeUpPct }}% 或 ≤ {{ ALERT_CONFIG.surgeDownPct }}% → 推送桌面通知（仅通知，不进建议操作列）</li>
-      </ul>
+      <div class="font-semibold text-gray-300 mb-2">智能建议规则（趋势健康度 + 盈亏 + 评分综合判断）</div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
+        <div><span class="text-emerald-400">可加仓</span>：趋势健康（≥4/5）+ 盈利 + 评分≥60</div>
+        <div><span class="text-muted">持有</span>：趋势≥3/5 且 亏损<5%，正常回调</div>
+        <div><span class="text-amber-400">减仓½</span>：趋势≤2/5 且 亏损>3%，或触发移动止盈</div>
+        <div><span class="text-red-400">准备清仓</span>：趋势恶化（≤1/5）或评分≤35</div>
+        <div><span class="text-red-400">清仓</span>：浮亏≤{{ ALERT_CONFIG.stopLossPct }}% 硬止损</div>
+        <div><span class="text-amber-400">减仓½</span>：浮盈≥+{{ ALERT_CONFIG.takeProfitPct }}% 硬止盈</div>
+      </div>
+      <div class="mt-3 pt-3 border-t border-border">
+        <div class="font-semibold text-gray-300 mb-1">趋势健康度 5 维度</div>
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+          <div>① <span class="text-gray-300">量能</span>：回调时缩量=健康</div>
+          <div>② <span class="text-gray-300">支撑</span>：守住MA20/MA60</div>
+          <div>③ <span class="text-gray-300">深度</span>：回调<8%正常</div>
+          <div>④ <span class="text-gray-300">动量</span>：MACD DIF>0</div>
+          <div>⑤ <span class="text-gray-300">均线</span>：MA5>MA20</div>
+        </div>
+        <div class="mt-1">≥4/5 趋势健康 → 洗盘概率大，拿住；≤2/5 趋势恶化 → 真跌概率大，减仓</div>
+      </div>
       <div class="mt-3 pt-3 border-t border-border">
         <div class="font-semibold text-gray-300 mb-1">刷新频率</div>
         <div>交易时段（工作日 9:30-11:30 / 13:00-15:00）每 30 秒刷新；其余时间每 5 分钟刷新一次，避免无意义请求。</div>
@@ -238,10 +284,11 @@ import { useRouter } from 'vue-router'
 import { getStockRealtime, getStockScore, searchStock } from '../api'
 import {
   addPosition, removePosition, updatePosition,
-  calcProfit, evaluateAlerts, updateHighWaterMark, useSummary,
+  calcProfit, evaluateAlerts, evaluatePositionAction, calcPositionSize, updateHighWaterMark, useSummary,
   exportJSON, importJSON, usePortfolio, ALERT_CONFIG,
   isTradingTime, getRefreshInterval,
 } from '../composables/usePortfolio'
+import { getMarketTemperature } from '../api'
 import {
   supported as notifSupported, permission as notifPermission,
   enabled as notifEnabled, requestPermission, disable as disableNotification,
@@ -271,6 +318,7 @@ const { positions } = usePortfolio()
 // ── 实时行情 & 评分缓存（响应式，刷新时更新）──
 const realtimeMap = ref({})   // { [code]: { price, change_pct, ... } }
 const scoreMap = ref({})      // { [code]: { total_score, signal, ... } }
+const marketTemp = ref({})    // 市场温度
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
 const tradingNow = ref(isTradingTime())  // 当前是否交易时段（用于 UI 提示）
@@ -287,7 +335,9 @@ const tableRows = computed(() => {
     const price = realtime?.price || 0
     const profit = calcProfit(p.cost, p.shares, price)
     const alerts = evaluateAlerts(p, realtime, score)
-    return { position: p, realtime, score, profit, alerts }
+    const posAction = evaluatePositionAction(p, score, realtime)
+    const posSize = calcPositionSize(score, marketTemp.value, positions.value.length)
+    return { position: p, realtime, score, profit, alerts, posAction, posSize }
   })
 })
 
@@ -431,13 +481,18 @@ async function refresh() {
     }).catch(() => {})
   )
 
-  // 行情就绪 → 解锁 UI；行情+评分都就绪 → 通知检查
+  // 行情就绪 → 解锁 UI；行情+评分+温度都就绪 → 通知检查
   Promise.allSettled(realtimePromises).finally(() => {
     loading.value = false
     tradingNow.value = isTradingTime()
     countdown.value = getRefreshInterval()
   })
-  Promise.allSettled([...realtimePromises, ...scorePromises]).finally(() => {
+  // 市场温度（用于仓位建议，每次刷新更新）
+  const tempPromise = getMarketTemperature().then(({ data }) => {
+    if (data) marketTemp.value = data
+  }).catch(() => {})
+
+  Promise.allSettled([...realtimePromises, ...scorePromises, tempPromise]).finally(() => {
     // 行情 + 评分都到位后，检查并发送桌面通知（内部做 diff 去重）
     checkAndNotify(positions.value, realtimeMap.value, scoreMap.value)
   })
@@ -497,6 +552,33 @@ function alertTextClass(level) {
   if (level === 'danger') return 'text-red-400'
   if (level === 'warning') return 'text-amber-400'
   return 'text-muted'
+}
+
+// ── 趋势健康度样式 ──
+function healthDotColor(score) {
+  if (score >= 4) return 'bg-emerald-400'
+  if (score >= 3) return 'bg-amber-400'
+  return 'bg-red-400'
+}
+function healthVerdictColor(verdict) {
+  return { '趋势健康': 'text-emerald-400', '趋势偏弱': 'text-amber-400', '趋势恶化': 'text-red-400' }[verdict] || 'text-muted'
+}
+function healthDetail(health) {
+  if (!health?.details) return ''
+  return health.details.map(d => `${d.dim}: ${d.desc}`).join('\n')
+}
+function posActionClass(action) {
+  return {
+    'success': 'text-emerald-400', 'warning': 'text-amber-400',
+    'danger': 'text-red-400', 'info': 'text-muted',
+  }[action.level] || 'text-muted'
+}
+function tempColor(level) {
+  return { '过热': 'text-red-400', '偏热': 'text-orange-400', '中性': 'text-amber-400',
+    '偏冷': 'text-cyan-400', '过冷': 'text-blue-400' }[level] || 'text-muted'
+}
+function tempLimit(level) {
+  return { '过热': 50, '偏热': 70, '中性': 100, '偏冷': 80, '过冷': 60 }[level] || 100
 }
 
 function goDetail(code) {

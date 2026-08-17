@@ -215,6 +215,101 @@ export function evaluateAlerts(position, realtime, score) {
   return alerts
 }
 
+// ── 智能加减仓建议（结合趋势健康度 + 盈亏 + 评分）──
+// 返回：{ action: string, reason: string, level: 'success'|'warning'|'danger'|'info' }
+export function evaluatePositionAction(position, score, realtime) {
+  const price = realtime?.price || 0
+  if (!price || !position) return { action: '持有', reason: '数据不足', level: 'info' }
+
+  const { profitPct } = calcProfit(position.cost, position.shares, price)
+  const health = score?.trend_health || {}
+  const healthScore = health.score ?? 0
+  const verdict = health.verdict || ''
+  const totalScore = score?.total_score || 0
+
+  // 硬止损优先
+  if (profitPct <= ALERT_CONFIG.stopLossPct) {
+    return { action: '清仓', reason: `浮亏 ${profitPct.toFixed(1)}% 触及止损线`, level: 'danger' }
+  }
+  // 硬止盈 → 至少减仓
+  if (profitPct >= ALERT_CONFIG.takeProfitPct) {
+    return { action: '减仓½', reason: `浮盈 ${profitPct.toFixed(1)}% 达止盈目标，可分批锁利`, level: 'warning' }
+  }
+  // 移动止盈
+  const hwm = position.high_water_mark || position.cost
+  if (hwm > 0 && profitPct > 0) {
+    const dd = ((hwm - price) / hwm) * 100
+    if (dd >= ALERT_CONFIG.trailingDrawdownPct) {
+      return { action: '减仓⅓', reason: `从高点回撤 ${dd.toFixed(1)}%，保利润`, level: 'warning' }
+    }
+  }
+  // 评分严重恶化
+  if (totalScore > 0 && totalScore <= ALERT_CONFIG.scoreSellThreshold) {
+    return { action: '清仓', reason: `评分 ${totalScore} 多因子转弱`, level: 'danger' }
+  }
+
+  // ── 以下结合趋势健康度给出建议 ──
+  // 趋势健康 + 盈利 → 加仓机会
+  if (healthScore >= 4 && profitPct > 0 && totalScore >= 60) {
+    return { action: '可加仓', reason: `${verdict}，趋势强劲，可顺势加仓`, level: 'success' }
+  }
+  // 趋势健康 + 小幅亏损 → 洗盘概率大，拿住
+  if (healthScore >= 3 && profitPct > -5 && totalScore >= 50) {
+    return { action: '持有', reason: `${verdict}，回调在正常范围，耐心持有`, level: 'info' }
+  }
+  // 趋势偏弱 + 亏损 → 减仓
+  if (healthScore <= 2 && profitPct < -3) {
+    return { action: '减仓½', reason: `${verdict}，亏损 ${profitPct.toFixed(1)}%，降低风险`, level: 'warning' }
+  }
+  // 趋势恶化 → 准备清仓
+  if (healthScore <= 1 && verdict === '趋势恶化') {
+    return { action: '准备清仓', reason: `${verdict}，多维信号失守，建议离场`, level: 'danger' }
+  }
+  // 评分偏弱
+  if (totalScore > 0 && totalScore <= ALERT_CONFIG.scoreWeakThreshold) {
+    return { action: '关注减仓', reason: `评分 ${totalScore} 偏弱，关注趋势变化`, level: 'warning' }
+  }
+  // 默认持有
+  return { action: '持有', reason: verdict || '正常持有', level: 'info' }
+}
+
+// ── 仓位管理建议（根据评分+市场温度+持仓数计算每只股票应占多少）──
+// 参数：score（评分对象）, marketTemp（市场温度对象）, positionCount（当前持仓数）
+// 返回：{ totalLimit: number, perStock: number, reason: string }
+export function calcPositionSize(score, marketTemp, positionCount) {
+  // 1. 根据市场温度确定总仓位上限
+  const level = marketTemp?.level || '中性'
+  const tempLimits = {
+    '过热': 0.5, '偏热': 0.7, '中性': 1.0, '偏冷': 0.8, '过冷': 0.6,
+  }
+  const totalLimit = tempLimits[level] ?? 1.0
+
+  // 2. 根据评分确定单只股票分配比例
+  const totalScore = score?.total_score || 0
+  let stockWeight
+  if (totalScore >= 80) stockWeight = 0.25       // 强烈买入 → 最多 25%
+  else if (totalScore >= 65) stockWeight = 0.18   // 买入 → 18%
+  else if (totalScore >= 55) stockWeight = 0.12   // 观望偏强 → 12%
+  else if (totalScore >= 45) stockWeight = 0.08   // 观望 → 8%
+  else stockWeight = 0.03                          // 偏弱 → 3%（试探仓）
+
+  // 3. 根据持仓数量调整（持仓越多，单只占比越小）
+  const count = Math.max(positionCount || 1, 1)
+  const diversificationFactor = count <= 3 ? 1.0 : count <= 5 ? 0.85 : count <= 8 ? 0.7 : 0.55
+
+  // 4. 最终建议
+  const perStock = Math.min(stockWeight * diversificationFactor, totalLimit / count)
+  const reason = totalScore >= 65
+    ? `评分${totalScore}+温度${level}，建议单只${(perStock * 100).toFixed(0)}%`
+    : `评分${totalScore}偏低，建议试探仓${(perStock * 100).toFixed(0)}%`
+
+  return {
+    totalLimit: Math.round(totalLimit * 100),
+    perStock: Math.round(perStock * 100),
+    reason,
+  }
+}
+
 // ── 高水位维护：刷新行情后更新持仓期最高价（仅向上更新）──
 export function updateHighWaterMark(code, price) {
   const p = positions.value.find(p => p.code === code)

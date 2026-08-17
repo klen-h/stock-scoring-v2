@@ -32,17 +32,21 @@ engine = ScoreEngine()
 EXCLUDE_LOSS_MAKING = True
 
 
-def _compute_buy_point_single(code: str) -> dict:
+def _compute_top5_extras(code: str) -> dict:
     """
-    为单只股票计算买入时机指标（MA20偏离/布林位置/支撑位）。
-    用于 Top 5 排序后单独拉K线计算，避免批量精算时100只并发触发WAF。
+    为 Top 5 股票单独计算买入时机 + 趋势健康度。
+    批量精算时跳过了这两项（避免100只并发拉K线触发WAF）。
+    排序确定后单独拉K线计算，此时并发压力小，成功率高。
     如果K线已在缓存中（批量精算时拉过），直接复用，无需重新请求。
     """
     klines = get_kline(code, period="day", count=500)
     if len(klines) >= 30:
         tech = _calc_technical(klines)
-        return engine._calc_buy_point(tech)
-    return {}
+        return {
+            "buy_point": engine._calc_buy_point(tech),
+            "trend_health": engine._calc_trend_health(tech),
+        }
+    return {"buy_point": {}, "trend_health": {}}
 
 
 def _precise_score_sync(stock_info: dict) -> dict:
@@ -83,11 +87,16 @@ def _precise_score_sync(stock_info: dict) -> dict:
         "code": result.code, "name": result.name,
         "total_score": result.total_score,
         "signal": result.signal, "signal_level": result.signal_level,
+        "change_pct": stock_info.get("change_pct", 0),
         # 买入原因（加分因素），供 Top 50 列表展示。最多 5 个，如「均线多头排列」「量价齐升」
         "factors_up": result.factors_up,
         # 批量模式跳过买入时机计算（避免100只股票同时拉K线触发WAF）
         # Top 5 的 buy_point 会在排序后单独计算
         "buy_point": {},
+        # 趋势健康度（5维度诊断：洗盘 vs 真跌）
+        "trend_health": result.trend_health,
+        # 各维度得分（用于权重优化分析）
+        "dimensions": {d["name"]: d["score"] for d in result.dimensions},
     }
 
 
@@ -165,23 +174,29 @@ async def _batch_with_precise_top(
             code=r["code"], name=r["name"],
             total_score=r["total_score"],
             signal=r["signal"], signal_level=r["signal_level"],
+            change_pct=r.get("change_pct", 0),
             factors_up=r.get("factors_up", []),
             buy_point=r.get("buy_point", {}),
+            trend_health=r.get("trend_health", {}),
+            dimensions=r.get("dimensions", {}),
         )
         for r in results if r
     ]
     final.sort(key=lambda r: r.total_score, reverse=True)
 
-    # ── Top 5 单独计算买入时机 ──
-    # 批量精算时跳过了 buy_point（避免100只并发拉K线触发WAF）
-    # 排序确定后，只对 Top 5 单独拉K线计算买入时机，此时并发压力小，成功率高
-    top_n_for_buy_point = 5
-    for item in final[:top_n_for_buy_point]:
+    # ── Top 5 单独计算买入时机 + 趋势健康度 ──
+    # 批量精算时跳过了这两项（避免100只并发拉K线触发WAF）
+    # 排序确定后，只对 Top 5 单独拉K线计算，此时并发压力小，成功率高
+    top_n_for_extras = 5
+    for item in final[:top_n_for_extras]:
         try:
-            bp = await asyncio.to_thread(_compute_buy_point_single, item.code)
-            item.buy_point = bp
+            extras = await asyncio.to_thread(_compute_top5_extras, item.code)
+            item.buy_point = extras["buy_point"]
+            # 仅当批量精算时 trend_health 为空才覆盖（避免重复计算）
+            if not getattr(item, 'trend_health', None):
+                item.trend_health = extras["trend_health"]
         except Exception as e:
-            print(f"买入时机计算失败 {item.code}: {e}")
+            print(f"Top5 extras 计算失败 {item.code}: {e}")
 
     return pick_indices(final)
 
@@ -328,6 +343,119 @@ async def backtest(
     }
 
 
+@router.post("/weight-advice")
+async def weight_advice(data: dict):
+    """
+    权重优化分析：根据历史快照+实际收益，分析各维度预测力，建议权重调整。
+    前端传入已验证的快照数据（含维度分+实际收益）。
+    """
+    snapshots = data.get("snapshots", [])
+    if len(snapshots) < 3:
+        return {"error": "快照数据不足，至少需要 3 天快照才能分析（当前 %d 天）" % len(snapshots)}
+
+    # 收集所有已验证的记录
+    records = []
+    for snap in snapshots:
+        for s in snap.get("stocks", []):
+            if s.get("returnPct") is not None and s.get("dimensions"):
+                records.append(s)
+
+    if len(records) < 20:
+        return {"error": "已验证记录不足（需要至少 20 条，当前 %d 条）。继续积累快照并点击「查询当前收益」验证。" % len(records)}
+
+    # ── 1. 按信号等级统计胜率 ──
+    signal_stats = {}
+    for r in records:
+        sig = r.get("signal", "观望")
+        if sig not in signal_stats:
+            signal_stats[sig] = {"wins": 0, "total": 0, "sum_return": 0}
+        signal_stats[sig]["total"] += 1
+        signal_stats[sig]["sum_return"] += r["returnPct"]
+        if r["returnPct"] > 0:
+            signal_stats[sig]["wins"] += 1
+
+    signal_analysis = {}
+    for sig, s in signal_stats.items():
+        if s["total"] > 0:
+            signal_analysis[sig] = {
+                "count": s["total"],
+                "win_rate": round(s["wins"] / s["total"] * 100),
+                "avg_return": round(s["sum_return"] / s["total"], 2),
+            }
+
+    # ── 2. 按维度分析预测力（维度分与实际收益的相关性）──
+    dim_names = ["技术面", "资金面", "基本面"]
+    dim_correlation = {}
+    for dim in dim_names:
+        pairs = []
+        for r in records:
+            dim_score = r.get("dimensions", {}).get(dim)
+            ret = r.get("returnPct")
+            if dim_score is not None and ret is not None:
+                pairs.append((dim_score, ret))
+
+        if len(pairs) >= 10:
+            # 计算皮尔逊相关系数
+            n = len(pairs)
+            sum_x = sum(p[0] for p in pairs)
+            sum_y = sum(p[1] for p in pairs)
+            sum_xy = sum(p[0] * p[1] for p in pairs)
+            sum_x2 = sum(p[0] ** 2 for p in pairs)
+            sum_y2 = sum(p[1] ** 2 for p in pairs)
+            denom = math.sqrt((n * sum_x2 - sum_x ** 2) * (n * sum_y2 - sum_y ** 2))
+            corr = (n * sum_xy - sum_x * sum_y) / denom if denom > 0 else 0
+            dim_correlation[dim] = round(corr, 3)
+        else:
+            dim_correlation[dim] = None
+
+    # ── 3. 建议权重 ──
+    current_weights = {"技术面": 0.40, "资金面": 0.25, "基本面": 0.35}
+    suggested_weights = dict(current_weights)  # 默认不变
+
+    # 如果有足够相关性数据，按相关性比例调整
+    valid_corrs = {k: v for k, v in dim_correlation.items() if v is not None}
+    if len(valid_corrs) >= 2:
+        # 将相关性转为正数（取绝对值 + 0.1 保底）
+        abs_corrs = {k: abs(v) + 0.1 for k, v in valid_corrs.items()}
+        total_corr = sum(abs_corrs.values())
+        if total_corr > 0:
+            # 按相关性比例分配权重，但与当前权重做加权平均（避免样本少时剧变）
+            confidence = min(len(records) / 100, 1.0)  # 样本越多越敢调
+            optimal = {k: v / total_corr for k, v in abs_corrs.items()}
+            for dim in optimal:
+                # 新旧加权平均：70% 当前 + 30% 最优（受置信度调节）
+                blended = current_weights.get(dim, 0.33) * (1 - 0.3 * confidence) + optimal[dim] * (0.3 * confidence)
+                suggested_weights[dim] = round(blended, 2)
+            # 归一化确保总和 = 1
+            total_w = sum(suggested_weights.values())
+            if total_w > 0:
+                suggested_weights = {k: round(v / total_w, 2) for k, v in suggested_weights.items()}
+
+    # ── 4. 生成建议文字 ──
+    advice = []
+    for dim in dim_names:
+        cur = current_weights[dim]
+        sug = suggested_weights.get(dim, cur)
+        corr = dim_correlation.get(dim)
+        if corr is not None and abs(sug - cur) >= 0.03:
+            direction = "↑" if sug > cur else "↓"
+            advice.append(f"{dim}：当前 {cur:.0%} → 建议 {sug:.0%} {direction}（预测力相关系数 {corr:+.3f}）")
+        elif corr is not None:
+            advice.append(f"{dim}：当前 {cur:.0%} 合理（相关系数 {corr:+.3f}）")
+        else:
+            advice.append(f"{dim}：数据不足，暂无法分析")
+
+    return {
+        "signal_analysis": signal_analysis,
+        "dim_correlation": dim_correlation,
+        "current_weights": current_weights,
+        "suggested_weights": suggested_weights,
+        "advice": advice,
+        "sample_size": len(records),
+        "snapshot_count": len(snapshots),
+    }
+
+
 @router.get("/{symbol}")
 async def score_single(symbol: str):
     """
@@ -386,6 +514,7 @@ async def score_single(symbol: str):
         "factors_down": result.factors_down,
         "summary": result.summary,
         "buy_point": result.buy_point,
+        "trend_health": result.trend_health,
     }
 
 
@@ -426,10 +555,13 @@ async def score_top(
             "total_score": r.total_score,
             "signal": r.signal,
             "signal_level": r.signal_level,
+            "change_pct": getattr(r, 'change_pct', 0) or 0,
             # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
             "factors_up": getattr(r, 'factors_up', []) or [],
             # 买入时机指标
             "buy_point": getattr(r, 'buy_point', {}) or {},
+            # 各维度得分（用于权重优化分析）
+            "dimensions": getattr(r, 'dimensions', {}) or {},
         } for r in top],
         "total": len(valid),
         "cache_status": "ready",
@@ -457,6 +589,7 @@ async def score_bottom(
             "total_score": r.total_score,
             "signal": r.signal,
             "signal_level": r.signal_level,
+            "change_pct": getattr(r, 'change_pct', 0) or 0,
         } for r in bottom],
         "total": len(stock_list),
         "cache_status": "ready",
@@ -493,6 +626,7 @@ async def score_by_signal(
             "total_score": r.total_score,
             "signal": r.signal,
             "signal_level": r.signal_level,
+            "change_pct": getattr(r, 'change_pct', 0) or 0,
         } for r in filtered],
         "total": len([r for r in all_precise if r.signal == signal]),   # 该信号的总数
         "signal": signal,
