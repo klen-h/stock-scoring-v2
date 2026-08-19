@@ -232,11 +232,11 @@
       </div>
 
       <!-- 平仓历史 -->
-      <div class="bg-card border border-border rounded-lg overflow-hidden" v-if="signals.history?.length">
+      <div class="bg-card border border-border rounded-lg overflow-hidden" v-if="closedHistory.length">
         <div class="px-3 py-2 border-b border-border text-sm font-semibold">📜 平仓历史</div>
         <table class="w-full text-sm">
           <tbody>
-            <tr v-for="(h, i) in signals.history" :key="i" class="border-b border-border/50">
+            <tr v-for="(h, i) in closedHistory" :key="i" class="border-b border-border/50">
               <td class="py-2 px-3 font-medium">{{ h.etfName }}</td>
               <td class="py-2 px-3 text-xs" :class="h.direction === 'long' ? 'text-rise' : 'text-fall'">{{ h.direction === 'long' ? '多' : '空' }}</td>
               <td class="py-2 px-3 text-xs text-muted">{{ h.exits?.[h.exits.length - 1]?.reason }}</td>
@@ -244,6 +244,21 @@
                 {{ h.profit > 0 ? '+' : '' }}{{ h.profit }}%
               </td>
               <td class="py-2 px-3 text-right font-mono text-xs text-muted">{{ fmtTime(h.exitTime) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 过期信号（自动失效的等待信号） -->
+      <div class="bg-card border border-border rounded-lg overflow-hidden" v-if="expiredHistory.length">
+        <div class="px-3 py-2 border-b border-border text-sm font-semibold text-muted">⏰ 已过期信号（论点失效/超时未触发）</div>
+        <table class="w-full text-sm">
+          <tbody>
+            <tr v-for="(h, i) in expiredHistory" :key="'e'+i" class="border-b border-border/50">
+              <td class="py-2 px-3 font-medium text-muted">{{ h.etfName }}</td>
+              <td class="py-2 px-3 text-xs text-muted">{{ h.direction === 'long' ? '多' : '空' }}</td>
+              <td class="py-2 px-3 text-xs text-muted">{{ h.expireReason || '已过期' }}</td>
+              <td class="py-2 px-3 text-right font-mono text-xs text-muted">入场 {{ h.entryCondition?.targetPrice }}</td>
             </tr>
           </tbody>
         </table>
@@ -269,6 +284,12 @@
       </div>
       <div v-if="audit.summary?.stale_waiting?.length" class="text-xs text-muted">
         僵尸等待（超5天未触发）：{{ audit.summary.stale_waiting.join('、') }}
+      </div>
+      <div v-if="audit.summary?.expired_count" class="text-xs text-muted">
+        近30天过期信号：{{ audit.summary.expired_count }} 条
+        <span v-if="audit.summary.expired_details?.length" class="text-muted ml-1">
+          （{{ audit.summary.expired_details.map(d => d.etf).join('、') }}）
+        </span>
       </div>
 
       <!-- 按阶段 + 按方向 -->
@@ -373,7 +394,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
 // localStorage 在模板里直接读（状态条显示镜像时间；切到本页时刷新一次）
 const localStorage = window.localStorage
@@ -402,6 +423,10 @@ const audit = ref({})
 const review = ref({})
 const reviewPhase = ref('premarket')
 const ingesting = ref(false)
+
+// 平仓历史（排除过期信号）+ 过期信号列表
+const closedHistory = computed(() => (signals.value.history || []).filter(h => h.status === 'closed'))
+const expiredHistory = computed(() => (signals.value.history || []).filter(h => h.status === 'expired'))
 
 function corrColor(state) {
   if (state === '正相关') return 'text-orange-400'

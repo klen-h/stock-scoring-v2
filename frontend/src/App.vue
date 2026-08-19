@@ -54,6 +54,7 @@ const navItems = [
   { path: '/', label: '首页' },
   { path: '/market', label: '市场行情' },
   { path: '/score', label: '评分排行' },
+  { path: '/strategies', label: '战法选股' },
   { path: '/monitor', label: '快讯监控' },
   { path: '/portfolio', label: '我的持仓' },
   { path: '/watchlist', label: '自选股' },

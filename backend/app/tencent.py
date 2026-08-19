@@ -123,11 +123,23 @@ BATCH_SIZE = 80  # 每次请求腾讯最多放多少只股票（腾讯单次上�
 # 全量扫描由 force=True 触发（前端"手动刷新"按钮），用于发现新上市股票。
 _valid_codes = []  # [(prefix, code), ...] 有效代码列表
 
+
+def _is_trading_hours() -> bool:
+    """当前是否为 A 股交易时段（北京时间工作日 9:30-15:00）。轻量判断，不依赖外部模块。"""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=8)))
+    if now.weekday() >= 5:  # 周末
+        return False
+    t = now.hour * 100 + now.minute
+    return 930 <= t <= 1500
+
 # K线专用缓存：避免短时间内重复请求同一只股票（详情页 + 评分精算都会调 get_kline）
 # 结构：{ "code|period": {"data": [...], "ts": 1700000000} }
-# TTL 设为 5 分钟（盘中足够新鲜，又避免高频打爆腾讯接口）
+# 盘中 TTL 较短（90秒），保证趋势健康度等技术指标能及时反映盘中变化；
+# 非交易时段回落到 5 分钟（数据不再变化，无需频繁请求）。
 KLINE_CACHE = {}
-KLINE_CACHE_TTL = 300  # 秒
+KLINE_CACHE_TTL = 300          # 非交易时段默认 5 分钟
+KLINE_CACHE_TTL_TRADING = 60   # 盘中缩短到 60 秒（与持仓刷新节奏同步）
 
 # ── K线缓存磁盘持久化 ──
 # 后端重启（--reload）会清空内存，导致重新拉取全部K线 → 触发腾讯WAF限流。
@@ -368,12 +380,12 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     """
     global _waf_blocked_until, _kline_cache_dirty
 
-    # 缓存命中判断：同一只股票同一周期 5 分钟内不重复请求
-    # 这一步至关重要——评分精算 + 详情页 + 技术指标都会调 get_kline，
-    # 没缓存的话短时间内对同一只票反复请求，会触发腾讯限流导致全部失败。
+    # 缓存命中判断：同一只股票同一周期内不重复请求
+    # 盘中 TTL 缩短到 90 秒，保证趋势健康度/技术指标及时反映盘中变化
     cache_key = f"{symbol}|{period}"
     cached = KLINE_CACHE.get(cache_key)
-    if cached and time.time() - cached["ts"] < KLINE_CACHE_TTL:
+    ttl = KLINE_CACHE_TTL_TRADING if _is_trading_hours() else KLINE_CACHE_TTL
+    if cached and time.time() - cached["ts"] < ttl:
         return cached["data"]
 
     # ── WAF 全局限流保护 ──

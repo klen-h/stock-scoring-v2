@@ -37,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # 导入路由模块（每个模块负责一类业务接口）
 # from app.routers import xxx 中的 app 是 backend/app/ 目录（包）
 from app.routers import market, stock, capital, sector, scoring, macro, flash
+from app.strategies.router import router as strategies_router
 
 # ──────────────────────────────────────────────────────────────
 # lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
@@ -88,6 +89,7 @@ app.include_router(sector.router,  prefix="/api/sector",  tags=["板块数据"])
 app.include_router(scoring.router, prefix="/api/score",   tags=["评分数据"])  # 股票评分（核心功能）
 app.include_router(macro.router,   prefix="/api/macro",   tags=["宏观数据"])  # 宏观面板+规则方向分
 app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])  # 快讯事件/LLM诊断/信号跟踪
+app.include_router(strategies_router, prefix="/api/strategies", tags=["战法选股"])  # 量化战法扫描
 
 
 # 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL

@@ -3,6 +3,9 @@ import { evaluateAlerts, ALERT_CONFIG } from './usePortfolio'
 import { evaluateBuySignals } from './useWatchlist'
 import { evaluatePlanStatus } from './useTradePlans'
 
+// 趋势健康度恶化阈值：从上次通知时的分数算起，下降 ≥ 此值才通知
+const TREND_HEALTH_DROP_THRESHOLD = 2
+
 // ============================================================
 //  浏览器桌面通知模块
 // ============================================================
@@ -23,7 +26,25 @@ import { evaluatePlanStatus } from './useTradePlans'
 export const supported = typeof window !== 'undefined' && 'Notification' in window
 export const permission = ref(supported ? Notification.permission : 'denied')
 // 用户开关：即使浏览器授权了，用户也能在本应用内单独关闭（不撤回系统权限，仅停止发送）
-export const enabled = ref(false)
+// 持久化到 localStorage，刷新页面后保持用户选择
+const NOTIF_ENABLED_KEY = 'stock_scoring_notif_enabled'
+export const enabled = ref(loadNotifEnabled())
+
+// ── 通知开关持久化 ──
+function loadNotifEnabled() {
+  try {
+    return localStorage.getItem(NOTIF_ENABLED_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+function saveNotifEnabled() {
+  try {
+    localStorage.setItem(NOTIF_ENABLED_KEY, enabled.value ? 'true' : 'false')
+  } catch (e) {
+    console.error('通知开关保存失败', e)
+  }
+}
 
 /**
  * 申请通知权限（由用户点击"开启通知"按钮触发，不要自动调用）。
@@ -34,6 +55,7 @@ export async function requestPermission() {
   if (Notification.permission === 'granted') {
     permission.value = 'granted'
     enabled.value = true
+    saveNotifEnabled()
     return true
   }
   if (Notification.permission === 'denied') {
@@ -45,6 +67,7 @@ export async function requestPermission() {
   permission.value = result
   if (result === 'granted') {
     enabled.value = true
+    saveNotifEnabled()
     // 发一条欢迎通知，让用户确认权限生效
     notify({
       title: '🔔 通知已开启',
@@ -60,6 +83,7 @@ export async function requestPermission() {
 /** 用户在应用内关闭通知（不撤回系统权限，下次开启无需再授权） */
 export function disable() {
   enabled.value = false
+  saveNotifEnabled()
 }
 
 // ── 状态 diff：记录每只票当前已通知的事件集合 ──
@@ -96,6 +120,10 @@ export function checkAndNotify(positions, realtimeMap, scoreMap) {
       if (surge) events.push(surge)
     }
 
+    // 趋势健康度恶化检测（独立状态跟踪，需要对比历史值）
+    const thEvent = checkTrendHealthDrop(p.code, p.name, score)
+    if (thEvent) events.push(thEvent)
+
     // 当前事件的 rule 集合（用于 diff）
     const currentRules = new Set(events.map(e => e.rule))
     const prevRules = notifiedState.get(p.code) || new Set()
@@ -117,6 +145,10 @@ export function checkAndNotify(positions, realtimeMap, scoreMap) {
   const validCodes = new Set(positions.map(p => p.code))
   for (const code of notifiedState.keys()) {
     if (!validCodes.has(code)) notifiedState.delete(code)
+  }
+  // 同步清理趋势健康度跟踪状态
+  for (const code of trendHealthTracker.keys()) {
+    if (!validCodes.has(code)) trendHealthTracker.delete(code)
   }
 }
 
@@ -261,6 +293,73 @@ function checkSurge(realtime) {
   return null
 }
 
+// ── 趋势健康度恶化跟踪（独立状态，用于检测分数下降）──
+// 结构：Map<code, { lastNotifiedScore, ceiling }>
+//   ceiling: 上次通知后见过的最高分（分数恢复后抬高天花板，下次再跌还能通知）
+const trendHealthTracker = new Map()
+
+/**
+ * 趋势健康度恶化/好转检测。
+ * 逻辑：
+ *   - 恶化：从上次通知时的分数算起，下降 ≥ 2 分 → 通知
+ *   - 好转：从上次通知时的分数算起，上升 ≥ 2 分 → 通知
+ *   - 通知后更新 lastNotifiedScore = 当前分数
+ *   - 反向恢复后再次变化，会再次触发（ceiling/floor 机制）
+ */
+function checkTrendHealthDrop(code, name, score) {
+  const currentScore = score?.trend_health?.score
+  if (typeof currentScore !== 'number' || currentScore <= 0) return null
+
+  let tracker = trendHealthTracker.get(code)
+  if (!tracker) {
+    // 首次见到这只票，记录基线，不通知
+    trendHealthTracker.set(code, { lastNotifiedScore: currentScore, ceiling: currentScore, floor: currentScore })
+    return null
+  }
+
+  // 更新天花板（分数恢复时抬高，保证下次下跌还能触发）
+  if (currentScore > tracker.ceiling) {
+    tracker.ceiling = currentScore
+    tracker.lastNotifiedScore = currentScore
+  }
+  // 更新地板（分数继续下跌时压低，保证下次回升还能触发）
+  if (currentScore < tracker.floor) {
+    tracker.floor = currentScore
+  }
+
+  // ── 恶化检测 ──
+  const drop = tracker.lastNotifiedScore - currentScore
+  if (drop >= TREND_HEALTH_DROP_THRESHOLD) {
+    const verdict = score.trend_health.verdict || '趋势恶化'
+    tracker.lastNotifiedScore = currentScore
+    tracker.floor = currentScore
+    return {
+      type: 'trend',
+      level: drop >= 3 ? 'danger' : 'warning',
+      rule: '趋势恶化',
+      action: '关注持仓',
+      message: `趋势健康度 ${tracker.ceiling}→${currentScore}（${verdict}），${drop}个维度转差`,
+    }
+  }
+
+  // ── 好转检测 ──
+  const rise = currentScore - tracker.lastNotifiedScore
+  if (rise >= TREND_HEALTH_DROP_THRESHOLD) {
+    const verdict = score.trend_health.verdict || '趋势健康'
+    tracker.lastNotifiedScore = currentScore
+    tracker.ceiling = currentScore
+    return {
+      type: 'trend-good',
+      level: 'info',
+      rule: '趋势好转',
+      action: '关注',
+      message: `趋势健康度 ${tracker.floor}→${currentScore}（${verdict}），${rise}个维度改善`,
+    }
+  }
+
+  return null
+}
+
 /**
  * 发送单条持仓警报通知。
  */
@@ -328,6 +427,8 @@ function typeIcon(type) {
     warning: { emoji: '⚡', bg: '#f59e0b' },      // 橙
     info: { emoji: '📢', bg: '#3b82f6' },         // 蓝
     surge: { emoji: '📈', bg: '#8b5cf6' },        // 紫
+    trend: { emoji: '📉', bg: '#ec4899' },        // 粉（趋势恶化）
+    'trend-good': { emoji: '✅', bg: '#10b981' }, // 绿（趋势好转）
   }
   const { emoji, bg } = map[type] || map.info
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">

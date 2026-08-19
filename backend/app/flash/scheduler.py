@@ -98,6 +98,25 @@ async def review_loop():
 
 
 HEALTH_PROBE_INTERVAL = 300     # 健康探针：空闲时段也定期采样各数据源
+STOCK_CACHE_INTERVAL = 120       # 行情缓存刷新：盘中每 2 分钟刷新全量股票行情（供评分排行使用）
+
+
+async def stock_cache_refresh_loop():
+    """
+    盘中行情缓存自动刷新（供评分排行 /score/batch/top 使用）。
+    仅 A 股交易时段执行：refresh_all_stocks() 内部有 60 秒冷却，
+    这里每 3 分钟触发一次，保证评分排行始终用近实时数据。
+    非交易时段不执行（休市数据无意义，且浪费接口配额）。
+    """
+    while True:
+        market = rules.get_china_market_status()
+        if market["is_open"]:
+            try:
+                from app.tencent import refresh_all_stocks
+                await asyncio.to_thread(refresh_all_stocks)
+            except Exception as e:
+                print(f"[scheduler] 行情缓存刷新失败: {e}")
+        await asyncio.sleep(STOCK_CACHE_INTERVAL)
 
 
 async def health_loop():
@@ -135,8 +154,10 @@ async def start():
     tasks = [asyncio.create_task(flash_loop()),
              asyncio.create_task(track_loop()),
              asyncio.create_task(review_loop()),
-             asyncio.create_task(health_loop())]
+             asyncio.create_task(health_loop()),
+             asyncio.create_task(stock_cache_refresh_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
+          f"行情缓存{STOCK_CACHE_INTERVAL}s / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")
     return tasks

@@ -126,7 +126,8 @@ def flash_signals():
         "activeSignals": tracking.get("activeSignals", []),
         "history": tracking.get("history", [])[:30],
         "performance": tracking.get("performance", {}),
-        "metrics": tracker.calculate_advanced_metrics(tracking.get("history", [])[:100]),
+        "metrics": tracker.calculate_advanced_metrics(
+            [s for s in tracking.get("history", [])[:100] if s.get("status") == "closed"]),
         "rejected": tracking.get("rejectedSignals", [])[:10],
         "etf_pool": tracker.HOLDINGS_MAP,
     }

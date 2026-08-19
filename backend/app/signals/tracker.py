@@ -85,6 +85,7 @@ RISK_CONFIG = {
     "max_total_risk": 0.06,            # 总风险上限 6%
     "max_positions": 5,                # 最大持仓（含等待中）数
     "max_correlated_positions": 2,     # 同相关性组最大持仓数
+    "signal_expire_days": 5,           # 安全网：waiting 超 N 天强制过期（正常情况由论点失效机制管控）
 }
 ACCOUNT_SIZE = 100000                  # 默认账户规模（元）
 
@@ -380,18 +381,26 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
     return {"signal": signal, "validation": validation, "techCheck": tech, "positionSize": position}
 
 
-def record_price_history(market_data: dict) -> None:
-    """每日记录一次各 ETF 价格（技术分析的数据来源，每 ETF 保留 60 天）。"""
+def record_price_history(market_data: dict) -> dict:
+    """
+    每日记录一次各 ETF 价格（技术分析的数据来源，每 ETF 保留 60 天）。
+    返回 {etf_name: prev_close}——记录前的上一次收盘价（用于跨日论点失效检测）。
+    """
     tracking = load_tracking()
     today = store._bj_date()
     ph = tracking.setdefault("priceHistory", {})
+    prev_close_map = {}
     for h in market_data.get("holdings", []):
         hist = ph.setdefault(h["name"], [])
+        # 记录前，最后一条就是昨日收盘（尚未写入今日数据）
+        if hist and hist[-1].get("date") != today:
+            prev_close_map[h["name"]] = hist[-1]["price"]
         if not hist or hist[-1].get("date") != today:
             hist.append({"date": today, "price": float(h["price"]),
                          "timestamp": datetime.now().isoformat()})
             ph[h["name"]] = hist[-60:]
     save_tracking(tracking)
+    return prev_close_map
 
 
 def update_signals(market_data: dict) -> dict:
@@ -400,9 +409,14 @@ def update_signals(market_data: dict) -> dict:
       waiting → active：价格触及入场目标（上升沿：上一刻未触发、本刻触发）
       active → closed：止损 / 止盈 / 触阻力（优先级：止损 > 止盈 > 阻力）
       接近提醒：距目标 0.1%~1.0%
+
+    论点失效检测（替代固定阈值跳空守卫）：
+      用信号自身的止损位作为论点有效边界——若昨日收盘已跌破止损位，
+      说明交易论点在隔夜已被市场否定，信号自动过期。
+      优势：自适应各 ETF 波动率、自适应每笔交易的具体支撑/阻力结构。
     返回 {tracking, alerts}。
     """
-    record_price_history(market_data)
+    prev_close_map = record_price_history(market_data)
     tracking = load_tracking()
     holdings_map = {h["name"]: h for h in market_data.get("holdings", [])}
     now = datetime.now().isoformat()
@@ -418,13 +432,48 @@ def update_signals(market_data: dict) -> dict:
         prev_price = float(signal.get("lastCheckedPrice") or price)
         signal["lastCheckedPrice"] = price
 
-        # ── waiting → active（入场触发，上升沿检测）──
+        # ── waiting 过期检查（安全网：正常情况下由论点失效机制管控，此处防止极端情况）──
+        if signal["status"] == "waiting":
+            try:
+                created = datetime.fromisoformat(signal["createdAt"])
+                age_days = (datetime.now() - created).days
+                if age_days >= RISK_CONFIG["signal_expire_days"]:
+                    signal["status"] = "expired"
+                    signal["expireReason"] = f"等待超过{age_days}天未触发，自动过期"
+                    alerts["updates"].append({
+                        "signal": signal, "currentPrice": price,
+                        "message": f"⏰ 【信号过期】{signal['etfName']} 等待{age_days}天未触发，"
+                                   f"原入场价 {signal['entryCondition']['targetPrice']}，"
+                                   f"已过期，请在下次复盘中重新评估"})
+                    continue
+            except (ValueError, KeyError):
+                pass
+
+        # ── waiting → active（入场触发，上升沿检测 + 论点失效检测）──
         if signal["status"] == "waiting" and signal["entryCondition"].get("type") == "price":
             target = float(signal["entryCondition"]["targetPrice"])
             is_long = signal["direction"] == "long"
             triggered = (is_long and price <= target) or (not is_long and price >= target)
             prev_triggered = (is_long and prev_price <= target) or (not is_long and prev_price >= target)
             if triggered and not prev_triggered:
+                # ── 论点失效检测：昨日收盘已跌破止损位 → 隔夜已否定交易论点 ──
+                prev_close = prev_close_map.get(signal["etfName"])
+                if prev_close is not None:
+                    try:
+                        sl = float(signal["stopLoss"])
+                        thesis_broken = ((is_long and prev_close < sl)
+                                         or (not is_long and prev_close > sl))
+                    except (TypeError, ValueError):
+                        thesis_broken = False
+                    if thesis_broken:
+                        signal["status"] = "expired"
+                        signal["expireReason"] = (f"昨日收盘 {prev_close} 已跌破止损位 {sl}，"
+                                                  f"交易论点隔夜失效")
+                        alerts["updates"].append({
+                            "signal": signal, "currentPrice": price,
+                            "message": f"🚫 【论点失效】{signal['etfName']} 昨日收盘 {prev_close} "
+                                       f"已跌破止损 {sl}，入场分析隔夜失效，自动过期"})
+                        continue
                 signal["status"] = "active"
                 signal["entries"].append({"price": price, "time": now, "reason": "触发入场价格"})
                 signal["entryPrice"] = price
@@ -499,8 +548,14 @@ def update_signals(market_data: dict) -> dict:
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
 
-    # 清理已平仓信号
-    tracking["activeSignals"] = [s for s in tracking["activeSignals"] if s.get("status") != "closed"]
+    # 过期信号移入历史（供审计追踪），已平仓同理
+    for s in tracking["activeSignals"]:
+        if s.get("status") in ("closed", "expired"):
+            tracking["history"].insert(0, s)
+    tracking["activeSignals"] = [s for s in tracking["activeSignals"]
+                                 if s.get("status") not in ("closed", "expired")]
+    # 历史保留最近 200 条
+    tracking["history"] = tracking["history"][:200]
     save_tracking(tracking)
     return {"tracking": tracking, "alerts": alerts}
 
@@ -560,7 +615,8 @@ def calculate_advanced_metrics(history: list):
 
 def generate_pro_trader_report(account_size: int = ACCOUNT_SIZE) -> str:
     """专业交易员报告（Markdown，供推送与前端展示）。"""
-    metrics = calculate_advanced_metrics(get_history(100))
+    metrics = calculate_advanced_metrics(
+        [s for s in get_history(100) if s.get("status") == "closed"])
     active = [s for s in get_active_signals() if s.get("status") in ("active", "waiting")]
     report = "# 🎯 专业交易员报告\n"
     if metrics:
@@ -686,11 +742,17 @@ def build_audit() -> dict:
             key = (r.split("(")[0]).strip() or r[:12]
             gates[key] = gates.get(key, 0) + 1
 
-    # ── 僵尸等待：waiting 超过 5 天没触发的信号（提示可人工清理）──
+    # ── 僵尸等待：waiting 超过 5 天没触发的信号（理论上已被自动过期，此处做安全网）──
     cutoff = datetime.now() - timedelta(days=5)
     stale_waiting = [s.get("etfName") for s in active
                      if s.get("status") == "waiting"
                      and (_safe_dt(s.get("createdAt")) or datetime.now()) < cutoff]
+
+    # ── 过期信号统计（最近 30 天）──
+    expire_cutoff = datetime.now() - timedelta(days=30)
+    recent_expired = [s for s in history
+                      if s.get("status") == "expired"
+                      and (_safe_dt(s.get("createdAt")) or datetime.now()) > expire_cutoff]
 
     closed_trades = [{
         "etfName": s.get("etfName"), "direction": s.get("direction"),
@@ -699,7 +761,7 @@ def build_audit() -> dict:
         "profit": s.get("profit"), "isWin": s.get("isWin"),
         "reason": (s.get("exits") or [{}])[-1].get("reason", ""),
         "exitTime": s.get("exitTime"),
-    } for s in history[:30]]
+    } for s in history if s.get("status") == "closed"][:30]
 
     return {
         "summary": {
@@ -714,6 +776,10 @@ def build_audit() -> dict:
             else (999 if gross_win > 0 else None),
             "rejected": len(rejected),
             "stale_waiting": stale_waiting,
+            "expired_count": len(recent_expired),
+            "expired_details": [{"etf": s.get("etfName"), "reason": s.get("expireReason", ""),
+                                 "created": s.get("createdAt", "")}
+                                for s in recent_expired[:10]],
         },
         "by_phase": by_phase,
         "by_etf": by_etf,

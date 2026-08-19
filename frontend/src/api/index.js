@@ -60,3 +60,12 @@ export const getConceptFlow = (params) => http.get('/sector/concept-flow', { par
 export const getSectorIndustry = (params) => http.get('/sector/industry', { params })
 export const getSectorConcept = (params) => http.get('/sector/concept', { params })
 export const getNorthboundHoldings = () => Promise.resolve({ data: [] }) // 北向持股明细暂未实现
+
+// 战法选股
+export const getStrategiesList = () => http.get('/strategies/list')
+export const scanStrategy = (name, params) => http.get(`/strategies/${name}/scan`, { params, timeout: 120000 })
+export const getStrategyResult = (name) => http.get(`/strategies/${name}/result`)
+export const getStrategyWatch = (name) => http.get(`/strategies/${name}/watch`)
+export const updateStrategyWatch = (name, stocks) => http.post(`/strategies/${name}/watch`, stocks)
+export const getStrategyDetail = (name, code) => http.get(`/strategies/${name}/detail/${code}`)
+export const getScanStatus = (name) => http.get(`/strategies/${name}/status`)
