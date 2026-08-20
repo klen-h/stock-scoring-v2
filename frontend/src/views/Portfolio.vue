@@ -588,6 +588,8 @@ function goDetail(code) {
 onMounted(() => {
   refresh()
   startTimer()
+  // 从数据库同步持仓
+  import('../composables/usePortfolio.js').then(m => m.syncFromServer())
 })
 onBeforeUnmount(() => {
   stopTimer()

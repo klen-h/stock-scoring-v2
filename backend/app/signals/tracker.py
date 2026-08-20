@@ -17,10 +17,12 @@ llm.extract_structured_signals() 输出的结构化信号（build_signal_from_ll
 ================================================================================
 """
 
+import json
 import time
 from datetime import datetime
 
 from app.flash import rules, store
+from app.database import db
 from app.tencent import _fetch_tencent
 
 # ================================================================
@@ -302,11 +304,26 @@ _DEFAULT_TRACKING = {
 
 
 def load_tracking() -> dict:
-    return store._load(store.PATHS["tracking"], dict(_DEFAULT_TRACKING))
+    """从数据库加载跟踪状态"""
+    row = db.fetch_one("SELECT data_json FROM tracking_state WHERE id = 1")
+    if row:
+        try:
+            return json.loads(row["data_json"])
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return dict(_DEFAULT_TRACKING)
 
 
 def save_tracking(tracking: dict) -> None:
-    store._save(store.PATHS["tracking"], tracking)
+    """保存跟踪状态到数据库"""
+    try:
+        db.upsert("tracking_state", {
+            "id": 1,
+            "data_json": json.dumps(tracking, ensure_ascii=False),
+            "updated_at": datetime.now().isoformat()
+        }, conflict_columns=["id"])
+    except Exception as e:
+        print(f"[signals] 保存跟踪状态失败: {e}")
 
 
 def build_signal_from_llm(llm_signal: dict, source: str) -> dict:

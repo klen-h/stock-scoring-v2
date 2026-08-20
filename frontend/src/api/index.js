@@ -5,6 +5,67 @@ const http = axios.create({
   timeout: 30000,
 })
 
+// ── Token 管理 ──
+const TOKEN_KEY = 'auth_token'
+const USER_KEY = 'auth_user'
+
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY)
+}
+
+export function setToken(token, user) {
+  localStorage.setItem(TOKEN_KEY, token)
+  if (user) localStorage.setItem(USER_KEY, JSON.stringify(user))
+}
+
+export function removeToken() {
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(USER_KEY)
+}
+
+export function getUser() {
+  try {
+    const raw = localStorage.getItem(USER_KEY)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+
+export function isLoggedIn() {
+  return !!getToken()
+}
+
+// ── 请求拦截器：自动带 Token ──
+http.interceptors.request.use(config => {
+  const token = getToken()
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// ── 响应拦截器：401 自动跳转登录 ──
+http.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response?.status === 401) {
+      // Token 过期或无效，清除本地状态
+      removeToken()
+      // 如果不在登录页，跳转到登录
+      if (window.location.hash !== '#/login' && window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+// ── 认证 API ──
+export const authRegister = (username, password) => http.post('/auth/register', { username, password })
+export const authLogin = (username, password) => http.post('/auth/login', { username, password })
+export const authCurrent = () => http.get('/auth/current')
+
 // 市场行情
 export const getMarketOverview = () => http.get('/market/overview')
 export const getMarketTemperature = () => http.get('/market/temperature')
@@ -69,3 +130,21 @@ export const getStrategyWatch = (name) => http.get(`/strategies/${name}/watch`)
 export const updateStrategyWatch = (name, stocks) => http.post(`/strategies/${name}/watch`, stocks)
 export const getStrategyDetail = (name, code) => http.get(`/strategies/${name}/detail/${code}`)
 export const getScanStatus = (name) => http.get(`/strategies/${name}/status`)
+
+// 战法回测
+export const runBacktest = (name, params) => http.get(`/strategies/${name}/backtest`, { params, timeout: 120000 })
+export const getBacktestResult = (name) => http.get(`/strategies/${name}/backtest/result`)
+export const getBacktestSummary = () => http.get('/strategies/backtest/summary')
+
+// 用户数据（自选股/交易计划/持仓 → 数据库同步）
+export const getUserWatchlist = () => http.get('/user/watchlist')
+export const upsertUserWatch = (item) => http.post('/user/watchlist', item)
+export const deleteUserWatch = (code) => http.delete(`/user/watchlist/${code}`)
+export const getUserPlans = () => http.get('/user/plans')
+export const upsertUserPlan = (item) => http.post('/user/plans', item)
+export const updateUserPlan = (id, item) => http.put(`/user/plans/${id}`, item)
+export const deleteUserPlan = (id) => http.delete(`/user/plans/${id}`)
+export const getUserPortfolio = () => http.get('/user/portfolio')
+export const upsertUserPortfolio = (item) => http.post('/user/portfolio', item)
+export const deleteUserPortfolio = (code) => http.delete(`/user/portfolio/${code}`)
+export const batchSyncUser = (data) => http.post('/user/sync', data)

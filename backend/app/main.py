@@ -18,11 +18,11 @@
 ================================================================================
 """
 
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 import os
 
 # 加载 .env 文件（必须在读取环境变量之前）
-# load_dotenv()
+load_dotenv()
 
 FLASH_COOKIE = os.environ.get("FLASH_COOKIE", "")
 print(FLASH_COOKIE)
@@ -37,6 +37,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # 导入路由模块（每个模块负责一类业务接口）
 # from app.routers import xxx 中的 app 是 backend/app/ 目录（包）
 from app.routers import market, stock, capital, sector, scoring, macro, flash
+from app.routers import user as user_router
+from app.routers import auth as auth_router
 from app.strategies.router import router as strategies_router
 
 # ──────────────────────────────────────────────────────────────
@@ -46,8 +48,17 @@ _scheduler_tasks = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时拉起快讯/复盘/信号跟踪三个后台循环，关闭时优雅取消。"""
+    """启动时初始化数据库 + 拉起快讯/复盘/信号跟踪三个后台循环，关闭时优雅取消。"""
     global _scheduler_tasks
+    # 初始化数据库表结构
+    from app.database import db
+    db.init_tables()
+    # 执行数据迁移（如果 JSON 文件有未迁移的数据）
+    try:
+        from migrate import auto_migrate_if_needed
+        auto_migrate_if_needed()
+    except Exception as e:
+        print(f"[main] 数据迁移检查失败: {e}")
     from app.flash import scheduler
     _scheduler_tasks = await scheduler.start()
     yield
@@ -59,6 +70,11 @@ async def lifespan(app: FastAPI):
         print("[关闭] K线缓存已持久化到磁盘")
     except Exception as e:
         print(f"[关闭] K线缓存保存失败: {e}")
+    # 关闭数据库连接
+    try:
+        db.close()
+    except Exception:
+        pass
 
 # 创建 FastAPI 应用实例，配置标题和版本号（会显示在 /docs 文档页）
 app = FastAPI(title="A股数据评分系统", version="1.0.0", lifespan=lifespan)
@@ -90,6 +106,8 @@ app.include_router(scoring.router, prefix="/api/score",   tags=["评分数据"])
 app.include_router(macro.router,   prefix="/api/macro",   tags=["宏观数据"])  # 宏观面板+规则方向分
 app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])  # 快讯事件/LLM诊断/信号跟踪
 app.include_router(strategies_router, prefix="/api/strategies", tags=["战法选股"])  # 量化战法扫描
+app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
+app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 
 
 # 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL

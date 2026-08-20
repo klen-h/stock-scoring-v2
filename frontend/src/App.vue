@@ -1,42 +1,58 @@
 <template>
   <div class="min-h-screen bg-bg text-gray-200">
-    <!-- 顶部导航 -->
-    <nav class="bg-card border-b border-border sticky top-0 z-50">
-      <div class="max-w-[1600px] mx-auto px-4 h-12 flex items-center justify-between">
-        <div class="flex items-center gap-6">
-          <router-link to="/" class="font-bold text-accent text-sm tracking-wide">A股评分系统</router-link>
-          <div class="hidden md:flex gap-1">
-            <router-link v-for="item in navItems" :key="item.path" :to="item.path"
-              class="px-3 py-1 rounded text-xs transition-colors"
-              :class="isNavItemActive(item.path) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
-              {{ item.label }}
-            </router-link>
+    <!-- 登录页不显示导航 -->
+    <template v-if="!isLoginPage">
+      <!-- 顶部导航 -->
+      <nav class="bg-card border-b border-border sticky top-0 z-50">
+        <div class="max-w-[1600px] mx-auto px-4 h-12 flex items-center justify-between">
+          <div class="flex items-center gap-6">
+            <router-link to="/" class="font-bold text-accent text-sm tracking-wide">A股评分系统</router-link>
+            <div class="hidden md:flex gap-1">
+              <router-link v-for="item in navItems" :key="item.path" :to="item.path"
+                class="px-3 py-1 rounded text-xs transition-colors"
+                :class="isNavItemActive(item.path) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
+                {{ item.label }}
+              </router-link>
+            </div>
           </div>
-        </div>
-        <div class="flex items-center gap-2">
-          <!-- 页面通知开关：浏览器系统级通知（新诊断/复盘/信号） -->
-          <button @click="toggleNotif" :title="notifTitle"
-            class="px-2 py-1 rounded text-sm border border-border bg-bg hover:bg-white/5 transition-colors"
-            :class="notifOn ? 'text-accent' : 'text-muted'">
-            {{ notifOn ? '🔔' : '🔕' }}
-          </button>
-          <div class="relative">
-            <input v-model="keyword" @keyup.enter="doSearch" @focus="showSearch = true" @blur="hideSearch"
-              placeholder="输入代码或名称"
-              class="bg-bg border border-border rounded px-3 py-1 text-xs w-40 focus:w-56 transition-all focus:outline-none focus:border-accent/50"/>
-            <div v-if="showSearch && searchResults.length" class="absolute top-full mt-1 left-0 right-0 bg-card border border-border rounded shadow-lg z-50">
-              <div v-for="r in searchResults" :key="r.code" @mousedown.prevent="goStock(r.code)"
-                class="px-3 py-2 text-xs hover:bg-white/5 cursor-pointer flex justify-between">
-                <span>{{ r.name }}</span>
-                <span class="text-muted font-mono">{{ r.code }}</span>
+          <div class="flex items-center gap-2">
+            <!-- 用户信息 + 登出 -->
+            <div class="relative" ref="userMenuRef">
+              <button @click="showUserMenu = !showUserMenu"
+                class="px-2 py-1 rounded text-xs border border-border bg-bg hover:bg-white/5 transition-colors text-muted flex items-center gap-1">
+                <span>{{ currentUser?.username || '用户' }}</span>
+                <span class="text-[10px]">▼</span>
+              </button>
+              <div v-if="showUserMenu" class="absolute top-full mt-1 right-0 bg-card border border-border rounded shadow-lg z-50 min-w-[120px]">
+                <button @click="handleLogout" class="w-full px-3 py-2 text-xs text-left hover:bg-white/5 text-red-400">
+                  退出登录
+                </button>
+              </div>
+            </div>
+            <!-- 页面通知开关：浏览器系统级通知（新诊断/复盘/信号） -->
+            <button @click="toggleNotif" :title="notifTitle"
+              class="px-2 py-1 rounded text-sm border border-border bg-bg hover:bg-white/5 transition-colors"
+              :class="notifOn ? 'text-accent' : 'text-muted'">
+              {{ notifOn ? '🔔' : '🔕' }}
+            </button>
+            <div class="relative">
+              <input v-model="keyword" @keyup.enter="doSearch" @focus="showSearch = true" @blur="hideSearch"
+                placeholder="输入代码或名称"
+                class="bg-bg border border-border rounded px-3 py-1 text-xs w-40 focus:w-56 transition-all focus:outline-none focus:border-accent/50"/>
+              <div v-if="showSearch && searchResults.length" class="absolute top-full mt-1 left-0 right-0 bg-card border border-border rounded shadow-lg z-50">
+                <div v-for="r in searchResults" :key="r.code" @mousedown.prevent="goStock(r.code)"
+                  class="px-3 py-2 text-xs hover:bg-white/5 cursor-pointer flex justify-between">
+                  <span>{{ r.name }}</span>
+                  <span class="text-muted font-mono">{{ r.code }}</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-    </nav>
+      </nav>
+    </template>
 
-    <main class="max-w-[1600px] mx-auto px-4 py-4">
+    <main :class="isLoginPage ? '' : 'max-w-[1600px] mx-auto px-4 py-4'">
       <router-view/>
     </main>
   </div>
@@ -45,10 +61,33 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { searchStock, getFlashNotifications, getFlashBackup, restoreFlashBackup } from './api'
+import { searchStock, getFlashNotifications, getFlashBackup, restoreFlashBackup, getUser, removeToken } from './api'
 
 const router = useRouter()
 const route = useRoute()
+
+// ── 用户状态 ──
+const currentUser = computed(() => getUser())
+const showUserMenu = ref(false)
+const userMenuRef = ref(null)
+const isLoginPage = computed(() => route.name === 'Login')
+
+function handleLogout() {
+  removeToken()
+  showUserMenu.value = false
+  router.push('/login')
+}
+
+// 点击外部关闭用户菜单
+function handleClickOutside(e) {
+  if (userMenuRef.value && !userMenuRef.value.contains(e.target)) {
+    showUserMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
 
 const navItems = [
   { path: '/', label: '首页' },
@@ -128,6 +167,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (notifTimer) clearInterval(notifTimer)
   if (mirrorTimer) clearInterval(mirrorTimer)
+  document.removeEventListener('click', handleClickOutside)
 })
 
 // ──────────────────────────────────────────────────────────────

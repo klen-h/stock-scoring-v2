@@ -66,6 +66,36 @@
             class="w-full px-3 py-1.5 rounded text-xs bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-50">
             导出CSV
           </button>
+          
+          <!-- 回测按钮 -->
+          <div class="border-t border-border pt-3 mt-3">
+            <button @click="triggerBacktest" :disabled="backtesting || !currentStrategy"
+              class="w-full px-3 py-2 rounded text-sm bg-purple-500/15 text-purple-400 hover:bg-purple-500/25 transition-colors disabled:opacity-50 font-medium">
+              {{ backtesting ? '回测中...' : '历史回测' }}
+            </button>
+            <div v-if="backtestResult" class="mt-3 p-2 rounded bg-purple-500/10 border border-purple-500/20 text-xs space-y-1">
+              <div class="flex justify-between">
+                <span class="text-muted">胜率</span>
+                <span :class="backtestResult.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+                  {{ backtestResult.win_rate }}%
+                </span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-muted">信号数</span>
+                <span>{{ backtestResult.signals }}</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-muted">盈亏比</span>
+                <span>{{ backtestResult.profit_factor }}</span>
+              </div>
+              <div class="flex justify-between">
+                <span class="text-muted">平均收益</span>
+                <span :class="backtestResult.avg_profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                  {{ backtestResult.avg_profit_pct }}%
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -746,6 +776,8 @@ import {
   getStrategyWatch,
   updateStrategyWatch,
   getScanStatus,
+  runBacktest,
+  getBacktestResult,
 } from '../api'
 import { addWatch } from '../composables/useWatchlist'
 import { addPlan } from '../composables/useTradePlans'
@@ -759,6 +791,10 @@ const watchPool = ref([])
 const scanning = ref(false)
 const lastScanDate = ref('')
 const activeTab = ref('list')
+
+// 回测状态
+const backtesting = ref(false)
+const backtestResult = ref(null)
 
 // 筛选
 const filterConfidence = ref('')
@@ -791,6 +827,7 @@ function selectStrategy(s) {
   sessionStorage.setItem('strategy_selected', s.name_en)
   loadResult()
   loadWatchPool()
+  loadBacktestResult()
 }
 
 // ── 加载扫描结果 ──
@@ -855,6 +892,65 @@ async function pollScanStatus() {
     }
   }
   poll()
+}
+
+// ── 回测 ──
+async function triggerBacktest() {
+  if (!currentStrategy.value || backtesting.value) return
+  backtesting.value = true
+  backtestResult.value = null
+  try {
+    await runBacktest(currentStrategy.value.name_en, { days: 60, force: true })
+    // 轮询回测状态
+    await pollBacktestStatus()
+  } catch (e) {
+    console.error('回测失败', e)
+    backtesting.value = false
+    showToast('回测失败: ' + (e.response?.data?.detail || e.message))
+  }
+}
+
+async function pollBacktestStatus() {
+  const maxAttempts = 90
+  let attempts = 0
+  const poll = async () => {
+    attempts++
+    try {
+      const { data } = await getBacktestResult(currentStrategy.value.name_en)
+      if (data.data && data.data.signals !== undefined) {
+        backtesting.value = false
+        backtestResult.value = data.data
+        return
+      }
+      if (attempts < maxAttempts) {
+        setTimeout(poll, 2000)
+      } else {
+        backtesting.value = false
+        showToast('回测超时，请稍后重试')
+      }
+    } catch {
+      if (attempts < maxAttempts) {
+        setTimeout(poll, 2000)
+      } else {
+        backtesting.value = false
+      }
+    }
+  }
+  poll()
+}
+
+async function loadBacktestResult() {
+  if (!currentStrategy.value) return
+  try {
+    const { data } = await getBacktestResult(currentStrategy.value.name_en)
+    if (data.data && data.data.signals !== undefined) {
+      backtestResult.value = data.data
+    } else {
+      backtestResult.value = null
+    }
+  } catch {
+    backtestResult.value = null
+  }
 }
 
 // ── 筛选结果 ──

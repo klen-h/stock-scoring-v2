@@ -1,5 +1,10 @@
 import { ref, computed } from 'vue'
 import { ALERT_CONFIG } from './usePortfolio'
+import {
+  getUserWatchlist,
+  upsertUserWatch,
+  deleteUserWatch
+} from '../api/index.js'
 
 // ============================================================
 //  自选股 / 观察列表（组合式函数，全局单例）
@@ -51,7 +56,6 @@ function saveToStorage() {
 export function addWatch({ code, name, target_price, note = '' }) {
   const existing = watchlist.value.find(w => w.code === code)
   if (existing) {
-    // 已存在则更新（允许改目标价）
     Object.assign(existing, {
       target_price: target_price ?? existing.target_price,
       note: note || existing.note,
@@ -67,6 +71,8 @@ export function addWatch({ code, name, target_price, note = '' }) {
     })
   }
   saveToStorage()
+  // 同步到数据库
+  upsertUserWatch({ code, name: name || code, target_price, note }).catch(() => {})
 }
 
 export function removeWatch(code) {
@@ -74,6 +80,8 @@ export function removeWatch(code) {
   if (idx >= 0) {
     watchlist.value.splice(idx, 1)
     saveToStorage()
+    // 从数据库删除
+    deleteUserWatch(code).catch(() => {})
   }
 }
 
@@ -82,6 +90,27 @@ export function updateWatch(code, fields) {
   if (w) {
     Object.assign(w, fields)
     saveToStorage()
+    // 同步到数据库
+    upsertUserWatch({ code, ...fields }).catch(() => {})
+  }
+}
+
+// ── 从数据库加载（初始化时调用）──
+export async function syncFromServer() {
+  try {
+    const { data } = await getUserWatchlist()
+    const items = data.data || data || []
+    if (items.length > 0) {
+      // 合并：服务器数据优先
+      const map = new Map(watchlist.value.map(w => [w.code, w]))
+      for (const item of items) {
+        map.set(item.code, { ...map.get(item.code), ...item })
+      }
+      watchlist.value = Array.from(map.values())
+      saveToStorage()
+    }
+  } catch (e) {
+    // API 失败时用 localStorage 数据（已在 loadFromStorage 中加载）
   }
 }
 

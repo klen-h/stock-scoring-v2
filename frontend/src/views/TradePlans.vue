@@ -395,6 +395,11 @@ function goDetail(code) { router.push(`/stock/${code}`) }
 
 watch(() => plans.value.length, (n, old) => { if (n > (old || 0)) refresh() })
 
-onMounted(() => { refresh(); startTimer() })
+onMounted(() => {
+  refresh()
+  startTimer()
+  // 从数据库同步交易计划
+  import('../composables/useTradePlans.js').then(m => m.syncFromServer())
+})
 onBeforeUnmount(() => { stopTimer() })
 </script>

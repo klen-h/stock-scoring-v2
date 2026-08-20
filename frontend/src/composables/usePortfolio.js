@@ -1,4 +1,9 @@
 import { ref, computed } from 'vue'
+import {
+  getUserPortfolio,
+  upsertUserPortfolio,
+  deleteUserPortfolio
+} from '../api/index.js'
 
 // ============================================================
 //  持仓管理组合式函数（全局单例）
@@ -90,7 +95,6 @@ function saveToStorage() {
 
 // ── 持仓 CRUD ──
 export function addPosition({ code, name, cost, shares, note = '' }) {
-  // 去重：同一代码已存在则更新（而非新增）
   const existing = positions.value.find(p => p.code === code)
   if (existing) {
     Object.assign(existing, { cost, shares, note, name: name || existing.name })
@@ -101,12 +105,13 @@ export function addPosition({ code, name, cost, shares, note = '' }) {
       cost: Number(cost),
       shares: Number(shares),
       note,
-      // 初始最高点设为成本价（保守起见，后续刷新会被真实高价覆盖）
       high_water_mark: Number(cost),
       created_at: Date.now(),
     })
   }
   saveToStorage()
+  // 同步到数据库
+  upsertUserPortfolio({ code, name: name || code, cost: Number(cost), shares: Number(shares), note }).catch(() => {})
 }
 
 export function removePosition(code) {
@@ -114,6 +119,7 @@ export function removePosition(code) {
   if (idx >= 0) {
     positions.value.splice(idx, 1)
     saveToStorage()
+    deleteUserPortfolio(code).catch(() => {})
   }
 }
 
@@ -122,6 +128,25 @@ export function updatePosition(code, fields) {
   if (p) {
     Object.assign(p, fields)
     saveToStorage()
+    upsertUserPortfolio({ code, ...fields }).catch(() => {})
+  }
+}
+
+// ── 从数据库加载 ──
+export async function syncFromServer() {
+  try {
+    const { data } = await getUserPortfolio()
+    const items = data.data || data || []
+    if (items.length > 0) {
+      const map = new Map(positions.value.map(p => [p.code, p]))
+      for (const item of items) {
+        map.set(item.code, { ...map.get(item.code), ...item })
+      }
+      positions.value = Array.from(map.values())
+      saveToStorage()
+    }
+  } catch (e) {
+    // API 失败时用 localStorage
   }
 }
 

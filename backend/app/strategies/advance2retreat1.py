@@ -304,6 +304,89 @@ class Advance2Retreat1Strategy(BaseStrategy):
         if len(klines) < period:
             return 0
         return sum(k["close"] for k in klines[-period:]) / period
+    
+    def detect_signal(self, klines: List[Dict], idx: int) -> Dict:
+        """
+        检测在指定索引位置是否触发进二退一信号（用于回测）。
+        
+        检查 klines[idx-2], klines[idx-1], klines[idx] 是否构成进二退一形态。
+        """
+        if idx < 5:
+            return None
+        
+        cfg = self.CONFIG
+        
+        # 取 idx 位置及其前两根K线
+        day1 = klines[idx - 2]
+        day2 = klines[idx - 1]
+        day3 = klines[idx]
+        
+        # 获取前5根K线（用于计算均量）
+        prev_klines = klines[max(0, idx - 7):idx - 2]
+        
+        # ── Day 1 检查：放量大阳 ──
+        if not day1.get("is_positive", day1["close"] > day1["open"]):
+            return None
+        if day1["change_pct"] < cfg["day1_min_change"]:
+            return None
+        
+        if len(prev_klines) < 5:
+            return None
+        avg_vol = sum(k["volume"] for k in prev_klines[-5:]) / 5
+        if avg_vol == 0:
+            return None
+        vol_ratio = day1["volume"] / avg_vol
+        if vol_ratio < cfg["day1_min_volume_ratio"]:
+            return None
+        
+        # ── Day 2 检查：强攻上影 ──
+        if not day2.get("is_positive", day2["close"] > day2["open"]):
+            return None
+        if day2["change_pct"] < cfg["day2_min_change"]:
+            return None
+        if day2["change_pct"] > day1["change_pct"]:
+            return None
+        
+        body = abs(day2["close"] - day2["open"])
+        if body == 0:
+            return None
+        upper_shadow = day2["high"] - max(day2["close"], day2["open"])
+        upper_ratio = upper_shadow / body
+        if upper_ratio < cfg["day2_max_upper_shadow_ratio"]:
+            return None
+        if day2["volume"] <= day1["volume"]:
+            return None
+        
+        # ── Day 3 检查：缩量回调 ──
+        if day3["change_pct"] > cfg["day3_max_change"]:
+            return None
+        
+        avg_vol_12 = (day1["volume"] + day2["volume"]) / 2
+        if avg_vol_12 == 0:
+            return None
+        vol_ratio_3 = day3["volume"] / avg_vol_12
+        if vol_ratio_3 >= cfg["day3_max_volume_ratio"]:
+            return None
+        
+        pullback = (day2["close"] - day3["close"]) / day2["close"] * 100
+        if pullback > cfg["day3_max_pullback"]:
+            return None
+        
+        if day3["close"] < day1["high"] * 0.99:
+            return None
+        
+        # ── 计算关键价位 ──
+        entry_price = day3["close"]
+        stop_loss = day1["low"] * 0.98
+        if stop_loss < entry_price * 0.90:
+            stop_loss = entry_price * 0.90
+        target_price = max(day2["high"] * 1.05, entry_price * 1.10)
+        
+        return {
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "target_price": target_price,
+        }
 
 
 # ── 注册策略 ──

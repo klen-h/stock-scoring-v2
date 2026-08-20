@@ -34,6 +34,13 @@ from app.strategies import (
     get_kline_with_indicators,
     calc_position_in_range,
 )
+from app.strategies.backtest import (
+    run_backtest,
+    save_backtest_result,
+    get_backtest_result,
+    get_all_backtest_summary,
+)
+from app.tencent import _cache as tencent_cache, refresh_all_stocks
 
 router = APIRouter()
 
@@ -238,3 +245,91 @@ def get_scan_status(strategy_name: str):
         "scanning": status.get("scanning", False),
         "started_at": status.get("started_at"),
     }
+
+
+# ================================================================
+#  回测接口
+# ================================================================
+
+@router.get("/{strategy_name}/backtest")
+async def backtest_strategy(
+    strategy_name: str,
+    background_tasks: BackgroundTasks,
+    days: int = Query(60, description="回测天数"),
+    force: bool = Query(False, description="强制重新回测"),
+):
+    """
+    执行战法回测。
+    
+    回测是耗时操作，默认在后台执行。
+    如果 force=False 且今日已有结果，直接返回缓存。
+    """
+    strategy = get_strategy(strategy_name)
+    if not strategy:
+        raise HTTPException(status_code=404, detail=f"未找到战法: {strategy_name}")
+    
+    # 检查是否支持回测
+    if not hasattr(strategy, "detect_signal"):
+        raise HTTPException(status_code=400, detail=f"战法 {strategy_name} 不支持回测")
+    
+    # 检查是否已有今日结果
+    if not force:
+        cached = get_backtest_result(strategy_name)
+        if cached and cached.get("backtest_date") == datetime.now().strftime("%Y-%m-%d"):
+            return {"data": cached, "cached": True}
+    
+    # 检查是否正在回测
+    if _scan_status.get(f"{strategy_name}_backtest", {}).get("scanning"):
+        return {
+            "data": {},
+            "scanning": True,
+            "message": "回测进行中，请稍后刷新",
+        }
+    
+    # 后台执行回测
+    background_tasks.add_task(_run_backtest, strategy_name, days)
+    
+    return {
+        "data": {},
+        "scanning": True,
+        "message": "回测已启动，请稍后刷新查看结果",
+    }
+
+
+async def _run_backtest(strategy_name: str, days: int):
+    """后台执行回测"""
+    _scan_status[f"{strategy_name}_backtest"] = {"scanning": True, "started_at": datetime.now().isoformat()}
+    
+    try:
+        # 确保行情缓存已加载
+        if not tencent_cache.get("stocks"):
+            print(f"[backtest] 行情缓存为空，正在刷新股票列表...")
+            await asyncio.to_thread(refresh_all_stocks)
+        
+        # 在线程池中执行回测
+        result = await asyncio.to_thread(run_backtest, strategy_name, days)
+        
+        if "error" not in result:
+            save_backtest_result(strategy_name, result)
+            print(f"[backtest] {strategy_name} 回测完成: {result.get('signals')} 个信号, 胜率 {result.get('win_rate')}%")
+    
+    except Exception as e:
+        print(f"[backtest] {strategy_name} 回测失败: {e}")
+    finally:
+        _scan_status[f"{strategy_name}_backtest"] = {"scanning": False}
+
+
+@router.get("/{strategy_name}/backtest/result")
+def get_backtest_result_api(strategy_name: str):
+    """获取回测结果"""
+    result = get_backtest_result(strategy_name)
+    if not result:
+        return {"data": {}, "message": "暂无回测结果，请先执行回测"}
+    return {"data": result, "cached": True}
+
+
+@router.get("/backtest/summary")
+def get_backtest_summary():
+    """获取所有战法的回测摘要"""
+    summary = get_all_backtest_summary()
+    return {"data": summary}

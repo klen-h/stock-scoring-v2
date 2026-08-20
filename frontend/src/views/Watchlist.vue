@@ -438,6 +438,8 @@ watch(() => watchlist.value.length, (n, old) => {
 onMounted(() => {
   refresh()
   startTimer()
+  // 从数据库同步自选股
+  import('../composables/useWatchlist.js').then(m => m.syncFromServer())
 })
 onBeforeUnmount(() => {
   stopTimer()

@@ -6,12 +6,12 @@
 提供：
   1. 通用股票池过滤器（市值/成交量/ST/上市天数/板块等）
   2. 策略基类 BaseStrategy（统一接口）
-  3. 扫描结果存储
+  3. 扫描结果存储（数据库）
 
 设计原则：
   - 过滤器链式调用，各策略可复用
   - K线数据复用 tencent.py 的 get_kline（带缓存）
-  - 结果持久化到 data/strategies.json
+  - 结果持久化到数据库（SQLite 或 PostgreSQL）
 ================================================================================
 """
 
@@ -22,37 +22,10 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Any
 
 from app.tencent import get_kline, _cache as tencent_cache
-from app.flash import store
+from app.database import db
 
-# ── 路径 ──
+# ── 路径（保留用于兼容）──
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-STRATEGIES_FILE = os.path.join(DATA_DIR, "strategies.json")
-
-
-def _ensure_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-
-def _load_data() -> dict:
-    """加载策略数据"""
-    _ensure_dir()
-    if os.path.exists(STRATEGIES_FILE):
-        try:
-            with open(STRATEGIES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"scan_results": {}, "watch_pool": {}}
-
-
-def _save_data(data: dict):
-    """保存策略数据"""
-    _ensure_dir()
-    try:
-        with open(STRATEGIES_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[strategies] 保存失败: {e}")
 
 
 # ================================================================
@@ -278,46 +251,119 @@ class BaseStrategy(ABC):
             "name_en": self.name_en,
             "description": self.description,
         }
+    
+    def detect_signal(self, klines: List[Dict], idx: int) -> Optional[Dict]:
+        """
+        检测在指定索引位置是否触发信号（用于回测）。
+        
+        子类可以重写此方法实现具体的信号检测逻辑。
+        默认实现返回 None（表示不支持回测）。
+        
+        参数：
+          klines: 完整的K线数据列表
+          idx: 当前检测位置的索引（检测 klines[idx] 是否触发信号）
+        
+        返回：
+          如果触发信号，返回 {entry_price, stop_loss, target_price} 字典
+          否则返回 None
+        """
+        return None
 
 
 # ================================================================
-#  扫描结果管理
+#  扫描结果管理（数据库版）
 # ================================================================
 
 def save_scan_result(strategy_name: str, results: List[Dict]):
-    """保存扫描结果"""
-    data = _load_data()
+    """保存扫描结果到数据库"""
     today = datetime.now().strftime("%Y-%m-%d")
-    data["scan_results"][strategy_name] = {
-        "date": today,
-        "count": len(results),
-        "results": results,
-    }
-    _save_data(data)
-    print(f"[strategies] 保存扫描结果: {strategy_name} {len(results)} 只")
+    try:
+        db.upsert("strategy_results", {
+            "strategy_name": strategy_name,
+            "scan_date": today,
+            "count": len(results),
+            "results_json": json.dumps(results, ensure_ascii=False)
+        }, conflict_columns=["strategy_name", "scan_date"])
+        print(f"[strategies] 保存扫描结果: {strategy_name} {len(results)} 只")
+    except Exception as e:
+        print(f"[strategies] 保存扫描结果失败: {e}")
 
 
 def get_scan_result(strategy_name: str) -> Dict:
     """获取最近一次扫描结果"""
-    data = _load_data()
-    return data["scan_results"].get(strategy_name, {})
+    row = db.fetch_one(
+        "SELECT * FROM strategy_results WHERE strategy_name = %s ORDER BY scan_date DESC LIMIT 1",
+        (strategy_name,)
+    )
+    if not row:
+        return {}
+    try:
+        return {
+            "date": row["scan_date"],
+            "count": row["count"],
+            "results": json.loads(row["results_json"])
+        }
+    except (json.JSONDecodeError, KeyError):
+        return {}
 
 
 def save_watch_pool(strategy_name: str, pool: List[Dict]):
-    """保存观察池"""
-    data = _load_data()
+    """保存观察池到数据库"""
     today = datetime.now().strftime("%Y-%m-%d")
-    data["watch_pool"][strategy_name] = {
-        "date": today,
-        "stocks": pool,
-    }
-    _save_data(data)
+    try:
+        # 先删除旧的
+        db.execute(
+            "DELETE FROM strategy_watch WHERE strategy_name = %s",
+            (strategy_name,)
+        )
+        # 插入新的
+        for stock in pool:
+            db.execute(
+                "INSERT INTO strategy_watch "
+                "(strategy_name, code, name, entry_price, stop_loss, target_price, added_date, extra_json) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (strategy_name, stock.get("code", ""), stock.get("name", ""),
+                 stock.get("entry_price"), stock.get("stop_loss"),
+                 stock.get("target_price"), stock.get("added_date", today),
+                 json.dumps({k: v for k, v in stock.items() 
+                            if k not in ["code", "name", "entry_price", "stop_loss", "target_price", "added_date"]},
+                           ensure_ascii=False))
+            )
+    except Exception as e:
+        print(f"[strategies] 保存观察池失败: {e}")
 
 
 def get_watch_pool(strategy_name: str) -> Dict:
     """获取观察池"""
-    data = _load_data()
-    return data["watch_pool"].get(strategy_name, {})
+    rows = db.fetch(
+        "SELECT * FROM strategy_watch WHERE strategy_name = %s ORDER BY added_date DESC",
+        (strategy_name,)
+    )
+    if not rows:
+        return {"date": None, "stocks": []}
+    
+    stocks = []
+    for r in rows:
+        stock = {
+            "code": r["code"],
+            "name": r["name"],
+            "entry_price": r.get("entry_price"),
+            "stop_loss": r.get("stop_loss"),
+            "target_price": r.get("target_price"),
+            "added_date": r.get("added_date"),
+        }
+        # 合并 extra_json 中的字段
+        if r.get("extra_json"):
+            try:
+                extra = json.loads(r["extra_json"])
+                stock.update(extra)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        stocks.append(stock)
+    
+    # 获取最新日期
+    latest = rows[0].get("added_date") if rows else None
+    return {"date": latest, "stocks": stocks}
 
 
 # ================================================================

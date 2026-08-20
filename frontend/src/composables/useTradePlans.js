@@ -1,4 +1,9 @@
 import { ref, computed } from 'vue'
+import {
+  getUserPlans,
+  upsertUserPlan,
+  deleteUserPlan
+} from '../api/index.js'
 
 // ============================================================
 //  交易计划（买点跟踪 + T+1 验证）
@@ -48,7 +53,7 @@ function saveToStorage() {
 
 // ── CRUD ──
 export function addPlan({ code, name, buy_price, stop_loss, target, reason = '', expected = '' }) {
-  plans.value.push({
+  const plan = {
     id: 'tp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     code,
     name: name || code,
@@ -63,8 +68,11 @@ export function addPlan({ code, name, buy_price, stop_loss, target, reason = '',
     t1_close: null,
     max_high_after_hit: null,
     min_low_after_hit: null,
-  })
+  }
+  plans.value.push(plan)
   saveToStorage()
+  // 同步到数据库
+  upsertUserPlan(plan).catch(() => {})
 }
 
 export function removePlan(id) {
@@ -72,6 +80,8 @@ export function removePlan(id) {
   if (idx >= 0) {
     plans.value.splice(idx, 1)
     saveToStorage()
+    // 从数据库删除
+    deleteUserPlan(id).catch(() => {})
   }
 }
 
@@ -80,6 +90,26 @@ export function updatePlan(id, fields) {
   if (p) {
     Object.assign(p, fields)
     saveToStorage()
+    // 同步到数据库
+    upsertUserPlan(p).catch(() => {})
+  }
+}
+
+// ── 从数据库加载 ──
+export async function syncFromServer() {
+  try {
+    const { data } = await getUserPlans()
+    const items = data.data || data || []
+    if (items.length > 0) {
+      const map = new Map(plans.value.map(p => [p.id, p]))
+      for (const item of items) {
+        map.set(item.id, { ...map.get(item.id), ...item })
+      }
+      plans.value = Array.from(map.values())
+      saveToStorage()
+    }
+  } catch (e) {
+    // API 失败时用 localStorage
   }
 }
 
