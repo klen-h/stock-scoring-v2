@@ -14,7 +14,7 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi import APIRouter, Query, BackgroundTasks, Body
 import asyncio
 from types import SimpleNamespace
 from app.scoring.engine import ScoreEngine
@@ -518,6 +518,20 @@ async def score_single(symbol: str):
     }
 
 
+def _record_ranking(result_data: list):
+    """后台记录当日排行数据（用于计算连续上榜天数）"""
+    try:
+        from app.scoring.ranking_history import record_daily_ranking
+        stocks = [
+            {"code": r["code"], "name": r["name"], "total_score": r["total_score"], 
+             "signal": r["signal"], "rank": i + 1}
+            for i, r in enumerate(result_data)
+        ]
+        record_daily_ranking(stocks)
+    except Exception as e:
+        print(f"[ranking] 后台记录排行失败: {e}")
+
+
 @router.get("/batch/top")
 async def score_top(
     limit: int = Query(default=50, ge=10, le=200),   # ge/le 限制取值范围 10~200
@@ -548,21 +562,27 @@ async def score_top(
         valid, lambda results: results[:limit], limit=limit, side="top",
     )
 
+    result_data = [{
+        "code": r.code,
+        "name": r.name,
+        "total_score": r.total_score,
+        "signal": r.signal,
+        "signal_level": r.signal_level,
+        "change_pct": getattr(r, 'change_pct', 0) or 0,
+        # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
+        "factors_up": getattr(r, 'factors_up', []) or [],
+        # 买入时机指标
+        "buy_point": getattr(r, 'buy_point', {}) or {},
+        # 各维度得分（用于权重优化分析）
+        "dimensions": getattr(r, 'dimensions', {}) or {},
+    } for r in top]
+
+    # 后台记录当日排行（用于计算连续上榜天数）
+    if background_tasks:
+        background_tasks.add_task(_record_ranking, result_data)
+
     return {
-        "data": [{
-            "code": r.code,
-            "name": r.name,
-            "total_score": r.total_score,
-            "signal": r.signal,
-            "signal_level": r.signal_level,
-            "change_pct": getattr(r, 'change_pct', 0) or 0,
-            # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
-            "factors_up": getattr(r, 'factors_up', []) or [],
-            # 买入时机指标
-            "buy_point": getattr(r, 'buy_point', {}) or {},
-            # 各维度得分（用于权重优化分析）
-            "dimensions": getattr(r, 'dimensions', {}) or {},
-        } for r in top],
+        "data": result_data,
         "total": len(valid),
         "cache_status": "ready",
     }
@@ -723,3 +743,32 @@ def _calc_technical(klines: list) -> list:
             "boll_upper": boll_upper[i], "boll_mid": boll_mid[i], "boll_lower": boll_lower[i],
         })
     return result
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 排行榜可信度（连续上榜天数）
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.post("/ranking-persistence")
+async def ranking_persistence(codes: list = Body(...)):
+    """
+    查询多只股票的排行榜连续上榜天数 + 可信度。
+    
+    请求体：["000001", "600519", ...]
+    返回：[{code, consecutive_days, trust_score, trust_grade, advice}, ...]
+    """
+    from app.scoring.ranking_history import get_ranking_persistence
+    result = get_ranking_persistence(codes)
+    return {"data": result}
+
+
+@router.post("/ranking-record")
+async def ranking_record(stocks: list = Body(...)):
+    """
+    手动记录当日排行榜（供调试或定时任务调用）。
+    
+    请求体：[{code, name, total_score, signal, rank}, ...]
+    """
+    from app.scoring.ranking_history import record_daily_ranking
+    count = record_daily_ranking(stocks)
+    return {"recorded": count}

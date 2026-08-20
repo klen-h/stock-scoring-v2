@@ -40,6 +40,17 @@ from app.strategies.backtest import (
     get_backtest_result,
     get_all_backtest_summary,
 )
+from app.strategies.market_regime import (
+    detect_market_regime,
+    get_strategy_recommendation,
+    TRENDING_STRATEGIES,
+    OSCILLATING_STRATEGIES,
+)
+from app.strategies.support_resistance import find_support_resistance
+from app.strategies.rsi import calc_rsi_signals
+from app.strategies.signal_confirmation import confirm_signal, batch_confirm_signals
+from app.strategies.signal_persistence import update_persistence, get_persistence_summary, get_top_persistent_signals
+from app.strategies.exit_alert import check_exit_alerts, get_exit_summary_for_watchlist
 from app.tencent import _cache as tencent_cache, refresh_all_stocks
 
 router = APIRouter()
@@ -151,7 +162,30 @@ def _do_scan(strategy, min_market_cap: float, min_avg_volume: float):
     )
     
     # 执行策略扫描
-    return strategy.scan(pool)
+    results = strategy.scan(pool)
+    
+    # 对每个信号进行共振验证
+    if results:
+        print(f"[strategies] {strategy.name} 产生 {len(results)} 个信号，正在进行共振验证...")
+        results = batch_confirm_signals(results)
+        
+        # 统计各等级信号数量
+        grade_counts = {}
+        for r in results:
+            grade = r.get("signal_grade", "D")
+            grade_counts[grade] = grade_counts.get(grade, 0) + 1
+        print(f"[strategies] 共振验证完成: {grade_counts}")
+        
+        # 更新信号持久度（连续上榜追踪）
+        print(f"[strategies] 正在更新信号持久度...")
+        results = update_persistence(strategy.name, results)
+        trust_counts = {}
+        for r in results:
+            tg = r.get("trust_grade", "D")
+            trust_counts[tg] = trust_counts.get(tg, 0) + 1
+        print(f"[strategies] 持久度更新完成: {trust_counts}")
+    
+    return results
 
 
 @router.get("/{strategy_name}/result")
@@ -333,3 +367,142 @@ def get_backtest_summary():
     """获取所有战法的回测摘要"""
     summary = get_all_backtest_summary()
     return {"data": summary}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 市场状态识别
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/market/regime")
+def get_market_regime():
+    """
+    获取当前市场状态。
+    
+    返回：
+      - regime: "trending" / "oscillating" / "transition"
+      - confidence: 置信度 0-100
+      - adx: ADX 指标值
+      - bb_width: 布林带宽度
+      - volatility: 波动率
+      - recommended_strategies: 推荐战法列表
+    """
+    result = detect_market_regime()
+    return {"data": result}
+
+
+@router.get("/market/strategy-types")
+def get_strategy_types():
+    """
+    获取战法分类（趋势市 / 震荡市）。
+    """
+    return {
+        "data": {
+            "trending": TRENDING_STRATEGIES,
+            "oscillating": OSCILLATING_STRATEGIES,
+        }
+    }
+
+
+@router.get("/{strategy_name}/recommendation")
+def get_strategy_rec(strategy_name: str):
+    """
+    获取单个战法的适用性建议。
+    
+    根据当前市场状态，评估该战法是否适合使用。
+    """
+    result = get_strategy_recommendation(strategy_name)
+    return {"data": result}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 支撑阻力位 + RSI 指标
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/{code}/support-resistance")
+def get_support_resistance(code: str, lookback: int = Query(60, ge=20, le=120)):
+    """
+    获取股票的支撑阻力位。
+    
+    参数：
+      code: 股票代码
+      lookback: 回看天数（默认 60）
+    
+    返回：
+      - levels: 关键价位列表（价格、类型、强度）
+      - current_price: 当前价格
+      - position_pct: 在区间中的位置 (0-100)
+      - suggestion: 交易建议
+    """
+    result = find_support_resistance(code, lookback_days=lookback)
+    return {"data": result}
+
+
+@router.get("/{code}/rsi")
+def get_rsi_signals(code: str, period: int = Query(14, ge=5, le=30)):
+    """
+    获取股票的 RSI 指标和信号。
+    
+    参数：
+      code: 股票代码
+      period: RSI 周期（默认 14）
+    
+    返回：
+      - current_rsi: 当前 RSI 值
+      - zone: 超买/超卖/中性
+      - signal: 交易信号（金叉/死叉/背离）
+      - interpretation: 解读
+    """
+    result = calc_rsi_signals(code, period=period)
+    return {"data": result}
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 信号持久度 + 撤退提醒
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+@router.get("/{strategy_name}/persistence")
+def get_persistence_api(strategy_name: str):
+    """
+    获取战法的信号持久度摘要。
+    
+    返回各连续天数的信号数量统计。
+    """
+    strategy = get_strategy(strategy_name)
+    if not strategy:
+        raise HTTPException(status_code=404, detail=f"未找到战法: {strategy_name}")
+    
+    result = get_persistence_summary(strategy_name)
+    return {"data": result}
+
+
+@router.get("/{strategy_name}/persistent-signals")
+def get_persistent_signals_api(strategy_name: str, min_days: int = Query(3, ge=1, le=10)):
+    """
+    获取连续上榜天数 >= min_days 的信号（强者恒强）。
+    """
+    strategy = get_strategy(strategy_name)
+    if not strategy:
+        raise HTTPException(status_code=404, detail=f"未找到战法: {strategy_name}")
+    
+    result = get_top_persistent_signals(strategy_name, min_days=min_days)
+    return {"data": result}
+
+
+@router.post("/exit-alerts")
+def check_exit_alerts_api(positions: list = Body(...)):
+    """
+    检查持仓的撤退信号。
+    
+    请求体：[{code, name, entry_price, stop_loss, target_price}, ...]
+    """
+    alerts = check_exit_alerts(positions)
+    return {"data": alerts}
+
+
+@router.post("/exit-summary")
+def exit_summary_api(positions: list = Body(...)):
+    """
+    为持仓列表生成撤退摘要。
+    """
+    result = get_exit_summary_for_watchlist(positions)
+    return {"data": result}

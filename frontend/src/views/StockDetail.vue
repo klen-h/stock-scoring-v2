@@ -141,6 +141,74 @@
       <div ref="klineChartRef" class="h-[500px]"></div>
     </div>
 
+    <!-- 支撑阻力 + RSI -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- 支撑阻力 -->
+      <div v-if="supportResistance" class="bg-card border border-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-muted mb-3">支撑阻力位</h3>
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs text-muted">当前位置</span>
+          <div class="flex items-center gap-2">
+            <div class="w-24 h-2 rounded-full overflow-hidden" style="background:#21262d">
+              <div class="h-full rounded-full transition-all"
+                :style="{ width: supportResistance.position_pct + '%', background: srBarBg }"></div>
+            </div>
+            <span class="text-sm font-mono" :style="{ color: srBarBg }">{{ supportResistance.position_pct }}%</span>
+          </div>
+        </div>
+        <div class="space-y-1.5">
+          <div v-for="level in supportResistance.levels" :key="level.price"
+            class="flex items-center justify-between text-xs">
+            <span class="w-10 text-muted">{{ level.type === 'resistance' ? '阻力' : level.type === 'support' ? '支撑' : '中性' }}</span>
+            <span class="font-mono">{{ level.price }}</span>
+            <div class="flex items-center gap-1">
+              <span :class="level.strength === 'strong' ? 'text-emerald-400' : level.strength === 'medium' ? 'text-amber-400' : 'text-muted'">
+                {{ level.strength === 'strong' ? '●●' : level.strength === 'medium' ? '●○' : '○○' }}
+              </span>
+              <span class="text-muted w-8 text-right">{{ level.touches }}次</span>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 pt-2 border-t border-border text-xs text-muted leading-relaxed">
+          {{ supportResistance.suggestion }}
+        </div>
+      </div>
+
+      <!-- RSI -->
+      <div v-if="rsiSignals" class="bg-card border border-border rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-muted mb-3">RSI 指标</h3>
+        <div class="flex items-center justify-between mb-3">
+          <span class="text-xs text-muted">当前 RSI</span>
+          <span class="text-2xl font-bold font-mono" :class="rsiColor">{{ rsiSignals.current_rsi }}</span>
+        </div>
+        <!-- RSI 刻度条 -->
+        <div class="relative h-3 rounded-full overflow-hidden mb-3"
+          style="background: linear-gradient(to right, #22c55e 0%, #22c55e 20%, #f59e0b 30%, #8b949e 50%, #f59e0b 70%, #ef4444 80%, #ef4444 100%)">
+          <div class="absolute top-0 h-full w-1 bg-white shadow" :style="{ left: rsiSignals.current_rsi + '%' }"></div>
+        </div>
+        <div class="flex justify-between text-[10px] text-muted mb-3">
+          <span>超卖 30</span>
+          <span>中性 50</span>
+          <span>超买 70</span>
+        </div>
+        <div class="space-y-2 text-xs">
+          <div class="flex justify-between">
+            <span class="text-muted">区间</span>
+            <span :class="rsiColor">{{ rsiZoneText }}</span>
+          </div>
+          <div v-if="rsiSignals.signal" class="flex justify-between">
+            <span class="text-muted">信号</span>
+            <span :class="rsiSignals.signal.type === 'buy' ? 'text-emerald-400' : rsiSignals.signal.type === 'sell' ? 'text-red-400' : 'text-amber-400'">
+              {{ rsiSignals.signal.description }}
+            </span>
+          </div>
+        </div>
+        <div class="mt-3 pt-2 border-t border-border text-xs text-muted leading-relaxed">
+          {{ rsiSignals.interpretation }}
+        </div>
+      </div>
+    </div>
+
     <!-- 基本面 -->
     <div class="bg-card border border-border rounded-lg p-4">
       <h3 class="text-sm font-semibold text-muted mb-3">基本面数据</h3>
@@ -171,7 +239,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals } from '../api'
 
 const route = useRoute()
 const code = route.params.code
@@ -186,6 +254,10 @@ const period = ref('day')
 const activeIndicators = ref(['ma', 'macd', 'vol'])
 const showDetails = ref(true)
 
+// 支撑阻力 + RSI
+const supportResistance = ref(null)
+const rsiSignals = ref(null)
+
 const klineChartRef = ref(null)
 let charts = []
 
@@ -194,6 +266,7 @@ const indicators = [
   { key: 'macd', label: 'MACD' },
   { key: 'vol', label: '成交量' },
   { key: 'boll', label: 'BOLL' },
+  { key: 'rsi', label: 'RSI' },
 ]
 
 // 评分颜色
@@ -234,6 +307,45 @@ function healthVerdictClass(verdict) {
   }[verdict] || 'bg-white/5 text-muted'
 }
 
+// ── 支撑阻力 + RSI 显示辅助 ──
+const srBarBg = computed(() => {
+  if (!supportResistance.value) return '#8b949e'
+  const p = supportResistance.value.position_pct
+  if (p >= 75) return '#f59e0b'  // amber
+  if (p <= 25) return '#22c55e'  // emerald
+  return '#8b949e'               // gray/muted
+})
+
+const srPositionColor = computed(() => {
+  if (!supportResistance.value) return 'text-muted'
+  const p = supportResistance.value.position_pct
+  if (p >= 75) return 'text-amber-400'
+  if (p <= 25) return 'text-emerald-400'
+  return 'text-muted'
+})
+
+const srBarColor = computed(() => {
+  if (!supportResistance.value) return 'bg-muted'
+  const p = supportResistance.value.position_pct
+  if (p >= 75) return 'bg-amber-400'
+  if (p <= 25) return 'bg-emerald-400'
+  return 'bg-gray-400'
+})
+
+const rsiColor = computed(() => {
+  if (!rsiSignals.value) return 'text-muted'
+  const z = rsiSignals.value.zone
+  return { 'strong_overbought': 'text-red-400', 'overbought': 'text-amber-400',
+    'strong_oversold': 'text-emerald-400', 'oversold': 'text-emerald-400',
+    'neutral': 'text-muted' }[z] || 'text-muted'
+})
+
+const rsiZoneText = computed(() => {
+  if (!rsiSignals.value) return ''
+  return { 'strong_overbought': '强超买', 'overbought': '超买',
+    'strong_oversold': '强超卖', 'oversold': '超卖', 'neutral': '中性' }[rsiSignals.value.zone] || ''
+})
+
 function formatVol(v) {
   const n = parseFloat(v)
   if (!n) return '-'
@@ -271,6 +383,29 @@ async function loadKline() {
   } catch (e) { console.error(e) }
 }
 
+// ── 构建支撑阻力标记线 ──
+function buildSRMarkLine() {
+  if (!supportResistance.value || !supportResistance.value.levels?.length) return { data: [] }
+  const lines = supportResistance.value.levels.map(level => {
+    const color = level.type === 'resistance' ? '#ef4444' : level.type === 'support' ? '#22c55e' : '#f59e0b'
+    return {
+      yAxis: level.price,
+      label: {
+        formatter: `${level.type === 'resistance' ? '阻' : level.type === 'support' ? '支' : ''} ${level.price}`,
+        position: 'insideEndTop',
+        fontSize: 10,
+        color: color,
+      },
+      lineStyle: { color: color, type: 'dashed', width: 1, opacity: 0.6 },
+    }
+  })
+  return {
+    symbol: 'none',
+    data: lines,
+    animation: false,
+  }
+}
+
 function renderKline() {
   if (!klineChartRef.value || !klineData.value.length) return
 
@@ -283,7 +418,9 @@ function renderKline() {
   const xAxisCfg = [{ type: 'category', data: dates, gridIndex: 0, axisLabel: { fontSize: 10 }, boundaryGap: true }]
   const yAxisCfg = [{ type: 'value', gridIndex: 0, scale: true, splitLine: { lineStyle: { color: '#21262d' } } }]
   const seriesCfg = [
-    { name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0, data: ohlc, itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' } },
+    { name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0, data: ohlc, itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' },
+      markLine: buildSRMarkLine(),
+    },
   ]
 
   let gridIdx = 1
@@ -323,6 +460,25 @@ function renderKline() {
     gridIdx++
   }
 
+  if (activeIndicators.value.includes('rsi') && rsiSignals.value?.rsi_history?.length) {
+    const rsiData = rsiSignals.value.rsi_history
+    const rsiDates = rsiData.map(d => d.date)
+    const rsiValues = rsiData.map(d => d.rsi)
+    // 对齐日期：用 K线日期匹配 RSI 日期
+    const rsiMap = new Map(rsiData.map(d => [d.date, d.rsi]))
+    const alignedRsi = dates.map(dt => rsiMap.get(dt) ?? null)
+
+    gridCfg.push({ left: '8%', right: '2%', top: '80%', height: '16%' })
+    xAxisCfg.push({ type: 'category', data: dates, gridIndex: gridIdx, axisLabel: { fontSize: 10 }, boundaryGap: true })
+    yAxisCfg.push({ type: 'value', gridIndex: gridIdx, min: 0, max: 100, splitLine: { show: false }, axisLabel: { show: false } })
+    seriesCfg.push(
+      { name: 'RSI', type: 'line', xAxisIndex: gridIdx, yAxisIndex: gridIdx, data: alignedRsi, lineStyle: { color: '#f59e0b', width: 1.5 }, symbol: 'none' },
+      { name: '超买', type: 'line', xAxisIndex: gridIdx, yAxisIndex: gridIdx, data: dates.map(() => 70), lineStyle: { color: '#ef4444', width: 1, type: 'dashed' }, symbol: 'none' },
+      { name: '超卖', type: 'line', xAxisIndex: gridIdx, yAxisIndex: gridIdx, data: dates.map(() => 30), lineStyle: { color: '#22c55e', width: 1, type: 'dashed' }, symbol: 'none' },
+    )
+    gridIdx++
+  }
+
   const zoomAxes = xAxisCfg.map((_, i) => i)
 
   if (charts[0]) charts[0].dispose()
@@ -343,14 +499,18 @@ function renderKline() {
 
 onMounted(async () => {
   try {
-    const [info, fund, score] = await Promise.allSettled([
+    const [info, fund, score, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
       getStockFundamental(code),
       getStockScore(code),
+      getSupportResistance(code),
+      getRSISignals(code),
     ])
     if (info.status === 'fulfilled') stockInfo.value = info.value.data || {}
     if (fund.status === 'fulfilled') fundamental.value = fund.value.data || {}
     if (score.status === 'fulfilled' && score.value.data) scoreData.value = score.value.data
+    if (sr.status === 'fulfilled' && sr.value.data) supportResistance.value = sr.value.data.data
+    if (rsi.status === 'fulfilled' && rsi.value.data) rsiSignals.value = rsi.value.data.data
   } catch (e) { console.error(e) }
 
   // 关键修复：先把 loaded 置 true，让模板（含 klineChartRef 容器）渲染出来，

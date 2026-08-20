@@ -10,6 +10,31 @@
             {{ scanResults.length }} 只信号
           </span>
         </div>
+        <!-- 市场状态指示器 -->
+        <div v-if="marketRegime" class="flex items-center gap-2 text-xs">
+          <span class="text-muted">市场状态:</span>
+          <span :class="regimeColor" class="font-medium">{{ regimeText }}</span>
+          <span class="text-muted">置信度 {{ marketRegime.confidence }}%</span>
+          <span class="text-muted">|</span>
+          <span class="text-muted">ADX {{ marketRegime.adx }}</span>
+          <button @click="loadMarketRegime" class="px-2 py-0.5 rounded bg-white/5 text-muted hover:text-gray-200 transition-colors">
+            刷新
+          </button>
+        </div>
+      </div>
+      <!-- 战法适用性提示 -->
+      <div v-if="strategyRecommendation && strategyRecommendation.suitability" class="mt-3 flex items-center gap-2 text-xs">
+        <span class="text-muted">当前战法:</span>
+        <span v-if="strategyRecommendation.suitability === 'high'" class="text-emerald-400">
+          ✓ 适合当前市场
+        </span>
+        <span v-else-if="strategyRecommendation.suitability === 'medium'" class="text-amber-400">
+          △ 可谨慎使用
+        </span>
+        <span v-else-if="strategyRecommendation.suitability === 'low'" class="text-red-400">
+          ✗ 不太适用
+        </span>
+        <span class="text-muted">{{ strategyRecommendation.advice }}</span>
       </div>
     </div>
 
@@ -22,11 +47,15 @@
             <div v-for="s in strategies" :key="s.name_en"
               @click="selectStrategy(s)"
               :class="[
-                'p-2.5 rounded-lg cursor-pointer transition-all',
+                'p-2.5 rounded-lg cursor-pointer transition-all relative',
                 currentStrategy?.name_en === s.name_en
                   ? 'bg-accent/15 border border-accent/30'
                   : 'bg-white/5 hover:bg-white/10 border border-transparent'
               ]">
+              <!-- 推荐标记 -->
+              <span v-if="isRecommended(s.name_en)" class="absolute top-1 right-1 px-1 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-400">
+                推荐
+              </span>
               <div class="font-medium text-sm">{{ s.name }}</div>
               <div class="text-xs text-muted mt-0.5 line-clamp-1">{{ s.description }}</div>
             </div>
@@ -119,6 +148,7 @@
               <span class="text-muted">共 {{ filteredResults.length }} 只</span>
               <span class="text-emerald-400">高置信 {{ highCount }}</span>
               <span class="text-amber-400">中置信 {{ mediumCount }}</span>
+              <span v-if="persistentSignals.length" class="text-blue-400">连续上榜 {{ persistentSignals.length }} 只</span>
             </div>
             <div class="flex items-center gap-2">
               <template v-if="activeTab === 'list' && filteredResults.length">
@@ -147,6 +177,9 @@
                 <tr>
                   <th class="px-3 py-2 text-left">股票</th>
                   <th class="px-3 py-2 text-center">置信度</th>
+                  <th class="px-3 py-2 text-center">共振</th>
+                  <th class="px-3 py-2 text-center">连续</th>
+                  <th class="px-3 py-2 text-center">可信度</th>
                   <th class="px-3 py-2 text-right">介入价</th>
                   <th class="px-3 py-2 text-right">止损价</th>
                   <th class="px-3 py-2 text-right">目标价</th>
@@ -168,6 +201,26 @@
                       {{ r.confidence }}分
                     </span>
                     <div class="text-xs text-muted">{{ confidenceText(r.confidence_level) }}</div>
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span v-if="r.signal_grade" :class="gradeClass(r.signal_grade)" class="font-bold">
+                      {{ r.signal_grade }}
+                    </span>
+                    <span v-else class="text-muted">-</span>
+                    <div v-if="r.signal_score" class="text-xs text-muted">{{ r.signal_score }}分</div>
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span v-if="r.consecutive_days" :class="consecutiveClass(r.consecutive_days)" class="font-medium">
+                      {{ r.consecutive_days }}天
+                    </span>
+                    <span v-else class="text-muted">-</span>
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <span v-if="r.trust_grade" :class="trustGradeClass(r.trust_grade)" class="font-bold">
+                      {{ r.trust_grade }}
+                    </span>
+                    <span v-else class="text-muted">-</span>
+                    <div v-if="r.trust_score" class="text-xs text-muted">{{ r.trust_score }}分</div>
                   </td>
                   <td class="px-3 py-2 text-right font-mono">{{ r.entry_price }}</td>
                   <td class="px-3 py-2 text-right font-mono text-red-400">{{ r.stop_loss }}</td>
@@ -198,7 +251,32 @@
           </div>
 
           <!-- 观察池 -->
-          <div v-else class="overflow-x-auto">
+          <div v-else>
+            <!-- 撤退提醒区域 -->
+            <div v-if="exitAlerts.length" class="p-3 border-b border-border">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-red-400">撤退提醒</span>
+                <span class="text-xs text-muted">{{ exitAlerts.length }} 个提醒</span>
+              </div>
+              <div class="space-y-1.5">
+                <div v-for="alert in exitAlerts" :key="alert.code"
+                  :class="['p-2 rounded text-xs', alert.level === 'urgent' ? 'bg-red-500/10 border border-red-500/30' : alert.level === 'warning' ? 'bg-amber-500/10 border border-amber-500/30' : 'bg-white/5']">
+                  <div class="flex items-center justify-between">
+                    <span class="font-medium">{{ alert.name }} ({{ alert.code }})</span>
+                    <span :class="alert.level === 'urgent' ? 'text-red-400 font-bold' : 'text-amber-400'">
+                      {{ alert.level === 'urgent' ? '紧急' : alert.level === 'warning' ? '警告' : '观察' }}
+                    </span>
+                  </div>
+                  <div class="text-muted mt-1">{{ alert.action }}</div>
+                  <div class="flex gap-2 mt-1">
+                    <span class="text-muted">现价 {{ alert.current_price }}</span>
+                    <span :class="alert.profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                      盈亏 {{ alert.profit_pct >= 0 ? '+' : '' }}{{ alert.profit_pct }}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <table v-if="watchPool.length" class="w-full text-sm">
               <thead class="bg-white/5 text-xs text-muted">
                 <tr>
@@ -233,7 +311,7 @@
             </table>
             <div v-else class="p-8 text-center text-muted">
               <p>观察池为空</p>
-              <p class="text-xs mt-2">从信号列表点击"+观察"添加</p>
+              <p class="text-xs mt-2">从信号列表点击“+观察”添加</p>
             </div>
           </div>
         </div>
@@ -739,6 +817,116 @@
             </div>
           </div>
 
+          <!-- 信号共振验证 -->
+          <div v-if="detailStock?.confirmation" class="bg-white/5 rounded-lg p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm text-muted">信号共振验证</span>
+              <span :class="gradeClass(detailStock.signal_grade)" class="text-lg font-bold">
+                {{ detailStock.signal_grade }}级
+                <span class="text-xs font-normal text-muted">({{ detailStock.signal_score }}分)</span>
+              </span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+              <div class="flex justify-between items-center">
+                <span class="text-muted">RSI 共振</span>
+                <span :class="detailStock.confirmation.rsi?.score >= 20 ? 'text-emerald-400' : 'text-muted'">
+                  {{ detailStock.confirmation.rsi?.details }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-muted">支撑共振</span>
+                <span :class="detailStock.confirmation.support?.score >= 20 ? 'text-emerald-400' : 'text-muted'">
+                  {{ detailStock.confirmation.support?.details }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-muted">量能共振</span>
+                <span :class="detailStock.confirmation.volume?.score >= 20 ? 'text-emerald-400' : 'text-muted'">
+                  {{ detailStock.confirmation.volume?.details }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-muted">趋势共振</span>
+                <span :class="detailStock.confirmation.trend?.score >= 20 ? 'text-emerald-400' : 'text-muted'">
+                  {{ detailStock.confirmation.trend?.details }}
+                </span>
+              </div>
+            </div>
+            <div class="mt-2 pt-2 border-t border-border text-xs text-muted">
+              {{ detailStock.confirmation.verdict }}
+            </div>
+          </div>
+
+          <!-- 信号可信度（连续上榜） -->
+          <div v-if="detailStock?.trust_grade" class="bg-white/5 rounded-lg p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-sm text-muted">信号可信度</span>
+              <span :class="trustGradeClass(detailStock.trust_grade)" class="text-lg font-bold">
+                {{ detailStock.trust_grade }}级
+                <span class="text-xs font-normal text-muted">({{ detailStock.trust_score }}分)</span>
+              </span>
+            </div>
+            <div class="space-y-1.5 text-xs">
+              <div class="flex justify-between items-center">
+                <span class="text-muted">连续上榜</span>
+                <span :class="consecutiveClass(detailStock.consecutive_days)" class="font-medium">
+                  {{ detailStock.consecutive_days || 1 }} 天
+                  {{ detailStock.consecutive_days >= 5 ? '— 极强共识' : detailStock.consecutive_days >= 3 ? '— 持续强势' : detailStock.consecutive_days >= 2 ? '— 初步确认' : '— 观察期' }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span class="text-muted">建议</span>
+                <span :class="detailStock.trust_grade === 'A+' || detailStock.trust_grade === 'A' ? 'text-emerald-400' : detailStock.trust_grade === 'B' ? 'text-amber-400' : 'text-muted'">
+                  {{ detailStock.trust_grade === 'A+' ? '放心买，极强共识' : detailStock.trust_grade === 'A' ? '可重仓，持续强势' : detailStock.trust_grade === 'B' ? '可轻仓，初步确认' : detailStock.trust_grade === 'C' ? '建议观望，观察期' : '不建议操作' }}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 支撑阻力位 -->
+          <div v-if="supportResistance" class="bg-white/5 rounded-lg p-3">
+            <div class="text-sm text-muted mb-2">支撑阻力分析</div>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between items-center">
+                <span>当前位置</span>
+                <span :class="supportResistance.position_pct >= 75 ? 'text-amber-400' : supportResistance.position_pct <= 25 ? 'text-emerald-400' : 'text-muted'">
+                  {{ supportResistance.position_pct }}% ({{ supportResistance.suggestion }})
+                </span>
+              </div>
+              <div class="border-t border-border my-1"></div>
+              <div v-for="level in supportResistance.levels" :key="level.price" class="flex justify-between items-center">
+                <span class="text-muted">{{ level.type === 'resistance' ? '阻力' : level.type === 'support' ? '支撑' : '中性' }}</span>
+                <span class="font-mono">{{ level.price }}</span>
+                <span :class="level.strength === 'strong' ? 'text-emerald-400' : level.strength === 'medium' ? 'text-amber-400' : 'text-muted'">
+                  {{ level.strength === 'strong' ? '强' : level.strength === 'medium' ? '中' : '弱' }} ({{ level.touches }}次)
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <!-- RSI 指标 -->
+          <div v-if="rsiSignals" class="bg-white/5 rounded-lg p-3">
+            <div class="text-sm text-muted mb-2">RSI 指标</div>
+            <div class="space-y-2 text-xs">
+              <div class="flex justify-between items-center">
+                <span>当前 RSI</span>
+                <span :class="rsiZoneClass">
+                  {{ rsiSignals.current_rsi }} ({{ rsiZoneText }})
+                </span>
+              </div>
+              <div v-if="rsiSignals.signal" class="flex justify-between items-center">
+                <span>信号</span>
+                <span :class="rsiSignals.signal.type === 'buy' ? 'text-emerald-400' : rsiSignals.signal.type === 'sell' ? 'text-red-400' : 'text-amber-400'">
+                  {{ rsiSignals.signal.description }}
+                </span>
+              </div>
+              <div class="flex justify-between items-center">
+                <span>解读</span>
+                <span class="text-muted text-right max-w-[60%]">{{ rsiSignals.interpretation }}</span>
+              </div>
+            </div>
+          </div>
+
           <!-- 操作按钮 -->
           <div class="flex flex-wrap justify-end gap-2">
             <button @click="addToWatch(detailStock)" :disabled="isInWatch(detailStock.code)"
@@ -778,6 +966,13 @@ import {
   getScanStatus,
   runBacktest,
   getBacktestResult,
+  getMarketRegime,
+  getStrategyRecommendation,
+  getSupportResistance,
+  getRSISignals,
+  getPersistence,
+  getPersistentSignals,
+  checkExitAlerts,
 } from '../api'
 import { addWatch } from '../composables/useWatchlist'
 import { addPlan } from '../composables/useTradePlans'
@@ -795,6 +990,22 @@ const activeTab = ref('list')
 // 回测状态
 const backtesting = ref(false)
 const backtestResult = ref(null)
+
+// 市场状态
+const marketRegime = ref(null)
+const strategyRecommendation = ref(null)
+
+// 信号持久度
+const persistenceData = ref(null)
+const persistentSignals = ref([])
+
+// 撤退提醒
+const exitAlerts = ref([])
+const exitLoading = ref(false)
+
+// 支撑阻力 + RSI
+const supportResistance = ref(null)
+const rsiSignals = ref(null)
 
 // 筛选
 const filterConfidence = ref('')
@@ -828,6 +1039,8 @@ function selectStrategy(s) {
   loadResult()
   loadWatchPool()
   loadBacktestResult()
+  loadRecommendation(s.name_en)
+  loadPersistence(s.name_en)
 }
 
 // ── 加载扫描结果 ──
@@ -848,6 +1061,8 @@ async function loadWatchPool() {
   try {
     const { data } = await getStrategyWatch(currentStrategy.value.name_en)
     watchPool.value = data.data || []
+    // 加载观察池后自动检查撤退信号
+    if (watchPool.value.length) loadExitAlerts()
   } catch (e) {
     console.error('加载观察池失败', e)
   }
@@ -1007,14 +1222,108 @@ async function viewDetail(stock) {
   detailStock.value = stock
   detailKlines.value = stock.klines || []
   showDetail.value = true
+  
+  // 清空旧数据
+  supportResistance.value = null
+  rsiSignals.value = null
+  
+  // 加载支撑阻力和 RSI
+  if (stock.code) {
+    loadSupportResistance(stock.code)
+    loadRSISignals(stock.code)
+  }
 }
+
+// ── 加载支撑阻力 ──
+async function loadSupportResistance(code) {
+  try {
+    const { data } = await getSupportResistance(code)
+    supportResistance.value = data.data || null
+  } catch (e) {
+    console.error('加载支撑阻力失败', e)
+  }
+}
+
+// ── 加载 RSI ──
+async function loadRSISignals(code) {
+  try {
+    const { data } = await getRSISignals(code)
+    rsiSignals.value = data.data || null
+  } catch (e) {
+    console.error('加载 RSI 失败', e)
+  }
+}
+
+// ── 加载信号持久度 ──
+async function loadPersistence(strategyName) {
+  try {
+    const [summary, top] = await Promise.allSettled([
+      getPersistence(strategyName),
+      getPersistentSignals(strategyName, 2),
+    ])
+    if (summary.status === 'fulfilled') persistenceData.value = summary.value.data?.data || null
+    if (top.status === 'fulfilled') persistentSignals.value = top.value.data?.data || []
+  } catch (e) {
+    console.error('加载持久度失败', e)
+  }
+}
+
+// ── 加载撤退提醒 ──
+async function loadExitAlerts() {
+  if (!watchPool.value.length) {
+    exitAlerts.value = []
+    return
+  }
+  exitLoading.value = true
+  try {
+    const positions = watchPool.value.map(w => ({
+      code: w.code,
+      name: w.name,
+      entry_price: w.entry_price,
+      stop_loss: w.stop_loss,
+      target_price: w.target_price,
+    }))
+    const { data } = await checkExitAlerts(positions)
+    exitAlerts.value = data.data || []
+  } catch (e) {
+    console.error('加载撤退提醒失败', e)
+  } finally {
+    exitLoading.value = false
+  }
+}
+
+// ── RSI 显示辅助 ──
+const rsiZoneText = computed(() => {
+  if (!rsiSignals.value) return ''
+  const zone = rsiSignals.value.zone
+  return {
+    'strong_overbought': '强超买',
+    'overbought': '超买',
+    'strong_oversold': '强超卖',
+    'oversold': '超卖',
+    'neutral': '中性',
+  }[zone] || zone
+})
+
+const rsiZoneClass = computed(() => {
+  if (!rsiSignals.value) return 'text-muted'
+  const zone = rsiSignals.value.zone
+  return {
+    'strong_overbought': 'text-red-400',
+    'overbought': 'text-amber-400',
+    'strong_oversold': 'text-emerald-400',
+    'oversold': 'text-emerald-400',
+    'neutral': 'text-muted',
+  }[zone] || 'text-muted'
+})
 
 // ── 导出 CSV ──
 function exportCSV() {
   if (!filteredResults.value.length) return
-  const headers = ['代码', '名称', '置信度', '级别', '介入价', '止损价', '目标价', '位置%', '扫描日期']
+  const headers = ['代码', '名称', '置信度', '共振级别', '共振分', '连续天数', '可信度级别', '可信度分', '介入价', '止损价', '目标价', '位置%', '扫描日期']
   const rows = filteredResults.value.map(r => [
-    r.code, r.name, r.confidence, r.confidence_level,
+    r.code, r.name, r.confidence, r.signal_grade || '', r.signal_score || '',
+    r.consecutive_days || 1, r.trust_grade || '', r.trust_score || '',
     r.entry_price, r.stop_loss, r.target_price, r.position_pct, r.signal_date,
   ])
   const csv = [headers, ...rows].map(row => row.join(',')).join('\n')
@@ -1038,6 +1347,31 @@ function confidenceClass(level) {
 
 function confidenceText(level) {
   return { 'high': '高置信', 'medium': '中置信', 'low': '低置信' }[level] || ''
+}
+
+function gradeClass(grade) {
+  return {
+    'A': 'text-emerald-400',
+    'B': 'text-amber-400',
+    'C': 'text-muted',
+    'D': 'text-red-400',
+  }[grade] || 'text-muted'
+}
+
+function consecutiveClass(days) {
+  if (days >= 5) return 'text-emerald-400'
+  if (days >= 3) return 'text-amber-400'
+  return 'text-muted'
+}
+
+function trustGradeClass(grade) {
+  return {
+    'A+': 'text-emerald-400 font-bold',
+    'A': 'text-emerald-400',
+    'B': 'text-amber-400',
+    'C': 'text-muted',
+    'D': 'text-red-400',
+  }[grade] || 'text-muted'
 }
 
 // ── 联动自选股 ──
@@ -1094,5 +1428,52 @@ function showToast(msg) {
 // ── 初始化 ──
 onMounted(() => {
   loadStrategies()
+  loadMarketRegime()
 })
+
+// ── 加载市场状态 ──
+async function loadMarketRegime() {
+  try {
+    const { data } = await getMarketRegime()
+    marketRegime.value = data.data || null
+  } catch (e) {
+    console.error('加载市场状态失败', e)
+  }
+}
+
+// ── 加载战法适用性建议 ──
+async function loadRecommendation(strategyName) {
+  if (!strategyName) return
+  try {
+    const { data } = await getStrategyRecommendation(strategyName)
+    strategyRecommendation.value = data.data || null
+  } catch (e) {
+    console.error('加载战法建议失败', e)
+  }
+}
+
+// ── 市场状态显示 ──
+const regimeText = computed(() => {
+  if (!marketRegime.value) return ''
+  const r = marketRegime.value.regime
+  if (r === 'trending') return '趋势市'
+  if (r === 'oscillating') return '震荡市'
+  if (r === 'transition') return '过渡期'
+  return '未知'
+})
+
+const regimeColor = computed(() => {
+  if (!marketRegime.value) return 'text-muted'
+  const r = marketRegime.value.regime
+  if (r === 'trending') return 'text-emerald-400'
+  if (r === 'oscillating') return 'text-amber-400'
+  if (r === 'transition') return 'text-blue-400'
+  return 'text-muted'
+})
+
+// ── 判断战法是否推荐 ──
+function isRecommended(strategyName) {
+  if (!marketRegime.value || !marketRegime.value.recommended_strategies) return false
+  return marketRegime.value.recommended_strategies.includes(strategyName)
+}
 </script>

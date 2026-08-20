@@ -70,6 +70,15 @@ export const authCurrent = () => http.get('/auth/current')
 export const getMarketOverview = () => http.get('/market/overview')
 export const getMarketTemperature = () => http.get('/market/temperature')
 
+// 市场状态识别
+export const getMarketRegime = () => http.get('/strategies/market/regime')
+export const getStrategyTypes = () => http.get('/strategies/market/strategy-types')
+export const getStrategyRecommendation = (name) => http.get(`/strategies/${name}/recommendation`)
+
+// 支撑阻力 + RSI
+export const getSupportResistance = (code, lookback = 60) => http.get(`/strategies/${code}/support-resistance`, { params: { lookback } })
+export const getRSISignals = (code, period = 14) => http.get(`/strategies/${code}/rsi`, { params: { period } })
+
 // 宏观数据（全球+国内面板 + 规则方向分）
 export const getMacroSnapshot = () => http.get('/macro/snapshot')
 
@@ -106,6 +115,8 @@ export const getScoreBySignal = (params) => http.get('/score/batch/signal', { pa
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
 export const getWeightAdvice = (snapshots) => http.post('/score/weight-advice', { snapshots }, { timeout: 30000 })
+export const getRankingPersistence = (codes) => http.post('/score/ranking-persistence', codes)
+export const recordRanking = (stocks) => http.post('/score/ranking-record', stocks)
 
 // 异动监控
 export const getAnomalies = (watchCodes) => http.get('/stock/anomalies', { params: { watch_codes: watchCodes } })
@@ -135,6 +146,12 @@ export const getScanStatus = (name) => http.get(`/strategies/${name}/status`)
 export const runBacktest = (name, params) => http.get(`/strategies/${name}/backtest`, { params, timeout: 120000 })
 export const getBacktestResult = (name) => http.get(`/strategies/${name}/backtest/result`)
 export const getBacktestSummary = () => http.get('/strategies/backtest/summary')
+
+// 信号持久度 + 撤退提醒
+export const getPersistence = (name) => http.get(`/strategies/${name}/persistence`)
+export const getPersistentSignals = (name, minDays = 3) => http.get(`/strategies/${name}/persistent-signals`, { params: { min_days: minDays } })
+export const checkExitAlerts = (positions) => http.post('/strategies/exit-alerts', positions)
+export const getExitSummary = (positions) => http.post('/strategies/exit-summary', positions)
 
 // 用户数据（自选股/交易计划/持仓 → 数据库同步）
 export const getUserWatchlist = () => http.get('/user/watchlist')

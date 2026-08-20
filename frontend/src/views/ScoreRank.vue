@@ -59,6 +59,33 @@
       </div>
     </div>
 
+    <!-- 持仓撤退提醒 -->
+    <div v-if="exitAlerts.length && activeTab === 'top'"
+      class="bg-card border border-red-500/30 rounded-lg p-3 space-y-2">
+      <div class="flex items-center justify-between">
+        <span class="text-sm font-semibold text-red-400">持仓撤退提醒</span>
+        <span class="text-xs text-muted">{{ exitAlerts.length }} 个提醒</span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+        <div v-for="alert in exitAlerts" :key="alert.code"
+          :class="['p-2 rounded text-xs', alert.level === 'urgent' ? 'bg-red-500/10 border border-red-500/30' : 'bg-amber-500/10 border border-amber-500/30']">
+          <div class="flex items-center justify-between">
+            <span class="font-medium">{{ alert.name }} ({{ alert.code }})</span>
+            <span :class="alert.level === 'urgent' ? 'text-red-400 font-bold' : 'text-amber-400'">
+              {{ alert.level === 'urgent' ? '紧急撤退' : '警告' }}
+            </span>
+          </div>
+          <div class="text-muted mt-1">{{ alert.action }}</div>
+          <div class="flex gap-2 mt-1">
+            <span class="text-muted">现价 {{ alert.current_price }}</span>
+            <span :class="alert.profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+              盈亏 {{ alert.profit_pct >= 0 ? '+' : '' }}{{ alert.profit_pct }}%
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 评分分布概览 -->
     <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
@@ -98,6 +125,8 @@
             <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-right py-2.5 px-3">综合评分</th>
             <th class="text-center py-2.5 px-3">信号</th>
+            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">连续</th>
+            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">可信度</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">买入时机</th>
             <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">买入原因</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">操作</th>
@@ -131,6 +160,24 @@
                        'bg-amber-500/20 text-amber-400'">
                 {{ item.signal }}
               </span>
+            </td>
+            <!-- 连续上榜天数 -->
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+              <span v-if="persistenceMap[item.code]" 
+                :class="persistenceMap[item.code].consecutive_days >= 5 ? 'text-emerald-400 font-bold' : persistenceMap[item.code].consecutive_days >= 3 ? 'text-amber-400 font-medium' : 'text-muted'">
+                {{ persistenceMap[item.code].consecutive_days }}天
+              </span>
+              <span v-else class="text-xs text-muted">-</span>
+            </td>
+            <!-- 可信度等级 -->
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+              <span v-if="persistenceMap[item.code]" 
+                :class="rankTrustClass(persistenceMap[item.code].trust_grade)"
+                class="px-1.5 py-0.5 rounded text-xs font-bold"
+                :title="persistenceMap[item.code].advice">
+                {{ persistenceMap[item.code].trust_grade }}
+              </span>
+              <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
@@ -174,7 +221,7 @@
             </td>
           </tr>
           <tr v-if="!tableData.length">
-            <td :colspan="activeTab === 'top' ? 9 : 5" class="py-12 text-center text-muted">
+            <td :colspan="activeTab === 'top' ? 11 : 5" class="py-12 text-center text-muted">
               {{ cacheStatus === 'loading' ? '行情数据加载中，请稍后...' : '暂无数据' }}
             </td>
           </tr>
@@ -511,7 +558,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 
@@ -545,6 +592,12 @@ let refreshTimer = null
 const { positions } = usePortfolio()
 const portfolioCodes = computed(() => new Set(positions.value.map(p => p.code)))
 
+// ── 排行榜可信度（连续上榜天数） ──
+const persistenceMap = ref({})  // { code: { consecutive_days, trust_score, trust_grade, advice } }
+
+// ── 持仓撤退提醒 ──
+const exitAlerts = ref([])
+
 function quickAddPosition(item) {
   // 以当前价 + 默认 100 股添加到持仓
   const price = item.buy_point?.current_price || 0
@@ -556,6 +609,55 @@ function quickAddPosition(item) {
     shares: 100,
     note: `评分${item.total_score} ${item.signal}`,
   })
+}
+
+// ── 加载排行榜可信度 ──
+async function loadPersistence() {
+  if (!tableData.value.length || activeTab.value !== 'top') return
+  try {
+    const codes = tableData.value.map(i => i.code)
+    const { data } = await getRankingPersistence(codes)
+    const list = data.data || []
+    const map = {}
+    for (const item of list) {
+      map[item.code] = item
+    }
+    persistenceMap.value = map
+  } catch (e) {
+    console.error('加载排行可信度失败', e)
+  }
+}
+
+// ── 加载持仓撤退提醒 ──
+async function loadExitAlerts() {
+  if (!positions.value.length) {
+    exitAlerts.value = []
+    return
+  }
+  try {
+    const posList = positions.value.map(p => ({
+      code: p.code,
+      name: p.name,
+      entry_price: p.cost,
+      stop_loss: p.stop_loss || 0,
+      target_price: p.target_price || 0,
+    }))
+    const { data } = await checkExitAlerts(posList)
+    exitAlerts.value = data.data || []
+  } catch (e) {
+    console.error('加载撤退提醒失败', e)
+  }
+}
+
+// ── 可信度等级样式 ──
+function rankTrustClass(grade) {
+  return {
+    'A+': 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
+    'A': 'bg-emerald-500/15 text-emerald-400',
+    'B': 'bg-amber-500/15 text-amber-400',
+    'C': 'bg-white/5 text-muted',
+    'D': 'bg-red-500/15 text-red-400',
+  }[grade] || 'text-muted'
 }
 
 // ── 快照 / 胜率回查 ──
@@ -824,7 +926,11 @@ async function loadData() {
     stats.watchCount = tableData.value.filter(i => i.signal === '观望').length
     stats.sellCount = tableData.value.filter(i => i.signal.includes('卖出')).length
     // Top 50 加载完成后检测与上次快照的信号变动
-    if (activeTab.value === 'top') detectScoreChanges()
+    if (activeTab.value === 'top') {
+      detectScoreChanges()
+      loadPersistence()  // 加载连续上榜天数
+      loadExitAlerts()   // 加载持仓撤退提醒
+    }
   } catch (e) {
     console.error(e)
     cacheStatus.value = 'error'

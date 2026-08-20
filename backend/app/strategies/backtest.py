@@ -88,7 +88,11 @@ def run_backtest(
             min_market_cap=BACKTEST_CONFIG["min_market_cap"],
             min_avg_volume=BACKTEST_CONFIG["min_avg_volume"],
         )
-        stock_codes = list(pool.keys())[:BACKTEST_CONFIG["max_stocks"]]
+        # pool 是列表 [{code, name, ...}] 或字典 {code: info}
+        if isinstance(pool, dict):
+            stock_codes = list(pool.keys())[:BACKTEST_CONFIG["max_stocks"]]
+        else:
+            stock_codes = [s["code"] for s in pool][:BACKTEST_CONFIG["max_stocks"]]
     
     # 执行回测
     trades = []
@@ -98,6 +102,33 @@ def run_backtest(
     
     # 统计汇总
     return _calc_statistics(strategy_name, days, len(stock_codes), trades)
+
+
+def _enrich_klines(klines: List[Dict]) -> List[Dict]:
+    """
+    补充K线计算字段。
+    
+    原始数据只有 open/close/high/low/volume，
+    补充 change_pct, is_positive, body, upper_shadow, lower_shadow。
+    """
+    for i, k in enumerate(klines):
+        o, c, h, l = k["open"], k["close"], k["high"], k["low"]
+        
+        # 涨跌幅
+        if i > 0 and klines[i - 1]["close"] > 0:
+            k["change_pct"] = round((c - klines[i - 1]["close"]) / klines[i - 1]["close"] * 100, 2)
+        else:
+            k["change_pct"] = 0
+        
+        # 阳线/阴线
+        k["is_positive"] = c > o
+        
+        # 实体/影线
+        k["body"] = abs(c - o)
+        k["upper_shadow"] = h - max(c, o)
+        k["lower_shadow"] = min(c, o) - l
+    
+    return klines
 
 
 def _backtest_stock(strategy, code: str, days: int) -> List[Dict]:
@@ -126,6 +157,9 @@ def _backtest_stock(strategy, code: str, days: int) -> List[Dict]:
         klines = get_kline(code, period="day", count=BACKTEST_CONFIG["lookback_days"] + days)
         if not klines or len(klines) < 60:
             return trades
+        
+        # 补充计算字段（change_pct, is_positive, body, upper_shadow 等）
+        klines = _enrich_klines(klines)
         
         # 从后往前遍历（最近的日期在前）
         # 回测区间：最后 days 个交易日
