@@ -17,6 +17,7 @@
 from fastapi import APIRouter, Query, BackgroundTasks, Body
 import asyncio
 from types import SimpleNamespace
+from typing import Optional
 from app.scoring.engine import ScoreEngine
 from app.tencent import get_stock, get_kline, _cache, get_stocks_batch
 
@@ -60,7 +61,7 @@ def _compute_top5_extras(code: str) -> dict:
     return {"buy_point": {}, "trend_health": {}}
 
 
-def _precise_score_sync(stock_info: dict, preloaded: list | None = None) -> dict:
+def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None) -> dict:
     """
     对单只股票执行「完整评分」的同步实现（与 /api/score/{symbol} 完全一致）。
     用于批量列表的 Top N 精算，保证列表分数 == 详情页分数。
