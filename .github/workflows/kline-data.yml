@@ -53,7 +53,7 @@ jobs:
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.GH_PAGES_TOKEN }}
           publish_dir: ./data/kline
           publish_branch: gh-pages
           destination_dir: data
