@@ -1,0 +1,71 @@
+name: Generate K-line Data Package
+
+on:
+  # 每日收盘后自动运行（北京时间 16:00 = UTC 08:00）
+  schedule:
+    - cron: '0 8 * * 1-5'  # 周一到周五
+  
+  # 支持手动触发（用于测试）
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'K线天数'
+        required: false
+        default: '60'
+      top:
+        description: '取市值前N只'
+        required: false
+        default: '3000'
+
+# 并发控制：同一时间只运行一个实例
+concurrency:
+  group: kline-data
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          pip install requests
+      
+      - name: Generate K-line data package
+        run: |
+          python scripts/generate-kline-pack.py \
+            --output-dir ./data/kline \
+            --days ${{ github.event.inputs.days || 60 }} \
+            --top ${{ github.event.inputs.top || 3000 }}
+      
+      - name: Upload to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./data/kline
+          publish_branch: gh-pages
+          destination_dir: data
+          keep_files: true  # 保留其他文件，只更新 data 目录
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'chore: update kline data package'
+      
+      - name: Upload artifact (for debugging)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kline-data
+          path: ./data/kline/
+          retention-days: 7

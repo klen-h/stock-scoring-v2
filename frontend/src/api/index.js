@@ -109,14 +109,19 @@ export const searchStock = (keyword) => http.get('/stock/search', { params: { ke
 
 // 评分引擎
 export const getStockScore = (symbol) => http.get(`/score/${symbol}`)
-export const getScoreTop = (params) => http.get('/score/batch/top', { params })
-export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params })
-export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params })
+export const getScoreTop = (params) => http.get('/score/batch/top', { params, timeout: 90000 })
+export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
+export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
 export const getWeightAdvice = (snapshots) => http.post('/score/weight-advice', { snapshots }, { timeout: 30000 })
 export const getRankingPersistence = (codes) => http.post('/score/ranking-persistence', codes)
 export const recordRanking = (stocks) => http.post('/score/ranking-record', stocks)
+export const getKlineCacheStatus = () => http.get('/score/kline-cache/status')
+export const refreshKlineCache = () => http.post('/score/kline-cache/refresh', {}, { timeout: 10000 })
+export const getIndicatorCacheStatus = () => http.get('/score/indicator-cache/status')
+export const refreshIndicatorCache = () => http.post('/score/indicator-cache/refresh', {}, { timeout: 10000 })
+export const incrementalIndicatorUpdate = (code, price, high, low) => http.post('/score/indicator-cache/incremental', { code, price, high, low })
 
 // 异动监控
 export const getAnomalies = (watchCodes) => http.get('/stock/anomalies', { params: { watch_codes: watchCodes } })

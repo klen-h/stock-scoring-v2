@@ -63,15 +63,41 @@ class Database:
         return self._local.sqlite_conn
     
     def _get_pg_conn(self):
-        """获取 PostgreSQL 连接（线程本地单例）"""
+        """
+        获取 PostgreSQL 连接（线程本地单例）。
+        
+        关键：配置超时 + keepalives，避免连接挂起导致请求卡死：
+          - connect_timeout: 建连超时 10s（网络异常时快速失败而非无限等待）
+          - keepalives: TCP 保活，防止云数据库（Supabase 等）断开空闲连接
+        """
         import psycopg2
         import psycopg2.extras
-        if not hasattr(self._local, 'pg_conn') or self._local.pg_conn is None:
-            self._local.pg_conn = psycopg2.connect(
+        conn = getattr(self._local, 'pg_conn', None)
+        # 连接已关闭/损坏时自动重建（Supabase 空闲会断开连接）
+        if conn is not None and conn.closed:
+            conn = None
+        if conn is None:
+            conn = psycopg2.connect(
                 DATABASE_URL,
-                cursor_factory=psycopg2.extras.RealDictCursor
+                cursor_factory=psycopg2.extras.RealDictCursor,
+                connect_timeout=10,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=3,
             )
-        return self._local.pg_conn
+            self._local.pg_conn = conn
+        return conn
+    
+    def _reset_pg_conn(self):
+        """丢弃当前线程的 PostgreSQL 连接（下次访问时重建）"""
+        conn = getattr(self._local, 'pg_conn', None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._local.pg_conn = None
     
     @contextmanager
     def _get_conn(self):
@@ -82,7 +108,11 @@ class Database:
                 yield conn
                 conn.commit()
             except Exception:
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    # 连接已死（如 Supabase 断开空闲连接），丢弃以便下次重建
+                    self._reset_pg_conn()
                 raise
         else:
             conn = self._get_sqlite_conn()
@@ -98,37 +128,53 @@ class Database:
     def execute(self, sql: str, params: tuple = None) -> int:
         """
         执行 SQL（INSERT/UPDATE/DELETE）。
-        返回受影响的行数。
+        返回受影响的行数。连接异常时自动重建并重试一次。
         """
         # SQLite 使用 ? 占位符，PostgreSQL 使用 %s
         if not self._use_postgres:
             sql = sql.replace("%s", "?")
         
-        with self._get_conn() as conn:
-            if self._use_postgres:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params or ())
-                    return cur.rowcount
-            else:
-                cur = conn.execute(sql, params or ())
-                return cur.rowcount
-    
+        for attempt in range(2):
+            try:
+                with self._get_conn() as conn:
+                    if self._use_postgres:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, params or ())
+                            return cur.rowcount
+                    else:
+                        cur = conn.execute(sql, params or ())
+                        return cur.rowcount
+            except Exception:
+                if self._use_postgres and attempt == 0:
+                    self._reset_pg_conn()  # 丢弃死连接，重试一次
+                    continue
+                raise
+        return 0
+
     def fetch(self, sql: str, params: tuple = None) -> List[Dict]:
         """
-        查询 SQL，返回字典列表。
+        查询 SQL，返回字典列表。连接异常时自动重建并重试一次。
         """
         if not self._use_postgres:
             sql = sql.replace("%s", "?")
         
-        with self._get_conn() as conn:
-            if self._use_postgres:
-                with conn.cursor() as cur:
-                    cur.execute(sql, params or ())
-                    return [dict(row) for row in cur.fetchall()]
-            else:
-                cur = conn.execute(sql, params or ())
-                columns = [desc[0] for desc in cur.description] if cur.description else []
-                return [dict(zip(columns, row)) for row in cur.fetchall()]
+        for attempt in range(2):
+            try:
+                with self._get_conn() as conn:
+                    if self._use_postgres:
+                        with conn.cursor() as cur:
+                            cur.execute(sql, params or ())
+                            return [dict(row) for row in cur.fetchall()]
+                    else:
+                        cur = conn.execute(sql, params or ())
+                        columns = [desc[0] for desc in cur.description] if cur.description else []
+                        return [dict(zip(columns, row)) for row in cur.fetchall()]
+            except Exception:
+                if self._use_postgres and attempt == 0:
+                    self._reset_pg_conn()  # 丢弃死连接，重试一次
+                    continue
+                raise
+        return []
     
     def fetch_one(self, sql: str, params: tuple = None) -> Optional[Dict]:
         """查询单条记录。"""

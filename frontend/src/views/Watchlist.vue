@@ -29,10 +29,11 @@
             {{ notifEnabled ? '🔔 通知已开' : '🔔 开启通知' }}
           </button>
           <span class="text-xs" :class="tradingNow ? 'text-emerald-400' : 'text-muted'"
-            :title="tradingNow ? '当前为交易时段，每30秒刷新' : '非交易时段，每5分钟刷新一次'">
-            {{ tradingNow ? '● 交易中' : '○ 已休市' }}
+            :title="tradingNow ? '当前为交易时段，每30秒自动刷新' : '非交易时段，数据不变化，已停止自动刷新'">
+            {{ tradingNow ? '● 交易中（自动刷新）' : '○ 已休市（已暂停）' }}
           </span>
-          <span class="text-xs text-muted">{{ countdown > 0 ? countdown + 's 后刷新' : '刷新中...' }}</span>
+          <span v-if="tradingNow && countdown > 0" class="text-xs text-muted">{{ countdown }}s 后刷新</span>
+          <span v-else-if="loading" class="text-xs text-muted">刷新中...</span>
           <button @click="refresh" :disabled="loading"
             class="px-3 py-1 rounded text-xs bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50">
             {{ loading ? '加载中...' : '刷新' }}
@@ -403,15 +404,15 @@ async function refresh() {
 function startTimer() {
   stopTimer()
   timer = setInterval(() => {
+    // 非交易时段不轮询（节省资源，数据不会变）
+    if (!isTradingTime()) {
+      tradingNow.value = false
+      return
+    }
+    tradingNow.value = true
     countdown.value--
     if (countdown.value <= 0) {
       refresh()
-    } else {
-      const nowTrading = isTradingTime()
-      if (nowTrading !== tradingNow.value) {
-        tradingNow.value = nowTrading
-        countdown.value = getRefreshInterval()
-      }
     }
   }, 1000)
 }

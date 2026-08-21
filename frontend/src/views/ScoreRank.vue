@@ -10,6 +10,58 @@
       <span class="text-xs text-muted">建议买入线 <span class="text-accent font-bold">{{ temp.buy_threshold }}</span></span>
     </div>
 
+    <!-- K线数据库缓存状态 -->
+    <div v-if="klineCacheStatus" class="bg-card border border-border rounded-lg p-2 px-3 flex items-center justify-between flex-wrap gap-2 text-xs">
+      <div class="flex items-center gap-3">
+        <span class="text-muted">K线缓存</span>
+        <span v-if="klineCacheStatus.total_cached > 0" class="text-emerald-400">● {{ klineCacheStatus.total_cached }}只</span>
+        <span v-else class="text-amber-400">○ 未缓存</span>
+        <span v-if="klineCacheStatus.newest_update" class="text-muted">更新: {{ klineCacheStatus.newest_update.substring(0, 16) }}</span>
+        <span v-if="klineCacheStatus.expired_count > 0" class="text-amber-400">{{ klineCacheStatus.expired_count }}只过期</span>
+      </div>
+      <button @click="handleRefreshKlineCache" :disabled="klineCacheRefreshing"
+        class="px-2 py-1 rounded text-xs transition-colors"
+        :class="klineCacheRefreshing ? 'bg-white/5 text-muted cursor-not-allowed' : 'bg-accent/10 text-accent hover:bg-accent/20'">
+        {{ klineCacheRefreshing ? '刷新中...' : '刷新缓存' }}
+      </button>
+    </div>
+
+    <!-- 前端评分系统状态 -->
+    <div v-if="frontendInitialized" class="bg-card border border-border rounded-lg p-2 px-3 flex items-center justify-between flex-wrap gap-2 text-xs">
+      <div class="flex items-center gap-3">
+        <span class="text-muted">本地计算</span>
+        <span v-if="frontendDbReady && frontendStockCount > 0" class="text-emerald-400">● {{ frontendStockCount }}只</span>
+        <span v-else class="text-amber-400">○ 未就绪</span>
+        <span v-if="useFrontendMode" class="text-accent">（当前使用本地计算）</span>
+        <span v-if="frontendComputing" class="text-blue-400">计算中...</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <button v-if="!frontendDbReady || frontendStockCount === 0" 
+          @click="handleDownloadKlineData"
+          :disabled="frontendUpdating"
+          class="px-2 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
+          {{ frontendUpdating ? frontendProgress.message || '下载中...' : '下载数据' }}
+        </button>
+        <button v-else 
+          @click="useFrontendMode = !useFrontendMode"
+          class="px-2 py-1 rounded text-xs transition-colors"
+          :class="useFrontendMode ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'">
+          {{ useFrontendMode ? '切换到后端' : '切换到本地' }}
+        </button>
+      </div>
+    </div>
+    <!-- 下载进度条 -->
+    <div v-if="frontendUpdating && frontendProgress.loaded > 0" class="bg-card border border-border rounded-lg p-2 px-3">
+      <div class="flex items-center gap-2 text-xs">
+        <span class="text-muted">{{ frontendProgress.message }}</span>
+        <div class="flex-1 bg-white/5 rounded-full h-1.5">
+          <div class="bg-accent h-full rounded-full transition-all"
+            :style="{ width: frontendProgress.total > 0 ? (frontendProgress.loaded / frontendProgress.total * 100) + '%' : '30%' }"></div>
+        </div>
+        <span v-if="frontendProgress.total > 0" class="text-muted">{{ frontendProgress.loaded }}/{{ frontendProgress.total }}</span>
+      </div>
+    </div>
+
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between flex-wrap gap-3">
         <div class="flex items-center gap-3">
@@ -558,9 +610,10 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
+import { useFrontendScoring } from '../composables/useFrontendScoring'
 
 const router = useRouter()
 
@@ -597,6 +650,26 @@ const persistenceMap = ref({})  // { code: { consecutive_days, trust_score, trus
 
 // ── 持仓撤退提醒 ──
 const exitAlerts = ref([])
+
+// ── 前端评分系统 ──
+const {
+  dbReady: frontendDbReady,
+  dbStockCount: frontendStockCount,
+  isComputing: frontendComputing,
+  isUpdating: frontendUpdating,
+  updateProgress: frontendProgress,
+  error: frontendError,
+  initFrontendScoring,
+  downloadKlineData,
+  computeRanking,
+} = useFrontendScoring()
+
+const useFrontendMode = ref(false)  // 是否使用前端计算模式
+const frontendInitialized = ref(false)
+
+// ── K线缓存状态 ──
+const klineCacheStatus = ref(null)
+const klineCacheRefreshing = ref(false)
 
 function quickAddPosition(item) {
   // 以当前价 + 默认 100 股添加到持仓
@@ -658,6 +731,47 @@ function rankTrustClass(grade) {
     'C': 'bg-white/5 text-muted',
     'D': 'bg-red-500/15 text-red-400',
   }[grade] || 'text-muted'
+}
+
+// ── K线数据库缓存 ──
+async function loadKlineCacheStatus() {
+  try {
+    const res = await getKlineCacheStatus()
+    klineCacheStatus.value = res.data
+  } catch (e) {
+    console.error('加载K线缓存状态失败', e)
+  }
+}
+
+async function handleRefreshKlineCache() {
+  if (klineCacheRefreshing.value) return
+  klineCacheRefreshing.value = true
+  try {
+    await refreshKlineCache()
+    // 等待几秒后刷新状态
+    setTimeout(async () => {
+      await loadKlineCacheStatus()
+      klineCacheRefreshing.value = false
+    }, 3000)
+  } catch (e) {
+    console.error('刷新K线缓存失败', e)
+    klineCacheRefreshing.value = false
+  }
+}
+
+// 下载前端 K 线数据
+async function handleDownloadKlineData() {
+  if (frontendUpdating.value) return
+  const baseUrl = 'https://klen-h.github.io/stock-scoring-v2/data'
+  const result = await downloadKlineData(baseUrl)
+  if (result.updated) {
+    console.log('数据下载完成:', result.message)
+    // 下载完成后自动切换到前端模式
+    useFrontendMode.value = true
+    await loadFrontendRanking()
+  } else {
+    console.warn('数据下载失败:', result.message)
+  }
 }
 
 // ── 快照 / 胜率回查 ──
@@ -908,6 +1022,12 @@ async function runBacktest() {
 }
 
 async function loadData() {
+  // 如果使用前端模式，调用前端计算
+  if (useFrontendMode.value && frontendDbReady.value) {
+    await loadFrontendRanking()
+    return
+  }
+
   try {
     let res
     if (activeTab.value === 'top') {
@@ -930,9 +1050,46 @@ async function loadData() {
       detectScoreChanges()
       loadPersistence()  // 加载连续上榜天数
       loadExitAlerts()   // 加载持仓撤退提醒
+      loadKlineCacheStatus()  // 加载K线缓存状态
     }
   } catch (e) {
-    console.error(e)
+    console.error('后端评分失败:', e.message)
+    // 后端失败时，尝试切换到前端模式
+    if (!useFrontendMode.value && frontendDbReady.value) {
+      console.log('切换到前端计算模式')
+      useFrontendMode.value = true
+      await loadFrontendRanking()
+    } else {
+      cacheStatus.value = 'error'
+    }
+  }
+}
+
+// 前端计算排行榜
+async function loadFrontendRanking() {
+  cacheStatus.value = 'computing'
+  
+  const mode = activeTab.value === 'top' ? 'top' : 
+               activeTab.value === 'bottom' ? 'bottom' : 'signal'
+  
+  const results = await computeRanking({
+    mode,
+    limit: 50,
+    signal: signalType.value,
+  })
+  
+  if (results && results.length > 0) {
+    tableData.value = results
+    cacheStatus.value = 'ready'
+    stats.total = results.length
+    stats.buyCount = results.filter(i => i.signal.includes('买入')).length
+    stats.watchCount = results.filter(i => i.signal === '观望').length
+    stats.sellCount = results.filter(i => i.signal.includes('卖出')).length
+    
+    if (activeTab.value === 'top') {
+      detectScoreChanges()
+    }
+  } else {
     cacheStatus.value = 'error'
   }
 }
@@ -1031,7 +1188,19 @@ function stopAutoRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // 初始化前端评分系统（后台进行，不阻塞主流程）
+  initFrontendScoring().then(result => {
+    frontendInitialized.value = true
+    if (result.needsDownload) {
+      console.log('前端评分系统需要下载数据')
+    } else {
+      console.log('前端评分系统就绪，股票数:', frontendStockCount.value)
+    }
+  }).catch(e => {
+    console.warn('前端评分系统初始化失败:', e)
+  })
+
   loadData()
   loadTemp()
   loadSnapshots()

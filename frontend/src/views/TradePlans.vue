@@ -21,10 +21,12 @@
             class="px-3 py-1 rounded text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
             {{ notifEnabled ? '🔔 通知已开' : '🔔 开启通知' }}
           </button>
-          <span class="text-xs" :class="tradingNow ? 'text-emerald-400' : 'text-muted'">
+          <span class="text-xs" :class="tradingNow ? 'text-emerald-400' : 'text-muted'"
+            :title="tradingNow ? '当前为交易时段，每30秒自动刷新' : '非交易时段，已停止自动刷新'">
             {{ tradingNow ? '● 交易中' : '○ 已休市' }}
           </span>
-          <span class="text-xs text-muted">{{ countdown > 0 ? countdown + 's' : '刷新中' }}</span>
+          <span v-if="tradingNow && countdown > 0" class="text-xs text-muted">{{ countdown }}s</span>
+          <span v-else-if="loading" class="text-xs text-muted">刷新中</span>
           <button @click="refresh" :disabled="loading"
             class="px-3 py-1 rounded text-xs bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-50">
             {{ loading ? '...' : '刷新' }}
@@ -367,12 +369,14 @@ async function refresh() {
 function startTimer() {
   stopTimer()
   timer = setInterval(() => {
+    // 非交易时段不轮询（节省资源，数据不会变）
+    if (!isTradingTime()) {
+      tradingNow.value = false
+      return
+    }
+    tradingNow.value = true
     countdown.value--
     if (countdown.value <= 0) refresh()
-    else {
-      const t = isTradingTime()
-      if (t !== tradingNow.value) { tradingNow.value = t; countdown.value = getRefreshInterval() }
-    }
   }, 1000)
 }
 function stopTimer() { if (timer) { clearInterval(timer); timer = null } }

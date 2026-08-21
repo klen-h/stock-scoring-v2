@@ -146,6 +146,76 @@ async def health_loop():
         await asyncio.sleep(HEALTH_PROBE_INTERVAL)
 
 
+# ── K线数据库缓存每日刷新 ──
+KLINE_CACHE_REFRESHED_TODAY = False
+
+async def kline_cache_refresh_loop():
+    """
+    每日盘后 15:30 自动刷新 K 线数据库缓存。
+    刷新完成后当天不再重复。
+    """
+    global KLINE_CACHE_REFRESHED_TODAY
+    from datetime import datetime
+    
+    while True:
+        now = datetime.now()
+        h, m = now.hour, now.minute
+        today = now.strftime("%Y-%m-%d")
+        weekday = now.weekday()  # 0=周一, 6=周日
+        
+        # 工作日 15:30-23:59 触发刷新
+        if weekday < 5 and h >= 15 and m >= 30 and not KLINE_CACHE_REFRESHED_TODAY:
+            try:
+                print(f"[scheduler] 开始每日 K 线缓存刷新...")
+                from app.scoring.kline_cache import refresh_kline_cache
+                result = await asyncio.to_thread(refresh_kline_cache)
+                print(f"[scheduler] K 线缓存刷新完成: {result}")
+                KLINE_CACHE_REFRESHED_TODAY = True
+            except Exception as e:
+                print(f"[scheduler] K 线缓存刷新失败: {e}")
+        
+        # 跨天重置标记
+        if h == 0 and m < 5:
+            KLINE_CACHE_REFRESHED_TODAY = False
+        
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
+# ── 指标数据库缓存每日刷新 ──
+INDICATOR_CACHE_REFRESHED_TODAY = False
+
+async def indicator_cache_refresh_loop():
+    """
+    每日盘后 16:00 自动刷新指标数据库缓存（在 K 线缓存刷新之后）。
+    从 K 线缓存计算技术指标（MA/MACD/RSI/KDJ/BOLL），存入数据库。
+    刷新完成后当天不再重复。
+    """
+    global INDICATOR_CACHE_REFRESHED_TODAY
+    from datetime import datetime
+    
+    while True:
+        now = datetime.now()
+        h, m = now.hour, now.minute
+        weekday = now.weekday()  # 0=周一, 6=周日
+        
+        # 工作日 16:00-23:59 触发刷新（确保 K 线缓存已刷新）
+        if weekday < 5 and h >= 16 and m >= 0 and not INDICATOR_CACHE_REFRESHED_TODAY:
+            try:
+                print(f"[scheduler] 开始每日指标缓存刷新...")
+                from app.scoring.indicator_cache import refresh_indicator_cache
+                result = await asyncio.to_thread(refresh_indicator_cache)
+                print(f"[scheduler] 指标缓存刷新完成: {result}")
+                INDICATOR_CACHE_REFRESHED_TODAY = True
+            except Exception as e:
+                print(f"[scheduler] 指标缓存刷新失败: {e}")
+        
+        # 跨天重置标记
+        if h == 0 and m < 5:
+            INDICATOR_CACHE_REFRESHED_TODAY = False
+        
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     from datetime import datetime
@@ -155,9 +225,11 @@ async def start():
              asyncio.create_task(track_loop()),
              asyncio.create_task(review_loop()),
              asyncio.create_task(health_loop()),
-             asyncio.create_task(stock_cache_refresh_loop())]
+             asyncio.create_task(stock_cache_refresh_loop()),
+             asyncio.create_task(kline_cache_refresh_loop()),
+             asyncio.create_task(indicator_cache_refresh_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
-          f"行情缓存{STOCK_CACHE_INTERVAL}s / "
+          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")
     return tasks

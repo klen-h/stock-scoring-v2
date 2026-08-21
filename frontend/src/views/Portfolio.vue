@@ -26,10 +26,11 @@
             {{ notifEnabled ? '🔔 通知已开' : '🔔 开启通知' }}
           </button>
           <span class="text-xs" :class="tradingNow ? 'text-emerald-400' : 'text-muted'"
-            :title="tradingNow ? '当前为交易时段，每30秒刷新' : '非交易时段（周末/夜间/午休），每5分钟刷新一次'">
-            {{ tradingNow ? '● 交易中' : '○ 已休市' }}
+            :title="tradingNow ? '当前为交易时段，每30秒自动刷新' : '非交易时段，数据不变化，已停止自动刷新'">
+            {{ tradingNow ? '● 交易中（自动刷新）' : '○ 已休市（已暂停）' }}
           </span>
-          <span class="text-xs text-muted">{{ countdown > 0 ? countdown + 's 后刷新' : '刷新中...' }}</span>
+          <span v-if="tradingNow && countdown > 0" class="text-xs text-muted">{{ countdown }}s 后刷新</span>
+          <span v-else-if="loading" class="text-xs text-muted">刷新中...</span>
           <button @click="refresh" :disabled="loading"
             class="px-3 py-1 rounded text-xs bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-50">
             {{ loading ? '加载中...' : '刷新' }}
@@ -498,21 +499,19 @@ async function refresh() {
   })
 }
 
-// ── 倒计时轮询（动态间隔：交易时段 30s，非交易时段 5min）──
+// ── 倒计时轮询（动态间隔：交易时段 30s，非交易时段不轮询）──
 function startTimer() {
   stopTimer()
   timer = setInterval(() => {
+    // 非交易时段不轮询（节省资源，数据不会变）
+    if (!isTradingTime()) {
+      tradingNow.value = false
+      return
+    }
+    tradingNow.value = true
     countdown.value--
     if (countdown.value <= 0) {
       refresh()
-    } else {
-      // 每秒同步一次交易状态，便于 UI 实时反映"开盘/休市"切换
-      const nowTrading = isTradingTime()
-      if (nowTrading !== tradingNow.value) {
-        tradingNow.value = nowTrading
-        // 状态切换时，把倒计时重置为新时段的间隔（避免长时间用错频率）
-        countdown.value = getRefreshInterval()
-      }
     }
   }, 1000)
 }
@@ -586,8 +585,9 @@ function goDetail(code) {
 }
 
 onMounted(() => {
+  // 初始刷新一次（显示最新数据）
   refresh()
-  startTimer()
+  startTimer()  // 交易时段自动轮询，非交易时段不轮询
   // 从数据库同步持仓
   import('../composables/usePortfolio.js').then(m => m.syncFromServer())
 })
