@@ -148,13 +148,15 @@
             <th class="text-right py-2.5 px-3">浮动盈亏</th>
             <th class="text-center py-2.5 px-3">评分</th>
             <th class="text-center py-2.5 px-3">趋势健康</th>
+            <th class="text-center py-2.5 px-3">今日预测</th>
             <th class="text-left py-2.5 px-3">智能建议</th>
             <th class="text-center py-2.5 px-3">建议仓位</th>
             <th class="text-center py-2.5 px-3">操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="row in tableRows" :key="row.position.code"
+          <template v-for="row in tableRows" :key="row.position.code">
+          <tr
             class="border-b border-border/50 hover:bg-white/3 transition-colors"
             :class="rowBorderClass(row)">
             <!-- 名称/代码 -->
@@ -218,6 +220,26 @@
               </div>
               <span v-else class="text-muted text-xs">-</span>
             </td>
+            <!-- 今日预测：点击 badge 展开/收起手风琴详情 -->
+            <td class="py-2 px-3 text-center">
+              <div v-if="row.prediction && !row.prediction.error" class="inline-flex flex-col items-center gap-0.5">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer whitespace-nowrap transition-colors"
+                  :class="[predBadgeClass(row.prediction), expandedPredCode === row.position.code ? 'ring-1 ring-accent/60' : '']"
+                  @click="togglePrediction(row.position.code)"
+                  :title="expandedPredCode === row.position.code ? '点击收起预测详情' : '点击展开今日预测详情'">
+                  {{ predLabel(row.prediction) }} {{ expandedPredCode === row.position.code ? '▲' : '▼' }}
+                </span>
+                <!-- 偏离度指示 -->
+                <span v-if="row.predDeviation"
+                  class="text-[9px]"
+                  :class="row.predDeviation.level === 'critical' ? 'text-red-400' : row.predDeviation.level === 'alert' ? 'text-amber-400' : 'text-muted'">
+                  {{ row.predDeviation.text }}
+                </span>
+              </div>
+              <span v-else-if="row.prediction?.error" class="text-muted text-[10px]">预测失败</span>
+              <span v-else-if="row.loadingPred" class="text-muted text-[10px]">计算中...</span>
+              <span v-else class="text-muted text-xs">-</span>
+            </td>
             <!-- 智能建议：结合趋势健康+盈亏+评分 -->
             <td class="py-2 px-3">
               <div class="text-xs font-semibold" :class="posActionClass(row.posAction)">
@@ -241,6 +263,87 @@
                 class="text-xs text-red-400 hover:underline">删除</button>
             </td>
           </tr>
+          <!-- 手风琴展开行：今日预测详情（点击 badge 展开/收起） -->
+          <tr v-if="expandedPredCode === row.position.code && row.prediction && !row.prediction.error"
+            class="border-b border-border/50 bg-white/2">
+            <td colspan="13" class="px-4 py-3">
+              <div class="fade-in">
+                <!-- 头部 -->
+                <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs font-semibold text-gray-200">📊 今日预测详情</span>
+                    <span class="text-[10px] text-muted">{{ row.prediction.date }} 数据 · 置信度 {{ confidenceLabel(row.prediction.confidence) }}</span>
+                  </div>
+                  <button @click="togglePrediction(row.position.code)"
+                    class="text-[10px] text-muted hover:text-gray-200 transition-colors">收起 ▲</button>
+                </div>
+                <!-- 摘要 -->
+                <div class="text-xs text-gray-300 mb-3 whitespace-normal break-words">{{ row.prediction.summary }}</div>
+                <!-- 偏离度警示 -->
+                <div v-if="row.predDeviation" class="mb-3 px-3 py-2 rounded-lg text-xs whitespace-normal break-words"
+                  :class="row.predDeviation.level === 'critical' ? 'bg-red-500/10 border border-red-500/30 text-red-300' : row.predDeviation.level === 'alert' ? 'bg-amber-500/10 border border-amber-500/30 text-amber-300' : 'bg-blue-500/10 border border-blue-500/30 text-blue-300'">
+                  {{ row.predDeviation.level === 'info' ? 'ℹ' : '⚠' }} {{ row.predDeviation.text }}
+                </div>
+                <!-- 三场景卡片 -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div v-if="row.prediction.scenarios.bullish"
+                    class="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+                    <div class="text-xs font-bold text-emerald-400 mb-1">▲ 看涨 {{ row.prediction.scenarios.bullish.probability }}%</div>
+                    <div class="text-[11px] text-gray-300 leading-relaxed whitespace-normal break-words">{{ row.prediction.scenarios.bullish.strategy }}</div>
+                    <div class="text-[10px] text-gray-500 mt-2 whitespace-normal break-words">
+                      目标 {{ row.prediction.scenarios.bullish.targetPrice }}<template v-if="row.prediction.scenarios.bullish.targetPrice2"> / {{ row.prediction.scenarios.bullish.targetPrice2 }}</template> · 止损 {{ row.prediction.scenarios.bullish.stopLoss }}
+                    </div>
+                    <div class="text-[10px] text-gray-500 mt-1 whitespace-normal break-words">触发：{{ row.prediction.scenarios.bullish.triggers.join('、') }}</div>
+                  </div>
+                  <div v-if="row.prediction.scenarios.sideways"
+                    class="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                    <div class="text-xs font-bold text-amber-400 mb-1">◆ 震荡 {{ row.prediction.scenarios.sideways.probability }}%</div>
+                    <div class="text-[11px] text-gray-300 leading-relaxed whitespace-normal break-words">{{ row.prediction.scenarios.sideways.strategy }}</div>
+                    <div class="text-[10px] text-gray-500 mt-2 whitespace-normal break-words">区间 {{ row.prediction.scenarios.sideways.range[0] }} ~ {{ row.prediction.scenarios.sideways.range[1] }}</div>
+                    <div class="text-[10px] text-gray-500 mt-1 whitespace-normal break-words">触发：{{ row.prediction.scenarios.sideways.triggers.join('、') }}</div>
+                  </div>
+                  <div v-if="row.prediction.scenarios.bearish"
+                    class="rounded-lg border border-red-500/30 bg-red-500/5 p-3">
+                    <div class="text-xs font-bold text-red-400 mb-1">▼ 看跌 {{ row.prediction.scenarios.bearish.probability }}%</div>
+                    <div class="text-[11px] text-gray-300 leading-relaxed whitespace-normal break-words">{{ row.prediction.scenarios.bearish.strategy }}</div>
+                    <div class="text-[10px] text-gray-500 mt-2 whitespace-normal break-words">支撑 {{ row.prediction.scenarios.bearish.support1 }}<template v-if="row.prediction.scenarios.bearish.support2"> / {{ row.prediction.scenarios.bearish.support2 }}</template></div>
+                    <div class="text-[10px] text-gray-500 mt-1 whitespace-normal break-words">触发：{{ row.prediction.scenarios.bearish.triggers.join('、') }}</div>
+                  </div>
+                </div>
+                <!-- 监控阈值 + 支撑阻力 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                  <div v-if="row.prediction.deviation?.thresholds?.length" class="rounded-lg border border-border p-3">
+                    <div class="text-[10px] text-gray-500 mb-1.5">偏离度监控阈值（基准价 {{ row.prediction.price }}）</div>
+                    <div v-for="t in row.prediction.deviation.thresholds" :key="t.direction + t.breakPrice"
+                      class="text-[11px] leading-relaxed whitespace-normal break-words">
+                      <span :class="t.direction === 'up' ? 'text-emerald-500' : 'text-red-400'">{{ t.direction === 'up' ? '↑' : '↓' }}</span>
+                      <span class="text-gray-300 font-mono">{{ t.breakPrice }}</span>
+                      <span class="text-gray-500">({{ t.changePct > 0 ? '+' : '' }}{{ t.changePct }}%)</span>
+                      <span class="text-gray-500">→ {{ t.action }}</span>
+                    </div>
+                  </div>
+                  <div class="rounded-lg border border-border p-3">
+                    <div class="text-[10px] text-gray-500 mb-1.5">支撑 / 阻力位</div>
+                    <div class="text-[11px] leading-relaxed whitespace-normal break-words">
+                      <span class="text-gray-400">支撑：</span>
+                      <span v-if="row.prediction.supportResistance?.supports?.length" class="text-gray-300">
+                        {{ row.prediction.supportResistance.supports.map(s => `${s.name} ${s.price}`).join('、') }}
+                      </span>
+                      <span v-else class="text-gray-500">-</span>
+                    </div>
+                    <div class="text-[11px] leading-relaxed whitespace-normal break-words">
+                      <span class="text-gray-400">阻力：</span>
+                      <span v-if="row.prediction.supportResistance?.resistances?.length" class="text-gray-300">
+                        {{ row.prediction.supportResistance.resistances.map(r => `${r.name} ${r.price}`).join('、') }}
+                      </span>
+                      <span v-else class="text-gray-500">-</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+          </template>
         </tbody>
       </table>
     </div>
@@ -282,7 +385,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getStockRealtime, getStockScore, searchStock } from '../api'
+import { getStockRealtime, getStockScore, searchStock, getStockTechnical } from '../api'
 import {
   addPosition, removePosition, updatePosition,
   calcProfit, evaluateAlerts, evaluatePositionAction, calcPositionSize, updateHighWaterMark, useSummary,
@@ -296,6 +399,7 @@ import {
   checkAndNotify,
 } from '../composables/useNotifications'
 import { getXueqiuUrl } from '../composables/stockUtils'
+import { generatePrediction } from '../utils/predictionEngine'
 
 const router = useRouter()
 
@@ -319,6 +423,8 @@ const { positions } = usePortfolio()
 // ── 实时行情 & 评分缓存（响应式，刷新时更新）──
 const realtimeMap = ref({})   // { [code]: { price, change_pct, ... } }
 const scoreMap = ref({})      // { [code]: { total_score, signal, ... } }
+const predictionMap = ref({})    // { [code]: { scenarios, deviation, ... } }
+const predictionLoading = ref({}) // { [code]: true/false }
 const marketTemp = ref({})    // 市场温度
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
@@ -338,7 +444,32 @@ const tableRows = computed(() => {
     const alerts = evaluateAlerts(p, realtime, score)
     const posAction = evaluatePositionAction(p, score, realtime)
     const posSize = calcPositionSize(score, marketTemp.value, positions.value.length)
-    return { position: p, realtime, score, profit, alerts, posAction, posSize }
+    const prediction = predictionMap.value[p.code] || null
+    let predDeviation = null
+    if (prediction && realtime && prediction.price) {
+      const curPrice = realtime.price
+      // 遍历偏离度阈值，看当前价是否触及/接近
+      for (const t of prediction.deviation?.thresholds || []) {
+        if (t.direction === 'down' && curPrice <= t.breakPrice) {
+          predDeviation = { level: t.level, text: `已触${t.breakPrice}，${t.action}` }
+          break
+        } else if (t.direction === 'up' && curPrice >= t.breakPrice) {
+          predDeviation = { level: 'alert', text: `已破${t.breakPrice}，${t.action}` }
+          break
+        }
+      }
+      // 如果没触及阈值但接近（1% 以内），给预备提示
+      if (!predDeviation) {
+        for (const t of prediction.deviation?.thresholds || []) {
+          const dist = Math.abs(curPrice - t.breakPrice) / curPrice * 100
+          if (dist < 0.5) {
+            predDeviation = { level: 'info', text: `逼近${t.direction === 'up' ? '阻力' : '支撑'}${t.breakPrice}` }
+            break
+          }
+        }
+      }
+    }
+    return { position: p, realtime, score, profit, alerts, posAction, posSize, prediction, predDeviation, loadingPred: predictionLoading.value[p.code] }
   })
 })
 
@@ -497,6 +628,41 @@ async function refresh() {
     // 行情 + 评分都到位后，检查并发送桌面通知（内部做 diff 去重）
     checkAndNotify(positions.value, realtimeMap.value, scoreMap.value)
   })
+
+  // 行情到位后，异步拉取技术指标并生成预测（不阻塞主流程）
+  triggerPredictions()
+}
+
+// ── 异步：为所有持仓生成今日预测 ──
+let _predFetching = false
+async function triggerPredictions() {
+  if (_predFetching || !positions.value.length) return
+  _predFetching = true
+  for (const p of positions.value) {
+    // 已有当日预测则跳过
+    if (predictionMap.value[p.code] && !predictionMap.value[p.code].error) continue
+    await fetchPrediction(p.code)
+  }
+  _predFetching = false
+}
+
+async function fetchPrediction(code) {
+  predictionLoading.value = { ...predictionLoading.value, [code]: true }
+  try {
+    const { data: techData } = await getStockTechnical(code)
+    if (!techData || techData.length < 30) {
+      predictionMap.value[code] = { error: '技术指标数据不足' }
+      return
+    }
+    const realtime = realtimeMap.value[code]
+    const position = positions.value.find(p => p.code === code)
+    const prediction = generatePrediction(techData, realtime, position)
+    predictionMap.value[code] = prediction
+  } catch (e) {
+    predictionMap.value[code] = { error: e.message }
+  } finally {
+    predictionLoading.value = { ...predictionLoading.value, [code]: false }
+  }
 }
 
 // ── 倒计时轮询（动态间隔：交易时段 30s，非交易时段不轮询）──
@@ -578,6 +744,35 @@ function tempColor(level) {
 }
 function tempLimit(level) {
   return { '过热': 50, '偏热': 70, '中性': 100, '偏冷': 80, '过冷': 60 }[level] || 100
+}
+
+// ── 预测展示样式 ──
+function predBadgeClass(pred) {
+  if (!pred || pred.error) return 'bg-gray-500/20 text-gray-400'
+  const bull = pred.scenarios?.bullish?.probability || 0
+  const bear = pred.scenarios?.bearish?.probability || 0
+  const side = pred.scenarios?.sideways?.probability || 0
+  if (bull > bear && bull > side) return 'bg-emerald-500/20 text-emerald-400'
+  if (bear > bull && bear > side) return 'bg-red-500/20 text-red-400'
+  return 'bg-amber-500/20 text-amber-400'
+}
+function predLabel(pred) {
+  if (!pred || pred.error) return '无'
+  const bull = pred.scenarios?.bullish?.probability || 0
+  const bear = pred.scenarios?.bearish?.probability || 0
+  const side = pred.scenarios?.sideways?.probability || 0
+  if (bull > bear && bull > side) return `看涨 ${bull}%`
+  if (bear > bull && bear > side) return `看跌 ${bear}%`
+  return `震荡 ${side}%`
+}
+
+// ── 预测详情手风琴（点击 badge 展开/收起）──
+const expandedPredCode = ref(null)  // 当前展开的股票代码（单开：同时只展开一只）
+function togglePrediction(code) {
+  expandedPredCode.value = expandedPredCode.value === code ? null : code
+}
+function confidenceLabel(c) {
+  return { high: '高', medium: '中', low: '低' }[c] || '-'
 }
 
 function goDetail(code) {

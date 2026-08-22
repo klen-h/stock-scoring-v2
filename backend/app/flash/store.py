@@ -53,7 +53,9 @@ def _save(path: str, data):
 
 
 def _now_iso() -> str:
-    return datetime.now().isoformat()
+    """北京时间 ISO 时间戳（服务器可能跑在 UTC，落盘/展示统一用北京时间）。"""
+    from app.flash.rules import beijing_now
+    return beijing_now().isoformat()
 
 
 def _bj_date() -> str:
@@ -199,6 +201,22 @@ def load_review(phase: str) -> dict:
     }
 
 
+def load_review_history(phase: str, limit: int = 20) -> list:
+    """加载复盘历史（最新在前），供按日期搜索回溯 LLM 输出。"""
+    rows = db.fetch(
+        "SELECT * FROM flash_reviews WHERE phase = %s ORDER BY time DESC LIMIT %s",
+        (phase, limit)
+    )
+    out = []
+    for row in rows:
+        out.append({
+            "time": row["time"],
+            "markdown": row["markdown"],
+            "signals": json.loads(row["signals_json"]) if row.get("signals_json") else []
+        })
+    return out
+
+
 # ================================================================
 #  宏观历史（趋势上下文用）
 # ================================================================
@@ -268,6 +286,46 @@ def append_macro_history(panel: dict) -> None:
         """)
     except Exception as e:
         print(f"[store] 保存宏观历史失败: {e}")
+
+
+# ================================================================
+#  宏观每日快照（早盘锁定，按日期归档）
+# ================================================================
+
+def save_macro_daily(snapshot: dict, date_str: str = None) -> None:
+    """保存某日宏观快照（早盘锁定；同日期覆盖，保证一天一份）。"""
+    date = date_str or _bj_date()
+    try:
+        db.upsert("macro_daily", {
+            "date": date,
+            "data_json": json.dumps(snapshot, ensure_ascii=False)
+        }, conflict_columns=["date"])
+    except Exception as e:
+        print(f"[store] 保存宏观每日快照失败: {e}")
+
+
+def load_macro_daily(date_str: str = None) -> dict:
+    """加载某日宏观快照（默认今日；无则返回空 dict）。"""
+    date = date_str or _bj_date()
+    row = db.fetch_one("SELECT * FROM macro_daily WHERE date = %s", (date,))
+    if not row:
+        return {}
+    try:
+        return json.loads(row["data_json"])
+    except (json.JSONDecodeError, KeyError):
+        return {}
+
+
+def load_macro_daily_history(days: int = 30) -> list:
+    """加载近 N 日宏观快照（日期正序，最新在后）。"""
+    rows = db.fetch("SELECT * FROM macro_daily ORDER BY date DESC LIMIT %s", (days,))
+    out = []
+    for r in rows:
+        try:
+            out.append({"date": r["date"], "snapshot": json.loads(r["data_json"])})
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return list(reversed(out))
 
 
 # ================================================================

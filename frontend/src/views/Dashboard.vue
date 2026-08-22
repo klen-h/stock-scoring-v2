@@ -7,6 +7,8 @@
         <div>
           <div class="text-sm font-semibold" :class="dirColor(macro.direction.level)">今日宏观方向 · {{ macro.direction.level }}</div>
           <div class="text-xs text-muted">-100~+100，规则引擎 {{ macro.rules_version }}</div>
+          <div class="text-[11px]" :class="macro.locked ? 'text-accent' : 'text-muted'">{{ macro.locked ? `今日锁定 · 生成于 ${macro.generated_at?.slice(11, 16) || '—'}` : '实时计算（当日未锁定）' }}</div>
+          <div class="text-[11px]" :class="dataTimeClass(macro.data_time)">数据截至 {{ macro.data_time?.slice(5, 16) || '—' }}<template v-if="macro.data_time && macro.data_time.slice(0, 10) !== todayStr()">（非今日）</template></div>
         </div>
       </div>
       <div class="flex-1 min-w-[200px]">
@@ -95,7 +97,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getFlashDiagnosis } from '../api'
+import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis } from '../api'
 
 const overview = ref({ indices: [], stats: {} })
 const temp = ref({})
@@ -124,6 +126,17 @@ function dirColor(level) {
            '偏空': 'text-cyan-400', '强空': 'text-blue-400' }[level] || 'text-muted'
 }
 
+// 宏观数据新鲜度：行情时间非今日时黄色警示
+function todayStr() {
+  const d = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+function dataTimeClass(t) {
+  if (!t) return ''
+  return t.slice(0, 10) === todayStr() ? 'text-muted' : 'text-amber-400'
+}
+
 function fmtScore(v) {
   const n = parseFloat(v) || 0
   return (n > 0 ? '+' : '') + n.toFixed(2)
@@ -141,11 +154,22 @@ onMounted(async () => {
     temp.value = data
   } catch (e) { console.error(e) }
 
-  // 今日宏观方向（规则引擎，失败不影响主页面）
+  // 今日宏观方向：优先早盘锁定快照（每日 08:55 生成），未锁定回退实时计算
   try {
-    const { data } = await getMacroSnapshot()
-    macro.value = data
-  } catch (e) { console.error(e) }
+    const { data: dailyRes } = await getMacroDaily(todayStr())
+    if (dailyRes.snapshot) {
+      macro.value = { ...dailyRes.snapshot, locked: true }
+    } else {
+      const { data } = await getMacroSnapshot()
+      macro.value = { ...data, locked: false }
+    }
+  } catch (e) {
+    console.error(e)
+    try {
+      const { data } = await getMacroSnapshot()
+      macro.value = { ...data, locked: false }
+    } catch (e2) { console.error(e2) }
+  }
 
   // 最新 LLM 诊断头条（事件面，失败不影响主页面）
   try {

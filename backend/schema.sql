@@ -47,6 +47,28 @@ CREATE TABLE IF NOT EXISTS macro_history (
     data_json TEXT NOT NULL
 );
 
+-- ── 宏观每日快照（早盘锁定，按日期归档） ──
+
+CREATE TABLE IF NOT EXISTS macro_daily (
+    date TEXT PRIMARY KEY,
+    data_json TEXT NOT NULL
+);
+
+-- ── 回测历史日线（东财回填，幂等） ──
+
+CREATE TABLE IF NOT EXISTS backtest_prices (
+    id SERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    date TEXT NOT NULL,
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume REAL DEFAULT 0,
+    UNIQUE(code, date)
+);
+
 -- ── ETF 收盘 ──
 
 CREATE TABLE IF NOT EXISTS etf_close (

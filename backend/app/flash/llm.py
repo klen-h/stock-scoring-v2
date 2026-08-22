@@ -25,6 +25,7 @@ import threading
 import requests
 
 from app.flash import rules, store
+from app.database import db
 
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://api.siliconflow.cn/v1")
@@ -738,6 +739,28 @@ _PHASE_TITLES = {
 }
 
 
+def format_user_holdings() -> str:
+    """用户个股持仓（全部用户合并，轻量字段：代码/名称/成本）→ 提示词文本。
+    供盘前/午盘/盘后 LLM 做『持仓影响点评』；不参与 ETF 信号体系。
+    """
+    try:
+        rows = db.fetch(
+            "SELECT code, name, MIN(cost) AS cost FROM user_portfolio "
+            "GROUP BY code, name ORDER BY name")
+    except Exception as e:
+        print(f"[llm] 读取用户持仓失败: {e}")
+        return ""
+    if not rows:
+        return ""
+    lines = []
+    for r in rows:
+        s = f"- {r['name']}({r['code']})"
+        if r.get("cost"):
+            s += f" 成本{r['cost']}"
+        lines.append(s)
+    return "## 用户持仓\n" + "\n".join(lines) + "\n"
+
+
 def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
                         holdings_text: str, core_etfs: list, hours: int) -> str:
     """复盘流 prompt（事件链 + 宏观锚定 + ETF + 内部状态 + 核心技能 + 阶段技能）。"""
@@ -760,6 +783,13 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
     perf_section = f"## ETF实际表现\n{etf_perf}\n\n" if phase != "premarket" else ""
     output_style = ("请用简练的Markdown输出，包含 emoji 增强可读性。" if phase != "postmarket"
                     else "请用简练的Markdown输出，必须体现复盘性质（逐条比对、验证逻辑），而非泛泛总结。")
+    user_holdings = format_user_holdings()
+    holdings_note = ""
+    if user_holdings:
+        holdings_note = ("\n【持仓影响点评要求】若事件链或宏观信息与持仓个股所属行业/题材明确相关，"
+                         "请用『⚡ 对您的持仓影响』小节逐只点评（只点评有明确关联的，最多 3 只）；"
+                         "无关联则写『今日事件与持仓无明显直接关联』。"
+                         "严禁臆测个股业务与事件的关联，严禁对个股给出买卖指令，个股点评不得进入信号 JSON。\n")
     return f"""【角色定义】
 你是宏观交易策略复盘与决策引擎。当前时间为北京时间，{role_desc}
 
@@ -773,6 +803,7 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
 {etf_list}
 
 {perf_section}{_internal_context()}
+{user_holdings}{holdings_note}
 {get_core_skill()}
 
 {_PHASE_SKILLS[phase]()}
@@ -796,7 +827,10 @@ def run_review_llm(phase: str, clusters: list, panel: dict, holdings: list,
         prompt, temperature=0.3)
     if not md:
         return ("LLM 分析暂时不可用，请稍后重试。", [], LLM_MODEL)
-    return md, extract_structured_signals(md), LLM_MODEL
+    signals = extract_structured_signals(md)
+    # 剥离末尾的 ```json 信号块（信号已单独解析入库，落盘/推送/前端展示不再暴露原始 JSON）
+    clean_md = _JSON_BLOCK_RE.sub("", md).rstrip()
+    return clean_md, signals, LLM_MODEL
 
 
 _JSON_BLOCK_RE = re.compile(r"```json\s*(\{.*?\})\s*```", re.S)

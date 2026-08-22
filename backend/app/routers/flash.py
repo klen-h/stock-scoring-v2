@@ -110,6 +110,14 @@ def flash_review(phase: str):
     return store.load_review(phase)
 
 
+@router.get("/review/{phase}/history")
+def flash_review_history(phase: str, limit: int = Query(20, ge=1, le=50)):
+    """复盘历史（最新在前），供按日期搜索回溯。"""
+    if phase not in ("premarket", "lunchbreak", "postmarket"):
+        return {"error": f"未知复盘阶段 {phase}"}
+    return {"data": store.load_review_history(phase, limit)}
+
+
 @router.post("/review/{phase}/run")
 def flash_review_run(phase: str):
     """手动触发一次复盘（测试用；正常由调度器按窗口执行）。"""

@@ -42,6 +42,7 @@ status = {
     "last_flash_poll": None,
     "last_track": None,
     "last_reviews": {},          # {phase: 时间}
+    "last_backtest_backfill": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
         "track_interval_sec": TRACK_INTERVAL,
@@ -146,6 +147,35 @@ async def health_loop():
         await asyncio.sleep(HEALTH_PROBE_INTERVAL)
 
 
+# 宏观每日快照：工作日早盘锁定（08:55-13:00 窗口生成一次，跨重启幂等）
+# 窗口放宽到午休前：窄窗口（08:55-10:00）曾导致电脑未开机就整天错过，宏观回测无数据
+MACRO_DAILY_WINDOW = (535, 780)   # 北京时间分钟：08:55-13:00
+
+async def macro_daily_loop():
+    """
+    宏观快照每日锁定：工作日早盘前生成一次并落盘（macro_daily），
+    当日方向分从此固定不漂移；错过窗口（>10:00）当天不再补。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "macro_daily"
+        if (now.weekday() < 5 and MACRO_DAILY_WINDOW[0] <= t < MACRO_DAILY_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发宏观每日快照锁定")
+            try:
+                from app.macro import get_macro_snapshot
+                snap = await asyncio.to_thread(get_macro_snapshot)
+                store.save_macro_daily(snap)
+                store.mark_schedule_done(task_key)
+                d = snap.get("direction", {})
+                print(f"[scheduler] 宏观每日快照已锁定: {d.get('level')} {d.get('score')} "
+                      f"(数据截至 {snap.get('data_time')})")
+            except Exception as e:
+                print(f"[scheduler] 宏观每日快照生成失败: {e}")
+        await asyncio.sleep(60)
+
+
 # ── K线数据库缓存每日刷新 ──
 KLINE_CACHE_REFRESHED_TODAY = False
 
@@ -155,10 +185,9 @@ async def kline_cache_refresh_loop():
     刷新完成后当天不再重复。
     """
     global KLINE_CACHE_REFRESHED_TODAY
-    from datetime import datetime
-    
+
     while True:
-        now = datetime.now()
+        now = rules.beijing_now()
         h, m = now.hour, now.minute
         today = now.strftime("%Y-%m-%d")
         weekday = now.weekday()  # 0=周一, 6=周日
@@ -191,10 +220,9 @@ async def indicator_cache_refresh_loop():
     刷新完成后当天不再重复。
     """
     global INDICATOR_CACHE_REFRESHED_TODAY
-    from datetime import datetime
-    
+
     while True:
-        now = datetime.now()
+        now = rules.beijing_now()
         h, m = now.hour, now.minute
         weekday = now.weekday()  # 0=周一, 6=周日
         
@@ -216,20 +244,50 @@ async def indicator_cache_refresh_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 回测价格库每日增量回填 ──
+BACKTEST_BACKFILL_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（收盘后数据稳定）
+
+async def backtest_prices_refresh_loop():
+    """
+    每日盘后增量回填 backtest_prices（ETF 池 + 沪深300 + 战法新个股）。
+    工作日 15:40 后触发一次，用 schedule_state 幂等标记防重复（跨重启安全）；
+    错过窗口晚上开机也能补。新交易日价格入库后，战法回测才能完成
+    T+1 撮合与持有期平仓。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "backtest_backfill"
+        if (now.weekday() < 5 and BACKTEST_BACKFILL_WINDOW[0] <= t < BACKTEST_BACKFILL_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发回测价格库增量回填")
+            try:
+                from backfill_history import backfill_daily
+                stats = await asyncio.to_thread(backfill_daily)
+                store.mark_schedule_done(task_key)
+                status["last_backtest_backfill"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 回测价格回填完成: {stats}")
+            except Exception as e:
+                print(f"[scheduler] 回测价格回填失败: {e}")
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
-    from datetime import datetime
     status["running"] = True
-    status["started_at"] = datetime.now().isoformat()
+    status["started_at"] = rules.beijing_now().isoformat()
     tasks = [asyncio.create_task(flash_loop()),
              asyncio.create_task(track_loop()),
              asyncio.create_task(review_loop()),
+             asyncio.create_task(macro_daily_loop()),
              asyncio.create_task(health_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
              asyncio.create_task(kline_cache_refresh_loop()),
-             asyncio.create_task(indicator_cache_refresh_loop())]
+             asyncio.create_task(indicator_cache_refresh_loop()),
+             asyncio.create_task(backtest_prices_refresh_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
-          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
+          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / "
+          f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")
     return tasks

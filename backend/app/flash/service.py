@@ -18,6 +18,11 @@ from app.flash import rules, store, source, llm, wechat
 from app.signals import tracker
 
 
+def _now_iso() -> str:
+    """北京时间 ISO（服务器可能跑在 UTC，时间戳统一北京时间）。"""
+    return rules.beijing_now().isoformat()
+
+
 # ================================================================
 #  一、快讯轮询（fetch-flash.js main 的移植）
 # ================================================================
@@ -30,7 +35,7 @@ def _update_state_after_push(state: dict, to_analyze: list) -> None:
         if existing:
             existing["pushCount"] = existing.get("pushCount", 0) + 1
             existing["lastUpdateId"] = cluster["id"]
-            existing["lastUpdateTime"] = datetime.now().isoformat()
+            existing["lastUpdateTime"] = _now_iso()
             if rules.has_urgent_time(cluster.get("content") or ""):
                 existing["hadUrgent"] = True
             if "军事行动" in (cluster.get("content") or ""):
@@ -39,9 +44,9 @@ def _update_state_after_push(state: dict, to_analyze: list) -> None:
             state.setdefault("pushedClusters", []).append({
                 "cluster": cluster["_cluster"],
                 "firstId": cluster["id"],
-                "firstTime": datetime.now().isoformat(),
+                "firstTime": _now_iso(),
                 "lastUpdateId": cluster["id"],
-                "lastUpdateTime": datetime.now().isoformat(),
+                "lastUpdateTime": _now_iso(),
                 "pushCount": 1,
                 "hotMax": "爆" if cluster.get("hot") == "爆" else "沸",
                 "hadUrgent": rules.has_urgent_time(cluster.get("content") or ""),
@@ -54,7 +59,7 @@ def poll_flash_once() -> dict:
     快讯轮询一轮。返回执行摘要（供 /status 与手动触发展示）。
     幂等：无新事件时只推进游标，近零成本。
     """
-    summary = {"time": datetime.now().isoformat(), "fetched": 0, "new": 0,
+    summary = {"time": _now_iso(), "fetched": 0, "new": 0,
                "filtered": 0, "clusters": 0, "analyzed": 0}
     try:
         items = source.fetch_jin10()
@@ -111,7 +116,7 @@ def poll_flash_once() -> dict:
                              if p["cluster"] == cluster["_cluster"]), None)
             if existing:
                 existing["lastUpdateId"] = cluster["id"]
-                existing["lastUpdateTime"] = datetime.now().isoformat()
+                existing["lastUpdateTime"] = _now_iso()
 
         store.save_state(state)
         store.save_raw_data(items, new_items)
@@ -127,7 +132,7 @@ def poll_flash_once() -> dict:
 
 def _recent_pushed_clusters(hours: int) -> list:
     """最近 N 小时有更新的已推送簇（时间升序）。"""
-    cutoff = datetime.now() - timedelta(hours=hours)
+    cutoff = rules.beijing_now() - timedelta(hours=hours)
     out = []
     for c in store.load_state().get("pushedClusters", []):
         try:
@@ -143,7 +148,7 @@ def run_review(phase: str) -> dict:
     复盘一轮（phase: premarket / lunchbreak / postmarket）。
     返回 {phase, markdown, signals_added, alerts}。
     """
-    result = {"phase": phase, "time": datetime.now().isoformat(),
+    result = {"phase": phase, "time": _now_iso(),
               "markdown": "", "signals_added": 0, "alerts": {"entries": [], "exits": []}}
     try:
         # 1. 宏观面板 + 历史落盘
@@ -200,7 +205,7 @@ def run_review(phase: str) -> dict:
 
 def track_signals_once() -> dict:
     """拉行情 → 状态机 → 有入场/出场才推送。返回 {alerts}。"""
-    result = {"time": datetime.now().isoformat(),
+    result = {"time": _now_iso(),
               "alerts": {"entries": [], "exits": [], "updates": []}}
     try:
         market_data = tracker.get_market_data()

@@ -81,16 +81,21 @@ export const getRSISignals = (code, period = 14) => http.get(`/strategies/${code
 
 // 宏观数据（全球+国内面板 + 规则方向分）
 export const getMacroSnapshot = () => http.get('/macro/snapshot')
+export const getMacroDaily = (date) => http.get('/macro/daily', { params: { date } })
 
 // 快讯监控（事件流 / LLM诊断 / 三段复盘 / 信号跟踪）
 export const getFlashEvents = (params) => http.get('/flash/events', { params })
 export const getFlashDiagnosis = (params) => http.get('/flash/diagnosis', { params })
 export const getFlashReview = (phase) => http.get(`/flash/review/${phase}`)
+export const getFlashReviewHistory = (phase, limit = 20) => http.get(`/flash/review/${phase}/history`, { params: { limit } })
 export const getFlashSignals = () => http.get('/flash/signals')
 export const triggerFlashIngest = () => http.post('/flash/ingest')
 export const getFlashStatus = () => http.get('/flash/status')
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })
 export const getFlashAudit = () => http.get('/flash/audit')
+
+// 历史回测（引擎计算，后端 10 分钟缓存）
+export const getBacktestStrategy = (name) => http.get('/backtest/strategy', { params: { name } })
 
 // 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
 export const getFlashBackup = () => http.get('/flash/backup')

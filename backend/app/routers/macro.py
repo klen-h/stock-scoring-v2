@@ -13,7 +13,7 @@ URL 前缀 /api/macro，数据源：新浪财经（见 app/macro.py）。
 ================================================================================
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from app.macro import get_macro_snapshot, get_macro_panel, RULES, RULES_VERSION
 
 router = APIRouter()
@@ -27,6 +27,16 @@ def macro_snapshot():
       + tags(多空标签) + direction(score/level/advisory/分组得分) + 市场温度。
     """
     return get_macro_snapshot()
+
+
+@router.get("/daily")
+def macro_daily(date: str = None, days: int = Query(1, ge=1, le=60)):
+    """宏观每日快照（早盘锁定，按日期归档）：date=某日单条；days=近 N 日列表（正序）。"""
+    from app.flash.store import load_macro_daily, load_macro_daily_history
+    if date:
+        snap = load_macro_daily(date)
+        return {"date": date, "snapshot": snap or None}
+    return {"items": load_macro_daily_history(days)}
 
 
 @router.get("/panel")

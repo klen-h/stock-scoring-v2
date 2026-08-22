@@ -29,6 +29,7 @@
 import requests
 import time
 import threading
+from datetime import datetime, timedelta, timezone
 
 _session = requests.Session()
 # 新浪 2022 起强制校验 Referer，不带会被拒
@@ -431,6 +432,19 @@ def get_macro_snapshot() -> dict:
     panel = get_macro_panel()
     notes = []
 
+    # 数据新鲜度：面板各品种行情时间的最新值（非交易时段=最近收盘时间，可能不是今日）
+    def _parse_quote_time(s):
+        # 兼容新浪各字段族格式：标准 / 斜杠日期（恒科）/ 无冒号（国内期货）
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H%M%S"):
+            try:
+                return datetime.strptime(s.strip(), fmt)
+            except ValueError:
+                continue
+        return None
+    quote_ts = [t for t in (_parse_quote_time(v.get("time")) for v in panel.values()
+                            if isinstance(v, dict) and v.get("time")) if t]
+    data_time = max(quote_ts).strftime("%Y-%m-%d %H:%M:%S") if quote_ts else None
+
     # 内部状态：市场温度（复用 market.py 的缓存逻辑）
     temperature = None
     try:
@@ -457,7 +471,8 @@ def get_macro_snapshot() -> dict:
         panel, temperature, northbound_net_yi)
 
     snapshot = {
-        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
+        "data_time": data_time,
         "rules_version": RULES_VERSION,
         "panel": {k: v for k, v in panel.items() if not k.startswith("_")},
         "derived": panel.get("_derived", {}),
