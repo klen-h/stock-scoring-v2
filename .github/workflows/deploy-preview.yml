@@ -39,3 +39,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./frontend/dist
+          # 必须 keep_files：否则每次 push 都会清空重建 gh-pages 分支，
+          # 把 kline-data 工作流发布的 data/（K 线数据包）删掉，前端下载 404
+          keep_files: true
