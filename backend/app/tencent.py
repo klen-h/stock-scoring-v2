@@ -232,8 +232,8 @@ def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
             # split('"')[1] 取引号之间的内容，即 "1~上证指数~..." 这部分
             # 再按 ~ 切分成字段数组
             data = line.split('"')[1].split('~')
-            # 字段数不足 59 说明数据残缺，跳过
-            if len(data) < 59:
+            # 字段数不足 50 说明数据残缺，跳过（市值/ PB 字段在 44~46）
+            if len(data) < 50:
                 continue
             # 解析各字段。data[N] 对应固定含义（参考腾讯协议）
             # 用 data[3] if data[3] else 0 防止空字符串导致 float() 报错
@@ -254,10 +254,13 @@ def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
                 "amount": float(data[37]) * 10000 if data[37] else 0,  # 成交额（元）
                 "turnover_rate": float(data[38]) if data[38] else 0,   # 换手率 %
                 "pe": float(data[39]) if data[39] else 0,   # 市盈率 PE
-                "pb": float(data[40]) if data[40] else 0,   # 市净率 PB
+                "pb": float(data[46]) if data[46] else 0,   # 市净率 PB（data[40] 实测为空，正确字段是 46）
                 "amplitude": float(data[43]) if data[43] else 0,   # 振幅 %
-                "market_cap": float(data[57]) if data[57] else 0,  # 总市值（万元）
-                "float_cap": float(data[58]) if data[58] else 0,  # 流通市值（万元）
+                # 注意：腾讯接口 data[44]/data[45] 单位是亿元（实测：招行 44=8024.66 亿）；
+                # data[57] 实为成交额（万元）、data[58] 无效，早期误用已修正。
+                # 内部统一存为万元（×10000），下游 ÷10000 转亿的逻辑无需改动。
+                "market_cap": float(data[45]) * 10000 if data[45] else 0,  # 总市值（万元）
+                "float_cap": float(data[44]) * 10000 if data[44] else 0,   # 流通市值（万元）
             }
         except (IndexError, ValueError, TypeError):
             # 任何解析异常都跳过这一行（不影响其他股票）

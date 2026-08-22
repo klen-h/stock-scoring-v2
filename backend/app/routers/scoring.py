@@ -32,6 +32,23 @@ engine = ScoreEngine()
 # 设为 False 即可恢复，无需改其他代码。
 EXCLUDE_LOSS_MAKING = True
 
+# ── 股票池质量门槛（与前端/数据包生成脚本一致）──
+# 流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿（过滤阶段无 K 线，用当日成交额近似日均）
+MIN_FLOAT_CAP = 50 * 10000   # 单位：万元（50 亿）
+MIN_PRICE = 3.0              # 单位：元
+MIN_AMOUNT = 1e8             # 单位：元（1 亿）
+
+
+def _pool_quality_filter(stock: dict) -> bool:
+    """质量门槛过滤：流通市值/股价/成交额"""
+    if (stock.get("float_cap", 0) or 0) < MIN_FLOAT_CAP:
+        return False
+    if (stock.get("price", 0) or 0) < MIN_PRICE:
+        return False
+    if (stock.get("amount", 0) or 0) < MIN_AMOUNT:
+        return False
+    return True
+
 
 def _compute_top5_extras(code: str) -> dict:
     """
@@ -637,6 +654,8 @@ async def score_top(
         # 过滤亏损股（PE ≤ 0）：买入推荐榜不应包含无盈利能力的公司
         if EXCLUDE_LOSS_MAKING:
             valid = [s for s in valid if (s.get("pe", 0) or 0) > 0]
+        # 质量门槛：流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿
+        valid = [s for s in valid if _pool_quality_filter(s)]
 
         top = await _batch_with_precise_top(
             valid, lambda results: results[:limit], limit=limit, side="top",
@@ -692,6 +711,8 @@ async def score_bottom(
         return {"data": [], "total": 0, "cache_status": "loading"}
 
     stock_list = [s for s in stocks.values() if s.get("price", 0) > 0]
+    # 质量门槛：流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿（与推荐榜一致）
+    stock_list = [s for s in stock_list if _pool_quality_filter(s)]
     
     # ★ 使用简化评分（不拉 K 线，只用动量+换手+PE 快速排序）
     rough = engine.score_batch(stock_list)
@@ -798,8 +819,9 @@ def _calc_technical(klines: list) -> list:
     delta = [closes[i] - closes[i - 1] for i in range(1, n)]
     rsi_vals = [None] * n
     for i in range(14, n):
-        gains = [d for d in delta[i - 13:i + 1] if d > 0]
-        losses = [-d for d in delta[i - 13:i + 1] if d < 0]
+        # 窗口 = delta[i-14 : i]，即以当日变化结尾的 14 个变化量（与 _calc_technical_fast / 前端一致）
+        gains = [d for d in delta[i - 14:i] if d > 0]
+        losses = [-d for d in delta[i - 14:i] if d < 0]
         avg_gain = sum(gains) / 14
         avg_loss = sum(losses) / 14
         rsi_vals[i] = round(100 - 100 / (1 + avg_gain / avg_loss), 2) if avg_loss > 0 else 100.0

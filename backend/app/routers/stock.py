@@ -138,9 +138,9 @@ async def stock_technical(symbol: str, period: str = "day"):
     rsi_vals = [None] * n
     # 从第 14 天开始才能算（需要 14 天数据）
     for i in range(14, n):
-        # 取最近 14 天的涨跌
-        gains = [d for d in delta[i - 13:i + 1] if d > 0]    # 涨的天数
-        losses = [-d for d in delta[i - 13:i + 1] if d < 0]  # 跌的天数（取正值）
+        # 取最近 14 天的涨跌（以当日变化结尾；delta[m] 对应第 m+1 根相对第 m 根的涨跌）
+        gains = [d for d in delta[i - 14:i] if d > 0]    # 涨的天数
+        losses = [-d for d in delta[i - 14:i] if d < 0]  # 跌的天数（取正值）
         avg_gain = sum(gains) / 14
         avg_loss = sum(losses) / 14
         # RSI 公式；跌幅为 0 时 RSI=100（全涨）
@@ -224,9 +224,9 @@ async def stock_fundamental(symbol: str):
         "valuation": {
             "市盈率(动态)": info.get("pe", 0),
             "市净率": info.get("pb", 0),
-            # market_cap 单位是万元，÷10 转成亿元（这里 ÷10 可能是经验系数，÷10000 更标准）
-            "总市值(亿)": round(info.get("market_cap", 0) / 10, 2) if info.get("market_cap") else 0,
-            "流通市值(亿)": round(info.get("float_cap", 0) / 10, 2) if info.get("float_cap") else 0,
+            # market_cap / float_cap 单位是万元，÷10000 转成亿元（与 scoring.py 一致）
+            "总市值(亿)": round(info.get("market_cap", 0) / 10000, 2) if info.get("market_cap") else 0,
+            "流通市值(亿)": round(info.get("float_cap", 0) / 10000, 2) if info.get("float_cap") else 0,
         },
         "financial": {
             "换手率": info.get("turnover_rate", 0),

@@ -28,7 +28,10 @@ function clamp(v, lo = 0, hi = 100) {
 }
 
 function round1(v) {
-  return Math.round(v * 10) / 10
+  // 确定性四舍五入：+1e-9 抵消浮点累加噪声（真值恰在 .x5 平局点时，
+  // 纯 Math.round 会因累加误差方向不同而与后端结果不一致；
+  // 合法分数间隔 ≥ 0.0001，1e-9 不会误伤）
+  return Math.floor(v * 10 + 0.5 + 1e-9) / 10
 }
 
 function round2(v) {
@@ -54,11 +57,11 @@ export function scoreStock({ code, name, technicalData, stockInfo }) {
   const dimCap = scoreCapital(technicalData, stockInfo)
   const dimFund = scoreFundamental(stockInfo)
 
-  // 加权求和（与后端一致：先对未舍入的维度分乘权重求和，再一次性保留 1 位小数）
+  // 加权求和（与后端严格一致：每个维度分先乘权重并保留 1 位小数，再求和取 1 位）
   const total = round1(
-    dimTech.score * W_TECHNICAL +
-    dimCap.score * W_CAPITAL +
-    dimFund.score * W_FUNDAMENTAL
+    round1(dimTech.score * W_TECHNICAL) +
+    round1(dimCap.score * W_CAPITAL) +
+    round1(dimFund.score * W_FUNDAMENTAL)
   )
 
   // 信号判定（与后端一致：检查是否有维度极差）

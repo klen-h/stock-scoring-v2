@@ -221,9 +221,9 @@ function calcTechnical(klines) {
       ma10: round2(ma10[i]),
       ma20: round2(ma20[i]),
       ma60: round2(ma60[i]),
-      dif: round2(dif[i]),
-      dea: round2(dea[i]),
-      macd: round2(macd[i]),
+      dif: round4(dif[i]),
+      dea: round4(dea[i]),
+      macd: round4(macd[i]),
       rsi: round2(rsi[i]),
       k: round2(k[i]),
       d: round2(d[i]),
@@ -246,6 +246,15 @@ function calcTechnical(klines) {
 function round2(val) {
   if (val === null || val === undefined || isNaN(val)) return null
   return Math.round(val * 100) / 100
+}
+
+/**
+ * 四舍五入到 4 位小数（DIF/DEA/MACD 专用，与后端 round(v,4) 一致；
+ * 2 位会把 0.00096 这类微小值压成 0，导致红绿柱/金叉判定与后端分叉）
+ */
+function round4(val) {
+  if (val === null || val === undefined || isNaN(val)) return null
+  return Math.round(val * 10000) / 10000
 }
 
 // ── Worker 消息处理 ──

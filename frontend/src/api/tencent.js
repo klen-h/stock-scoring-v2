@@ -110,8 +110,8 @@ function parseTencentResponse(text) {
       const data = dataStr.replace(/"/g, '').trim()
       const fields = data.split('~')
 
-      // 字段数不足 59 说明数据残缺，跳过（与后端一致）
-      if (fields.length < 59) continue
+      // 字段数不足 50 说明数据残缺，跳过（市值/ PB 字段在 44~46）
+      if (fields.length < 50) continue
 
       // 字段索引与后端 tencent.py 完全对齐（data[N] 对应腾讯协议固定含义）
       const code = fields[2]
@@ -125,13 +125,15 @@ function parseTencentResponse(text) {
       const change_pct = parseFloat(fields[32]) || 0   // 涨跌幅 %
       const amount = parseFloat(fields[37]) || 0       // 成交额（万元）
       const turnover_rate = parseFloat(fields[38]) || 0   // 换手率 %
-      const pe = parseFloat(fields[39]) || 0           // 市盈率 PE
-      const pb = parseFloat(fields[40]) || 0           // 市净率 PB（后端 data[40]）
+      const pe = parseFloat(fields[39]) || 0           // 市盈率 PE（腾讯协议 data[39]）
+      const pb = parseFloat(fields[46]) || 0           // 市净率 PB（data[46]；data[40] 实测为空）
       const high = parseFloat(fields[41]) || 0         // 最高（后端 data[41]）
       const low = parseFloat(fields[42]) || 0          // 最低（后端 data[42]）
       const amplitude = parseFloat(fields[43]) || 0    // 振幅 %（后端 data[43]）
-      const market_cap = parseFloat(fields[57]) || 0   // 总市值（万元，后端 data[57]）
-      const float_cap = parseFloat(fields[58]) || 0    // 流通市值（万元，后端 data[58]）
+      // data[44]=流通市值（亿元）、data[45]=总市值（亿元），实测验证；
+      // data[57] 实为成交额、data[58] 无效，早期误用已修正。×10000 转万元，与后端单位对齐。
+      const market_cap = (parseFloat(fields[45]) || 0) * 10000  // 总市值（万元）
+      const float_cap = (parseFloat(fields[44]) || 0) * 10000   // 流通市值（万元）
 
       if (price > 0 && name) {
         result[code] = {

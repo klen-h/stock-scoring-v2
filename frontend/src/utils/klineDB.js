@@ -362,6 +362,9 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
 
   // 数据包结构版本：version 2 = 150 天 K 线（评分需要足够历史让 EMA 系列指标收敛）
   const REQUIRED_PACK_VERSION = 2
+  // 缓存破坏参数：GitHub Pages 有 CDN 缓存，同一文件名可能被浏览器/CDN 返回旧版本，
+  // 导致「下载到旧版包 → 写入旧版本号 → 下次又被判需重下」的循环，故每次请求强制绕过缓存
+  const cacheBust = `t=${Date.now()}`
   const localPackVersion = await getMeta('pack_version') || 1
   const needFullRedownload = lastUpdate && localPackVersion < REQUIRED_PACK_VERSION
 
@@ -373,16 +376,21 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
   // 首次使用或数据包结构升级，下载完整包（增量包无法补齐历史天数）
   if (!lastUpdate || needFullRedownload) {
     onProgress?.({ stage: 'download', message: needFullRedownload ? '数据结构升级，重新下载完整包...' : '首次加载，下载数据包...' })
-    const packUrl = `${baseUrl}/kline-pack-latest.json.gz`
+    const packUrl = `${baseUrl}/kline-pack-latest.json.gz?${cacheBust}`
     
     try {
-      const response = await fetch(packUrl)
+      const response = await fetch(packUrl, { cache: 'no-store' })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       
       onProgress?.({ stage: 'decompress', message: '解压数据...' })
       const blob = await response.blob()
       const text = await decompressGzip(blob)
       const data = JSON.parse(text)
+
+      // 防御：服务端/CDN 仍返回旧版包时拒绝导入（否则旧版本号会污染本地元信息）
+      if ((data.version || 1) < REQUIRED_PACK_VERSION) {
+        return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
+      }
       
       onProgress?.({ stage: 'import', message: '导入数据...' })
       const result = await importKlinePack(data, (loaded, total) => {
@@ -395,11 +403,11 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
     }
   }
 
-  // 尝试增量更新
-  const deltaUrl = `${baseUrl}/kline-delta-${todayStr}.json`
+  // 尝试增量更新（本地已是新版数据时才允许走增量路径）
+  const deltaUrl = `${baseUrl}/kline-delta-${todayStr}.json?${cacheBust}`
   try {
     onProgress?.({ stage: 'download', message: '检查增量更新...' })
-    const response = await fetch(deltaUrl)
+    const response = await fetch(deltaUrl, { cache: 'no-store' })
     
     if (response.ok) {
       const delta = await response.json()
@@ -412,13 +420,18 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
     } else {
       // 增量包不存在，下载完整包
       onProgress?.({ stage: 'download', message: '下载完整数据包...' })
-      const packUrl = `${baseUrl}/kline-pack-latest.json.gz`
-      const packResponse = await fetch(packUrl)
+      const packUrl = `${baseUrl}/kline-pack-latest.json.gz?${cacheBust}`
+      const packResponse = await fetch(packUrl, { cache: 'no-store' })
       if (!packResponse.ok) throw new Error(`HTTP ${packResponse.status}`)
       
       const blob = await packResponse.blob()
       const text = await decompressGzip(blob)
       const data = JSON.parse(text)
+
+      // 防御：旧版包拒绝导入（同上）
+      if ((data.version || 1) < REQUIRED_PACK_VERSION) {
+        return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
+      }
       
       const result = await importKlinePack(data, (loaded, total) => {
         onProgress?.({ stage: 'import', loaded, total })

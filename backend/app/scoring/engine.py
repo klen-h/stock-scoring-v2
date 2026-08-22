@@ -82,6 +82,16 @@ def _clamp(v: float, lo: float = 0.0, hi: float = 100.0) -> float:
     return max(lo, min(hi, v))
 
 
+def _round1(v: float) -> float:
+    """
+    确定性四舍五入到 1 位小数（与前端 scoringEngine.js 的 round1 严格一致）。
+    直接 round() 在真值恰为 .x5 平局点时，会因浮点累加噪声方向不同而
+    得到不同结果（曾导致前后端 0.1 分差异）；+1e-9 抵消噪声。
+    合法分数间隔 ≥ 0.0001，1e-9 不会误伤。
+    """
+    return round(v + 1e-9, 1)
+
+
 def _score_in_range(val: float, good_lo: float, good_hi: float,
                     bad_lo: float = None, bad_hi: float = None) -> float:
     """
@@ -147,7 +157,7 @@ class ScoreEngine:
         # 三维度加权求和 → 综合分
         dimensions = [dim_tech, dim_cap, dim_fund]
         total = sum(d.weighted_score for d in dimensions)   # sum(生成器)：累加每个维度的加权分
-        total = round(total, 1)   # 保留 1 位小数
+        total = _round1(total)   # 保留 1 位小数（确定性四舍五入）
 
         # 推导信号、提取因素、生成摘要
         signal, signal_level = self._derive_signal(total, dimensions)
@@ -262,10 +272,10 @@ class ScoreEngine:
 
         # 加权：每个子分 × (子满分/100)，再求和 → 技术面 0~100 分
         raw = sum(s * w / 100 for s, w in sub_scores)
-        score = _clamp(round(raw, 1))
+        score = _clamp(_round1(raw))
         # weighted_score = score × 维度权重（用于最终综合分累加）
         return DimensionScore("技术面", score, self.W_TECHNICAL,
-                              round(score * self.W_TECHNICAL, 1), details)
+                              _round1(score * self.W_TECHNICAL), details)
 
     def _score_ma(self, latest: dict, tech_data: list) -> float:
         """
@@ -564,9 +574,9 @@ class ScoreEngine:
         sub_scores.append((amount_score, 25))
 
         raw = sum(s * w / 100 for s, w in sub_scores)
-        score = _clamp(round(raw, 1))
+        score = _clamp(_round1(raw))
         return DimensionScore("资金面", score, self.W_CAPITAL,
-                              round(score * self.W_CAPITAL, 1), details)
+                              _round1(score * self.W_CAPITAL), details)
 
     def _score_volume_price(self, tech_data: list, stock_info: dict) -> float:
         """
@@ -784,9 +794,9 @@ class ScoreEngine:
         sub_scores.append((vol_score, 25))
 
         raw = sum(s * w / 100 for s, w in sub_scores)
-        score = _clamp(round(raw, 1))
+        score = _clamp(_round1(raw))
         return DimensionScore("基本面", score, self.W_FUNDAMENTAL,
-                              round(score * self.W_FUNDAMENTAL, 1), details)
+                              _round1(score * self.W_FUNDAMENTAL), details)
 
     def _score_pe(self, stock_info: dict, fundamental: dict) -> float:
         """
@@ -954,7 +964,7 @@ class ScoreEngine:
         sub_scores.append((pe_s, 25))
 
         raw = sum(s * w / 100 for s, w in sub_scores)
-        score = _clamp(round(raw, 1))
+        score = _clamp(_round1(raw))
 
         # 简化模式下只有一个维度，权重设为 1.0
         dim = DimensionScore("简化评分", score, 1.0, score, details)

@@ -52,6 +52,11 @@ WAF_COOLDOWN = 5        # WAF 触发后冷却（秒）
 # A 股代码池（与 backend/app/tencent.py 保持一致）
 DISABLED_PREFIXES = {"688", "300", "301"}
 
+# ── 股票池质量门槛（与后端/前端一致）──
+MIN_FLOAT_CAP_YI = 50     # 流通市值 > 50 亿（腾讯 fields[44]，单位亿元）
+MIN_PRICE = 3.0           # 股价 > 3 元
+MIN_AMOUNT_WAN = 10000    # 成交额 > 1 亿（腾讯 fields[37]，单位万元；用当日成交额近似日均）
+
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0"})
 
@@ -67,6 +72,17 @@ def _is_valid_stock(name: str, pe: float = 0) -> bool:
         return False
     # 亏损股（PE <= 0 表示亏损或无数据）
     if pe <= 0:
+        return False
+    return True
+
+
+def _pass_quality_filter(price: float, float_cap_yi: float, amount_wan: float) -> bool:
+    """质量门槛：流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿"""
+    if float_cap_yi < MIN_FLOAT_CAP_YI:
+        return False
+    if price < MIN_PRICE:
+        return False
+    if amount_wan < MIN_AMOUNT_WAN:
         return False
     return True
 
@@ -128,17 +144,21 @@ def fetch_realtime_batch(codes: List[Tuple[str, str]]) -> Dict:
                     code = fields[2]
                     name = fields[1]
                     price = float(fields[3]) if fields[3] else 0
-                    market_cap = float(fields[45]) if len(fields) > 45 and fields[45] else 0
+                    market_cap = float(fields[45]) if len(fields) > 45 and fields[45] else 0   # 总市值（亿元）
+                    float_cap = float(fields[44]) if len(fields) > 44 and fields[44] else 0    # 流通市值（亿元）
                     pe = float(fields[39]) if len(fields) > 39 and fields[39] else 0
                     pb = float(fields[46]) if len(fields) > 46 and fields[46] else 0
                     turnover_rate = float(fields[38]) if len(fields) > 38 and fields[38] else 0
                     change_pct = float(fields[32]) if len(fields) > 32 and fields[32] else 0
+                    amount_wan = float(fields[37]) if len(fields) > 37 and fields[37] else 0   # 成交额（万元）
                     
-                    if price > 0 and name and _is_valid_stock(name, pe):
+                    if price > 0 and name and _is_valid_stock(name, pe) and \
+                            _pass_quality_filter(price, float_cap, amount_wan):
                         result[code] = {
                             "name": name,
                             "price": price,
                             "market_cap": market_cap,
+                            "float_cap": float_cap,
                             "pe": pe,
                             "pb": pb,
                             "turnover_rate": turnover_rate,

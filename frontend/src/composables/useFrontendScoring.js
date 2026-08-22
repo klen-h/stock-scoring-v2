@@ -39,6 +39,22 @@ function isValidStock(stock) {
   return true
 }
 
+// ── 股票池质量门槛（与后端一致）──
+// 流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿（当日成交额近似）
+const MIN_FLOAT_CAP = 50 * 10000  // 万元（50 亿）
+const MIN_PRICE = 3               // 元
+const MIN_AMOUNT = 1e8            // 元（1 亿）
+
+/**
+ * 质量过滤：流通市值/股价/成交额门槛（需已合并实时行情）
+ */
+function passQualityFilter(stock) {
+  if ((stock.float_cap || 0) < MIN_FLOAT_CAP) return false
+  if ((stock.price || 0) < MIN_PRICE) return false
+  if ((stock.amount || 0) < MIN_AMOUNT) return false
+  return true
+}
+
 // ── 响应式状态 ──
 const dbReady = ref(false)
 const dbStockCount = ref(0)
@@ -159,13 +175,13 @@ export async function computeRanking(options = {}) {
     const codes = allStocks.map(s => s.code)
     const quotes = await fetchRealtimeQuotes(codes)
 
-    // 3. 合并行情数据并过滤
+    // 3. 合并行情数据并过滤（含流通市值/股价/成交额质量门槛）
     const stocksWithQuotes = allStocks
       .map(s => ({
         ...s,
         ...(quotes[s.code] || {}),
       }))
-      .filter(s => s.price > 0 && isValidStock(s))
+      .filter(s => s.price > 0 && isValidStock(s) && passQualityFilter(s))
 
     // 4. 简化评分快速排序
     const scored = stocksWithQuotes.map(s => ({
@@ -344,9 +360,9 @@ function calcTechnicalSimple(klines) {
     ma10: ma10[i],
     ma20: ma20[i],
     ma60: ma60[i],
-    dif: round2(dif[i]),
-    dea: round2(dea[i]),
-    macd: round2(macd[i]),
+    dif: round4(dif[i]),
+    dea: round4(dea[i]),
+    macd: round4(macd[i]),
     rsi: round2(rsi[i]),
     k: round2(kdj.k[i]),
     d: round2(kdj.d[i]),
@@ -360,6 +376,12 @@ function calcTechnicalSimple(klines) {
 function round2(val) {
   if (val === null || val === undefined || isNaN(val)) return null
   return Math.round(val * 100) / 100
+}
+
+// DIF/DEA/MACD 专用 4 位小数（与后端 round(v,4) 一致，避免微小值被压成 0）
+function round4(val) {
+  if (val === null || val === undefined || isNaN(val)) return null
+  return Math.round(val * 10000) / 10000
 }
 
 function calcMA(data, window) {
