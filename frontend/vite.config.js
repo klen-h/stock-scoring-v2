@@ -16,6 +16,13 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+      },
+      // 腾讯行情 CORS 代理（开发环境）
+      // /tencent-api/q=sz000001 → https://qt.gtimg.cn/q=sz000001
+      '/tencent-api': {
+        target: 'https://qt.gtimg.cn',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/tencent-api/, ''),
       }
     }
   }

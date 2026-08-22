@@ -43,7 +43,7 @@
           {{ frontendUpdating ? frontendProgress.message || '下载中...' : '下载数据' }}
         </button>
         <button v-else 
-          @click="useFrontendMode = !useFrontendMode"
+          @click="toggleFrontendMode"
           class="px-2 py-1 rounded text-xs transition-colors"
           :class="useFrontendMode ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'">
           {{ useFrontendMode ? '切换到后端' : '切换到本地' }}
@@ -659,12 +659,12 @@ const {
   isUpdating: frontendUpdating,
   updateProgress: frontendProgress,
   error: frontendError,
+  useFrontendMode,
   initFrontendScoring,
   downloadKlineData,
   computeRanking,
+  saveFrontendModePreference,
 } = useFrontendScoring()
-
-const useFrontendMode = ref(false)  // 是否使用前端计算模式
 const frontendInitialized = ref(false)
 
 // ── K线缓存状态 ──
@@ -757,6 +757,14 @@ async function handleRefreshKlineCache() {
     console.error('刷新K线缓存失败', e)
     klineCacheRefreshing.value = false
   }
+}
+
+// 切换前端/后端模式，并持久化
+function toggleFrontendMode() {
+  useFrontendMode.value = !useFrontendMode.value
+  saveFrontendModePreference(useFrontendMode.value)
+  // 切换后立即重新加载
+  loadData()
 }
 
 // 下载前端 K 线数据
@@ -1050,7 +1058,10 @@ async function loadData() {
       detectScoreChanges()
       loadPersistence()  // 加载连续上榜天数
       loadExitAlerts()   // 加载持仓撤退提醒
-      loadKlineCacheStatus()  // 加载K线缓存状态
+      // 前端模式下不加载后端K线缓存状态（无关）
+      if (!useFrontendMode.value) {
+        loadKlineCacheStatus()
+      }
     }
   } catch (e) {
     console.error('后端评分失败:', e.message)
@@ -1103,7 +1114,8 @@ function switchTab(tab) {
 }
 
 function goDetail(code) {
-  router.push(`/stock/${code}`)
+  const { href } = router.resolve(`/stock/${code}`)
+  window.open(href, '_blank')
 }
 
 // 市场温度等级配色：冷→蓝，中性→琥珀，热→红
@@ -1196,12 +1208,21 @@ onMounted(async () => {
       console.log('前端评分系统需要下载数据')
     } else {
       console.log('前端评分系统就绪，股票数:', frontendStockCount.value)
+      // 如果用户之前选择了前端模式且数据已就绪，自动使用本地计算
+      if (useFrontendMode.value && frontendDbReady.value && frontendStockCount.value > 0) {
+        console.log('恢复前端计算模式')
+        loadData()
+      }
     }
   }).catch(e => {
     console.warn('前端评分系统初始化失败:', e)
   })
 
-  loadData()
+  // 如果用户之前选了前端模式，等 init 完成后再加载（上面的 .then 会处理）
+  // 否则立即走后端加载
+  if (!useFrontendMode.value) {
+    loadData()
+  }
   loadTemp()
   loadSnapshots()
   autoSaveTimer = setInterval(autoSaveCheck, 60000)

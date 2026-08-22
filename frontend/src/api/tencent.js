@@ -12,17 +12,32 @@
  */
 
 // 腾讯行情 API 基础 URL
-const TENCENT_API = 'https://qt.gtimg.cn/q='
+// 腾讯 API 格式：/q=sz000001,sz000002（= 是路径的一部分，不是查询参数）
+// 开发环境：通过 Vite 代理（/tencent-api/q=xxx → qt.gtimg.cn/q=xxx）
+// 生产环境：通过 Cloudflare Worker 代理（worker.example/q=xxx → qt.gtimg.cn/q=xxx）
+
+// 自动检测环境
+const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV
+
+// 生产环境 Cloudflare Worker 代理 URL（部署后配置）
+// 格式：'https://your-worker.workers.dev'（不带末尾斜杠）
+const CF_PROXY_URL = ''
+
+// 根据环境选择基础 URL
+let BASE_URL
+if (isDev) {
+  BASE_URL = '/tencent-api'  // Vite 代理前缀
+} else if (CF_PROXY_URL) {
+  BASE_URL = CF_PROXY_URL    // Cloudflare Worker
+} else {
+  BASE_URL = 'https://qt.gtimg.cn'  // 直连（可能被 CORS 拦截）
+}
 
 // 每批请求数量（避免触发 WAF）
 const BATCH_SIZE = 50
 
 // 请求超时（毫秒）
 const TIMEOUT = 10000
-
-// 是否使用代理（CORS 问题时自动启用）
-let useProxy = false
-const PROXY_URL = 'https://your-worker.workers.dev/proxy?url='
 
 /**
  * 批量拉取实时行情
@@ -42,17 +57,9 @@ export async function fetchRealtimeQuotes(codes) {
       Object.assign(result, batchResult)
     } catch (error) {
       console.warn(`批次 ${i + 1} 失败:`, error.message)
-      // 如果是 CORS 错误，切换到代理模式
-      if (error.message.includes('CORS') || error.message.includes('Failed to fetch')) {
-        useProxy = true
-        console.log('检测到 CORS 问题，启用代理模式')
-        // 重试当前批次
-        try {
-          const retryResult = await fetchBatch(batch)
-          Object.assign(result, retryResult)
-        } catch (retryError) {
-          console.error(`批次 ${i + 1} 重试失败:`, retryError.message)
-        }
+      // CORS 或网络错误，记录但不重试（代理已在环境层配置）
+      if (error.message.includes('Failed to fetch') || error.message.includes('CORS')) {
+        console.error('网络请求失败，请检查代理配置')
       }
     }
 
@@ -74,10 +81,10 @@ async function fetchBatch(codes) {
     return `${prefix}${code}`
   }).join(',')
 
-  const url = TENCENT_API + symbols
-  const finalUrl = useProxy ? PROXY_URL + encodeURIComponent(url) : url
+  // 构造 URL：BASE_URL + /q=sz000001,sz000002
+  const url = `${BASE_URL}/q=${symbols}`
 
-  const response = await fetchWithTimeout(finalUrl, TIMEOUT)
+  const response = await fetchWithTimeout(url, TIMEOUT)
   
   // 腾讯 API 返回 GBK 编码
   const buffer = await response.arrayBuffer()
@@ -103,32 +110,35 @@ function parseTencentResponse(text) {
       const data = dataStr.replace(/"/g, '').trim()
       const fields = data.split('~')
 
-      if (fields.length < 50) continue
+      // 字段数不足 59 说明数据残缺，跳过（与后端一致）
+      if (fields.length < 59) continue
 
+      // 字段索引与后端 tencent.py 完全对齐（data[N] 对应腾讯协议固定含义）
       const code = fields[2]
       const name = fields[1]
       const price = parseFloat(fields[3]) || 0
-      const yesterdayClose = parseFloat(fields[4]) || 0
+      const prevClose = parseFloat(fields[4]) || 0
       const open = parseFloat(fields[5]) || 0
       const volume = parseFloat(fields[6]) || 0  // 成交量（手）
       const buyVolume = parseFloat(fields[7]) || 0
       const sellVolume = parseFloat(fields[8]) || 0
-      const high = parseFloat(fields[33]) || 0
-      const low = parseFloat(fields[34]) || 0
-      const change_pct = parseFloat(fields[32]) || 0
-      const turnover_rate = parseFloat(fields[38]) || 0
-      const pe = parseFloat(fields[39]) || 0
-      const pb = parseFloat(fields[46]) || 0
-      const market_cap = parseFloat(fields[45]) || 0  // 总市值（亿）
-      const float_cap = parseFloat(fields[44]) || 0  // 流通市值（亿）
-      const amount = parseFloat(fields[37]) || 0  // 成交额（万元）
+      const change_pct = parseFloat(fields[32]) || 0   // 涨跌幅 %
+      const amount = parseFloat(fields[37]) || 0       // 成交额（万元）
+      const turnover_rate = parseFloat(fields[38]) || 0   // 换手率 %
+      const pe = parseFloat(fields[39]) || 0           // 市盈率 PE
+      const pb = parseFloat(fields[40]) || 0           // 市净率 PB（后端 data[40]）
+      const high = parseFloat(fields[41]) || 0         // 最高（后端 data[41]）
+      const low = parseFloat(fields[42]) || 0          // 最低（后端 data[42]）
+      const amplitude = parseFloat(fields[43]) || 0    // 振幅 %（后端 data[43]）
+      const market_cap = parseFloat(fields[57]) || 0   // 总市值（万元，后端 data[57]）
+      const float_cap = parseFloat(fields[58]) || 0    // 流通市值（万元，后端 data[58]）
 
       if (price > 0 && name) {
         result[code] = {
           code,
           name,
           price,
-          yesterday_close: yesterdayClose,
+          yesterday_close: prevClose,
           open,
           high,
           low,
@@ -139,9 +149,10 @@ function parseTencentResponse(text) {
           turnover_rate,
           pe,
           pb,
-          market_cap: market_cap * 10000,  // 转换为万元
-          float_cap: float_cap * 10000,
+          market_cap,            // 万元（与后端单位一致）
+          float_cap,             // 万元（与后端单位一致）
           amount: amount * 10000,  // 转换为元
+          amplitude,               // 振幅 %（接口直接提供）
         }
       }
     } catch (error) {
@@ -213,14 +224,12 @@ function sleep(ms) {
 }
 
 /**
- * 测试 CORS 是否可用
+ * 测试连接是否可用
  * @returns {Promise<boolean>}
  */
 export async function testCORS() {
   try {
-    const testCode = '000001'
-    const prefix = 'sz'
-    const url = TENCENT_API + prefix + testCode
+    const url = `${BASE_URL}/q=sz000001`
     
     const response = await fetchWithTimeout(url, 5000)
     const buffer = await response.arrayBuffer()

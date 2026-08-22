@@ -11,7 +11,7 @@
 
 数据格式：
 {
-  "version": 1,
+  "version": 2,
   "date": "20260822",
   "stocks": {
     "000001": {
@@ -42,7 +42,7 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 # ── 配置 ──
-DEFAULT_DAYS = 60       # K 线天数
+DEFAULT_DAYS = 150      # K 线天数（需足够长让 EMA26/DEA 系列指标收敛，与后端 500 天历史对齐）
 DEFAULT_TOP = 3000      # 取市值前 N 只
 BATCH_SIZE = 50         # 批量请求行情每批数量
 KLINE_BATCH_SIZE = 10   # K 线请求并发数（避免触发 WAF）
@@ -54,6 +54,21 @@ DISABLED_PREFIXES = {"688", "300", "301"}
 
 _session = requests.Session()
 _session.headers.update({"User-Agent": "Mozilla/5.0"})
+
+
+def _is_valid_stock(name: str, pe: float = 0) -> bool:
+    """
+    过滤无效股票：
+    - ST/*ST 风险警示股
+    - 亏损股（PE <= 0）
+    """
+    clean = name.replace(' ', '').upper()
+    if clean.startswith('ST') or clean.startswith('*ST') or clean.startswith('SST'):
+        return False
+    # 亏损股（PE <= 0 表示亏损或无数据）
+    if pe <= 0:
+        return False
+    return True
 
 
 def build_stock_pool() -> List[Tuple[str, str]]:
@@ -119,7 +134,7 @@ def fetch_realtime_batch(codes: List[Tuple[str, str]]) -> Dict:
                     turnover_rate = float(fields[38]) if len(fields) > 38 and fields[38] else 0
                     change_pct = float(fields[32]) if len(fields) > 32 and fields[32] else 0
                     
-                    if price > 0 and name and not name.startswith("ST"):
+                    if price > 0 and name and _is_valid_stock(name, pe):
                         result[code] = {
                             "name": name,
                             "price": price,
@@ -226,9 +241,9 @@ def generate_packs(
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # 完整数据包
+    # 完整数据包（version 2：K 线从 60 天升级到 150 天，前端检测版本不匹配会强制重新下载）
     full_pack = {
-        "version": 1,
+        "version": 2,
         "date": date_str,
         "stocks": stocks_data,
     }
@@ -256,7 +271,7 @@ def generate_packs(
         delta = compute_delta(prev_data, stocks_data)
         if delta:
             delta_pack = {
-                "version": 1,
+                "version": 2,
                 "date": date_str,
                 "stocks": delta,
             }

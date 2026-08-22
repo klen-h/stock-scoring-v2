@@ -95,8 +95,9 @@ export async function importKlinePack(data, onProgress) {
     })
   }
 
-  // 更新版本信息
+  // 更新版本信息（记录数据包版本，用于检测数据结构升级）
   await setMeta('last_update', data.date)
+  await setMeta('pack_version', data.version || 1)
   await setMeta('total_stocks', total)
 
   return { imported }
@@ -156,8 +157,9 @@ export async function applyDelta(delta) {
     tx.onerror = () => reject(tx.error)
   })
 
-  // 更新版本信息
+  // 更新版本信息（记录数据包版本，用于检测数据结构升级）
   await setMeta('last_update', delta.date)
+  if (delta.version) await setMeta('pack_version', delta.version)
 
   return { updated, added }
 }
@@ -358,14 +360,19 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
   const today = new Date()
   const todayStr = today.toISOString().slice(0, 10).replace(/-/g, '')
 
-  // 如果今天已经更新过，跳过
-  if (lastUpdate === todayStr) {
+  // 数据包结构版本：version 2 = 150 天 K 线（评分需要足够历史让 EMA 系列指标收敛）
+  const REQUIRED_PACK_VERSION = 2
+  const localPackVersion = await getMeta('pack_version') || 1
+  const needFullRedownload = lastUpdate && localPackVersion < REQUIRED_PACK_VERSION
+
+  // 如果今天已经更新过且数据包版本匹配，跳过（版本不匹配时强制重新下载）
+  if (lastUpdate === todayStr && !needFullRedownload) {
     return { updated: false, message: '数据已是最新' }
   }
 
-  // 首次使用，下载完整包
-  if (!lastUpdate) {
-    onProgress?.({ stage: 'download', message: '首次加载，下载数据包...' })
+  // 首次使用或数据包结构升级，下载完整包（增量包无法补齐历史天数）
+  if (!lastUpdate || needFullRedownload) {
+    onProgress?.({ stage: 'download', message: needFullRedownload ? '数据结构升级，重新下载完整包...' : '首次加载，下载数据包...' })
     const packUrl = `${baseUrl}/kline-pack-latest.json.gz`
     
     try {

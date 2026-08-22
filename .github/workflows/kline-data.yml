@@ -11,7 +11,7 @@ on:
       days:
         description: 'K线天数'
         required: false
-        default: '60'
+        default: '150'
       top:
         description: '取市值前N只'
         required: false
@@ -47,7 +47,7 @@ jobs:
         run: |
           python scripts/generate-kline-pack.py \
             --output-dir ./data/kline \
-            --days ${{ github.event.inputs.days || 60 }} \
+            --days ${{ github.event.inputs.days || 150 }} \
             --top ${{ github.event.inputs.top || 3000 }}
       
       - name: Upload to GitHub Pages

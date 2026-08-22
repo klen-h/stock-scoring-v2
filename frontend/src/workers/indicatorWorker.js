@@ -79,51 +79,26 @@ function calcMACD(closes) {
 }
 
 /**
- * 计算 RSI（相对强弱指标）
+ * 计算 RSI（与后端 _calc_technical_fast 一致：近 14 日简单平均口径，非 Wilder 平滑）
  */
 function calcRSI(closes, period = 14) {
   const result = new Array(closes.length).fill(null)
   if (closes.length < period + 1) return result
-  
-  const gains = new Array(closes.length - 1)
-  const losses = new Array(closes.length - 1)
-  
-  for (let i = 1; i < closes.length; i++) {
-    const change = closes[i] - closes[i - 1]
-    gains[i - 1] = change > 0 ? change : 0
-    losses[i - 1] = change < 0 ? -change : 0
-  }
-  
-  // 初始平均值（前 period 个）
-  let avgGain = 0
-  let avgLoss = 0
-  for (let i = 0; i < period; i++) {
-    avgGain += gains[i]
-    avgLoss += losses[i]
-  }
-  avgGain /= period
-  avgLoss /= period
-  
-  if (avgLoss === 0) {
-    result[period] = 100
-  } else {
-    const rs = avgGain / avgLoss
-    result[period] = 100 - 100 / (1 + rs)
-  }
-  
-  // 后续使用 Wilder 平滑
-  for (let i = period; i < gains.length; i++) {
-    avgGain = (avgGain * (period - 1) + gains[i]) / period
-    avgLoss = (avgLoss * (period - 1) + losses[i]) / period
-    
-    if (avgLoss === 0) {
-      result[i + 1] = 100
-    } else {
-      const rs = avgGain / avgLoss
-      result[i + 1] = 100 - 100 / (1 + rs)
+
+  for (let i = period; i < closes.length; i++) {
+    let avgGain = 0
+    let avgLoss = 0
+    // 窗口 = delta[i-13 .. i]，即 closes[i-14 .. i] 的 14 个变化量（与后端一致）
+    for (let p = i - period + 1; p <= i; p++) {
+      const change = closes[p] - closes[p - 1]
+      if (change > 0) avgGain += change
+      else if (change < 0) avgLoss -= change
     }
+    avgGain /= period
+    avgLoss /= period
+    result[i] = avgLoss > 0 ? 100 - 100 / (1 + avgGain / avgLoss) : 100
   }
-  
+
   return result
 }
 
