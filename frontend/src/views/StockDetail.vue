@@ -126,6 +126,27 @@
       </div>
     </div>
 
+    <!-- 消息面情绪（独立维度，不进入综合总分）-->
+    <div v-if="newsData" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold">消息面情绪</h3>
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-sm font-bold" :class="newsScoreClass">{{ newsData.score > 0 ? '+' : '' }}{{ newsData.score }}</span>
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" :class="newsLevelClass">{{ newsData.level_text }}</span>
+        </div>
+      </div>
+      <div v-if="newsData.items?.length" class="space-y-1.5">
+        <div v-for="n in newsData.items.slice(0, 6)" :key="n.time + n.title"
+          class="flex items-start gap-2 px-3 py-2 rounded-lg text-xs bg-white/5">
+          <span class="font-mono shrink-0" :class="n.score < 0 ? 'text-red-400' : 'text-emerald-400'">{{ n.score > 0 ? '+' : '' }}{{ n.score }}</span>
+          <span class="leading-snug">{{ n.title }}</span>
+          <span class="ml-auto shrink-0 text-muted text-[10px]">{{ (n.time || '').slice(5, 16) }}</span>
+        </div>
+      </div>
+      <div v-else class="text-xs text-muted">近 3 天无该股票的情绪倾向新闻（共匹配 {{ newsData.news_count }} 条快讯）</div>
+      <div class="mt-3 text-[11px] text-muted">东财 7×24 快讯 + 关键词规则打分（72h 衰减）；独立维度不进总分，仅供参考</div>
+    </div>
+
     <!-- K线图 + 技术指标 -->
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex gap-2 mb-3 flex-wrap">
@@ -239,7 +260,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews } from '../api'
 
 const route = useRoute()
 const code = route.params.code
@@ -257,6 +278,9 @@ const showDetails = ref(true)
 // 支撑阻力 + RSI
 const supportResistance = ref(null)
 const rsiSignals = ref(null)
+
+// 消息面（独立维度，异步加载不阻塞主数据）
+const newsData = ref(null)
 
 const klineChartRef = ref(null)
 let charts = []
@@ -306,6 +330,21 @@ function healthVerdictClass(verdict) {
     '趋势恶化': 'bg-red-500/20 text-red-400 border border-red-500/30',
   }[verdict] || 'bg-white/5 text-muted'
 }
+
+// ── 消息面徽章配色（5 档：强烈负面 → 强烈正面）──
+const newsScoreClass = computed(() => {
+  const s = newsData.value?.score || 0
+  if (s <= -1.5) return 'text-red-400'
+  if (s >= 1.5) return 'text-emerald-400'
+  return 'text-muted'
+})
+const newsLevelClass = computed(() => ({
+  [-2]: 'bg-red-500/20 text-red-400 border border-red-500/30',
+  [-1]: 'bg-red-500/10 text-red-300 border border-red-500/20',
+  0: 'bg-white/5 text-muted border border-border',
+  1: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20',
+  2: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
+}[newsData.value?.level ?? 0]))
 
 // ── 支撑阻力 + RSI 显示辅助 ──
 const srBarBg = computed(() => {
@@ -498,6 +537,8 @@ function renderKline() {
 }
 
 onMounted(async () => {
+  // 消息面独立加载（首次需拉东财快讯，不阻塞主数据渲染）
+  getStockNews(code).then(({ data }) => { newsData.value = data }).catch(() => {})
   try {
     const [info, fund, score, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),

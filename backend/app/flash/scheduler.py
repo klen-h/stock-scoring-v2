@@ -45,6 +45,7 @@ status = {
     "last_backtest_backfill": None,
     "last_score_snapshot": None,
     "last_market_snapshot": None,
+    "last_news_alert": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
         "track_interval_sec": TRACK_INTERVAL,
@@ -385,6 +386,60 @@ async def market_snapshot_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 持仓负面消息提醒（消息面阶段 1）──
+NEWS_ALERT_INTERVAL = 600    # 盘中每 10 分钟扫一轮持仓新闻分
+NEWS_ALERT_THRESHOLD = -4    # 新闻分 ≤ -4（强烈负面）才推送，避免噪音刷屏
+_news_alerted = {"date": "", "codes": set()}   # 同一股票同一自然日最多推一次（内存频控）
+
+
+def _check_holding_news_once():
+    """扫描合并持仓的新闻分，强烈负面且当日未提醒过 → 企微推送。
+    推送走 push_markdown_batched（force=False），受 WECHAT_BUSINESS_ALERTS 开关控制。
+    返回本轮推送条数。
+    """
+    from app.database import db
+    from app.eastmoney_news import get_stock_news
+    from app.news_sentiment import score_stock_news
+    from app.flash.wechat import push_markdown_batched
+
+    today = rules.beijing_now().strftime("%Y-%m-%d")
+    if _news_alerted["date"] != today:      # 跨天清空频控集合
+        _news_alerted["date"] = today
+        _news_alerted["codes"] = set()
+
+    rows = db.fetch("SELECT DISTINCT code, name FROM user_portfolio")
+    alerts = []
+    for r in rows or []:
+        code = r["code"]
+        if code in _news_alerted["codes"]:
+            continue
+        res = score_stock_news(get_stock_news(code))
+        if res["score"] <= NEWS_ALERT_THRESHOLD:
+            _news_alerted["codes"].add(code)
+            top = "\n".join(f"> - {it['title']}" for it in res["items"][:3]) or "> - （无情绪倾向条目）"
+            alerts.append((r.get("name") or code, code, res["score"], top))
+    for name, code, score, top in alerts:
+        push_markdown_batched(
+            f"🚨 持仓负面消息 {name}",
+            f"> **{name}({code})** 新闻分 **{score}**（强烈负面）\n"
+            f"> **相关快讯：**\n{top}\n\n关键词规则打分仅供参考，不构成买卖建议。")
+    return len(alerts)
+
+
+async def news_alert_loop():
+    """盘中定期扫描持仓负面消息（同股同日最多推一次，推送受业务开关控制）。"""
+    while True:
+        market = rules.get_china_market_status()
+        if market["is_open"]:
+            try:
+                n = await asyncio.to_thread(_check_holding_news_once)
+                if n:
+                    status["last_news_alert"] = rules.beijing_now().isoformat()
+            except Exception as e:
+                print(f"[scheduler] 持仓新闻提醒异常: {e}")
+        await asyncio.sleep(NEWS_ALERT_INTERVAL)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -399,10 +454,11 @@ async def start():
              asyncio.create_task(indicator_cache_refresh_loop()),
              asyncio.create_task(backtest_prices_refresh_loop()),
              asyncio.create_task(score_snapshot_loop()),
-             asyncio.create_task(market_snapshot_loop())]
+             asyncio.create_task(market_snapshot_loop()),
+             asyncio.create_task(news_alert_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
-          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
+          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 持仓负面消息盘中每10分钟 / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

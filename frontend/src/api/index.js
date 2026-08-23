@@ -109,6 +109,7 @@ export const triggerRefresh = () => http.get('/market/trigger-refresh')
 export const getStockKline = (symbol, params) => http.get(`/stock/kline/${symbol}`, { params })
 export const getStockRealtime = (symbol) => http.get(`/stock/realtime/${symbol}`)
 export const getStockFundamental = (symbol) => http.get(`/stock/fundamental/${symbol}`)
+export const getStockNews = (symbol) => http.get(`/stock/news/${symbol}`)
 export const getStockTechnical = (symbol, period = 'day') => http.get(`/stock/technical/${symbol}`, { params: { period } })
 export const searchStock = (keyword) => http.get('/stock/search', { params: { keyword } })
 

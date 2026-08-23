@@ -9,6 +9,7 @@
   GET /api/stock/search?keyword=xxx      → 股票搜索
   GET /api/stock/technical/{symbol}      → 技术指标（MA/MACD/KDJ/RSI/BOLL）★核心
   GET /api/stock/fundamental/{symbol}    → 基本面（PE/PB/市值）
+  GET /api/stock/news/{symbol}           → 消息面（新闻情绪分 + 相关快讯）
 
 ★ 重点：/technical 接口计算了 5 大经典技术指标，这些指标的数学原理见下方注释。
        计算结果会被评分引擎 engine.py 消费。
@@ -17,6 +18,7 @@
 
 from fastapi import APIRouter, Query
 from datetime import datetime
+import time
 import numpy as np
 from app.tencent import get_stock, get_kline, search_stocks, _CODE_TO_PREFIX, _cache
 
@@ -232,6 +234,34 @@ async def stock_fundamental(symbol: str):
             "换手率": info.get("turnover_rate", 0),
         },
     }
+
+
+# 消息面结果缓存：{code: {data, ts}}，TTL 60s（防详情页重复请求重复打分）
+_news_cache = {}
+
+
+@router.get("/news/{symbol}")
+async def stock_news(symbol: str):
+    """
+    消息面：个股新闻情绪分 + 相关快讯列表（阶段 1：东财快讯 + 关键词规则）。
+    独立维度，不进入综合总分。结果缓存 60s。
+    """
+    now = time.time()
+    c = _news_cache.get(symbol)
+    if c and now - c["ts"] < 60:
+        return c["data"]
+    items = []
+    try:
+        from app.eastmoney_news import get_stock_news
+        from app.news_sentiment import score_stock_news
+        items = get_stock_news(symbol)
+        result = score_stock_news(items)
+    except Exception as e:
+        print(f"[stock_news] {symbol} 消息面计算失败: {e}")
+        result = {"score": 0, "level": 0, "level_text": "中性", "items": []}
+    result["news_count"] = len(items)
+    _news_cache[symbol] = {"data": result, "ts": now}
+    return result
 
 
 @router.get("/anomalies")
