@@ -29,6 +29,8 @@
 import requests
 import time
 import threading
+import json
+import re
 
 # requests.Session 复用连接池，性能更好（类比 axios.create()）
 _session = requests.Session()
@@ -187,6 +189,9 @@ def get_sectors(kind: str = "industry", limit: int = 200) -> list:
                 "leader_change_pct": _to_float(d.get("f136")),
                 "leader_code": d.get("f140", ""),
             })
+        if not out:
+            print(f"[eastmoney] 东财板块列表为空，降级新浪 {kind}")
+            return _sina_sector_list(kind)
         return out
 
     return _get_cached(f"sectors|{kind}|{limit}", TTL_SECTOR, loader)
@@ -227,7 +232,11 @@ def get_sector_flow(kind: str = "industry", limit: int = 200) -> list:
 
     def loader():
         rows = _fetch_clist(fs, _FLOW_FIELDS, fid="f62", order="desc", limit=limit)
-        return [_parse_flow(d) for d in rows]
+        out = [_parse_flow(d) for d in rows]
+        if not out:
+            print(f"[eastmoney] 东财板块资金流为空，降级新浪 {kind}")
+            return _sina_sector_flow(kind)
+        return out
 
     return _get_cached(f"sector_flow|{kind}|{limit}", TTL_FLOW, loader)
 
@@ -311,3 +320,96 @@ def get_northbound() -> dict:
         }
 
     return _get_cached("northbound", TTL_NORTH, loader)
+
+
+# ================================================================
+#  新浪降级源（板块数据兜底）
+# ================================================================
+# 东财 push2 偶发限流 / 字段调整（板块数据不稳定的主因）。这里加新浪财经兜底：
+#   - 板块列表：newSinaHy.php（行业）/ newFLJK.php?param=class（概念）
+#   - 板块资金流：MoneyFlow.ssl_bkzj_zjlrqs（fenlei=0 行业 / 1 概念，按日）
+# 新浪 = 宏观面板（macro.py hq.sinajs.cn）同源，长期稳定；老接口响应为 GBK 需显式解码。
+# 触发条件：东财抓取失败 / 返回空列表（交易日东财板块资金流周末返回全 0 行而非空，不误触）。
+
+_SINA_SESSION = requests.Session()
+_SINA_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://finance.sina.com.cn",
+})
+
+
+def _sina_get(url: str, params: dict = None) -> str:
+    """抓取新浪接口文本（显式 GBK 解码）。失败返回空串，绝不抛异常。"""
+    try:
+        r = _SINA_SESSION.get(url, params=params, timeout=10)
+        r.encoding = "gbk"
+        return r.text
+    except Exception as e:
+        print(f"[eastmoney] 新浪抓取失败 {url}: {e}")
+        return ""
+
+
+def _sina_sector_list(kind: str) -> list:
+    """新浪板块列表（行业/概念）。字段布局（13 列，经实测验证）：
+    代码,名称,家数,均价,涨跌额,涨跌幅%,成交量,成交额,领涨股代码,领涨涨幅,领涨价,领涨额,领涨名。
+    新浪口径行业 49 个、概念 175 个（比东财少），无涨跌家数/换手率 → 兜底 0。"""
+    url = ("https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php"
+           if kind == "industry"
+           else "http://money.finance.sina.com.cn/q/view/newFLJK.php")
+    params = None if kind == "industry" else {"param": "class"}
+    text = _sina_get(url, params)
+    m = re.search(r"= (\{.*?\});?\s*$", text, re.S) if text else None
+    if not m:
+        return []
+    try:
+        data = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for v in data.values():
+        p = v.split(",")
+        if len(p) < 13:
+            continue
+        out.append({
+            "code": p[0],
+            "name": p[1],
+            "price": _to_float(p[3]),
+            "change_pct": _to_float(p[5]),
+            "change_amt": _to_float(p[4]),
+            "turnover_rate": 0.0,
+            "up_count": 0,
+            "down_count": 0,
+            "leader": p[12],
+            "leader_change_pct": _to_float(p[9]),
+            "leader_code": p[8],
+        })
+    return out
+
+
+def _sina_sector_flow(kind: str) -> list:
+    """新浪板块资金流（按日，仅当日有效，周末/盘前为空属正常）。
+    字段：netamount 主力净流入(元) / ratioamount 净占比 / r0-r3 超大单、大、中、小单。"""
+    text = _sina_get(
+        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_zjlrqs",
+        {"page": "1", "num": "300", "sort": "netamount", "asc": "0",
+         "fenlei": "0" if kind == "industry" else "1"})
+    if not text:
+        return []
+    try:
+        rows = json.loads(text)
+    except (ValueError, TypeError):
+        return []
+    out = []
+    for d in rows:
+        out.append({
+            "code": d.get("code", ""),
+            "name": d.get("name", ""),
+            "change_pct": _to_float(d.get("changeratio")),
+            "net_inflow": _to_float(d.get("netamount")),
+            "net_inflow_pct": _to_float(d.get("ratioamount")),
+            "super_large_net": _to_float(d.get("r0_net")),
+            "large_net": _to_float(d.get("r1_net")),
+            "medium_net": _to_float(d.get("r2_net")),
+            "small_net": _to_float(d.get("r3_net")),
+        })
+    return out

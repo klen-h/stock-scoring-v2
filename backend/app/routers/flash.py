@@ -10,6 +10,7 @@ URL 前缀 /api/flash：
   GET  /api/flash/signals              → 信号跟踪（活跃/历史/绩效/被拒）
   POST /api/flash/ingest               → 手动触发一轮快讯轮询（测试用）
   POST /api/flash/review/{phase}/run   → 手动触发一次复盘（测试用）
+  POST /api/flash/wechat-test        → 企微推送连通性测试（测试用）
   GET  /api/flash/status               → 调度器状态与配置
 ================================================================================
 """
@@ -20,7 +21,7 @@ import os
 import uuid
 from datetime import datetime
 
-from app.flash import store, service, scheduler
+from app.flash import store, service, scheduler, wechat
 from app.signals import tracker
 
 router = APIRouter()
@@ -218,6 +219,24 @@ def flash_notifications(since: str = ""):
     events.extend(health.recent_alerts(since))
     events.sort(key=lambda x: x.get("time") or "")
     return {"events": events[-20:], "now": _dt.now().isoformat()}
+
+
+@router.post("/wechat-test")
+def flash_wechat_test():
+    """企微推送连通性测试：立即向配置的 webhook 发一条验证消息（测试用）。
+
+    部署后可用 curl -X POST https://<你的服务地址>/api/flash/wechat-test 验证
+    线上实例的 WECHAT_WEBHOOK 是否有效；企微群收到消息即代表通道正常。
+    """
+    if not wechat.WECHAT_WEBHOOK:
+        return {"ok": False, "error": "未配置 WECHAT_WEBHOOK 环境变量"}
+    content = ("## ✅ 企微推送连通性测试\n"
+               f"> **实例：** {os.environ.get('RENDER_INSTANCE_ID', 'local')}\n"
+               f"> **时间：** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+               f"> 收到此消息说明本实例的 WECHAT_WEBHOOK 配置有效，任务失败提醒将正常送达。")
+    ok = wechat._send(content, "wechat-test")
+    return {"ok": ok, "webhook_configured": True,
+            "webhook_prefix": wechat.WECHAT_WEBHOOK[:45] + "..."}
 
 
 @router.get("/status")

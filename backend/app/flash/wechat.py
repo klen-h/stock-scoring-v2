@@ -14,6 +14,10 @@ import requests
 WECHAT_WEBHOOK = os.environ.get("WECHAT_WEBHOOK", "")
 MAX_CONTENT_BYTES = 4000
 
+# 业务推送开关：诊断/复盘/信号提醒等日常推送。只需要任务失败提醒时保持关闭，
+# 设 WECHAT_BUSINESS_ALERTS=1 可恢复全部日常推送（失败提醒不受此开关限制）。
+BUSINESS_ALERTS_ENABLED = os.environ.get("WECHAT_BUSINESS_ALERTS", "0") == "1"
+
 _session = requests.Session()
 
 
@@ -25,11 +29,12 @@ def _send(content: str, label: str) -> bool:
                           json={"msgtype": "markdown", "markdown": {"content": content}},
                           timeout=30)
         ok = r.json().get("errcode") == 0
-        print(f"[wechat] [{'✅' if ok else '❌'}] {label}")
-        return ok
     except Exception as e:
         print(f"[wechat] {label} 推送失败: {e}")
         return False
+    # print 放 try 外，避免控制台编码问题（如 Windows GBK 下的 emoji）影响发送结果
+    print(f"[wechat] [{'OK' if ok else 'FAIL'}] {label}")
+    return ok
 
 
 def _truncate(text: str, max_bytes: int) -> str:
@@ -40,9 +45,12 @@ def _truncate(text: str, max_bytes: int) -> str:
     return raw[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def push_markdown_batched(title: str, content: str) -> None:
-    """按段落边界分批推送长 Markdown（每批 ≤4KB，标题带序号）。"""
+def push_markdown_batched(title: str, content: str, force: bool = False) -> None:
+    """按段落边界分批推送长 Markdown（每批 ≤4KB，标题带序号）。
+    force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。"""
     if not WECHAT_WEBHOOK:
+        return
+    if not force and not BUSINESS_ALERTS_ENABLED:
         return
     full = f"## {title}\n---\n{content}"
     if len(full.encode("utf-8")) <= MAX_CONTENT_BYTES:
@@ -65,6 +73,8 @@ def push_markdown_batched(title: str, content: str) -> None:
 def push_analysis(analysis: dict, clusters: list) -> None:
     """诊断流三段推送：诊断+情景 / 重点事件 / 策略+合规。"""
     if not WECHAT_WEBHOOK:
+        return
+    if not BUSINESS_ALERTS_ENABLED:
         return
     diag = analysis.get("diagnostic_status") or {}
     corr = analysis.get("correlation_diagnosis") or {}
@@ -107,6 +117,8 @@ def push_analysis(analysis: dict, clusters: list) -> None:
 def push_alerts(alerts: dict) -> None:
     """信号跟踪提醒（入场/出场/接近目标）。"""
     if not WECHAT_WEBHOOK:
+        return
+    if not BUSINESS_ALERTS_ENABLED:
         return
     lines = []
     for a in alerts.get("entries", []):

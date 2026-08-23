@@ -43,6 +43,7 @@ status = {
     "last_track": None,
     "last_reviews": {},          # {phase: 时间}
     "last_backtest_backfill": None,
+    "last_score_snapshot": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
         "track_interval_sec": TRACK_INTERVAL,
@@ -51,6 +52,28 @@ status = {
         "wechat_configured": bool(WECHAT_WEBHOOK),
     },
 }
+
+
+# 任务失败企微提醒：当天每任务最多一次（防刷屏）
+_failure_notified = set()
+
+
+def _notify_failure(task: str, err: str):
+    """核心定时任务失败 → 企微推送。当天同一任务只提醒一次。"""
+    today = rules.beijing_now().strftime("%Y-%m-%d")
+    key = f"{task}|{today}"
+    if key in _failure_notified:
+        return
+    _failure_notified.add(key)
+    try:
+        from app.flash.wechat import push_markdown_batched
+        push_markdown_batched(
+            f"⚠️ {task}失败",
+            f"> **任务：** {task}\n> **时间：** {rules.beijing_now().strftime('%H:%M')}\n"
+            f"> **错误：** {err}\n\n请查看后端日志排查（数据源可能临时不可用，次日窗口内自动重试）。",
+            force=True)
+    except Exception as e:
+        print(f"[scheduler] 企微通知失败: {e}")
 
 
 async def _run_sync(fn, *args):
@@ -173,6 +196,7 @@ async def macro_daily_loop():
                       f"(数据截至 {snap.get('data_time')})")
             except Exception as e:
                 print(f"[scheduler] 宏观每日快照生成失败: {e}")
+                _notify_failure("宏观每日快照", str(e))
         await asyncio.sleep(60)
 
 
@@ -269,6 +293,60 @@ async def backtest_prices_refresh_loop():
                 print(f"[scheduler] 回测价格回填完成: {stats}")
             except Exception as e:
                 print(f"[scheduler] 回测价格回填失败: {e}")
+                _notify_failure("回测价格回填", str(e))
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
+# ── 评分排行快照每日保存 ──
+SCORE_SNAPSHOT_WINDOW = (915, 1020)   # 北京时间 15:15-17:00（收盘后评分稳定，窗口宽支持补跑）
+
+async def score_snapshot_loop():
+    """
+    每日盘后主动拉取评分 Top50 并记录快照（ranking_history 表）。
+    此前排行记录只在用户访问评分页时被动写入（score_top 的 background_tasks）——
+    页面不开当天就没快照、失败也无感知。本任务不依赖页面：主动请求与
+    /score/batch/top 同源的 score_top()，失败重试 3 次，仍失败企微提醒。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "score_snapshot"
+        if (now.weekday() < 5 and SCORE_SNAPSHOT_WINDOW[0] <= t < SCORE_SNAPSHOT_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发评分排行快照")
+            last_err = ""
+            for attempt in range(1, 4):   # 最多 3 次，间隔 90s（给行情缓存刷新留时间）
+                try:
+                    from app.tencent import _cache
+                    if not _cache.get("stocks"):
+                        # Render 休眠唤醒后内存缓存可能为空：先全量刷新（约 1-2 分钟）
+                        print("[scheduler] 行情缓存为空，先刷新全量行情")
+                        from app.tencent import refresh_all_stocks
+                        await asyncio.to_thread(refresh_all_stocks)
+                    from app.routers.scoring import score_top
+                    result = await score_top(limit=50)
+                    if result.get("data"):
+                        # score_top 在调度器上下文 background_tasks=None 不会自动记录，
+                        # 这里显式写入 ranking_history（ON CONFLICT 幂等）
+                        from app.scoring.ranking_history import record_daily_ranking
+                        stocks = [
+                            {"code": r["code"], "name": r["name"],
+                             "total_score": r["total_score"], "signal": r["signal"],
+                             "rank": i + 1}
+                            for i, r in enumerate(result["data"])
+                        ]
+                        count = await asyncio.to_thread(record_daily_ranking, stocks)
+                        store.mark_schedule_done(task_key)
+                        status["last_score_snapshot"] = rules.beijing_now().isoformat()
+                        print(f"[scheduler] 评分快照已保存: {count} 条")
+                        break
+                    last_err = f"第{attempt}次返回空（cache_status={result.get('cache_status')}）"
+                except Exception as e:
+                    last_err = f"第{attempt}次异常: {e}"
+                print(f"[scheduler] 评分快照{last_err}，90s 后重试")
+                await asyncio.sleep(90)
+            else:
+                _notify_failure("评分排行快照", last_err or "未知错误")
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
@@ -284,9 +362,11 @@ async def start():
              asyncio.create_task(stock_cache_refresh_loop()),
              asyncio.create_task(kline_cache_refresh_loop()),
              asyncio.create_task(indicator_cache_refresh_loop()),
-             asyncio.create_task(backtest_prices_refresh_loop())]
+             asyncio.create_task(backtest_prices_refresh_loop()),
+             asyncio.create_task(score_snapshot_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
-          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / "
+          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
+          f"回测价格每日15:40 / 评分快照每日15:15 / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")
