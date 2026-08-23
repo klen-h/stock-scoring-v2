@@ -11,6 +11,10 @@ services:
     # 本项目是常驻后台任务型应用，长期建议 starter 计划 + 磁盘。
     plan: free
     branch: main
+    # rootDir=backend：Dockerfile 在 backend/ 下（仓库根没有 Dockerfile），
+    # 不设此项时 Blueprint 按仓库根找 ./Dockerfile 会构建失败；
+    # 且控制台手动改 Root Directory 会造成配置漂移、自动部署停摆。
+    rootDir: backend
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /api/health
