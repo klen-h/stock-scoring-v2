@@ -46,6 +46,7 @@ status = {
     "last_score_snapshot": None,
     "last_market_snapshot": None,
     "last_news_alert": None,
+    "last_news_history": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
         "track_interval_sec": TRACK_INTERVAL,
@@ -392,6 +393,13 @@ NEWS_ALERT_THRESHOLD = -4    # 新闻分 ≤ -4（强烈负面）才推送，避
 _news_alerted = {"date": "", "codes": set()}   # 同一股票同一自然日最多推一次（内存频控）
 
 
+def _news_alert_markdown(name: str, code: str, score: float, items: list) -> str:
+    """拼装负面消息提醒正文（抽出便于干跑验证格式）。"""
+    top = "\n".join(f"> - {it['title']}" for it in (items or [])[:3]) or "> - （无情绪倾向条目）"
+    return (f"> **{name}({code})** 新闻分 **{score}**（强烈负面）\n"
+            f"> **相关快讯：**\n{top}\n\n关键词规则打分仅供参考，不构成买卖建议。")
+
+
 def _check_holding_news_once():
     """扫描合并持仓的新闻分，强烈负面且当日未提醒过 → 企微推送。
     推送走 push_markdown_batched（force=False），受 WECHAT_BUSINESS_ALERTS 开关控制。
@@ -416,13 +424,9 @@ def _check_holding_news_once():
         res = score_stock_news(get_stock_news(code))
         if res["score"] <= NEWS_ALERT_THRESHOLD:
             _news_alerted["codes"].add(code)
-            top = "\n".join(f"> - {it['title']}" for it in res["items"][:3]) or "> - （无情绪倾向条目）"
-            alerts.append((r.get("name") or code, code, res["score"], top))
-    for name, code, score, top in alerts:
-        push_markdown_batched(
-            f"🚨 持仓负面消息 {name}",
-            f"> **{name}({code})** 新闻分 **{score}**（强烈负面）\n"
-            f"> **相关快讯：**\n{top}\n\n关键词规则打分仅供参考，不构成买卖建议。")
+            alerts.append((r.get("name") or code, code, res["score"], res["items"]))
+    for name, code, score, items in alerts:
+        push_markdown_batched(f"🚨 持仓负面消息 {name}", _news_alert_markdown(name, code, score, items))
     return len(alerts)
 
 
@@ -440,6 +444,68 @@ async def news_alert_loop():
         await asyncio.sleep(NEWS_ALERT_INTERVAL)
 
 
+# ── 消息分每日历史快照（阶段 3 回测的数据积累）──
+NEWS_HISTORY_WINDOW = (920, 1020)   # 北京时间 15:20-17:00（与评分快照同窗口，宽窗口支持补跑）
+
+
+def take_news_snapshot_once() -> int:
+    """
+    给「持仓股 + 评分 Top50」算当日新闻分并落库（news_history）。
+    同步函数，由调度器丢线程池执行。逐只调搜索/快讯接口，间隔 0.3s 防限流。
+    返回写入条数。
+    """
+    import time as _time
+    from app.database import db
+    from app.eastmoney_news import get_stock_news
+    from app.news_sentiment import score_stock_news
+    from app.news_history import record_news_snapshot
+
+    # 股票池：持仓股 + 当日评分 Top50（直接读 ranking_history，避免重算评分）
+    today = rules.beijing_now().strftime("%Y-%m-%d")
+    pool = {}
+    for r in db.fetch("SELECT DISTINCT code, name FROM user_portfolio") or []:
+        pool[r["code"]] = r.get("name") or ""
+    for r in db.fetch("""SELECT code, name FROM ranking_history
+                         WHERE rank_date = %s ORDER BY rank_pos LIMIT 50""", (today,)) or []:
+        pool.setdefault(r["code"], r.get("name") or "")
+
+    rows = []
+    for code, name in pool.items():
+        try:
+            items = get_stock_news(code)
+            res = score_stock_news(items)
+            rows.append({"code": code, "name": name, "score": res["score"],
+                         "level": res["level"], "level_text": res["level_text"],
+                         "news_count": len(items)})
+        except Exception as e:
+            print(f"[scheduler] 消息快照 {code} 计算失败: {e}")
+        _time.sleep(0.3)
+    return record_news_snapshot(rows)
+
+
+async def news_history_loop():
+    """工作日盘后保存消息分历史快照（幂等，错过窗口当日可补跑）。失败不吵：
+    非核心任务（不影响当日功能），仅打印日志，窗口内每 5 分钟自然重试。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "news_history"
+        if (now.weekday() < 5 and NEWS_HISTORY_WINDOW[0] <= t < NEWS_HISTORY_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发消息分每日快照")
+            try:
+                n = await asyncio.to_thread(take_news_snapshot_once)
+                if n:
+                    store.mark_schedule_done(task_key)
+                    status["last_news_history"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 消息分快照已保存: {n} 只")
+                else:
+                    print("[scheduler] 消息分快照写入 0 条，稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 消息分快照失败: {e}")
+        await asyncio.sleep(300)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -455,10 +521,12 @@ async def start():
              asyncio.create_task(backtest_prices_refresh_loop()),
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
-             asyncio.create_task(news_alert_loop())]
+             asyncio.create_task(news_alert_loop()),
+             asyncio.create_task(news_history_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
-          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 持仓负面消息盘中每10分钟 / "
+          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
+          f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

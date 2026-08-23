@@ -238,6 +238,31 @@ async def stock_fundamental(symbol: str):
 
 # 消息面结果缓存：{code: {data, ts}}，TTL 60s（防详情页重复请求重复打分）
 _news_cache = {}
+# 消息分历史缓存：TTL 300s（每日才更新一次，不需要频繁查库）
+_news_history_cache = {}
+
+
+# 注意：/news/{symbol}/history 必须定义在 /news/{symbol} 之前，
+# 否则 "history" 会被 {symbol} 捕获。
+@router.get("/news/{symbol}/history")
+async def stock_news_history(symbol: str, days: int = 30):
+    """消息分历史快照（每日盘后落库，供详情页走势图与阶段 3 回测）。
+    无数据返回空列表（首次快照在下一个工作日 15:20 后生成）。缓存 300s。"""
+    key = f"{symbol}:{days}"
+    now = time.time()
+    c = _news_history_cache.get(key)
+    if c and now - c["ts"] < 300:
+        return c["data"]
+    try:
+        from app.news_history import get_news_history
+        items = get_news_history(symbol, min(max(days, 1), 90))
+    except Exception as e:
+        print(f"[stock_news_history] {symbol} 读取失败: {e}")
+        items = []
+    result = {"code": symbol, "history": items}
+    if items:
+        _news_history_cache[key] = {"data": result, "ts": now}
+    return result
 
 
 @router.get("/news/{symbol}")

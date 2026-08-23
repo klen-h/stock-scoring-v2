@@ -110,6 +110,7 @@ export const getStockKline = (symbol, params) => http.get(`/stock/kline/${symbol
 export const getStockRealtime = (symbol) => http.get(`/stock/realtime/${symbol}`)
 export const getStockFundamental = (symbol) => http.get(`/stock/fundamental/${symbol}`)
 export const getStockNews = (symbol) => http.get(`/stock/news/${symbol}`)
+export const getStockNewsHistory = (symbol, days = 30) => http.get(`/stock/news/${symbol}/history`, { params: { days } })
 export const getStockTechnical = (symbol, period = 'day') => http.get(`/stock/technical/${symbol}`, { params: { period } })
 export const searchStock = (keyword) => http.get('/stock/search', { params: { keyword } })
 

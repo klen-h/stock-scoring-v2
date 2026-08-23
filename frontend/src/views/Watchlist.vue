@@ -140,6 +140,11 @@
                 <a :href="getXueqiuUrl(row.item.code)" target="_blank" rel="noopener"
                    class="hover:text-accent hover:underline" title="在雪球查看">{{ row.item.code }}</a>
               </div>
+              <span v-if="newsScores[row.item.code]" class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px]"
+                :class="newsBadgeClass(newsScores[row.item.code].level)"
+                :title="`消息面 ${newsScores[row.item.code].score} 分（关键词规则打分，独立维度不进总分）`">
+                消息 {{ newsScores[row.item.code].level_text }}
+              </span>
               <div v-if="row.item.note" class="text-[10px] text-muted mt-0.5">{{ row.item.note }}</div>
             </td>
             <!-- 现价 -->
@@ -228,10 +233,14 @@ import {
   checkWatchlistNotify,
 } from '../composables/useNotifications'
 import { getXueqiuUrl } from '../composables/stockUtils'
+import { useNewsBadges } from '../composables/useNewsBadges'
 
 const router = useRouter()
 
 const { watchlist, WATCH_CONFIG } = useWatchlist()
+
+// ── 消息面徽章（逐只加载一次，后端 60s 缓存；不随行情轮询重拉）──
+const { newsScores, loadNews, newsBadgeClass } = useNewsBadges()
 
 // ── 实时行情 & 评分缓存 ──
 const realtimeMap = ref({})
@@ -371,6 +380,7 @@ async function refresh() {
   if (!watchlist.value.length) return
   loading.value = true
   countdown.value = 0
+  loadNews(watchlist.value.map(w => w.code))
 
   const realtimePromises = watchlist.value.map(w =>
     getStockRealtime(w.code).then(({ data }) => {

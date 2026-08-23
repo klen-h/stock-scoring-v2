@@ -144,6 +144,11 @@
         </div>
       </div>
       <div v-else class="text-xs text-muted">近 3 天无该股票的情绪倾向新闻（共匹配 {{ newsData.news_count }} 条快讯）</div>
+      <div v-if="newsHistory.length >= 2" class="mt-2">
+        <div class="text-[10px] text-muted mb-1">消息分走势（每日盘后快照）</div>
+        <div ref="newsSparkRef" style="height: 48px"></div>
+      </div>
+      <div v-else class="mt-2 text-[10px] text-muted">历史走势：数据积累中（首个快照于工作日 15:20 后生成）</div>
       <div class="mt-3 text-[11px] text-muted">东财 7×24 快讯 + 关键词规则打分（72h 衰减）；独立维度不进总分，仅供参考</div>
     </div>
 
@@ -260,7 +265,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory } from '../api'
 
 const route = useRoute()
 const code = route.params.code
@@ -281,6 +286,10 @@ const rsiSignals = ref(null)
 
 // 消息面（独立维度，异步加载不阻塞主数据）
 const newsData = ref(null)
+// 消息分历史快照（每日盘后落库，画走势图用）
+const newsHistory = ref([])
+const newsSparkRef = ref(null)
+let newsSparkChart = null
 
 const klineChartRef = ref(null)
 let charts = []
@@ -345,6 +354,32 @@ const newsLevelClass = computed(() => ({
   1: 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20',
   2: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
 }[newsData.value?.level ?? 0]))
+
+// ── 消息分走势小图（历史 ≥ 2 天才有意义）──
+function renderNewsSpark() {
+  if (!newsSparkRef.value || newsHistory.value.length < 2) return
+  if (newsSparkChart) newsSparkChart.dispose()
+  const c = echarts.init(newsSparkRef.value, 'dark')
+  c.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 28, right: 8, top: 6, bottom: 16 },
+    xAxis: { type: 'category', data: newsHistory.value.map(h => (h.date || '').slice(5)),
+      axisLabel: { fontSize: 9, color: '#8b949e' }, axisLine: { lineStyle: { color: '#30363d' } } },
+    yAxis: { type: 'value', min: -10, max: 10, splitNumber: 2,
+      axisLabel: { fontSize: 9, color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+    tooltip: { trigger: 'axis', formatter: p => `${p[0].axisValue}<br/>消息分 ${p[0].value}` },
+    series: [{
+      type: 'line', data: newsHistory.value.map(h => h.score), smooth: true,
+      symbol: 'circle', symbolSize: 4,
+      lineStyle: { color: '#58a6ff', width: 1.5 }, itemStyle: { color: '#58a6ff' },
+      markLine: { silent: true, symbol: 'none', label: { show: false },
+        data: [{ yAxis: 0 }], lineStyle: { color: '#30363d', type: 'dashed' } },
+    }],
+  })
+  newsSparkChart = c
+  charts.push(c)
+}
+watch(newsHistory, () => nextTick(renderNewsSpark))
 
 // ── 支撑阻力 + RSI 显示辅助 ──
 const srBarBg = computed(() => {
@@ -539,6 +574,7 @@ function renderKline() {
 onMounted(async () => {
   // 消息面独立加载（首次需拉东财快讯，不阻塞主数据渲染）
   getStockNews(code).then(({ data }) => { newsData.value = data }).catch(() => {})
+  getStockNewsHistory(code, 30).then(({ data }) => { newsHistory.value = data.history || [] }).catch(() => {})
   try {
     const [info, fund, score, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),

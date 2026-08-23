@@ -167,6 +167,11 @@
                    class="hover:text-accent hover:underline"
                    title="在雪球查看">{{ row.position.code }}</a>
               </div>
+              <span v-if="newsScores[row.position.code]" class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px]"
+                :class="newsBadgeClass(newsScores[row.position.code].level)"
+                :title="`消息面 ${newsScores[row.position.code].score} 分（关键词规则打分，独立维度不进总分）`">
+                消息 {{ newsScores[row.position.code].level_text }}
+              </span>
               <div v-if="row.position.note" class="text-[10px] text-muted mt-0.5">{{ row.position.note }}</div>
             </td>
             <!-- 现价 -->
@@ -386,6 +391,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getStockRealtime, getStockScore, searchStock, getStockTechnical } from '../api'
+import { useNewsBadges } from '../composables/useNewsBadges'
 import {
   addPosition, removePosition, updatePosition,
   calcProfit, evaluateAlerts, evaluatePositionAction, calcPositionSize, updateHighWaterMark, useSummary,
@@ -584,11 +590,15 @@ async function handleImport(e) {
   e.target.value = ''
 }
 
+// ── 消息面徽章（逐只加载一次，后端 60s 缓存；不随行情轮询重拉）──
+const { newsScores, loadNews, newsBadgeClass } = useNewsBadges()
+
 // ── 刷新行情 & 评分 ──
 async function refresh() {
   if (!positions.value.length) return
   loading.value = true
   countdown.value = 0
+  loadNews(positions.value.map(p => p.code))
 
   // 并发拉取所有持仓的实时行情（allSettled 容错：单只失败不影响整体）
   const realtimePromises = positions.value.map(p =>
