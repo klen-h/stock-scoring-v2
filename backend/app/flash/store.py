@@ -412,3 +412,43 @@ def is_schedule_done(task: str, date_str: str = None) -> bool:
         (task,)
     )
     return row and row["done_date"] == date
+
+
+# ================================================================
+#  全市场行情收盘快照（盘后/周末免刷新 + _valid_codes 持久化）
+# ================================================================
+
+def save_market_snapshot(stocks: dict, valid_codes: list) -> bool:
+    """保存全市场行情收盘快照（单行覆盖，key='latest'）。
+    stocks: _cache['stocks'] 全量字典；valid_codes: [(prefix, code), ...]。
+    成功返回 True。
+    """
+    if not stocks:
+        return False
+    try:
+        db.upsert("market_snapshot", {
+            "key": "latest",
+            "stocks_json": json.dumps(stocks, ensure_ascii=False),
+            "valid_codes_json": json.dumps(valid_codes, ensure_ascii=False),
+            "saved_at": _now_iso(),
+        }, conflict_columns=["key"])
+        return True
+    except Exception as e:
+        print(f"[store] 保存行情收盘快照失败: {e}")
+        return False
+
+
+def load_market_snapshot() -> dict:
+    """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at}；无则空 dict。"""
+    row = db.fetch_one("SELECT * FROM market_snapshot WHERE key = %s", ("latest",))
+    if not row:
+        return {}
+    try:
+        return {
+            "stocks": json.loads(row["stocks_json"]),
+            "valid_codes": json.loads(row["valid_codes_json"]),
+            "saved_at": row.get("saved_at", ""),
+        }
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        print(f"[store] 读取行情收盘快照失败: {e}")
+        return {}

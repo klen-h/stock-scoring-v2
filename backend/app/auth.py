@@ -6,7 +6,7 @@
 JWT Token + bcrypt 密码哈希。
 环境变量：
   JWT_SECRET  JWT 签名密钥（默认随机生成，重启后旧 token 失效）
-  JWT_EXPIRE_HOURS  Token 有效期（默认 72 小时）
+  JWT_EXPIRE_HOURS  Token 有效期（默认 87600 小时 = 10 年，实现"永久登录"）
 ================================================================================
 """
 
@@ -29,7 +29,8 @@ if not JWT_SECRET:
     JWT_SECRET = hashlib.sha256(f"stock-scoring-{_machine_id}-secret-2026".encode()).hexdigest()
 
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "72"))
+# 默认 10 年（87600 小时）—— 个人项目无需频繁重新登录；如需调整可在 Render 控制台设 JWT_EXPIRE_HOURS
+JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "87600"))
 
 # 密码哈希（使用 SHA-256 + salt）
 import secrets

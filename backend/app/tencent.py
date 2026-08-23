@@ -332,6 +332,63 @@ def refresh_all_stocks(force: bool = False):
         return stocks
 
 
+# ================================================================
+#  收盘快照持久化（盘后/周末免刷新 + _valid_codes 跨重启恢复）
+# ================================================================
+# 背景：全市场首次全量扫描需 2-4 分钟，但 A 股数据仅盘中有时效性。
+#   方案 A：交易日收盘后把全量行情存快照，盘后/周末直接恢复，不再扫描。
+#   方案 C：快照同时存 _valid_codes，重启后增量刷新（~4000 只）而非全量（12000 只）。
+# 存储用数据库（跨 Render 部署持久；文件会被清空）。
+
+def save_market_snapshot() -> bool:
+    """把当前内存缓存的全量行情 + _valid_codes 存为收盘快照（调度器收盘后调用）。"""
+    try:
+        from app.flash import store
+    except Exception as e:
+        print(f"[snapshot] 无法导入 store: {e}")
+        return False
+    stocks = _cache.get("stocks", {})
+    if not stocks:
+        print("[snapshot] 缓存为空，跳过快照保存")
+        return False
+    ok = store.save_market_snapshot(stocks, _valid_codes)
+    if ok:
+        print(f"[snapshot] 收盘快照已保存: {len(stocks)} 只股票 + {len(_valid_codes)} 个有效代码")
+    return ok
+
+
+def restore_market_snapshot(restore_stocks: bool = True) -> bool:
+    """从数据库收盘快照恢复内存状态（启动时调用）。
+
+    无论何时都恢复 _valid_codes（方案 C：让重启后的刷新走增量而非全量）。
+    仅当 restore_stocks=True（盘后/周末）时才恢复全量行情——盘中恢复昨日收盘数据会误导。
+    返回是否成功恢复了全量行情。
+    """
+    try:
+        from app.flash import store
+    except Exception as e:
+        print(f"[snapshot] 无法导入 store: {e}")
+        return False
+    global _valid_codes
+    snap = store.load_market_snapshot()
+    if not snap:
+        print("[snapshot] 无收盘快照，首次将全量扫描")
+        return False
+    # _valid_codes 总是恢复（重启后增量刷新的关键）
+    vc = snap.get("valid_codes") or []
+    if vc:
+        _valid_codes = [(p, c) for p, c in vc]
+    if restore_stocks and snap.get("stocks"):
+        with _cache["lock"]:
+            _cache["stocks"] = snap["stocks"]
+            _cache["last_update"] = time.time()   # 标记为新鲜，避免 overview 误判过期
+        print(f"[snapshot] 已从收盘快照恢复行情: {len(snap['stocks'])} 只 "
+              f"(快照时间 {snap.get('saved_at')})")
+        return True
+    print(f"[snapshot] 已恢复 {len(_valid_codes)} 个有效代码（行情待盘中刷新）")
+    return False
+
+
 def get_stock(code: str) -> dict:
     """获取单只股票实时行情。code 是纯数字代码如 "000001"。"""
     # 根据代码反查市场前缀（sh/sz）；查不到则按代码首位推断（0/3 开头是深市，其余沪市）

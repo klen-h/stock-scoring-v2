@@ -44,6 +44,7 @@ status = {
     "last_reviews": {},          # {phase: 时间}
     "last_backtest_backfill": None,
     "last_score_snapshot": None,
+    "last_market_snapshot": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
         "track_interval_sec": TRACK_INTERVAL,
@@ -350,6 +351,40 @@ async def score_snapshot_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 全市场行情收盘快照（盘后/周末免刷新）──
+MARKET_SNAPSHOT_WINDOW = (905, 935)   # 北京时间 15:05-15:35（收盘后数据稳定，窗口宽支持补跑）
+
+async def market_snapshot_loop():
+    """
+    交易日收盘后保存全市场行情快照（方案 A）+ 持久化 _valid_codes（方案 C）。
+    A 股数据仅盘中有时效性：盘后/周末/重启后直接从快照恢复内存缓存，
+    避免 2-4 分钟全量扫描，/api/market/overview 首页秒开。
+    保存前先确保缓存有收盘数据（为空则先增量刷新）。幂等（当日一次）。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "market_snapshot"
+        if (now.weekday() < 5 and MARKET_SNAPSHOT_WINDOW[0] <= t < MARKET_SNAPSHOT_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发全市场行情收盘快照")
+            try:
+                from app.tencent import _cache, refresh_all_stocks, save_market_snapshot
+                # 缓存为空（如 Render 休眠唤醒）→ 先增量刷新拿收盘数据（_valid_codes 已在则走增量）
+                if not _cache.get("stocks"):
+                    await asyncio.to_thread(refresh_all_stocks)
+                ok = await asyncio.to_thread(save_market_snapshot)
+                if ok:
+                    store.mark_schedule_done(task_key)
+                    status["last_market_snapshot"] = rules.beijing_now().isoformat()
+                else:
+                    print("[scheduler] 行情快照保存返回失败，稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 行情快照保存失败: {e}")
+                _notify_failure("行情收盘快照", str(e))
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -363,10 +398,11 @@ async def start():
              asyncio.create_task(kline_cache_refresh_loop()),
              asyncio.create_task(indicator_cache_refresh_loop()),
              asyncio.create_task(backtest_prices_refresh_loop()),
-             asyncio.create_task(score_snapshot_loop())]
+             asyncio.create_task(score_snapshot_loop()),
+             asyncio.create_task(market_snapshot_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
-          f"回测价格每日15:40 / 评分快照每日15:15 / "
+          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

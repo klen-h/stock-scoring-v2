@@ -46,11 +46,12 @@ from app.strategies.router import router as strategies_router
 # lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
 # ──────────────────────────────────────────────────────────────
 _scheduler_tasks = None
+_snapshot_bootstrap = None   # 首份快照引导任务句柄（仅快照建立前使用）
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动时初始化数据库 + 拉起快讯/复盘/信号跟踪三个后台循环，关闭时优雅取消。"""
-    global _scheduler_tasks
+    global _scheduler_tasks, _snapshot_bootstrap
     # 初始化数据库表结构
     from app.database import db
     db.init_tables()
@@ -60,10 +61,34 @@ async def lifespan(app: FastAPI):
         auto_migrate_if_needed()
     except Exception as e:
         print(f"[main] 数据迁移检查失败: {e}")
+    # 行情收盘快照预加载（方案 A + C）：
+    #   盘后/周末 → 恢复全量行情缓存，首页 /api/market/overview 秒开（数据静态无需刷新）
+    #   盘中 → 仅恢复 _valid_codes，让首次刷新走增量（~4000 只）而非全量扫描（12000 只）
+    try:
+        from app.tencent import _is_trading_hours, restore_market_snapshot
+        restored = restore_market_snapshot(restore_stocks=not _is_trading_hours())
+        # 冷启动兜底：盘后/周末且快照尚不存在（首次部署）→ 后台引导一次全量刷新并立即产出首份快照，
+        # 避免“第一份快照产出前重启 = 盘后一直空白”的空档（仅在快照建立前发生一次）。
+        # 盘中不引导：stock_cache_refresh_loop 开盘后会自动填充。
+        if not restored and not _is_trading_hours():
+            async def _bootstrap_snapshot():
+                try:
+                    from app.tencent import refresh_all_stocks, save_market_snapshot
+                    await asyncio.to_thread(refresh_all_stocks)
+                    if await asyncio.to_thread(save_market_snapshot):
+                        print("[main] 首份收盘快照已引导生成")
+                except Exception as e:
+                    print(f"[main] 快照引导失败（不影响服务）: {e}")
+            _snapshot_bootstrap = asyncio.create_task(_bootstrap_snapshot())
+    except Exception as e:
+        print(f"[main] 行情快照恢复失败（降级为正常刷新流程）: {e}")
     from app.flash import scheduler
     _scheduler_tasks = await scheduler.start()
     yield
     scheduler.stop(_scheduler_tasks)
+    # 关闭时取消未完成的快照引导任务（如有）
+    if _snapshot_bootstrap and not _snapshot_bootstrap.done():
+        _snapshot_bootstrap.cancel()
     # 关闭时强制保存K线缓存到磁盘（下次启动可直接恢复，避免重新拉取触发WAF）
     try:
         from app.tencent import _save_kline_cache

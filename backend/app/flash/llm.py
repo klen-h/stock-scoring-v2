@@ -740,8 +740,10 @@ _PHASE_TITLES = {
 
 
 def format_user_holdings() -> str:
-    """用户个股持仓（全部用户合并，轻量字段：代码/名称/成本）→ 提示词文本。
+    """用户个股持仓（全部用户合并）+ 当日实时价格/涨跌幅 → 提示词文本。
     供盘前/午盘/盘后 LLM 做『持仓影响点评』；不参与 ETF 信号体系。
+    附带涨跌幅让点评从“行业相关”升级到“已跌 x%，事件是否已被定价”。
+    行情一次批量请求（腾讯单请求上限内）；失败降级为无行情的基础格式。
     """
     try:
         rows = db.fetch(
@@ -752,11 +754,23 @@ def format_user_holdings() -> str:
         return ""
     if not rows:
         return ""
+    # 批量拉当日行情（非交易时段返回最近收盘价，涨跌幅为最近交易日全天涨跌）
+    quotes = {}
+    try:
+        from app.tencent import get_stocks_batch
+        for info in get_stocks_batch([r["code"] for r in rows[:20]]):
+            quotes[info["code"]] = info
+    except Exception as e:
+        print(f"[llm] 持仓实时行情获取失败（降级为无行情输出）: {e}")
     lines = []
     for r in rows:
         s = f"- {r['name']}({r['code']})"
         if r.get("cost"):
             s += f" 成本{r['cost']}"
+        q = quotes.get(r["code"])
+        if q and q.get("price"):
+            sign = "+" if q["change_pct"] >= 0 else ""
+            s += f" | 现价 {q['price']} 涨跌 {sign}{q['change_pct']}%"
         lines.append(s)
     return "## 用户持仓\n" + "\n".join(lines) + "\n"
 
@@ -788,6 +802,8 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
     if user_holdings:
         holdings_note = ("\n【持仓影响点评要求】若事件链或宏观信息与持仓个股所属行业/题材明确相关，"
                          "请用『⚡ 对您的持仓影响』小节逐只点评（只点评有明确关联的，最多 3 只）；"
+                         "点评时须结合持仓的当日涨跌幅判断事件影响是否已被定价（如利空但已先跌、利好但未涨），"
+                         "盘前时段给出的是最近交易日涨跌，请注明；"
                          "无关联则写『今日事件与持仓无明显直接关联』。"
                          "严禁臆测个股业务与事件的关联，严禁对个股给出买卖指令，个股点评不得进入信号 JSON。\n")
     return f"""【角色定义】

@@ -370,13 +370,23 @@ export function importJSON(file) {
         if (!Array.isArray(arr)) throw new Error('文件格式不正确')
         // 合并导入：按 code 去重，新数据覆盖旧数据
         const map = new Map(positions.value.map(p => [p.code, p]))
+        const imported = []
         for (const item of arr) {
           if (item.code && item.cost && item.shares) {
             map.set(item.code, { ...map.get(item.code), ...item })
+            imported.push(item)
           }
         }
         positions.value = Array.from(map.values())
         saveToStorage()
+        // 导入项同步到数据库（与 addPosition 一致）：否则 LLM 持仓点评读不到，换设备/清缓存会丢；
+        // 单条失败静默，不影响本地导入结果
+        for (const item of imported) {
+          upsertUserPortfolio({
+            code: item.code, name: item.name || item.code,
+            cost: Number(item.cost), shares: Number(item.shares), note: item.note || '',
+          }).catch(() => {})
+        }
         resolve(positions.value.length)
       } catch (err) {
         reject(err)

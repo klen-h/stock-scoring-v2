@@ -23,7 +23,7 @@ import time
 import threading
 from app.tencent import (
     get_index, refresh_all_stocks, get_kline,
-    _cache, BATCH_SIZE, _ALL_CODES,
+    _cache, BATCH_SIZE, _ALL_CODES, _is_trading_hours,
 )
 
 # 创建路由实例。类比 Express：const router = express.Router()
@@ -172,8 +172,10 @@ async def market_overview(background_tasks: BackgroundTasks):
             "total_amount": round(sum(s["amount"] for s in stocks.values()), 2),   # 总成交额
         }
 
-    # ── 第三部分：缓存不存在或过期（>120秒）→ 后台触发刷新 ──
-    if not stocks or datetime.now().timestamp() - _cache.get("last_update", 0) > 120:
+    # ── 第三部分：仅盘中才触发后台刷新（盘后/周末数据静态，无需重拉）──
+    # A 股数据仅盘中有时效性：盘后/周末启动时已从收盘快照恢复缓存（见 main.py），
+    # 这里不再触发全量扫描，避免无意义的 2-4 分钟等待。
+    if _is_trading_hours() and (not stocks or datetime.now().timestamp() - _cache.get("last_update", 0) > 120):
         background_tasks.add_task(refresh_all_stocks)   # 非阻塞，立即返回响应
 
     return result

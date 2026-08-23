@@ -158,6 +158,17 @@ CREATE TABLE IF NOT EXISTS schedule_state (
     done_date TEXT NOT NULL
 );
 
+-- ── 全市场行情收盘快照（盘后/周末免刷新 + _valid_codes 持久化）──
+-- 单行存储（key 固定 'latest'）：每个交易日收盘后由调度器写入。
+-- 盘后/周末/重启后直接从快照恢复内存缓存，避免 2-4 分钟全量扫描。
+-- stocks_json 约 4000 只股票全字段（~1MB），valid_codes_json 为有效代码列表。
+CREATE TABLE IF NOT EXISTS market_snapshot (
+    key TEXT PRIMARY KEY,
+    stocks_json TEXT NOT NULL,
+    valid_codes_json TEXT NOT NULL,
+    saved_at TEXT NOT NULL
+);
+
 -- ── 用户表 ──
 
 CREATE TABLE IF NOT EXISTS users (
