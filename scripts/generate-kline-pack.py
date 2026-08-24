@@ -43,7 +43,6 @@ import requests
 
 # ── 配置 ──
 DEFAULT_DAYS = 150      # K 线天数（需足够长让 EMA26/DEA 系列指标收敛，与后端 500 天历史对齐）
-DEFAULT_TOP = 3000      # 取市值前 N 只
 BATCH_SIZE = 50         # 批量请求行情每批数量
 KLINE_BATCH_SIZE = 10   # K 线请求并发数（避免触发 WAF）
 REQUEST_TIMEOUT = 10    # 请求超时（秒）
@@ -354,13 +353,13 @@ def main():
     parser = argparse.ArgumentParser(description="生成 K 线数据包")
     parser.add_argument("--output-dir", default="./data/kline", help="输出目录")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="K 线天数")
-    parser.add_argument("--top", type=int, default=DEFAULT_TOP, help="取市值前 N 只")
+    parser.add_argument("--top", type=int, default=0, help="取市值前 N 只（0=不限制，包含全部）")
     args = parser.parse_args()
     
     print(f"=== K 线数据包生成 ===")
     print(f"  输出目录: {args.output_dir}")
     print(f"  K 线天数: {args.days}")
-    print(f"  取市值前: {args.top}")
+    print(f"  取市值前: {args.top if args.top > 0 else '不限制'}")
     
     # 1. 生成代码池
     print("\n[1/4] 生成代码池...")
@@ -371,15 +370,17 @@ def main():
     print("\n[2/4] 拉取实时行情...")
     quotes = fetch_realtime_batch(all_codes)
     
-    # 按市值排序，取前 N 只
+    # 按市值排序（可选取前 N 只，默认不限制）
     sorted_stocks = sorted(
         quotes.items(),
         key=lambda x: x[1].get("market_cap", 0),
         reverse=True,
-    )[:args.top]
+    )
+    if args.top > 0:
+        sorted_stocks = sorted_stocks[:args.top]
     
     top_codes = [code for code, _ in sorted_stocks]
-    print(f"  取市值前 {len(top_codes)} 只")
+    print(f"  最终股票池: {len(top_codes)} 只")
     
     # 3. 加载上一次的数据包（用于生成增量）
     print("\n[3/4] 加载历史数据...")

@@ -42,12 +42,21 @@
           class="px-2 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 transition-colors">
           {{ frontendUpdating ? frontendProgress.message || '下载中...' : '下载数据' }}
         </button>
-        <button v-else 
-          @click="toggleFrontendMode"
-          class="px-2 py-1 rounded text-xs transition-colors"
-          :class="useFrontendMode ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'">
-          {{ useFrontendMode ? '切换到后端' : '切换到本地' }}
-        </button>
+        <template v-else>
+          <button 
+            @click="handleDownloadKlineData"
+            :disabled="frontendUpdating"
+            class="px-2 py-1 rounded text-xs bg-white/5 text-muted hover:text-gray-200 transition-colors"
+            title="手动更新 K 线数据包">
+            {{ frontendUpdating ? '更新中...' : '更新数据' }}
+          </button>
+          <button 
+            @click="toggleFrontendMode"
+            class="px-2 py-1 rounded text-xs transition-colors"
+            :class="useFrontendMode ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'">
+            {{ useFrontendMode ? '切换到后端' : '切换到本地' }}
+          </button>
+        </template>
       </div>
     </div>
     <!-- 下载进度条 -->
@@ -771,8 +780,7 @@ function toggleFrontendMode() {
 // 下载前端 K 线数据
 async function handleDownloadKlineData() {
   if (frontendUpdating.value) return
-  const baseUrl = 'https://klen-h.github.io/stock-scoring-v2/data'
-  const result = await downloadKlineData(baseUrl)
+  const result = await downloadKlineData()
   if (result.updated) {
     console.log('数据下载完成:', result.message)
     // 下载完成后自动切换到前端模式

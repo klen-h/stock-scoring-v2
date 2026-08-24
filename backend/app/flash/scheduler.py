@@ -118,9 +118,23 @@ async def review_loop():
             if start <= t < end and not store.is_schedule_done(task_key):
                 print(f"[scheduler] 触发复盘: {phase}")
                 result = await _run_sync(service.run_review, phase)
-                store.mark_schedule_done(task_key)
-                if result:
+                # 只有成功（无 error）才标记完成；失败则允许窗口内重试
+                if result and not result.get("error"):
+                    store.mark_schedule_done(task_key)
                     status["last_reviews"][phase] = result.get("time")
+                    print(f"[scheduler] 复盘 {phase} 完成")
+                else:
+                    err = result.get("error") if result else "任务异常（返回 None）"
+                    print(f"[scheduler] 复盘 {phase} 失败，未标记完成（允许重试）: {err}")
+                    # 推送失败提醒到企微
+                    try:
+                        from app.flash import wechat
+                        wechat.push_markdown_batched(
+                            f"⚠️ {phase} 复盘失败",
+                            f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}"
+                        )
+                    except Exception as e:
+                        print(f"[scheduler] 推送失败提醒异常: {e}")
         await asyncio.sleep(60)
 
 

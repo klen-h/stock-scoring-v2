@@ -70,6 +70,9 @@ const error = ref(null)
 const FRONTEND_MODE_KEY = 'score_use_frontend_mode'
 const useFrontendMode = ref(false)
 
+// 数据包基础 URL（GitHub Pages 托管）
+const KLINE_DATA_BASE_URL = 'https://klen-h.github.io/stock-scoring-v2/data'
+
 function loadFrontendModePreference() {
   try {
     const saved = localStorage.getItem(FRONTEND_MODE_KEY)
@@ -114,6 +117,13 @@ export async function initFrontendScoring() {
       return { needsDownload: true }
     }
 
+    // 5. 自动检测过期：如果数据不是今天的，后台静默更新
+    const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    if (lastUpdateDate.value !== todayStr) {
+      console.log(`[前端评分] 数据过期（${lastUpdateDate.value}），后台静默更新...`)
+      silentUpdate()
+    }
+
     return { needsDownload: false }
   } catch (e) {
     error.value = e.message
@@ -123,10 +133,9 @@ export async function initFrontendScoring() {
 }
 
 /**
- * 下载并导入 K 线数据包
- * @param {string} baseUrl - 数据包 URL 前缀
+ * 下载并导入 K 线数据包（默认使用 KLINE_DATA_BASE_URL）
  */
-export async function downloadKlineData(baseUrl) {
+export async function downloadKlineData(baseUrl = KLINE_DATA_BASE_URL) {
   isUpdating.value = true
   updateProgress.value = { stage: 'download', message: '准备下载...', loaded: 0, total: 0 }
 
@@ -146,6 +155,25 @@ export async function downloadKlineData(baseUrl) {
     return { updated: false, message: e.message }
   } finally {
     isUpdating.value = false
+  }
+}
+
+/**
+ * 后台静默更新数据包（不阻塞 UI，不显示进度）
+ * 在 initFrontendScoring 检测到数据过期时自动调用。
+ */
+async function silentUpdate() {
+  try {
+    const result = await checkAndUpdate(KLINE_DATA_BASE_URL, () => {})
+    if (result.updated) {
+      dbStockCount.value = await getStockCount()
+      lastUpdateDate.value = await getLastUpdateDate()
+      console.log(`[前端评分] 静默更新完成: ${result.message}`)
+    } else {
+      console.log(`[前端评分] 静默更新: ${result.message}`)
+    }
+  } catch (e) {
+    console.warn('[前端评分] 静默更新失败（不影响当前使用）:', e.message)
   }
 }
 
@@ -233,6 +261,35 @@ export async function computeRanking(options = {}) {
 }
 
 /**
+ * 拼接今日实时快照作为最后一根 K 线
+ * 历史 K 线格式：[date, open, high, low, close, volume]
+ * 腾讯快照字段：open, high, low, price, volume
+ * 如果历史数据已包含今天（数据包当天更新过），则跳过拼接。
+ */
+function appendTodayBar(klines, stock) {
+  // 无实时数据时不拼接（停牌/拉取失败）
+  if (!stock.price || stock.price <= 0) return klines
+
+  const today = new Date().toISOString().slice(0, 10)
+  const lastBar = klines[klines.length - 1]
+
+  // 已经包含今天的数据，跳过（避免重复）
+  if (lastBar && lastBar[0] === today) return klines
+
+  // 拼接今日 K 线：[date, open, high, low, close, volume]
+  const todayBar = [
+    today,
+    stock.open || stock.price,   // 今开（无则用现价兑底）
+    stock.high || stock.price,
+    stock.low || stock.price,
+    stock.price,                 // 现价作为 close
+    stock.volume || 0,           // 成交量（股）
+  ]
+
+  return [...klines, todayBar]
+}
+
+/**
  * 批量精算评分（使用 Worker）
  */
 async function preciseScoreBatch(stocks) {
@@ -250,11 +307,13 @@ async function preciseScoreBatch(stocks) {
     const batch = stocks.slice(i, i + batchSize)
 
     // 获取每只股票的 K 线数据（150 天，与后端 500 天历史相比足以让 EMA 系列指标收敛）
+    // 并拼接今日实时快照作为最后一根 K 线（盘中准实时指标）
     const items = []
     for (const stock of batch) {
       const klines = await getKlines(stock.code, 150)
       if (klines && klines.length >= 30) {
-        items.push({ code: stock.code, klines })
+        const klinesWithToday = appendTodayBar(klines, stock)
+        items.push({ code: stock.code, klines: klinesWithToday })
       }
     }
 
@@ -296,8 +355,9 @@ async function preciseScoreBatchMainThread(stocks) {
       const klines = await getKlines(stock.code, 150)
       if (!klines || klines.length < 30) continue
 
-      // 主线程计算指标（简化版）
-      const technicalData = calcTechnicalSimple(klines)
+      // 主线程计算指标（简化版）—— 同样拼接今日实时数据
+      const klinesWithToday = appendTodayBar(klines, stock)
+      const technicalData = calcTechnicalSimple(klinesWithToday)
       if (!technicalData) continue
 
       const scoreResult = scoreStock({
