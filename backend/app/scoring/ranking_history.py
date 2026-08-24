@@ -26,9 +26,17 @@
 """
 
 from typing import Dict, List
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from app.database import db
+
+# 排行日期统一用北京时间（UTC+8）：调度器的窗口判定（rules.beijing_now）也是北京时间，
+# 若用 datetime.now() 会隐式依赖服务器 TZ 环境，部署环境不一致时 rank_date 会漂移。
+_BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _today_str() -> str:
+    return datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d")
 
 
 # ── 数据库表初始化 ──
@@ -67,7 +75,7 @@ def record_daily_ranking(top_stocks: List[Dict]) -> int:
     
     返回：成功记录的条数
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
     count = 0
     
     for i, stock in enumerate(top_stocks):
@@ -108,7 +116,7 @@ def get_ranking_persistence(codes: List[str]) -> List[Dict]:
     if not codes:
         return []
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = _today_str()
     results = []
     
     for code in codes:
@@ -236,7 +244,7 @@ async def auto_record_ranking():
     由调度器在盘后调用。
     """
     from app.tencent import _cache
-    from app.scoring.engine import ScoringEngine
+    from app.scoring.engine import ScoreEngine
     
     stocks = _cache.get("stocks", {})
     if not stocks:
@@ -247,7 +255,7 @@ async def auto_record_ranking():
     valid = [s for s in stock_list if s.get("price", 0) > 0 and s.get("change_pct") is not None]
     
     # 用简化评分快速排序
-    engine = ScoringEngine()
+    engine = ScoreEngine()
     results = engine.score_batch(valid[:200])  # 只算前200只
     results.sort(key=lambda r: r.total_score, reverse=True)
     

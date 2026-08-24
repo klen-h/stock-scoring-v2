@@ -25,6 +25,30 @@ router = APIRouter()
 # 全局单例：评分引擎只创建一次，复用（它内部无状态）
 engine = ScoreEngine()
 
+# ── 动态权重：盘后按市场状态切换三维权重（与回测 regime 引擎同源）──
+# 调度器每日盘后计算市场状态并缓存（app.backtest.market_regime），评分入口在此
+# 按缓存切换引擎权重。权重在盘后锁定当日状态、盘中不变，与「宏观方向分每日锁定」理念一致。
+_engine_weights_applied = {"date": None, "state": None}
+
+
+def _sync_regime_weights() -> None:
+    """读取市场状态缓存，缓存日期变化时切换引擎三维权重（幂等，失败静默回退静态权重）。"""
+    try:
+        from app.backtest.market_regime import get_regime_cache
+        cache = get_regime_cache()
+        if not cache or not cache.get("date"):
+            return
+        if _engine_weights_applied["date"] == cache["date"]:
+            return
+        engine.set_weights(regime=cache["state"])
+        _engine_weights_applied["date"] = cache["date"]
+        _engine_weights_applied["state"] = cache["state"]
+        # 权重切换后，旧排行缓存作废（下次访问重新精算）
+        _rank_result_cache["top"]["data"] = None
+        print(f"[scoring] 应用市场状态权重 {cache['date']} {cache['state']}: {cache['weights']}")
+    except Exception as e:
+        print(f"[scoring] 同步市场状态权重失败: {e}")
+
 # ── 亏损股过滤开关 ──
 # True：PE ≤ 0 的股票（亏损/无盈利）不进入「买入推荐榜单」(score_top)。
 #       注意：仅在 Top 榜单过滤，Bottom(回避榜) 和按信号筛选不过滤
@@ -173,6 +197,7 @@ async def _batch_with_precise_top(
     if not stocks:
         return []
 
+    _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
     # 阶段1：简化评分 + 排序（简化分只用于挑选候选池，绝不直接展示）
     rough = engine.score_batch(stocks)
 
@@ -526,6 +551,7 @@ async def score_single(symbol: str):
       4. 喂给 engine.score_stock() 算综合分
       5. 返回完整评分结果（含三维度明细、加分扣分因素、摘要）
     """
+    _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
     # 1. 实时行情
     stock_info = get_stock(symbol)
     if not stock_info:
@@ -707,6 +733,7 @@ async def score_bottom(
     if not stocks:
         return {"data": [], "total": 0, "cache_status": "loading"}
 
+    _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
     stock_list = [s for s in stocks.values() if s.get("price", 0) > 0]
     # 质量门槛：流通市值 > 50 亿、股价 > 3 元（与推荐榜一致）
     stock_list = [s for s in stock_list if _pool_quality_filter(s)]

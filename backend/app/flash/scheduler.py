@@ -126,13 +126,14 @@ async def review_loop():
                 else:
                     err = result.get("error") if result else "任务异常（返回 None）"
                     print(f"[scheduler] 复盘 {phase} 失败，未标记完成（允许重试）: {err}")
-                    # 推送失败提醒到企微
+                    # 推送失败提醒到企微（force=True：任务失败告警不受业务推送开关限制，
+                    # 与 _notify_failure 语义一致；此前缺 force 导致复盘失败永远推不出去）
                     try:
                         from app.flash import wechat
                         wechat.push_markdown_batched(
                             f"⚠️ {phase} 复盘失败",
-                            f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}"
-                        )
+                            f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}",
+                            force=True)
                     except Exception as e:
                         print(f"[scheduler] 推送失败提醒异常: {e}")
         await asyncio.sleep(60)
@@ -308,9 +309,146 @@ async def backtest_prices_refresh_loop():
                 store.mark_schedule_done(task_key)
                 status["last_backtest_backfill"] = rules.beijing_now().isoformat()
                 print(f"[scheduler] 回测价格回填完成: {stats}")
+                # 战法个股行情落后于沪深300 → 部分回填失败（backfill 内部失败不抛异常，
+                # 但会静默导致个股行情停更），主动告警便于排查数据源
+                missing = stats.get("stock_missing") or []
+                if missing:
+                    _notify_failure(
+                        "回测价格回填",
+                        f"{len(missing)} 只战法个股行情缺失/滞后（正常应同步到最新交易日）：\n"
+                        f"> " + "、".join(missing[:8]) + (f" 等共 {len(missing)} 只" if len(missing) > 8 else ""))
             except Exception as e:
                 print(f"[scheduler] 回测价格回填失败: {e}")
                 _notify_failure("回测价格回填", str(e))
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
+# ── 战法每日自动扫描 ──
+STRATEGY_SCAN_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（与回测回填同窗口，收盘后数据稳定）
+
+
+def scan_all_strategies() -> dict:
+    """盘后扫描全部注册战法并保存结果（同步函数，由调度器丢线程池执行）。
+
+    复用 router._do_scan（股票池过滤 + 共振验证 + 持久度更新），与手动
+    /api/strategies/{name}/scan 完全同源。此前战法信号仅靠手动触发、
+    strategy_results 只有一次性迁移的 5 天数据；战法回测（backtest_warfare）
+    依赖持续信号样本，本任务让其可持续积累。"""
+    from app.tencent import _cache, refresh_all_stocks
+    if not _cache.get("stocks"):
+        print("[scheduler] 行情缓存为空，先刷新全量行情")
+        refresh_all_stocks()
+    from app.strategies import list_strategies, get_strategy, save_scan_result
+    from app.strategies.router import _do_scan
+    stats = {"scanned": 0, "signals": 0, "failed": 0}
+    for cfg in list_strategies():
+        # 注册/查询用 name_en（英文 key），name 只是前端显示名
+        key = cfg["name_en"]
+        strategy = get_strategy(key)
+        if not strategy:
+            stats["failed"] += 1
+            continue
+        try:
+            results = _do_scan(strategy, 20e8, 1000e4)
+            save_scan_result(key, results)
+            stats["scanned"] += 1
+            stats["signals"] += len(results)
+            print(f"[scheduler] 战法 {key} 扫描完成: {len(results)} 只")
+        except Exception as e:
+            stats["failed"] += 1
+            print(f"[scheduler] 战法 {key} 扫描失败: {e}")
+    return stats
+
+
+async def strategy_scan_loop():
+    """工作日盘后自动扫描全部战法并落库 strategy_results（幂等，错过窗口当日可补跑）。
+    部分战法失败不阻塞整体（不 mark_done 会导致窗口内全部重扫，浪费资源）——
+    只要成功 ≥1 个即视为当日完成；全部失败才告警。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "strategy_scan"
+        if (now.weekday() < 5 and STRATEGY_SCAN_WINDOW[0] <= t < STRATEGY_SCAN_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发战法全量扫描")
+            try:
+                stats = await asyncio.to_thread(scan_all_strategies)
+                if stats["scanned"] > 0 or stats["failed"] == 0:
+                    store.mark_schedule_done(task_key)
+                    status["last_strategy_scan"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 战法扫描完成: {stats}")
+                    if stats["failed"]:
+                        _notify_failure("战法扫描",
+                                        f"{stats['failed']} 个战法扫描失败（成功 {stats['scanned']} 个）")
+                else:
+                    print(f"[scheduler] 战法扫描全部失败: {stats}，稍后重试")
+                    _notify_failure("战法扫描", f"全部 {stats['failed']} 个战法扫描失败")
+            except Exception as e:
+                print(f"[scheduler] 战法扫描失败: {e}")
+                _notify_failure("战法扫描", str(e))
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
+# ── 市场状态每日判定（生产评分动态权重数据源）──
+REGIME_CACHE_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（沪深300收盘后，与回测回填同窗口）
+
+
+async def regime_cache_loop():
+    """工作日盘后判定市场状态并缓存/落库，评分接口据此动态切换三维权重。
+    依赖 backtest_prices 中当日沪深300数据（回填任务先写入）；数据未就绪则
+    不 mark_done，窗口内每 5 分钟重试（回填完成后即成功）。"""
+    from app.backtest.market_regime import refresh_regime_cache
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and REGIME_CACHE_WINDOW[0] <= t < REGIME_CACHE_WINDOW[1]
+                and not store.is_schedule_done("regime_cache")):
+            try:
+                cache = await asyncio.to_thread(refresh_regime_cache)
+                if cache and cache.get("state"):
+                    store.mark_schedule_done("regime_cache")
+                    status["last_regime"] = f"{cache['date']} {cache['state']}"
+                    print(f"[scheduler] 市场状态缓存完成: {cache['date']} {cache['state']} "
+                          f"权重={cache['weights']}")
+                else:
+                    print("[scheduler] 沪深300当日数据未就绪，等待回填后重试")
+            except Exception as e:
+                print(f"[scheduler] 市场状态缓存失败: {e}")
+                _notify_failure("市场状态缓存", str(e))
+        await asyncio.sleep(300)  # 每 5 分钟检查一次
+
+
+# ── 回测报告周度自动生成 + 企微推送 ──
+def run_weekly_backtest_report() -> dict:
+    """生成完整回测报告（写文件）与精简摘要（企微推送用）。同步函数，线程池执行。"""
+    from app.backtest.run import generate_report, save_report, generate_summary
+    content = generate_report("all")
+    path = save_report(content, tag="weekly")
+    summary = generate_summary()
+    return {"path": path, "summary": summary}
+
+
+async def backtest_report_loop():
+    """每周五盘后（周六补跑）自动生成全策略回测报告并推送企微摘要。
+    周幂等：同一 ISO 周只跑一次（mark_done 用周 key 而非日期，跨周自动失效）。"""
+    from app.flash.wechat import push_markdown_batched
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        iso = now.isocalendar()
+        week_key = f"W{iso[0]}-{iso[1]:02d}"
+        in_week_window = (now.weekday() == 4 and t >= 16 * 60) or now.weekday() == 5
+        if in_week_window and not store.is_schedule_done("backtest_report", date_str=week_key):
+            print(f"[scheduler] 触发周度回测报告生成（{week_key}）")
+            try:
+                result = await asyncio.to_thread(run_weekly_backtest_report)
+                store.mark_schedule_done("backtest_report", date_str=week_key)
+                status["last_backtest_report"] = rules.beijing_now().isoformat()
+                push_markdown_batched("📊 周度回测报告", result["summary"])
+                print(f"[scheduler] 周度回测报告完成: {result['path']}")
+            except Exception as e:
+                print(f"[scheduler] 周度回测报告失败: {e}")
+                _notify_failure("周度回测报告", str(e))
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
@@ -533,13 +671,17 @@ async def start():
              asyncio.create_task(kline_cache_refresh_loop()),
              asyncio.create_task(indicator_cache_refresh_loop()),
              asyncio.create_task(backtest_prices_refresh_loop()),
+             asyncio.create_task(strategy_scan_loop()),
+             asyncio.create_task(regime_cache_loop()),
+             asyncio.create_task(backtest_report_loop()),
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(news_history_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
-          f"回测价格每日15:40 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
+          f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
+          f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "

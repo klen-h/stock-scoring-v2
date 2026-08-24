@@ -117,14 +117,60 @@ def _score_in_range(val: float, good_lo: float, good_hi: float,
 class ScoreEngine:
     """多因子评分引擎（无状态，可单例复用）"""
 
-    # ── 权重配置（类常量，所有实例共享）──
-    # 三个权重加起来 = 1.0，确保综合分满分是 100
-    W_TECHNICAL = 0.40    # 技术面权重 40%
-    W_CAPITAL   = 0.25    # 资金面权重 25%
-    W_FUNDAMENTAL = 0.35  # 基本面权重 35%
+    # ── 权重配置 ──
+    # 默认（静态）权重：三个权重加起来 = 1.0，确保综合分满分是 100。
+    # 支持通过 weights / regime 参数做「市场状态 + 动态权重」漂移。
+    W_TECHNICAL = 0.40    # 技术面默认权重 40%
+    W_CAPITAL   = 0.25    # 资金面默认权重 25%
+    W_FUNDAMENTAL = 0.35  # 基本面默认权重 35%
 
-    def __init__(self):
-        pass
+    DEFAULT_WEIGHTS = {
+        "technical": W_TECHNICAL,
+        "capital": W_CAPITAL,
+        "fundamental": W_FUNDAMENTAL,
+    }
+
+    def __init__(self, weights: dict | None = None, regime: str | None = None):
+        """
+        动态权重配置（「只改权重不改指标」的落地点）：
+
+            weights: 维度权重表 {"technical": x, "capital": y, "fundamental": z}，
+                     缺省项自动用默认值补齐，传入后归一化为和 = 1.0
+            regime:  市场状态（offensive / neutral / defensive），
+                     传入时优先按状态机给出权重（见 app.backtest.market_regime）
+
+        两者都不传时，行为与旧版完全一致（静态默认权重 40/25/35）。
+        """
+        if regime is not None:
+            try:
+                from app.backtest.market_regime import get_regime_weights
+                weights = get_regime_weights(regime)
+            except Exception:
+                weights = None
+        w = dict(self.DEFAULT_WEIGHTS)
+        if weights:
+            for k in ("technical", "capital", "fundamental"):
+                if weights.get(k) is not None:
+                    w[k] = float(weights[k])
+        total = w["technical"] + w["capital"] + w["fundamental"]
+        if total > 0:
+            w = {k: v / total for k, v in w.items()}
+        self.weights = w
+        self.w_technical = w["technical"]
+        self.w_capital = w["capital"]
+        self.w_fundamental = w["fundamental"]
+
+    def set_weights(self, weights: dict | None = None, regime: str | None = None) -> dict:
+        """
+        运行时切换权重（单例复用场景，如按当日市场状态切换评分）。
+        返回切换后生效的权重表。
+        """
+        engine = ScoreEngine(weights=weights, regime=regime)
+        self.weights = engine.weights
+        self.w_technical = engine.w_technical
+        self.w_capital = engine.w_capital
+        self.w_fundamental = engine.w_fundamental
+        return dict(self.weights)
 
     # ================================================================
     #  对外接口（路由层调用这两个方法）
@@ -237,8 +283,8 @@ class ScoreEngine:
 
         # 数据不足，无法计算技术指标，给中性分
         if len(tech_data) < 30:
-            return DimensionScore("技术面", 50.0, self.W_TECHNICAL,
-                                  round(50.0 * self.W_TECHNICAL, 1),
+            return DimensionScore("技术面", 50.0, self.w_technical,
+                                  round(50.0 * self.w_technical, 1),
                                   {"说明": "数据不足，中性评分"})
 
         latest = tech_data[-1]   # 最新一天
@@ -274,8 +320,8 @@ class ScoreEngine:
         raw = sum(s * w / 100 for s, w in sub_scores)
         score = _clamp(_round1(raw))
         # weighted_score = score × 维度权重（用于最终综合分累加）
-        return DimensionScore("技术面", score, self.W_TECHNICAL,
-                              _round1(score * self.W_TECHNICAL), details)
+        return DimensionScore("技术面", score, self.w_technical,
+                              _round1(score * self.w_technical), details)
 
     def _score_ma(self, latest: dict, tech_data: list) -> float:
         """
@@ -575,8 +621,8 @@ class ScoreEngine:
 
         raw = sum(s * w / 100 for s, w in sub_scores)
         score = _clamp(_round1(raw))
-        return DimensionScore("资金面", score, self.W_CAPITAL,
-                              _round1(score * self.W_CAPITAL), details)
+        return DimensionScore("资金面", score, self.w_capital,
+                              _round1(score * self.w_capital), details)
 
     def _score_volume_price(self, tech_data: list, stock_info: dict) -> float:
         """
@@ -795,8 +841,8 @@ class ScoreEngine:
 
         raw = sum(s * w / 100 for s, w in sub_scores)
         score = _clamp(_round1(raw))
-        return DimensionScore("基本面", score, self.W_FUNDAMENTAL,
-                              _round1(score * self.W_FUNDAMENTAL), details)
+        return DimensionScore("基本面", score, self.w_fundamental,
+                              _round1(score * self.w_fundamental), details)
 
     def _score_pe(self, stock_info: dict, fundamental: dict) -> float:
         """

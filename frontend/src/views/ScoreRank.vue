@@ -1014,8 +1014,8 @@ function autoSaveCheck() {
   if (h < 9 || h > 15) return
   const today = now.toISOString().slice(0, 10)
   if (lastAutoSaveDate.value === today) return
-  if (!tableData.value.length) return
   // 15:10 后自动保存（给数据源留 10 分钟稳定时间）
+  // captureSnapshot 会自己拉取最新 Top 50，不依赖 tableData
   if (h === 15 && m >= 10 || h > 15) {
     captureSnapshot()
   }

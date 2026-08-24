@@ -7,6 +7,7 @@
   python -m app.backtest.run --strategy signals    # 仅 LLM 信号绩效追踪
   python -m app.backtest.run --strategy warfare    # 仅战法选股回测
   python -m app.backtest.run --strategy macro      # 仅宏观方向分回测
+  python -m app.backtest.run --strategy review     # 历史评分 × 市场状态 分层复盘
   python -m app.backtest.run --strategy warfare --name 战法名   # 指定战法
 
 输出：markdown 报告存 backend/backtest_reports/（latest.md 覆盖最新一份）。
@@ -166,6 +167,9 @@ def generate_report(strategy: str) -> str:
         sections.append(_render_warfare())
     if strategy in ("all", "macro"):
         sections.append(_render_macro())
+    if strategy in ("all", "review"):
+        from app.backtest.regime_review import run_review, render_review_markdown
+        sections.append(render_review_markdown(run_review()))
     body = title + "\n---\n\n".join(sections)
     if strategy != "all":
         body += f"\n> 本次仅生成 {strategy} 报告，完整报告请运行 --strategy all\n"
@@ -185,10 +189,78 @@ def save_report(content: str, tag: str = "") -> str:
     return path
 
 
+def generate_summary() -> str:
+    """
+    精简版回测摘要（企微周报推送用）：各策略核心指标 + 分层复盘结论 + 当前市场状态。
+    不写文件；完整报告仍走 generate_report + save_report。
+    """
+    lines = ["## 自动回测报告（精简版）", "", f"> 生成时间：{time.strftime('%Y-%m-%d %H:%M')}", ""]
+
+    # LLM 信号追踪
+    try:
+        r = strategies.backtest_llm_signals()
+        lines += ["### 📡 LLM 信号追踪", f"> ⚠️ {r['sample_note']}", "",
+                  "| 来源 | 平仓 | 胜率% | 平均单笔% | 盈亏比 |", "|---|---|---|---|---|"]
+        for key, g in r["by_source"].items():
+            lines.append(f"| {g['name']} | {g['closed']} | {g['win_rate']} | "
+                         f"{g['avg_profit_pct']} | {g['profit_factor']} |")
+    except Exception as e:
+        lines.append(f"> LLM 信号回测异常：{e}")
+
+    # 战法选股回测
+    try:
+        r = strategies.backtest_warfare()
+        lines += ["", "### ⚔️ 战法选股回测", f"> 样本期：{r['sample_note']}", ""]
+        lines.append(_metrics_table(r.get("metrics") or {}))
+        oos = r.get("out_sample") or {}
+        om = oos.get("metrics") or {}
+        if om:
+            lines.append(f"> 样本外（后30%）：胜率 {om.get('win_rate')}%，"
+                         f"平均单笔 {om.get('avg_pnl_pct')}%，盈亏比 {om.get('profit_factor')}")
+    except Exception as e:
+        lines.append(f"> 战法回测异常：{e}")
+
+    # 宏观方向分回测
+    try:
+        r = strategies.backtest_macro()
+        lines += ["", "### 🌐 宏观方向分回测", f"> ⚠️ {r['sample_note']}", ""]
+        lines.append(_metrics_table(r.get("metrics") or {}))
+    except Exception as e:
+        lines.append(f"> 宏观回测异常：{e}")
+
+    # 分层复盘（评分 × 市场状态）
+    try:
+        from app.backtest.regime_review import run_review, render_review_markdown
+        lines += ["", "### 📊 分层复盘"]
+        lines.append(render_review_markdown(run_review()))
+    except Exception as e:
+        lines.append(f"> 分层复盘异常：{e}")
+
+    # 当前市场状态（生产评分动态权重依据）
+    try:
+        from app.backtest.market_regime import get_regime_cache, get_regime_description
+        cache = get_regime_cache()
+        if cache and cache.get("state"):
+            w = cache["weights"]
+            d = cache.get("detail") or {}
+            lines += ["", "### 🎯 当前市场状态",
+                      f"- {get_regime_description(cache['state'])}（{cache['date']}）",
+                      f"- ADX {d.get('adx')} / 均线 {d.get('ma_trend')} / 波动 {d.get('volatility_regime')}",
+                      f"- 评分权重：技术 {w['technical']:.0%} / 资金 {w['capital']:.0%} / "
+                      f"基本面 {w['fundamental']:.0%}"]
+        else:
+            lines += ["", "### 🎯 当前市场状态",
+                      "> 数据未就绪（未到盘后窗口或无沪深300数据），评分使用默认权重"]
+    except Exception as e:
+        lines.append(f"> 市场状态读取异常：{e}")
+
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="回测报告生成")
     parser.add_argument("--strategy", default="all",
-                        choices=["all", "signals", "warfare", "macro"])
+                        choices=["all", "signals", "warfare", "macro", "review"])
     parser.add_argument("--name", default=None, help="指定战法名（配合 --strategy warfare）")
     args = parser.parse_args()
 
