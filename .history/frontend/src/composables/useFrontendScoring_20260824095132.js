@@ -40,16 +40,18 @@ function isValidStock(stock) {
 }
 
 // ── 股票池质量门槛（与后端一致）──
-// 流通市值 > 50 亿、股价 > 3 元（成交额门槛已移除：盘中早盘时段当日成交额未累积到位，会误杀大量股票）
+// 流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿（当日成交额近似）
 const MIN_FLOAT_CAP = 50 * 10000  // 万元（50 亿）
 const MIN_PRICE = 3               // 元
+const MIN_AMOUNT = 1e8            // 元（1 亿）
 
 /**
- * 质量过滤：流通市值/股价门槛（需已合并实时行情）
+ * 质量过滤：流通市值/股价/成交额门槛（需已合并实时行情）
  */
 function passQualityFilter(stock) {
   if ((stock.float_cap || 0) < MIN_FLOAT_CAP) return false
   if ((stock.price || 0) < MIN_PRICE) return false
+  if ((stock.amount || 0) < MIN_AMOUNT) return false
   return true
 }
 

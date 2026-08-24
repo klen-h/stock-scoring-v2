@@ -40,16 +40,18 @@ function isValidStock(stock) {
 }
 
 // ── 股票池质量门槛（与后端一致）──
-// 流通市值 > 50 亿、股价 > 3 元（成交额门槛已移除：盘中早盘时段当日成交额未累积到位，会误杀大量股票）
+// 流通市值 > 50 亿、股价 > 3 元、成交额 > 1 亿（当日成交额近似）
 const MIN_FLOAT_CAP = 50 * 10000  // 万元（50 亿）
 const MIN_PRICE = 3               // 元
+const MIN_AMOUNT = 1e8            // 元（1 亿）
 
 /**
- * 质量过滤：流通市值/股价门槛（需已合并实时行情）
+ * 质量过滤：流通市值/股价/成交额门槛（需已合并实时行情）
  */
 function passQualityFilter(stock) {
   if ((stock.float_cap || 0) < MIN_FLOAT_CAP) return false
   if ((stock.price || 0) < MIN_PRICE) return false
+  if ((stock.amount || 0) < MIN_AMOUNT) return false
   return true
 }
 
@@ -175,17 +177,14 @@ export async function computeRanking(options = {}) {
     const codes = allStocks.map(s => s.code)
     const quotes = await fetchRealtimeQuotes(codes)
 
-    // 3. 合并行情数据并逐层过滤（拆开统计便于排查“评分股票数偏少”问题）
-    const merged = allStocks.map(s => ({
-      ...s,
-      ...(quotes[s.code] || {}),
-    }))
-    // 行情拉取失败/停牌 → price 缺失，直接出局（质量过滤依赖实时市值/成交额，无法兜底）
-    const withQuote = merged.filter(s => s.price > 0)
-    const valid = withQuote.filter(isValidStock)
-    const stocksWithQuotes = valid.filter(passQualityFilter)
+    // 3. 合并行情数据并过滤（含流通市值/股价/成交额质量门槛）
+    const stocksWithQuotes = allStocks
+      .map(s => ({
+        ...s,
+        ...(quotes[s.code] || {}),
+      }))
+      .filter(s => s.price > 0 && isValidStock(s) && passQualityFilter(s))
     poolCount.value = stocksWithQuotes.length
-    console.info(`[前端评分] 过滤漏斗: 本地库 ${allStocks.length} → 行情成功 ${withQuote.length} → 有效(非ST/PE>0) ${valid.length} → 质量门槛通过 ${stocksWithQuotes.length}`)
 
     // 4. 简化评分快速排序
     const scored = stocksWithQuotes.map(s => ({
