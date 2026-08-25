@@ -130,8 +130,35 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None) -> d
             klines = get_kline(code, period="day", count=500)
         if len(klines) >= 30:
             technical_data = _calc_technical_fast(klines)
+            # ★ 拉取成功的 K 线/指标顺手写回缓存：下次精算直接命中，
+            #   避免同一只股票反复实时拉腾讯 K 线（触发 WAF → 技术面0分掉榜）
+            try:
+                from app.scoring.kline_cache import save_kline_cache
+                from app.scoring.indicator_cache import (
+                    save_indicator_cache, compute_latest_indicators)
+                market_cap = stock_info.get("market_cap", 0) or 0
+                save_kline_cache(code, name, klines, market_cap)
+                _ind = compute_latest_indicators(klines)
+                if _ind:
+                    save_indicator_cache(code, name, _ind, len(klines), market_cap)
+            except Exception:
+                pass
         else:
-            technical_data = []
+            # ★ 数据不足（如腾讯 WAF 冷却导致 K 线拉取失败）：回退简化分兜底。
+            #   此前实现用空技术面硬算，技术面 0 分 → 假低分 → 股票被挤出榜单
+            #   （如 600508 反复掉榜），docstring 承诺的「数据不足回退简化分」没落地。
+            rough = engine._score_from_realtime(code, name, stock_info)
+            return {
+                "code": code, "name": name,
+                "total_score": rough.total_score,
+                "signal": rough.signal, "signal_level": rough.signal_level,
+                "change_pct": stock_info.get("change_pct", 0),
+                "factors_up": rough.factors_up,
+                "buy_point": {},
+                "trend_health": {},
+                "dimensions": {d["name"]: d["score"] for d in rough.dimensions},
+                "degraded": True,
+            }
     # 组装基本面（与 score_single 一致）
     fundamental = {
         "valuation": {
@@ -262,6 +289,7 @@ async def _batch_with_precise_top(
             buy_point=r.get("buy_point", {}),
             trend_health=r.get("trend_health", {}),
             dimensions=r.get("dimensions", {}),
+            degraded=r.get("degraded", False),
         )
         for r in results if r
     ]
@@ -426,25 +454,72 @@ async def backtest(
     }
 
 
+@router.get("/snapshots")
+async def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
+    """最近 N 天评分排行快照（含维度分/快照价/现价收益），供前端「胜率回查」面板。
+    数据由调度器每天盘后自动落库（ranking_history），也可前端手动保存触发。"""
+    from app.scoring.ranking_history import get_daily_rankings
+    return {"data": get_daily_rankings(days)}
+
+
+@router.post("/snapshots/capture")
+async def capture_score_snapshot():
+    """立即记录当日 Top 50 快照（含维度分+快照价格）到 ranking_history，同日幂等覆盖。
+    日常由调度器每天 15:15 自动执行；此接口供前端「保存快照」按钮手动触发。"""
+    result = await score_top(limit=50)
+    data = result.get("data") or []
+    if not data:
+        return {"error": "评分数据未就绪（行情缓存加载中），请稍后再试"}
+    from app.scoring.ranking_history import record_daily_ranking
+    from app.tencent import _cache as _t_cache
+    stocks_map = _t_cache.get("stocks", {})
+    stocks = [
+        {"code": r["code"], "name": r["name"], "total_score": r["total_score"],
+         "signal": r["signal"], "rank": i + 1,
+         "dimensions": r.get("dimensions") or {},
+         "price": (stocks_map.get(r["code"]) or {}).get("price") or 0}
+        for i, r in enumerate(data)
+    ]
+    # 手动保存 = 当日权威快照：清空当天已有记录再写入，保证每日固定 Top50
+    count = record_daily_ranking(stocks, replace_day=True)
+    from datetime import datetime as _dt, timezone as _tz
+    today = _dt.now(_tz(_dt.timedelta(hours=8))).strftime("%Y-%m-%d")
+    return {"recorded": count, "date": today, "total": len(data)}
+
+
 @router.post("/weight-advice")
 async def weight_advice(data: dict):
     """
     权重优化分析：根据历史快照+实际收益，分析各维度预测力，建议权重调整。
-    前端传入已验证的快照数据（含维度分+实际收益）。
-    """
-    snapshots = data.get("snapshots", [])
-    if len(snapshots) < 3:
-        return {"error": "快照数据不足，至少需要 3 天快照才能分析（当前 %d 天）" % len(snapshots)}
 
-    # 收集所有已验证的记录
-    records = []
-    for snap in snapshots:
-        for s in snap.get("stocks", []):
-            if s.get("returnPct") is not None and s.get("dimensions"):
-                records.append(s)
+    两种模式：
+      A. 后端自动模式（推荐，统一后默认）：不传 snapshots，后端从 ranking_history
+         每日快照（含维度分+快照价）自动计算收益并分析，无需人工点击验证。
+      B. 兼容模式：前端传已验证快照（含 returnPct + dimensions）。
+    """
+    snapshots = data.get("snapshots") or []
+    snapshot_count = len(snapshots)
+    if snapshots:
+        # B. 兼容模式：前端传入已验证快照
+        if len(snapshots) < 3:
+            return {"error": "快照数据不足，至少需要 3 天快照才能分析（当前 %d 天）" % len(snapshots)}
+        records = []
+        for snap in snapshots:
+            for s in snap.get("stocks", []):
+                if s.get("returnPct") is not None and s.get("dimensions"):
+                    records.append(s)
+    else:
+        # A. 后端自动模式：从每日快照（保存 ≥ 2 天）读取已验证记录
+        from app.scoring.ranking_history import get_verified_records
+        records = get_verified_records(min_age_days=2)
+        if records:
+            snapshot_count = len({r["date"] for r in records})
 
     if len(records) < 20:
-        return {"error": "已验证记录不足（需要至少 20 条，当前 %d 条）。继续积累快照并点击「查询当前收益」验证。" % len(records)}
+        hint = ("快照每天盘后自动落库，保存满 2 天即自动参与分析。"
+                if not snapshots else
+                "继续积累快照并点击「查询当前收益」验证。")
+        return {"error": "已验证记录不足（需要至少 20 条，当前 %d 条）。%s" % (len(records), hint)}
 
     # ── 1. 按信号等级统计胜率 ──
     signal_stats = {}
@@ -492,7 +567,12 @@ async def weight_advice(data: dict):
             dim_correlation[dim] = None
 
     # ── 3. 建议权重 ──
-    current_weights = {"技术面": 0.40, "资金面": 0.25, "基本面": 0.35}
+    # 当前权重：跟随生产评分实际生效的动态权重（盘后按市场状态切换），而非硬编码默认值
+    current_weights = {
+        "技术面": round(engine.w_technical, 2),
+        "资金面": round(engine.w_capital, 2),
+        "基本面": round(engine.w_fundamental, 2),
+    }
     suggested_weights = dict(current_weights)  # 默认不变
 
     # 如果有足够相关性数据，按相关性比例调整
@@ -603,15 +683,20 @@ async def score_single(symbol: str):
 
 
 def _record_ranking(result_data: list):
-    """后台记录当日排行数据（用于计算连续上榜天数）"""
+    """后台记录当日排行数据（含维度分+快照价，用于连续上榜天数 + 权重优化分析）。
+    仅兜底：当天已有快照（盘后调度器/手动保存）则跳过，避免盘中反复追加导致每日快照膨胀。"""
     try:
         from app.scoring.ranking_history import record_daily_ranking
+        from app.tencent import _cache as _t_cache
+        stocks_map = _t_cache.get("stocks", {})
         stocks = [
             {"code": r["code"], "name": r["name"], "total_score": r["total_score"], 
-             "signal": r["signal"], "rank": i + 1}
+             "signal": r["signal"], "rank": i + 1,
+             "dimensions": r.get("dimensions") or {},
+             "price": (stocks_map.get(r["code"]) or {}).get("price") or 0}
             for i, r in enumerate(result_data)
         ]
-        record_daily_ranking(stocks)
+        record_daily_ranking(stocks, only_if_empty=True)
     except Exception as e:
         print(f"[ranking] 后台记录排行失败: {e}")
 

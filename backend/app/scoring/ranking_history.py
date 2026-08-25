@@ -25,6 +25,8 @@
 ================================================================================
 """
 
+import json
+import time
 from typing import Dict, List
 from datetime import datetime, timedelta, timezone
 
@@ -59,6 +61,15 @@ def init_ranking_history_table():
         CREATE INDEX IF NOT EXISTS idx_ranking_history_date_code 
         ON ranking_history(rank_date, code)
     """)
+    # 迁移：权重优化分析需要的维度分 + 快照价格（旧库无此列，幂等加列）
+    for col_sql in (
+        "ALTER TABLE ranking_history ADD COLUMN IF NOT EXISTS dimensions_json TEXT",
+        "ALTER TABLE ranking_history ADD COLUMN IF NOT EXISTS price REAL",
+    ):
+        try:
+            db.execute(col_sql)
+        except Exception as e:
+            print(f"[ranking] 加列失败（可能已存在）: {e}")
     print("[ranking] ranking_history 表初始化完成")
 
 
@@ -66,16 +77,28 @@ def init_ranking_history_table():
 init_ranking_history_table()
 
 
-def record_daily_ranking(top_stocks: List[Dict]) -> int:
+def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, replace_day: bool = False) -> int:
     """
     记录当日评分排行榜。
     
     参数：
-      top_stocks: [{code, name, total_score, signal, rank}, ...]
+      top_stocks: [{code, name, total_score, signal, rank, dimensions?, price?}, ...]
+                  dimensions 为三维评分明细（供权重优化分析），price 为快照价格。
+      only_if_empty: True 时当天已有任何记录则跳过（用于盘中兜底，防止反复追加膨胀每日快照）
+      replace_day: True 时先清空当天记录再写入（用于盘后/手动权威快照，保证每天固定 Top50）
     
     返回：成功记录的条数
     """
     today = _today_str()
+    if only_if_empty:
+        exists = db.fetch_one(
+            "SELECT 1 FROM ranking_history WHERE rank_date = %s LIMIT 1", (today,)
+        )
+        if exists:
+            return 0
+    if replace_day:
+        db.execute("DELETE FROM ranking_history WHERE rank_date = %s", (today,))
+    
     count = 0
     
     for i, stock in enumerate(top_stocks):
@@ -83,13 +106,17 @@ def record_daily_ranking(top_stocks: List[Dict]) -> int:
         if not code:
             continue
         try:
+            dims = stock.get("dimensions") or {}
+            dims_json = json.dumps(dims, ensure_ascii=False) if dims else None
+            price = stock.get("price") or 0
             db.execute("""
                 INSERT INTO ranking_history 
-                (rank_date, code, name, rank_pos, total_score, signal)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                (rank_date, code, name, rank_pos, total_score, signal, dimensions_json, price)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (rank_date, code) DO UPDATE 
                 SET name = EXCLUDED.name, rank_pos = EXCLUDED.rank_pos,
-                    total_score = EXCLUDED.total_score, signal = EXCLUDED.signal
+                    total_score = EXCLUDED.total_score, signal = EXCLUDED.signal,
+                    dimensions_json = EXCLUDED.dimensions_json, price = EXCLUDED.price
             """, (
                 today,
                 code,
@@ -97,6 +124,8 @@ def record_daily_ranking(top_stocks: List[Dict]) -> int:
                 stock.get("rank", i + 1),
                 stock.get("total_score"),
                 stock.get("signal"),
+                dims_json,
+                price,
             ))
             count += 1
         except Exception as e:
@@ -266,8 +295,120 @@ async def auto_record_ranking():
             "total_score": r.total_score,
             "signal": r.signal,
             "rank": i + 1,
+            # 简化评分无维度分；快照价格用于权重分析的收益验证
+            "price": (stocks.get(r.code) or {}).get("price") or 0,
         }
         for i, r in enumerate(results[:50])
     ]
     
     return record_daily_ranking(top_stocks)
+
+
+# ── 快照读取（前端胜率回查 / 权重优化分析）──
+def _parse_dims(row: Dict) -> Dict:
+    try:
+        return json.loads(row.get("dimensions_json") or "{}") or {}
+    except Exception:
+        return {}
+
+
+def get_daily_rankings(days: int = 30) -> List[Dict]:
+    """
+    读取最近 N 天每日 Top 快照（含维度分、快照价、现价与收益）。
+    返回结构对齐前端 score_snapshots 面板：按日期倒序。
+      [{date, ts, stocks: [{code, name, rank, score, signal, dimensions,
+                            price, currentPrice, returnPct}], verified, winRate, avgReturn, verifiedAt}]
+    """
+    since = (datetime.now(_BEIJING_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = db.fetch("""
+        SELECT rank_date, code, name, rank_pos, total_score, signal,
+               dimensions_json, price
+        FROM ranking_history
+        WHERE rank_date >= %s
+        ORDER BY rank_date DESC, rank_pos ASC
+    """, (since,))
+
+    from app.tencent import _cache
+    now_prices = _cache.get("stocks", {})
+    today = _today_str()
+
+    by_date: Dict[str, list] = {}
+    for r in rows:
+        by_date.setdefault(r["rank_date"], []).append(r)
+
+    snapshots = []
+    for d, items in sorted(by_date.items(), reverse=True):
+        stocks = []
+        for r in items:
+            price = r.get("price") or 0
+            info = now_prices.get(r["code"]) or {}
+            now_p = info.get("price") or 0
+            return_pct = None
+            # 快照保存当天收益无验证意义（当日价格≈快照价），次日才计算
+            if now_p > 0 and price > 0 and d < today:
+                return_pct = round((now_p - price) / price * 100, 2)
+            stocks.append({
+                "code": r["code"],
+                "name": r["name"],
+                "rank": r.get("rank_pos"),
+                "score": r.get("total_score"),
+                "signal": r.get("signal"),
+                "dimensions": _parse_dims(r),
+                "price": price or None,
+                "currentPrice": now_p or None,
+                "returnPct": return_pct,
+            })
+        verified_stocks = [s for s in stocks if s["returnPct"] is not None]
+        verified = len(verified_stocks) > 0
+        wins = sum(1 for s in verified_stocks if s["returnPct"] > 0)
+        snapshots.append({
+            "date": d,
+            "ts": 0,  # 占位，与本地快照结构一致（前端不依赖此字段）
+            "stocks": stocks,
+            "verified": verified,
+            "verifiedAt": int(time.time() * 1000) if verified else None,
+            "winRate": round(wins / len(verified_stocks) * 100) if verified_stocks else 0,
+            "avgReturn": round(sum(s["returnPct"] for s in verified_stocks)
+                               / len(verified_stocks), 2) if verified_stocks else 0,
+        })
+    return snapshots
+
+
+def get_verified_records(min_age_days: int = 2) -> List[Dict]:
+    """
+    读取已验证的历史快照记录（保存 ≥ min_age_days 天 + 现价可算收益），
+    供权重优化分析直接使用（免前端人工验证）。
+    返回：[{date, code, name, score, signal, dimensions, returnPct}, ...]
+    """
+    cutoff = (datetime.now(_BEIJING_TZ) - timedelta(days=min_age_days)).strftime("%Y-%m-%d")
+    rows = db.fetch("""
+        SELECT rank_date, code, name, total_score, signal, dimensions_json, price
+        FROM ranking_history
+        WHERE rank_date <= %s AND dimensions_json IS NOT NULL AND dimensions_json != ''
+          AND price IS NOT NULL AND price > 0
+        ORDER BY rank_date DESC
+    """, (cutoff,))
+
+    from app.tencent import _cache
+    now_prices = _cache.get("stocks", {})
+
+    records = []
+    for r in rows:
+        price = r.get("price") or 0
+        info = now_prices.get(r["code"]) or {}
+        now_p = info.get("price") or 0
+        if now_p <= 0 or price <= 0:
+            continue
+        dims = _parse_dims(r)
+        if not dims:
+            continue
+        records.append({
+            "date": r["rank_date"],
+            "code": r["code"],
+            "name": r["name"],
+            "score": r.get("total_score"),
+            "signal": r.get("signal"),
+            "dimensions": dims,
+            "returnPct": round((now_p - price) / price * 100, 2),
+        })
+    return records

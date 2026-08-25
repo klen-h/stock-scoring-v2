@@ -121,7 +121,13 @@ export const getScoreBottom = (params) => http.get('/score/batch/bottom', { para
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
-export const getWeightAdvice = (snapshots) => http.post('/score/weight-advice', { snapshots }, { timeout: 30000 })
+// 权重优化分析：不传 snapshots 时后端自动从每日快照库读取已验证记录（统一后推荐用法）
+export const getWeightAdvice = (snapshots = null) =>
+  http.post('/score/weight-advice', snapshots ? { snapshots } : {}, { timeout: 30000 })
+// 评分排行快照：后端每日自动落库（含维度分+价格），前端直接读取
+export const getSnapshots = (days = 30) => http.get('/score/snapshots', { params: { days } })
+// 手动立即记录当日快照（与调度器每日任务同源，同日幂等覆盖）
+export const captureScoreSnapshot = () => http.post('/score/snapshots/capture', {}, { timeout: 120000 })
 export const getRankingPersistence = (codes) => http.post('/score/ranking-persistence', codes)
 export const recordRanking = (stocks) => http.post('/score/ranking-record', stocks)
 export const getKlineCacheStatus = () => http.get('/score/kline-cache/status')

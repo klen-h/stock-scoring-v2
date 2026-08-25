@@ -482,18 +482,36 @@ async def score_snapshot_loop():
                     result = await score_top(limit=50)
                     if result.get("data"):
                         # score_top 在调度器上下文 background_tasks=None 不会自动记录，
-                        # 这里显式写入 ranking_history（ON CONFLICT 幂等）
+                        # 这里显式写入 ranking_history（ON CONFLICT 幂等）。
+                        # 带维度分 + 快照价：供「胜率回查」与「权重优化分析」复用，无需前端手动保存。
                         from app.scoring.ranking_history import record_daily_ranking
+                        from app.tencent import _cache as _t_cache
+                        stocks_map = _t_cache.get("stocks", {})
                         stocks = [
                             {"code": r["code"], "name": r["name"],
                              "total_score": r["total_score"], "signal": r["signal"],
-                             "rank": i + 1}
+                             "rank": i + 1,
+                             "dimensions": r.get("dimensions") or {},
+                             "price": (stocks_map.get(r["code"]) or {}).get("price") or 0}
                             for i, r in enumerate(result["data"])
                         ]
-                        count = await asyncio.to_thread(record_daily_ranking, stocks)
+                        # 盘后权威快照：清空当天记录再写入，避免盘中 background 记录的残留
+                        count = await asyncio.to_thread(
+                            record_daily_ranking, stocks, False, True
+                        )
                         store.mark_schedule_done(task_key)
                         status["last_score_snapshot"] = rules.beijing_now().isoformat()
                         print(f"[scheduler] 评分快照已保存: {count} 条")
+                        # ★ 预热今日 Top50 的 K 线缓存：快照代码（多为中小盘强势股）通常不在
+                        #   市值前 500 的缓存池里，不预热则次日精算实时拉腾讯 K 线易触发 WAF 掉榜
+                        try:
+                            from app.scoring.kline_cache import refresh_kline_cache
+                            top_codes = [r["code"] for r in result["data"]]
+                            refresh_result = await asyncio.to_thread(
+                                refresh_kline_cache, top_codes)
+                            print(f"[scheduler] Top50 K线预热完成: {refresh_result}")
+                        except Exception as e:
+                            print(f"[scheduler] Top50 K线预热失败: {e}")
                         break
                     last_err = f"第{attempt}次返回空（cache_status={result.get('cache_status')}）"
                 except Exception as e:

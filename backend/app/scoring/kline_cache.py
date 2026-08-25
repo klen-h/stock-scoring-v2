@@ -36,7 +36,7 @@ from app.database import db
 
 
 # ── 配置 ──
-CACHE_POOL_SIZE = 200       # 缓存股票池大小（按市值排序前N只）
+CACHE_POOL_SIZE = 500       # 缓存股票池大小（按市值排序前N只）
 CACHE_KLINE_COUNT = 500     # 每只股票缓存多少根K线
 MAX_CACHE_AGE_HOURS = 36    # 缓存最大有效期（小时），超过则强制刷新
 

@@ -619,7 +619,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache, getSnapshots, captureScoreSnapshot } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring } from '../composables/useFrontendScoring'
@@ -783,9 +783,13 @@ async function handleDownloadKlineData() {
   const result = await downloadKlineData()
   if (result.updated) {
     console.log('数据下载完成:', result.message)
-    // 下载完成后自动切换到前端模式
-    useFrontendMode.value = true
-    await loadFrontendRanking()
+    // 不再自动切换模式：下载/更新数据只是让“本地计算”变得可用，
+    // 是否使用由用户手动切换，避免前后端榜单不一致被误认为 bug
+    if (useFrontendMode.value) {
+      await loadFrontendRanking()
+    } else {
+      await loadData()
+    }
   } else {
     console.warn('数据下载失败:', result.message)
   }
@@ -794,6 +798,7 @@ async function handleDownloadKlineData() {
 // ── 快照 / 胜率回查 ──
 const SNAP_KEY = 'score_snapshots'
 const snapshots = ref({})          // { 'YYYY-MM-DD': { ts, stocks: [...] } }
+let snapshotsSource = 'local'      // 'server' | 'local'：快照来源（后端统一后默认 server）
 const snapshotList = computed(() =>
   Object.entries(snapshots.value)
     .sort(([a], [b]) => b.localeCompare(a))
@@ -820,9 +825,9 @@ async function runWeightAnalysis() {
   optLoading.value = true
   optResult.value = null
   try {
-    // 取已验证的快照列表
-    const verified = snapshotList.value.filter(s => s.verified)
-    const { data } = await getWeightAdvice(verified)
+    // 统一后：不传快照，后端自动从每日快照库（含维度分+价格）读取已验证记录，
+    // 收益由后端按现价计算，不再依赖前端手动验证
+    const { data } = await getWeightAdvice()
     if (data.error) {
       optResult.value = { error: data.error }
     } else {
@@ -911,11 +916,25 @@ function toggleSnap(date) {
   expandedSnapshots.value = s
 }
 
-function loadSnapshots() {
+async function loadSnapshots() {
+  // 统一后：优先后端快照库（每日自动落库，含维度分+价格+收益，跨设备不丢数据）；
+  // 后端不可用（离线/开发）才回退本地 localStorage 缓存
+  try {
+    const { data } = await getSnapshots(30)
+    const list = data.data || []
+    if (list.length) {
+      const obj = {}
+      for (const snap of list) obj[snap.date] = snap
+      snapshots.value = obj
+      snapshotsSource = 'server'
+      return
+    }
+  } catch { /* 后端不可用，走本地 */ }
   try {
     const raw = localStorage.getItem(SNAP_KEY)
     if (raw) snapshots.value = JSON.parse(raw)
   } catch { snapshots.value = {} }
+  snapshotsSource = 'local'
 }
 
 function saveSnapshots() {
@@ -923,7 +942,19 @@ function saveSnapshots() {
 }
 
 async function captureSnapshot() {
-  // 始终拉取最新 Top 50，不依赖当前 tab 的 tableData（可能是其他视图）
+  // 统一后：后端立即记录当日 Top 50 快照（含维度分+价格，同日幂等覆盖），
+  // 与调度器每日自动任务同源；后端不可用（离线/开发）才回退本地 localStorage。
+  try {
+    const { data } = await captureScoreSnapshot()
+    if (data && data.recorded > 0) {
+      lastAutoSaveDate.value = data.date || new Date().toISOString().slice(0, 10)
+      await loadSnapshots()   // 重新从后端拉取最新快照列表
+      return
+    }
+    if (data && data.error) console.warn('[snapshot]', data.error)
+  } catch { /* 后端不可用，走本地兜底 */ }
+
+  // ── 本地兜底（离线模式）：始终拉取最新 Top 50 ──
   let freshData
   try {
     const res = await getScoreTop({ limit: 50 })
@@ -979,30 +1010,35 @@ async function verifyAll() {
   if (!snapshotList.value.length) return
   verifying.value = true
   try {
-    const allCodes = new Set()
-    for (const snap of snapshotList.value) {
-      for (const s of snap.stocks) allCodes.add(s.code)
-    }
-    const { data } = await getBatchPrices([...allCodes])
-    const priceMap = Object.fromEntries(data.map(s => [s.code, s]))
-    for (const [date, snap] of Object.entries(snapshots.value)) {
-      let wins = 0, totalRet = 0, cnt = 0
-      for (const s of snap.stocks) {
-        const cur = priceMap[s.code]
-        if (cur && s.price > 0) {
-          s.currentPrice = cur.price
-          s.returnPct = +((cur.price - s.price) / s.price * 100).toFixed(2)
-          cnt++
-          totalRet += s.returnPct
-          if (s.returnPct > 0) wins++
-        }
+    // 统一后：后端快照已按现价自动计算收益（保存满 1 天），重新拉取即可
+    await loadSnapshots()
+    // 本地兜底模式（后端不可用，快照来自 localStorage）才需要本地计算收益
+    if (snapshotsSource === 'local') {
+      const allCodes = new Set()
+      for (const snap of snapshotList.value) {
+        for (const s of snap.stocks) allCodes.add(s.code)
       }
-      snap.verified = cnt > 0
-      snap.verifiedAt = Date.now()
-      snap.winRate = cnt ? Math.round(wins / cnt * 100) : 0
-      snap.avgReturn = cnt ? +(totalRet / cnt).toFixed(2) : 0
+      const { data } = await getBatchPrices([...allCodes])
+      const priceMap = Object.fromEntries(data.map(s => [s.code, s]))
+      for (const [date, snap] of Object.entries(snapshots.value)) {
+        let wins = 0, totalRet = 0, cnt = 0
+        for (const s of snap.stocks) {
+          const cur = priceMap[s.code]
+          if (cur && s.price > 0) {
+            s.currentPrice = cur.price
+            s.returnPct = +((cur.price - s.price) / s.price * 100).toFixed(2)
+            cnt++
+            totalRet += s.returnPct
+            if (s.returnPct > 0) wins++
+          }
+        }
+        snap.verified = cnt > 0
+        snap.verifiedAt = Date.now()
+        snap.winRate = cnt ? Math.round(wins / cnt * 100) : 0
+        snap.avgReturn = cnt ? +(totalRet / cnt).toFixed(2) : 0
+      }
+      saveSnapshots()   // 持久化验证结果，刷新页面后仍可看到
     }
-    saveSnapshots()   // 持久化验证结果，刷新页面后仍可看到
   } catch (e) { console.error(e) }
   verifying.value = false
 }
@@ -1074,14 +1110,9 @@ async function loadData() {
     }
   } catch (e) {
     console.error('后端评分失败:', e.message)
-    // 后端失败时，尝试切换到前端模式
-    if (!useFrontendMode.value && frontendDbReady.value) {
-      console.log('切换到前端计算模式')
-      useFrontendMode.value = true
-      await loadFrontendRanking()
-    } else {
-      cacheStatus.value = 'error'
-    }
+    // 不再静默切换本地模式：本地计算仅由用户手动开启，
+    // 避免前端 K 线包不完整/算法口径差异导致前后端榜单不一致
+    cacheStatus.value = 'error'
   }
 }
 
