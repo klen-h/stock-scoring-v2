@@ -6,16 +6,13 @@ on:
     - cron: '0 8 * * 1-5'  # 周一到周五
   
   # 支持手动触发（用于测试）
+  # 注意：建议在收盘后（北京时间 16:00 后）运行，盘中拉取会被腾讯限流且当日K线不完整
   workflow_dispatch:
     inputs:
       days:
         description: 'K线天数'
         required: false
         default: '150'
-      top:
-        description: '取市值前N只'
-        required: false
-        default: '5000'
 
 # 并发控制：同一时间只运行一个实例
 concurrency:
@@ -25,7 +22,7 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     
     steps:
       - name: Checkout repository
@@ -47,8 +44,7 @@ jobs:
         run: |
           python scripts/generate-kline-pack.py \
             --output-dir ./data/kline \
-            --days ${{ github.event.inputs.days || 150 }} \
-            --top ${{ github.event.inputs.top || 3000 }}
+            --days ${{ github.event.inputs.days || 150 }}
       
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

@@ -34,6 +34,7 @@ import argparse
 import gzip
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime, timedelta
@@ -44,9 +45,12 @@ import requests
 # ── 配置 ──
 DEFAULT_DAYS = 150      # K 线天数（需足够长让 EMA26/DEA 系列指标收敛，与后端 500 天历史对齐）
 BATCH_SIZE = 50         # 批量请求行情每批数量
-KLINE_BATCH_SIZE = 10   # K 线请求并发数（避免触发 WAF）
+KLINE_BATCH_SIZE = 10   # K 线请求每批数量（仅用于节流节奏，仍是串行请求）
 REQUEST_TIMEOUT = 10    # 请求超时（秒）
-WAF_COOLDOWN = 5        # WAF 触发后冷却（秒）
+WAF_COOLDOWN = 120      # WAF 触发后全局冷却（秒）——与后端 tencent.py 保持一致
+KLINE_RETRIES = 3       # 单只股票 K 线请求重试次数（含首次）
+RETRY_BACKOFF = [1, 3, 6]  # 重试退避（秒）
+CONSECUTIVE_COOLDOWN = 10  # 连续失败达到该次数后暂停（秒级退避）
 
 # A 股代码池（与 backend/app/tencent.py 保持一致）
 DISABLED_PREFIXES = {"688", "300", "301"}
@@ -56,7 +60,16 @@ MIN_FLOAT_CAP_YI = 50     # 流通市值 > 50 亿（腾讯 fields[44]，单位�
 MIN_PRICE = 3.0           # 股价 > 3 元
 
 _session = requests.Session()
-_session.headers.update({"User-Agent": "Mozilla/5.0"})
+_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+    "Referer": "https://gu.qq.com/",
+})
+
+# ── WAF 全局限流状态（与后端 tencent.py 同策略）──
+# 腾讯 WAF 触发后（HTTP 501）需要暂停所有 K 线请求，避免被持续封禁。
+_waf_blocked_until = 0.0
+_consecutive_failures = 0
 
 
 def _is_valid_stock(name: str, pe: float = 0) -> bool:
@@ -180,67 +193,125 @@ def fetch_realtime_batch(codes: List[Tuple[str, str]]) -> Dict:
 
 def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     """
-    获取单只股票 K 线数据
+    获取单只股票 K 线数据（带重试 + WAF 检测 + 全局熔断）
     返回: [[date, open, high, low, close, volume], ...] 或 None
     """
+    global _waf_blocked_until, _consecutive_failures
+
+    # WAF 全局冷却中：直接跳过（避免继续撞墙浪费请求）
+    if time.time() < _waf_blocked_until:
+        return None
+
     prefix = "sh" if code.startswith("6") else "sz"
     symbol = f"{prefix}{code}"
-    
+
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用
-    
-    try:
-        url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        params = {
-            "param": f"{symbol},day,{start_date},{end_date},{days * 2},qfq",
-        }
-        resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        data = resp.json()
-        
-        klines_raw = data.get("data", {}).get(symbol, {})
-        day_data = klines_raw.get("day") or klines_raw.get("qfqday") or []
-        
-        if not day_data:
+
+    url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    params = {
+        "param": f"{symbol},day,{start_date},{end_date},{days * 2},qfq",
+    }
+
+    last_err = None
+    for attempt in range(KLINE_RETRIES):
+        # 冷却中则中止本轮重试
+        if time.time() < _waf_blocked_until:
             return None
-        
-        # 解析并格式化
-        result = []
-        for item in day_data[-days:]:  # 只取最近 N 天
-            if len(item) >= 6:
-                date = item[0]
-                open_p = float(item[1])
-                close = float(item[2])
-                high = float(item[3])
-                low = float(item[4])
-                volume = float(item[5])
-                result.append([date, open_p, high, low, close, volume])
-        
-        return result if len(result) >= 30 else None
-        
-    except Exception as e:
-        return None
+        try:
+            resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
+
+            # WAF 检测：腾讯返回 501 表示被防火墙拦截 → 全局冷却
+            if resp.status_code == 501:
+                _waf_blocked_until = time.time() + WAF_COOLDOWN
+                _consecutive_failures = 0
+                print(f"\n  [WAF] K线请求被拦截 {symbol}，全局冷却 {WAF_COOLDOWN}s")
+                return None
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            klines_raw = data.get("data", {}).get(symbol, {})
+            day_data = klines_raw.get("day") or klines_raw.get("qfqday") or []
+
+            if not day_data:
+                last_err = "空数据"
+                time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
+                continue
+
+            # 解析并格式化
+            result = []
+            for item in day_data[-days:]:  # 只取最近 N 天
+                if len(item) >= 6:
+                    date = item[0]
+                    open_p = float(item[1])
+                    close = float(item[2])
+                    high = float(item[3])
+                    low = float(item[4])
+                    volume = float(item[5])
+                    result.append([date, open_p, high, low, close, volume])
+
+            if len(result) >= 30:
+                _consecutive_failures = 0
+                return result
+            last_err = f"K线不足({len(result)}根)"
+            time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
+
+        except Exception as e:
+            last_err = str(e)
+            _consecutive_failures += 1
+            # 连续失败 → 退避冷却（避免触发更严格的封禁）
+            if _consecutive_failures >= CONSECUTIVE_COOLDOWN:
+                wait = min(60, _consecutive_failures * 5)
+                print(f"\n  连续失败 {_consecutive_failures} 次，暂停 {wait}s")
+                time.sleep(wait)
+                _consecutive_failures = 0
+            elif attempt < len(RETRY_BACKOFF):
+                time.sleep(RETRY_BACKOFF[attempt])
+
+    return None
+
+
+def _throttle(index: int) -> None:
+    """节流：随机间隔避免固定节奏被识别为爬虫；每 50 只额外停顿让 WAF 松弛。"""
+    time.sleep(0.3 + random.random() * 0.5)
+    if index % 50 == 0 and index > 0:
+        time.sleep(1.5)
 
 
 def fetch_all_klines(codes: List[str], days: int) -> Dict:
     """
-    批量获取 K 线数据
+    批量获取 K 线数据（最多两轮：首轮 + 失败重试，重试前整体停顿让 WAF 冷却）
     """
     result = {}
     total = len(codes)
-    
-    for i, code in enumerate(codes):
-        klines = fetch_kline(code, days)
-        if klines:
-            result[code] = klines
-        
-        # 进度显示
-        if (i + 1) % 50 == 0 or i == total - 1:
-            print(f"  K线: {i+1}/{total} ({len(result)} 成功)", end="\r")
-        
-        # WAF 保护
-        if (i + 1) % KLINE_BATCH_SIZE == 0:
-            time.sleep(0.3)
-    
+    pending = list(codes)
+
+    for round_no in range(2):
+        if not pending:
+            break
+        failed = []
+        for i, code in enumerate(pending):
+            klines = fetch_kline(code, days)
+            if klines:
+                result[code] = klines
+            else:
+                failed.append(code)
+
+            # 进度显示（WAF 冷却中也会快速跳过，计数不撒谎）
+            if (i + 1) % 50 == 0 or i == len(pending) - 1:
+                print(f"  K线: {len(result)}/{total} 成功 (第{round_no+1}轮 {i+1}/{len(pending)})", end="\r")
+
+            _throttle(i)
+
+        print(f"\n  第{round_no + 1}轮完成: {len(result)}/{total} 成功，"
+              f"{len(failed)} 只待重试")
+        if round_no == 0 and failed:
+            # 重试前停顿，让限流窗口恢复
+            print(f"  等待 8s 后重试失败股票...")
+            time.sleep(8)
+        pending = failed
+
     print(f"  K线完成: {len(result)}/{total} 成功")
     return result
 
@@ -390,20 +461,39 @@ def main():
     
     # 4. 拉取 K 线数据
     print("\n[4/4] 拉取 K 线数据...")
-    klines_data = fetch_all_klines(top_codes, args.days)
-    
-    # 组装最终数据
-    stocks_data = {}
-    for code in top_codes:
-        if code in klines_data and code in quotes:
-            stocks_data[code] = {
-                "name": quotes[code]["name"],
-                "market_cap": quotes[code]["market_cap"],
-                "klines": klines_data[code],
-            }
-    
-    # 生成数据包
     date_str = datetime.now().strftime("%Y%m%d")
+
+    # 防御：当日定时任务（16:00）已生成过完整包时，直接复用，避免盘中手动触发
+    # 把完整包覆盖成不完整包（盘中拉取易被腾讯限流且当日K线未收盘）
+    if (prev_data and prev_data.get("date") == date_str
+            and prev_data.get("stocks")):
+        print(f"  检测到今日 {date_str} 已生成完整包（{len(prev_data['stocks'])} 只），"
+              f"直接复用，跳过拉取")
+        stocks_data = prev_data["stocks"]
+    else:
+        klines_data = fetch_all_klines(top_codes, args.days)
+
+        # 组装最终数据
+        stocks_data = {}
+        for code in top_codes:
+            if code in klines_data and code in quotes:
+                stocks_data[code] = {
+                    "name": quotes[code]["name"],
+                    "market_cap": quotes[code]["market_cap"],
+                    "klines": klines_data[code],
+                }
+
+    # 完整性校验：本次显著少于历史包时醒目警告（防止不完整包静默覆盖线上数据）
+    if prev_data and prev_data.get("stocks") and stocks_data:
+        prev_n = len(prev_data["stocks"])
+        cur_n = len(stocks_data)
+        if cur_n < prev_n * 0.8:
+            print(f"\n  ⚠️ 警告: 本次仅 {cur_n} 只，历史包有 {prev_n} 只"
+                  f"（{cur_n / prev_n:.0%}）")
+            print("    > 可能被腾讯限流导致不完整。若在盘中运行，"
+                  "请等 16:00 后定时任务重新生成完整包。")
+
+    # 生成数据包
     generate_packs(stocks_data, args.output_dir, date_str, prev_data)
     
     print("\n=== 完成 ===")
