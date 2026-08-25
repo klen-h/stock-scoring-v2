@@ -12,6 +12,10 @@ on:
         description: 'K线天数'
         required: false
         default: '150'
+      top:
+        description: '取市值前N只'
+        required: false
+        default: '5000'
 
 # 并发控制：同一时间只运行一个实例
 concurrency:
@@ -43,7 +47,8 @@ jobs:
         run: |
           python scripts/generate-kline-pack.py \
             --output-dir ./data/kline \
-            --days ${{ github.event.inputs.days || 150 }}
+            --days ${{ github.event.inputs.days || 150 }} \
+            --top ${{ github.event.inputs.top || 3000 }}
       
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
