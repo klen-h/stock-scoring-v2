@@ -144,7 +144,8 @@ def save_kline_cache(code: str, name: str, klines: List[Dict], market_cap: float
             INSERT INTO kline_cache (code, name, kline_data, kline_count, updated_at, market_cap)
             VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (code) DO UPDATE SET
-                name = EXCLUDED.name,
+                name = CASE WHEN kline_cache.name IS NULL OR kline_cache.name = ''
+                            THEN EXCLUDED.name ELSE kline_cache.name END,
                 kline_data = EXCLUDED.kline_data,
                 kline_count = EXCLUDED.kline_count,
                 updated_at = EXCLUDED.updated_at,

@@ -453,6 +453,16 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     if time.time() < _waf_blocked_until:
         if cached:
             return cached["data"]  # 返回过期缓存，总比空数据好
+        # ★ WAF 冷却期且无内存缓存：查数据库 K 线缓存兜底（评分精算/每日刷新写回的），
+        #   避免详情页/持仓页盘中拿不到 K 线（数据为近 36h 内快照，仍可画图）
+        if period == "day":
+            try:
+                from app.scoring.kline_cache import get_cached_klines
+                db_klines = get_cached_klines(symbol)
+                if db_klines:
+                    return db_klines
+            except Exception:
+                pass
         return []
 
     # 默认时间范围：近 2 年至今
@@ -511,6 +521,13 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
                 KLINE_CACHE[cache_key] = {"data": result, "ts": time.time()}
                 _kline_cache_dirty = True
                 _save_kline_cache()  # 有写入间隔控制，不会每次都写
+                # ★ 顺手写回数据库 K 线缓存：供 WAF 冷却期兜底（详情页/持仓页）
+                if period == "day":
+                    try:
+                        from app.scoring.kline_cache import save_kline_cache
+                        save_kline_cache(symbol, symbol, result, 0)
+                    except Exception:
+                        pass
             return result
 
         except Exception as e:
