@@ -147,6 +147,11 @@
       </div>
     </div>
 
+    <!-- 连续/可信度加载失败提示（默认只在 top 榜显示） -->
+    <div v-if="activeTab === 'top' && persistenceError" class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-400">
+      ⚠️ 连续/可信度加载失败：{{ persistenceError }}
+    </div>
+
     <!-- 评分分布概览 -->
     <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
@@ -660,6 +665,7 @@ const portfolioCodes = computed(() => new Set(positions.value.map(p => p.code)))
 
 // ── 排行榜可信度（连续上榜天数） ──
 const persistenceMap = ref({})  // { code: { consecutive_days, trust_score, trust_grade, advice } }
+const persistenceError = ref('')
 
 // ── 持仓撤退提醒 ──
 const exitAlerts = ref([])
@@ -701,16 +707,26 @@ function quickAddPosition(item) {
 // ── 加载排行榜可信度 ──
 async function loadPersistence() {
   if (!tableData.value.length || activeTab.value !== 'top') return
+  persistenceError.value = ''
   try {
     const codes = tableData.value.map(i => i.code)
     const { data } = await getRankingPersistence(codes)
     const list = data.data || []
+    if (data.error) {
+      persistenceError.value = data.error
+      persistenceMap.value = {}
+      return
+    }
     const map = {}
     for (const item of list) {
       map[item.code] = item
     }
     persistenceMap.value = map
   } catch (e) {
+    // 显示到界面：超时/网络失败时浏览器统一报 CORS，真实原因需要看 detail
+    persistenceError.value = (e?.response?.status ? `HTTP ${e.response.status} ` : '') +
+      (e?.response?.data?.detail || e?.message || '未知错误（可能是接口超时）')
+    persistenceMap.value = {}
     console.error('加载排行可信度失败', e)
   }
 }

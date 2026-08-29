@@ -113,10 +113,18 @@ app = FastAPI(title="A股数据评分系统", version="1.0.0", lifespan=lifespan
 # 这里 allow_origins=["*"] 表示允许任何来源（开发环境方便，生产应限制具体域名）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],       # 允许哪些前端域名访问，* 表示全部
-    allow_credentials=True,    # 允许携带 Cookie
-    allow_methods=["*"],       # 允许所有 HTTP 方法（GET/POST/PUT/DELETE...）
-    allow_headers=["*"],       # 允许所有请求头
+    # 显式列出前端来源：allow_origins=["*"] 与 allow_credentials=True 组合下
+    # 部分浏览器/中间件版本不发具体 origin 回显，导致跨域失败
+    allow_origins=[
+        "https://klen-h.github.io",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://localhost:3000",
+    ],
+    allow_origin_regex=r"https://[\w-]+\.github\.io",   # GitHub Pages 任意仓库
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ──────────────────────────────────────────────────────────────

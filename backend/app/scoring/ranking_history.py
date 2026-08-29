@@ -401,8 +401,10 @@ def _current_prices(codes: List[str]) -> Dict[str, float]:
     except Exception:
         pass
 
-    # ③ kline_cache：DB 缓存的 K 线，取最后一根收盘价
-    still = [c for c in missing if c not in prices]
+    # ③ kline_cache：DB 缓存的 K 线，取最后一根收盘价。
+    #    必须限量：kline_data 每只几十 KB（500 根），服务重启后内存行情为空时
+    #    missing 可能有几百只，全量拉取几十 MB 会把接口拖到超时（前端表现为 CORS 错误）。
+    still = [c for c in missing if c not in prices][:50]
     if still:
         try:
             ph2 = ",".join(["%s"] * len(still))

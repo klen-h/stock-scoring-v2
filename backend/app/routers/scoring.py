@@ -1141,13 +1141,19 @@ def _calc_technical_fast(klines: list) -> list:
 async def ranking_persistence(codes: list = Body(...)):
     """
     查询多只股票的排行榜连续上榜天数 + 可信度。
-    
+
     请求体：["000001", "600519", ...]
     返回：[{code, consecutive_days, trust_score, trust_grade, advice}, ...]
     """
     from app.scoring.ranking_history import get_ranking_persistence
-    result = get_ranking_persistence(codes)
-    return {"data": result}
+    try:
+        result = get_ranking_persistence(codes)
+        return {"data": result}
+    except Exception as e:
+        # 错误透传给前端（否则前端只显示"-"，真实原因被吞掉）
+        import traceback
+        traceback.print_exc()
+        return {"data": [], "error": f"{type(e).__name__}: {e}"}
 
 
 @router.post("/ranking-record")

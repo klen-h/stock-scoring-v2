@@ -688,8 +688,16 @@ export async function runLocalBacktest({
   if (codes.length < 10) return { error: '指标计算失败，请稍后重试' }
 
   // 4) 回测窗口（与后端同口径：30 根指标预热 + 最长持有期前瞻）
+  //    注意：不能直接对全部代码取最小长度——数据包里可能有 K 线很短的股票
+  //    （新股/数据不全），一只 45 根就会把 minLen 拉低导致整体误报"数据不足"。
+  //    先剔除长度不足的股票，再用剩余的回测。
+  const minNeed = 30 + Math.max(...periods) + 35   // 预热 + 前瞻
+  const usable = codes.filter(c => seriesMap[c].length >= minNeed)
+  if (usable.length < 10) {
+    return { error: `历史数据不足以完成回测（K线超过 ${minNeed} 根的股票只有 ${usable.length} 只）` }
+  }
   const maxP = Math.max(...periods)
-  const minLen = Math.min(...codes.map(c => seriesMap[c].length))
+  const minLen = Math.min(...usable.map(c => seriesMap[c].length))
   const btDays = Math.min(days, minLen - maxP - 35)
   if (btDays < 10) {
     return { error: '历史数据不足以完成回测（本地数据包仅 150 根K线）' }
