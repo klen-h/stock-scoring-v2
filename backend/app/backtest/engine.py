@@ -60,7 +60,7 @@ def match_signals(signals: list, prices_map: dict,
         sell_cost = c["commission"] + c["slippage"] + c["stamp"]
 
         # 持仓期逐日检查触发（含入场当日；同日止损优先）
-        exit_i, exit_price, reason = None, None, "hold"
+        exit_i, exit_price, reason = None, None, "持有到期"
         last_i = min(entry_i + hold - 1, len(bars) - 1)
         if last_i == entry_i:
             # 信号日之后无足够 K 线完成持仓（数据只到入场日）→ 无法模拟持有期，跳过
@@ -69,20 +69,20 @@ def match_signals(signals: list, prices_map: dict,
             bar = bars[j]
             if direction > 0:
                 if stop and bar["low"] <= stop:
-                    exit_i, exit_price, reason = j, min(bar["open"], stop), "stop"
+                    exit_i, exit_price, reason = j, min(bar["open"], stop), "止损"
                     break
                 if tp and bar["high"] >= tp:
-                    exit_i, exit_price, reason = j, tp, "take_profit"
+                    exit_i, exit_price, reason = j, tp, "止盈"
                     break
             else:
                 if stop and bar["high"] >= stop:
-                    exit_i, exit_price, reason = j, max(bar["open"], stop), "stop"
+                    exit_i, exit_price, reason = j, max(bar["open"], stop), "止损"
                     break
                 if tp and bar["low"] <= tp:
-                    exit_i, exit_price, reason = j, tp, "take_profit"
+                    exit_i, exit_price, reason = j, tp, "止盈"
                     break
         if exit_i is None:
-            exit_i, exit_price, reason = last_i, bars[last_i]["close"], "hold"
+            exit_i, exit_price, reason = last_i, bars[last_i]["close"], "持有到期"
 
         gross = (exit_price / entry_price - 1) * direction
         pnl = gross - buy_cost - sell_cost
@@ -99,6 +99,8 @@ def match_signals(signals: list, prices_map: dict,
 
         trades.append({
             "code": code,
+            "name": s.get("name") or code,
+            "strategy": s.get("strategy") or "",
             "direction": direction,
             "entry_date": bars[entry_i]["date"],
             "entry_price": round(entry_price, 4),

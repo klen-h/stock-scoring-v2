@@ -24,6 +24,7 @@ from app.flash import rules
 from app.signals.tracker import HOLDINGS_MAP
 
 RATE_LIMIT = 1.0   # 每请求间隔（秒），东财对连续请求会断连，放慢更稳
+DAILY_STOCK_QUOTA = 150  # 每晚个股回填上限：数据源限流下长任务易被打断，分批推进更稳
 
 _EM_FAIL_STREAK = 0   # 东财连续失败计数，>=3 后全局切换腾讯源（东财可能被临时封 IP）
 
@@ -107,6 +108,17 @@ def backfill_stocks() -> int:
     return total
 
 
+def _latest_date_map(codes: list) -> dict:
+    """一次查完池内所有 code 的最新日期（避免逐只查询，远程库往返很慢）。"""
+    if not codes:
+        return {}
+    placeholders = ",".join(["%s"] * len(codes))
+    rows = db.fetch(
+        f"SELECT code, MAX(date) AS d FROM backtest_prices "
+        f"WHERE code IN ({placeholders}) GROUP BY code", tuple(codes))
+    return {r["code"]: r["d"] for r in rows}
+
+
 def backfill_daily() -> dict:
     """每日增量回填（供调度器调用）：ETF 池 + 沪深300 + 战法新个股。
     已回填标的只补最新日期之后，新出现的个股全量。返回统计 dict。
@@ -114,6 +126,12 @@ def backfill_daily() -> dict:
     额外输出 stock_missing：战法个股最新行情日期落后于沪深300基准的清单——
     增量回填对"数据源无返回"只是打印 [FAIL] 不抛异常，若不检测，
     个股行情会静默停更、战法回测无法撮合且无人知晓。
+
+    调度策略（关键）：数据源（东财/腾讯）对连续请求会限流，单晚能成功写入的
+    只数有限。若每晚都从池头顺序扫描，前面的股票会占完请求配额，
+    池尾股票永远轮不到（实测 400 只池子里 334 只长期 0 数据）。
+    因此：①已同步到基准的股票直接跳过不发请求；②无数据的排最前、滞后越久越前；
+    ③每晚限量 DAILY_STOCK_QUOTA 只，分批推进，几天内即可补齐。
     """
     stats = {"codes": 0, "rows": 0}
     for name, code in HOLDINGS_MAP.items():
@@ -121,23 +139,46 @@ def backfill_daily() -> dict:
         stats["rows"] += backfill(code, name)
     stats["codes"] += 1
     stats["rows"] += backfill("sh000300", "沪深300指数")
+
+    # 基准日期：个股应同步到该日期
+    benchmark = (db.fetch_one(
+        "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
+    stats["benchmark"] = benchmark
+
     stock_items = _collect_strategy_codes()
     stats["stock_pool"] = len(stock_items)
+    codes = [c for c, _ in stock_items]
+    name_of = dict(stock_items)
+    latest_map = _latest_date_map(codes)
+
+    # ①+② 优先队列：跳过已同步的，无数据排最前
+    pending, skipped = [], 0
+    for c in codes:
+        latest = latest_map.get(c)
+        if latest and benchmark and latest >= benchmark:
+            skipped += 1
+            continue
+        pending.append((c, name_of.get(c) or c, latest or ""))
+    pending.sort(key=lambda x: x[2])  # ""（无数据）排最前，滞后越久越靠前
+    stats["stock_skipped"] = skipped
+    stats["stock_pending"] = len(pending)
+
+    # ③ 每晚限量推进
+    quota = pending[:DAILY_STOCK_QUOTA]
+    stats["stock_quota"] = DAILY_STOCK_QUOTA
     stats["stock_rows"] = 0
-    for code, name in stock_items:
+    for code, name, _ in quota:
         stats["codes"] += 1
         stats["stock_rows"] += backfill(code, name)
 
-    # 个股缺失检测：以沪深300最新日期为基准（当日收盘后应全部同步到该日）
+    # 缺失检测：回填后重新取最新日期，仍落后基准的进告警清单
     stats["stock_missing"] = []
-    benchmark = (db.fetch_one(
-        "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
     if benchmark:
-        for code, name in stock_items:
-            latest = (db.fetch_one(
-                "SELECT MAX(date) AS d FROM backtest_prices WHERE code=%s", (code,)) or {}).get("d")
+        after_map = _latest_date_map([c for c, _, _ in pending])
+        for c, name, _ in pending:
+            latest = after_map.get(c)
             if not latest or latest < benchmark:
-                stats["stock_missing"].append(f"{code}({name})")
+                stats["stock_missing"].append(f"{c}({name})")
     print(f"[backfill_daily] 完成: {stats}")
     return stats
 

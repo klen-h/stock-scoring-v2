@@ -94,8 +94,12 @@ export const getFlashStatus = () => http.get('/flash/status')
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })
 export const getFlashAudit = () => http.get('/flash/audit')
 
-// 历史回测（引擎计算，后端 10 分钟缓存）
-export const getBacktestStrategy = (name) => http.get('/backtest/strategy', { params: { name } })
+// 历史回测（引擎计算，后端 10 分钟缓存；冷启动需从库拉几百只日线，放宽超时）
+export const getBacktestStrategy = (name) => http.get('/backtest/strategy', { params: { name }, timeout: 120000 })
+
+// 周度回测报告归档（scheduler 每周五 16:00 生成的 markdown 文件）
+export const getBacktestReports = () => http.get('/backtest/reports')
+export const getBacktestReportContent = (name) => http.get('/backtest/reports/content', { params: { name } })
 
 // 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
 export const getFlashBackup = () => http.get('/flash/backup')

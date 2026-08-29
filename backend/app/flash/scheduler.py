@@ -43,6 +43,7 @@ status = {
     "last_track": None,
     "last_reviews": {},          # {phase: 时间}
     "last_backtest_backfill": None,
+    "last_backtest_preheat": None,
     "last_score_snapshot": None,
     "last_market_snapshot": None,
     "last_news_alert": None,
@@ -418,6 +419,28 @@ async def regime_cache_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 回测预热：盘后自动计算三类策略并写持久缓存，用户访问秒回（冷启动不再 30s+）──
+BACKTEST_PREHEAT_WINDOW = (1605, 2359)   # 北京时间 16:05-23:59
+
+async def backtest_preheat_loop():
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        day_key = now.strftime("%Y%m%d")
+        if (now.weekday() < 5 and BACKTEST_PREHEAT_WINDOW[0] <= t < BACKTEST_PREHEAT_WINDOW[1]
+                and not store.is_schedule_done("backtest_preheat", date_str=day_key)):
+            print("[scheduler] 触发回测预热（signals/warfare/macro 写持久缓存）")
+            try:
+                from app.routers.backtest import preheat_all
+                await asyncio.to_thread(preheat_all)
+                store.mark_schedule_done("backtest_preheat", date_str=day_key)
+                status["last_backtest_preheat"] = rules.beijing_now().isoformat()
+                print("[scheduler] 回测预热完成")
+            except Exception as e:
+                print(f"[scheduler] 回测预热失败: {e}")
+        await asyncio.sleep(600)  # 每 10 分钟检查一次
+
+
 # ── 回测报告周度自动生成 + 企微推送 ──
 def run_weekly_backtest_report() -> dict:
     """生成完整回测报告（写文件）与精简摘要（企微推送用）。同步函数，线程池执行。"""
@@ -689,6 +712,7 @@ async def start():
              asyncio.create_task(kline_cache_refresh_loop()),
              asyncio.create_task(indicator_cache_refresh_loop()),
              asyncio.create_task(backtest_prices_refresh_loop()),
+             asyncio.create_task(backtest_preheat_loop()),
              asyncio.create_task(strategy_scan_loop()),
              asyncio.create_task(regime_cache_loop()),
              asyncio.create_task(backtest_report_loop()),

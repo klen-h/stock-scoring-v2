@@ -63,11 +63,12 @@ def _trades_top(trades: list, n: int = 10) -> str:
     if not trades:
         return "（无成交）\n"
     top = sorted(trades, key=lambda t: abs(t["pnl_pct"]), reverse=True)[:n]
-    lines = ["| 代码 | 方向 | 入场日 | 出场日 | 持仓天 | 单笔收益% | 出场原因 |",
+    lines = ["| 股票 | 方向 | 入场日 | 出场日 | 持仓天 | 单笔收益% | 出场原因 |",
              "|---|---|---|---|---|---|---|"]
     for t in top:
         direction = "多" if t["direction"] > 0 else "空"
-        lines.append(f"| {t['code']} | {direction} | {t['entry_date']} | "
+        stock = f"{t.get('name') or t['code']}({t['code']})"
+        lines.append(f"| {stock} | {direction} | {t['entry_date']} | "
                      f"{t['exit_date']} | {t['hold_days']} | {t['pnl_pct']} | "
                      f"{t['exit_reason']} |")
     return "\n".join(lines) + "\n"
@@ -79,7 +80,6 @@ def _curve_summary(curve: list) -> str:
         return "（无净值曲线）\n"
     first, last = curve[0], curve[-1]
     peak = max(curve, key=lambda c: c["nav"])
-    trough_ratio = min(c["nav"] / p for c, p in zip(curve, [curve[0]] + curve[:-1])) if len(curve) > 1 else 1.0
     # 找最大回撤段（峰值日 → 之后最低点日）
     mdd_pair, peak_nav = None, curve[0]
     for c in curve:

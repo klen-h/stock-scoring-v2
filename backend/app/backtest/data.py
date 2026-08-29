@@ -34,6 +34,8 @@ _MAX_RETRIES = 2          # 单源拉取失败重试次数
 _RETRY_BACKOFF = [2, 4]   # 重试等待（秒），东财对连续请求会断连
 DISABLE_EASTMONEY = False # 东财连续失败后置 True，全局走腾讯源
 _em_failures = 0          # 东财连续失败计数（>=3 自动禁用东财）
+_tencent_blocked_until = 0.0      # 腾讯 WAF 冷却截止时间（时间戳）
+_TENCENT_WAF_COOLDOWN = 300       # 腾讯 WAF 拦截后的冷却秒数
 
 
 def to_secid(code: str) -> str:
@@ -76,7 +78,14 @@ def _parse_klines(code: str, raw_items: list) -> list:
 
 def fetch_history_tencent(code: str, years: int = 3, start: str = None) -> list:
     """腾讯 fqkline 兜底源：拉取日线（count=800；start 给定时只取该日之后做增量）。
-    返回 [{date, open, high, low, close, volume}]（升序）。"""
+    返回 [{date, open, high, low, close, volume}]（升序）。
+
+    WAF 保护：腾讯对连续 K 线请求返回 501（防火墙拦截），此时进入全局冷却，
+    冷却期内直接放弃请求——否则数百只股票连续重试会把 IP 封得更久。
+    """
+    global _tencent_blocked_until
+    if time.time() < _tencent_blocked_until:
+        return []
     tc = _tencent_code(code)
     beg = start or (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
     end = datetime.now().strftime("%Y-%m-%d")
@@ -85,6 +94,11 @@ def fetch_history_tencent(code: str, years: int = 3, start: str = None) -> list:
     for attempt in range(_MAX_RETRIES):
         try:
             r = _SESSION.get(_TENCENT_KLINE_URL, params=params, timeout=15)
+            # 501 = 腾讯 WAF 拦截：触发全局冷却，冷却期内不再打腾讯
+            if r.status_code == 501:
+                _tencent_blocked_until = time.time() + _TENCENT_WAF_COOLDOWN
+                print(f"[backtest] {code} 腾讯WAF拦截(501)，全局冷却 {_TENCENT_WAF_COOLDOWN}s")
+                return []
             r.raise_for_status()
             raw = ((r.json() or {}).get("data") or {}).get(tc, {})
             # ETF/股票返回 qfqday，指数返回 day

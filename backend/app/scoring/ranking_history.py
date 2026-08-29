@@ -27,6 +27,7 @@
 
 import json
 import time
+from collections import defaultdict
 from typing import Dict, List
 from datetime import datetime, timedelta, timezone
 
@@ -138,43 +139,69 @@ def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, re
 def get_ranking_persistence(codes: List[str]) -> List[Dict]:
     """
     查询多只股票的连续上榜天数和可信度。
-    
+
+    批量查询（固定 3 次 DB 往返）：逐只查询时 Supabase 每次往返约 0.7s，
+    50 只股票要 100+ 次查询 ≈ 70s，必然超过前端 30s 超时被静默 catch，
+    表现为"连续/可信度一直是空的"。批量后稳定在 2s 内。
+
     返回：
       [{code, consecutive_days, trust_score, trust_grade, latest_score, latest_signal, advice}, ...]
     """
     if not codes:
         return []
-    
+
     today = _today_str()
+    days = [d for d in _trading_days(31) if d <= today]
+
+    ph_codes = ",".join(["%s"] * len(codes))
+    ph_days = ",".join(["%s"] * len(days)) if days else "NULL"
+
+    # ① 这些股票在这些交易日的上榜记录 → {code: {rank_date, ...}}
+    if days:
+        on_rows = db.fetch(
+            f"SELECT code, rank_date FROM ranking_history "
+            f"WHERE code IN ({ph_codes}) AND rank_date IN ({ph_days})",
+            (*codes, *days))
+    else:
+        on_rows = []
+    on_map = defaultdict(set)
+    for r in on_rows:
+        on_map[r["code"]].add(r["rank_date"])
+
+    # ② 每只股票的最新一条记录（一次查完）
+    latest_rows = db.fetch(f"""
+        SELECT code, name, total_score, signal, rank_pos, rank_date
+        FROM ranking_history
+        WHERE code IN ({ph_codes})
+          AND (code, rank_date) IN (
+              SELECT code, MAX(rank_date) FROM ranking_history
+              WHERE code IN ({ph_codes}) GROUP BY code)
+    """, (*codes, *codes))     # ph_codes 在 SQL 中出现两次，参数也要给两遍
+    latest_map = {r["code"]: r for r in latest_rows}
+
     results = []
-    
     for code in codes:
-        consecutive = _calc_consecutive_days(code, today)
-        
-        # 获取最新排行信息
-        latest = db.fetch_one("""
-            SELECT total_score, signal, name, rank_pos 
-            FROM ranking_history 
-            WHERE code = %s
-            ORDER BY rank_date DESC LIMIT 1
-        """, (code,))
-        
+        # 从最近快照交易日往前数（周末/盘前不归零，按交易日历不中断）
+        consecutive = 0
+        for d in days:
+            if d in on_map.get(code, ()):
+                consecutive += 1
+            else:
+                break
+
+        latest = latest_map.get(code)
         if latest:
             total_score = latest.get("total_score", 0) or 0
             signal = latest.get("signal", "观望") or "观望"
-            name = latest.get("name", "")
-            rank_pos = latest.get("rank_pos", 0)
+            name = latest.get("name", "") or ""
+            rank_pos = latest.get("rank_pos", 0) or 0
         else:
-            total_score = 0
-            signal = "观望"
-            name = ""
-            rank_pos = 0
-        
-        # 计算综合可信度
+            total_score, signal, name, rank_pos = 0, "观望", "", 0
+
         trust_score = _calc_trust_score(total_score, consecutive, signal)
         trust_grade = _trust_grade(trust_score)
         advice = _trust_advice(trust_grade, consecutive)
-        
+
         results.append({
             "code": code,
             "name": name,
@@ -186,28 +213,48 @@ def get_ranking_persistence(codes: List[str]) -> List[Dict]:
             "rank_pos": rank_pos,
             "advice": advice,
         })
-    
+
     return results
 
 
+def _trading_days(limit: int = 31) -> List[str]:
+    """全市场快照的交易日列表（降序）。
+
+    ranking_history 每个交易日落一次 Top50，其去重日期即天然的交易日历。
+    用交易日历而非自然日回溯，周末/节假日才不会把连续天数误判为中断。
+    """
+    rows = db.fetch("SELECT DISTINCT rank_date FROM ranking_history "
+                    "ORDER BY rank_date DESC LIMIT %s", (limit,))
+    return [r["rank_date"] for r in rows]
+
+
 def _calc_consecutive_days(code: str, end_date: str) -> int:
-    """计算从 end_date 往前连续上榜的天数（最多回溯 30 天）"""
+    """计算连续上榜天数（按交易日回溯，最多 30 个交易日）。
+
+    两个关键点（旧实现都踩了）：
+      1. 不能从 end_date 当天起算：盘中/盘前/周末/节假日当天还没有快照，
+         会第一天就 break 导致永远 0 天 → 改为从最近一个已有快照的交易日起算；
+      2. 不能按自然日回溯（current -= 1 天）：周末没有快照，
+         周一只能数到 1 天 → 改为按交易日历回溯。
+
+    性能：旧实现每只股票最多 30 次查询（50 只 = 1500 次远程往返），
+    现在全市场交易日 1 次 + 每只股票 1 次。
+    """
+    days = [d for d in _trading_days(31) if d <= end_date]
+    if not days:
+        return 0
+    placeholders = ",".join(["%s"] * len(days))
+    rows = db.fetch(
+        f"SELECT DISTINCT rank_date FROM ranking_history "
+        f"WHERE code = %s AND rank_date IN ({placeholders})", (code, *days))
+    on_list = {r["rank_date"] for r in rows}
+
     consecutive = 0
-    current = datetime.strptime(end_date, "%Y-%m-%d")
-    
-    for _ in range(30):
-        date_str = current.strftime("%Y-%m-%d")
-        row = db.fetch_one("""
-            SELECT 1 FROM ranking_history 
-            WHERE code = %s AND rank_date = %s
-        """, (code, date_str))
-        
-        if row:
+    for d in days:          # days 已降序：从最近快照日往前
+        if d in on_list:
             consecutive += 1
-            current -= timedelta(days=1)
         else:
             break
-    
     return consecutive
 
 

@@ -75,6 +75,20 @@ def backtest_llm_signals() -> dict:
 #  二、战法选股回测（strategy_results → 撮合）
 # ================================================================
 
+def _strategy_zh_name(name_en: str) -> str:
+    """战法英文 key → 中文名（注册表查不到时原样返回）。"""
+    if not name_en:
+        return name_en
+    try:
+        from app.strategies.base import get_strategy
+        s = get_strategy(name_en)
+        if s and s.name:
+            return s.name
+    except Exception:
+        pass
+    return name_en
+
+
 def _warfare_signal_stream(strategy_name: str = None) -> list:
     """strategy_results → 信号流（按 scan_date 升序）。"""
     sql = ("SELECT strategy_name, scan_date, results_json FROM strategy_results "
@@ -98,19 +112,20 @@ def _warfare_signal_stream(strategy_name: str = None) -> list:
             signals.append({
                 "date": r["scan_date"],
                 "code": code,
+                "name": str(it.get("name") or "").strip() or code,
                 "direction": "long",
                 "stop_loss": it.get("stop_loss"),
                 "take_profit": it.get("target_price"),
                 "hold_days": WARFARE_HOLD_DAYS,
                 "position_ratio": min(max(pos, 0.05), 1.0),
                 "is_etf": False,
-                "strategy": r["strategy_name"],
+                "strategy": _strategy_zh_name(r["strategy_name"]),
             })
     return signals
 
 
-_PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存，TTL 5 分钟
-_PRICES_TTL = 300
+_PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存（回测价格每日一更，长驻减少 Supabase 传输）
+_PRICES_TTL = 21600       # 6 小时：每日回填一次，无需短 TTL 反复重拉
 
 def _load_prices_map(codes: set, start: str = None) -> dict:
     """一次 IN 查询加载多只股票日线。
@@ -168,16 +183,44 @@ def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
             "sample_note": f"{start_d} ~ {end_d}"}
 
 
+def _strategy_stat(trades: list) -> dict:
+    """单战法成交统计（验证胜率用，与 backtest_llm_signals._stat 同口径）。"""
+    n = len(trades)
+    wins = [t for t in trades if t["pnl_pct"] > 0]
+    profits = [t["pnl_pct"] for t in trades]
+    gross_win = sum(p for p in profits if p > 0)
+    gross_loss = abs(sum(p for p in profits if p < 0))
+    return {
+        "trades": n,
+        "win_rate": round(len(wins) / n * 100, 1) if n else None,
+        "avg_pnl_pct": round(sum(profits) / n, 2) if n else None,
+        "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0
+                         else (999.0 if gross_win > 0 else 0.0),
+        "total_pnl_pct": round(sum(profits), 2),
+        "avg_hold_days": round(sum(t["hold_days"] for t in trades) / n, 1) if n else None,
+    }
+
+
 def backtest_warfare(strategy_name: str = None) -> dict:
     """战法回测：全体（或指定战法），含前 70% / 后 30% 切分防过拟合。"""
     signals = _warfare_signal_stream(strategy_name)
+    zh_label = _strategy_zh_name(strategy_name) if strategy_name else "全部战法"
     if not signals:
-        return {"type": "warfare", "label": strategy_name or "全部战法",
+        return {"type": "warfare", "label": zh_label,
                 "trades": [], "metrics": None, "sample_note": "无信号"}
         # 价格一次加载，整体/样本内/样本外三段复用
     prices_map = _load_prices_map({s["code"] for s in signals} | {"sh000300"},
                                   start=min(x["date"] for x in signals))
-    result = _run_warfare(signals, strategy_name or "全部战法", prices_map)
+    result = _run_warfare(signals, zh_label, prices_map)
+    # 按战法分组统计（验证各战法胜率），按成交数降序
+    if result.get("trades"):
+        groups = defaultdict(list)
+        for t in result["trades"]:
+            groups[t.get("strategy") or "未知"].append(t)
+        result["by_strategy"] = {
+            k: _strategy_stat(v)
+            for k, v in sorted(groups.items(), key=lambda x: -len(x[1]))
+        }
     # 时间切分：按信号日 70/30
     n = len(signals)
     split_i = int(n * 0.7)

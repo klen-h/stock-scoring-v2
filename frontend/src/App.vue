@@ -95,6 +95,7 @@ const navItems = [
   { path: '/score', label: '评分排行' },
   { path: '/strategies', label: '战法选股' },
   { path: '/monitor', label: '快讯监控' },
+  { path: '/backtest', label: '回测中心' },
   { path: '/portfolio', label: '我的持仓' },
   { path: '/watchlist', label: '自选股' },
   { path: '/trade-plans', label: '交易计划' },

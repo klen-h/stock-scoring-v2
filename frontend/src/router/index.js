@@ -9,6 +9,7 @@ const routes = [
   { path: '/score', name: 'ScoreRank', component: () => import('../views/ScoreRank.vue') },
   { path: '/strategies', name: 'Strategies', component: () => import('../views/Strategies.vue') },
   { path: '/monitor', name: 'Monitor', component: () => import('../views/MonitorView.vue') },
+  { path: '/backtest', name: 'Backtest', component: () => import('../views/BacktestView.vue') },
   { path: '/portfolio', name: 'Portfolio', component: () => import('../views/Portfolio.vue') },
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },
   { path: '/trade-plans', name: 'TradePlans', component: () => import('../views/TradePlans.vue') },
