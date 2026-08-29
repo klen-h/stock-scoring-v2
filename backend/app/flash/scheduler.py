@@ -17,7 +17,7 @@
 import asyncio
 import os
 
-from app.flash import service, store, rules
+from app.flash import service, store, rules, calendar
 from app.flash.source import FLASH_COOKIE
 from app.flash.llm import llm_configured
 from app.flash.wechat import WECHAT_WEBHOOK
@@ -705,6 +705,36 @@ async def news_history_loop():
         await asyncio.sleep(300)
 
 
+# ── 财经日历缓存刷新（低频：每天一次即可）──
+# 日历是静态排期数据（下周的非农/CPI 早就排好了），不需要像快讯那样分钟级轮询；
+# 每天盘前刷一次足够。缓存为空时 calendar.get_items() 会现场拉一次兜底。
+CALENDAR_WINDOW = (420, 480)   # 北京时间 07:00-08:00
+
+
+async def calendar_loop():
+    """每日盘前刷新财经日历缓存（幂等，错过窗口当日可补跑）。
+    失败仅打印日志：日历是辅助数据，挂了不影响事件流/复盘，
+    且缓存里仍保留着上一次成功拉取的数据。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "calendar"
+        if (CALENDAR_WINDOW[0] <= t < CALENDAR_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发财经日历刷新")
+            try:
+                n = await asyncio.to_thread(calendar.refresh)
+                if n:
+                    store.mark_schedule_done(task_key)
+                    status["last_calendar"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 财经日历已更新: {n} 条")
+                else:
+                    print("[scheduler] 财经日历返回 0 条，稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 财经日历刷新失败: {e}")
+        await asyncio.sleep(600)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -725,12 +755,14 @@ async def start():
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
              asyncio.create_task(news_alert_loop()),
-             asyncio.create_task(news_history_loop())]
+             asyncio.create_task(news_history_loop()),
+             asyncio.create_task(calendar_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
           f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
+          f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

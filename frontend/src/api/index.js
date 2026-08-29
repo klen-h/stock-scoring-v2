@@ -94,6 +94,10 @@ export const getFlashStatus = () => http.get('/flash/status')
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })
 export const getFlashAudit = () => http.get('/flash/audit')
 
+// 财经日历（金十：经济指标 / 事件讲话 / 交易所休市，后端每日 07:00 自动刷新缓存）
+export const getCalendar = (params) => http.get('/flash/calendar', { params })
+export const refreshCalendar = (daysAhead = 14) => http.post('/flash/calendar/refresh', {}, { params: { days_ahead: daysAhead } })
+
 // 历史回测（引擎计算，后端 10 分钟缓存；冷启动需从库拉几百只日线，放宽超时）
 export const getBacktestStrategy = (name) => http.get('/backtest/strategy', { params: { name }, timeout: 120000 })
 

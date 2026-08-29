@@ -92,6 +92,8 @@ docker compose up -d --build
 
 所有运行时状态在 `backend/data/`（已 gitignore）：
 `tracking.json`（信号+胜率）｜`analyses.json`（LLM诊断全文）｜`reviews.json`（复盘全文）｜
-`macro_history.json`（宏观历史，回测用）｜`llm_usage.json`（用量）｜`flash_state.json`（事件簇游标）
+`macro_history.json`（宏观历史，回测用）｜`llm_usage.json`（用量）｜`flash_state.json`（事件簇游标）｜
+`calendar.json`（财经日历缓存，丢了会自动重拉，可不备份）
 
 迁移/备份 = 拷贝这个目录。金十 Cookie 过期时页面通知会弹"数据源异常：金十快讯"。
+（财经日历是独立数据源，用开放接口无需 Cookie，不会随快讯 Cookie 过期一起告警。）

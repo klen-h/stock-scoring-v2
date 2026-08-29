@@ -5,6 +5,8 @@
 
 URL 前缀 /api/flash：
   GET  /api/flash/events               → 快讯事件流（分页，最新在前）
+  GET  /api/flash/calendar             → 财经日历（未来N天：经济指标/事件讲话/休市）
+  POST /api/flash/calendar/refresh     → 手动刷新日历缓存（正常由调度器每日07:00跑）
   GET  /api/flash/diagnosis            → 最新 LLM 诊断（含历史列表）
   GET  /api/flash/review/{phase}       → 最新三段复盘（premarket/lunchbreak/postmarket）
   GET  /api/flash/signals              → 信号跟踪（活跃/历史/绩效/被拒）
@@ -84,6 +86,34 @@ def flash_restore(bundle: dict, x_backup_secret: str = Header(None)):
             restored.append(key)
     return {"restored": restored, "total_entries": _count_entries(),
             "boot_id": _BOOT_ID}
+
+
+@router.get("/calendar")
+def flash_calendar(days: int = Query(7, ge=1, le=60),
+                   min_star: int = Query(0, ge=0, le=5),
+                   kind: str = Query("")):
+    """
+    财经日历：未来 days 天的事件，三类混排（data经济指标 / event事件讲话 / holiday休市）。
+    min_star>0 时只返回该星级以上（holiday 无星级字段，会被一并过滤掉）。
+    kind 传单个类型可只看某一类。缓存为空时会现场拉一次再返回。
+    """
+    from app.flash import calendar
+    c = calendar.load()
+    items = calendar.upcoming(days=days, min_star=min_star,
+                              kinds=(kind,) if kind else ())
+    return {"updated_at": c.get("updated_at", ""),
+            "range": c.get("range", {}),
+            "total": len(c.get("items") or []),
+            "count": len(items),
+            "items": items}
+
+
+@router.post("/calendar/refresh")
+def flash_calendar_refresh(days_ahead: int = Query(14, ge=7, le=60)):
+    """手动刷新财经日历缓存（测试/应急用；日常由调度器每日 07:00 自动刷新）。"""
+    from app.flash import calendar
+    n = calendar.refresh(days_ahead=days_ahead)
+    return {"refreshed": n, "time": datetime.now().isoformat()}
 
 
 @router.get("/events")

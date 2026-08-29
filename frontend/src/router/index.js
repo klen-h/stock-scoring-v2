@@ -10,6 +10,7 @@ const routes = [
   { path: '/score/stats', name: 'BucketStats', component: () => import('../views/BucketStats.vue') },
   { path: '/strategies', name: 'Strategies', component: () => import('../views/Strategies.vue') },
   { path: '/monitor', name: 'Monitor', component: () => import('../views/MonitorView.vue') },
+  { path: '/calendar', name: 'Calendar', component: () => import('../views/CalendarView.vue') },
   { path: '/backtest', name: 'Backtest', component: () => import('../views/BacktestView.vue') },
   { path: '/portfolio', name: 'Portfolio', component: () => import('../views/Portfolio.vue') },
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },

@@ -399,7 +399,15 @@ def format_macro_snapshot(panel: dict, history: list) -> str:
     add("恒生科技指数", "", "hstech", dollar=False)
     add("美元指数", "dxy", "dxy", dollar=False)
     add("离岸人民币", "usdcnh", "usdcnh", dollar=False)
-    add("美10年期国债收益率%", "", "us10y", dollar=False)
+    # 美债收益率曲线：2Y=政策利率预期锚，10Y=基准，30Y=长端折现率锚
+    for key, label in (("us2y", "美2年期国债收益率%"), ("us10y", "美10年期国债收益率%"),
+                       ("us30y", "美30年期国债收益率%")):
+        add(label, "", key, dollar=False)
+    if d.get("us_curve_10y2y_bp") is not None:
+        cur_chg = d.get("us_curve_bp_change", 0) or 0
+        flatten = "走平/倒挂加深=加息预期升温" if cur_chg < -2 else ("陡峭化=宽松预期" if cur_chg > 2 else "形态稳定")
+        lines.append(f"- 美债10Y-2Y利差: {d['us_curve_10y2y_bp']}bp "
+                     f"({'+' if cur_chg > 0 else ''}{cur_chg}bp/日, {flatten})")
     add("VIX", "", "vix", dollar=False)
     # 国内增强项
     add("富时A50期货", "", "a50", dollar=False)
@@ -450,6 +458,29 @@ def _internal_context() -> str:
     if not sections:
         return ""
     return "## 内部市场状态（量化系统提供，原项目没有的增量信息）\n" + "\n".join(sections) + "\n"
+
+
+def _calendar_context(days: int = 3) -> str:
+    """
+    【财经日历】未来 days 天内的重要宏观事件（★>=4）。
+
+    与 _internal_context() 分开注入：后者是"本系统的量化状态"（市场温度/方向分），
+    而日历是外部排期数据（非农/CPI/央行决议的时间与前值/预期）。
+
+    为什么只送 ★>=4：实测一周 64 条里 3 星占 54 条，用 >=3 等于没过滤（84% 都是
+    3 星，白烧 token）；>=4 只剩个位数，才是真正能驱动行情的事件。
+
+    无数据/异常 → 返回空串，不影响 prompt 其余部分（与 _internal_context 同策略）。
+    """
+    try:
+        from app.flash.calendar import format_for_llm
+        text = format_for_llm(days=days, min_star=4, limit=8)
+        if text:
+            return ("## 近期重要财经事件（金十日历，★=重要性）\n"
+                    f"{text}\n\n")
+    except Exception as e:
+        print(f"[llm] 财经日历注入失败（跳过）: {e}")
+    return ""
 
 
 def format_cluster_text(clusters: list) -> str:
@@ -574,6 +605,9 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 - 美元指数(DXY): {_fmt_item(g('dxy') or {})}
 - 离岸人民币(CNH): {_fmt_item(g('usdcnh') or {})}
 - 美10年期国债收益率: {_fmt_item(g('us10y') or {})}
+- 美2年期国债收益率: {_fmt_item(g('us2y') or {})}（政策利率预期锚）
+- 美30年期国债收益率: {_fmt_item(g('us30y') or {})}（长端折现率锚）
+- 美债10Y-2Y利差: {d.get('us_curve_10y2y_bp', 'N/A')}bp（日变化{d.get('us_curve_bp_change', 0):+.1f}bp，走平=加息预期升温）
 - VIX恐慌指数: {_fmt_item(g('vix') or {})}
 
 【工业需求与交叉验证】
@@ -593,6 +627,7 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 {_format_holdings_for_llm(holdings, holdings_text)}
 
 {_internal_context()}
+{_calendar_context(2)}
 
 ## 第二部分：核心诊断逻辑
 ### 2.1 盘面交叉验证
@@ -819,7 +854,7 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
 {etf_list}
 
 {perf_section}{_internal_context()}
-{user_holdings}{holdings_note}
+{_calendar_context(3)}{user_holdings}{holdings_note}
 {get_core_skill()}
 
 {_PHASE_SKILLS[phase]()}

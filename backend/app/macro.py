@@ -4,7 +4,7 @@
 ================================================================================
 
 数据来源：新浪财经公开行情接口（hq.sinajs.cn），一次请求抓全部品种。
-  全球：布伦特/WTI原油、COMEX金银铜、美债10Y、纳指期货、日经、恒生科技、
+  全球：布伦特/WTI原油、COMEX金银铜、美债2Y/10Y/30Y、纳指期货、日经、恒生科技、
         美元指数、离岸人民币、VIX
   国内：富时A50期货、中国10年期国债、在岸人民币、螺纹钢/铁矿石主连（黑色系）
         （以上国内代码均经实抓验证）
@@ -55,7 +55,8 @@ TTL_SNAPSHOT = 60    # 快照 60 秒
 _SINA_SYMBOLS = [
     "hf_OIL", "hf_CL", "hf_GC", "hf_XAU", "hf_SI", "hf_HG",       # 油/金/银/铜
     "hf_NQ", "hf_NK", "rt_hkHSTECH",                               # 纳指/日经/恒科
-    "globalbd_us10yt", "globalbd_cn10yt",                          # 美债/中国国债
+    "globalbd_us2yt", "globalbd_us10yt", "globalbd_us30yt",        # 美债 2Y/10Y/30Y
+    "globalbd_cn10yt",                                             # 中国国债
     "DINIW", "fx_susdcnh", "fx_susdcny",                           # 美元/离岸/在岸人民币
     "hf_VX", "gb_gld",                                             # VIX / GLD ETF
     "hf_CHA50CFD", "nf_RB0", "nf_I0",                              # A50 / 螺纹 / 铁矿
@@ -80,7 +81,9 @@ _PANEL_MAP = {
     "nasdaq":   ("hf_NQ", "hf"),
     "nikkei":   ("hf_NK", "hf"),
     "hstech":   ("rt_hkHSTECH", "hk"),
+    "us2y":     ("globalbd_us2yt", "bd"),   # 对政策利率最敏感→加息预期
     "us10y":    ("globalbd_us10yt", "bd"),
+    "us30y":    ("globalbd_us30yt", "bd"),  # 长端折现率锚→高估值资产定价
     "cn10y":    ("globalbd_cn10yt", "bd"),
     "dxy":      ("DINIW", "dxy"),
     "usdcnh":   ("fx_susdcnh", "fx"),
@@ -207,6 +210,21 @@ def get_macro_panel() -> dict:
     cnh, cny = panel.get("usdcnh"), panel.get("usdcny")
     if cnh and cny and cnh["price"] > 0 and cny["price"] > 0:
         derived["cny_cnh_basis_pips"] = round((cnh["price"] - cny["price"]) * 10000, 1)
+    # ── 美债收益率（A股传导链起点：美联储 → 美元/外资风险偏好 → A股）──
+    # 2Y 对政策利率最敏感（加息预期），30Y 是全球折现率锚（高估值资产定价），
+    # 10Y-2Y 利差刻画曲线形态：短端上行快于长端=曲线走平=市场在定价加息
+    us10, us2 = panel.get("us10y"), panel.get("us2y")
+    if us10:
+        derived["us10y_bp_change"] = round((us10["price"] - us10["prev_close"]) * 100, 2)
+    if us2:
+        derived["us2y_bp_change"] = round((us2["price"] - us2["prev_close"]) * 100, 2)
+    if us10 and us2 and us10["price"] and us2["price"]:
+        curve_now = (us10["price"] - us2["price"]) * 100
+        curve_prev = ((us10["prev_close"] - us2["prev_close"]) * 100
+                      if us10["prev_close"] and us2["prev_close"] else curve_now)
+        derived["us_curve_10y2y_bp"] = round(curve_now, 1)             # 水平值(bp)
+        derived["us_curve_bp_change"] = round(curve_now - curve_prev, 2)  # 日变化(bp)
+
     # 中国10年国债收益率日变化（bp，1bp=0.01%）
     cn = panel.get("cn10y")
     if cn:
@@ -231,13 +249,19 @@ def get_macro_panel() -> dict:
 #
 # 阈值是 v1 初值（按各品种日均波幅的量级设定），后续需用历史数据回测校准：
 # 触发偏多的次日上证上涨比例 ≥55% 保留、50~55% 降权、<50% 删除。
-RULES_VERSION = "macro-rules-v1"
+RULES_VERSION = "macro-rules-v2"
 
+# v2 调整（外部利率冲击成为主要矛盾）：global 上调、commodity 下调、internal 上调
+#   global ↑0.30→0.35：新增美债 2Y/曲线/30Y 三条规则，利率是当前定价核心
+#   internal ↑0.15→0.18：北向资金是"外资是否真的把 A 股当避风港"的直接验证，
+#                        外部动荡期它比商品更能说明 A 股的相对吸引力
+#   commodity ↓0.20→0.15：油价/铜相对利率是次要变量
+#   china 略降仍最高：A50/汇率仍是开盘方向的第一指标
 GROUP_WEIGHTS = {
-    "china": 0.35,      # 中国直接信号（指示性最强）
-    "global": 0.30,     # 全球风险偏好
-    "commodity": 0.20,  # 商品/需求
-    "internal": 0.15,   # 内部状态（温度+北向）
+    "china": 0.32,      # 中国直接信号（A50/汇率，开盘第一指标）
+    "global": 0.35,     # 全球风险偏好（美债/美元/VIX/纳指/恒科）
+    "commodity": 0.15,  # 商品/需求
+    "internal": 0.18,   # 内部状态（温度+北向）
 }
 
 RULES = [
@@ -284,6 +308,21 @@ RULES = [
      "bull": {"op": "<", "v": -0.3}, "bear": {"op": ">", "v": 0.3}, "strength": 1.5,
      "tag_bull": "美元走弱", "tag_bear": "美元走强",
      "why": "强美元抽水新兴市场，压制外资流入"},
+
+    # ── 美债/利率（传导：美联储 → 美元 + 外资风险偏好 → A股估值）──
+    # 美股逻辑不能直接搬：对 A 股是间接传导，真正落地在"美元/北向/成长股估值"上
+    {"id": "us2y_surge", "group": "global", "metric": "us2y_bp_change",
+     "bull": {"op": "<", "v": -5}, "bear": {"op": ">", "v": 8}, "strength": 1.5,
+     "tag_bull": "美债短端回落(加息预期降温)", "tag_bear": "美债短端飙升(加息预期升温)",
+     "why": "2Y 对政策利率最敏感，短端大幅上行=加息预期升温→美元走强、外资风险偏好回落，压制A股成长股估值"},
+    {"id": "us_curve_flatten", "group": "global", "metric": "us_curve_bp_change",
+     "bull": {"op": ">", "v": 5}, "bear": {"op": "<", "v": -5}, "strength": 1.0,
+     "tag_bull": "美债曲线陡峭化(宽松预期)", "tag_bear": "美债曲线走平(紧缩预期)",
+     "why": "10Y-2Y 利差收窄=短端上行快于长端=市场在定价加息，全球流动性收紧"},
+    {"id": "us30y_high", "group": "global", "metric": "us30y.price",
+     "bull": None, "bear": {"op": ">", "v": 5.0}, "strength": 1.0,
+     "tag_bull": None, "tag_bear": "美债长端高位(估值压制)",
+     "why": "30Y 是全球折现率锚，持续高位系统性压制高估值/长久期资产（水平值规则）"},
 
     # ── 商品/需求 ──
     {"id": "copper_demand", "group": "commodity", "metric": "copper.change_pct",
