@@ -152,6 +152,28 @@
       <div class="mt-3 text-[11px] text-muted">东财 7×24 快讯 + 关键词规则打分（72h 衰减）；独立维度不进总分，仅供参考</div>
     </div>
 
+    <!-- 评分 vs 价格（每日收盘快照，评分有效性个股级验证） -->
+    <div v-if="rankHistoryData && rankHistoryData.points && rankHistoryData.points.length >= 2"
+         class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <h3 class="text-sm font-semibold">📈 评分 vs 价格（近 30 日收盘快照）</h3>
+        <div class="flex gap-2 flex-wrap text-[10px]">
+          <span v-for="b in rankHistoryData.bucket_stats || []" :key="b.bucket"
+                class="px-1.5 py-0.5 rounded border"
+                :class="(b.bucket === '>=70' || b.bucket === '60-70')
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                  : 'bg-white/5 text-muted border-border'">
+            评分{{ b.bucket }}→未来{{ rankHistoryData.fwd_days }}日均 {{ b.avg_fwd5 > 0 ? '+' : '' }}{{ b.avg_fwd5 }}%（{{ b.count }}次）
+          </span>
+        </div>
+      </div>
+      <div ref="rankHistoryRef" class="h-[260px]"></div>
+      <div class="mt-1 text-[10px] text-muted">
+        评分是技术结构分（趋势+动量+超买超卖），与当日涨跌天然相关；看分桶更有意义——
+        高分桶的未来均值显著高于低分桶，才说明评分有预测力。样本较少时仅供参考。
+      </div>
+    </div>
+
     <!-- K线图 + 技术指标 -->
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex gap-2 mb-3 flex-wrap">
@@ -265,7 +287,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory } from '../api'
 
 const route = useRoute()
 const code = route.params.code
@@ -290,6 +312,11 @@ const newsData = ref(null)
 const newsHistory = ref([])
 const newsSparkRef = ref(null)
 let newsSparkChart = null
+
+// 评分 vs 价格（每日收盘快照，评分有效性个股级验证）
+const rankHistoryData = ref(null)
+const rankHistoryRef = ref(null)
+let rankHistoryChart = null
 
 const klineChartRef = ref(null)
 let charts = []
@@ -380,6 +407,50 @@ function renderNewsSpark() {
   charts.push(c)
 }
 watch(newsHistory, () => nextTick(renderNewsSpark))
+
+// ── 评分 vs 价格 双轴折线（每日收盘快照）──
+function renderRankHistory() {
+  const d = rankHistoryData.value
+  if (!rankHistoryRef.value || !d?.points || d.points.length < 2) return
+  if (rankHistoryChart) rankHistoryChart.dispose()
+  const pts = d.points
+  const c = echarts.init(rankHistoryRef.value, 'dark')
+  c.setOption({
+    backgroundColor: 'transparent',
+    tooltip: {
+      trigger: 'axis',
+      formatter: ps => {
+        let s = ps[0].axisValue
+        for (const p of ps) s += `<br/>${p.seriesName} ${p.value ?? '-'}`
+        const pt = pts[ps[0].dataIndex]
+        if (pt && pt.fwd5 != null) s += `<br/>未来${d.fwd_days}日 ${pt.fwd5 > 0 ? '+' : ''}${pt.fwd5}%`
+        return s
+      },
+    },
+    legend: { data: ['评分', '收盘价'], top: 0, textStyle: { fontSize: 10, color: '#8b949e' } },
+    grid: { left: 40, right: 52, top: 28, bottom: 20 },
+    xAxis: { type: 'category', data: pts.map(p => (p.date || '').slice(5)),
+      axisLabel: { fontSize: 9, color: '#8b949e' }, axisLine: { lineStyle: { color: '#30363d' } } },
+    yAxis: [
+      { type: 'value', min: 0, max: 100, name: '评分',
+        nameTextStyle: { fontSize: 9, color: '#8b949e' },
+        axisLabel: { fontSize: 9, color: '#8b949e' }, splitLine: { lineStyle: { color: '#21262d' } } },
+      { type: 'value', scale: true, name: '价格',
+        nameTextStyle: { fontSize: 9, color: '#8b949e' },
+        axisLabel: { fontSize: 9, color: '#8b949e' }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: '评分', type: 'line', yAxisIndex: 0, smooth: true, symbol: 'circle', symbolSize: 4,
+        data: pts.map(p => p.score),
+        lineStyle: { color: '#a371f7', width: 1.5 }, itemStyle: { color: '#a371f7' } },
+      { name: '收盘价', type: 'line', yAxisIndex: 1, smooth: true, symbol: 'none',
+        data: pts.map(p => p.price),
+        lineStyle: { color: '#58a6ff', width: 1.5, opacity: 0.85 }, itemStyle: { color: '#58a6ff' } },
+    ],
+  })
+  rankHistoryChart = c
+  charts.push(c)
+}
 
 // ── 支撑阻力 + RSI 显示辅助 ──
 const srBarBg = computed(() => {
@@ -596,6 +667,14 @@ onMounted(async () => {
   loaded.value = true
   await nextTick()
   await loadKline()
+
+  // 评分 vs 价格历史（独立加载，失败静默——数据积累需要时间）
+  getRankHistory(code, 30)
+    .then(({ data }) => {
+      rankHistoryData.value = data
+      nextTick(renderRankHistory)
+    })
+    .catch(() => {})
 
   window.addEventListener('resize', () => charts.forEach(c => c && c.resize()))
 })

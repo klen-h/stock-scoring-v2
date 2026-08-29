@@ -359,6 +359,269 @@ def _parse_dims(row: Dict) -> Dict:
         return {}
 
 
+def get_rank_history(code: str, days: int = 30, fwd_days: int = 5) -> Dict:
+    """单股历史评分 vs 价格（评分有效性个股级验证）。
+
+    数据源：
+      - 评分序列：ranking_history 每日 Top50 快照（score/price/rank）
+      - 价格序列：kline_cache 优先（含最新交易日），backtest_prices 兜底
+    对每个评分日计算 fwd_days 个交易日后的收益（fwd5），
+    并按评分分桶（>=70/60-70/50-60/<50）统计平均未来收益——
+    直接回答「评分高的股票后续更容易涨吗」。
+    """
+    since = (datetime.now(_BEIJING_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = db.fetch("""
+        SELECT rank_date, total_score, price, rank_pos
+        FROM ranking_history
+        WHERE code = %s AND rank_date >= %s
+        ORDER BY rank_date ASC
+    """, (code, since))
+
+    # 价格序列：kline_cache 优先（36h 内含最新），backtest_prices 兜底
+    closes: List = []
+    try:
+        from app.scoring.kline_cache import get_cached_klines
+        kl = get_cached_klines(code) or []
+        closes = [(k["date"], k["close"]) for k in kl]
+    except Exception:
+        pass
+    if len(closes) < 10:
+        try:
+            pr = db.fetch(
+                "SELECT date, close FROM backtest_prices WHERE code = %s ORDER BY date ASC",
+                (code,))
+            if pr:
+                closes = [(r["date"], r["close"]) for r in pr]
+        except Exception:
+            pass
+
+    date_idx = {d: i for i, (d, _) in enumerate(closes)}
+
+    points = []
+    for r in rows:
+        d = r["rank_date"]
+        i = date_idx.get(d)
+        snap_price = r.get("price") or 0
+        fwd_ret = None
+        if i is not None and i + fwd_days < len(closes):
+            base, target = closes[i][1], closes[i + fwd_days][1]
+            if base and base > 0 and target:
+                fwd_ret = round((target - base) / base * 100, 2)
+        points.append({
+            "date": d,
+            "score": r.get("total_score"),
+            "price": snap_price or (closes[i][1] if i is not None else None),
+            "rank": r.get("rank_pos"),
+            "fwd5": fwd_ret,
+        })
+
+    # 评分分桶 → 未来收益统计（先按快照价的涨跌方向分组，避免同义反复）
+    buckets: Dict[str, List] = {}
+    for p in points:
+        if p["fwd5"] is None or p["score"] is None:
+            continue
+        s = p["score"]
+        b = ">=70" if s >= 70 else "60-70" if s >= 60 else "50-60" if s >= 50 else "<50"
+        buckets.setdefault(b, []).append(p["fwd5"])
+    order = [">=70", "60-70", "50-60", "<50"]
+    bucket_stats = [
+        {"bucket": b, "count": len(buckets[b]),
+         "avg_fwd5": round(sum(buckets[b]) / len(buckets[b]), 2)}
+        for b in order if buckets.get(b)
+    ]
+
+    note = None
+    if not points:
+        note = "该股票近期不在评分 Top50 中，无历史评分记录"
+    return {"code": code, "points": points, "bucket_stats": bucket_stats,
+            "fwd_days": fwd_days, "note": note}
+
+
+# ── 评分分桶 × 持有期 胜率统计（全局验证"评分越高，未来收益越好吗"）──
+_BUCKET_ORDER = ["90-100", "80-90", "70-80", "60-70", "<60"]
+_BUY_SIGNALS = ("强烈买入", "买入")
+
+
+def _score_bucket(score) -> str:
+    if score is None:
+        return None
+    if score >= 90:
+        return "90-100"
+    if score >= 80:
+        return "80-90"
+    if score >= 70:
+        return "70-80"
+    if score >= 60:
+        return "60-70"
+    return "<60"
+
+
+def _stats(values: List[float]) -> Dict:
+    """样本列表 → {n, win_rate, avg_ret, median_ret}（空列表返回全 None）。"""
+    if not values:
+        return {"n": 0, "win_rate": None, "avg_ret": None, "median_ret": None}
+    n = len(values)
+    wins = sum(1 for v in values if v > 0)
+    s = sorted(values)
+    med = s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    return {
+        "n": n,
+        "win_rate": round(wins / n * 100, 1),
+        "avg_ret": round(sum(values) / n, 2),
+        "median_ret": round(med, 2),
+    }
+
+
+def _load_price_series(codes: List[str], since: str) -> Dict[str, List]:
+    """批量加载 {code: [(date, close), ...]}（升序）：backtest_prices 优先，kline_cache 兜底。
+
+    为什么不用 kline_cache 做主源：它每只存 500 根 K 线 JSON（几十 KB），
+    一次批量拉 200 只需传输 10MB+，Supabase 远程往返极慢（实测 >100s）。
+    backtest_prices 是独立 date/close 列，SQL 可裁剪（date >= since），
+    300 只 × 100 根 ≈ 3 万行小结果集，一次查询毫秒级。
+    只有回填未覆盖的股票才回退 kline_cache（数量少，传输可控）。
+    """
+    series: Dict[str, List] = {}
+    if not codes:
+        return series
+    try:
+        buffer_start = (datetime.strptime(since, "%Y-%m-%d")
+                        - timedelta(days=20)).strftime("%Y-%m-%d")
+        for i in range(0, len(codes), 100):
+            chunk = codes[i:i + 100]
+            ph = ",".join(["%s"] * len(chunk))
+            rows = db.fetch(
+                f"SELECT code, date, close FROM backtest_prices "
+                f"WHERE code IN ({ph}) AND date >= %s ORDER BY code, date",
+                (*chunk, buffer_start))
+            tmp: Dict[str, List] = defaultdict(list)
+            for r in rows:
+                if (r.get("close") or 0) > 0:
+                    tmp[r["code"]].append((r["date"], r["close"]))
+            for c, lst in tmp.items():
+                series[c] = lst
+    except Exception:
+        pass
+    # 兜底：回填未覆盖的股票从 kline_cache 补（每块 50 只，控制传输量）
+    missing = [c for c in codes if c not in series]
+    if missing:
+        try:
+            from app.scoring.kline_cache import get_cached_klines_batch
+            for i in range(0, len(missing), 50):
+                for c, kl in get_cached_klines_batch(missing[i:i + 50]).items():
+                    series[c] = [(k["date"], k["close"]) for k in kl if k.get("close")]
+        except Exception:
+            pass
+    return series
+
+
+def _bucket_conclusion(rows: List[Dict], horizon: int) -> str:
+    """基于某持有期、有样本的桶生成一句结论（最高 vs 最低桶）。"""
+    valid = [r for r in rows if r["all"].get(str(horizon), {}).get("n", 0) > 0]
+    if len(valid) < 2:
+        return "样本不足，暂无法给出可靠结论，继续积累每日快照后再看。"
+    top = valid[0]
+    bottom = valid[-1]
+    ts, bs = top["all"][str(horizon)], bottom["all"][str(horizon)]
+    wr_gap = (ts["win_rate"] or 0) - (bs["win_rate"] or 0)
+    ar_gap = (ts["avg_ret"] or 0) - (bs["avg_ret"] or 0)
+    if wr_gap >= 5 or ar_gap >= 1.5:
+        trend = "评分与未来收益呈正相关"
+    elif wr_gap <= -5 or ar_gap <= -1.5:
+        trend = "评分与未来收益呈负相关（高分反而更差，需警惕过拟合）"
+    else:
+        trend = "高低分桶差异不明显（当前数据下评分预测力有限）"
+    return (f"持有 {horizon} 个交易日：{top['bucket']} 分桶胜率 {ts['win_rate']}% / "
+            f"平均收益 {ts['avg_ret']}%（样本 {ts['n']}），"
+            f"{bottom['bucket']} 分桶胜率 {bs['win_rate']}% / "
+            f"平均收益 {bs['avg_ret']}%（样本 {bs['n']}），"
+            f"胜率差 {wr_gap:+.1f}pp、收益差 {ar_gap:+.2f}pp —— {trend}。")
+
+
+def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
+    """
+    评分分桶 × 持有期 胜率统计（全局验证评分有效性）。
+
+    数据源：
+      - 评分序列：ranking_history 每日 Top50 快照（total_score + signal）
+      - 价格序列：kline_cache 优先，backtest_prices 兜底（批量加载，不逐只往返）
+
+    对每条快照记录计算持有 1/5/10 个交易日后的收益，
+    按评分桶（90-100/80-90/70-80/60-70/<60）统计胜率/平均收益/中位数收益，
+    并分别输出「全部记录」与「仅买入类信号」两套口径 + 全样本 baseline 对照。
+    """
+    since = (datetime.now(_BEIJING_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = db.fetch("""
+        SELECT rank_date, code, total_score, signal
+        FROM ranking_history
+        WHERE rank_date >= %s
+        ORDER BY rank_date ASC
+    """, (since,))
+
+    # ① 批量加载价格序列（每只一次建 date→index 索引）
+    series = _load_price_series(list({r["code"] for r in rows}), since)
+    date_idx = {c: {d: i for i, (d, _) in enumerate(cl)} for c, cl in series.items()}
+
+    # ② 逐条快照计算各持有期收益
+    buckets: Dict[str, Dict] = {
+        b: {"all": {h: [] for h in horizons}, "buy": {h: [] for h in horizons}}
+        for b in _BUCKET_ORDER
+    }
+    baseline = {"all": {h: [] for h in horizons}, "buy": {h: [] for h in horizons}}
+    no_price = 0
+    total_records = 0
+
+    for r in rows:
+        total_records += 1
+        b = _score_bucket(r.get("total_score"))
+        if b not in buckets:
+            continue
+        idx_map = date_idx.get(r["code"])
+        if idx_map is None:
+            no_price += 1
+            continue
+        i = idx_map.get(r["rank_date"])
+        if i is None:
+            no_price += 1
+            continue
+        closes = series[r["code"]]
+        is_buy = (r.get("signal") or "") in _BUY_SIGNALS
+        for h in horizons:
+            if i + h < len(closes):
+                base, target = closes[i][1], closes[i + h][1]
+                if base and base > 0 and target:
+                    ret = (target - base) / base * 100
+                    buckets[b]["all"][h].append(ret)
+                    baseline["all"][h].append(ret)
+                    if is_buy:
+                        buckets[b]["buy"][h].append(ret)
+                        baseline["buy"][h].append(ret)
+
+    # ③ 汇总
+    bucket_rows = []
+    for b in _BUCKET_ORDER:
+        g = buckets[b]
+        bucket_rows.append({
+            "bucket": b,
+            "all": {str(h): _stats(g["all"][h]) for h in horizons},
+            "buy": {str(h): _stats(g["buy"][h]) for h in horizons},
+        })
+    result = {
+        "days": days,
+        "horizons": list(horizons),
+        "window": [min((r["rank_date"] for r in rows), default="-"),
+                   max((r["rank_date"] for r in rows), default="-")],
+        "total_records": total_records,
+        "no_price": no_price,
+        "price_coverage": round((total_records - no_price) / total_records, 4) if total_records else 0,
+        "buckets": bucket_rows,
+        "baseline": {"all": {str(h): _stats(baseline["all"][h]) for h in horizons},
+                     "buy": {str(h): _stats(baseline["buy"][h]) for h in horizons}},
+    }
+    result["conclusion"] = _bucket_conclusion(bucket_rows, horizons[-1] if horizons else 5)
+    return result
+
+
 def _current_prices(codes: List[str]) -> Dict[str, float]:
     """批量获取现价：内存实时行情 → backtest_prices 最新收盘 → kline_cache 末根收盘。
 

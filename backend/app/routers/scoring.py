@@ -480,6 +480,41 @@ async def backtest(
     return result
 
 
+@router.get("/rank-history/{code}")
+async def rank_history(code: str, days: int = Query(default=30, ge=7, le=90)):
+    """单股历史评分 vs 价格 + 未来5日收益（评分有效性个股级验证）。"""
+    from app.scoring.ranking_history import get_rank_history
+    return get_rank_history(code, days=days)
+
+
+# 分桶胜率统计缓存（计算涉及批量价格加载，10 分钟复用）
+_bucket_cache = {"ts": 0.0, "data": None}
+_BUCKET_CACHE_TTL = 600
+
+
+@router.get("/bucket-stats")
+async def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
+    """
+    评分分桶 × 持有期胜率统计（全局验证"评分越高，未来收益越好吗"）。
+
+    数据源：ranking_history 每日 Top50 快照 + kline_cache/backtest_prices 价格序列。
+    输出：每个评分桶（90-100/80-90/70-80/60-70/<60）持有 1/5/10 个交易日后的
+    胜率、平均收益、中位数收益（全部记录 + 仅买入信号两套口径）+ baseline 对照。
+    """
+    import time as _time
+    now = _time.time()
+    if _bucket_cache["data"] is not None and now - _bucket_cache["ts"] < _BUCKET_CACHE_TTL:
+        data = dict(_bucket_cache["data"])
+        data["cached"] = True
+        return data
+    from app.scoring.ranking_history import get_bucket_stats
+    result = get_bucket_stats(days=days)
+    result["cached"] = False
+    _bucket_cache["ts"] = now
+    _bucket_cache["data"] = result
+    return result
+
+
 @router.get("/snapshots")
 async def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
     """最近 N 天评分排行快照（含维度分/快照价/现价收益），供前端「胜率回查」面板。

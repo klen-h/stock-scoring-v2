@@ -93,6 +93,7 @@ const navItems = [
   { path: '/', label: '首页' },
   { path: '/market', label: '市场行情' },
   { path: '/score', label: '评分排行' },
+  { path: '/score/stats', label: '评分验证' },
   { path: '/strategies', label: '战法选股' },
   { path: '/monitor', label: '快讯监控' },
   { path: '/backtest', label: '回测中心' },
@@ -103,10 +104,10 @@ const navItems = [
 ]
 
 // 导航高亮判断：
-//   - 首页 '/' 必须严格匹配（否则在 /market 等任何页面首页都会高亮）
+//   - 首页 '/' 与评分排行 '/score' 必须严格匹配（避免子路由 /score/stats 同时高亮两个 tab）
 //   - 其他 tab 用 startsWith，支持子路由（如 /stock/000001 不命中任何 tab，正确）
 function isNavItemActive(path) {
-  if (path === '/') return route.path === '/'
+  if (path === '/' || path === '/score') return route.path === path
   return route.path === path || route.path.startsWith(path + '/')
 }
 

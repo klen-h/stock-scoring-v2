@@ -125,6 +125,11 @@ export const getScoreBottom = (params) => http.get('/score/batch/bottom', { para
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
+// 单股历史评分 vs 价格（评分有效性个股级验证，详情页折线图）
+export const getRankHistory = (code, days = 30) => http.get(`/score/rank-history/${code}`, { params: { days } })
+// 评分分桶 × 持有期胜率统计（全局验证"评分越高，未来收益越好吗"）
+export const getBucketStats = (days = 120) => http.get('/score/bucket-stats', { params: { days }, timeout: 60000 })
+
 // 权重优化分析：不传 snapshots 时后端自动从每日快照库读取已验证记录（统一后推荐用法）
 export const getWeightAdvice = (snapshots = null) =>
   http.post('/score/weight-advice', snapshots ? { snapshots } : {}, { timeout: 30000 })

@@ -7,6 +7,7 @@ const routes = [
   { path: '/market', name: 'Market', component: () => import('../views/MarketView.vue') },
   { path: '/stock/:code', name: 'StockDetail', component: () => import('../views/StockDetail.vue') },
   { path: '/score', name: 'ScoreRank', component: () => import('../views/ScoreRank.vue') },
+  { path: '/score/stats', name: 'BucketStats', component: () => import('../views/BucketStats.vue') },
   { path: '/strategies', name: 'Strategies', component: () => import('../views/Strategies.vue') },
   { path: '/monitor', name: 'Monitor', component: () => import('../views/MonitorView.vue') },
   { path: '/backtest', name: 'Backtest', component: () => import('../views/BacktestView.vue') },

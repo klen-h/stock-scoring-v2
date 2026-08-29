@@ -243,7 +243,8 @@ def render_review_markdown(result: dict) -> str:
     lines.append("")
 
     # 四、结论
-    lines.append("### 四、初步结论", "")
+    lines.append("")
+    lines.append("### 四、初步结论")
     lines.append(_conclusion(result))
     lines.append("")
     return "\n".join(lines)
