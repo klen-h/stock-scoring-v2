@@ -359,6 +359,68 @@ def _parse_dims(row: Dict) -> Dict:
         return {}
 
 
+def _current_prices(codes: List[str]) -> Dict[str, float]:
+    """批量获取现价：内存实时行情 → backtest_prices 最新收盘 → kline_cache 末根收盘。
+
+    不能只依赖内存行情缓存（tencent._cache["stocks"]）：服务重启或免费档休眠后
+    缓存为空，所有快照的收益都会算不出来，表现为「查询当前收益无效」
+    「权重优化提示已验证记录不足 0 条」。三级兜底后，只要库里存过这只股票的
+    任意历史价格就能算出收益（批量查询，不随股票数增长远程往返）。
+    """
+    prices: Dict[str, float] = {}
+    if not codes:
+        return prices
+
+    # ① 内存实时行情（最快，盘中最新）
+    try:
+        from app.tencent import _cache
+        stocks = _cache.get("stocks", {}) or {}
+        for c in codes:
+            p = (stocks.get(c) or {}).get("price") or 0
+            if p > 0:
+                prices[c] = p
+    except Exception:
+        pass
+
+    missing = [c for c in codes if c not in prices]
+    if not missing:
+        return prices
+
+    # ② backtest_prices：每日回填的日线，取每只最新收盘价
+    ph = ",".join(["%s"] * len(missing))
+    try:
+        rows = db.fetch(f"""
+            SELECT code, close FROM backtest_prices
+            WHERE code IN ({ph}) AND (code, date) IN (
+                SELECT code, MAX(date) FROM backtest_prices
+                WHERE code IN ({ph}) GROUP BY code)
+        """, (*missing, *missing))
+        for r in rows:
+            if (r.get("close") or 0) > 0:
+                prices[r["code"]] = r["close"]
+    except Exception:
+        pass
+
+    # ③ kline_cache：DB 缓存的 K 线，取最后一根收盘价
+    still = [c for c in missing if c not in prices]
+    if still:
+        try:
+            ph2 = ",".join(["%s"] * len(still))
+            rows = db.fetch(
+                f"SELECT code, kline_data FROM kline_cache WHERE code IN ({ph2})",
+                (*still,))
+            for r in rows:
+                try:
+                    kl = json.loads(r.get("kline_data") or "[]")
+                    if kl:
+                        prices[r["code"]] = kl[-1].get("close") or 0
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    return prices
+
+
 def get_daily_rankings(days: int = 30) -> List[Dict]:
     """
     读取最近 N 天每日 Top 快照（含维度分、快照价、现价与收益）。
@@ -375,8 +437,8 @@ def get_daily_rankings(days: int = 30) -> List[Dict]:
         ORDER BY rank_date DESC, rank_pos ASC
     """, (since,))
 
-    from app.tencent import _cache
-    now_prices = _cache.get("stocks", {})
+    # 现价三级兜底：内存行情 / backtest_prices / kline_cache（重启后也能算出收益）
+    now_prices = _current_prices(list({r["code"] for r in rows}))
     today = _today_str()
 
     by_date: Dict[str, list] = {}
@@ -388,8 +450,7 @@ def get_daily_rankings(days: int = 30) -> List[Dict]:
         stocks = []
         for r in items:
             price = r.get("price") or 0
-            info = now_prices.get(r["code"]) or {}
-            now_p = info.get("price") or 0
+            now_p = now_prices.get(r["code"]) or 0
             return_pct = None
             # 快照保存当天收益无验证意义（当日价格≈快照价），次日才计算
             if now_p > 0 and price > 0 and d < today:
@@ -436,14 +497,13 @@ def get_verified_records(min_age_days: int = 2) -> List[Dict]:
         ORDER BY rank_date DESC
     """, (cutoff,))
 
-    from app.tencent import _cache
-    now_prices = _cache.get("stocks", {})
+    # 现价三级兜底：内存行情 / backtest_prices / kline_cache（重启后也能算出收益）
+    now_prices = _current_prices(list({r["code"] for r in rows}))
 
     records = []
     for r in rows:
         price = r.get("price") or 0
-        info = now_prices.get(r["code"]) or {}
-        now_p = info.get("price") or 0
+        now_p = now_prices.get(r["code"]) or 0
         if now_p <= 0 or price <= 0:
             continue
         dims = _parse_dims(r)

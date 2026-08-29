@@ -17,6 +17,7 @@
 """
 
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 # ── 关键词字典（权重 2 = 强信号，1 = 弱信号）──
 # 打分时在「标题 + 摘要」全文中做子串匹配；命中权重累加后统一 clamp。
@@ -51,7 +52,7 @@ def _beijing_now() -> datetime:
     return datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
 
 
-def parse_news_time(s: str) -> datetime | None:
+def parse_news_time(s: str) -> Optional[datetime]:
     """解析快讯时间 "YYYY-MM-DD HH:MM:SS"（北京时间）。失败返回 None。"""
     try:
         return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")

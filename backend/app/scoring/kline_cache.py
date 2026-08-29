@@ -129,6 +129,20 @@ def get_cached_klines_batch(codes: List[str]) -> Dict[str, List[Dict]]:
     return result
 
 
+def get_cache_codes(limit: int = 100) -> List[str]:
+    """有 K 线缓存的股票代码（按市值降序）。
+
+    用途：服务重启/休眠后内存行情缓存为空时，用它兜底构建回测股票池，
+    避免直接报「行情数据未就绪」（免费档重启频繁，等内存缓存就绪要很久）。
+    """
+    try:
+        rows = db.fetch("SELECT code FROM kline_cache "
+                        "ORDER BY market_cap DESC LIMIT %s", (limit,))
+        return [r["code"] for r in rows]
+    except Exception:
+        return []
+
+
 def save_kline_cache(code: str, name: str, klines: List[Dict], market_cap: float = 0):
     """
     保存K线数据到数据库缓存。

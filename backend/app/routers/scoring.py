@@ -16,6 +16,7 @@
 
 from fastapi import APIRouter, Query, BackgroundTasks, Body
 import asyncio
+import time
 from types import SimpleNamespace
 from typing import Optional
 from app.scoring.engine import ScoreEngine
@@ -330,6 +331,10 @@ async def batch_prices(codes: str = Query(..., description="逗号分隔的股�
     } for c, s in zip(code_list, stocks)]
 
 
+_bt_cache = {}          # {(top_n, days, periods): (ts, result)} 回测结果缓存
+_BT_CACHE_TTL = 1800    # 30 分钟：计算量大（每日×每只重算指标），同参数直接复用
+
+
 @router.get("/backtest")
 async def backtest(
     top_n: int = Query(default=10, ge=5, le=30),
@@ -345,31 +350,49 @@ async def backtest(
     if not periods:
         periods = [1, 3, 5, 10]
 
-    # 取市值前 100 只股票作为回测池
+    # 同参数直接复用结果：小算力环境下单次计算要几十秒，避免每次点击重算
+    _key = (top_n, days, tuple(periods))
+    _c = _bt_cache.get(_key)
+    if _c and time.time() - _c[0] < _BT_CACHE_TTL:
+        cached = dict(_c[1])
+        cached["cached"] = True
+        return cached
+
+    # 回测池：优先用内存实时行情（按市值取前 100）；服务重启/休眠后内存缓存为空时
+    # 从 DB K线缓存兜底取池，避免直接报"行情数据未就绪"
     stocks = list(_cache.get("stocks", {}).values())
-    if len(stocks) < 20:
+    if len(stocks) >= 20:
+        stocks.sort(key=lambda s: s.get("market_cap", 0) or 0, reverse=True)
+        pool_codes = [s["code"] for s in stocks[:100]]
+    else:
+        from app.scoring.kline_cache import get_cache_codes
+        pool_codes = get_cache_codes(100)
+    if len(pool_codes) < 20:
         return {"error": "行情数据未就绪，请稍后再试"}
-    stocks.sort(key=lambda s: s.get("market_cap", 0) or 0, reverse=True)
-    pool = stocks[:100]
 
-    # 并发拉取 K线（限制 3 并发 + 请求间隔，避免触发WAF）
-    sem = asyncio.Semaphore(3)
+    # K线：优先读 DB 缓存（批量一次，快且不触发WAF），未命中的才实时拉取
+    from app.scoring.kline_cache import get_cached_klines_batch
+    klines_map = {c: kl for c, kl in get_cached_klines_batch(pool_codes).items()
+                  if len(kl) >= 30}
+    miss = [c for c in pool_codes if c not in klines_map]
 
-    async def fetch_kline(code):
-        async with sem:
-            try:
-                result = await asyncio.to_thread(get_kline, code, "day", 500)
-                await asyncio.sleep(0.3)  # 请求间隔，降低WAF风险
-                return result
-            except Exception:
-                return None
+    if miss:
+        # 并发拉取（限制 3 并发 + 请求间隔，避免触发WAF）
+        sem = asyncio.Semaphore(3)
 
-    klines_map = {}
-    tasks = [fetch_kline(s["code"]) for s in pool]
-    results = await asyncio.gather(*tasks)
-    for s, kl in zip(pool, results):
-        if kl and len(kl) >= 30:
-            klines_map[s["code"]] = kl
+        async def fetch_kline(code):
+            async with sem:
+                try:
+                    result = await asyncio.to_thread(get_kline, code, "day", 500)
+                    await asyncio.sleep(0.3)  # 请求间隔，降低WAF风险
+                    return result
+                except Exception:
+                    return None
+
+        results = await asyncio.gather(*[fetch_kline(c) for c in miss])
+        for code, kl in zip(miss, results):
+            if kl and len(kl) >= 30:
+                klines_map[code] = kl
 
     codes = list(klines_map.keys())
     if len(codes) < 10:
@@ -445,13 +468,16 @@ async def backtest(
         else:
             summary[p] = {"win_rate": 0, "avg_return": 0, "total": 0}
 
-    return {
+    result = {
         "summary": summary,
         "backtest_days": bt_days,
         "stock_pool_size": len(codes),
         "top_n": top_n,
         "periods": periods,
+        "cached": False,
     }
+    _bt_cache[_key] = (time.time(), result)
+    return result
 
 
 @router.get("/snapshots")

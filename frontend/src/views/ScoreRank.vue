@@ -415,6 +415,10 @@
       <div v-if="btResult" class="bg-card border border-border rounded-lg p-4">
         <div class="text-xs text-muted mb-3">
           回测 {{ btResult.backtest_days }} 天 · {{ btResult.stock_pool_size }} 只股票池 · 每日选 Top {{ btResult.top_n }}
+          <span v-if="btResult.source === 'local'"
+                class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">本地计算</span>
+          <span v-else
+                class="ml-1 px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-muted border border-border">后端计算</span>
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div v-for="p in btResult.periods" :key="p" class="p-3 bg-bg rounded-lg text-center">
@@ -622,7 +626,7 @@ import { useRouter } from 'vue-router'
 import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache, getSnapshots, captureScoreSnapshot } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
-import { useFrontendScoring } from '../composables/useFrontendScoring'
+import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
 
 const router = useRouter()
 
@@ -813,7 +817,7 @@ let autoSaveTimer = null
 const scoreAlerts = ref({ upgrades: [], downgrades: [] })
 
 // ── 历史回测 ──
-const btConfig = reactive({ topN: 10, days: 60 })
+const btConfig = reactive({ topN: 10, days: 30 })
 const btResult = ref(null)
 const btLoading = ref(false)
 
@@ -1061,11 +1065,32 @@ async function runBacktest() {
   btLoading.value = true
   btResult.value = null
   try {
-    const { data } = await getBacktest({
-      top_n: btConfig.topN,
-      days: btConfig.days,
-    })
-    if (data.error) {
+    let data = null
+    // 本地 K 线库可用时优先本地计算：零后端请求、不触发 WAF、不受服务重启影响
+    if (frontendStockCount.value >= 100) {
+      try {
+        const local = await runLocalBacktest({
+          topN: btConfig.topN,
+          days: btConfig.days,
+        })
+        if (local && !local.error) {
+          data = local
+        } else if (local && local.error) {
+          console.warn('[本地回测不可用]', local.error)
+        }
+      } catch (e) {
+        console.warn('[本地回测失败，回退后端]', e)
+      }
+    }
+    // 本地不可用/失败 → 回退后端接口
+    if (!data) {
+      const { data: remote } = await getBacktest({
+        top_n: btConfig.topN,
+        days: btConfig.days,
+      })
+      data = remote
+    }
+    if (data && data.error) {
       console.error(data.error)
     } else {
       btResult.value = data

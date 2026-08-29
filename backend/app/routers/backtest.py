@@ -17,6 +17,7 @@ import json
 import os
 import threading
 import time
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Query
 
@@ -61,7 +62,7 @@ def _cache_save(name: str, resp: dict):
         print(f"[backtest] 持久缓存写入失败 {name}: {e}")
 
 
-def _cache_load(name: str) -> dict | None:
+def _cache_load(name: str) -> Optional[Dict]:
     try:
         row = db.fetch_one(
             "SELECT data_json, updated_at FROM backtest_cache WHERE strategy = %s", (name,))
