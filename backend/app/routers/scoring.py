@@ -528,6 +528,11 @@ async def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
 async def capture_score_snapshot():
     """立即记录当日 Top 50 快照（含维度分+快照价格）到 ranking_history，同日幂等覆盖。
     日常由调度器每天 15:15 自动执行；此接口供前端「保存快照」按钮手动触发。"""
+    from datetime import datetime as _dt, timezone as _tz
+    from app.scoring.ranking_history import _is_trading_date
+    if not _is_trading_date(_dt.now(_tz(_dt.timedelta(hours=8)))):
+        # 周末/节假日明确报错（而非 recorded=0），前端收到 error 不会回落本地兜底
+        return {"error": "今日非A股交易日（周末/节假日休市），无需保存快照"}
     result = await score_top(limit=50)
     data = result.get("data") or []
     if not data:
@@ -544,7 +549,6 @@ async def capture_score_snapshot():
     ]
     # 手动保存 = 当日权威快照：清空当天已有记录再写入，保证每日固定 Top50
     count = record_daily_ranking(stocks, replace_day=True)
-    from datetime import datetime as _dt, timezone as _tz
     today = _dt.now(_tz(_dt.timedelta(hours=8))).strftime("%Y-%m-%d")
     return {"recorded": count, "date": today, "total": len(data)}
 

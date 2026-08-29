@@ -299,7 +299,10 @@
     <div v-if="activeTab === 'verify'" class="space-y-4">
       <!-- 操作栏 -->
       <div class="bg-card border border-border rounded-lg p-4 flex items-center justify-between flex-wrap gap-3">
-        <h2 class="text-lg font-bold">推荐胜率回查</h2>
+        <div class="flex items-center gap-3 flex-wrap">
+          <h2 class="text-lg font-bold">推荐胜率回查</h2>
+          <span v-if="lastMsg" class="text-xs text-amber-400">{{ lastMsg }}</span>
+        </div>
         <div class="flex gap-2">
           <button @click="captureSnapshot" :disabled="!tableData.length"
             class="px-3 py-1.5 rounded text-xs bg-accent/20 text-accent hover:bg-accent/30 transition-colors disabled:opacity-40">
@@ -826,6 +829,7 @@ const snapshotList = computed(() =>
 const expandedSnapshots = ref(new Set())
 const verifying = ref(false)
 const lastAutoSaveDate = ref('')
+const lastMsg = ref('')            // 快照操作结果提示（如非交易日拒绝保存）
 let autoSaveTimer = null
 
 // ── 评分变动提醒 ──
@@ -970,7 +974,12 @@ async function captureSnapshot() {
       await loadSnapshots()   // 重新从后端拉取最新快照列表
       return
     }
-    if (data && data.error) console.warn('[snapshot]', data.error)
+    if (data && data.error) {
+      // 后端明确拒绝（如非交易日休市）：提示且不落本地兜底，避免周末写入脏快照
+      console.warn('[snapshot]', data.error)
+      lastMsg.value = data.error
+      return
+    }
   } catch { /* 后端不可用，走本地兜底 */ }
 
   // ── 本地兜底（离线模式）：始终拉取最新 Top 50 ──

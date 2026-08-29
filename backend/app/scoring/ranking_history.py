@@ -42,6 +42,25 @@ def _today_str() -> str:
     return datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d")
 
 
+def _is_trading_date(d: datetime) -> bool:
+    """A股交易日判断：非周末且不在 rules.HOLIDAYS 节假日表内。
+
+    排行快照必须落在真实交易日：非交易日行情缓存不刷新，写进去的是上一
+    交易日的重复数据，且 _trading_days 把 ranking_history 的去重日期当
+    交易日历来算连续上榜天数，混入周末/节假日会把天数虚增。
+    注意不能用 get_china_market_status()：盘后/盘前它返回 is_open=False，
+    会把正常的盘后权威快照也挡掉。
+    """
+    from app.flash.rules import HOLIDAYS
+    if d.weekday() >= 5:   # 0=周一 ... 5/6=周六/周日
+        return False
+    md = (d.month, d.day)
+    for lo, hi, _name in HOLIDAYS.get(d.year, []):
+        if lo <= md <= hi:
+            return False
+    return True
+
+
 # ── 数据库表初始化 ──
 def init_ranking_history_table():
     """创建排行榜历史表"""
@@ -90,6 +109,12 @@ def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, re
     
     返回：成功记录的条数
     """
+    now_bj = datetime.now(_BEIJING_TZ)
+    if not _is_trading_date(now_bj):
+        # 统一交易日守卫：调度器/页面兜底/手动保存/调试接口全部走这里，
+        # 非交易日一律不写（此前 HTTP 入口无检查，周末开一次评分页就多出一条脏快照）
+        print(f"[ranking] {now_bj:%Y-%m-%d} 非A股交易日（周末/节假日），跳过排行快照")
+        return 0
     today = _today_str()
     if only_if_empty:
         exists = db.fetch_one(
