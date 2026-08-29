@@ -635,10 +635,9 @@ import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontend
 
 const router = useRouter()
 
+// bottom / signal 入口暂隐藏（后续优化完再开放）
 const tabs = [
   { key: 'top', label: '评分 Top 50' },
-  { key: 'bottom', label: '评分 Bottom 50' },
-  { key: 'signal', label: '按信号筛选' },
   { key: 'sector', label: '板块分析' },
   { key: 'verify', label: '胜率回查' },
   { key: 'backtest', label: '历史回测' },
@@ -1181,6 +1180,9 @@ async function loadFrontendRanking() {
     
     if (activeTab.value === 'top') {
       detectScoreChanges()
+      // 与后端模式对齐：本地计算同样加载连续上榜/可信度 + 持仓撤退提醒
+      loadPersistence()
+      loadExitAlerts()
     }
   } else {
     cacheStatus.value = 'error'
