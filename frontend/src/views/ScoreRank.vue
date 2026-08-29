@@ -139,7 +139,7 @@
           <div class="text-muted mt-1">{{ alert.action }}</div>
           <div class="flex gap-2 mt-1">
             <span class="text-muted">现价 {{ alert.current_price }}</span>
-            <span :class="alert.profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+            <span :class="alert.profit_pct >= 0 ? 'text-rise' : 'text-fall'">
               盈亏 {{ alert.profit_pct >= 0 ? '+' : '' }}{{ alert.profit_pct }}%
             </span>
           </div>
@@ -321,13 +321,14 @@
             <div class="text-muted text-xs">快照次数</div>
             <div class="text-lg font-bold mt-1">{{ verifySummary.total }}</div>
           </div>
-          <div class="p-2 bg-emerald-500/10 rounded-lg">
-            <div class="text-emerald-400 text-xs">推荐盈利占比</div>
-            <div class="text-lg font-bold text-emerald-400 mt-1">{{ verifySummary.winRate }}%</div>
+          <!-- A股口径：盈利/正收益=红(rise)，亏损/负收益=绿(fall) -->
+          <div class="p-2 bg-rise/10 rounded-lg">
+            <div class="text-rise text-xs">推荐盈利占比</div>
+            <div class="text-lg font-bold text-rise mt-1">{{ verifySummary.winRate }}%</div>
           </div>
-          <div class="p-2" :class="verifySummary.avgReturn >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'">
-            <div class="text-xs" :class="verifySummary.avgReturn >= 0 ? 'text-emerald-400' : 'text-red-400'">平均收益</div>
-            <div class="text-lg font-bold mt-1" :class="verifySummary.avgReturn >= 0 ? 'text-emerald-400' : 'text-red-400'">
+          <div class="p-2" :class="verifySummary.avgReturn >= 0 ? 'bg-rise/10' : 'bg-fall/10'">
+            <div class="text-xs" :class="verifySummary.avgReturn >= 0 ? 'text-rise' : 'text-fall'">平均收益</div>
+            <div class="text-lg font-bold mt-1" :class="verifySummary.avgReturn >= 0 ? 'text-rise' : 'text-fall'">
               {{ verifySummary.avgReturn >= 0 ? '+' : '' }}{{ verifySummary.avgReturn }}%
             </div>
           </div>
@@ -343,7 +344,7 @@
           <div class="flex items-center gap-3">
             <span class="text-sm font-bold">{{ snap.date }}</span>
             <span class="text-xs text-muted">{{ snap.stocks.length }} 只</span>
-            <span v-if="snap.verified" class="text-xs" :class="snap.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+            <span v-if="snap.verified" class="text-xs" :class="snap.winRate >= 50 ? 'text-rise' : 'text-fall'">
               胜率 {{ snap.winRate }}% · 均收益 {{ snap.avgReturn >= 0 ? '+' : '' }}{{ snap.avgReturn }}%
               <span class="text-muted ml-1">({{ fmtVerifyTime(snap.verifiedAt) }})</span>
             </span>
@@ -376,7 +377,7 @@
                 </td>
                 <td class="py-1.5 px-3 text-right text-muted">{{ s.price || '-' }}</td>
                 <td class="py-1.5 px-3 text-right">{{ s.currentPrice || '-' }}</td>
-                <td class="py-1.5 px-3 text-right" :class="(s.returnPct || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                <td class="py-1.5 px-3 text-right" :class="(s.returnPct || 0) >= 0 ? 'text-rise' : 'text-fall'">
                   {{ s.returnPct != null ? (s.returnPct >= 0 ? '+' : '') + s.returnPct + '%' : '-' }}
                 </td>
               </tr>
@@ -431,12 +432,12 @@
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
           <div v-for="p in btResult.periods" :key="p" class="p-3 bg-bg rounded-lg text-center">
             <div class="text-muted text-xs mb-1">持有 {{ p }} 天</div>
-            <div class="text-lg font-bold" :class="btResult.summary[p]?.avg_return >= 0 ? 'text-emerald-400' : 'text-red-400'">
+            <div class="text-lg font-bold" :class="btResult.summary[p]?.avg_return >= 0 ? 'text-rise' : 'text-fall'">
               {{ btResult.summary[p]?.avg_return >= 0 ? '+' : '' }}{{ btResult.summary[p]?.avg_return }}%
             </div>
             <div class="text-xs mt-1">
               <span class="text-muted">胜率</span>
-              <span class="font-bold" :class="btResult.summary[p]?.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+              <span class="font-bold" :class="btResult.summary[p]?.win_rate >= 50 ? 'text-rise' : 'text-fall'">
                 {{ btResult.summary[p]?.win_rate }}%
               </span>
               <span class="text-muted ml-1">({{ btResult.summary[p]?.total }} 笔)</span>
@@ -468,7 +469,7 @@
               <div v-for="(stats, sig) in optResult.signal_analysis" :key="sig"
                 class="p-2 rounded-lg bg-bg text-center">
                 <div class="text-xs text-muted">{{ sig }}</div>
-                <div class="text-lg font-bold mt-1" :class="stats.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+                <div class="text-lg font-bold mt-1" :class="stats.win_rate >= 50 ? 'text-rise' : 'text-fall'">
                   {{ stats.win_rate }}%
                 </div>
                 <div class="text-[10px] text-muted">{{ stats.count }}次 · 均{{ stats.avg_return >= 0 ? '+' : '' }}{{ stats.avg_return }}%</div>

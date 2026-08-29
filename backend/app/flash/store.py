@@ -156,6 +156,32 @@ def save_analysis(analysis: dict, analyzed_clusters: list) -> None:
         print(f"[store] 保存诊断失败: {e}")
 
 
+def load_analyses(limit: int = 20) -> list:
+    """加载 LLM 诊断历史（最新在前），每条含 {time, model, clusters, output}。
+
+    ★ 数据源必须是数据库表 flash_analyses：save_analysis() 早已迁移到 DB，
+      但路由里有多处仍在读迁移前的 data/analyses.json——那个文件停留在迁移
+      当天再没被写入，导致「今日诊断」永远显示十几天前的旧诊断（新诊断写进了
+      表、接口却读文件）。读 JSON 的旧调用全部改走这里。
+    """
+    rows = db.fetch(
+        "SELECT time, model, clusters_json, output_json FROM flash_analyses "
+        "ORDER BY time DESC LIMIT %s", (limit,))
+    out = []
+    for r in rows:
+        try:
+            output = json.loads(r["output_json"]) if r.get("output_json") else {}
+        except (ValueError, TypeError):
+            output = {}
+        try:
+            clusters = json.loads(r["clusters_json"]) if r.get("clusters_json") else []
+        except (ValueError, TypeError):
+            clusters = []
+        out.append({"time": r["time"], "model": r.get("model"),
+                    "clusters": clusters, "output": output})
+    return out
+
+
 def load_latest_analysis() -> dict:
     """最新一条诊断（无则空 dict）。"""
     row = db.fetch_one("SELECT * FROM flash_analyses ORDER BY time DESC LIMIT 1")

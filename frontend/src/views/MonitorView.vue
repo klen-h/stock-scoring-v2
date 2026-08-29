@@ -24,7 +24,7 @@
           {{ fmtTokens(status.llm_usage.today.prompt_tokens + status.llm_usage.today.completion_tokens) }}token
           <span v-if="status.llm_usage.blocked_reason" class="text-red-400">（{{ status.llm_usage.blocked_reason }}）</span>
         </span>
-        <span class="text-muted">上次轮询 {{ fmtTime(status.last_flash_poll?.time) }}</span>
+        <span class="text-muted">上次轮询 {{ fmtBjTime(status.last_flash_poll?.time) }}</span>
         <button @click="ingest" :disabled="ingesting"
           class="bg-white/5 border border-border rounded px-3 py-1 text-gray-300 hover:bg-white/10 disabled:opacity-40">
           {{ ingesting ? '拉取中...' : '立即拉取' }}
@@ -49,6 +49,22 @@
         暂无诊断记录——需配置 FLASH_COOKIE + LLM_API_KEY，等调度器抓到新事件后自动生成。
       </div>
       <template v-else>
+        <!-- 生成时间：非今日时明确标注，避免把几天前的旧诊断当成今天的结论 -->
+        <div v-if="diagTime" class="flex items-center gap-2 flex-wrap text-xs">
+          <span class="text-muted">诊断生成于 {{ fmtBjTime(diagTime) }}</span>
+          <span v-if="diagIsToday"
+            class="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 font-semibold">今日</span>
+          <span v-else
+            class="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25 font-semibold">
+            非今日 · 今日暂无新诊断
+          </span>
+          <!-- 说明为什么没有诊断：不是故障，是没达到触发门槛 -->
+          <span v-if="!diagIsToday" class="text-[11px] text-muted">
+            诊断只在新事件簇 / 升「爆」/ 重大更新时触发，已有事件的常规更新只推进游标、不重复送 LLM；
+            企微收到的复盘与信号推送与此无关
+          </span>
+        </div>
+
         <!-- 诊断头部 -->
         <div class="bg-card border border-border rounded-lg p-4 grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
@@ -136,7 +152,7 @@
         <div class="flex items-center gap-3 flex-wrap">
           <label class="text-xs text-muted">📅 日期</label>
           <select v-model="selectedDate" class="bg-bg border border-border rounded px-2 py-1 text-xs">
-            <option v-for="d in reviewDates" :key="d" :value="d">{{ d }}</option>
+            <option v-for="d in reviewDates" :key="d" :value="d">{{ d }}{{ weekendLabel(d) }}</option>
           </select>
           <div class="flex gap-1">
             <button v-for="p in phases" :key="p.key" @click="reviewPhase = p.key"
@@ -144,7 +160,7 @@
               class="px-2 py-1 rounded text-xs transition-colors">{{ p.label }}</button>
           </div>
         </div>
-        <span v-if="currentReview?.time" class="text-xs text-muted">{{ fmtTime(currentReview.time) }}</span>
+        <span v-if="currentReview?.time" class="text-xs text-muted">{{ fmtBjTime(currentReview.time) }}</span>
       </div>
       <div v-if="currentReview?.markdown" class="bg-card border border-border rounded-lg p-4">
         <div class="md-body max-h-[70vh] overflow-y-auto" v-html="renderMd(currentReview.markdown)"></div>
@@ -426,6 +442,7 @@ const phases = [
 const activeTab = ref('diagnosis')
 const status = ref({})
 const diag = ref(null)
+const diagTime = ref('')   // 诊断生成时间（后端落盘为北京时间 naive ISO，无时区标记）
 const events = ref([])
 const eventsTotal = ref(0)
 const eventPage = ref(1)
@@ -491,8 +508,35 @@ async function loadDiagnosis() {
   try {
     const { data } = await getFlashDiagnosis({ limit: 1 })
     diag.value = data.latest?.output || null
+    diagTime.value = data.latest?.time || ''
   } catch (e) { console.error(e) }
 }
+
+// 后端 store._now_iso() 落盘的就是北京时间（naive ISO，无时区标记），
+// 不能再按 UTC 解析 +8（fmtTime 的 +8 是为兼容更早期的 UTC 旧数据保留的）
+function fmtBjTime(t) {
+  if (!t) return '—'
+  return String(t).slice(0, 16).replace('T', ' ')
+}
+
+function todayBj() {
+  const bj = new Date(Date.now() + 8 * 3600 * 1000)
+  const pad = n => String(n).padStart(2, '0')
+  return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())}`
+}
+
+// 周末生成的复盘记录标注出来：复盘只在交易日跑，库里的周末记录是修复前的脏数据
+// （节假日需查后端 HOLIDAYS，前端只标周末即可）
+function weekendLabel(d) {
+  if (!d) return ''
+  const wd = new Date(d + 'T00:00:00Z').getUTCDay()
+  return (wd === 0 || wd === 6) ? '（周末·非交易日）' : ''
+}
+
+// 诊断是否今日生成：LLM 只在抓到新事件簇时才产出诊断，安静的交易日可能整天
+// 没有新诊断，此时页面必须标明陈旧，否则会被误当成今天的结论
+const diagIsToday = computed(() =>
+  !!diagTime.value && String(diagTime.value).slice(0, 10) === todayBj())
 
 async function loadEvents() {
   try {

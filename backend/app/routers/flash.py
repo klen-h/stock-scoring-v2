@@ -36,9 +36,10 @@ _BACKUP_FILES = list(store.PATHS.keys())    # 参与镜像的数据文件白名�
 
 def _count_entries() -> int:
     """数据条目总数——恢复判定的签名：镜像比服务端多 = 服务端数据被清过。"""
-    a = len(store._load(store.PATHS["analyses"], {"analyses": []}).get("analyses", []))
-    r = sum(len(v) for v in store._load(store.PATHS["reviews"], {}).values()
-            if isinstance(v, list))
+    # 诊断与复盘均已迁移到数据库表，读迁移前的 JSON 文件会恒为旧值/0
+    a = len(store.load_analyses(50))
+    r = sum(len(store.load_review_history(p, 20))
+            for p in ("premarket", "lunchbreak", "postmarket"))
     tr = store._load(store.PATHS["tracking"], {})
     t = len(tr.get("history", [])) + len(tr.get("activeSignals", []))
     m = len(store.load_macro_history())
@@ -97,9 +98,14 @@ def flash_events(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200)
 
 @router.get("/diagnosis")
 def flash_diagnosis(limit: int = Query(5, ge=1, le=20)):
-    """最新 LLM 诊断（列表，最新在前；每条含完整输出）。"""
-    analyses = store._load(store.PATHS["analyses"], {"analyses": []}).get("analyses", [])
-    return {"data": analyses[:limit], "total": len(analyses),
+    """最新 LLM 诊断（列表，最新在前；每条含完整输出）。
+
+    从数据库表 flash_analyses 读取（与 save_analysis 写入侧对齐）。
+    此前读的是迁移前的 data/analyses.json，该文件自迁移后再没被写入，
+    表现为「今日诊断」永远显示十几年前的旧诊断。
+    """
+    analyses = store.load_analyses(limit)
+    return {"data": analyses, "total": len(analyses),
             "latest": analyses[0] if analyses else None}
 
 
@@ -180,7 +186,7 @@ def flash_notifications(since: str = ""):
             return False
 
     # 1. 新诊断
-    for a in store._load(store.PATHS["analyses"], {"analyses": []})["analyses"][:20]:
+    for a in store.load_analyses(20):
         if _newer(a.get("time", "")):
             out = a.get("output") or {}
             corr = out.get("correlation_diagnosis") or {}
@@ -194,7 +200,8 @@ def flash_notifications(since: str = ""):
 
     # 2. 新复盘
     phase_names = {"premarket": "盘前", "lunchbreak": "午盘", "postmarket": "盘后"}
-    for phase, lst in store._load(store.PATHS["reviews"], {}).items():
+    for phase in ("premarket", "lunchbreak", "postmarket"):
+        lst = store.load_review_history(phase, 1)
         if lst and _newer(lst[0].get("time", "")):
             events.append({
                 "type": "review", "time": lst[0].get("time"),

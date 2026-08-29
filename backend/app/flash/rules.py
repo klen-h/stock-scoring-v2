@@ -308,6 +308,21 @@ def get_china_market_status() -> dict:
     return {"is_open": False, "reason": "已收盘 (15:00后)"}
 
 
+def is_trading_day(dt=None) -> bool:
+    """是否为 A 股交易日（只判周末 + 法定节假日，不判盘中时段）。
+
+    与 get_china_market_status() 的区别：后者把 15:00 后一律判为"已收盘"，
+    而盘后复盘窗口（15:03-23:59）本就落在收盘之后，用它做门禁会把正常的
+    盘后复盘一并拦掉。判断"今天该不该跑复盘"只需要日期维度的交易日。
+    """
+    now = dt or beijing_now()
+    md = (now.month, now.day)
+    for (lo, hi, _name) in HOLIDAYS.get(now.year, []):
+        if lo <= md <= hi:
+            return False
+    return now.weekday() < 5      # 0=周一 ... 5/6=周六/周日
+
+
 # ================================================================
 #  三、数据质量评估（按市场时钟分级降级）
 # ================================================================

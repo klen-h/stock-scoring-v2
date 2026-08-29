@@ -105,7 +105,7 @@
             <div v-if="backtestResult" class="mt-3 p-2 rounded bg-purple-500/10 border border-purple-500/20 text-xs space-y-1">
               <div class="flex justify-between">
                 <span class="text-muted">胜率</span>
-                <span :class="backtestResult.win_rate >= 50 ? 'text-emerald-400' : 'text-red-400'">
+                <span :class="backtestResult.win_rate >= 50 ? 'text-rise' : 'text-fall'">
                   {{ backtestResult.win_rate }}%
                 </span>
               </div>
@@ -119,7 +119,7 @@
               </div>
               <div class="flex justify-between">
                 <span class="text-muted">平均收益</span>
-                <span :class="backtestResult.avg_profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                <span :class="backtestResult.avg_profit_pct >= 0 ? 'text-rise' : 'text-fall'">
                   {{ backtestResult.avg_profit_pct }}%
                 </span>
               </div>
@@ -270,7 +270,7 @@
                   <div class="text-muted mt-1">{{ alert.action }}</div>
                   <div class="flex gap-2 mt-1">
                     <span class="text-muted">现价 {{ alert.current_price }}</span>
-                    <span :class="alert.profit_pct >= 0 ? 'text-emerald-400' : 'text-red-400'">
+                    <span :class="alert.profit_pct >= 0 ? 'text-rise' : 'text-fall'">
                       盈亏 {{ alert.profit_pct >= 0 ? '+' : '' }}{{ alert.profit_pct }}%
                     </span>
                   </div>

@@ -110,10 +110,16 @@ async def track_loop():
 
 
 async def review_loop():
-    """三段复盘循环：到窗口且当日未跑 → 执行并标记。"""
+    """三段复盘循环：交易日 + 到窗口 + 当日未跑 → 执行并标记。"""
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
+        # 非交易日不跑：REVIEW_WINDOWS 只按"一天中的时刻"判断，周末/节假日开机
+        # 同样会命中 postmarket 的 15:03-23:59，白烧 LLM token 还会往复盘历史
+        # 里写入无意义的记录（此前周六照跑三段复盘就是这个原因）
+        if not rules.is_trading_day(now):
+            await asyncio.sleep(60)
+            continue
         for phase, (start, end) in REVIEW_WINDOWS.items():
             task_key = f"review_{phase}"
             if start <= t < end and not store.is_schedule_done(task_key):
