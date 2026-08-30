@@ -15,7 +15,9 @@ import {
   getStockCount,
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
+import { getFinanceBatch } from '../api'
 import { scoreStock, roughScore } from '../utils/scoringEngine'
+import { isTradingDay } from './usePortfolio'
 
 /**
  * 过滤无效股票（ST、亏损、科创板、创业板）
@@ -215,8 +217,31 @@ export async function computeRanking(options = {}) {
     poolCount.value = stocksWithQuotes.length
     console.info(`[前端评分] 过滤漏斗: 本地库 ${allStocks.length} → 行情成功 ${withQuote.length} → 有效(非ST/PE>0) ${valid.length} → 质量门槛通过 ${stocksWithQuotes.length}`)
 
+    // 3.5 批量加载财报（成长/质量维度的数据源）
+    //   后端 1 次 SQL + 30 分钟进程缓存，上限 1000/批，所以分批调
+    //   合并进 stock.finance —— roughScore/scoreStock 会兜底从 stockInfo.finance 读取，
+    //   Worker 也能透明传递（stockInfo 整个丢给 scoreStock）
+    let finMap = {}
+    try {
+      const codes = stocksWithQuotes.map(s => s.code)
+      for (let i = 0; i < codes.length; i += 1000) {
+        const chunk = codes.slice(i, i + 1000)
+        const part = await getFinanceBatch(chunk)
+        // ★ 响应拦截器返回的是 AxiosResponse 对象，真实数据在 .data 里；
+        //   不取 .data 会让 finMap 变成 {data:{...}, status, headers}，导致 finMap[code] 永远 undefined、财报静默丢失
+        const partData = (part && typeof part === 'object' && 'data' in part) ? part.data : part
+        finMap = { ...finMap, ...partData }
+      }
+    } catch (e) {
+      console.warn('[前端评分] 财报加载失败（成长/质量维度将不参与加权）:', e)
+    }
+    const stocksWithFin = stocksWithQuotes.map(s => ({
+      ...s,
+      finance: finMap[s.code] || null,
+    }))
+
     // 4. 简化评分快速排序
-    const scored = stocksWithQuotes.map(s => ({
+    const scored = stocksWithFin.map(s => ({
       ...s,
       roughScore: roughScore(s),
     }))
@@ -265,12 +290,21 @@ export async function computeRanking(options = {}) {
  * 历史 K 线格式：[date, open, high, low, close, volume]
  * 腾讯快照字段：open, high, low, price, volume
  * 如果历史数据已包含今天（数据包当天更新过），则跳过拼接。
+ *
+ * ★ 两类场景禁止拼接（否则把最后收盘价重复计一天，MA/MACD/RSI/KDJ 全部失真）：
+ *   1. 非交易日（周末休市，复用 usePortfolio 的 isTradingDay 判断）——
+ *      周六打开页面会把周五收盘再拼一条"周六"K 线（000833 实测总分虚增 ~2 分）
+ *   2. 交易日 09:25 前——集合竞价未出价，实时快照仍是昨日数据，拼上等于昨日重复
+ *   另外日期必须用本地时间（原 toISOString 是 UTC，北京时间 0-8 点会错一天）
  */
-function appendTodayBar(klines, stock) {
+export function appendTodayBar(klines, stock, now = new Date()) {
   // 无实时数据时不拼接（停牌/拉取失败）
   if (!stock.price || stock.price <= 0) return klines
+  if (!isTradingDay(now)) return klines
+  if (now.getHours() * 60 + now.getMinutes() < 9 * 60 + 25) return klines
 
-  const today = new Date().toISOString().slice(0, 10)
+  const pad = n => String(n).padStart(2, '0')
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   const lastBar = klines[klines.length - 1]
 
   // 已经包含今天的数据，跳过（避免重复）

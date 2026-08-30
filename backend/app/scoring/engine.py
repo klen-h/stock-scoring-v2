@@ -7,17 +7,31 @@
 输入：股票的技术指标数据 + 实时行情 + 基本面数据
 输出：一个 0~100 的综合评分 + 买卖信号（强烈买入/买入/观望/卖出/强烈卖出）
 
-评分体系（三维度加权）：
+评分体系（五维度加权）：
   ┌──────────┬──────┬──────────────────────────────────────────────┐
   │ 维度     │ 权重 │ 包含的子指标                                 │
   ├──────────┼──────┼──────────────────────────────────────────────┤
-  │ 技术面   │ 40%  │ MA均线 / MACD / RSI / KDJ / 布林带           │
-  │ 资金面   │ 25%  │ 量价配合 / 涨跌动量 / 换手率 / 成交额强度    │
-  │ 基本面   │ 35%  │ PE估值 / PB估值 / 市值规模 / 振幅            │
+  │ 技术面   │ 32%  │ MA均线 / MACD / RSI / KDJ / 布林带           │
+  │ 资金面   │ 20%  │ 量价配合 / 涨跌动量 / 换手率 / 成交额强度    │
+  │ 基本面   │ 18%  │ PE估值 / PB估值 / 市值规模 / 振幅            │
+  │ 成长     │ 18%  │ 营收同比增速 / 净利同比增速                  │
+  │ 质量     │ 12%  │ ROE / 资产负债率 / 毛利率                    │
   └──────────┴──────┴──────────────────────────────────────────────┘
 
 计算公式：
-  综合分 = 技术面得分×0.40 + 资金面得分×0.25 + 基本面得分×0.35
+  综合分 = 技术×0.32 + 资金×0.20 + 基本面×0.18 + 成长×0.18 + 质量×0.12
+
+★ 缺失维度不参与加权（重要）：
+  成长/质量依赖财报数据（stock_finance 表，东财季度更新）。个股未披露时
+  该维度为 None —— 此时把它的权重按比例分摊给其余维度（见 _combine），
+  而不是记 0 分。否则"尚未披露财报"会被当成"基本面极差"，
+  导致这些股票被系统性低估、莫名掉榜。
+
+★ 已知局限（待 stock_industry 有数据后改进）：
+  资产负债率、毛利率的阈值是【绝对阈值】，但行业差异极大 ——
+  银行负债率 92% 属正常、白酒毛利率 90% 属正常。目前缺行业归类数据，
+  只能先按绝对值打分（阈值已刻意放宽，避免误伤金融/酒类）。
+  等个股→行业映射表建成后，应改为"行业内相对排名"打分。
 
 信号判定（基于综合分）：
   ≥ 80 → 强烈买入   |   ≥ 65 → 买入   |   45~65 → 观望
@@ -120,26 +134,37 @@ class ScoreEngine:
     # ── 权重配置 ──
     # 默认（静态）权重：三个权重加起来 = 1.0，确保综合分满分是 100。
     # 支持通过 weights / regime 参数做「市场状态 + 动态权重」漂移。
-    W_TECHNICAL = 0.40    # 技术面默认权重 40%
-    W_CAPITAL   = 0.25    # 资金面默认权重 25%
-    W_FUNDAMENTAL = 0.35  # 基本面默认权重 35%
+    # 五维度权重（和为 1.0）。原三维度中的"基本面"拆出"成长""质量"两个独立维度
+    # —— 估值/规模（基本面）与成长性、财务质量是三类不同的信号，分开才便于
+    #    按市场状态调权重（如防御市应大幅提高质量权重）。
+    W_TECHNICAL   = 0.32  # 技术面默认权重 32%
+    W_CAPITAL     = 0.20  # 资金面默认权重 20%
+    W_FUNDAMENTAL = 0.18  # 基本面（估值 + 规模）默认权重 18%
+    W_GROWTH      = 0.18  # 成长（营收/净利增速）默认权重 18%
+    W_QUALITY     = 0.12  # 质量（ROE/负债率/毛利率）默认权重 12%
 
     DEFAULT_WEIGHTS = {
         "technical": W_TECHNICAL,
         "capital": W_CAPITAL,
         "fundamental": W_FUNDAMENTAL,
+        "growth": W_GROWTH,
+        "quality": W_QUALITY,
     }
+
+    # 参与加权/归一化的维度键（顺序即展示顺序）
+    WEIGHT_KEYS = ("technical", "capital", "fundamental", "growth", "quality")
 
     def __init__(self, weights: dict | None = None, regime: str | None = None):
         """
         动态权重配置（「只改权重不改指标」的落地点）：
 
-            weights: 维度权重表 {"technical": x, "capital": y, "fundamental": z}，
-                     缺省项自动用默认值补齐，传入后归一化为和 = 1.0
+            weights: 维度权重表，键为 technical/capital/fundamental/growth/quality；
+                     缺省项自动用默认值补齐（所以外部只传三键的旧配置也能工作），
+                     传入后整体归一化为和 = 1.0
             regime:  市场状态（offensive / neutral / defensive），
                      传入时优先按状态机给出权重（见 app.backtest.market_regime）
 
-        两者都不传时，行为与旧版完全一致（静态默认权重 40/25/35）。
+        两者都不传时，用静态默认权重 32/20/18/18/12。
         """
         if regime is not None:
             try:
@@ -149,16 +174,18 @@ class ScoreEngine:
                 weights = None
         w = dict(self.DEFAULT_WEIGHTS)
         if weights:
-            for k in ("technical", "capital", "fundamental"):
+            for k in self.WEIGHT_KEYS:
                 if weights.get(k) is not None:
                     w[k] = float(weights[k])
-        total = w["technical"] + w["capital"] + w["fundamental"]
+        total = sum(w[k] for k in self.WEIGHT_KEYS)
         if total > 0:
             w = {k: v / total for k, v in w.items()}
         self.weights = w
         self.w_technical = w["technical"]
         self.w_capital = w["capital"]
         self.w_fundamental = w["fundamental"]
+        self.w_growth = w["growth"]
+        self.w_quality = w["quality"]
 
     def set_weights(self, weights: dict | None = None, regime: str | None = None) -> dict:
         """
@@ -170,6 +197,8 @@ class ScoreEngine:
         self.w_technical = engine.w_technical
         self.w_capital = engine.w_capital
         self.w_fundamental = engine.w_fundamental
+        self.w_growth = engine.w_growth
+        self.w_quality = engine.w_quality
         return dict(self.weights)
 
     # ================================================================
@@ -195,19 +224,22 @@ class ScoreEngine:
         stock_info = stock_info or {}
         fundamental = fundamental or {}
 
-        # 分别计算三个维度
+        # 分别计算五个维度
+        # 成长/质量依赖财报数据：个股未披露时 score=None（不是 0），由 _combine 跳过
         dim_tech = self._score_technical(technical_data)              # 技术面
         dim_cap  = self._score_capital(technical_data, stock_info)    # 资金面
         dim_fund = self._score_fundamental(stock_info, fundamental)   # 基本面
+        dim_growth = self._score_growth(fundamental)                  # 成长
+        dim_quality = self._score_quality(fundamental)                # 质量
 
-        # 三维度加权求和 → 综合分
-        dimensions = [dim_tech, dim_cap, dim_fund]
-        total = sum(d.weighted_score for d in dimensions)   # sum(生成器)：累加每个维度的加权分
-        total = _round1(total)   # 保留 1 位小数（确定性四舍五入）
+        dimensions = [dim_tech, dim_cap, dim_fund, dim_growth, dim_quality]
+        total = self._combine(dimensions)
+        # 只把有数据的维度交给下游（None 维度会让信号推导/因素提取取 .score 时出错）
+        valid = [d for d in dimensions if d.score is not None]
 
         # 推导信号、提取因素、生成摘要
-        signal, signal_level = self._derive_signal(total, dimensions)
-        factors_up, factors_down = self._extract_factors(dimensions)
+        signal, signal_level = self._derive_signal(total, valid)
+        factors_up, factors_down = self._extract_factors(valid)
         summary = self._build_summary(name or code, total, signal, factors_up, factors_down)
 
         # 返回结果对象（dimensions 转成 dict 列表方便 JSON 序列化给前端）
@@ -224,11 +256,12 @@ class ScoreEngine:
             total_score=total,
             signal=signal,
             signal_level=signal_level,
+            # 只返回有效维度：缺失的不展示（前端 v-for 渲染，自动少一个轴）
             dimensions=[{
                 "name": d.name, "score": d.score,
                 "weight": d.weight, "weighted_score": d.weighted_score,
                 "details": d.details,
-            } for d in dimensions],
+            } for d in valid],
             summary=summary,
             factors_up=factors_up,
             factors_down=factors_down,
@@ -236,13 +269,18 @@ class ScoreEngine:
             trend_health=trend_health,
         )
 
-    def score_batch(self, stocks: list[dict], technical_cache: dict | None = None) -> list[ScoreResult]:
+    def score_batch(self, stocks: list[dict], technical_cache: dict | None = None,
+                    fin_map: dict | None = None) -> list[ScoreResult]:
         """
         批量评分（用于 /api/score/batch/* 接口，对几千只股票排序）。
 
         参数：
             stocks: 全量缓存里的股票列表，每个 dict 含 tencent.py 返回的字段
             technical_cache: 可选的技术指标缓存 {code: 技术指标数组}
+            fin_map: 可选的财报数据 {code: 财报行}（app.finance.get_finance_batch）。
+                     ★ 传入后简化评分也带成长/质量维度 —— 保证阶段1（筛选）和
+                     阶段2（展示）用同一套评分标准，避免财务优质的股票
+                     在筛选阶段就被错杀掉榜。
 
         说明：
           批量模式下，几千只股票逐个拉技术指标太慢，所以：
@@ -252,6 +290,7 @@ class ScoreEngine:
         返回：按 total_score 降序排列的结果列表
         """
         technical_cache = technical_cache or {}
+        fin_map = fin_map or {}
         results = []
         for s in stocks:
             code = s.get("code", "")
@@ -259,9 +298,20 @@ class ScoreEngine:
             tech = technical_cache.get(code, [])
             if not tech:
                 # 没有技术指标 → 简化评分
-                result = self._score_from_realtime(code, name, s)
+                result = self._score_from_realtime(code, name, s, fin_map.get(code))
             else:
-                result = self.score_stock(code, name, tech, s)
+                # 有技术指标 → 完整评分，同样注入财报（成长/质量维度）
+                fin = fin_map.get(code)
+                fund = {}
+                if fin:
+                    fund = {
+                        "growth": {"revenue_yoy": fin.get("revenue_yoy"),
+                                   "profit_yoy": fin.get("profit_yoy")},
+                        "quality": {"roe": fin.get("roe"),
+                                    "debt_ratio": fin.get("debt_ratio"),
+                                    "gross_margin": fin.get("gross_margin")},
+                    }
+                result = self.score_stock(code, name, tech, s, fund)
             results.append(result)
         # 按综合分从高到低排序
         results.sort(key=lambda r: r.total_score, reverse=True)
@@ -844,6 +894,170 @@ class ScoreEngine:
         return DimensionScore("基本面", score, self.w_fundamental,
                               _round1(score * self.w_fundamental), details)
 
+    # ================================================================
+    #  综合：加权求和（支持维度缺失）
+    # ================================================================
+
+    def _combine(self, dimensions: list) -> float:
+        """
+        ★ 加权求和 → 综合分，支持维度缺失。
+
+        缺失维度（score=None，如财报未披露）不参与计算，其权重按比例分摊给
+        其余维度。这样"缺财报数据"的股票只是少了一个评分角度，总分仍在
+        0-100 的同一尺度上可比 —— 而不是被两个 0 分维度拖到榜单底部。
+
+        同时回写 weighted_score（用归一化后的有效权重），保证前端看到
+        sum(weighted_score) == total_score，明细自洽。
+        """
+        valid = [d for d in dimensions if d.score is not None]
+        if not valid:
+            return 0.0
+        w_sum = sum(d.weight for d in valid)
+        if w_sum <= 0:
+            return 0.0
+        for d in valid:
+            d.weighted_score = _round1(d.score * d.weight / w_sum)
+        return _round1(sum(d.weighted_score for d in valid))
+
+    # ================================================================
+    #  成长评分 (18%)：营收同比 + 净利同比
+    # ================================================================
+
+    def _score_growth(self, fundamental: dict) -> DimensionScore:
+        """
+        成长维度：营收同比增速 + 净利同比增速（各占一半）。
+
+        ★ 财报缺失时返回 score=None（而不是 0 分）：
+          "尚未披露" ≠ "增速为 0"。记 0 分会把未披露公司当成业绩崩盘，
+          造成系统性低估（历史上 600508 就因数据缺失被误判掉榜）。
+        """
+        g = (fundamental or {}).get("growth") or {}
+        rev, profit = g.get("revenue_yoy"), g.get("profit_yoy")
+        if rev is None and profit is None:
+            return DimensionScore("成长", None, self.w_growth, 0.0,
+                                  {"说明": "财报未披露，本维度不参与加权"})
+
+        details, parts = {}, []
+        if rev is not None:
+            s = self._growth_curve(rev)
+            details["营收同比"] = {"分值": s, "满分": 50, "实际值": round(rev, 2)}
+            parts.append((s, 50))
+        if profit is not None:
+            s = self._growth_curve(profit)
+            details["净利同比"] = {"分值": s, "满分": 50, "实际值": round(profit, 2)}
+            parts.append((s, 50))
+        # 只有一个指标时按该项满分折算，避免"缺另一半"被当成另一半得 0 分
+        raw = sum(s * w / 100 for s, w in parts) * 100 / sum(w for _, w in parts)
+        score = _clamp(_round1(raw))
+        return DimensionScore("成长", score, self.w_growth,
+                              _round1(score * self.w_growth), details)
+
+    @staticmethod
+    def _growth_curve(yoy: float) -> float:
+        """
+        同比增速 → 0-100 分。
+
+        阈值参考 A 股整体分布（中报口径）：营收增速中位数约 5-10%，净利增速波动更大。
+        极高增速（>150%）多为低基数所致（去年亏损/微利），给高分但不给满分。
+        """
+        if yoy >= 150:
+            return 92.0
+        if yoy >= 100:
+            return 85.0 + (yoy - 100) / 50 * 7
+        if yoy >= 50:
+            return 75.0 + (yoy - 50) / 50 * 10
+        if yoy >= 20:
+            return 62.0 + (yoy - 20) / 30 * 13
+        if yoy >= 0:
+            return 50.0 + yoy / 20 * 12
+        if yoy >= -20:
+            return 38.0 + (yoy + 20) / 20 * 12
+        if yoy >= -50:
+            return 22.0 + (yoy + 50) / 30 * 16
+        return max(8.0, 22.0 + yoy * 0.3)
+
+    # ================================================================
+    #  质量评分 (12%)：ROE + 资产负债率 + 毛利率
+    # ================================================================
+
+    def _score_quality(self, fundamental: dict) -> DimensionScore:
+        """
+        质量维度：ROE(50) + 资产负债率(25) + 毛利率(25)。
+
+        同成长的缺失处理：三项全缺才返回 None；部分缺项按已有项折算。
+        """
+        q = (fundamental or {}).get("quality") or {}
+        roe, debt, gross = q.get("roe"), q.get("debt_ratio"), q.get("gross_margin")
+        if roe is None and debt is None and gross is None:
+            return DimensionScore("质量", None, self.w_quality, 0.0,
+                                  {"说明": "财报未披露，本维度不参与加权"})
+
+        details, parts = {}, []
+        if roe is not None:
+            s = self._roe_curve(roe)
+            details["ROE"] = {"分值": s, "满分": 50, "实际值": round(roe, 2)}
+            parts.append((s, 50))
+        if debt is not None:
+            s = self._debt_curve(debt)
+            details["资产负债率"] = {"分值": s, "满分": 25, "实际值": round(debt, 2)}
+            parts.append((s, 25))
+        if gross is not None:
+            s = self._gross_curve(gross)
+            details["毛利率"] = {"分值": s, "满分": 25, "实际值": round(gross, 2)}
+            parts.append((s, 25))
+        raw = sum(s * w / 100 for s, w in parts) * 100 / sum(w for _, w in parts)
+        score = _clamp(_round1(raw))
+        return DimensionScore("质量", score, self.w_quality,
+                              _round1(score * self.w_quality), details)
+
+    @staticmethod
+    def _roe_curve(roe: float) -> float:
+        """ROE → 0-100。A股 ROE 中位数约 6-8%，15% 以上属优秀。"""
+        if roe >= 25:
+            return 95.0
+        if roe >= 15:
+            return 80.0 + (roe - 15) / 10 * 15
+        if roe >= 8:
+            return 62.0 + (roe - 8) / 7 * 18
+        if roe >= 0:
+            return 40.0 + roe / 8 * 22
+        return max(10.0, 40.0 + roe * 1.5)
+
+    @staticmethod
+    def _debt_curve(d: float) -> float:
+        """
+        资产负债率 → 0-100（越低越好）。
+
+        ⚠️ 行业差异极大：银行/保险 90% 属正常，科技/消费 30% 才算健康。
+           目前缺行业归类数据（stock_industry 表待建），只能按绝对值打分，
+           所以阈值刻意放宽 —— 超过 85% 才明显扣分，避免把金融股整体误杀。
+           等映射表建成后应改为"行业内相对排名"。
+        """
+        if d < 20:
+            return 95.0
+        if d < 40:
+            return 82.0 + (40 - d) / 20 * 13
+        if d < 60:
+            return 65.0 + (60 - d) / 20 * 17
+        if d < 75:
+            return 50.0 + (75 - d) / 15 * 15
+        if d < 85:
+            return 38.0 + (85 - d) / 10 * 12
+        return max(12.0, 38.0 - (d - 85) * 1.5)
+
+    @staticmethod
+    def _gross_curve(g: float) -> float:
+        """毛利率 → 0-100（越高越好；同受行业影响，阈值已放宽）。"""
+        if g >= 60:
+            return 95.0
+        if g >= 40:
+            return 78.0 + (g - 40) / 20 * 17
+        if g >= 25:
+            return 62.0 + (g - 25) / 15 * 16
+        if g >= 10:
+            return 45.0 + (g - 10) / 15 * 17
+        return max(12.0, 45.0 - (10 - g) * 1.5)
+
     def _score_pe(self, stock_info: dict, fundamental: dict) -> float:
         """
         PE（市盈率）估值评分（满分 30）—— 市值分层版本。
@@ -977,11 +1191,19 @@ class ScoreEngine:
     #  简化评分（仅用实时数据，批量模式）
     # ================================================================
 
-    def _score_from_realtime(self, code: str, name: str, info: dict) -> ScoreResult:
+    def _score_from_realtime(self, code: str, name: str, info: dict,
+                             fin: dict | None = None) -> ScoreResult:
         """
         仅用实时行情做简化评分（无技术指标时使用，用于批量模式的兜底）。
 
         只看 3 个指标：涨跌幅 + 换手率 + PE，快速给出一个粗略分数。
+
+        fin: 该股的财报数据（app/finance.get_finance_batch 返回的行）。
+             ★ 批量模式用它来给阶段1（候选池筛选）也带上成长/质量维度 ——
+             否则会出现"用三维度分数筛选、用五维度分数展示"的错位：
+             财务优质但技术平平的股票会在阶段1 被筛掉，进不了 Top50 候选池。
+             有财报时简化主维度权重降为 0.70，让出 0.30 给成长(0.18)+质量(0.12)，
+             并复用 _combine 的缺失归一化（部分指标缺失也不影响）。
         """
         details = {}
         sub_scores = []
@@ -1012,18 +1234,32 @@ class ScoreEngine:
         raw = sum(s * w / 100 for s, w in sub_scores)
         score = _clamp(_round1(raw))
 
-        # 简化模式下只有一个维度，权重设为 1.0
-        dim = DimensionScore("简化评分", score, 1.0, score, details)
-        signal, signal_level = self._derive_signal(score, [dim])
+        # 简化主维度 + 可选的成长/质量维度，统一走 _combine 的缺失归一化。
+        # 无财报时主维度权重 = 1.0（与旧版行为完全一致）；
+        # 有财报时主维度降为 0.70，让出 0.30 给成长(0.18)+质量(0.12)。
+        extra = []
+        if fin:
+            f = {"growth": {"revenue_yoy": fin.get("revenue_yoy"),
+                            "profit_yoy": fin.get("profit_yoy")},
+                 "quality": {"roe": fin.get("roe"),
+                             "debt_ratio": fin.get("debt_ratio"),
+                             "gross_margin": fin.get("gross_margin")}}
+            extra = [self._score_growth(f), self._score_quality(f)]
+        main_w = 1.0 - sum(d.weight for d in extra if d.score is not None)
+        main = DimensionScore("简化评分", score, max(0.0, main_w), 0.0, details)
+        dims = [main] + extra
+        total = self._combine(dims)
+        valid = [d for d in dims if d.score is not None]
+        signal, signal_level = self._derive_signal(total, valid)
         return ScoreResult(
-            code=code, name=name, total_score=score,
+            code=code, name=name, total_score=total,
             signal=signal, signal_level=signal_level,
             dimensions=[{
-                "name": dim.name, "score": dim.score,
-                "weight": dim.weight, "weighted_score": dim.weighted_score,
-                "details": dim.details,
-            }],
-            summary=f"{name or code} 简化评分 {score}，信号：{signal}"
+                "name": d.name, "score": d.score,
+                "weight": d.weight, "weighted_score": d.weighted_score,
+                "details": d.details,
+            } for d in valid],
+            summary=f"{name or code} 简化评分 {total}，信号：{signal}"
         )
 
     # ================================================================

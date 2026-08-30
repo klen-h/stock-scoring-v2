@@ -39,6 +39,12 @@ from app.database import db
 CACHE_POOL_SIZE = 500       # 缓存股票池大小（按市值排序前N只）
 CACHE_KLINE_COUNT = 500     # 每只股票缓存多少根K线
 MAX_CACHE_AGE_HOURS = 36    # 缓存最大有效期（小时），超过则强制刷新
+# 评分链路可采信的最小K线数。战法扫描（count=30/60/120）、持仓撤退提醒（count=30）
+# 等短拉取曾把 kline_cache 覆盖截断，排行精算读到截断数据导致指标失真
+# （000833 实测：30根 → 技术面 57.3；全量 → 60.3，KDJ 未收敛 / MA60 缺失）。
+# 低于此数的缓存：写侧不允许短拉取覆盖（tencent.get_kline），
+# 读侧评分兜底不直接采信（scoring._precise_score_sync / indicator_cache）。
+MIN_SCORING_KLINE_COUNT = 250
 
 
 # ── 数据库表初始化 ──

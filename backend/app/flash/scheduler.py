@@ -316,9 +316,15 @@ async def backtest_prices_refresh_loop():
                 store.mark_schedule_done(task_key)
                 status["last_backtest_backfill"] = rules.beijing_now().isoformat()
                 print(f"[scheduler] 回测价格回填完成: {stats}")
-                # 战法个股行情落后于沪深300 → 部分回填失败（backfill 内部失败不抛异常，
-                # 但会静默导致个股行情停更），主动告警便于排查数据源
+                # 行情落后于沪深300 → 部分回填失败（backfill 内部失败不抛异常，
+                # 但会静默导致行情停更、宏观/战法回测饿死），主动告警便于排查数据源
                 missing = stats.get("stock_missing") or []
+                etf_missing = stats.get("etf_missing") or []
+                if etf_missing:
+                    _notify_failure(
+                        "回测价格回填",
+                        f"{len(etf_missing)} 只ETF行情缺失/滞后（宏观回测数据底座）：\n"
+                        f"> " + "、".join(etf_missing[:8]) + (f" 等共 {len(etf_missing)} 只" if len(etf_missing) > 8 else ""))
                 if missing:
                     _notify_failure(
                         "回测价格回填",
@@ -735,6 +741,119 @@ async def calendar_loop():
         await asyncio.sleep(600)
 
 
+# ── 个股→行业映射表（每月重建一次）──
+# 为什么定期重建：新股 IPO 持续新增（A股每年 200-400 只），不刷新它们就一直没有行业
+# 归属；个股主业变更也会换分类。全量重建约 300-500 次请求，内部已加间隔防东财限流。
+INDUSTRY_MAP_DAY = 1                  # 每月 1 号
+INDUSTRY_MAP_WINDOW = (180, 240)      # 北京时间 03:00-04:00（凌晨低峰，避开盘中与限流）
+
+
+async def industry_map_loop():
+    """每月 1 号凌晨重建个股→行业映射表（幂等，窗口内错过可补跑）。
+    失败只打日志：映射表是板块分化因子的可选输入，缺失时因子自动跳过，
+    不影响快讯/复盘/信号等主流程。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        month_key = f"M{now.year}-{now.month:02d}"
+        if (now.day == INDUSTRY_MAP_DAY
+                and INDUSTRY_MAP_WINDOW[0] <= t < INDUSTRY_MAP_WINDOW[1]
+                and not store.is_schedule_done("industry_map", date_str=month_key)):
+            print("[scheduler] 触发个股→行业映射表重建")
+            try:
+                from app.sector_industry import build_map
+                r = await asyncio.to_thread(build_map, False)
+                if r.get("ok"):
+                    store.mark_schedule_done("industry_map", date_str=month_key)
+                    status["last_industry_map"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 行业映射已重建: {r.get('stocks')} 只 / "
+                          f"{r.get('sectors')} 板块 / {r.get('cost_sec')}s")
+                else:
+                    print(f"[scheduler] 行业映射重建失败: {r.get('error')}")
+            except Exception as e:
+                print(f"[scheduler] 行业映射重建异常: {e}")
+        await asyncio.sleep(3600)
+
+
+# ── 板块每日快照（收盘后记录，积累板块历史序列）──
+SECTOR_SNAPSHOT_WINDOW = (910, 1000)   # 北京时间 15:10-16:40
+
+
+async def sector_snapshot_loop():
+    """每个交易日收盘后记录板块快照（幂等，错过窗口可补跑）。
+
+    只在交易日跑：非交易日板块数据不更新，记进去全是和上一天一样的重复行，
+    会污染序列（比如算板块动量时凭空多出几天零变化）。
+
+    失败只打日志：快照是给未来攒数据的，漏一天不影响现有功能。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "sector_snapshot"
+        if (rules.is_trading_day(now)
+                and SECTOR_SNAPSHOT_WINDOW[0] <= t < SECTOR_SNAPSHOT_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            print("[scheduler] 触发板块每日快照")
+            try:
+                from app.sector_industry import take_snapshot
+                r = await asyncio.to_thread(take_snapshot)
+                if r.get("written"):
+                    store.mark_schedule_done(task_key)
+                    status["last_sector_snapshot"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 板块快照已记录: {r['written']} 条 {r.get('kinds')}")
+                else:
+                    print(f"[scheduler] 板块快照未写入（{r.get('skipped')}），稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 板块快照失败: {e}")
+        await asyncio.sleep(600)
+
+
+# ── 财务数据更新（每天凌晨检查，新报告期出现才拉取）──
+FINANCE_WINDOW = (200, 260)   # 北京时间 03:20-04:20
+
+
+async def finance_loop():
+    """
+    财务数据季度更新：每天检查一次"接口最新报告期"（1 次请求，秒回），
+    库里没有该报告期才拉取（约 14 秒/期）。幂等 key = 报告期本身，
+    同一期绝不重复拉；错过凌晨窗口当日任意时刻开机也会补。
+
+    财报披露节奏：一季报4月底 / 中报8月底 / 三季报10月底 / 年报次年4月底，
+    披露是渐进的（个股会延期），所以"每天检查"比"固定季度跑"更可靠。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (FINANCE_WINDOW[0] <= t < FINANCE_WINDOW[1]
+                and not store.is_schedule_done("finance_probe")):
+            store.mark_schedule_done("finance_probe")   # 每天只探测一次
+            try:
+                from app.finance import latest_report_date, has_report, refresh
+                latest = await asyncio.to_thread(latest_report_date)
+                if not latest:
+                    print("[scheduler] 财务数据：无法探测最新报告期，明天再试")
+                elif store.is_schedule_done("finance_refresh", date_str=latest):
+                    print(f"[scheduler] 财务数据已是最新（{latest}）")
+                elif has_report(latest):
+                    # 库里已有（如手动跑过脚本）但没标记 → 补标记即可
+                    store.mark_schedule_done("finance_refresh", date_str=latest)
+                    print(f"[scheduler] 财务数据 {latest} 已在库，补标记")
+                else:
+                    print(f"[scheduler] 发现新报告期 {latest}，拉取财务数据")
+                    r = await asyncio.to_thread(refresh, 2)
+                    if r.get("ok"):
+                        store.mark_schedule_done("finance_refresh", date_str=latest)
+                        status["last_finance_refresh"] = rules.beijing_now().isoformat()
+                        print(f"[scheduler] 财务数据已更新: {r.get('written')} 条 "
+                              f"({r.get('cost_sec')}s)")
+                    else:
+                        print(f"[scheduler] 财务刷新失败: {r.get('error')}")
+            except Exception as e:
+                print(f"[scheduler] 财务数据检查异常: {e}")
+        await asyncio.sleep(600)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -756,13 +875,19 @@ async def start():
              asyncio.create_task(market_snapshot_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(news_history_loop()),
-             asyncio.create_task(calendar_loop())]
+             asyncio.create_task(calendar_loop()),
+             asyncio.create_task(industry_map_loop()),
+             asyncio.create_task(sector_snapshot_loop()),
+             asyncio.create_task(finance_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
           f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "
+          f"行业映射每月{INDUSTRY_MAP_DAY}号03:00 / "
+          f"板块快照交易日{SECTOR_SNAPSHOT_WINDOW[0] // 60}:"
+          f"{SECTOR_SNAPSHOT_WINDOW[0] % 60:02d} / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

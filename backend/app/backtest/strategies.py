@@ -11,6 +11,7 @@
 import json
 import time
 from collections import defaultdict
+from datetime import datetime
 
 from app.backtest import data, engine
 from app.database import db
@@ -25,15 +26,23 @@ MACRO_ETF_NAME = "沪深300ETF"
 
 def backtest_llm_signals() -> dict:
     """统计已平仓交易：总体 + 按来源分组胜率/盈亏比。
+    数据源：tracking_state（tracker.load_tracking，复盘提议→跟踪→平仓的真实记录）。
     口径与 flash audit（tracker.build_audit）完全一致：
-    status='closed' 全部纳入，profit 为空按 0 计，保证交叉验证误差 < 0.01%。"""
-    rows = db.fetch("SELECT * FROM etf_signals WHERE status = 'closed'")
-    closed = rows
+    closed = history 中 status='closed'，profit 为空按 0，isWin 判胜；
+    提议数 = 通过(active+history) + 被拒(rejected)。
+    旧版读 etf_signals 表，但该表全库无写入方（恒为 0 笔），故改同源。"""
+    from app.signals.tracker import load_tracking
+
+    tracking = load_tracking()
+    history = tracking.get("history", [])
+    active = tracking.get("activeSignals", [])
+    rejected = tracking.get("rejectedSignals", [])
+    closed = [s for s in history if (s.get("status") or "") == "closed"]
 
     def _stat(rs):
         n = len(rs)
-        wins = [r for r in rs if r["is_win"]]
-        profits = [float(r["profit"] or 0) for r in rs]  # 与 audit 同口径：null 按 0
+        wins = [r for r in rs if r.get("isWin")]
+        profits = [float(r.get("profit") or 0) for r in rs]  # null 按 0
         gross_win = sum(p for p in profits if p > 0)
         gross_loss = abs(sum(p for p in profits if p < 0))
         return {
@@ -60,8 +69,7 @@ def backtest_llm_signals() -> dict:
         by_source["other"] = s
 
     total = _stat(closed)
-    total["proposed"] = db.fetch_one(
-        "SELECT COUNT(*) AS c FROM etf_signals")["c"]
+    total["proposed"] = len(active) + len(history) + len(rejected)
     return {
         "type": "signals",
         "label": "LLM 信号绩效追踪",
@@ -236,6 +244,19 @@ def backtest_warfare(strategy_name: str = None) -> dict:
 #  三、宏观方向分回测（macro_daily → 沪深300ETF 全仓/空仓）
 # ================================================================
 
+def _iso_date(s: str) -> str:
+    """日期归一化为 ISO（YYYY-MM-DD）。
+    macro_daily 兼容旧项目用斜杠不补零格式（2026/8/24），backtest_prices 是横杠
+    ISO（2026-08-24）；字符串直接比较会整体错序（'-' < '/'，'2026-08-xx' 恒小于
+    '2026/8/xx'），曾导致宏观回测所有 K 线被跳过、永远"无持仓区间"。"""
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(str(s).strip(), fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return str(s)
+
+
 def backtest_macro() -> dict:
     """方向分 score>0 全仓沪深300ETF、score≤0 空仓；信号日 T+1 生效。"""
     items = db.fetch("SELECT date, data_json FROM macro_daily ORDER BY date ASC")
@@ -245,7 +266,7 @@ def backtest_macro() -> dict:
             snap = json.loads(r["data_json"])
             sc = (snap.get("direction") or {}).get("score")
             if sc is not None:
-                score_map[r["date"]] = float(sc)
+                score_map[_iso_date(r["date"])] = float(sc)
         except (json.JSONDecodeError, KeyError, TypeError):
             continue
     bars = data.load_prices(MACRO_ETF)

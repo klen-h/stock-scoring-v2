@@ -92,6 +92,7 @@ onMounted(() => {
 const navItems = [
   { path: '/', label: '首页' },
   { path: '/market', label: '市场行情' },
+  { path: '/sector', label: '板块分化' },
   { path: '/score', label: '评分排行' },
   { path: '/score/stats', label: '评分验证' },
   { path: '/strategies', label: '战法选股' },

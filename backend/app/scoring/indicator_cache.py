@@ -32,6 +32,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from app.database import db
+from app.scoring.kline_cache import MIN_SCORING_KLINE_COUNT
 
 
 # ── 配置 ──
@@ -86,7 +87,14 @@ def get_cached_indicators(code: str) -> Optional[Dict]:
                 return None  # 缓存过期
         except ValueError:
             return None
-    
+
+    # ★ 截断缓存门槛：kline_count 在 (0, 250) 区间的行来自短拉取覆盖的 K 线，
+    #   指标严重失真（KDJ 未收敛/MA60 缺失），评分不可采信。
+    #   kline_count=0 是盘中增量更新的合法标记，放行。
+    kline_count = row.get("kline_count") or 0
+    if 0 < kline_count < MIN_SCORING_KLINE_COUNT:
+        return None
+
     # 解析 JSON
     indicators_json = row.get("indicators", "{}")
     try:
@@ -144,13 +152,18 @@ def get_cached_technical_batch_sql(codes: List[str]) -> Dict[str, List[Dict]]:
     
     placeholders = ",".join(["%s"] * len(codes))
     rows = db.fetch(f"""
-        SELECT code, indicators
+        SELECT code, indicators, kline_count
         FROM indicator_cache
         WHERE code IN ({placeholders}) AND updated_at >= %s
     """, tuple(codes) + (cutoff,))
-    
+
     result = {}
     for row in rows or []:
+        # ★ 截断缓存门槛（与 get_cached_indicators 同口径）：
+        #   kline_count 在 (0, 250) 区间的行来自短拉取覆盖的 K 线，指标不可信
+        kline_count = row.get("kline_count") or 0
+        if 0 < kline_count < MIN_SCORING_KLINE_COUNT:
+            continue
         try:
             indicators = json.loads(row.get("indicators", "{}"))
             series = indicators.get("_series")
@@ -158,7 +171,7 @@ def get_cached_technical_batch_sql(codes: List[str]) -> Dict[str, List[Dict]]:
                 result[row["code"]] = series
         except (json.JSONDecodeError, TypeError):
             pass
-    
+
     return result
 
 

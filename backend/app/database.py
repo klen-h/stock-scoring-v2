@@ -230,7 +230,58 @@ class Database:
             sql = f"INSERT OR REPLACE INTO {table} ({col_str}) VALUES ({placeholders})"
         
         return self.execute(sql, tuple(values))
-    
+
+    def upsert_many(self, table: str, rows: List[Dict],
+                    conflict_columns: List[str], page_size: int = 100) -> int:
+        """
+        批量 upsert（单事务 + execute_values 真批量），返回处理行数。
+
+        为什么需要它：远程云库（本项目 Supabase 东京节点）单条 upsert 实测
+        0.5s/条 —— 500 条逐条写要 4 分钟起步，看起来像"卡死"；
+        execute_values 把每 100 行拼成一条 SQL，500 条 ≈ 5 次往返 ≈ 2.5s，
+        差上百倍。全市场级写入（财务数据 / 行业映射）必须用这个。
+
+        注意：rows 里所有 dict 的键必须一致（以第一行的键为准）。
+        """
+        if not rows:
+            return 0
+
+        if not self._use_postgres:
+            # SQLite 是本地文件库，逐条足够快，直接复用单条 upsert
+            n = 0
+            for r in rows:
+                self.upsert(table, r, conflict_columns)
+                n += 1
+            return n
+
+        import psycopg2.extras
+        columns = list(rows[0].keys())
+        col_str = ", ".join(columns)
+        conflict_cols = ", ".join(conflict_columns)
+        update_cols = ", ".join(
+            f"{c} = EXCLUDED.{c}" for c in columns if c not in conflict_columns)
+        if update_cols:
+            sql = (f"INSERT INTO {table} ({col_str}) VALUES %s "
+                   f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {update_cols}")
+        else:
+            sql = (f"INSERT INTO {table} ({col_str}) VALUES %s "
+                   f"ON CONFLICT ({conflict_cols}) DO NOTHING")
+        tuples = [tuple(r.get(c) for c in columns) for r in rows]
+
+        for attempt in range(2):
+            try:
+                with self._get_conn() as conn:
+                    with conn.cursor() as cur:
+                        psycopg2.extras.execute_values(cur, sql, tuples,
+                                                       page_size=page_size)
+                    return len(tuples)
+            except Exception:
+                if attempt == 0:
+                    self._reset_pg_conn()   # 连接已死（云库空闲断连），重建后重试一次
+                    continue
+                raise
+        return 0
+
     # ── 初始化 ──
     
     def init_tables(self):

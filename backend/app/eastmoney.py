@@ -110,21 +110,38 @@ def _get_cached(key: str, ttl: int, loader):
     return data
 
 
+# 东财 clist 单页硬上限（实测）：pz 传大于 100 的值无效，接口静默只返回 100 条。
+# 这个坑很隐蔽 —— 不报错、不提示，只是数据变少。曾导致板块成分股被截成 100 只
+# （"基础化工"实际 454 只，只拿到前 100）。要拿全量必须用 _fetch_clist_paged()。
+_PAGE_SIZE = 100
+
+# 反爬：失败重试次数 + 退避基数（秒）。批量拉取时另需请求间隔，见 _PAGE_GAP。
+_RETRIES = 2
+_RETRY_BACKOFF = 0.6
+_PAGE_GAP = 0.25          # 翻页间隔（秒）
+
+
 def _fetch_clist(fs: str, fields: str, fid: str = None,
-                 order: str = "desc", limit: int = 200) -> list:
+                 order: str = "desc", limit: int = 200,
+                 page: int = 1) -> list:
     """
     调用 clist 接口，返回 data.diff 列表（每项是 {fxx: 值} 的 dict）。
 
+    ★ 单页最多 100 条：limit 传再大也只返回 100 条（东财限制，静默截断）。
+      需要全量数据请用 _fetch_clist_paged()。
+
     参数：
-      fs:     市场范围过滤（如 "m:90+t:2" 行业板块、"m:0+t:6,..." 沪深A股）
+      fs:     市场范围过滤（如 "m:90+t:2" 行业板块、"m:0+t:6,..." 沪深A股、
+              "b:BK1206" 某板块的成分股）
       fields: 要返回的字段码（逗号分隔）
       fid:    排序字段（如 "f62" 按主力净流入排序）；不传则用东方财富默认排序
       order:  'desc' 降序 / 'asc' 升序
-      limit:  返回条数
+      limit:  返回条数（自动收敛到 100 以内）
+      page:   页码（第几页，从 1 开始）
     """
     params = {
-        "pn": 1,                        # 页码
-        "pz": limit,                    # 每页条数
+        "pn": page,                     # 页码
+        "pz": min(limit, _PAGE_SIZE),   # 每页条数（东财上限 100，超了静默截断）
         "po": 1 if order == "desc" else 0,   # po=1 降序, 0 升序
         "np": 1,
         "fltt": 2,                      # fltt=2：返回纯数字（不带"亿/万"等单位），便于解析
@@ -134,18 +151,64 @@ def _fetch_clist(fs: str, fields: str, fid: str = None,
     }
     if fid:
         params["fid"] = fid
-    try:
-        r = _session.get(_CLIST, params=params, timeout=10)
-        # 返回结构：{data: {total, diff: [...]}}
-        rows = r.json().get("data", {}).get("diff", []) or []
-        from app import health
-        health.record("eastmoney", bool(rows), "" if rows else "clist 返回空")
-        return rows
-    except Exception as e:
-        print(f"[eastmoney] clist 抓取失败 fs={fs}: {e}")
-        from app import health
-        health.record("eastmoney", False, str(e))
-        return []
+
+    # 东财对高频请求的处理是【直接断连】（RemoteDisconnected），且连续高频会临时封 IP
+    # （实测几百次请求后封禁持续数十分钟）。所以失败做退避重试；
+    # 批量调用方（_fetch_clist_paged / sector_industry.build_map）还需自行加请求间隔。
+    last_err = ""
+    for attempt in range(1 + _RETRIES):
+        try:
+            r = _session.get(_CLIST, params=params, timeout=10)
+            # 返回结构：{data: {total, diff: [...]}}
+            rows = r.json().get("data", {}).get("diff", []) or []
+            from app import health
+            health.record("eastmoney", bool(rows), "" if rows else "clist 返回空")
+            return rows
+        except Exception as e:
+            last_err = str(e)
+            if attempt < _RETRIES:
+                time.sleep(_RETRY_BACKOFF * attempt)   # 0.6s → 1.2s 退避
+                continue
+            print(f"[eastmoney] clist 抓取失败 fs={fs}（已重试{_RETRIES}次）: {last_err}")
+            from app import health
+            health.record("eastmoney", False, last_err)
+            return []
+    return []
+
+
+def _fetch_clist_paged(fs: str, fields: str, fid: str = None,
+                       order: str = "desc", max_items: int = 6000,
+                       max_pages: int = 200) -> list:
+    """
+    分页拉取 clist 全量数据（自动翻页，直到取完 / 无新数据 / 达到上限）。
+
+    存在的理由：东财单页上限 100 条（见 _PAGE_SIZE 注释）。_fetch_clist(limit=2000)
+    实际只返回前 100 条且**没有任何报错**，用它取板块成分股会得到残缺数据
+    （"基础化工" 454 只只能拿到前 100 只）。建映射表、全市场扫描必须用这个。
+
+    返回：去重后的完整列表（按 f12 代码去重 —— 翻页时相邻页可能出现重复行）。
+    """
+    out, seen = [], set()
+    for pn in range(1, max_pages + 1):
+        if pn > 1:
+            time.sleep(_PAGE_GAP)       # 翻页间隔：连续请求会触发东财断连/封 IP
+        rows = _fetch_clist(fs, fields, fid=fid, order=order,
+                            limit=_PAGE_SIZE, page=pn)
+        if not rows:
+            break
+        new = 0
+        for r in rows:
+            key = r.get("f12") or str(r)
+            if key not in seen:
+                seen.add(key)
+                out.append(r)
+                new += 1
+        # 翻到末页的两个信号：本页不满 100 条 / 整页都是重复数据
+        if len(rows) < _PAGE_SIZE or new == 0:
+            break
+        if len(out) >= max_items:
+            break
+    return out[:max_items]
 
 
 # ================================================================
@@ -173,7 +236,10 @@ def get_sectors(kind: str = "industry", limit: int = 200) -> list:
     fs = _FS_SECTOR.get(kind, _FS_SECTOR["industry"])
 
     def loader():
-        rows = _fetch_clist(fs, _SECTOR_FIELDS, fid="f3", order="desc", limit=limit)
+        # ★ 必须用分页版：单页上限 100 条，而概念板块有几百个。用 _fetch_clist
+        #   会静默只返回前 100 个 —— 行业板块恰好约 100 个看不出问题，
+        #   概念板块则长期残缺（limit=200 实际只生效 100）。
+        rows = _fetch_clist_paged(fs, _SECTOR_FIELDS, fid="f3", max_items=limit)
         out = []
         for d in rows:
             out.append({
@@ -231,7 +297,8 @@ def get_sector_flow(kind: str = "industry", limit: int = 200) -> list:
     fs = _FS_SECTOR.get(kind, _FS_SECTOR["industry"])
 
     def loader():
-        rows = _fetch_clist(fs, _FLOW_FIELDS, fid="f62", order="desc", limit=limit)
+        # 同 get_sectors：用分页版避免单页 100 条截断（概念板块几百个）
+        rows = _fetch_clist_paged(fs, _FLOW_FIELDS, fid="f62", max_items=limit)
         out = [_parse_flow(d) for d in rows]
         if not out:
             print(f"[eastmoney] 东财板块资金流为空，降级新浪 {kind}")

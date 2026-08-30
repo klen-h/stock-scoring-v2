@@ -245,3 +245,81 @@ CREATE INDEX IF NOT EXISTS idx_strategy_backtest_name ON strategy_backtest(strat
 CREATE INDEX IF NOT EXISTS idx_user_watchlist_uid ON user_watchlist(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_trade_plans_uid ON user_trade_plans(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_portfolio_uid ON user_portfolio(user_id);
+
+-- ── 个股 → 行业板块映射（东财细分行业，含嵌套层级链）──
+-- 用途：给评分引擎算"个股相对所属板块的强弱"（板块分化因子）。
+-- 东财只提供"板块→成分股"正向查询，没有反查接口，故本地反建映射表。
+-- 注意：东财行业是嵌套多级的（000912 同属 氮肥 ⊂ 农化制品 ⊂ 基础化工），
+--       所以除主行业（最细层）外，还存从细到粗的完整层级链。
+CREATE TABLE IF NOT EXISTS stock_industry (
+    code TEXT PRIMARY KEY,              -- 股票代码
+    name TEXT NOT NULL,                 -- 股票名称
+    main_industry TEXT NOT NULL,        -- 主行业（最细层，如"氮肥"）
+    main_industry_code TEXT NOT NULL,   -- 主行业板块代码（如 BK1432）
+    industry_chain TEXT NOT NULL,       -- 层级链 JSON，从细到粗 ["氮肥","农化制品","基础化工"]
+    industry_codes TEXT NOT NULL,       -- 对应板块代码链 JSON
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stock_industry_main ON stock_industry(main_industry);
+
+-- 映射表元信息（全量构建时间 / 板块数 / 覆盖股票数）
+CREATE TABLE IF NOT EXISTS industry_map_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- ── 板块每日快照（积累板块历史序列，供板块分化/动量因子用）──
+-- 一次 get_sectors + 一次 get_sector_flow 就能覆盖全部板块（每天仅 2 次请求），
+-- 行业约 100 个 + 概念约 300 个 ≈ 400 行/交易日。
+-- ★ 只存东财数据源：新浪降级的板块代码是 new_xxx，混进来会让同一板块出现
+--   两个 key，历史序列断裂。东财不可用时宁可跳过（封禁通常只几小时到几天）。
+CREATE TABLE IF NOT EXISTS sector_daily (
+    date TEXT NOT NULL,              -- 交易日 YYYY-MM-DD
+    kind TEXT NOT NULL,              -- industry 行业 / concept 概念
+    code TEXT NOT NULL,              -- 板块代码（东财 BK1206）
+    name TEXT NOT NULL,              -- 板块名称
+    change_pct REAL DEFAULT 0,       -- 板块涨跌幅%
+    turnover_rate REAL DEFAULT 0,    -- 换手率%
+    up_count INTEGER DEFAULT 0,      -- 上涨家数
+    down_count INTEGER DEFAULT 0,    -- 下跌家数
+    leader TEXT DEFAULT '',          -- 领涨股名称
+    leader_change_pct REAL DEFAULT 0,-- 领涨股涨幅%
+    net_inflow REAL DEFAULT 0,       -- 主力净流入（元）
+    net_inflow_pct REAL DEFAULT 0,   -- 主力净流入占比%
+    UNIQUE(date, kind, code)
+);
+CREATE INDEX IF NOT EXISTS idx_sector_daily_code ON sector_daily(code, date DESC);
+CREATE INDEX IF NOT EXISTS idx_sector_daily_date ON sector_daily(date DESC, kind);
+
+-- ── A股财务数据（成长/质量因子的数据源）──
+-- 数据源：东财 F10 主要财务指标（datacenter-web 域名，与 push2 实时行情域名独立）
+-- 季度更新（财报披露后），全市场拉取约 27 页 / 11 秒。
+--
+-- ★ notice_date（公告日期）必须存：回测时要用它判断"当时是否已披露"。
+--   2026中报的报告期是 6-30，但 8-29 才公告 —— 若 7 月就用它回测等于偷看未来，
+--   回测收益会虚高。查询一律走 get_finance_asof(code, date)。
+--
+-- ★ 一季报/三季报字段缺失明显（实测 ROE 缺失约 17%），所以这些列允许 NULL，
+--   且**不能把 NULL 当 0**——"未披露"和"ROE为0"是完全不同的含义。
+CREATE TABLE IF NOT EXISTS stock_finance (
+    code TEXT NOT NULL,              -- 股票代码
+    name TEXT NOT NULL,              -- 股票名称
+    report_date TEXT NOT NULL,       -- 报告期（2026-06-30）
+    report_type TEXT,                -- 年报/中报/一季报/三季报
+    notice_date TEXT,                -- ★ 公告日期（防未来函数）
+    revenue NUMERIC,                 -- 营业总收入（元）
+    profit NUMERIC,                  -- 归母净利润（元）
+    revenue_yoy REAL,                -- 营收同比%
+    profit_yoy REAL,                 -- 净利同比%
+    roe REAL,                        -- ROE（加权）%
+    roe_deduct REAL,                 -- ROE（扣非）%
+    debt_ratio REAL,                 -- 资产负债率%
+    gross_margin REAL,               -- 毛利率%
+    net_margin REAL,                 -- 净利率%
+    eps REAL,                        -- 每股收益
+    bps REAL,                        -- 每股净资产
+    updated_at TEXT,
+    UNIQUE(code, report_date)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_finance_code ON stock_finance(code, report_date DESC);
+CREATE INDEX IF NOT EXISTS idx_stock_finance_notice ON stock_finance(notice_date DESC);

@@ -145,6 +145,17 @@ def backfill_daily() -> dict:
         "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
     stats["benchmark"] = benchmark
 
+    # ETF 滞后检测：ETF 是宏观回测/信号跟踪的数据底座，此前曾全部静默停在
+    # 08-24 四个交易日无人发现（战法个股有 missing 检测，ETF 池没有）→ 补上
+    stats["etf_missing"] = []
+    if benchmark:
+        for name, code in HOLDINGS_MAP.items():
+            latest = (db.fetch_one(
+                "SELECT MAX(date) AS d FROM backtest_prices WHERE code = %s", (code,))
+                or {}).get("d")
+            if not latest or latest < benchmark:
+                stats["etf_missing"].append(f"{name}({code})停于{latest or '无数据'}")
+
     stock_items = _collect_strategy_codes()
     stats["stock_pool"] = len(stock_items)
     codes = [c for c, _ in stock_items]

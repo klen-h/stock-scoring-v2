@@ -1,0 +1,92 @@
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 224 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-08-28T15:05:51.839103+08:00)
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[health] ⚠️ 东财板块 连续失败 3 次，已告警
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+[kline_cache] kline_cache 表初始化完成
+K线获取失败 001399: 'list' object has no attribute 'get'
+K线获取失败 001248: 'list' object has no attribute 'get'
+K线获取失败 601299: 'list' object has no attribute 'get'
+INFO:     127.0.0.1:64119 - "GET /api/score/backtest?top_n=10&days=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63407 - "GET /api/score/backtest?top_n=10&days=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53965 - "GET /api/score/backtest?top_n=10&days=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59633 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59635 - "GET /api/backtest/strategy?name=signals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58671 - "GET /api/backtest/strategy?name=warfare HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52102 - "GET /api/backtest/strategy?name=macro HTTP/1.1" 200 OK
+[backtest] 后台刷新 signals 完成
+[backtest] 后台刷新 macro 完成
+[backtest] 后台刷新 warfare 完成
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+K线获取失败 001248: 'list' object has no attribute 'get'
+K线获取失败 001399: 'list' object has no attribute 'get'
+K线获取失败 601299: 'list' object has no attribute 'get'
+INFO:     127.0.0.1:57875 - "GET /api/score/backtest?top_n=10&days=30 HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+INFO:     127.0.0.1:64641 - "GET /api/score/bucket-stats?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64643 - "GET /api/backtest/reports HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58682 - "GET /api/market/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58188 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59208 - "GET /api/macro/daily?date=2026-08-30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56090 - "GET /api/macro/snapshot HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61901 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54372 - "GET /api/market/index-kline/000300?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64699 - "GET /api/backtest/strategy?name=warfare HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64700 - "GET /api/backtest/reports HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52766 - "GET /api/backtest/strategy?name=signals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57360 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59565 - "GET /api/backtest/strategy?name=macro HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59093 - "GET /api/score/backtest?top_n=10&days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51818 - "GET /api/backtest/strategy?name=signals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59299 - "GET /api/backtest/strategy?name=macro HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55511 - "GET /api/backtest/strategy?name=warfare HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55488 - "GET /api/flash/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55489 - "GET /api/flash/review/premarket/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55493 - "GET /api/flash/review/postmarket/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55490 - "GET /api/flash/review/lunchbreak/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55492 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49534 - "GET /api/flash/audit HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58126 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57753 - "GET /api/flash/notifications?since=2026-08-30T14:15:22.477706 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51493 - "GET /api/flash/signals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63360 - "GET /api/flash/events?page=1&size=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55265 - "GET /api/strategies/list HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55266 - "GET /api/strategies/market/regime HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59159 - "GET /api/strategies/advance2retreat1/backtest/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59162 - "GET /api/strategies/advance2retreat1/persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59160 - "GET /api/strategies/advance2retreat1/recommendation HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59158 - "GET /api/strategies/advance2retreat1/watch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59154 - "GET /api/strategies/advance2retreat1/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64489 - "GET /api/strategies/advance2retreat1/persistent-signals?min_days=2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56258 - "GET /api/score/bucket-stats?days=120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63028 - "GET /api/flash/notifications?since=2026-08-30T14:16:22.258403 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61765 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61763 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52657 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50346 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53437 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53438 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:65493 - "GET /api/flash/notifications?since=2026-08-30T14:17:18.923913 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56339 - "GET /api/sector/snapshot-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65414 - "GET /api/flash/notifications?since=2026-08-30T14:18:18.878627 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65416 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62542 - "GET /api/flash/notifications?since=2026-08-30T14:19:19.028402 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52920 - "GET /api/flash/notifications?since=2026-08-30T14:20:21.403030 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63964 - "GET /api/flash/notifications?since=2026-08-30T14:21:25.316124 HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:56977 - "GET /api/flash/notifications?since=2026-08-30T14:22:23.270630 HTTP/1.1" 200 OK

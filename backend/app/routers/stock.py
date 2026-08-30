@@ -16,7 +16,7 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Body
 from datetime import datetime
 import time
 import numpy as np
@@ -234,6 +234,62 @@ async def stock_fundamental(symbol: str):
             "换手率": info.get("turnover_rate", 0),
         },
     }
+
+
+# ── 财务数据（成长/质量因子数据源；东财 F10，季度更新，本地库查询）──
+
+@router.get("/finance/{symbol}/history")
+async def stock_finance_history(symbol: str, limit: int = 12):
+    """个股财报历史序列（最新在前）。看营收/利润增速、ROE 的趋势变化。"""
+    from app.finance import get_history
+    return {"code": symbol, "history": get_history(symbol, min(max(limit, 1), 40))}
+
+
+@router.get("/finance/{symbol}")
+async def stock_finance(symbol: str, report_date: str = "", asof: str = ""):
+    """
+    个股财报：营收/利润增速、ROE、负债率、毛利率、净利率等。
+      - 默认：最新一期
+      - report_date=2026-06-30：指定报告期
+      - asof=2026-07-01：取"该日期时点已公告"的最新一期（★ 回测/复盘必须用这个，
+        按公告日而非报告期判断，防未来函数）
+    部分字段可能为 null —— 一季报/三季报披露不全，"未披露"≠"值为0"。
+    """
+    from app.finance import get_finance, get_finance_asof
+    if asof:
+        return get_finance_asof(symbol, asof)
+    return get_finance(symbol, report_date or None)
+
+
+@router.get("/finance-stats")
+async def finance_stats():
+    """财务数据表概况：覆盖股票数 / 各报告期条数 / 字段缺失率。"""
+    from app.finance import stats
+    return stats()
+
+
+@router.post("/finance-refresh")
+def finance_refresh(reports: int = 2):
+    """
+    手动刷新财务数据（正常由调度器每天凌晨自动检查，新报告期才拉取）。
+    每期约 27 页 / 14 秒（含批量入库）。reports 为往前拉几期。
+    """
+    from app.finance import refresh
+    return refresh(min(max(reports, 1), 8))
+
+
+@router.post("/finance/batch")
+async def finance_batch(codes: list = Body(...)):
+    """
+    批量查财报（1 次 SQL + 30 分钟进程缓存），返回 {code: 财报行}。
+
+    ★ 用途：前端本地评分引擎（utils/scoringEngine.js）算 top50 时，
+      需要候选池的财报数据来算成长/质量维度。逐只调 /finance/{symbol}
+      在远程库上要 0.5s/只，几百只就是几分钟；这里 1 次批量取回。
+    """
+    from app.finance import get_finance_batch
+    codes = [c for c in (codes or []) if c][:1000]   # 上限 1000，防滥用
+    return get_finance_batch(codes)
 
 
 # 消息面结果缓存：{code: {data, ts}}，TTL 60s（防详情页重复请求重复打分）

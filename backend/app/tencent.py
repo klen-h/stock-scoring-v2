@@ -442,7 +442,9 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
 
     # 缓存命中判断：同一只股票同一周期内不重复请求
     # 盘中 TTL 缩短到 90 秒，保证趋势健康度/技术指标及时反映盘中变化
-    cache_key = f"{symbol}|{period}"
+    # ★ key 必须带 count：否则 30 根的短拉取（战法/撤退提醒）会在 TTL 内
+    #   污染 500 根的调用（详情页/排行精算拿到截断数据）
+    cache_key = f"{symbol}|{period}|{count}"
     cached = KLINE_CACHE.get(cache_key)
     ttl = KLINE_CACHE_TTL_TRADING if _is_trading_hours() else KLINE_CACHE_TTL
     if cached and time.time() - cached["ts"] < ttl:
@@ -521,11 +523,14 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
                 KLINE_CACHE[cache_key] = {"data": result, "ts": time.time()}
                 _kline_cache_dirty = True
                 _save_kline_cache()  # 有写入间隔控制，不会每次都写
-                # ★ 顺手写回数据库 K 线缓存：供 WAF 冷却期兜底（详情页/持仓页）
+                # ★ 顺手写回数据库 K 线缓存：供 WAF 冷却期兜底（详情页/持仓页）。
+                #   写侧门槛：战法扫描（count=30/60/120）、撤退提醒（count=30）等短拉取
+                #   禁止覆盖全量缓存，否则排行精算读到截断数据、指标失真（000833 案例）
                 if period == "day":
                     try:
-                        from app.scoring.kline_cache import save_kline_cache
-                        save_kline_cache(symbol, symbol, result, 0)
+                        from app.scoring.kline_cache import MIN_SCORING_KLINE_COUNT, save_kline_cache
+                        if len(result) >= MIN_SCORING_KLINE_COUNT:
+                            save_kline_cache(symbol, symbol, result, 0)
                     except Exception:
                         pass
             return result

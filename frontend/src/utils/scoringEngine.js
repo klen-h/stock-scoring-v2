@@ -2,24 +2,32 @@
  * 前端评分引擎
  * 
  * 功能：
- *   - 三维度评分：技术面（40%）+ 资金面（25%）+ 基本面（35%）
+ *   - 五维度评分：技术面(32%) + 资金面(20%) + 基本面(18%) + 成长(18%) + 质量(12%)
  *   - 信号判定：强烈买入/买入/观望/卖出/强烈卖出
- *   - 与 Python 版本保持一致（误差 < 0.1）
+ *   - 与 Python 版本（app/scoring/engine.py）保持一致
  * 
- * 评分体系：
+ * 评分体系（与后端严格对齐）：
  *   ┌──────────┬──────┬──────────────────────────────────────────────┐
  *   │ 维度     │ 权重 │ 包含的子指标                                 │
  *   ├──────────┼──────┼──────────────────────────────────────────────┤
- *   │ 技术面   │ 40%  │ MA均线 / MACD / RSI / KDJ / 布林带           │
- *   │ 资金面   │ 25%  │ 量价配合 / 涨跌动量 / 换手率 / 成交额强度    │
- *   │ 基本面   │ 35%  │ PE估值 / PB估值 / 市值规模                   │
+ *   │ 技术面   │ 32%  │ MA均线 / MACD / RSI / KDJ / 布林带           │
+ *   │ 资金面   │ 20%  │ 量价配合 / 涨跌动量 / 换手率 / 成交额强度    │
+ *   │ 基本面   │ 18%  │ PE估值 / PB估值 / 市值规模 / 振幅            │
+ *   │ 成长     │ 18%  │ 营收同比增速 / 净利同比增速                  │
+ *   │ 质量     │ 12%  │ ROE / 资产负债率 / 毛利率                    │
  *   └──────────┴──────┴──────────────────────────────────────────────┘
+ *
+ * ★ 成长/质量依赖财报数据（finance 参数）。缺失时该维度不参与加权
+ *   （权重按比例分摊给其余维度），而不是记 0 分——与后端 _combine 一致。
+ *   财报数据由调用方通过 getFinanceBatch(codes) 批量获取后传入。
  */
 
-// ── 权重配置 ──
-const W_TECHNICAL = 0.40
-const W_CAPITAL = 0.25
-const W_FUNDAMENTAL = 0.35
+// ── 权重配置（与后端 engine.py 严格一致，和为 1.0）──
+const W_TECHNICAL = 0.32
+const W_CAPITAL = 0.20
+const W_FUNDAMENTAL = 0.18
+const W_GROWTH = 0.18
+const W_QUALITY = 0.12
 
 // ── 工具函数 ──
 
@@ -48,28 +56,44 @@ function round2(v) {
  * @param {Object} params.stockInfo - 实时行情 { price, change_pct, pe, pb, market_cap, turnover_rate, ... }
  * @returns {Object} 评分结果
  */
-export function scoreStock({ code, name, technicalData, stockInfo }) {
+export function scoreStock({ code, name, technicalData, stockInfo, finance }) {
   technicalData = technicalData || []
   stockInfo = stockInfo || {}
+  // finance: 财报数据 {revenue_yoy, profit_yoy, roe, debt_ratio, gross_margin}
+  //   两种传入方式：① 显式 finance 参数 ② 合并进 stockInfo.finance（Worker 透明传递用）
+  //   缺失时成长/质量维度为 null，归一化时跳过（不记 0 分）。
+  finance = finance || (stockInfo && stockInfo.finance) || null
 
-  // 三维度评分
+  // 五维度评分
   const dimTech = scoreTechnical(technicalData)
   const dimCap = scoreCapital(technicalData, stockInfo)
   const dimFund = scoreFundamental(stockInfo)
+  const dimGrowth = finance ? scoreGrowth(finance) : null
+  const dimQuality = finance ? scoreQuality(finance) : null
 
-  // 加权求和（与后端严格一致：每个维度分先乘权重并保留 1 位小数，再求和取 1 位）
-  const total = round1(
-    round1(dimTech.score * W_TECHNICAL) +
-    round1(dimCap.score * W_CAPITAL) +
-    round1(dimFund.score * W_FUNDAMENTAL)
-  )
+  // 构建维度列表（带权重，用于加权求和）
+  const allDims = [
+    { name: '技术面', ...dimTech, weight: W_TECHNICAL },
+    { name: '资金面', ...dimCap, weight: W_CAPITAL },
+    { name: '基本面', ...dimFund, weight: W_FUNDAMENTAL },
+  ]
+  if (dimGrowth) allDims.push({ name: '成长', ...dimGrowth, weight: W_GROWTH })
+  if (dimQuality) allDims.push({ name: '质量', ...dimQuality, weight: W_QUALITY })
+
+  // ★ 加权求和 + 缺失归一化（与后端 _combine 一致）：
+  //   score 为 null 的维度不参与，其权重按比例分摊给其余维度。
+  //   这样"缺财报"只是少一个评分角度，总分仍与其他股票可比，不会被两个 0 分拖低。
+  const valid = allDims.filter(d => d.score !== null && d.score !== undefined)
+  const wSum = valid.reduce((s, d) => s + d.weight, 0)
+  valid.forEach(d => { d.weighted_score = round1(d.score * d.weight / wSum) })
+  const total = round1(valid.reduce((s, d) => s + d.weighted_score, 0))
 
   // 信号判定（与后端一致：检查是否有维度极差）
-  const anyExtremeLow = [dimTech, dimCap, dimFund].some(d => d.score < 20)
+  const anyExtremeLow = valid.some(d => d.score < 20)
   const { signal, signalLevel } = deriveSignal(total, anyExtremeLow)
 
-  // 提取加分/扣分因素（与后端一致）
-  const { factorsUp, factorsDown } = extractFactors(dimTech, dimCap, dimFund)
+  // 提取加分/扣分因素
+  const { factorsUp, factorsDown } = extractFactors(valid)
 
   // 计算买入时机（与后端一致）
   const buyPoint = calcBuyPoint(technicalData)
@@ -87,6 +111,8 @@ export function scoreStock({ code, name, technicalData, stockInfo }) {
       technical: dimTech,
       capital: dimCap,
       fundamental: dimFund,
+      growth: dimGrowth,
+      quality: dimQuality,
     },
     summary,
     factors_up: factorsUp,
@@ -615,6 +641,133 @@ function scoreVolatility(stockInfo) {
   return 30                  // 极高波动，风险大
 }
 
+// ──────────────────────────────────────────────────────────────
+//  成长维度（与后端 _score_growth 一致）：营收同比 + 净利同比
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * 成长维度评分（满分 100）
+ * finance: { revenue_yoy, profit_yoy } 同比增速 %
+ * 两项都缺失返回 null（不参与加权，绝不记 0 分）
+ */
+function scoreGrowth(finance) {
+  const rev = finance.revenue_yoy
+  const profit = finance.profit_yoy
+  if ((rev === null || rev === undefined) && (profit === null || profit === undefined)) {
+    return null
+  }
+  const details = {}
+  const parts = []
+  if (rev !== null && rev !== undefined) {
+    const s = growthCurve(rev)
+    details['营收同比'] = { 分值: s, 满分: 50, 实际值: round2(rev) }
+    parts.push([s, 50])
+  }
+  if (profit !== null && profit !== undefined) {
+    const s = growthCurve(profit)
+    details['净利同比'] = { 分值: s, 满分: 50, 实际值: round2(profit) }
+    parts.push([s, 50])
+  }
+  if (!parts.length) return null
+  // 只有一个指标时按该项满分折算，避免缺项被当成另一半 0 分
+  const wTotal = parts.reduce((s, [, w]) => s + w, 0)
+  const raw = parts.reduce((s, [sc, w]) => s + sc * w / 100, 0) * 100 / wTotal
+  return { score: clamp(round1(raw)), details }
+}
+
+/**
+ * 同比增速 → 0-100 分（与后端 _growth_curve 一致）
+ * 阈值参考 A 股整体分布；极高增速（>150%）多为低基数，给高分但不给满分
+ */
+function growthCurve(yoy) {
+  if (yoy >= 150) return 92.0
+  if (yoy >= 100) return 85.0 + (yoy - 100) / 50 * 7
+  if (yoy >= 50) return 75.0 + (yoy - 50) / 50 * 10
+  if (yoy >= 20) return 62.0 + (yoy - 20) / 30 * 13
+  if (yoy >= 0) return 50.0 + yoy / 20 * 12
+  if (yoy >= -20) return 38.0 + (yoy + 20) / 20 * 12
+  if (yoy >= -50) return 22.0 + (yoy + 50) / 30 * 16
+  return Math.max(8.0, 22.0 + yoy * 0.3)
+}
+
+// ──────────────────────────────────────────────────────────────
+//  质量维度（与后端 _score_quality 一致）：ROE + 资产负债率 + 毛利率
+// ──────────────────────────────────────────────────────────────
+
+/**
+ * 质量维度评分（满分 100）
+ * finance: { roe, debt_ratio, gross_margin }
+ * 三项都缺失返回 null
+ */
+function scoreQuality(finance) {
+  const roe = finance.roe
+  const debt = finance.debt_ratio
+  const gross = finance.gross_margin
+  if ((roe === null || roe === undefined) &&
+      (debt === null || debt === undefined) &&
+      (gross === null || gross === undefined)) {
+    return null
+  }
+  const details = {}
+  const parts = []
+  if (roe !== null && roe !== undefined) {
+    const s = roeCurve(roe)
+    details['ROE'] = { 分值: s, 满分: 50, 实际值: round2(roe) }
+    parts.push([s, 50])
+  }
+  if (debt !== null && debt !== undefined) {
+    const s = debtCurve(debt)
+    details['资产负债率'] = { 分值: s, 满分: 25, 实际值: round2(debt) }
+    parts.push([s, 25])
+  }
+  if (gross !== null && gross !== undefined) {
+    const s = grossCurve(gross)
+    details['毛利率'] = { 分值: s, 满分: 25, 实际值: round2(gross) }
+    parts.push([s, 25])
+  }
+  if (!parts.length) return null
+  const wTotal = parts.reduce((s, [, w]) => s + w, 0)
+  const raw = parts.reduce((s, [sc, w]) => s + sc * w / 100, 0) * 100 / wTotal
+  return { score: clamp(round1(raw)), details }
+}
+
+/**
+ * ROE → 0-100（与后端 _roe_curve 一致）
+ * A 股 ROE 中位数约 6-8%，15% 以上属优秀
+ */
+function roeCurve(roe) {
+  if (roe >= 25) return 95.0
+  if (roe >= 15) return 80.0 + (roe - 15) / 10 * 15
+  if (roe >= 8) return 62.0 + (roe - 8) / 7 * 18
+  if (roe >= 0) return 40.0 + roe / 8 * 22
+  return Math.max(10.0, 40.0 + roe * 1.5)
+}
+
+/**
+ * 资产负债率 → 0-100（越低越好，与后端 _debt_curve 一致）
+ * ⚠️ 行业差异极大：银行/保险 90% 属正常。阈值已放宽（>85% 才明显扣分），
+ *   等个股→行业映射表建好后改为行业内相对排名。
+ */
+function debtCurve(d) {
+  if (d < 20) return 95.0
+  if (d < 40) return 82.0 + (40 - d) / 20 * 13
+  if (d < 60) return 65.0 + (60 - d) / 20 * 17
+  if (d < 75) return 50.0 + (75 - d) / 15 * 15
+  if (d < 85) return 38.0 + (85 - d) / 10 * 12
+  return Math.max(12.0, 38.0 - (d - 85) * 1.5)
+}
+
+/**
+ * 毛利率 → 0-100（越高越好，与后端 _gross_curve 一致）
+ */
+function grossCurve(g) {
+  if (g >= 60) return 95.0
+  if (g >= 40) return 78.0 + (g - 40) / 20 * 17
+  if (g >= 25) return 62.0 + (g - 25) / 15 * 16
+  if (g >= 10) return 45.0 + (g - 10) / 15 * 17
+  return Math.max(12.0, 45.0 - (10 - g) * 1.5)
+}
+
 /**
  * 信号判定（与后端一致）
  */
@@ -630,7 +783,7 @@ function deriveSignal(totalScore, anyExtremeLow) {
 /**
  * 提取加分/扣分因素（与后端一致）
  */
-function extractFactors(dimTech, dimCap, dimFund) {
+function extractFactors(dims) {
   const ups = []
   const downs = []
 
@@ -648,6 +801,11 @@ function extractFactors(dimTech, dimCap, dimFund) {
     'PB估值': 'PB处于低位',
     '市值规模': '市值适中弹性好',
     '振幅': '波动率适中',
+    '营收同比': '营收高增长',
+    '净利同比': '净利润高增长',
+    'ROE': 'ROE优秀',
+    '资产负债率': '负债率低',
+    '毛利率': '毛利率高',
   }
 
   const downMap = {
@@ -664,12 +822,17 @@ function extractFactors(dimTech, dimCap, dimFund) {
     'PB估值': 'PB偏高',
     '市值规模': '市值过大弹性不足',
     '振幅': '波动率过高风险大',
+    '营收同比': '营收下滑',
+    '净利同比': '净利润下滑',
+    'ROE': 'ROE偏低',
+    '资产负债率': '负债率偏高',
+    '毛利率': '毛利率偏低',
   }
 
   // 遍历每个维度的每个子项，按得分率分类（与后端一致）
   // 注意：子项「分值」统一在 0~100 尺度（满分字段仅作权重/分值占比，不再当上限），
   // 所以得分率直接用 分值/100。
-  for (const dim of [dimTech, dimCap, dimFund]) {
+  for (const dim of dims) {
     if (!dim.details) continue
     for (const [name, detail] of Object.entries(dim.details)) {
       if (name === '说明') continue
@@ -768,27 +931,40 @@ function generateSummary(name, total, signal, factorsUp, factorsDown) {
  * @param {Object} stockInfo - 实时行情
  * @returns {number} 简化评分（0-100）
  */
-export function roughScore(stockInfo) {
+export function roughScore(stockInfo, finance) {
+  // 兜底 stockInfo.finance（调用方合并进来时）
+  finance = finance || (stockInfo && stockInfo.finance) || null
   const changePct = stockInfo.change_pct || 0
   const turnover = stockInfo.turnover_rate || 0
   const pe = stockInfo.pe || 0
 
-  // 动量分（涨跌幅）
+  // 简化主维度：动量(40) + 换手(30) + PE(30)，与后端 _score_from_realtime 同口径
   let momentum = 50
   if (changePct > 0) momentum = 50 + Math.min(changePct * 5, 30)
   else momentum = 50 + Math.max(changePct * 5, -30)
-
-  // 换手率分
   let turnoverScore = 50
   if (turnover >= 2 && turnover <= 8) turnoverScore = 80
   else if (turnover >= 1 && turnover <= 10) turnoverScore = 65
   else turnoverScore = 40
-
-  // PE 分
   let peScore = 50
   if (pe > 0 && pe <= 25) peScore = 80
   else if (pe > 25 && pe <= 40) peScore = 60
   else if (pe > 40) peScore = 30
+  const mainScore = clamp(round1(momentum * 0.4 + turnoverScore * 0.3 + peScore * 0.3))
 
-  return clamp(round1(momentum * 0.4 + turnoverScore * 0.3 + peScore * 0.3))
+  // 成长/质量（有财报才参与，权重 0.18/0.12，主维度让出 0.30）
+  // ★ 必须带：否则会出现"三维度分数筛选、五维度分数展示"的错位
+  //   （财务优质但技术平平的股票会在筛选阶段被错杀掉榜）
+  const extra = []
+  if (finance) {
+    const g = scoreGrowth(finance)
+    const q = scoreQuality(finance)
+    if (g) extra.push({ score: g.score, weight: W_GROWTH })
+    if (q) extra.push({ score: q.score, weight: W_QUALITY })
+  }
+  const mainW = 1 - extra.reduce((s, d) => s + d.weight, 0)
+  const dims = [{ score: mainScore, weight: Math.max(0, mainW) }, ...extra]
+  // 归一化（与 scoreStock 同逻辑：缺失维度权重分摊给其余）
+  const wSum = dims.reduce((s, d) => s + d.weight, 0)
+  return clamp(round1(dims.reduce((s, d) => s + d.score * d.weight / wSum, 0)))
 }

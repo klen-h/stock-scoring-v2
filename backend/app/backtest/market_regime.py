@@ -323,13 +323,23 @@ def _apply_hysteresis(raw_states: List[dict], min_days: int = 3) -> List[dict]:
 
 def get_regime_weights(state: str) -> dict:
     """
-    根据市场状态返回三维度权重。
-    返回值: {"technical": float, "capital": float, "fundamental": float}
+    根据市场状态返回五维度权重（和 = 1.0）。
+    返回值: {"technical", "capital", "fundamental", "growth", "quality"}
+
+    各状态的侧重逻辑：
+      - 进攻市（牛市）：重技术动量与资金追逐，估值不重要 → 技术/资金占 75%
+      - 震荡市：资金与成长选股并重，各项均衡
+      - 防御市（熊市）：★ 质量权重拉到 35% —— 下跌市里财务健康、低负债的公司
+        抗跌性最强；同时估值安全边际（基本面）权重提高，成长权重相应降低
+        （熊市市场不为成长故事付费）。
     """
     weights = {
-        OFFENSIVE:  {"technical": 0.55, "capital": 0.30, "fundamental": 0.15},
-        NEUTRAL:    {"technical": 0.30, "capital": 0.40, "fundamental": 0.30},
-        DEFENSIVE:  {"technical": 0.15, "capital": 0.20, "fundamental": 0.65},
+        OFFENSIVE:  {"technical": 0.50, "capital": 0.25, "fundamental": 0.08,
+                     "growth": 0.12, "quality": 0.05},
+        NEUTRAL:    {"technical": 0.25, "capital": 0.30, "fundamental": 0.15,
+                     "growth": 0.18, "quality": 0.12},
+        DEFENSIVE:  {"technical": 0.12, "capital": 0.15, "fundamental": 0.25,
+                     "growth": 0.13, "quality": 0.35},
     }
     return weights.get(state, weights[NEUTRAL])
 

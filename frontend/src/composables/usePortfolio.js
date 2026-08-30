@@ -50,13 +50,22 @@ const TRADING_SESSIONS = [
 ]
 
 /**
+ * 判断当天是否为 A股交易日（仅日期层面：周末休市）。
+ * 注意：与 isTradingTime 同口径，用浏览器本地时间，假设用户在中国时区（UTC+8）；
+ *       节假日日历暂无前端版本，法定假日会误判为交易日。
+ */
+export function isTradingDay(date = new Date()) {
+  const day = date.getDay()
+  return day !== 0 && day !== 6  // 周末休市
+}
+
+/**
  * 判断当前是否为 A股交易时段（含午休排除）。
  * 注意：这里用浏览器本地时间，假设用户在中国时区（UTC+8）。
  *       若部署给海外用户，需改用服务器时间或显式时区换算。
  */
 export function isTradingTime(date = new Date()) {
-  const day = date.getDay()
-  if (day === 0 || day === 6) return false  // 周末休市
+  if (!isTradingDay(date)) return false
   const minutes = date.getHours() * 60 + date.getMinutes()  // 当天总分钟数
   return TRADING_SESSIONS.some(({ start, end }) => {
     const s = start[0] * 60 + start[1]

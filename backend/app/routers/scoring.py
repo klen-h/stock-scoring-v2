@@ -86,8 +86,12 @@ def _compute_top5_extras(code: str) -> dict:
     
     if tech is None:
         # 回退到 K 线缓存 + numpy 计算
-        from app.scoring.kline_cache import get_cached_klines
+        from app.scoring.kline_cache import (
+            MIN_SCORING_KLINE_COUNT, get_cached_klines)
         klines = get_cached_klines(code)
+        # ★ 截断缓存门槛（与 _precise_score_sync 同口径）：短缓存不采信，回退实时
+        if klines is not None and len(klines) < MIN_SCORING_KLINE_COUNT:
+            klines = None
         if not klines:
             klines = get_kline(code, period="day", count=500)
         if len(klines) >= 30:
@@ -101,7 +105,8 @@ def _compute_top5_extras(code: str) -> dict:
     return {"buy_point": {}, "trend_health": {}}
 
 
-def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None) -> dict:
+def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None,
+                        fin: Optional[dict] = None) -> dict:
     """
     对单只股票执行「完整评分」的同步实现（与 /api/score/{symbol} 完全一致）。
     用于批量列表的 Top N 精算，保证列表分数 == 详情页分数。
@@ -123,11 +128,17 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None) -> d
         # 回退：逐只读预计算指标缓存
         from app.scoring.indicator_cache import get_cached_technical
         technical_data = get_cached_technical(code)
-    
+
     if technical_data is None:
         # 指标缓存未命中，回退到 K 线缓存 + numpy 计算
-        from app.scoring.kline_cache import get_cached_klines
+        from app.scoring.kline_cache import (
+            MIN_SCORING_KLINE_COUNT, get_cached_klines)
         klines = get_cached_klines(code)
+        # ★ 截断缓存门槛：战法扫描/撤退提醒的短拉取曾把缓存覆盖成 30 根，
+        #   截断数据算出的指标严重失真（KDJ 未收敛/MA60 缺失，000833 实测
+        #   技术面 57.3 vs 真值 60.3）→ 不足最小可信根数就回退实时拉全量
+        if klines is not None and len(klines) < MIN_SCORING_KLINE_COUNT:
+            klines = None
         if not klines:
             klines = get_kline(code, period="day", count=500)
         if len(klines) >= 30:
@@ -171,6 +182,19 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None) -> d
         },
         "financial": {"换手率": stock_info.get("turnover_rate", 0)},
     }
+    # ★ 成长 / 质量（东财季度财报，见 app/finance.py）
+    #   fin 为 None = 该股无财报数据 → 引擎会让对应维度【不参与加权】，
+    #   而不是记 0 分（否则"未披露"会被当成"业绩崩盘"而莫名掉榜）。
+    if fin:
+        fundamental["growth"] = {
+            "revenue_yoy": fin.get("revenue_yoy"),
+            "profit_yoy": fin.get("profit_yoy"),
+        }
+        fundamental["quality"] = {
+            "roe": fin.get("roe"),
+            "debt_ratio": fin.get("debt_ratio"),
+            "gross_margin": fin.get("gross_margin"),
+        }
     result = engine.score_stock(
         code=code, name=name,
         technical_data=technical_data,
@@ -227,8 +251,22 @@ async def _batch_with_precise_top(
         return []
 
     _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
+
+    # ★ 批量预加载财务数据（提前到阶段1 之前，两阶段共用）：
+    #   按评分池的代码过滤（剔除创业板/科创板/ST 后约 1550 只，非全表 6236 只），
+    #   1-4 条 SQL + 30 分钟进程缓存。逐只查在远程云库上要 0.5s/只，不可接受。
+    #   ★ 必须在阶段1 之前加载：否则会出现"用三维度分数筛选、用五维度分数
+    #     展示"的错位 —— 财务优质但技术平平的股票在筛选阶段就被错杀掉榜。
+    fin_map = {}
+    try:
+        from app.finance import get_finance_batch
+        all_codes = [s.get("code") for s in stocks if s.get("code")]
+        fin_map = await asyncio.to_thread(get_finance_batch, all_codes)
+    except Exception as e:
+        print(f"财务数据批量预加载失败（成长/质量维度将不参与加权）: {e}")
+
     # 阶段1：简化评分 + 排序（简化分只用于挑选候选池，绝不直接展示）
-    rough = engine.score_batch(stocks)
+    rough = engine.score_batch(stocks, fin_map=fin_map)
 
     # 阶段2：候选池 = 简化榜头部 / 尾部，覆盖「要展示的范围 + 余量」
     pool_size = limit + margin
@@ -251,6 +289,8 @@ async def _batch_with_precise_top(
         print(f"指标批量预加载失败: {e}")
         preloaded_map = {}
 
+    # （财务数据已在阶段1 之前批量预加载，这里直接复用 fin_map）
+
     # 限流并发精算：最多 3 个并发（降低对腾讯接口的压力，避免触发WAF）
     # 如果K线数据库缓存已启用，可以提高并发数并跳过延迟
     from app.scoring.kline_cache import get_cache_status
@@ -265,9 +305,10 @@ async def _batch_with_precise_top(
             return None
         async with sem:
             try:
-                # 传入预加载的指标数组（命中则零 DB 往返）
+                # 传入预加载的指标数组 + 财务数据（命中则零 DB 往返）
                 result = await asyncio.to_thread(
-                    _precise_score_sync, info, preloaded_map.get(code)
+                    _precise_score_sync, info, preloaded_map.get(code),
+                    fin_map.get(code)
                 )
                 # 只有使用腾讯API时才需要延迟（DB缓存无需延迟）
                 if not use_db_cache:
@@ -400,7 +441,14 @@ async def backtest(
         return {"error": "有效K线数据不足，请稍后再试"}
 
     # 确定回测窗口
-    min_len = min(len(klines_map[c]) for c in codes)
+    # ★ 不能直接对全部股票取最短K线：一只新股/一条被截断的短缓存就会把
+    #   min_len 拖到阈值以下，整体误报"历史数据不足"（前端本地回测已修过同款坑）。
+    #   先剔除长度不足的股票，再对剩余样本取最短。
+    need = 30 + max(periods) + 35
+    usable = [c for c in codes if len(klines_map[c]) >= need]
+    if len(usable) < 10:
+        return {"error": f"历史数据不足以完成回测（K线超过 {need} 根的股票只有 {len(usable)} 只）"}
+    min_len = min(len(klines_map[c]) for c in usable)
     bt_days = min(days, min_len - max(periods) - 35)  # 30 指标预热 + 前瞻天数
     if bt_days < 10:
         return {"error": "历史数据不足以完成回测"}
@@ -411,20 +459,26 @@ async def backtest(
                     for p in periods}
     daily_records = []
 
+    # 指标序列每只只算一次、按日切片评分——与逐日重算数学等价
+    # （MA/MACD/RSI/KDJ/BOLL 均为递推/前缀指标，第 i 天只依赖 i 之前的数据，无未来函数），
+    # 但免去 30 天 × 97 只的全量重算（纯 Python 需数分钟，前端请求 120s 会超时）
+    tech_map = {code: (_calc_technical(klines_map[code])
+                       if len(klines_map[code]) >= 30 else klines_map[code])
+                for code in usable}
+
     for day_offset in range(bt_days):
         idx = start_idx + day_offset
         day_scores = []
 
-        for code in codes:
-            kl = klines_map[code]
-            if idx >= len(kl) - 1:
+        for code in usable:
+            tech = tech_map[code]
+            if idx >= len(tech) - 1:
                 continue
-            hist = kl[:idx + 1]
-            tech = _calc_technical(hist) if len(hist) >= 30 else hist
-            if len(tech) < 30:
+            hist = tech[:idx + 1]
+            if len(hist) < 30:
                 continue
             # 仅技术面评分（回测无基本面数据）
-            dim = engine._score_technical(tech)
+            dim = engine._score_technical(hist)
             day_scores.append({"code": code, "score": dim.score})
 
         if len(day_scores) < top_n:
@@ -638,6 +692,8 @@ async def weight_advice(data: dict):
         "技术面": round(engine.w_technical, 2),
         "资金面": round(engine.w_capital, 2),
         "基本面": round(engine.w_fundamental, 2),
+        "成长": round(getattr(engine, "w_growth", 0), 2),
+        "质量": round(getattr(engine, "w_quality", 0), 2),
     }
     suggested_weights = dict(current_weights)  # 默认不变
 
@@ -722,6 +778,23 @@ async def score_single(symbol: str):
             "换手率": stock_info.get("turnover_rate", 0),
         },
     }
+    # ★ 成长 / 质量：读本地财报库（东财季度数据，app/finance.py）。
+    #   无数据时不写这两个 key → 引擎让对应维度不参与加权（不是记 0 分）。
+    try:
+        from app.finance import get_finance
+        fin = get_finance(symbol)
+        if fin:
+            fundamental["growth"] = {
+                "revenue_yoy": fin.get("revenue_yoy"),
+                "profit_yoy": fin.get("profit_yoy"),
+            }
+            fundamental["quality"] = {
+                "roe": fin.get("roe"),
+                "debt_ratio": fin.get("debt_ratio"),
+                "gross_margin": fin.get("gross_margin"),
+            }
+    except Exception as e:
+        print(f"[score] 财务数据读取失败 {symbol}（成长/质量维度跳过）: {e}")
 
     # 4. 调用引擎算分
     result = engine.score_stock(

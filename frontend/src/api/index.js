@@ -120,6 +120,11 @@ export const getStockFundamental = (symbol) => http.get(`/stock/fundamental/${sy
 export const getStockNews = (symbol) => http.get(`/stock/news/${symbol}`)
 export const getStockNewsHistory = (symbol, days = 30) => http.get(`/stock/news/${symbol}/history`, { params: { days } })
 export const getStockTechnical = (symbol, period = 'day') => http.get(`/stock/technical/${symbol}`, { params: { period } })
+export const getStockFinance = (symbol, params) => http.get(`/stock/finance/${symbol}`, { params })
+export const getStockFinanceHistory = (symbol, limit = 12) => http.get(`/stock/finance/${symbol}/history`, { params: { limit } })
+// 批量财报（前端本地评分引擎算 top50 时用：1 次取回候选池财报，传给 scoreStock 算成长/质量维度）
+// ★ 响应拦截器返回的是 AxiosResponse，这里统一解包成 .data，避免调用方拿到整个 response 对象
+export const getFinanceBatch = (codes) => http.post('/stock/finance/batch', codes).then(r => r.data)
 export const searchStock = (keyword) => http.get('/stock/search', { params: { keyword } })
 
 // 评分引擎
@@ -162,6 +167,16 @@ export const getIndustryFlow = (params) => http.get('/sector/industry-flow', { p
 export const getConceptFlow = (params) => http.get('/sector/concept-flow', { params })
 export const getSectorIndustry = (params) => http.get('/sector/industry', { params })
 export const getSectorConcept = (params) => http.get('/sector/concept', { params })
+
+// 板块每日快照（历史序列 → 分化度 / 板块动量；交易日 15:10 自动记录）
+export const getSectorDispersion = (params) => http.get('/sector/dispersion', { params })
+export const getSectorSnapshot = (date, params) => http.get(`/sector/snapshot/${date}`, { params })
+export const getSectorHistory = (code, days = 30) => http.get(`/sector/history/${code}`, { params: { days } })
+export const getSectorSnapshotStats = () => http.get('/sector/snapshot-stats')
+export const takeSectorSnapshot = (date) => http.post('/sector/snapshot/take', {}, { params: { date } })
+// 个股→行业映射（评分引擎板块因子的基础数据）
+export const getStockIndustry = (code) => http.get(`/sector/stock-industry/${code}`)
+export const getIndustryMapStats = () => http.get('/sector/industry-map/stats')
 export const getNorthboundHoldings = () => Promise.resolve({ data: [] }) // 北向持股明细暂未实现
 
 // 战法选股
