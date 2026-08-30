@@ -128,6 +128,7 @@ def _warfare_signal_stream(strategy_name: str = None) -> list:
                 "position_ratio": min(max(pos, 0.05), 1.0),
                 "is_etf": False,
                 "strategy": _strategy_zh_name(r["strategy_name"]),
+                "strategy_en": r["strategy_name"],
             })
     return signals
 
@@ -237,6 +238,130 @@ def backtest_warfare(strategy_name: str = None) -> dict:
         result["in_sample"] = _run_warfare(head, "前70%样本", prices_map)
     if len(tail) >= 3:
         result["out_sample"] = _run_warfare(tail, "后30%样本", prices_map)
+    return result
+
+
+def _regime_lookup() -> dict:
+    """沪深300 → {date: {state, volatility_regime, regime_score}}。
+    复用 backtest/market_regime.detect_market_regime（进攻/震荡/防御 + 高/正常/低波动）。"""
+    from app.backtest.market_regime import detect_market_regime
+    bars = data.load_prices("sh000300")
+    if len(bars) < 70:
+        return {}
+    return {s.date: {"state": s.state, "volatility_regime": s.volatility_regime,
+                     "regime_score": s.regime_score}
+            for s in detect_market_regime(bars)}
+
+
+def _nearest_regime_info(m: dict, date: str):
+    """按日期查市场状态，查不到时向前找最近一个交易日。"""
+    if date in m:
+        return m[date]
+    from datetime import timedelta
+    d = datetime.strptime(str(date).strip(), "%Y-%m-%d")
+    for _ in range(10):
+        d -= timedelta(days=1)
+        key = d.strftime("%Y-%m-%d")
+        if key in m:
+            return m[key]
+    return None
+
+
+def _tag_signals_with_regime(signals: list, regime_map: dict) -> list:
+    """给信号打市场状态标签（按信号日 scan_date，向前找最近交易日）。"""
+    for s in signals:
+        r = _nearest_regime_info(regime_map, s["date"])
+        s["regime_state"] = r["state"] if r else None
+        s["regime_vol"] = r["volatility_regime"] if r else None
+        s["regime_score"] = r["regime_score"] if r else None
+    return signals
+
+
+def backtest_warfare_by_regime() -> dict:
+    """
+    战法 × 市场状态 分层回测：给「战法准入」提供数据依据。
+
+    对每个战法信号（strategy_results 扫描日）打市场状态标签
+    （进攻/震荡/防御 × 高/正常/低波动，按信号日向前找最近交易日），
+    撮合后按「战法 × 状态」和「战法 × 波动」分组统计胜率/盈亏比。
+
+    关键产出：
+      - 高波动（volatility_regime=high）常态下哪些战法胜率好/差 → 准入/禁止清单依据
+      - 进攻/震荡/防御 各自适合的战法 → 动态准入依据
+    """
+    regime_map = _regime_lookup()
+    if not regime_map:
+        return {"status": "error",
+                "message": "沪深300（sh000300）历史数据不足（<70 条），无法判定市场状态。"
+                           "请先回填指数日线：python -m app.backtest.fill"}
+
+    signals = _tag_signals_with_regime(_warfare_signal_stream(), regime_map)
+    if not signals:
+        return {"status": "error", "message": "无战法信号样本"}
+
+    prices_map = _load_prices_map({s["code"] for s in signals} | {"sh000300"},
+                                  start=min(x["date"] for x in signals))
+    trades = engine.match_signals(signals, prices_map)
+    if not trades:
+        return {"status": "error", "message": "撮合无成交"}
+
+    states = ["offensive", "neutral", "defensive"]
+    vols = ["high", "normal", "low"]
+    state_labels = {"offensive": "进攻", "neutral": "震荡", "defensive": "防御"}
+    vol_labels = {"high": "高波动", "normal": "正常波动", "low": "低波动"}
+
+    # 按战法（英文 key）分桶
+    by_strategy = defaultdict(lambda: {"name": "", "by_state": defaultdict(list),
+                                       "by_vol": defaultdict(list)})
+    state_all = defaultdict(list)
+    vol_all = defaultdict(list)
+
+    for t in trades:
+        en = t.get("strategy_en") or "unknown"
+        bucket = by_strategy[en]
+        bucket["name"] = t.get("strategy") or en
+        st, vol = t.get("regime_state"), t.get("regime_vol")
+        if st in state_labels:
+            bucket["by_state"][st].append(t)
+            state_all[st].append(t)
+        if vol in vol_labels:
+            bucket["by_vol"][vol].append(t)
+            vol_all[vol].append(t)
+
+    def _stat(trades):
+        n = len(trades)
+        if not n:
+            return {"n": 0, "win_rate": None, "avg_pnl_pct": None, "profit_factor": None}
+        wins = sum(1 for t in trades if t["pnl_pct"] > 0)
+        profits = [t["pnl_pct"] for t in trades]
+        gross_win = sum(p for p in profits if p > 0)
+        gross_loss = abs(sum(p for p in profits if p < 0))
+        return {
+            "n": n,
+            "win_rate": round(wins / n * 100, 1),
+            "avg_pnl_pct": round(sum(profits) / n, 2),
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0
+                             else (999.0 if gross_win > 0 else 0.0),
+        }
+
+    result = {
+        "status": "ok",
+        "type": "warfare_regime",
+        "label": "战法 × 市场状态 分层回测",
+        "state_labels": state_labels,
+        "vol_labels": vol_labels,
+        "window": [min(t["signal_date"] for t in trades), max(t["signal_date"] for t in trades)],
+        "total": _stat(trades),
+        "by_strategy": {},
+        "state_summary": {st: _stat(state_all[st]) for st in states},
+        "vol_summary": {v: _stat(vol_all[v]) for v in vols},
+    }
+    for en, b in sorted(by_strategy.items()):
+        result["by_strategy"][en] = {
+            "name": b["name"],
+            "by_state": {st: _stat(b["by_state"][st]) for st in states},
+            "by_vol": {v: _stat(b["by_vol"][v]) for v in vols},
+        }
     return result
 
 

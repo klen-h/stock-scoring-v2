@@ -32,6 +32,7 @@ import requests
 import json
 import time
 import threading
+from datetime import datetime
 from urllib.parse import urlencode
 
 _session = requests.Session()
@@ -181,6 +182,44 @@ def _fetch_search_news(code: str, limit: int) -> list:
     return out
 
 
+def _dedup_similar(items: list, window_hours: float = 72.0, threshold: float = 0.55) -> list:
+    """相似标题去重：同一事件的多家媒体重复报道（措辞不同但发布时间在 window_hours
+    内、归一化标题相似度 ≥ threshold）只保留最新一条，防止重复计分。
+    例：『XX拟回购…』08-04 / 08-05 两条标题不同但同一事件，合并为一条。"""
+    from difflib import SequenceMatcher
+    import re
+
+    def _norm(t):
+        return re.sub(r"[\s，。！？、：:（）()【】\d%]", "", t or "")
+
+    def _ts(s):
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            return None
+
+    kept = []
+    for it in items:
+        it_t = _ts(it.get("time", ""))
+        it_n = _norm(it["title"])
+        dup_idx = None
+        for j, k in enumerate(kept):
+            k_t = _ts(k.get("time", ""))
+            # 时间差超过窗口 → 视为不同事件（旧报道影响已衰减，新报道单独计分）
+            if it_t and k_t and abs((it_t - k_t).total_seconds()) > window_hours * 3600:
+                continue
+            if SequenceMatcher(None, it_n, _norm(k["title"])).ratio() >= threshold:
+                dup_idx = j
+                break
+        if dup_idx is not None:
+            k_t = _ts(kept[dup_idx].get("time", ""))
+            if it_t and k_t and it_t > k_t:
+                kept[dup_idx] = it
+        else:
+            kept.append(it)
+    return kept
+
+
 def get_stock_news(code: str, limit: int = 20) -> list:
     """
     某只股票的相关新闻（缓存 300s/只），双源合并：
@@ -200,11 +239,16 @@ def get_stock_news(code: str, limit: int = 20) -> list:
         # 主源：搜索接口（深度报道）；失败不抛，降级为纯快讯方案。
         # 搜索按相关度排序可能混入弱相关文章，名称已知时要求标题/正文提及代码或名称。
         search_items = _fetch_search_news(code, limit)
+        # ★ 严格关联：只保留「标题」含代码或公司名的文章。此前标题/摘要全文匹配，
+        #   导致"正文提及"的弱相关文章（如卓目科技报道里点名的保荐机构长江证券）
+        #   误挂到本股、污染情绪分。标题不含本股即视为弱相关，丢弃。
         if name:
             search_items = [
                 it for it in search_items
-                if code in it["title"] + it["summary"] or name in it["title"] + it["summary"]
+                if code in it["title"] or name in it["title"]
             ]
+        else:
+            search_items = [it for it in search_items if code in it["title"]]
 
         # 辅源：快讯过滤（实时性）
         fast_items = []
@@ -222,5 +266,8 @@ def get_stock_news(code: str, limit: int = 20) -> list:
                 continue
             seen.add(key)
             merged.append(it)
+        # ★ 相似事件去重：同一事件多家媒体重复报道（措辞不同、72h 内）会重复计分，
+        #   按标题相似度合并为一条（保留最新）。
+        merged = _dedup_similar(merged)
         return merged[:limit]
     return _get_cached(f"stock:{code}", TTL_STOCK, loader)

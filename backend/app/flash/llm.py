@@ -205,6 +205,14 @@ def get_core_skill() -> str:
   其驱动主要来自国防预算、军贸订单、重大装备进展等本土因素。
   仅当事件直接涉及中国国防政策/军贸时才可推荐军工ETF，不要把海外冲突简单映射为军工利好。
 
+**地缘协议分级处理（D状态下强制执行）**：
+- **临时协议/框架协议/口头缓和**（如美伊临时协议、阶段性停火、领导人通话）：仅降低风险溢价，
+  不改变结构性趋势。D 状态下仍 ❌ 严禁做空黄金，✅ 允许做多黄金ETF（风险溢价回落有限+央行购金支撑）
+- **永久协议/全面和解/制裁解除**（如伊核协议正式签署、战争结束、制裁法案废除）：可重新评估地缘溢价，
+  允许基于"通胀预期降温"逻辑调整黄金仓位，但仍须通过央行购金数据验证，禁止直接做空
+- **协议破裂/冲突升级**：立即上调黄金目标位，❌ 严禁任何做空建议
+- 无法判断协议性质（临时/永久）时，默认按"临时协议"处理，保守对待
+
 **扩展诊断维度**（在基本状态判断后必须执行）：
 - 负相关（原油涨+黄金跌）+ 铜跌 → 衰退预警（供给冲击正在扼杀需求）
 - 负相关（原油涨+黄金跌）+ 铜涨 → 真紧缩/需求韧性（实际利率驱动为主）
@@ -217,9 +225,46 @@ def get_core_skill() -> str:
 - 负相关 + 美债收益率↑ → 真紧缩成立；负相关 + 美债收益率↓ → 供给冲击假象
 - 正相关 + 美债收益率↑ → 滞胀强化；正相关 + 美债收益率↓ → 通胀交易
 
+**通胀-油价-政策联动（★ 核心：沃什关注通胀，油价是美联储通胀政策的核心观测变量）**：
+- 油价↑ → 通胀预期↑ → 美联储鹰派风险 → 实际利率↑ → 压制黄金/科技成长；
+  这是"油价→通胀→政策→资产"的主导传导链，优先级不亚于油金相关性矩阵本身
+- 油价↓ → 通胀缓解，但必须区分驱动：需求驱动（衰退风险）vs 供给驱动（增产/地缘缓和）
+- 「紧缩-衰退」过渡标签（复盘框架修正建议固化）：当【美债收益率↑ + 商品（油/铜）齐跌】同时出现时，
+  标记为"紧缩-衰退"过渡——政策收紧过快正在压制需求，通胀虽降但增长恶化，对政策风险保持高敏感
+- 沃什政策立场变化（鹰/鸽表态）应结合油价方向评估：鹰派+油价涨=双重紧缩压力；鹰派+油价跌=加速衰退定价
+
 **VIX情绪验证**（若VIX数据可用）：
 - VIX < 15：极度乐观，警惕回调风险；15~20：正常；20~30：担忧升温；> 30：恐慌
 - VIX与纳指同跌：定价"基本面走弱"；VIX飙升+纳指暴跌：恐慌性抛售，短期可能超卖
+
+### 1.5 黄金双轨定价（若央行购金数据可用）
+- **金融轨**：实际利率（美债收益率）→ 传统定价，与美元、美债收益率负相关
+- **货币轨**：全球央行净购金（月度数据）→ 结构性买盘，与实际利率可能脱钩
+- 两轨同向：趋势极强（实际利率↑+央行购金↓=大跌；实际利率↓+央行购金↑=大涨）
+- 两轨背离：进入震荡（如实际利率↑但央行购金持续增持=黄金抗跌，此时禁止基于单一轨道做空黄金）
+
+### 1.6 美债供给/财政轨道（若财政部数据可用）
+- 美债净融资 + 月度赤字：赤字扩张 + 净融资上升 = 长端供给压力 → 收益率易升难降 → 压制黄金/科技、支撑美元
+- 与利率验证联动：净融资上升但收益率反而走低 = 海外买盘/宽松预期对冲（"供给冲击假象"），须交叉验证，禁止单轨下结论
+
+### 1.7 预期差分析强制要求（★★★ 核心：读"实际值"必须对照"预期值"）
+对每个宏观数据（非农、CPI、PPI、利率决议、财报指引、地缘协议），必须执行：
+1. 识别"市场预期值"（见上文【近期重要财经事件】日历中的"预期X"与"前值X"）
+2. 对比"实际值 vs 预期值"，只允许三种结论：
+   - 实际 > 预期且方向利好 = 超预期利好；实际 < 预期且方向利空 = 超预期利空
+   - 实际 ≈ 预期 = 符合预期（已 priced in，市场可能反向波动）
+   - 无实际值（数据未公布）= 仅按预期做前瞻，禁止当作已成事实
+3. 禁止仅用绝对值好坏做判断：CPI 3.4%本身不算高，但若预期3.2%就是超预期通胀；
+   非农-2.3万本身很差，但若预期-5万就是超预期韧性（"数据差≠利空"必须通过预期差判断）
+4. 若某项数据的预期值未知，必须显式标注"预期未知，仅按绝对值分析，置信度降级"
+
+### 1.8 央行沟通范式识别（若输入含央行官员讲话/会议纪要）
+1. **前瞻性指引**：官员明确暗示未来政策路径（如"年内可能降息3次"）→ 市场定价效率高，波动相对可控
+2. **原则性表态**：官员仅重申政策目标（如"2%通胀不可动摇"、"数据依赖"），不透露具体路径 → 不确定性溢价
+3. 处理规则：
+   - 若为"原则性表态"：必须将 uncertainty_level 上调一档（中→高，高→极高），禁止对短期政策方向做高置信度预测
+   - 若为"信誉修复型讲话"（如沃什回应沟通事故）：鹰/鸽倾向会被市场放大定价，给予额外权重（fragility 标"高"）
+   - 禁止将"原则性表态"误读为"前瞻性指引"并据此给出高置信度信号
 
 ### 2. 白银交叉验证（辅助，若数据可用）
 - 白银涨幅明显大于黄金（日内差距>2%）：负相关可能是假象（同时定价避险+工业需求）
@@ -250,14 +295,23 @@ _SIGNAL_SCHEMA_HINT = """### 信号输出格式（必须严格遵守）
 在报告的最后，输出一个 ```json 围栏代码块，内容形如：
 ```json
 {"signals": [
-  {"etfName": "黄金ETF", "direction": "long", "support": 7.10, "resistance": 7.55, "reasoning": "避险需求"}
+  {"etfName": "黄金ETF", "direction": "long", "timeframe": "波段(3-5日)",
+   "confidence": "中", "entry_condition": "回调至7.05附近且未跌破6.95",
+   "invalidation": "跌破6.95或9月CPI超预期反弹",
+   "support": 7.10, "resistance": 7.55, "position_sizing": "轻仓试探",
+   "reasoning": "央行购金结构性支撑+降息预期已部分定价，回调提供买点"}
 ]}
 ```
 字段要求：
 - etfName 必须严格从上面给出的 ETF 列表中选择
 - direction 只能是 "long"（做多）或 "short"（做空）；没有合适信号就输出空数组
+- timeframe: "日内" / "波段(3-5日)" / "趋势(1-4周)" —— 必须明确
+- confidence: "高" / "中" / "低" —— 置信度低于60%必须标"低"
+- entry_condition: 触发建仓的具体价格/事件条件，禁止模糊
+- invalidation: 什么情况下该信号失效，必须明确
 - support / resistance 必须是数字（基于当前价格给出，不是百分比）
-- reasoning 一句话说明传导逻辑
+- position_sizing: "轻仓试探" / "标准仓位" / "重仓" —— 与 confidence 联动，confidence 低时必须"轻仓试探"
+- reasoning 一句话说明传导逻辑，禁止"通常/历史上"等模糊词
 没有把握时输出空数组，禁止编造点位。"""
 
 
@@ -293,6 +347,9 @@ def get_postmarket_skill() -> str:
 2. **逻辑自洽检验**：今日资产表现是否表明宏观框架需要修正？
 3. **错失信号识别**：今日盘面是否有无法用已推送事件解释的异动？
 4. **框架修正建议**：是否需要调整原油-黄金相关性判断？对 D 状态持仓建议有何反思？
+   重点检查：① 是否出现「紧缩-衰退」过渡特征（收益率↑ + 商品油/铜齐跌）→ 按核心约束给过渡标签；
+   ② 沃什政策立场变化对"油价→通胀预期→政策利率→资产"传导链的影响权重；
+   ③ 若油价是本日核心变量，明确它在通胀/政策定价中的角色，避免只按"油金相关性"机械诊断。
 5. **明日初步预案**：明日核心观察指标和潜在情景。
 
 （盘后复盘不要求输出交易信号 json 块。）"""
@@ -559,6 +616,29 @@ def _fmt_item(item: dict) -> str:
             f"{'+' if chg > 0 else ''}{chg}%) [日内高:{item.get('high')} 低:{item.get('low')}]")
 
 
+def _format_prev_narrative() -> str:
+    """最近一次诊断的主导叙事/情景（供 LLM 对比"叙事切换概率"）。无记录返回空字符串。"""
+    try:
+        prev = store.load_latest_analysis()
+    except Exception:
+        return ""
+    if not prev:
+        return ""
+    n = prev.get("dominant_narrative") or {}
+    narr, frag = n.get("narrative") or "", n.get("fragility") or ""
+    parts = []
+    if narr:
+        parts.append(f"主导叙事：{narr}" + (f"（fragility: {frag}）" if frag else ""))
+    scens = prev.get("scenarios") or []
+    sc = []
+    for s in scens[:3]:
+        name, p = s.get("scenario_name") or "", s.get("probability_qualitative") or ""
+        sc.append(f"{name}({p})" if name and p else (name or p))
+    if sc:
+        parts.append("情景：" + "、".join(sc))
+    return " | ".join(parts) if parts else ""
+
+
 def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
                            quality: dict, holdings_text: str) -> str:
     """诊断流完整 prompt（数据预检 + 核心诊断逻辑 + 持仓映射 + 事件簇 + JSON schema）。"""
@@ -582,6 +662,27 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
     d = panel.get("_derived", {})
     g = panel.get
 
+    # 央行购金（黄金"货币轨"，结构性买盘）——拉取失败静默跳过
+    try:
+        from app.flash.cb_gold import cb_gold_line as _cb_line
+        cb_gold_line_text = f"- {_cb_line()}" if _cb_line() else ""
+    except Exception:
+        cb_gold_line_text = ""
+
+    # 美债供给/财政轨（财政部公开 API，免认证）——拉取失败静默跳过
+    try:
+        from app.flash.treasury import treasury_line as _tr_line
+        treasury_line_text = f"- {_tr_line()}" if _tr_line() else ""
+    except Exception:
+        treasury_line_text = ""
+
+    # 上次叙事状态（叙事切换概率的对比基准）——无历史记录则静默
+    prev_narrative_text = ""
+    try:
+        prev_narrative_text = _format_prev_narrative()
+    except Exception:
+        pass
+
     return f"""【角色定义】
 你目前是宏观交易信号过滤引擎。你的首要任务不是"给出答案"，而是"诚实地评估数据能支撑什么结论"。
 核心原则：宁可不交易，不可用残缺数据做决策。
@@ -590,12 +691,15 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 ### 1.1 当前数据快照
 - 数据质量评估状态: {json.dumps(quality, ensure_ascii=False)}
 - 当前市场时段: {clock['beijing_time']} 北京时间 | {clock_desc}
+- 上次叙事: {prev_narrative_text or "（无历史诊断记录，本诊断将确立叙事基线）"}
 
 【核心能源与避险】
 - 布伦特原油: {_fmt_item(g('brent') or {})}
 - 纽约原油: {_fmt_item(g('wti') or {})}
 - COMEX黄金: {_fmt_item(g('gold') or {})}
 - 黄金现货: {g('gold_spot', {}).get('price', '未知')}
+{cb_gold_line_text}
+{treasury_line_text}
 
 【全球风险资产】
 - 纳指期货(NQ): {_fmt_item(g('nasdaq') or {})}
@@ -642,6 +746,9 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
   - D2(衰退驱动)：需求崩塌导致油价跌。验证：铜价同步暴跌，铜金比骤降，金银比飙升，VIX异常走高。
 - 步骤3：极端走势校验（价格与日内高低点的关系：贴低点=抛压未释放；大幅回收=买盘承接）。
 - 步骤4：D状态下的美元与风险资产确认（需纳指/恒科/美债表现）。
+- 步骤5：通胀-政策视角（★ 沃什关注通胀，油价为核心观测变量）：
+  油价↑ → 通胀预期↑ → 美联储鹰派风险 → 实际利率↑（压制黄金/科技成长）；
+  油价跌 + 收益率↑ + 铜跌 → 「紧缩-衰退」过渡标签（政策收紧压制需求），对政策风险保持高敏感。
 
 ### 2.3 D状态专属规则（强制遵守）
 - ❌ 严禁基于"协议达成"逻辑推荐做空黄金。
@@ -649,6 +756,7 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 - ✅ D1(供给驱动)下允许：科技ETF（成本下降）、黄金ETF（独立支撑）。
 - ⚠️ 军工ETF与海外冲突联动弱（驱动力是国防政策/军贸订单），不得仅因海外地缘冲突推荐军工。
 - ❌ D2(衰退驱动)下严禁：科技ETF、宽基ETF（盈利预期恶化）。
+- **协议分级**：临时协议/口头缓和→仅降风险溢价，仍严禁做空黄金；永久协议/制裁解除→可重估地缘溢价但仍须央行购金验证；协议破裂→上调黄金目标位、严禁做空。无法判断按"临时"保守处理。
 - ✅ D2(衰退驱动)下允许：国债ETF、黄金ETF、短融ETF。
 
 ### 2.4 事件簇分析
@@ -684,10 +792,13 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
   }},
   "market_mood": "string",
   "uncertainty_level": "高/中/低",
-  "dominant_narrative": {{"narrative": "string", "fragility": "string", "conflicting_signals": ["string"]}},
+  "dominant_narrative": {{"narrative": "string", "fragility": "string", "conflicting_signals": ["string"],
+    "narrative_shift_probability": "0-100整数（相对上次叙事的切换概率；-1表示无上次记录）",
+    "narrative_shift_target": "string（若切换最可能的新叙事名，不切换则与 narrative 相同）"}},
   "scenarios": [
     {{"scenario_name": "string", "generation_rule": "单事件推演/多事件推演",
-      "probability_qualitative": "string", "assumptions": ["string"], "oil_path": "string",
+      "probability_qualitative": "string", "probability_numeric": "0-100整数，所有情景之和在85-115之间即可（不必严格等于100）",
+      "assumptions": ["string"], "oil_path": "string",
       "affected_etfs": ["string"], "action_if_confirmed": "string", "trigger_to_watch": "string"}}
   ],
   "top_events": [
@@ -725,7 +836,16 @@ def analyze_with_llm(clusters: list, panel: dict, holdings: list, holdings_text:
                 "top_events": [], "diagnostic_status": quality}
     prompt = build_diagnosis_prompt(clusters, panel, holdings, quality, holdings_text)
     result = _call_json(
-        "你是冷酷的原油宏观交易员。当前一切以油价为核心。对无价值信息要毫不留情。必须输出合法JSON。",
+        """你是冷酷的原油宏观交易员。当前一切以油价为核心——油价是美联储沃什通胀政策的核心观测变量，油价方向决定通胀/政策/利率的定价权重。对无价值信息要毫不留情。
+
+【数据真实性铁律 — 违反将导致严重亏损】
+1. 只能使用输入数据中的具体数值。禁止编造任何价格、涨跌幅、概率、历史事件或数据发布时间。
+2. 某项数据缺失（如VIX、央行购金量不可用）时，必须在该字段输出"数据缺失"/"N/A"，禁止基于假设继续推理。
+3. 对某个判断置信度低于60%时，必须标注"低置信度"，并将对应 action 降级为"观望"。
+4. 禁止使用"通常/历史上/一般"等模糊表述，必须基于本次输入的具体数据做因果推导。
+5. support/resistance 必须基于输入当前价格和日内高低计算，禁止凭空捏造点位。
+
+必须输出合法JSON。""",
         prompt, temperature=0.1)
     if not result:
         return {"degraded": "llm_failed", "market_mood": "未知",
@@ -815,6 +935,26 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
     """复盘流 prompt（事件链 + 宏观锚定 + ETF + 内部状态 + 核心技能 + 阶段技能）。"""
     history = store.load_macro_history()
     macro_text = format_macro_snapshot(panel, history)
+    # 央行购金（黄金"货币轨"，结构性买盘）——拉取失败静默跳过
+    try:
+        from app.flash.cb_gold import cb_gold_line as _cb_line
+        cb_gold_text = f"## 央行购金（黄金货币轨）\n{_cb_line()}\n" if _cb_line() else ""
+    except Exception:
+        cb_gold_text = ""
+
+    # 美债供给/财政轨（财政部公开 API，免认证）——拉取失败静默跳过
+    try:
+        from app.flash.treasury import treasury_line as _tr_line
+        treasury_text = f"## 美债供给/财政轨\n{_tr_line()}\n" if _tr_line() else ""
+    except Exception:
+        treasury_text = ""
+
+    # 上次叙事状态（复盘"情景概率更新/核心叙事修正"的对比基准）
+    prev_review_text = ""
+    try:
+        prev_review_text = _format_prev_narrative()
+    except Exception:
+        pass
     cluster_text = format_cluster_text(clusters)
     etf_list = format_etf_list(holdings, core_etfs)
     etf_perf = format_etf_performance(holdings)
@@ -849,6 +989,9 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
 
 ## 当前全球宏观锚定物
 {macro_text}
+{cb_gold_text}
+{treasury_text}
+- 上次叙事: {prev_review_text or "（无历史诊断记录）"}
 {yest_text}
 {etf_hist}
 {etf_list}
@@ -918,6 +1061,11 @@ def extract_structured_signals(markdown: str) -> list:
                 "direction": direction,
                 "support": support,
                 "resistance": resistance,
+                "timeframe": str(s.get("timeframe", ""))[:20],
+                "confidence": str(s.get("confidence", ""))[:2],
+                "entry_condition": str(s.get("entry_condition", ""))[:200],
+                "invalidation": str(s.get("invalidation", ""))[:200],
+                "position_sizing": str(s.get("position_sizing", ""))[:10],
                 "reasoning": str(s.get("reasoning", ""))[:200],
             })
         except (TypeError, ValueError):

@@ -43,6 +43,7 @@ from app.strategies.backtest import (
 from app.strategies.market_regime import (
     detect_market_regime,
     get_strategy_recommendation,
+    is_strategy_admitted,
     TRENDING_STRATEGIES,
     OSCILLATING_STRATEGIES,
 )
@@ -82,7 +83,19 @@ async def scan_strategy(
     strategy = get_strategy(strategy_name)
     if not strategy:
         raise HTTPException(status_code=404, detail=f"未找到战法: {strategy_name}")
-    
+
+    # ★ P3 战法准入：非准入战法直接返回，不启动后台扫描
+    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(strategy.name_en)
+    if not admitted:
+        return {
+            "data": [],
+            "total": 0,
+            "admitted": False,
+            "regime": admit_regime,
+            "volatility": admit_vol,
+            "message": f"未准入：{admit_reason}",
+        }
+
     # 检查是否已有今日结果
     if not force:
         cached = get_scan_result(strategy_name)
@@ -155,6 +168,12 @@ async def _run_scan(strategy_name: str, min_market_cap: float, min_avg_volume: f
 
 def _do_scan(strategy, min_market_cap: float, min_avg_volume: float):
     """同步执行扫描（在线程池中运行）"""
+    # ★ P3 战法准入：非准入战法禁止扫描（手动 /scan 与盘后全量扫描共用此函数）
+    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(strategy.name_en)
+    if not admitted:
+        print(f"[strategies] {strategy.name} 未准入（{admit_reason}），跳过扫描")
+        return []
+
     # 过滤股票池
     pool = filter_stock_pool(
         min_market_cap=min_market_cap,

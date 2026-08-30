@@ -46,6 +46,7 @@ status = {
     "last_backtest_preheat": None,
     "last_score_snapshot": None,
     "last_market_snapshot": None,
+    "last_open_confirm": None,
     "last_news_alert": None,
     "last_news_history": None,
     "config": {
@@ -339,6 +340,10 @@ async def backtest_prices_refresh_loop():
 # ── 战法每日自动扫描 ──
 STRATEGY_SCAN_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（与回测回填同窗口，收盘后数据稳定）
 
+# 战法买入信号推送：每个白名单战法最多推送条数 + 全天总量上限（防刷屏，多战法时仍可控）
+PUSH_MAX_PER_STRATEGY = 8
+PUSH_MAX_TOTAL = 10
+
 
 def scan_all_strategies() -> dict:
     """盘后扫描全部注册战法并保存结果（同步函数，由调度器丢线程池执行）。
@@ -353,7 +358,11 @@ def scan_all_strategies() -> dict:
         refresh_all_stocks()
     from app.strategies import list_strategies, get_strategy, save_scan_result
     from app.strategies.router import _do_scan
-    stats = {"scanned": 0, "signals": 0, "failed": 0}
+    from app.strategies.market_regime import is_strategy_admitted
+    from app.strategies.recommendation import get_push_whitelist
+    stats = {"scanned": 0, "signals": 0, "failed": 0, "skipped": 0}
+    push_pool = {}  # 白名单战法 → 当天扫描信号（用于企微推送买入提醒）
+    whitelist = set(get_push_whitelist())
     for cfg in list_strategies():
         # 注册/查询用 name_en（英文 key），name 只是前端显示名
         key = cfg["name_en"]
@@ -361,16 +370,158 @@ def scan_all_strategies() -> dict:
         if not strategy:
             stats["failed"] += 1
             continue
+        # ★ P3 战法准入：未准入战法不进调度器（不调 _do_scan、不写空结果，单独计 skipped）
+        admitted, admit_reason, _, _ = is_strategy_admitted(key)
+        if not admitted:
+            stats["skipped"] += 1
+            print(f"[scheduler] 战法 {key} 未准入（{admit_reason}），跳过扫描")
+            continue
         try:
             results = _do_scan(strategy, 20e8, 1000e4)
             save_scan_result(key, results)
             stats["scanned"] += 1
             stats["signals"] += len(results)
             print(f"[scheduler] 战法 {key} 扫描完成: {len(results)} 只")
+            if key in whitelist and results:
+                push_pool[key] = results
         except Exception as e:
             stats["failed"] += 1
             print(f"[scheduler] 战法 {key} 扫描失败: {e}")
+    _push_buy_signals(push_pool)
     return stats
+
+
+def _push_buy_signals(push_pool: dict) -> None:
+    """推送白名单战法当天的新买入信号到企微（置信度过滤 + 限量，避免刷屏）。"""
+    if not push_pool:
+        return
+    try:
+        from app.strategies.market_regime import detect_market_regime
+        from app.strategies.recommendation import format_signal_message
+        from app.flash.wechat import push_strategy_signals
+        market = detect_market_regime()
+        messages = []
+        seen_codes = set()
+        for strategy_en, results in push_pool.items():
+            # 只推 高/中 置信度信号，按置信度降序限量
+            cands = [s for s in results
+                     if (s.get("confidence_level") or "low") in ("high", "medium")]
+            cands.sort(key=lambda s: s.get("confidence") or 0, reverse=True)
+            for s in cands[:PUSH_MAX_PER_STRATEGY]:
+                if len(messages) >= PUSH_MAX_TOTAL:  # 全天总量上限（防多战法刷屏）
+                    break
+                code = s.get("code")
+                if code in seen_codes:  # 同一股票多战法共振时只推一条，避免刷屏
+                    continue
+                seen_codes.add(code)
+                messages.append(format_signal_message(strategy_en, s, market))
+            if len(messages) >= PUSH_MAX_TOTAL:
+                break
+        push_strategy_signals(messages)
+        if messages:
+            print(f"[scheduler] 战法买入信号推送: {len(messages)} 条")
+    except Exception as e:
+        print(f"[scheduler] 战法买入信号推送失败: {e}")
+
+
+# ── 次日开盘买点确认（白名单战法昨日信号的执行指引）──
+OPEN_CONFIRM_WINDOW = (575, 680)   # 北京时间 09:35-11:20（开盘价稳定后；窗口加宽支持补跑）
+
+
+def run_open_confirmation() -> dict:
+    """执行开盘买点确认：读白名单战法最近一次扫描信号 → 拉实时开盘价 → 生成买点指引 → 推送。"""
+    try:
+        from app.strategies.recommendation import get_push_whitelist, build_open_confirmation
+        from app.flash.wechat import push_strategy_signals
+        from app.tencent import get_stocks_batch
+        from app.database import db
+        import json
+    except Exception as e:
+        print(f"[scheduler] 开盘买点确认导入失败: {e}")
+        return {"sent": 0, "no_signals": False}
+
+    signals = []
+    for strategy_en in get_push_whitelist():
+        row = db.fetch_one(
+            "SELECT scan_date, results_json FROM strategy_results "
+            "WHERE strategy_name=%s AND count>0 ORDER BY scan_date DESC LIMIT 1",
+            (strategy_en,))
+        if not row:
+            continue
+        try:
+            items = json.loads(row["results_json"])
+        except (json.JSONDecodeError, KeyError):
+            continue
+        for s in items:
+            s["_strategy"] = strategy_en
+            s["_scan_date"] = row["scan_date"]
+            signals.append(s)
+    if not signals:
+        print("[scheduler] 开盘买点确认：白名单战法无历史信号")
+        return {"sent": 0, "no_signals": True}
+
+    quotes = {q.get("code"): q for q in get_stocks_batch([s["code"] for s in signals])}
+    # ★ 量价验证：量比 = 实时量 / (昨日量 × 已交易分钟/240)，防诱多
+    vol_ratios = _calc_vol_ratios([s["code"] for s in signals], quotes)
+    messages = []
+    for s in signals:
+        q = quotes.get(s["code"])
+        if not q:
+            continue
+        msg = build_open_confirmation(s, q, vol_ratios.get(s["code"]))
+        if msg:
+            messages.append(msg)
+    push_strategy_signals(messages)
+    print(f"[scheduler] 开盘买点确认推送: {len(messages)} 条")
+    return {"sent": len(messages), "no_signals": False}
+
+
+def _calc_vol_ratios(codes: list, quotes: dict) -> dict:
+    """量比 = 实时成交量(手) / (昨日成交量 × 已交易分钟/240)。
+    昨日量从数据库 kline_cache 读（全量缓存最后根=最近交易日收盘量）。
+    数据缺失/过期的股票返回空（跳过量能维度，只按价格判定）。
+    9:30 开盘起算已交易分钟；早于 9:30 时按 5 分钟兜底。"""
+    from app.scoring.kline_cache import get_cached_klines_batch
+    now = rules.beijing_now()
+    elapsed = max(5, (now.hour * 60 + now.minute) - 570)  # 570 = 09:30
+    cache = get_cached_klines_batch(list(set(codes)))
+    ratios = {}
+    for c in set(codes):
+        ks = cache.get(c) or []
+        if len(ks) < 2 or not ks[-1].get("volume"):
+            continue
+        q = quotes.get(c)
+        if not q or not q.get("volume"):
+            continue
+        expected = float(ks[-1]["volume"]) * elapsed / 240
+        if expected > 0:
+            ratios[c] = round(float(q["volume"]) / expected, 2)
+    return ratios
+
+
+async def open_confirmation_loop():
+    """工作日开盘后，对白名单战法最近一次扫描信号做「买点确认」：
+    实时开盘价 vs 参考介入价 vs 止损位 → 低吸/正常/回踩/放弃指引，推送企微。
+    幂等：当天只推一次（schedule_state 按日期标记）。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        day_key = now.strftime("%Y%m%d")
+        if (now.weekday() < 5 and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
+                and not store.is_schedule_done("open_confirm", date_str=day_key)):
+            print("[scheduler] 触发开盘买点确认")
+            try:
+                r = await asyncio.to_thread(run_open_confirmation)
+                # 无信号也 mark_done（当天不再重试）；有信号推送成功即完成
+                if r.get("sent") > 0 or r.get("no_signals"):
+                    store.mark_schedule_done("open_confirm", date_str=day_key)
+                    status["last_open_confirm"] = rules.beijing_now().isoformat()
+                else:
+                    print("[scheduler] 开盘买点确认无有效消息，稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 开盘买点确认失败: {e}")
+                _notify_failure("开盘买点确认", str(e))
+        await asyncio.sleep(60)
 
 
 async def strategy_scan_loop():
@@ -878,7 +1029,8 @@ async def start():
              asyncio.create_task(calendar_loop()),
              asyncio.create_task(industry_map_loop()),
              asyncio.create_task(sector_snapshot_loop()),
-             asyncio.create_task(finance_loop())]
+             asyncio.create_task(finance_loop()),
+             asyncio.create_task(open_confirmation_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "

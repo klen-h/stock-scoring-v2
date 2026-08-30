@@ -59,55 +59,69 @@ OSCILLATING_STRATEGIES = [
 ]
 
 
-def detect_market_regime(index_code: str = "000300") -> Dict:
+def detect_market_regime(index_code: str = "sh000300") -> Dict:
     """
-    检测当前市场状态。
-    
-    参数：
-      index_code: 参考指数代码，默认沪深300
-    
+    检测当前市场状态（统一口径）。
+
+    ★ 复用 backtest/market_regime 的判定引擎（backtest_prices 本地库 3 年历史，
+    基于沪深300：MA20/MA60 + ADX + ATR 历史分位），与回测、评分动态权重完全同源，
+    消除此前战法侧（腾讯实时 ADX+布林带+20日波动率 → trending/oscillating/transition）
+    与回测侧（MA60+ADX+ATR分位 → 进攻/震荡/防御）两套口径割裂的问题。
+
     返回：
       {
-        "regime": "trending" | "oscillating" | "transition",
-        "confidence": 75,           # 置信度 0-100
-        "adx": 18.5,                # ADX 值
-        "bb_width": 0.08,           # 布林带宽度
-        "volatility": 0.025,        # 20日波动率
-        "details": {...},           # 详细指标
-        "recommended_strategies": [...],  # 推荐战法
-        "timestamp": "2026-08-21 10:30:00"
+        "regime": "offensive" | "neutral" | "defensive",
+        "confidence": 0-100,             # 置信度
+        "adx": 18.5,
+        "regime_score": -100~+100,       # 连续分
+        "ma_trend": "up"/"down"/"flat",
+        "volatility_regime": "high"/"normal"/"low",   # ATR 历史分位
+        "atr_percentile": 83.5,
+        "price_vs_ma20": 2.1,
+        "details": {...},                # 状态/波动中文描述 + 动态权重
+        "recommended_strategies": [...], # 该状态下推荐战法
+        "timestamp": "..."
       }
     """
-    # 获取指数K线
-    klines = get_kline(index_code, period="day", count=60)
-    if not klines or len(klines) < 30:
-        return _default_result("数据不足")
-    
-    # 计算各指标
-    adx = _calc_adx(klines, period=14)
-    bb_width = _calc_bollinger_width(klines, period=20)
-    volatility = _calc_volatility(klines, period=20)
-    
-    # 综合判定
-    regime, confidence = _determine_regime(adx, bb_width, volatility)
-    
-    # 推荐战法
-    recommended = _get_recommended_strategies(regime)
-    
+    from app.backtest.market_regime import (
+        load_regime_history, get_regime_weights, get_regime_description,
+    )
+    states = load_regime_history()
+    if not states:
+        return _default_result("沪深300（backtest_prices）历史数据不足（<70 条），"
+                               "请先回填指数日线：python -m app.backtest.fill")
+    latest = states[-1]
+    regime = latest.state
     return {
         "regime": regime,
-        "confidence": confidence,
-        "adx": round(adx, 2),
-        "bb_width": round(bb_width, 4),
-        "volatility": round(volatility, 4),
+        "confidence": _state_confidence(latest),
+        "adx": round(latest.adx or 0, 2),
+        "regime_score": round(latest.regime_score or 0, 2),
+        "ma_trend": latest.ma_trend,
+        "volatility_regime": latest.volatility_regime,
+        "atr_percentile": round(latest.atr_percentile or 0, 1),
+        "price_vs_ma20": round(latest.price_vs_ma20 or 0, 2),
         "details": {
-            "adx_interpretation": _interpret_adx(adx),
-            "bb_interpretation": _interpret_bb_width(bb_width),
-            "volatility_interpretation": _interpret_volatility(volatility),
+            "state_desc": get_regime_description(regime),
+            "volatility_desc": _volatility_desc(latest.volatility_regime),
+            "weights": get_regime_weights(regime),
         },
-        "recommended_strategies": recommended,
+        "recommended_strategies": _get_recommended_strategies(regime),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+
+
+def _state_confidence(s) -> int:
+    """置信度 0-100：基于 regime_score 连续分（震荡市中性 50）。"""
+    if s.state == "neutral":
+        return 50
+    return int(min(50 + abs(s.regime_score or 0) * 0.5, 95))
+
+
+def _volatility_desc(v: str) -> str:
+    return {"high": "高波动（ATR 处于历史高位）",
+            "normal": "波动正常",
+            "low": "低波动（ATR 处于历史低位）"}.get(v, v)
 
 
 def _calc_adx(klines: List[Dict], period: int = 14) -> float:
@@ -307,14 +321,17 @@ def _determine_regime(adx: float, bb_width: float, volatility: float) -> tuple:
 
 
 def _get_recommended_strategies(regime: str) -> List[str]:
-    """根据市场状态返回推荐战法"""
-    if regime == "trending":
+    """按市场状态推荐战法（统一口径：offensive/neutral/defensive）。
+    - 进攻市 → 趋势类战法
+    - 震荡市 → 震荡类战法
+    - 防御市 → 不推荐（准入收紧由策略层 gate 实现）"""
+    if regime == "offensive":
         return TRENDING_STRATEGIES
-    elif regime == "oscillating":
+    elif regime == "neutral":
         return OSCILLATING_STRATEGIES
-    else:  # transition
-        # 过渡期两种都推荐，但优先震荡市战法（更安全）
-        return OSCILLATING_STRATEGIES + TRENDING_STRATEGIES[:2]
+    elif regime == "defensive":
+        return []
+    return TRENDING_STRATEGIES + OSCILLATING_STRATEGIES
 
 
 def _interpret_adx(adx: float) -> str:
@@ -375,35 +392,43 @@ def _default_result(reason: str = "") -> Dict:
 
 def get_strategy_recommendation(strategy_name: str) -> Dict:
     """
-    获取单个战法的适用建议。
-    
-    返回该战法在当前市场状态下的适用性评估。
+    获取单个战法的适用建议（统一口径）。
+    基于当前市场状态（进攻/震荡/防御）+ 波动率（高/正常/低）评估适用性。
     """
     regime_result = detect_market_regime()
     current_regime = regime_result["regime"]
-    
-    # 判断战法类型
+    vol = regime_result.get("volatility_regime")
+
+    # 战法类型：趋势类 / 震荡类
     if strategy_name in TRENDING_STRATEGIES:
         strategy_type = "trending"
     elif strategy_name in OSCILLATING_STRATEGIES:
         strategy_type = "oscillating"
     else:
         strategy_type = "unknown"
-    
-    # 评估适用性
-    if current_regime == "unknown":
+
+    if current_regime == "unknown" or not current_regime:
         suitability = "unknown"
         advice = "市场数据不足，无法判断"
-    elif strategy_type == current_regime:
+    elif strategy_type == "unknown":
+        suitability = "unknown"
+        advice = "未分类战法，无准入规则"
+    elif current_regime == "offensive" and strategy_type == "trending":
         suitability = "high"
-        advice = f"当前为{('趋势' if current_regime == 'trending' else '震荡')}市，适合使用此战法"
-    elif current_regime == "transition":
-        suitability = "medium"
-        advice = "市场处于过渡期，可谨慎使用"
+        advice = "当前为进攻市，适合趋势类战法"
+    elif current_regime == "neutral" and strategy_type == "oscillating":
+        suitability = "high"
+        advice = "当前为震荡市，适合震荡类战法"
+    elif current_regime == "defensive":
+        suitability = "low"
+        advice = "当前为防御市，建议暂停战法入场"
     else:
         suitability = "low"
-        advice = f"当前为{('趋势' if current_regime == 'trending' else '震荡')}市，此战法不太适用"
-    
+        advice = f"当前市场状态（{current_regime}）与该战法类型不匹配"
+
+    if vol == "high":
+        advice += "；当前高波动，注意仓位控制"
+
     return {
         "strategy": strategy_name,
         "strategy_type": strategy_type,
@@ -412,3 +437,70 @@ def get_strategy_recommendation(strategy_name: str) -> Dict:
         "advice": advice,
         "regime_details": regime_result,
     }
+
+
+# ================================================================
+#  战法准入（regime × 波动 gate）— P3
+# ================================================================
+# 规则先用专家经验（初始版），待「战法 × regime 分层回测」
+# （backtest.run --strategy regime_warfare）积累数据后调优。
+# 状态基本准入：进攻→趋势类、震荡→震荡类、防御→全禁。
+# 「高波动常态」调节：震荡市 + 高波动只放行低吸/反转类（止损明确）。
+
+REGIME_LABELS = {"offensive": "进攻", "neutral": "震荡", "defensive": "防御"}
+TYPE_LABELS = {"trending": "趋势类", "oscillating": "震荡类"}
+
+# 高波动常态调节白名单：key=(regime, volatility)，
+#   None = 不额外限制（保持状态基本准入）
+#   []   = 该状态+波动下全部禁止
+#   list = 只放行名单内战法
+ADMISSION_MATRIX = {
+    ("offensive", "high"): None,
+    ("offensive", "normal"): None,
+    ("offensive", "low"): None,
+    ("neutral", "high"): ["morning_star", "ma_pullback"],
+    ("neutral", "normal"): None,
+    ("neutral", "low"): None,
+    ("defensive", "high"): [],
+    ("defensive", "normal"): [],
+    ("defensive", "low"): [],
+}
+
+
+def is_strategy_admitted(strategy_name: str, regime: str = None,
+                         volatility: str = None) -> tuple:
+    """
+    判断战法在给定市场状态下是否准入。
+
+    返回 (admitted: bool, reason: str, regime, volatility)。
+    regime/volatility 缺省时自动检测当前市场状态。
+    非准入战法禁止扫描（由 _do_scan / scan 接口调用）。
+    """
+    info = detect_market_regime()
+    regime = regime or info.get("regime")
+    volatility = volatility or info.get("volatility_regime")
+
+    if regime in ("unknown", None):
+        return False, "市场状态未知，战法扫描已暂停", regime, volatility
+
+    if strategy_name in TRENDING_STRATEGIES:
+        strategy_type = "trending"
+    elif strategy_name in OSCILLATING_STRATEGIES:
+        strategy_type = "oscillating"
+    else:
+        return False, "未分类战法，无准入规则", regime, volatility
+
+    base = {"offensive": "trending", "neutral": "oscillating",
+            "defensive": None}.get(regime)
+    if base is None:
+        return False, f"当前为{REGIME_LABELS.get(regime, regime)}市，禁止战法入场", regime, volatility
+    if strategy_type != base:
+        return False, (f"当前为{REGIME_LABELS.get(regime, regime)}市，"
+                       f"{TYPE_LABELS.get(strategy_type, strategy_type)}战法不准入"), regime, volatility
+
+    rule = ADMISSION_MATRIX.get((regime, volatility))
+    if rule == []:
+        return False, "高波动常态下暂停该战法（待分层数据调优）", regime, volatility
+    if rule and strategy_name not in rule:
+        return False, "高波动常态下该战法不准入（待分层数据调优）", regime, volatility
+    return True, "准入", regime, volatility

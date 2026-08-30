@@ -272,9 +272,9 @@ def get_finance_asof(code: str, date_str: str) -> dict:
 # ── 进程级缓存 ──
 # 财报是季度更新的低频数据，而评分排行每 3 分钟就要重算一次（_RANK_CACHE_TTL=180）。
 # 每次都去远程库（Supabase 往返 0.5s 起）拉同样的 1550 行纯属浪费，
-# 所以缓存起来：财报刷新后最多延迟 _FIN_CACHE_TTL 秒生效，完全可接受。
+# 所以缓存起来：财报刷新后 clear_finance_cache() 立即生效，TTL 仅作兜底。
 _fin_cache = {"data": {}, "ts": 0.0}
-_FIN_CACHE_TTL = 1800        # 30 分钟
+_FIN_CACHE_TTL = 86400       # 24 小时兜底（财报季度更新，基本固定；刷新时显式清缓存）
 _SQL_BATCH = 500             # 单条 SQL 的代码数上限（SQLite 默认参数上限 999，留足余量）
 
 
@@ -306,31 +306,34 @@ def get_finance_batch(codes: list, force: bool = False) -> dict:
     codes = list(codes)
     now = time.time()
 
-    # 缓存命中：请求的代码全部在缓存里且未过期
+    # 缓存命中：★ 按 code 粒度取缓存，未命中的代码才查库补漏。
+    # 此前是"整批全部命中才用缓存"，只要候选池里有一只新股票就全量重查——
+    # 排行榜候选池每日变动，整批命中率低，是批量接口慢的主因。
+    out = {}
+    miss = codes
     if not force and _fin_cache["data"] and now - _fin_cache["ts"] < _FIN_CACHE_TTL:
         cached = _fin_cache["data"]
-        if all(c in cached for c in codes):
-            return {c: cached[c] for c in codes if c in cached}
+        out = {c: cached[c] for c in codes if c in cached}
+        miss = [c for c in codes if c not in cached]
 
-    out = {}
-    for i in range(0, len(codes), _SQL_BATCH):
-        chunk = codes[i:i + _SQL_BATCH]
-        ph = ",".join(["%s"] * len(chunk))
-        rows = db.fetch(
-            "SELECT code, name, report_date, report_type, notice_date, revenue, "
-            "profit, revenue_yoy, profit_yoy, roe, roe_deduct, debt_ratio, "
-            "gross_margin, net_margin FROM stock_finance f "
-            f"WHERE f.code IN ({ph}) AND f.report_date = ("
-            "SELECT MAX(f2.report_date) FROM stock_finance f2 WHERE f2.code = f.code)",
-            tuple(chunk))
-        for r in (rows or []):
-            if r.get("code"):
-                out[r["code"]] = dict(r)
-
-    # 增量并入缓存（不整体丢弃，避免不同请求的代码集互相把缓存清空）
-    _fin_cache["data"].update(out)
-    _fin_cache["ts"] = now
-    return out
+    if miss:
+        for i in range(0, len(miss), _SQL_BATCH):
+            chunk = miss[i:i + _SQL_BATCH]
+            ph = ",".join(["%s"] * len(chunk))
+            rows = db.fetch(
+                "SELECT code, name, report_date, report_type, notice_date, revenue, "
+                "profit, revenue_yoy, profit_yoy, roe, roe_deduct, debt_ratio, "
+                "gross_margin, net_margin FROM stock_finance f "
+                f"WHERE f.code IN ({ph}) AND f.report_date = ("
+                "SELECT MAX(f2.report_date) FROM stock_finance f2 WHERE f2.code = f.code)",
+                tuple(chunk))
+            for r in (rows or []):
+                if r.get("code"):
+                    out[r["code"]] = dict(r)
+        # 增量并入缓存（不整体丢弃，避免不同请求的代码集互相把缓存清空）
+        _fin_cache["data"].update(out)
+        _fin_cache["ts"] = now
+    return {c: out[c] for c in codes if c in out}
 
 
 def get_history(code: str, limit: int = 12) -> list:

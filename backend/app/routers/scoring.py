@@ -849,6 +849,28 @@ _rank_cache_lock = asyncio.Lock()
 _RANK_CACHE_TTL = 180  # 缓存有效期 3 分钟
 
 
+def _batch_news_scores(codes: list) -> dict:
+    """用 7×24 快讯源批量算消息分（1 次全局快讯请求 + 内存过滤，90s 缓存），
+    返回 {code: news_score}。仅快讯源（排行榜标注够用），避免逐只拉搜索接口
+    拖慢榜单。消息分独立展示，不参与综合评分。"""
+    try:
+        from app.eastmoney_news import get_global_news
+        from app.news_sentiment import score_stock_news
+        items = get_global_news()
+        by_code = {}
+        for it in items:
+            for c in it.get("stocks", []):
+                by_code.setdefault(c, []).append(it)
+        out = {}
+        for code in codes:
+            its = by_code.get(code, [])
+            out[code] = score_stock_news(its).get("score", 0) if its else 0
+        return out
+    except Exception as e:
+        print(f"[scoring] 批量消息分计算失败: {e}")
+        return {}
+
+
 @router.get("/batch/top")
 async def score_top(
     limit: int = Query(default=50, ge=10, le=200),   # ge/le 限制取值范围 10~200
@@ -922,6 +944,11 @@ async def score_top(
             # 各维度得分（用于权重优化分析）
             "dimensions": getattr(r, 'dimensions', {}) or {},
         } for r in top]
+
+        # ★ 排行榜标注：批量算消息面情绪分（快讯源 1 次请求），不参与综合分，仅作参考
+        news_scores = _batch_news_scores([r.code for r in top])
+        for item in result_data:
+            item["news_score"] = news_scores.get(item["code"], 0)
 
         # ★ 写入短期缓存
         _rank_result_cache["top"] = {

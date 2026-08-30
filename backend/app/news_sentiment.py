@@ -79,7 +79,19 @@ def score_news_item(item: dict) -> float:
       1) clamp 到 ±2；2) 标题含否定词 → 反转极性。
     """
     text = f"{item.get('title', '')} {item.get('summary', '')}"
-    pos_w = sum(2 for kw in POS_STRONG if kw in text) + sum(1 for kw in POS if kw in text)
+    title = item.get("title", "")
+    # ★ 情境化："回购"权重按用途区分——
+    #   标题含「员工持股/股权激励」→ 激励型回购：公司出钱买股再低价授予员工，
+    #   对股东直接回报有限（拿全体股东的钱补贴少数人），权重降为 +1（中性偏正）；
+    #   其余情形（含注销/减资，直接减股本增厚 EPS）→ 保持 +2（真正利好股东）。
+    pos_w = 0
+    for kw in POS_STRONG:
+        if kw in text:
+            if kw == "回购" and any(k in title for k in ("员工持股", "股权激励")):
+                pos_w += 1
+            else:
+                pos_w += 2
+    pos_w += sum(1 for kw in POS if kw in text)
     neg_w = sum(2 for kw in NEG_STRONG if kw in text) + sum(1 for kw in NEG if kw in text)
     score = pos_w - neg_w
     score = max(-SINGLE_CLAMP, min(SINGLE_CLAMP, score))
@@ -126,7 +138,7 @@ def score_stock_news(news_items: list, now: datetime = None) -> dict:
                             "time": it.get("time", ""), "score": s})
     total = round(max(-TOTAL_CLAMP, min(TOTAL_CLAMP, total)), 2)
     level, level_text = _level(total)
-    # 明细按情绪强度倒序，方便前端置顶展示
-    details.sort(key=lambda d: abs(d["score"]), reverse=True)
+    # 明细按时间倒序（最新在前），避免同一事件多篇报道混排让用户困惑
+    details.sort(key=lambda d: parse_news_time(d.get("time", "")) or datetime.min, reverse=True)
     return {"score": total, "level": level, "level_text": level_text,
             "items": details}

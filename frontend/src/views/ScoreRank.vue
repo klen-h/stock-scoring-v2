@@ -193,6 +193,7 @@
             <th class="text-center py-2.5 px-3">信号</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">连续</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">可信度</th>
+            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">消息</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">买入时机</th>
             <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">买入原因</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">操作</th>
@@ -245,6 +246,17 @@
               </span>
               <span v-else class="text-xs text-muted">-</span>
             </td>
+            <!-- 消息面情绪分（参考，不参与综合分；前端本地模式无此数据） -->
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+              <span v-if="item.news_score != null"
+                class="px-2 py-0.5 rounded-full text-xs font-bold"
+                :class="item.news_score > 0 ? 'bg-emerald-500/20 text-emerald-400' :
+                       item.news_score < 0 ? 'bg-red-500/20 text-red-400' :
+                       'bg-white/5 text-muted'">
+                {{ item.news_score > 0 ? '+' : '' }}{{ item.news_score }}
+              </span>
+              <span v-else class="text-xs text-muted">-</span>
+            </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
               <div v-if="item.buy_point?.buy_timing" class="space-y-0.5">
@@ -287,7 +299,7 @@
             </td>
           </tr>
           <tr v-if="!tableData.length">
-            <td :colspan="activeTab === 'top' ? 11 : 5" class="py-12 text-center text-muted">
+            <td :colspan="activeTab === 'top' ? 12 : 5" class="py-12 text-center text-muted">
               {{ cacheStatus === 'loading' ? '行情数据加载中，请稍后...' : '暂无数据' }}
             </td>
           </tr>

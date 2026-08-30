@@ -101,3 +101,40 @@ INFO:     127.0.0.1:56064 - "POST /api/score/ranking-persistence HTTP/1.1" 200 O
 INFO:     127.0.0.1:56065 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
 INFO:     127.0.0.1:58176 - "GET /api/flash/notifications?since=2026-08-30T14:25:24.853017 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:49660 - "GET /api/flash/notifications?since=2026-08-30T14:26:25.453103 HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:52313 - "GET /api/flash/notifications?since=2026-08-30T14:27:22.752285 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58262 - "GET /api/flash/notifications?since=2026-08-30T14:28:24.265849 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55329 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50793 - "GET /api/flash/notifications?since=2026-08-30T14:29:23.734347 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49248 - "GET /api/flash/notifications?since=2026-08-30T14:30:28.764691 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56185 - "GET /api/flash/notifications?since=2026-08-30T14:31:23.414097 HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:49386 - "GET /api/flash/notifications?since=2026-08-30T14:32:26.951636 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54358 - "GET /api/flash/notifications?since=2026-08-30T14:33:24.599187 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65161 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56922 - "GET /api/flash/notifications?since=2026-08-30T14:34:21.300856 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63099 - "GET /api/flash/notifications?since=2026-08-30T14:35:21.990007 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65296 - "GET /api/flash/notifications?since=2026-08-30T14:36:26.475227 HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:65522 - "GET /api/flash/notifications?since=2026-08-30T14:37:23.760180 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59591 - "GET /api/flash/notifications?since=2026-08-30T14:38:23.989764 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61716 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60512 - "GET /api/flash/notifications?since=2026-08-30T14:39:21.888933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53007 - "GET /api/flash/notifications?since=2026-08-30T14:40:22.965012 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54393 - "GET /api/flash/notifications?since=2026-08-30T14:41:23.054254 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61878 - "GET /api/flash/notifications?since=2026-08-30T14:42:22.629326 HTTP/1.1" 200 OK
+[eastmoney] clist 抓取失败 fs=m:90+t:2（已重试2次）: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[eastmoney] 东财板块资金流为空，降级新浪 industry
+INFO:     127.0.0.1:60315 - "GET /api/flash/notifications?since=2026-08-30T14:43:23.712302 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62239 - "GET /api/stock/news/000933 HTTP/1.1" 200 OK
+[news_history] news_history 表已初始化
+INFO:     127.0.0.1:62241 - "GET /api/stock/news/000933/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62246 - "GET /api/stock/fundamental/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62247 - "GET /api/score/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62244 - "GET /api/stock/realtime/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60316 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63398 - "GET /api/strategies/000933/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52997 - "GET /api/strategies/000933/support-resistance?lookback=60 HTTP/1.1" 200 OK

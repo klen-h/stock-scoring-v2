@@ -137,8 +137,11 @@
 
         <div v-else-if="!scanResults.length && !scanning" class="bg-card border border-border rounded-lg p-8 text-center text-muted">
           <div class="text-4xl mb-3">🔍</div>
-          <p>暂无扫描结果</p>
-          <p class="text-sm mt-2">点击"执行扫描"开始扫描股票池</p>
+          <p v-if="scanMessage">{{ scanMessage }}</p>
+          <template v-else>
+            <p>暂无扫描结果</p>
+            <p class="text-sm mt-2">点击"执行扫描"开始扫描股票池</p>
+          </template>
         </div>
 
         <div v-else class="bg-card border border-border rounded-lg overflow-hidden">
@@ -968,6 +971,7 @@ import {
   getBacktestResult,
   getMarketRegime,
   getStrategyRecommendation,
+  getStrategyDetail,
   getSupportResistance,
   getRSISignals,
   getPersistence,
@@ -986,6 +990,7 @@ const watchPool = ref([])
 const scanning = ref(false)
 const lastScanDate = ref('')
 const activeTab = ref('list')
+const scanMessage = ref('')
 
 // 回测状态
 const backtesting = ref(false)
@@ -1072,11 +1077,19 @@ async function loadWatchPool() {
 async function triggerScan() {
   if (!currentStrategy.value || scanning.value) return
   scanning.value = true
+  scanMessage.value = ''
   try {
-    await scanStrategy(currentStrategy.value.name_en, {
+    const res = await scanStrategy(currentStrategy.value.name_en, {
       min_market_cap: filterMinCap.value * 1e8,
       force: true,
     })
+    // ★ 战法准入：未准入时不轮询，直接显示原因
+    if (res.data?.admitted === false) {
+      scanResults.value = []
+      scanMessage.value = res.data?.message || '当前市场状态该战法未准入'
+      scanning.value = false
+      return
+    }
     // 轮询扫描状态
     await pollScanStatus()
   } catch (e) {
@@ -1231,6 +1244,11 @@ async function viewDetail(stock) {
   if (stock.code) {
     loadSupportResistance(stock.code)
     loadRSISignals(stock.code)
+    // ★ 实时刷新 K 线：详情不展示扫描落库时的旧快照（扫描时若遇腾讯 WAF 冷却会滞后）
+    try {
+      const { data } = await getStrategyDetail(currentStrategy.value.name_en, stock.code)
+      if (data?.klines?.length) detailKlines.value = data.klines
+    } catch (e) { /* 拉取失败保留扫描快照 */ }
   }
 }
 
@@ -1456,18 +1474,18 @@ async function loadRecommendation(strategyName) {
 const regimeText = computed(() => {
   if (!marketRegime.value) return ''
   const r = marketRegime.value.regime
-  if (r === 'trending') return '趋势市'
-  if (r === 'oscillating') return '震荡市'
-  if (r === 'transition') return '过渡期'
+  if (r === 'offensive') return '进攻市'
+  if (r === 'neutral') return '震荡市'
+  if (r === 'defensive') return '防御市'
   return '未知'
 })
 
 const regimeColor = computed(() => {
   if (!marketRegime.value) return 'text-muted'
   const r = marketRegime.value.regime
-  if (r === 'trending') return 'text-emerald-400'
-  if (r === 'oscillating') return 'text-amber-400'
-  if (r === 'transition') return 'text-blue-400'
+  if (r === 'offensive') return 'text-emerald-400'
+  if (r === 'neutral') return 'text-amber-400'
+  if (r === 'defensive') return 'text-red-400'
   return 'text-muted'
 })
 

@@ -127,3 +127,20 @@ def push_alerts(alerts: dict) -> None:
         lines.append(a["message"])
     if lines:
         push_markdown_batched("🎯 交易信号提醒", "\n".join(lines))
+
+
+def push_strategy_signals(messages: list) -> None:
+    """
+    推送战法买入信号到企微（白名单战法盘后扫描出的新信号）。
+
+    ★ 这是核心交易通知（用户明确要的买入提醒），不受 WECHAT_BUSINESS_ALERTS
+    业务推送开关限制——只要配置了 WECHAT_WEBHOOK 即推送（与失败告警同等级）。
+    消息由 strategies.recommendation.format_signal_message 生成（含买入逻辑/目标推导）。
+    """
+    if not WECHAT_WEBHOOK:
+        print("[wechat] 未配置 WECHAT_WEBHOOK，跳过战法信号推送")
+        return
+    if not messages:
+        return
+    for m in messages:
+        _send(m, "战法买入信号")

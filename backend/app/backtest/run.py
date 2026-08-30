@@ -153,6 +153,107 @@ def _render_macro() -> str:
     return "\n".join(s)
 
 
+def _fmt_cell(stat: dict) -> str:
+    """分层表单元格：胜率%(样本)；样本 <5 加 ° 标记（样本不足，仅供参考）。"""
+    n = stat.get("n") or 0
+    wr = stat.get("win_rate")
+    if n == 0 or wr is None:
+        return "-"
+    mark = "" if n >= 5 else "°"
+    return f"{wr}%({n}){mark}"
+
+
+def _pct(v):
+    return "-" if v is None else f"{v}%"
+
+
+def _num(v):
+    return "-" if v is None else f"{v}"
+
+
+def _render_regime_warfare() -> str:
+    r = strategies.backtest_warfare_by_regime()
+    if r.get("status") == "error":
+        return f"## 战法 × 市场状态 分层回测\n\n> ⚠️ {r['message']}\n"
+    s = [f"## {r['label']}", "", f"> 信号期：{r['window'][0]} ~ {r['window'][1]}", ""]
+    total = r["total"]
+    s += [f"> 全部战法合并：样本 {total['n']} | 胜率 {total['win_rate']}% | "
+          f"平均单笔 {total['avg_pnl_pct']}% | 盈亏比 {total['profit_factor']}", ""]
+
+    sl, vl = r["state_labels"], r["vol_labels"]
+
+    # 表 1：战法 × 市场状态
+    s += ["### 一、战法 × 市场状态（胜率% (样本)）", "",
+          "| 战法 | " + " | ".join(sl[st] for st in sl) + " |",
+          "|---|" + "---|" * len(sl)]
+    for en, b in r["by_strategy"].items():
+        cells = [_fmt_cell(b["by_state"][st]) for st in sl]
+        s.append(f"| {b['name']} | " + " | ".join(cells) + " |")
+    s.append("")
+
+    # 表 2：战法 × 波动率（高波动常态准入依据）
+    s += ["### 二、战法 × 波动率（胜率% (样本)）★高波动常态准入依据", "",
+          "| 战法 | " + " | ".join(vl[v] for v in vl) + " |",
+          "|---|" + "---|" * len(vl)]
+    for en, b in r["by_strategy"].items():
+        cells = [_fmt_cell(b["by_vol"][v]) for v in vl]
+        s.append(f"| {b['name']} | " + " | ".join(cells) + " |")
+    s.append("")
+
+    # 表 3：市场状态汇总
+    s += ["### 三、市场状态汇总（全部战法合并）", "",
+          "| 状态 | 样本 | 胜率% | 平均单笔% | 盈亏比 |", "|---|---|---|---|---|"]
+    for st in sl:
+        stat = r["state_summary"][st]
+        s.append(f"| {sl[st]} | {stat['n']} | {_pct(stat['win_rate'])} | "
+                 f"{_num(stat['avg_pnl_pct'])} | {_num(stat['profit_factor'])} |")
+    s.append("")
+
+    # 表 4：波动率汇总
+    s += ["### 四、波动率汇总（高波动常态判定）", "",
+          "| 波动率 | 样本 | 胜率% | 平均单笔% | 盈亏比 |", "|---|---|---|---|---|"]
+    for v in vl:
+        stat = r["vol_summary"][v]
+        s.append(f"| {vl[v]} | {stat['n']} | {_pct(stat['win_rate'])} | "
+                 f"{_num(stat['avg_pnl_pct'])} | {_num(stat['profit_factor'])} |")
+    s.append("")
+    s.append("### 五、初步结论（准入参考）")
+    s.append(_regime_warfare_conclusion(r))
+    s.append("")
+    return "\n".join(s)
+
+
+def _regime_warfare_conclusion(r: dict) -> str:
+    """基于分层数据的准入结论：高波动常态 + 各状态适合战法。"""
+    lines = []
+    high = r["vol_summary"].get("high") or {}
+    normal = r["vol_summary"].get("normal") or {}
+    if (high.get("n") or 0) >= 5 and (normal.get("n") or 0) >= 5:
+        diff = (high.get("win_rate") or 0) - (normal.get("win_rate") or 0)
+        if diff > 0:
+            lines.append(f"- 高波动下整体胜率 {high['win_rate']}%（样本 {high['n']}）高于"
+                         f"正常波动 {normal['win_rate']}% → 高波动期间可正常/偏积极准入")
+        elif diff < -10:
+            lines.append(f"- 高波动下整体胜率 {high['win_rate']}%（样本 {high['n']}）明显低于"
+                         f"正常波动 {normal['win_rate']}% → 高波动常态应收紧战法准入")
+        else:
+            lines.append(f"- 高波动与正常波动胜率接近（{high['win_rate']}% vs {normal['win_rate']}%）"
+                         f"→ 波动率对整体胜率影响不大")
+    high_rows = []
+    for en, b in r["by_strategy"].items():
+        h = b["by_vol"].get("high") or {}
+        if (h.get("n") or 0) >= 5:
+            high_rows.append((b["name"], h))
+    if high_rows:
+        high_rows.sort(key=lambda x: -(x[1]["win_rate"] or 0))
+        best, worst = high_rows[0], high_rows[-1]
+        lines.append(f"- 高波动下胜率最佳战法：**{best[0]}**（{best[1]['win_rate']}%，样本 {best[1]['n']}）")
+        lines.append(f"- 高波动下胜率最差战法：**{worst[0]}**（{worst[1]['win_rate']}%，样本 {worst[1]['n']}）")
+    if not lines:
+        lines.append("- 各分组样本过少（<5 条），暂无法给出可靠结论。建议持续积累战法扫描信号后重跑。")
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────────────────────
 #  主入口
 # ──────────────────────────────────────────────────────────────
@@ -167,6 +268,8 @@ def generate_report(strategy: str) -> str:
         sections.append(_render_warfare())
     if strategy in ("all", "macro"):
         sections.append(_render_macro())
+    if strategy in ("all", "regime_warfare"):
+        sections.append(_render_regime_warfare())
     if strategy in ("all", "review"):
         from app.backtest.regime_review import run_review, render_review_markdown
         sections.append(render_review_markdown(run_review()))
@@ -260,7 +363,7 @@ def generate_summary() -> str:
 def main():
     parser = argparse.ArgumentParser(description="回测报告生成")
     parser.add_argument("--strategy", default="all",
-                        choices=["all", "signals", "warfare", "macro", "review"])
+                        choices=["all", "signals", "warfare", "macro", "review", "regime_warfare"])
     parser.add_argument("--name", default=None, help="指定战法名（配合 --strategy warfare）")
     args = parser.parse_args()
 
