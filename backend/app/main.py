@@ -41,6 +41,7 @@ from app.routers import user as user_router
 from app.routers import auth as auth_router
 from app.routers import backtest as backtest_router
 from app.strategies.router import router as strategies_router
+from app.routers.paper import router as paper_router
 
 # ──────────────────────────────────────────────────────────────
 # lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
@@ -141,6 +142,7 @@ app.include_router(macro.router,   prefix="/api/macro",   tags=["宏观数据"])
 app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])  # 快讯事件/LLM诊断/信号跟踪
 app.include_router(backtest_router.router, prefix="/api/backtest", tags=["回测"])  # 历史回测/绩效报告
 app.include_router(strategies_router, prefix="/api/strategies", tags=["战法选股"])  # 量化战法扫描
+app.include_router(paper_router, prefix="/api/paper", tags=["模拟盘"])  # 纸面交易（模拟盘）
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 

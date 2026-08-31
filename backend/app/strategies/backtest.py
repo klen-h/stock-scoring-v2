@@ -5,13 +5,14 @@
 
 对历史数据进行战法回测，验证战法有效性。
 
-回测逻辑：
+回测逻辑（★ 撮合口径与 app/backtest/engine.match_signals 完全同源）：
   1. 遍历历史K线（至少60个交易日）
   2. 在每个交易日，检查是否触发战法信号
   3. 触发后跟踪后续走势：
-     - 达到目标价 → 盈利
-     - 触及止损价 → 亏损
-     - 超过最大持有天数 → 按收盘价退出
+     - T+1 开盘价成交（信号日盘后产生，当日买入不现实）
+     - ★ T+1 制度：当日买入当日不可卖出 → 从 T+2 起检查止损/止盈
+     - 同日止损优先；跳空破止损按 min(开盘, 止损) 成交
+     - 达到目标价 → 止盈；触及止损价 → 止损；超过持有天数 → 按收盘价退出
   4. 汇总统计：胜率、盈亏比、平均收益等
 
 依赖：
@@ -198,51 +199,51 @@ def _track_trade(
     target_price: float,
 ) -> Optional[Dict]:
     """
-    跟踪一笔交易的后续走势。
-    
-    从 signal_idx+1 开始，检查每日高低点：
-    - 最高价 >= target_price → 止盈退出
-    - 最低价 <= stop_loss → 止损退出
-    - 超过 max_hold_days → 超时退出
+    跟踪一笔交易的后续走势（★ 与 app/backtest/engine.match_signals 同口径）。
+
+    撮合口径：
+      - 信号日 T 盘后产生 → T+1 开盘价成交（entry_price 参数仅作信号参考，不用于成交）
+      - ★ T+1 制度：当日买入当日不可卖出 → 从 T+2（entry_idx+1）起检查触发
+      - 同日止损优先（引擎口径）：跳空破止损按 min(开盘, 止损) 成交
+      - 最高价 >= target_price → 止盈；最低价 <= stop_loss → 止损
+      - 持有到期（max_hold）未触发 → 末日收盘价退出
     """
     max_hold = BACKTEST_CONFIG["max_hold_days"]
-    exit_reason = "timeout"
-    exit_price = None
-    exit_idx = None
-    
-    for i in range(1, max_hold + 1):
-        if signal_idx + i >= len(klines):
-            # 数据不足，按最后收盘价退出
-            exit_idx = len(klines) - 1
-            exit_price = klines[exit_idx]["close"]
-            break
-        
-        kline = klines[signal_idx + i]
-        high = kline["high"]
-        low = kline["low"]
-        
-        # 检查是否触及目标价（优先检查目标，因为通常目标 > 止损）
-        if high >= target_price:
-            exit_reason = "target"
-            exit_price = target_price
-            exit_idx = signal_idx + i
-            break
-        
-        # 检查是否触及止损
+    entry_idx = signal_idx + 1                    # T+1 开盘价成交
+    if entry_idx >= len(klines):
+        return None
+    fill_price = float(klines[entry_idx].get("open") or 0)
+    if fill_price <= 0:
+        return None
+
+    # 可卖区间：T+2（entry_idx+1）~ 持有期最后一天；不足则无法模拟
+    sell_from = entry_idx + 1
+    last_idx = min(entry_idx + max_hold - 1, len(klines) - 1)
+    if last_idx < sell_from:
+        return None
+
+    exit_reason, exit_price, exit_idx = "timeout", None, None
+    for j in range(sell_from, last_idx + 1):
+        kline = klines[j]
+        high = float(kline["high"] or 0)
+        low = float(kline["low"] or 0)
+        o = float(kline.get("open") or 0)
+        # 同日止损优先（与引擎一致）；跳空低开破止损按开盘价成交
         if low <= stop_loss:
-            exit_reason = "stop_loss"
-            exit_price = stop_loss
-            exit_idx = signal_idx + i
+            exit_reason, exit_price, exit_idx = "stop_loss", min(o, stop_loss), j
             break
-    
-    # 超时退出：用最后一天收盘价
+        if high >= target_price:
+            exit_reason, exit_price, exit_idx = "target", target_price, j
+            break
+
+    # 持有到期：末日收盘价
     if exit_price is None:
-        exit_idx = min(signal_idx + max_hold, len(klines) - 1)
-        exit_price = klines[exit_idx]["close"]
+        exit_idx = last_idx
+        exit_price = float(klines[last_idx].get("close") or 0)
         exit_reason = "timeout"
-    
-    # 计算收益率
-    profit_pct = ((exit_price - entry_price) / entry_price) * 100
+
+    # 收益率基于实际成交价（T+1 开盘）
+    profit_pct = ((exit_price - fill_price) / fill_price) * 100
     hold_days = exit_idx - signal_idx
     
     # 获取股票名称
@@ -255,7 +256,7 @@ def _track_trade(
         "code": code,
         "name": name,
         "signal_date": klines[signal_idx]["date"],
-        "entry_price": round(entry_price, 2),
+        "entry_price": round(fill_price, 2),   # 实际成交价（T+1 开盘）
         "stop_loss": round(stop_loss, 2),
         "target_price": round(target_price, 2),
         "exit_date": klines[exit_idx]["date"],

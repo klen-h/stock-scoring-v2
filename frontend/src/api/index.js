@@ -211,3 +211,12 @@ export const getUserPortfolio = () => http.get('/user/portfolio')
 export const upsertUserPortfolio = (item) => http.post('/user/portfolio', item)
 export const deleteUserPortfolio = (code) => http.delete(`/user/portfolio/${code}`)
 export const batchSyncUser = (data) => http.post('/user/sync', data)
+
+// 模拟盘（纸面交易：pending 待确认 → holding 持仓 → closed 已平仓）
+export const getPaperPositions = (status) => http.get('/paper/positions', { params: { status } })
+export const manualIngestPaper = (body) => http.post('/paper/positions/manual', body)
+export const closePaperPosition = (id) => http.post(`/paper/positions/${id}/close`)
+export const cancelPaperPosition = (id) => http.delete(`/paper/positions/${id}`)
+export const getPaperStats = () => http.get('/paper/stats')
+export const getPaperAccount = () => http.get('/paper/account')
+export const refreshPaperWhitelist = () => http.post('/paper/whitelist/refresh')

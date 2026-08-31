@@ -4,7 +4,9 @@
 ================================================================================
 撮合规则（保守口径）：
   - 信号日 T+1 开盘价成交（信号多为盘前/午盘生成，当日买入不现实）
-  - 止损/止盈：持仓期间 high/low 触及即平仓（同日触发按止损优先；
+  - ★ T+1 卖：A股当日买入当日不可卖出，最早 T+1 才能平仓 →
+    止损/止盈从入场次日起检查（此前含入场当日，等于 T+0 卖，胜率虚高）
+  - 止损/止盈：可卖区间内 high/low 触及即平仓（同日触发按止损优先；
     跳空破止损按开盘价成交，否则按止损价）
   - 到期（hold_days）未触发 → 期末收盘价平仓
   - 成本模型：ETF 佣金+滑点；个股佣金+滑点+卖出印花税
@@ -59,13 +61,15 @@ def match_signals(signals: list, prices_map: dict,
         buy_cost = c["commission"] + c["slippage"]
         sell_cost = c["commission"] + c["slippage"] + c["stamp"]
 
-        # 持仓期逐日检查触发（含入场当日；同日止损优先）
+        # 持仓期逐日检查触发（同日止损优先）
+        # ★ T+1：A股当日买入当日不可卖出，最早 T+1 才能平仓 → 从入场次日起检查
         exit_i, exit_price, reason = None, None, "持有到期"
         last_i = min(entry_i + hold - 1, len(bars) - 1)
-        if last_i == entry_i:
-            # 信号日之后无足够 K 线完成持仓（数据只到入场日）→ 无法模拟持有期，跳过
+        sellable_i = entry_i + 1
+        if last_i < sellable_i:
+            # 无可卖出交易日（持有期仅1天，或数据只到入场日）→ 无法模拟持仓，跳过
             continue
-        for j in range(entry_i, last_i + 1):
+        for j in range(sellable_i, last_i + 1):
             bar = bars[j]
             if direction > 0:
                 if stop and bar["low"] <= stop:

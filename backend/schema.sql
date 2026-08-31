@@ -130,6 +130,42 @@ CREATE TABLE IF NOT EXISTS strategy_results (
     UNIQUE(strategy_name, scan_date)
 );
 
+-- ── 模拟盘（纸面交易）──
+
+CREATE TABLE IF NOT EXISTS paper_positions (
+    id SERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    strategy_name TEXT NOT NULL,
+    signal_date TEXT NOT NULL,
+    entry_price REAL,
+    fill_price REAL,
+    fill_date TEXT,
+    stop_loss REAL,
+    target_price REAL,
+    shares INTEGER,
+    cost REAL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    exit_price REAL,
+    exit_date TEXT,
+    exit_reason TEXT,
+    pnl_pct REAL,
+    pnl_amount REAL,
+    is_win INTEGER,
+    fill_note TEXT,
+    confirmation_json TEXT,
+    created_at TEXT NOT NULL,
+    closed_at TEXT,
+    UNIQUE(strategy_name, code, signal_date)
+);
+
+CREATE TABLE IF NOT EXISTS paper_account (
+    id INTEGER PRIMARY KEY,
+    initial_capital REAL NOT NULL DEFAULT 100000,
+    realized_pnl REAL NOT NULL DEFAULT 0,
+    updated_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS strategy_watch (
     id SERIAL PRIMARY KEY,
     strategy_name TEXT NOT NULL,

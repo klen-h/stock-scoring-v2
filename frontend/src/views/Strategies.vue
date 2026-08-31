@@ -244,8 +244,12 @@
                       +自选
                     </button>
                     <button @click="syncToTradePlan(r)"
-                      class="text-xs text-amber-400 hover:text-amber-300">
+                      class="text-xs text-amber-400 hover:text-amber-300 mr-1">
                       +计划
+                    </button>
+                    <button @click="syncToPaper(r)"
+                      class="text-xs text-emerald-400 hover:text-emerald-300">
+                      +模拟仓
                     </button>
                   </td>
                 </tr>
@@ -307,7 +311,8 @@
                   <td class="px-3 py-2 text-center">
                     <button @click="removeFromWatch(w.code)" class="text-xs text-red-400 hover:underline mr-1">移除</button>
                     <button @click="syncToWatchlist(w)" class="text-xs text-blue-400 hover:text-blue-300 mr-1">+自选</button>
-                    <button @click="syncToTradePlan(w)" class="text-xs text-amber-400 hover:text-amber-300">+计划</button>
+                    <button @click="syncToTradePlan(w)" class="text-xs text-amber-400 hover:text-amber-300 mr-1">+计划</button>
+                    <button @click="syncToPaper(w)" class="text-xs text-emerald-400 hover:text-emerald-300">+模拟仓</button>
                   </td>
                 </tr>
               </tbody>
@@ -944,6 +949,10 @@
               class="px-3 py-2 rounded text-xs bg-amber-500/15 text-amber-400 hover:bg-amber-500/25">
               +交易计划
             </button>
+            <button @click="syncToPaper(detailStock)"
+              class="px-3 py-2 rounded text-xs bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25">
+              +模拟仓
+            </button>
           </div>
         </div>
       </div>
@@ -977,6 +986,7 @@ import {
   getPersistence,
   getPersistentSignals,
   checkExitAlerts,
+  manualIngestPaper,
 } from '../api'
 import { addWatch } from '../composables/useWatchlist'
 import { addPlan } from '../composables/useTradePlans'
@@ -1417,6 +1427,27 @@ function syncToTradePlan(stock, silent = false) {
     expected: `目标涨幅 ${((stock.target_price - stock.entry_price) / stock.entry_price * 100).toFixed(1)}%`,
   })
   if (!silent) showToast(`已创建交易计划: ${stock.name}`)
+}
+
+// ── 联动模拟盘（纸面交易）──
+async function syncToPaper(stock, silent = false) {
+  if (!stock) return
+  try {
+    await manualIngestPaper({
+      strategy_name: currentStrategy.value?.name_en || currentStrategy.value?.name || '',
+      code: stock.code,
+    })
+    if (!silent) showToast(`已加入模拟仓: ${stock.name}`)
+  } catch (e) {
+    const detail = e?.response?.data?.detail
+    if (!silent) showToast(detail ? `加入模拟仓失败: ${detail}` : '加入模拟仓失败')
+  }
+}
+
+function batchSyncPaper() {
+  if (!filteredResults.value.length) return
+  filteredResults.value.forEach(r => syncToPaper(r, true))
+  showToast(`已批量加入模拟仓: ${filteredResults.value.length} 只`)
 }
 
 // ── 批量联动 ──

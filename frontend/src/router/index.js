@@ -13,6 +13,7 @@ const routes = [
   { path: '/monitor', name: 'Monitor', component: () => import('../views/MonitorView.vue') },
   { path: '/calendar', name: 'Calendar', component: () => import('../views/CalendarView.vue') },
   { path: '/backtest', name: 'Backtest', component: () => import('../views/BacktestView.vue') },
+  { path: '/paper', name: 'PaperTrading', component: () => import('../views/PaperTrading.vue') },
   { path: '/portfolio', name: 'Portfolio', component: () => import('../views/Portfolio.vue') },
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },
   { path: '/trade-plans', name: 'TradePlans', component: () => import('../views/TradePlans.vue') },

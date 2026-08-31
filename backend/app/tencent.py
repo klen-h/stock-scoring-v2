@@ -156,6 +156,36 @@ _waf_blocked_until = 0
 _WAF_COOLDOWN = 120  # WAF触发后冷却120秒
 
 
+def _is_stale_kline(klines: list) -> bool:
+    """
+    K线是否"跨交易日陈旧"（最后一根早于最近交易日）。
+
+    ★ 为什么必须校验：WAF 冷却期会直接返回过期缓存（好过被封），但扫描任务
+      拿到的是上一交易日的收盘数据 —— 实测 15:40 扫描单阳不破，因 WAF 冷却
+      期间命中 08-28 缓存，16 个信号全部基于陈旧数据（而晚些扫描的战法冷却
+      已过、拿到 08-31）。宁可返回空让上层跳过，也不能用错日期的数据出信号。
+
+    收益方：战法扫描/撤退提醒/评分精算所有走 get_kline 的地方。
+    """
+    if not klines:
+        return True
+    last = (klines[-1] or {}).get("date") or ""
+    if not last:
+        return True
+    try:
+        d = datetime.strptime(last, "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    now = datetime.now()
+    # 15:00 后当日数据应已更新；15:00 前允许停在上一交易日
+    ref = now.date() if now.hour >= 15 else now.date() - timedelta(days=1)
+    for _ in range(5):          # 跳过周末（节假日按工作日近似，保守）
+        if ref.weekday() < 5:
+            break
+        ref -= timedelta(days=1)
+    return d < ref
+
+
 def _load_kline_cache():
     """从磁盘加载K线缓存（启动时调用一次）"""
     global KLINE_CACHE
@@ -185,8 +215,15 @@ def _save_kline_cache(force=False):
     if not force and now - _kline_cache_last_save < _KLINE_CACHE_SAVE_INTERVAL:
         return
     try:
-        with open(_KLINE_CACHE_FILE, "w", encoding="utf-8") as f:
+        # ★ 原子写入：先写 .tmp 再 os.replace。
+        #   直接写目标文件时，多进程并发（调度器 + 手动重扫脚本）或进程被杀会留下
+        #   半截 JSON，下次启动解析失败 → 缓存整份丢失、重启后重拉全量K线触发WAF
+        #   （实测 51MB 缓存文件损坏：Expecting ':' delimiter at char 51526343）。
+        #   原子替换保证文件要么是旧版、要么是完整新版，不会是半写状态。
+        tmp_path = f"{_KLINE_CACHE_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(KLINE_CACHE, f, ensure_ascii=False)
+        os.replace(tmp_path, _KLINE_CACHE_FILE)
         _kline_cache_last_save = now
         _kline_cache_dirty = False
     except Exception as e:
@@ -453,15 +490,17 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     # ── WAF 全局限流保护 ──
     # 如果腾讯WAF正在冷却中，直接返回过期缓存（好过被继续封）
     if time.time() < _waf_blocked_until:
-        if cached:
-            return cached["data"]  # 返回过期缓存，总比空数据好
+        # ★ 冷却期只能返回"当日仍新鲜"的缓存：跨交易日的旧数据会让战法扫描
+        #   基于上一交易日收盘价出信号（08-28 vs 08-31 案例），宁可空也不能错
+        if cached and not _is_stale_kline(cached["data"]):
+            return cached["data"]
         # ★ WAF 冷却期且无内存缓存：查数据库 K 线缓存兜底（评分精算/每日刷新写回的），
         #   避免详情页/持仓页盘中拿不到 K 线（数据为近 36h 内快照，仍可画图）
         if period == "day":
             try:
                 from app.scoring.kline_cache import get_cached_klines
                 db_klines = get_cached_klines(symbol)
-                if db_klines:
+                if db_klines and not _is_stale_kline(db_klines):
                     return db_klines
             except Exception:
                 pass
@@ -498,8 +537,9 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
             if r.status_code == 501:
                 _waf_blocked_until = time.time() + _WAF_COOLDOWN
                 print(f"[WAF] K线请求被拦截 {symbol}，全局冷却 {_WAF_COOLDOWN}s")
-                # 返回过期缓存（如果有），避免上层拿到空数据
-                if cached:
+                # 返回过期缓存（如果有），避免上层拿到空数据；
+                # 但仅限"当日仍新鲜"的缓存（跨交易日缓存会让信号基于陈旧数据）
+                if cached and not _is_stale_kline(cached["data"]):
                     return cached["data"]
                 return []
 

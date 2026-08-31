@@ -416,6 +416,12 @@ def scan_all_strategies() -> dict:
             stats["failed"] += 1
             print(f"[scheduler] 战法 {key} 扫描失败: {e}")
     _push_buy_signals(push_pool)
+    # 模拟盘入池：与企微推送同一批信号（白名单 + 高/中置信度）
+    try:
+        from app.strategies.paper_trading import auto_ingest_signals
+        stats["paper"] = auto_ingest_signals()
+    except Exception as e:
+        print(f"[scheduler] 模拟盘入池失败: {e}")
     return stats
 
 
@@ -550,6 +556,61 @@ async def open_confirmation_loop():
                 print(f"[scheduler] 开盘买点确认失败: {e}")
                 _notify_failure("开盘买点确认", str(e))
         await asyncio.sleep(60)
+
+
+# ── 模拟盘（纸面交易）：9:35 开盘确认 + 盘中/盘后跟踪 ──
+
+async def paper_fill_loop():
+    """工作日开盘后确认模拟盘 pending 持仓：实时量价关系 → 成交/放弃（9:35）。
+    幂等：当天只跑一次（schedule_state 按日期标记）。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        day_key = now.strftime("%Y%m%d")
+        if (now.weekday() < 5 and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
+                and not store.is_schedule_done("paper_fill", date_str=day_key)):
+            print("[scheduler] 触发模拟盘开盘确认")
+            try:
+                from app.strategies.paper_trading import fill_pending_positions
+                r = await asyncio.to_thread(fill_pending_positions)
+                store.mark_schedule_done("paper_fill", date_str=day_key)
+                status["last_paper_fill"] = rules.beijing_now().isoformat()
+                if r.get("filled") or r.get("cancelled"):
+                    _push_paper_summary(r)
+            except Exception as e:
+                print(f"[scheduler] 模拟盘开盘确认失败: {e}")
+                _notify_failure("模拟盘开盘确认", str(e))
+        await asyncio.sleep(60)
+
+
+async def paper_track_loop():
+    """模拟盘持仓跟踪：盘中每 5 分钟实时价触发；盘后回填完成后日线兜底一次。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        try:
+            from app.strategies.paper_trading import track_positions
+            if now.weekday() < 5 and rules.get_china_market_status()["is_open"]:
+                await asyncio.to_thread(track_positions, False)
+            elif now.weekday() < 5 and 940 <= t < 1440 and not store.is_schedule_done("paper_daily_close"):
+                await asyncio.to_thread(track_positions, True)
+                store.mark_schedule_done("paper_daily_close")
+                status["last_paper_track"] = rules.beijing_now().isoformat()
+        except Exception as e:
+            print(f"[scheduler] 模拟盘跟踪异常: {e}")
+        await asyncio.sleep(300)
+
+
+def _push_paper_summary(r: dict) -> None:
+    """模拟盘成交摘要推送企微（重要通知，force=True 不受业务开关限制）。"""
+    try:
+        from app.flash.wechat import push_markdown_batched
+        lines = [f"**模拟盘开盘确认**（{rules.beijing_now().strftime('%m-%d %H:%M')}）",
+                 f"- 成交 {r.get('filled', 0)} 笔（按开盘价 + 量比验证）",
+                 f"- 放弃 {r.get('cancelled', 0) + r.get('watched', 0)} 笔（破位/高开/缩量）"]
+        push_markdown_batched("📋 模拟盘", "\n".join(lines), force=True)
+    except Exception as e:
+        print(f"[scheduler] 模拟盘摘要推送失败: {e}")
 
 
 async def strategy_scan_loop():
@@ -1064,7 +1125,9 @@ async def start():
              asyncio.create_task(industry_map_loop()),
              asyncio.create_task(sector_snapshot_loop()),
              asyncio.create_task(finance_loop()),
-             asyncio.create_task(open_confirmation_loop())]
+             asyncio.create_task(open_confirmation_loop()),
+             asyncio.create_task(paper_fill_loop()),
+             asyncio.create_task(paper_track_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "

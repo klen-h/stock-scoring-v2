@@ -99,6 +99,7 @@ const navItems = [
   { path: '/monitor', label: '快讯监控' },
   { path: '/calendar', label: '财经日历' },
   { path: '/backtest', label: '回测中心' },
+  { path: '/paper', label: '模拟盘' },
   { path: '/portfolio', label: '我的持仓' },
   { path: '/watchlist', label: '自选股' },
   { path: '/trade-plans', label: '交易计划' },
