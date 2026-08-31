@@ -37,6 +37,11 @@ SOURCE_NAMES = {
 }
 
 _FAIL_THRESHOLD = 3          # 连续失败 N 次告警
+
+# 只进页面通知、不推企微的数据源：
+#   东财主站封 IP 是常态（高频触发风控，通常 24~48h 自愈），且板块数据有
+#   delay 端点/新浪兜底不影响业务，"失败 + 已恢复"每次都推企微纯属噪音。
+_NO_WECHAT_SOURCES = {"eastmoney_main"}
 _ALERTS_PATH = store.PATHS.get("health") or store.DATA_DIR + "/source_health.json"
 
 _lock = threading.Lock()
@@ -113,7 +118,8 @@ def record(source: str, ok: bool, error: str = "") -> None:
                 _save_alerts()
                 print(f"[health] ⚠️ {name} 连续失败 {st['consec_fail']} 次，已告警")
 
-    if pending_wechat:
+    # 东财主站等噪音源仍进页面通知铃铛，但不推企微
+    if pending_wechat and source not in _NO_WECHAT_SOURCES:
         _push_wechat_safely(pending_wechat)
 
 

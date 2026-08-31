@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
-"""测单条 DB 操作耗时（诊断"卡住"是否 = 远程库逐条提交慢）。"""
-import sys, os, io, time
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-t0 = time.time()
-import app  # noqa: F401
-print(f"import app: {time.time()-t0:.2f}s")
+import io, sys, time
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+from app.tencent import get_kline, _fetch_tencent
+from app.tencent import _waf_blocked_until
+import app.tencent as tx
 
-from app.database import db, DATABASE_URL
-import re
-m = re.search(r"@([^:/]+)", DATABASE_URL or "")
-print("DB host:", (m.group(1) if m else "?")[:40])
+print("WAF冷却中:", time.time() < tx._waf_blocked_until)
+print("内存K线缓存条目:", len(tx.KLINE_CACHE))
+print("缓存样例key:", list(tx.KLINE_CACHE.keys())[:3])
 
-t0 = time.time(); db.fetch("SELECT 1 AS ok"); print(f"SELECT 1: {time.time()-t0:.2f}s")
-t0 = time.time(); db.upsert("industry_map_meta", {"key": "__t", "value": "1"}, conflict_columns=["key"]); print(f"upsert #1: {time.time()-t0:.2f}s")
-t0 = time.time(); db.upsert("industry_map_meta", {"key": "__t", "value": "2"}, conflict_columns=["key"]); print(f"upsert #2: {time.time()-t0:.2f}s")
-t0 = time.time(); db.execute("DELETE FROM industry_map_meta WHERE key = %s", ("__t",)); print(f"delete: {time.time()-t0:.2f}s")
+# 1. K线新鲜度（平安银行）
+k = get_kline("000001", period="day", count=8)
+print("\n平安银行 最后3根K线:", [(x["date"], x["close"]) for x in k[-3:]] if k else "空")
+
+# 2. 两只新ETF行情
+for code in ("sz159825", "sz159865", "sz159985"):
+    try:
+        d = _fetch_tencent(code)
+        for v in d.values():
+            print(f"{code}: name={v.get('name')} price={v.get('price')}")
+    except Exception as e:
+        print(f"{code} 获取异常: {e}")

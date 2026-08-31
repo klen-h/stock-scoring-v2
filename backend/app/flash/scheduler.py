@@ -345,6 +345,19 @@ PUSH_MAX_PER_STRATEGY = 8
 PUSH_MAX_TOTAL = 10
 
 
+def _latest_trading_day() -> str:
+    """最近交易日（YYYY-MM-DD）：当日 15:00 前算上一交易日，跳过周末/节假日。"""
+    from datetime import timedelta
+    now = rules.beijing_now()
+    d = now.date()
+    if now.hour < 15:
+        d -= timedelta(days=1)
+    hol = rules.HOLIDAYS.get(d.year) or []
+    while d.weekday() >= 5 or any(s <= (d.month, d.day) <= e for s, e, *_ in hol):
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
 def scan_all_strategies() -> dict:
     """盘后扫描全部注册战法并保存结果（同步函数，由调度器丢线程池执行）。
 
@@ -361,6 +374,21 @@ def scan_all_strategies() -> dict:
     from app.strategies.market_regime import is_strategy_admitted
     from app.strategies.recommendation import get_push_whitelist
     stats = {"scanned": 0, "signals": 0, "failed": 0, "skipped": 0}
+
+    # ★ 当日K线就绪校验：腾讯 K 线在收盘后延迟更新，过早扫描会拿到上一交易日数据
+    #   （实测：15:40 扫描 → 16:45 推送的信号全是上周五收盘价，当日已收盘却未更新）
+    #   → 未就绪则本轮跳过且不 mark_done，调度器窗口内每 5 分钟重试至数据就绪。
+    from app.tencent import get_kline
+    expect_day = _latest_trading_day()
+    probe = get_kline("000001", period="day", count=5)
+    if probe and (probe[-1].get("date") or "") < expect_day:
+        print(f"[strategies] 当日K线未就绪（数据源最新 {probe[-1].get('date')} "
+              f"< 交易日 {expect_day}），本轮跳过，等待重试")
+        stats["not_ready"] = True
+        stats["data_date"] = probe[-1].get("date")
+        stats["expect_date"] = expect_day
+        return stats
+
     push_pool = {}  # 白名单战法 → 当天扫描信号（用于企微推送买入提醒）
     whitelist = set(get_push_whitelist())
     for cfg in list_strategies():
@@ -537,7 +565,10 @@ async def strategy_scan_loop():
             print("[scheduler] 触发战法全量扫描")
             try:
                 stats = await asyncio.to_thread(scan_all_strategies)
-                if stats["scanned"] > 0 or stats["failed"] == 0:
+                if stats.get("not_ready"):
+                    print(f"[scheduler] 当日K线未就绪（{stats.get('data_date')} < "
+                          f"{stats.get('expect_date')}），5 分钟后重试")
+                elif stats["scanned"] > 0 or stats["failed"] == 0:
                     store.mark_schedule_done(task_key)
                     status["last_strategy_scan"] = rules.beijing_now().isoformat()
                     print(f"[scheduler] 战法扫描完成: {stats}")

@@ -39,6 +39,11 @@ def backfill(code: str, name: str) -> int:
         print(f"  增量 {code} {name}（已有数据至 {start}）")
     rows = data.fetch_history(code, start=start)
     if not rows:
+        if start:
+            # 已有数据且无新增日期 = 已同步到最新，不是失败。
+            # 此前被误计为 [FAIL] 并累计连续失败、触发全局切腾讯源，
+            # 掩盖了真正需要补数据的新标的（农业/养殖 ETF 案例）。
+            return 0
         _EM_FAIL_STREAK += 1
         if _EM_FAIL_STREAK >= 3 and not data.DISABLE_EASTMONEY:
             data.DISABLE_EASTMONEY = True
@@ -134,16 +139,34 @@ def backfill_daily() -> dict:
     ③每晚限量 DAILY_STOCK_QUOTA 只，分批推进，几天内即可补齐。
     """
     stats = {"codes": 0, "rows": 0}
-    for name, code in HOLDINGS_MAP.items():
-        stats["codes"] += 1
-        stats["rows"] += backfill(code, name)
+
+    # ① 先回填基准（沪深300），据此判断"应同步到哪天"
     stats["codes"] += 1
     stats["rows"] += backfill("sh000300", "沪深300指数")
 
-    # 基准日期：个股应同步到该日期
+    # 基准日期：个股/ETF 应同步到该日期
     benchmark = (db.fetch_one(
         "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
     stats["benchmark"] = benchmark
+
+    # ② ETF 优先队列：无数据/滞后的排最前优先补，已同步的直接跳过（不发请求）
+    #    此前按字典顺序全量请求 28 只：新加标的排在池尾，限流/配额下长期 0 数据
+    #    （农业ETF/养殖ETF 案例），已同步的也白占请求额度。
+    etf_pending, etf_skipped = [], 0
+    for name, code in HOLDINGS_MAP.items():
+        latest = (db.fetch_one(
+            "SELECT MAX(date) AS d FROM backtest_prices WHERE code = %s", (code,))
+            or {}).get("d")
+        if latest and benchmark and latest >= benchmark:
+            etf_skipped += 1
+            continue
+        etf_pending.append((name, code, latest or ""))
+    etf_pending.sort(key=lambda x: x[2])   # ""（无数据）排最前，滞后越久越靠前
+    stats["etf_skipped"] = etf_skipped
+    stats["etf_pending"] = len(etf_pending)
+    for name, code, _ in etf_pending:
+        stats["codes"] += 1
+        stats["rows"] += backfill(code, name)
 
     # ETF 滞后检测：ETF 是宏观回测/信号跟踪的数据底座，此前曾全部静默停在
     # 08-24 四个交易日无人发现（战法个股有 missing 检测，ETF 池没有）→ 补上
