@@ -116,9 +116,17 @@ def _get_cached(key: str, ttl: int, loader):
 _PAGE_SIZE = 100
 
 # 反爬：失败重试次数 + 退避基数（秒）。批量拉取时另需请求间隔，见 _PAGE_GAP。
+# ★ 历史教训：0.25s 翻页间隔连续跑建映射任务（300-500 请求）触发了东财 IP 封禁
+#   （2026-08-15，封禁持续 ~48h，期间 push2 全断）。间隔宁可慢也别封——
+#   建映射是月级任务，多花几分钟无所谓。
 _RETRIES = 2
 _RETRY_BACKOFF = 0.6
-_PAGE_GAP = 0.25          # 翻页间隔（秒）
+_PAGE_GAP = 1.0           # 翻页间隔（秒）——1s 是实测安全值
+
+# 端点降级链：主站封 IP（高频触发后封 24~48h）时切 delay 端点。
+# push2delay 数据格式与 push2 完全相同，仅行情延迟约 15 分钟——封禁期有数据总比没有强。
+_CLIST_HOSTS = ["http://push2.eastmoney.com", "https://push2delay.eastmoney.com"]
+_CLIST_PATH = "/api/qt/clist/get"   # 两端点共用路径（hosts 只存主机名）
 
 
 def _fetch_clist(fs: str, fields: str, fid: str = None,
@@ -138,6 +146,8 @@ def _fetch_clist(fs: str, fields: str, fid: str = None,
       order:  'desc' 降序 / 'asc' 升序
       limit:  返回条数（自动收敛到 100 以内）
       page:   页码（第几页，从 1 开始）
+
+    端点策略：主站 push2 失败 → 自动切 push2delay（延迟行情）。
     """
     params = {
         "pn": page,                     # 页码
@@ -153,26 +163,49 @@ def _fetch_clist(fs: str, fields: str, fid: str = None,
         params["fid"] = fid
 
     # 东财对高频请求的处理是【直接断连】（RemoteDisconnected），且连续高频会临时封 IP
-    # （实测几百次请求后封禁持续数十分钟）。所以失败做退避重试；
+    # （实测封禁持续 24~48 小时）。所以失败做退避重试；主站连重试都失败 → 切 delay 端点；
     # 批量调用方（_fetch_clist_paged / sector_industry.build_map）还需自行加请求间隔。
+    #
+    # 健康埋点分两层：
+    #   eastmoney_main —— 主站本身的状态（封 IP 时连续失败 → 触发企微告警）
+    #   eastmoney      —— 数据链路整体（delay 兜底成功 = 数据还在流，算健康）
+    from app import health
     last_err = ""
     for attempt in range(1 + _RETRIES):
         try:
-            r = _session.get(_CLIST, params=params, timeout=10)
+            r = _session.get(_CLIST_HOSTS[0] + _CLIST_PATH, params=params, timeout=10)
             # 返回结构：{data: {total, diff: [...]}}
             rows = r.json().get("data", {}).get("diff", []) or []
-            from app import health
             health.record("eastmoney", bool(rows), "" if rows else "clist 返回空")
+            health.record("eastmoney_main", bool(rows),
+                          "" if rows else "主站返回空（疑似风控）")
             return rows
         except Exception as e:
             last_err = str(e)
             if attempt < _RETRIES:
                 time.sleep(_RETRY_BACKOFF * attempt)   # 0.6s → 1.2s 退避
                 continue
-            print(f"[eastmoney] clist 抓取失败 fs={fs}（已重试{_RETRIES}次）: {last_err}")
-            from app import health
-            health.record("eastmoney", False, last_err)
-            return []
+    health.record("eastmoney_main", False, last_err)   # 主站重试耗尽（含封 IP 场景）
+
+    # 主站（含重试）全部失败 → 尝试 delay 端点（数据同构，行情延迟 ~15 分钟）
+    # 用全新 Session：主站的失败连接(RST)会污染 _session 的连接池，
+    # 复用会话紧接着请求 delay 会拿到空响应体（实测），必须新开会话。
+    try:
+        time.sleep(0.5)
+        with requests.Session() as fresh:
+            fresh.headers.update(_session.headers)
+            r = fresh.get(_CLIST_HOSTS[1] + _CLIST_PATH, params=params, timeout=10)
+        rows = r.json().get("data", {}).get("diff", []) or []
+        if rows:
+            print(f"[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs={fs}")
+            health.record("eastmoney", True, "")   # 数据链路健康（虽延迟）
+            return rows
+        last_err = f"{last_err}; delay端点: 返回空"
+    except Exception as e:
+        last_err = f"{last_err}; delay端点: {e}"
+
+    print(f"[eastmoney] clist 抓取失败 fs={fs}（主站+delay均失败）: {last_err[:150]}")
+    health.record("eastmoney", False, last_err)
     return []
 
 

@@ -42,9 +42,10 @@ from app.database import db
 from app.eastmoney import get_sectors, get_sector_flow, _fetch_clist_paged
 
 # 板块之间的请求间隔（秒）。
-# 反爬实测：连续几百次请求会触发东财断连甚至临时封 IP（封禁持续数十分钟）。
-# 建表是一次性任务，慢一点没关系，但不能把 IP 搞封 —— 否则盘中板块资金流也跟着挂。
-_SECTOR_GAP = 0.3
+# 反爬实测：连续几百次请求会触发东财断连甚至临时封 IP。
+# ★ 2026-08-15 教训：0.3s 板块间隔 × 0.25s 翻页间隔跑建映射，把 IP 封了 ~48h，
+#   盘中板块资金流/分化因子数据一起挂。统一放宽到 1s（建映射约 10 分钟，月级任务可接受）。
+_SECTOR_GAP = 1.0
 
 
 def _now_iso() -> str:
@@ -66,14 +67,42 @@ def _sector_members(sector_code: str, max_items: int = 3000) -> dict:
     return out
 
 
+def _main_site_available() -> bool:
+    """
+    建映射前置检查：主站 push2 是否可用。
+    建映射要发 300-500 个 clist 请求。主站被封（风控）时这些请求会全部走
+    delay 端点兜底——高频压 delay 有把它也搞封的风险（届时盘中资金流全挂）。
+    所以主站不可用时应推迟建映射（返回 False），调度器窗口内会按小时重试，
+    解封后自动补跑。
+    """
+    import requests
+    try:
+        s = requests.Session()
+        s.headers.update({"User-Agent": "Mozilla/5.0",
+                          "Referer": "https://data.eastmoney.com/"})
+        r = s.get("http://push2.eastmoney.com/api/qt/clist/get",
+                  params={"pn": 1, "pz": 2, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+                          "fs": "m:90+t:2", "fields": "f12,f14,f3"}, timeout=8)
+        return bool(r.json().get("data", {}).get("diff"))
+    except Exception:
+        return False
+
+
 def build_map(verbose: bool = True) -> dict:
     """
     全量构建映射表：遍历所有行业板块 → 拉成分股 → 反建 个股→行业 → 落库。
 
     返回统计：{ok, sectors, stocks, multi_level, cost_sec, error}
     失败时保留旧表（宁可用旧映射，也不能让评分因子全部失效）。
+    主站被封时自动推迟（error 带推迟标记，调度器窗口内按小时重试）。
     """
     t0 = time.time()
+
+    # 封禁守卫：主站不可用 → 不硬跑（避免把 delay 端点也压封）
+    if not _main_site_available():
+        return {"ok": False,
+                "error": "东财主站不可用（疑似风控封禁），本轮建映射推迟；解封后自动重试",
+                "deferred": True}
 
     sectors = get_sectors("industry", limit=200)
     if not sectors:

@@ -32,6 +32,8 @@ SOURCE_NAMES = {
     "sina_macro": "宏观面板",
     "tencent_etf": "ETF行情",
     "eastmoney": "东财板块",
+    "eastmoney_main": "东财主站",   # 单独监控：封 IP 时 delay 端点仍能出数据，
+                                     # 但"主站被风控"必须告警（企微提醒），不能混在东财板块里
 }
 
 _FAIL_THRESHOLD = 3          # 连续失败 N 次告警
@@ -62,7 +64,11 @@ def record(source: str, ok: bool, error: str = "") -> None:
     """
     埋点入口：各数据源在被调用处上报成功/失败。
     连续失败达到阈值 → 告警事件；从告警状态恢复 → 恢复事件。
+    告警/恢复除了进页面通知（notifications 接口），还推企微（已配置时）——
+    离开电脑也能知道"东财被风控/金十 Cookie 过期"这类事。
     """
+    # 网络推送放锁外做（企微是慢 IO，不能占着全局锁）
+    pending_wechat = None
     with _lock:
         st = _state.setdefault(source, {
             "events": deque(maxlen=50), "consec_fail": 0, "alerted": False,
@@ -75,10 +81,14 @@ def record(source: str, ok: bool, error: str = "") -> None:
             st["last_ok"] = _now()
             if st["alerted"]:
                 st["alerted"] = False
-                _alerts.append({
-                    "type": "source_recovered", "time": _now(),
+                pending_wechat = {
                     "title": f"✅ {name}已恢复",
                     "body": "数据源恢复正常，快讯/诊断继续自动更新",
+                    "alert_type": "source_recovered",
+                }
+                _alerts.append({
+                    "type": "source_recovered", "time": _now(),
+                    "title": pending_wechat["title"], "body": pending_wechat["body"],
                 })
                 _save_alerts()
         else:
@@ -88,13 +98,33 @@ def record(source: str, ok: bool, error: str = "") -> None:
             if st["consec_fail"] >= _FAIL_THRESHOLD and not st["alerted"]:
                 st["alerted"] = True
                 hint = "，Cookie 可能过期" if source == "jin10" else ""
-                _alerts.append({
-                    "type": "source_alert", "time": _now(),
+                if source == "eastmoney_main":
+                    hint = "（疑似高频触发风控封 IP，通常 24~48h 自动解封；" \
+                           "期间板块数据走 delay 端点/新浪，行情延迟约15分钟）"
+                pending_wechat = {
                     "title": f"⚠️ 数据源异常：{name}",
                     "body": f"连续 {st['consec_fail']} 次失败{hint}（{error[:80] or '无返回数据'}）",
+                    "alert_type": "source_alert",
+                }
+                _alerts.append({
+                    "type": "source_alert", "time": _now(),
+                    "title": pending_wechat["title"], "body": pending_wechat["body"],
                 })
                 _save_alerts()
                 print(f"[health] ⚠️ {name} 连续失败 {st['consec_fail']} 次，已告警")
+
+    if pending_wechat:
+        _push_wechat_safely(pending_wechat)
+
+
+def _push_wechat_safely(msg: dict) -> None:
+    """企微推送（可选）：未配置 webhook 时静默跳过；推送失败只打日志。"""
+    try:
+        from app.flash.wechat import _send
+        icon = "🚨" if msg["alert_type"] == "source_alert" else "♻️"
+        _send(f"{icon} **{msg['title']}**\n{msg['body']}", f"数据源告警/{msg['title']}")
+    except Exception as e:
+        print(f"[health] 企微推送失败: {e}")
 
 
 def get_health() -> dict:
