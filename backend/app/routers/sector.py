@@ -81,11 +81,56 @@ def industry_map_build(verbose: bool = Query(False)):
     """
     手动重建映射表（正常由调度器每月 1 号 03:00 自动跑）。
 
-    ★ 耗时较长：约 100 个板块 × 分页，带间隔防东财限流，实测 2-5 分钟。
-      不要频繁调用 —— 连续高频请求会让东财临时封 IP（封禁会连累盘中板块资金流）。
+    ★ 已从东财 build_map 切换到新浪 build_map_sina：约 60-90 次请求 / 30 秒，
+      无东财封 IP 风险，覆盖 ~3000 只 + 归一并集。更全的可调 build-full。
     """
-    from app.sector_industry import build_map
-    return build_map(verbose=verbose)
+    from app.sector_industry import build_map_sina
+    return build_map_sina(verbose=verbose)
+
+
+@router.post("/industry-map/build-full")
+def industry_map_build_full(verbose: bool = Query(False)):
+    """
+    ★ 东财 clist 全市场映射（f100 行业 + 新浪一级归一化）：约 60 次请求，
+      覆盖 ~5900 只（含科创板/创业板/北交所），是覆盖最全的构建方式。
+      东财单股封 IP 风险远低于旧 build_map（板块遍历 300-500 次）。
+    """
+    from app.sector_industry import build_map_full
+    return build_map_full(verbose=verbose)
+
+
+@router.post("/industry-map/backfill")
+def industry_map_backfill(verbose: bool = Query(False)):
+    """补齐 stock_industry 尾部缺失股票（东财单股 f127 查询，按需轻量）。"""
+    from app.sector_industry import backfill_missing
+    return backfill_missing(verbose=verbose)
+
+
+# ── 行业主线/共振分析（顺势于行业映射补齐的决策功能）──
+
+@router.get("/mainline/summary")
+def mainline_summary(days: int = Query(12, ge=3, le=60)):
+    """主线榜 + 风格切换信号（基于 ranking_history Top50 × 行业映射聚合）。
+
+    主线榜：出现率≥一半、日均≥1.5只，按近期日均降序（金融↑/有色↑等）。
+    切换信号：行业占比相对窗口前段突变（如 医药退出、电子信息流入）。
+    """
+    from app.mainline import get_mainline_summary
+    return get_mainline_summary(days)
+
+
+@router.get("/mainline/date")
+def mainline_date(date: str = Query(None)):
+    """分析并落库指定交易日（默认今天）的行业共振。幂等可重跑。"""
+    from app.mainline import compute_mainline
+    return compute_mainline(date)
+
+
+@router.post("/mainline/push")
+def mainline_push(days: int = Query(12, ge=3, le=60)):
+    """推送行业主线日报到企微（受业务推送开关限制）。"""
+    from app.mainline import push_mainline_report
+    return push_mainline_report(days)
 
 
 # ── 板块每日快照（历史序列：板块分化度 / 板块动量的数据基础）──

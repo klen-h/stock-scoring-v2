@@ -177,6 +177,10 @@ export const takeSectorSnapshot = (date) => http.post('/sector/snapshot/take', {
 // 个股→行业映射（评分引擎板块因子的基础数据）
 export const getStockIndustry = (code) => http.get(`/sector/stock-industry/${code}`)
 export const getIndustryMapStats = () => http.get('/sector/industry-map/stats')
+// 行业主线/共振（每日 Top50 × 行业映射 → 主线榜 + 风格切换信号）
+export const getMainlineSummary = (days = 12) => http.get('/sector/mainline/summary', { params: { days } })
+export const buildMainlineDate = (date) => http.get('/sector/mainline/date', { params: { date } })
+export const pushMainlineReport = (days = 12) => http.post('/sector/mainline/push', {}, { params: { days } })
 export const getNorthboundHoldings = () => Promise.resolve({ data: [] }) // 北向持股明细暂未实现
 
 // 战法选股

@@ -1012,7 +1012,11 @@ async def calendar_loop():
 
 # ── 个股→行业映射表（每月重建一次）──
 # 为什么定期重建：新股 IPO 持续新增（A股每年 200-400 只），不刷新它们就一直没有行业
-# 归属；个股主业变更也会换分类。全量重建约 300-500 次请求，内部已加间隔防东财限流。
+# 归属；个股主业变更也会换分类。
+# ★ 数据源已从东财 build_map 切换到 build_map_sina（新浪全市场行业）：
+#   东财需 300-500 次请求且实测深市主板漏收录（000 只 165 只）、2026-08-15 封 IP 48h；
+#   新浪方案约 60-90 次请求（49 行业 × 翻页）/ 30 秒 / 无东财风控，覆盖 2994 只、
+#   Top50 快照命中率 84%（东财仅 40%）。东财细分链（159 行业）暂不做，粒度粗但可用。
 INDUSTRY_MAP_DAY = 1                  # 每月 1 号
 # 窗口放宽到 03:00-20:00：起点仍是凌晨低峰（优先在低峰跑），但若当时东财主站
 # 正被风控封禁（build_map 内有守卫会自动推迟），窗口内每小时重试，解封后当天补跑——
@@ -1033,8 +1037,8 @@ async def industry_map_loop():
                 and not store.is_schedule_done("industry_map", date_str=month_key)):
             print("[scheduler] 触发个股→行业映射表重建")
             try:
-                from app.sector_industry import build_map
-                r = await asyncio.to_thread(build_map, False)
+                from app.sector_industry import build_map_sina
+                r = await asyncio.to_thread(build_map_sina, False)
                 if r.get("ok"):
                     store.mark_schedule_done("industry_map", date_str=month_key)
                     status["last_industry_map"] = rules.beijing_now().isoformat()
@@ -1045,6 +1049,41 @@ async def industry_map_loop():
             except Exception as e:
                 print(f"[scheduler] 行业映射重建异常: {e}")
         await asyncio.sleep(3600)
+
+
+# ── 行业主线/共振日报（每个交易日收盘后分析 + 企微推送）──
+# ranking_history 15:15 落库、15:40 战法扫描，数据稳定后 16:05 分析最合适。
+MAINLINE_WINDOW = (965, 1020)   # 北京时间 16:05-17:00
+
+
+async def mainline_loop():
+    """每个交易日收盘后：Top50 × 行业映射 → 主线榜 + 风格切换信号 → 企微日报。
+
+    失败只打日志：次日窗口内 store.is_schedule_done 未标记会补跑，
+    历史序列滚动窗口自动覆盖，不影响主流程。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (rules.is_trading_day(now)
+                and MAINLINE_WINDOW[0] <= t < MAINLINE_WINDOW[1]
+                and not store.is_schedule_done("mainline_daily")):
+            print("[scheduler] 触发行业主线分析")
+            try:
+                from app.mainline import compute_mainline, push_mainline_report
+                r = await asyncio.to_thread(compute_mainline)
+                if r.get("ok"):
+                    store.mark_schedule_done("mainline_daily")
+                    status["last_mainline"] = rules.beijing_now().isoformat()
+                    p = await asyncio.to_thread(push_mainline_report)
+                    print(f"[scheduler] 主线分析完成: {r['industries']} 行业 / "
+                          f"未知{r['unknown_stocks']} / 推送{p.get('mainlines')}条"
+                          f" 切换{p.get('switches')}")
+                else:
+                    print(f"[scheduler] 主线分析失败: {r.get('error')}")
+            except Exception as e:
+                print(f"[scheduler] 主线分析异常: {e}")
+        await asyncio.sleep(600)
 
 
 # ── 板块每日快照（收盘后记录，积累板块历史序列）──
@@ -1149,6 +1188,7 @@ async def start():
              asyncio.create_task(news_history_loop()),
              asyncio.create_task(calendar_loop()),
              asyncio.create_task(industry_map_loop()),
+             asyncio.create_task(mainline_loop()),
              asyncio.create_task(sector_snapshot_loop()),
              asyncio.create_task(finance_loop()),
              asyncio.create_task(open_confirmation_loop()),
@@ -1161,6 +1201,7 @@ async def start():
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "
           f"行业映射每月{INDUSTRY_MAP_DAY}号03:00 / "
+          f"主线日报每日16:05 / "
           f"板块快照交易日{SECTOR_SNAPSHOT_WINDOW[0] // 60}:"
           f"{SECTOR_SNAPSHOT_WINDOW[0] % 60:02d} / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
