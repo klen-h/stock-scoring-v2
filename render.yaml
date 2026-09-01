@@ -34,6 +34,11 @@ services:
         sync: false
       - key: WECHAT_WEBHOOK
         sync: false
+      # ★ JWT 签名密钥（控制台填任意固定随机串，如 64 位 hex）。
+      #   不配置时代码按容器 HOSTNAME 推导 → 免费版每次休眠唤醒/重新部署
+      #   HOSTNAME 都变 → 密钥变 → 所有用户 token 失效、每天都要重新登录。
+      - key: JWT_SECRET
+        sync: false
     # 数据持久化（需付费计划，取消注释即可启用）：
     # 保存 tracking.json（信号与胜率）、analyses.json（诊断全文）、macro_history.json（宏观历史）
     # disk:

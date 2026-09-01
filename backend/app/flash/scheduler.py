@@ -295,7 +295,9 @@ async def indicator_cache_refresh_loop():
 
 
 # ── 回测价格库每日增量回填 ──
-BACKTEST_BACKFILL_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（收盘后数据稳定）
+# 16:10 起（错开 15:40 战法扫描高峰）：① 东财/腾讯的当日日线收盘后需 15-60 分钟
+# 结算才完整；② 15:40 回填/扫描/regime 三任务并发抢数据源 → 断连/WAF 成功率骤降
+BACKTEST_BACKFILL_WINDOW = (970, 1440)   # 北京时间 16:10-23:59
 
 async def backtest_prices_refresh_loop():
     """
@@ -311,6 +313,16 @@ async def backtest_prices_refresh_loop():
         if (now.weekday() < 5 and BACKTEST_BACKFILL_WINDOW[0] <= t < BACKTEST_BACKFILL_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发回测价格库增量回填")
+            # ★ 数据源当日K线就绪校验：未就绪不 mark_done，5 分钟后重试。
+            #   否则"空手而归 + mark_done"会让整库静默滞后一天
+            #   （实测 08-31 整库仅 15 条、信号股全停 08-28 的案例）。
+            from app.tencent import get_kline
+            _expect = _latest_trading_day()
+            _probe = get_kline("000001", period="day", count=3)
+            if _probe and (_probe[-1].get("date") or "") < _expect:
+                print(f"[scheduler] 数据源当日K线未就绪（{_probe[-1].get('date')} < {_expect}），回填延后重试")
+                await asyncio.sleep(300)
+                continue
             try:
                 from backfill_history import backfill_daily
                 stats = await asyncio.to_thread(backfill_daily)
@@ -331,6 +343,20 @@ async def backtest_prices_refresh_loop():
                         "回测价格回填",
                         f"{len(missing)} 只战法个股行情缺失/滞后（正常应同步到最新交易日）：\n"
                         f"> " + "、".join(missing[:8]) + (f" 等共 {len(missing)} 只" if len(missing) > 8 else ""))
+                # ★ 回测可撮合率告警：价格缺失/滞后的信号会在回测中被静默跳过
+                #   （08-28→08-31 整库滞后、121 个信号全跳过的教训）
+                try:
+                    from backfill_history import check_signal_coverage
+                    cov = await asyncio.to_thread(check_signal_coverage)
+                    bad, stale = cov.get("missing") or [], cov.get("stale") or []
+                    if cov.get("total") and (bad or len(stale) > cov["total"] * 0.2):
+                        _notify_failure(
+                            "回测价格库",
+                            f"最新信号 {cov['total']} 只股票中，无价格 {len(bad)} 只、"
+                            f"价格落后信号日 {len(stale)} 只 → 回测将跳过这些信号：\n"
+                            f"> " + "、".join((bad + stale)[:8]))
+                except Exception as e:
+                    print(f"[scheduler] 信号覆盖率检查失败: {e}")
             except Exception as e:
                 print(f"[scheduler] 回测价格回填失败: {e}")
                 _notify_failure("回测价格回填", str(e))

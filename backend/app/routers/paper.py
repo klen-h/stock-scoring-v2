@@ -26,6 +26,10 @@ def list_positions(status: str = None):
         params.append(status)
     sql += " ORDER BY id DESC"
     rows = db.fetch(sql, tuple(params)) or []
+    # 补战法中文名（前端列表直接显示，避免暴露英文 key）
+    from app.strategies.recommendation import STRATEGY_ZH
+    for r in rows:
+        r["strategy_name_zh"] = STRATEGY_ZH.get(r["strategy_name"], r["strategy_name"])
     return {"data": rows}
 
 

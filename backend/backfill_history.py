@@ -217,6 +217,38 @@ def backfill_daily() -> dict:
     return stats
 
 
+def check_signal_coverage(days: int = 3) -> dict:
+    """
+    检查最新信号的"回测可撮合率"：信号股票在价格库中是否有 ≥ 信号日的价格。
+    无价格（missing）→ 信号永远无法撮合；价格早于信号日（stale）→ T+1 开盘无从撮合。
+    供回填完成后告警——价格库滞后会令回测静默饿死（08-28→08-31 案例的教训）。
+    """
+    from datetime import timedelta
+    since = (rules.beijing_now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = db.fetch(
+        "SELECT scan_date, results_json FROM strategy_results "
+        "WHERE scan_date >= %s AND count > 0 ORDER BY scan_date DESC LIMIT 5", (since,))
+    seen, missing, stale = set(), [], []
+    for r in rows or []:
+        try:
+            items = json.loads(r["results_json"]) or []
+        except (json.JSONDecodeError, TypeError):
+            continue
+        scan_date = r["scan_date"]
+        for it in items:
+            code = str(it.get("code") or "").strip()
+            if len(code) != 6 or code in seen:
+                continue
+            seen.add(code)
+            row = db.fetch_one("SELECT MAX(date) AS d FROM backtest_prices WHERE code=%s", (code,))
+            d = (row or {}).get("d")
+            if not d:
+                missing.append(code)
+            elif d < scan_date:
+                stale.append(f"{code}停于{d}")
+    return {"total": len(seen), "missing": missing, "stale": stale}
+
+
 def main():
     parser = argparse.ArgumentParser(description="回测历史数据回填")
     parser.add_argument("--all", action="store_true", help="全部回填")

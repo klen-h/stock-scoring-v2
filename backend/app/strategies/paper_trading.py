@@ -12,6 +12,11 @@
   - 止损/止盈：盘中实时价触发；盘后兜底用日线 low/high（同日止损优先、跳空按 open）
   - 成本 = engine.DEFAULT_COSTS["stock"]（佣金+滑点+卖出印花税）
 
+仓位规则（本金只用来控制"同时持仓笔数"，胜率统计不依赖本金）：
+  - 虚拟本金 100 万；单仓 = 本金 / MAX_POSITIONS（默认 20 笔）→ 资金恰好够 20 笔同持
+  - 单战法最多 MAX_PER_STRATEGY_POSITIONS 笔（≈40% 额度），保证多战法并行验证
+  - 额度不足时放弃并记原因：no_capital（资金不足）/ strategy_limit（战法超限）
+
 成交确认规则（对齐 recommendation.build_open_confirmation，企微开盘买点那一套）：
   - 开盘 ≤ 止损位        → 放弃（形态破坏）
   - 高开 >3%             → 放弃（成本抬高、盈亏比变差）
@@ -28,11 +33,19 @@ from app.flash import rules
 from app.backtest.engine import DEFAULT_COSTS, DEFAULT_POSITION_RATIO
 
 ACCOUNT_ID = 1
-INITIAL_CAPITAL = 100000.0   # 虚拟本金（元）
-MAX_PENDING = 20             # 待确认池上限（按置信度截断）
-MAX_PER_STRATEGY = 5         # 单战法最多入池数（避免一个战法垄断模拟盘，保证多样性）
-MAX_HOLD_DAYS = 20           # 超期强平天数
-POSITION_RATIO = DEFAULT_POSITION_RATIO   # 单仓占用虚拟本金比例（0.2）
+INITIAL_CAPITAL = 1_000_000.0   # 虚拟本金（元）
+MAX_POSITIONS = 20              # 最大同时持仓笔数
+
+# ★ 单仓比例 = 1/MAX_POSITIONS（而非固定 20%）：
+#   本金恰好够 MAX_POSITIONS 笔 —— 既不超买，也不会因资金不足错失样本。
+#   此前固定 20% → 5 笔即打满 10 万本金，第 6 笔起全被 no_capital 取消，
+#   样本积累过慢（而胜率/盈亏比是按笔统计的，与本金大小无关）。
+POSITION_RATIO = 1 / MAX_POSITIONS
+
+MAX_PER_STRATEGY_POSITIONS = 8  # 单战法最多持仓笔数（≈40% 额度，保证多战法并行验证）
+MAX_PER_STRATEGY = 5            # 单战法最多入池数（避免一个战法垄断待确认池）
+MAX_PENDING = 20                # 待确认池上限（按置信度截断）
+MAX_HOLD_DAYS = 20              # 超期强平天数
 
 
 def _now_iso() -> str:
@@ -73,15 +86,28 @@ def get_account() -> dict:
 # ================================================================
 
 def auto_ingest_signals() -> dict:
-    """把白名单战法当日高/中置信度信号写入模拟池（status=pending）。
-    幂等：UNIQUE(strategy_name, code, signal_date) + 同 code 已有持仓则跳过。"""
+    """
+    把**所有 regime 准入战法**当日高/中置信度信号写入模拟池（status=pending）。
+
+    ★ 入池范围为什么不是"仅推送白名单"：
+      白名单的准入条件是"样本≥30 且胜率≥55%"，而样本要靠模拟盘积累 ——
+      若只入池白名单战法，其他战法永远攒不到样本、永远进不了白名单（鸡生蛋），
+      计划里"自动发现新的达标战法"这个目标就落空了。因此：
+        - 白名单战法     → 入池 + 企微推送（可作实盘参考）
+        - 非白名单战法   → 同样入池（纯攒样本），但不推送（避免误导实盘）
+      推送侧由 scan_all_strategies 的 `key in whitelist` 过滤，与本函数解耦。
+
+    幂等：UNIQUE(strategy_name, code, signal_date) + 同 code 已有持仓则跳过。
+    """
+    from app.strategies import list_strategies
     from app.strategies.recommendation import get_push_whitelist
     from app.strategies.market_regime import is_strategy_admitted
     today = _bj_date()
     whitelist = set(get_push_whitelist())
     stats = {"ingested": 0, "skipped_exist": 0, "skipped_low_conf": 0,
-             "skipped_bad_stop": 0, "pool_full": False}
-    for strategy_en in whitelist:
+             "skipped_bad_stop": 0, "pool_full": False, "non_whitelist": 0}
+    for cfg in list_strategies():
+        strategy_en = cfg["name_en"]        # 注册/查询用英文 key，name 只是显示名
         admitted, reason, _, _ = is_strategy_admitted(strategy_en)
         if not admitted:
             continue
@@ -97,6 +123,13 @@ def auto_ingest_signals() -> dict:
         cands = [s for s in results
                  if (s.get("confidence_level") or "low") in ("high", "medium")]
         cands.sort(key=lambda s: s.get("confidence") or 0, reverse=True)
+        # 该战法"待确认 + 持仓"已达上限则不再入池：否则明天确认时会被
+        # strategy_limit 判取消，白占其他战法的入池额度
+        held = db.fetch_one(
+            "SELECT COUNT(*) AS c FROM paper_positions WHERE strategy_name=%s "
+            "AND status IN ('pending','holding')", (strategy_en,))
+        if held and (held.get("c") or 0) >= MAX_PER_STRATEGY_POSITIONS:
+            continue
         ingested_this = 0
         for s in cands:
             code = s.get("code")
@@ -132,6 +165,8 @@ def auto_ingest_signals() -> dict:
                  json.dumps(s, ensure_ascii=False), _now_iso()))
             stats["ingested"] += 1
             ingested_this += 1
+            if strategy_en not in whitelist:
+                stats["non_whitelist"] += 1
     print(f"[paper] 信号入池: {stats}")
     return stats
 
@@ -223,6 +258,31 @@ def fill_pending_positions() -> dict:
         if price <= 0:
             continue
         per = INITIAL_CAPITAL * POSITION_RATIO * (0.5 if half else 1.0)
+        # ★ 单战法持仓上限：保证多战法并行验证，避免单一战法吃满全部额度
+        cnt = db.fetch_one(
+            "SELECT COUNT(*) AS c FROM paper_positions "
+            "WHERE status='holding' AND strategy_name=%s", (p["strategy_name"],))
+        if cnt and (cnt.get("c") or 0) >= MAX_PER_STRATEGY_POSITIONS:
+            db.execute(
+                "UPDATE paper_positions SET status='cancelled', exit_reason='strategy_limit', "
+                "fill_note=%s, closed_at=%s WHERE id=%s",
+                (note + f"｜该战法持仓已达上限 {MAX_PER_STRATEGY_POSITIONS} 笔，放弃",
+                 _now_iso(), p["id"]))
+            cancelled += 1
+            continue
+        # ★ 资金检查：可用资金不足一个标准仓位则放弃（满仓后不再开新仓）。
+        #   否则会按固定仓位比例无限开仓、总占用远超虚拟本金（实测 5 仓已占满 10 万）；
+        #   也不建"碎股仓"（可用几千元买 9 手）以免仓位结构失真、统计无意义。
+        avail = get_account()["available_capital"]
+        if avail < per:
+            db.execute(
+                "UPDATE paper_positions SET status='cancelled', exit_reason='no_capital', "
+                "fill_note=%s, closed_at=%s WHERE id=%s",
+                (note + f"｜可用资金 {avail:.0f} 元不足单仓 {per:.0f} 元，放弃",
+                 _now_iso(), p["id"]))
+            cancelled += 1
+            continue
+        per = min(per, avail)          # 防御：仍不超过可用资金
         shares = int(per / price / 100) * 100
         if shares <= 0:
             continue

@@ -60,7 +60,9 @@
         </thead>
         <tbody>
           <tr v-for="r in statRows" :key="r.name" class="border-t border-border hover:bg-white/[0.02]">
-            <td class="px-3 py-2">{{ r.name }}</td>
+            <td class="px-3 py-2">
+              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+            </td>
             <td class="px-3 py-2 text-right font-mono">{{ r.v.trades }}</td>
             <td class="px-3 py-2 text-right font-mono" :class="winRateText(r.v.win_rate)">
               {{ r.v.win_rate == null ? '-' : r.v.win_rate + '%' }}
@@ -99,10 +101,13 @@
         <tbody>
           <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
             <td class="px-3 py-2 font-mono">
-              <router-link :to="'/stock/' + r.code" class="text-accent hover:underline">{{ r.code }}</router-link>
+              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                class="text-accent hover:underline">{{ r.code }}</a>
             </td>
-            <td class="px-3 py-2">{{ r.name }}</td>
-            <td class="px-3 py-2 text-muted">{{ r.strategy_name }}</td>
+            <td class="px-3 py-2">
+              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+            </td>
+            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ r.entry_price }}</td>
             <td class="px-3 py-2 text-right font-mono text-rise">{{ r.stop_loss }}</td>
             <td class="px-3 py-2 text-right font-mono text-fall">{{ r.target_price }}</td>
@@ -131,9 +136,12 @@
         <tbody>
           <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
             <td class="px-3 py-2 font-mono">
-              <router-link :to="'/stock/' + r.code" class="text-accent hover:underline">{{ r.code }}</router-link>
+              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                class="text-accent hover:underline">{{ r.code }}</a>
             </td>
-            <td class="px-3 py-2">{{ r.name }}</td>
+            <td class="px-3 py-2">
+              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+            </td>
             <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ priceOf(r.code) ?? '-' }}</td>
             <td class="px-3 py-2 text-right font-mono" :class="pnlText(floatPnl(r))">
@@ -166,10 +174,13 @@
         <tbody>
           <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
             <td class="px-3 py-2 font-mono">
-              <router-link :to="'/stock/' + r.code" class="text-accent hover:underline">{{ r.code }}</router-link>
+              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                class="text-accent hover:underline">{{ r.code }}</a>
             </td>
-            <td class="px-3 py-2">{{ r.name }}</td>
-            <td class="px-3 py-2 text-muted">{{ r.strategy_name }}</td>
+            <td class="px-3 py-2">
+              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+            </td>
+            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ r.exit_price }}</td>
             <td class="px-3 py-2 text-center">{{ reasonText(r.exit_reason) }}</td>
@@ -190,10 +201,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   getPaperPositions, getPaperAccount, getPaperStats,
   cancelPaperPosition, closePaperPosition, getBatchPrices,
 } from '../api'
+import { getXueqiuUrl } from '../composables/stockUtils'
+
+const router = useRouter()
+
+// 名称 → 个股详情页（与"我的持仓"一致）
+function goDetail(code) {
+  router.push(`/stock/${code}`)
+}
 
 const tab = ref('holding')
 const tabs = [
@@ -243,8 +263,12 @@ async function loadPrices(all) {
   const codes = [...new Set((all || []).filter(r => r.status === 'holding').map(r => r.code))]
   if (!codes.length) { prices.value = {}; return }
   try {
-    const d = await getBatchPrices(codes).then(r => r.data)
-    prices.value = d || {}
+    // ★ /score/batch-prices 返回的是列表 [{code, name, price, change_pct}]，
+    //   不是 {code: price} 字典 → 先转 map 才能按代码取价（否则现价恒为空）
+    const arr = await getBatchPrices(codes).then(r => r.data)
+    const map = {}
+    ;(arr || []).forEach(x => { if (x && x.code != null) map[x.code] = x.price })
+    prices.value = map
   } catch {
     prices.value = {}
   }
