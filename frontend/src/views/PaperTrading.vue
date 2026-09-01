@@ -35,6 +35,24 @@
       </div>
     </div>
 
+    <!-- 组合风控状态（PLAN_PAPER_RISK.md）-->
+    <div v-if="risk" class="bg-card border border-border rounded p-3 mb-4 text-xs flex flex-wrap items-center gap-x-4 gap-y-1">
+      <span class="text-muted">🛡 组合风控</span>
+      <span>净值回撤 <b :class="(risk.state?.drawdown || 0) > 0 ? 'text-fall' : 'text-muted'">{{ risk.state?.drawdown ?? '-' }}%</b></span>
+      <span v-if="risk.state?.frozen" class="text-rise font-bold">🔒 回撤熔断中</span>
+      <span v-else class="text-muted">✓ 正常</span>
+      <span v-if="risk.state?.cooldown" class="text-amber-400">⏳ 连亏冷却中</span>
+      <span v-if="risk.state?.daily_stop" class="text-amber-400">🚫 日亏损限额已达</span>
+      <button v-if="risk.state?.frozen" @click="doUnfreeze"
+        class="ml-auto px-2 py-0.5 rounded border border-border text-amber-400 hover:text-amber-300">
+        解除熔断
+      </button>
+      <div v-if="risk.recent_events?.length" class="w-full text-muted pt-1 border-t border-border/50">
+        最近事件：
+        <span v-for="e in risk.recent_events.slice(0, 3)" :key="e.id" class="mr-3">{{ (e.message || '').slice(0, 40) }}</span>
+      </div>
+    </div>
+
     <!-- Tab -->
     <div class="flex flex-wrap gap-2 mb-3">
       <button v-for="t in tabs" :key="t.key" @click="tab = t.key"
@@ -205,6 +223,7 @@ import { useRouter } from 'vue-router'
 import {
   getPaperPositions, getPaperAccount, getPaperStats,
   cancelPaperPosition, closePaperPosition, getBatchPrices,
+  getPaperRisk, unfreezePaperRisk,
 } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 
@@ -226,6 +245,7 @@ const account = ref({})
 const stats = ref({})
 const rows = ref([])
 const prices = ref({})
+const risk = ref(null)
 
 const list = computed(() => rows.value.filter(r => r.status === tab.value))
 const statRows = computed(() =>
@@ -241,7 +261,7 @@ function countOf(k) {
   return rows.value.filter(r => r.status === k).length
 }
 
-onMounted(load)
+onMounted(() => { load(); loadRisk() })
 
 async function load() {
   try {
@@ -256,6 +276,25 @@ async function load() {
     await loadPrices(rows.value)
   } catch (e) {
     console.error('[paper] 加载失败', e)
+  }
+}
+
+async function loadRisk() {
+  try {
+    risk.value = await getPaperRisk().then(r => r.data)
+  } catch (e) {
+    console.error('[paper] 风控状态加载失败', e)
+  }
+}
+
+async function doUnfreeze() {
+  if (!confirm('解除回撤熔断并恢复开新仓？')) return
+  try {
+    await unfreezePaperRisk()
+    await loadRisk()
+    await load()
+  } catch (e) {
+    alert(e?.response?.data?.detail || '操作失败')
   }
 }
 

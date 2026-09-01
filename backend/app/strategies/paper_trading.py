@@ -47,6 +47,97 @@ MAX_PER_STRATEGY = 5            # 单战法最多入池数（避免一个战法�
 MAX_PENDING = 20                # 待确认池上限（按置信度截断）
 MAX_HOLD_DAYS = 20              # 超期强平天数
 
+# ── 组合风控（PLAN_PAPER_RISK.md；阈值为专家经验初值，risk_events 攒数据后回调）──
+MAX_SAME_INDUSTRY = 2           # G1 同行业持仓上限（行业映射缺失视为独立行业不限制）
+DRAWDOWN_FREEZE_PCT = 5.0       # G2 净值自峰值回撤 ≥ 此值 → 冻结开新仓
+CONSEC_LOSS_COOLDOWN = 3        # G3 连续止损笔数
+COOLDOWN_DAYS = 1               # G3 冷却天数
+DAILY_LOSS_LIMIT_PCT = 2.0      # G4 当日平仓亏损 ≥ 本金此比例 → 当日停开
+
+# ── 仓位模型（PLAN_PAPER_RISK.md B 节：波动率/风险仓位，替代固定等分）──
+RISK_PER_TRADE_PCT = 0.008      # 单笔风险额 = 本金 × 0.8%（对齐 tracker 1.5%，20 仓更保守）
+MIN_POSITION_VALUE = 20_000     # 单仓市值钳位下限
+MAX_POSITION_VALUE = 80_000     # 单仓市值钳位上限
+ATR_PERIOD = 14                 # 止损缺失时的兜底波动度量
+
+
+def _atr14(code: str) -> float:
+    """14 日 ATR（股票日线 TR 均值）；失败返回 0。
+
+    ★ 不能直接用 tencent.get_kline：它会把 000001/399001 等当指数（INDEX_MAP），
+      而战法信号是股票（000001=平安银行）→ 会拉到上证指数 K 线、波动率差一个量级。
+      这里手动构造带市场前缀的股票 K 线请求（qfqday）规避该判定。
+    """
+    try:
+        import requests
+        prefix = "sh" if code.startswith("6") else "sz"
+        url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+        r = requests.get(url, params={
+            "param": f"{prefix}{code},day,2026-01-01,2026-12-31,40,qfq"}, timeout=15)
+        raw = ((r.json() or {}).get("data") or {}).get(f"{prefix}{code}", {}).get("qfqday") or []
+        if len(raw) < ATR_PERIOD + 1:
+            return 0.0
+        trs = []
+        for i in range(1, len(raw)):
+            # 腾讯 fqkline 每根：[date, open, close, high, low, volume, ...]
+            h, l, pc = float(raw[i][3]), float(raw[i][4]), float(raw[i - 1][2])
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        return sum(trs[-ATR_PERIOD:]) / ATR_PERIOD
+    except Exception:
+        return 0.0
+
+
+def _calc_shares(code: str, price: float, stop: float, entry: float, half: bool) -> int:
+    """
+    风险仓位：股数 = 单笔风险额 / 每股风险，市值钳位 [MIN, MAX]。
+      - 每股风险 = entry - stop（信号自带止损，天然可用）
+      - stop 缺失/异常 → 每股风险 = 2 × ATR14 兜底
+      - 无有效风险度量 → 返回 0（宁可放弃，不用拍脑袋仓位）
+    半仓档 = 风险额减半（股数同减半，保留防诱多语义）。
+    """
+    risk_budget = INITIAL_CAPITAL * RISK_PER_TRADE_PCT * (0.5 if half else 1.0)
+    per_share_risk = 0.0
+    if entry > 0 and stop > 0 and stop < entry:
+        per_share_risk = entry - stop
+    else:
+        atr = _atr14(code)
+        if atr > 0:
+            per_share_risk = 2 * atr
+    if per_share_risk <= 0:
+        return 0
+    shares = int(risk_budget / per_share_risk / 100) * 100
+    if shares <= 0:
+        return 0
+    # 市值钳位（先压上限，再保下限）
+    if shares * price > MAX_POSITION_VALUE:
+        shares = int(MAX_POSITION_VALUE / price / 100) * 100
+    if shares * price < MIN_POSITION_VALUE:
+        shares = max(shares, int(MIN_POSITION_VALUE / price / 100) * 100)
+    return shares
+
+
+def _migrate() -> None:
+    """风控表结构幂等迁移（已有库加列/建表；新部署走 schema.sql）。"""
+    for sql in (
+        "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS peak_equity REAL",
+        "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS cooldown_until TEXT",
+        "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS risk_frozen INTEGER DEFAULT 0",
+        """CREATE TABLE IF NOT EXISTS paper_risk_events (
+            id SERIAL PRIMARY KEY,
+            time TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            code TEXT,
+            message TEXT
+        )""",
+    ):
+        try:
+            db.execute(sql)
+        except Exception as e:
+            print(f"[paper] 风控表迁移: {e}")
+
+
+_migrate()
+
 
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -234,6 +325,7 @@ def fill_pending_positions() -> dict:
     codes = [p["code"] for p in pending]
     quotes = {q.get("code"): q for q in get_stocks_batch(codes) if q.get("code")}
     ratios = _calc_vol_ratios(codes, quotes)
+    risk = _risk_state()          # G2/G3/G4 账户级状态，循环中不变，查一次
     filled = cancelled = watched = 0
     for p in pending:
         quote = quotes.get(p["code"]) or {}
@@ -257,7 +349,28 @@ def fill_pending_positions() -> dict:
         price = fill_p if fill_p > 0 else float(quote.get("price") or 0)
         if price <= 0:
             continue
-        per = INITIAL_CAPITAL * POSITION_RATIO * (0.5 if half else 1.0)
+        # ★ G2 回撤熔断 / G3 连亏冷却 / G4 日亏损限额（账户级）
+        if risk["frozen"]:
+            _reject_position(p["id"], "risk_freeze",
+                             note + f"｜组合回撤 {risk['drawdown']}% 熔断中，暂停开新仓")
+            cancelled += 1
+            continue
+        if risk["cooldown"]:
+            _reject_position(p["id"], "cooldown", note + "｜连亏冷却中，暂停开新仓")
+            cancelled += 1
+            continue
+        if risk["daily_stop"]:
+            _reject_position(p["id"], "daily_stop",
+                             note + f"｜当日平仓亏损 {risk['daily_loss']:,.0f} 元达限额，暂停开新仓")
+            cancelled += 1
+            continue
+        # ★ G1 行业集中度：同 main_industry 持仓达上限则放弃（映射缺失不限制）
+        same, ind = _same_industry_count(p["code"])
+        if ind and same >= MAX_SAME_INDUSTRY:
+            _reject_position(p["id"], "industry_limit",
+                             note + f"｜同行业({ind})持仓已达 {same} 只上限")
+            cancelled += 1
+            continue
         # ★ 单战法持仓上限：保证多战法并行验证，避免单一战法吃满全部额度
         cnt = db.fetch_one(
             "SELECT COUNT(*) AS c FROM paper_positions "
@@ -270,22 +383,33 @@ def fill_pending_positions() -> dict:
                  _now_iso(), p["id"]))
             cancelled += 1
             continue
-        # ★ 资金检查：可用资金不足一个标准仓位则放弃（满仓后不再开新仓）。
-        #   否则会按固定仓位比例无限开仓、总占用远超虚拟本金（实测 5 仓已占满 10 万）；
-        #   也不建"碎股仓"（可用几千元买 9 手）以免仓位结构失真、统计无意义。
+        # ★ 资金检查：可用资金不足最小仓则放弃（风险仓位金额在 [2万, 8万] 区间）
         avail = get_account()["available_capital"]
-        if avail < per:
+        if avail < MIN_POSITION_VALUE:
             db.execute(
                 "UPDATE paper_positions SET status='cancelled', exit_reason='no_capital', "
                 "fill_note=%s, closed_at=%s WHERE id=%s",
-                (note + f"｜可用资金 {avail:.0f} 元不足单仓 {per:.0f} 元，放弃",
+                (note + f"｜可用资金 {avail:,.0f} 元不足最小仓 {MIN_POSITION_VALUE:,.0f} 元，放弃",
                  _now_iso(), p["id"]))
             cancelled += 1
             continue
-        per = min(per, avail)          # 防御：仍不超过可用资金
-        shares = int(per / price / 100) * 100
+        # ★ 仓位模型（PLAN_PAPER_RISK.md B 节）：股数 = 风险额 / 每股风险
+        #   （entry-stop，信号止损缺失用 2×ATR14 兜底；市值钳位 2万~8万）
+        shares = _calc_shares(p["code"], price,
+                              float(sig.get("stop_loss") or 0),
+                              float(sig.get("entry_price") or 0), half)
         if shares <= 0:
+            _reject_position(p["id"], "no_risk_metric",
+                             note + "｜无有效止损/ATR，无法定仓，放弃")
+            cancelled += 1
             continue
+        if shares * price > avail:            # 可用资金不足目标仓位 → 缩至可用
+            shares = int(avail / price / 100) * 100
+            if shares <= 0 or shares * price < MIN_POSITION_VALUE * 0.5:
+                _reject_position(p["id"], "no_capital",
+                                 note + f"｜可用资金 {avail:,.0f} 元不足以维持最小仓，放弃")
+                cancelled += 1
+                continue
         cost = round(shares * price, 2)
         db.execute(
             "UPDATE paper_positions SET status='holding', fill_price=%s, fill_date=%s, "
@@ -294,6 +418,119 @@ def fill_pending_positions() -> dict:
         filled += 1
     print(f"[paper] 开盘确认: filled={filled} cancelled={cancelled} watched={watched}")
     return {"filled": filled, "cancelled": cancelled, "watched": watched}
+
+
+# ================================================================
+#  组合风控（PLAN_PAPER_RISK.md：G1-G4 gate + 净值/峰值维护 + 事件审计）
+# ================================================================
+
+def _log_risk_event(event_type: str, code: str, message: str) -> None:
+    """风控事件落审计表 + 企微推送（重要通知，不受业务开关限制）。"""
+    try:
+        db.execute("INSERT INTO paper_risk_events (time, event_type, code, message) "
+                   "VALUES (%s, %s, %s, %s)", (_now_iso(), event_type, code, message))
+    except Exception as e:
+        print(f"[paper] 风控事件落库失败: {e}")
+    try:
+        from app.flash.wechat import push_markdown_batched
+        push_markdown_batched("🛡 模拟盘风控", f"**{event_type}**\n{message}", force=True)
+    except Exception as e:
+        print(f"[paper] 风控事件推送失败: {e}")
+
+
+def _current_equity() -> float:
+    """账户净值 = 初始本金 + 已实现盈亏 + 持仓浮盈（按实时价，缺价按成交价）。"""
+    acc = get_account()
+    unrealized = 0.0
+    holdings = db.fetch("SELECT code, fill_price, shares FROM paper_positions WHERE status='holding'")
+    if holdings:
+        from app.tencent import get_stocks_batch
+        quotes = {q.get("code"): q for q in get_stocks_batch([h["code"] for h in holdings]) if q.get("code")}
+        for h in holdings:
+            q = quotes.get(h["code"]) or {}
+            price = float(q.get("price") or 0) or float(h["fill_price"] or 0)
+            unrealized += (price - float(h["fill_price"] or 0)) * int(h["shares"] or 0)
+    return INITIAL_CAPITAL + float(acc["realized_pnl"]) + unrealized
+
+
+def _update_peak_equity() -> float:
+    """刷新净值峰值（track 与平仓时调用）；返回当前峰值。"""
+    eq = _current_equity()
+    row = db.fetch_one("SELECT peak_equity FROM paper_account WHERE id=%s", (ACCOUNT_ID,))
+    peak = max(float((row or {}).get("peak_equity") or 0), eq, INITIAL_CAPITAL)
+    db.execute("UPDATE paper_account SET peak_equity=%s WHERE id=%s", (peak, ACCOUNT_ID))
+    return peak
+
+
+def _risk_state() -> dict:
+    """
+    组合风控状态（fill 循环前调用一次）：
+      - G2 回撤：净值自峰值回撤 ≥ 阈值 → 置 risk_frozen=1（钉住，人工解锁——
+        保守面：避免 V 型反弹立即恢复开仓，先评估战法是否失效）
+      - G3 冷却：cooldown_until > 今天 → 冷却中；到期自动清除
+      - G4 日亏：当日平仓亏损合计 ≥ 本金限额 → 当日停开
+    """
+    row = db.fetch_one("SELECT * FROM paper_account WHERE id=%s", (ACCOUNT_ID,)) or {}
+    cooldown = False
+    cu = row.get("cooldown_until")
+    if cu:
+        if str(cu) > _bj_date():
+            cooldown = True
+        else:
+            db.execute("UPDATE paper_account SET cooldown_until=NULL WHERE id=%s", (ACCOUNT_ID,))
+    frozen = bool(row.get("risk_frozen"))
+    drawdown = 0.0
+    if not frozen:
+        peak = float(row.get("peak_equity") or INITIAL_CAPITAL)
+        eq = _current_equity()
+        if peak > 0:
+            drawdown = (peak - eq) / peak * 100
+            if drawdown >= DRAWDOWN_FREEZE_PCT:
+                frozen = True
+                db.execute("UPDATE paper_account SET risk_frozen=1 WHERE id=%s", (ACCOUNT_ID,))
+                _log_risk_event("risk_freeze", "",
+                                f"组合净值 {eq:,.0f} 自峰值 {peak:,.0f} 回撤 {drawdown:.1f}% "
+                                f"≥ {DRAWDOWN_FREEZE_PCT}%，冻结开新仓（需人工解锁：POST /api/paper/risk/unfreeze）")
+    daily = db.fetch_one(
+        "SELECT COALESCE(SUM(pnl_amount), 0) AS s FROM paper_positions "
+        "WHERE status='closed' AND exit_date=%s AND pnl_amount < 0", (_bj_date(),))
+    daily_loss = abs(float((daily or {}).get("s") or 0))
+    daily_stop = daily_loss >= INITIAL_CAPITAL * DAILY_LOSS_LIMIT_PCT / 100
+    return {"frozen": frozen, "cooldown": cooldown, "daily_stop": daily_stop,
+            "drawdown": round(drawdown, 2), "daily_loss": round(daily_loss, 0)}
+
+
+def unfreeze() -> dict:
+    """人工解除回撤熔断（评估战法是否失效后再解锁）。"""
+    db.execute("UPDATE paper_account SET risk_frozen=0, peak_equity=%s WHERE id=%s",
+               (_current_equity(), ACCOUNT_ID))   # 峰值重置为当前净值，避免立刻再触发
+    _log_risk_event("unfreeze", "", "人工解除回撤熔断，恢复开新仓（净值峰值已重置为当前净值）")
+    return {"ok": True, "message": "已解除熔断"}
+
+
+def _same_industry_count(code: str) -> tuple:
+    """(同行业持仓数, 行业名)。行业映射缺失 → (0, "") 不限制（攒样本优先，plan 开放问题 1）。"""
+    try:
+        from app.sector_industry import get_stock_industry
+        ind = (get_stock_industry(code) or {}).get("main_industry") or ""
+    except Exception:
+        return 0, ""
+    if not ind:
+        return 0, ""
+    holdings = db.fetch("SELECT code FROM paper_positions WHERE status='holding'")
+    same = 0
+    for h in holdings or []:
+        try:
+            if (get_stock_industry(h["code"]) or {}).get("main_industry") == ind:
+                same += 1
+        except Exception:
+            continue
+    return same, ind
+
+
+def _reject_position(pos_id: int, reason: str, note: str) -> None:
+    db.execute("UPDATE paper_positions SET status='cancelled', exit_reason=%s, "
+               "fill_note=%s, closed_at=%s WHERE id=%s", (reason, note, _now_iso(), pos_id))
 
 
 # ================================================================
@@ -337,6 +574,16 @@ def _close_position(pos: dict, exit_price: float, reason: str) -> None:
          1 if pnl_pct > 0 else 0, _now_iso(), pos["id"]))
     db.execute("UPDATE paper_account SET realized_pnl = realized_pnl + %s, updated_at=%s WHERE id=%s",
                (round(pnl_amount, 2), _now_iso(), ACCOUNT_ID))
+    # ★ 组合风控挂钩：G3 连亏冷却检测（只统计止损，manual/expire 不算）+ 净值峰值维护
+    recent = db.fetch("SELECT exit_reason FROM paper_positions WHERE status='closed' "
+                      "ORDER BY closed_at DESC LIMIT %s", (CONSEC_LOSS_COOLDOWN,))
+    if (len(recent or []) >= CONSEC_LOSS_COOLDOWN
+            and all(r["exit_reason"] == "stop_loss" for r in recent)):
+        until = (datetime.now() + timedelta(days=COOLDOWN_DAYS)).strftime("%Y-%m-%d")
+        db.execute("UPDATE paper_account SET cooldown_until=%s WHERE id=%s", (until, ACCOUNT_ID))
+        _log_risk_event("cooldown_start", pos["code"],
+                        f"连续 {CONSEC_LOSS_COOLDOWN} 笔止损，冷却至 {until} 不开新仓")
+    _update_peak_equity()
 
 
 def track_positions(use_daily: bool = False) -> dict:
@@ -390,6 +637,7 @@ def track_positions(use_daily: bool = False) -> dict:
         if reason:
             _close_position(h, exit_p, reason)
             closed += 1
+    _update_peak_equity()   # G2 基准：每次跟踪后刷新净值峰值
     print(f"[paper] 持仓跟踪{'（盘后兜底）' if use_daily else ''}: 平仓 {closed} 笔")
     return {"closed": closed}
 

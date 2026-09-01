@@ -163,7 +163,19 @@ CREATE TABLE IF NOT EXISTS paper_account (
     id INTEGER PRIMARY KEY,
     initial_capital REAL NOT NULL DEFAULT 100000,
     realized_pnl REAL NOT NULL DEFAULT 0,
+    peak_equity REAL,
+    cooldown_until TEXT,
+    risk_frozen INTEGER DEFAULT 0,
     updated_at TEXT
+);
+
+-- 风控事件审计（PLAN_PAPER_RISK.md：G1-G4 触发记录 + 企微推送底稿）
+CREATE TABLE IF NOT EXISTS paper_risk_events (
+    id SERIAL PRIMARY KEY,
+    time TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    code TEXT,
+    message TEXT
 );
 
 CREATE TABLE IF NOT EXISTS strategy_watch (

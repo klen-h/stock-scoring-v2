@@ -116,3 +116,18 @@ def account():
 def whitelist_refresh(dry_run: bool = True):
     """模拟盘样本充足后的白名单自动刷新建议（默认 dry_run 只给建议）。"""
     return paper_trading.auto_refresh_whitelist()
+
+
+@router.get("/risk")
+def risk_status():
+    """组合风控状态总览（G1-G4 gate + 净值/回撤 + 最近事件）。"""
+    st = paper_trading._risk_state()
+    acc = paper_trading.get_account()
+    events = db.fetch("SELECT * FROM paper_risk_events ORDER BY time DESC LIMIT 20") or []
+    return {"state": st, "account": acc, "recent_events": events}
+
+
+@router.post("/risk/unfreeze")
+def risk_unfreeze():
+    """人工解除回撤熔断（评估战法是否失效后再解锁）。"""
+    return paper_trading.unfreeze()
