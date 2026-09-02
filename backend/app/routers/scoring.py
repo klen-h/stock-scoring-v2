@@ -607,6 +607,28 @@ async def capture_score_snapshot():
     return {"recorded": count, "date": today, "total": len(data)}
 
 
+@router.get("/weights")
+def score_weights():
+    """
+    当前评分引擎生效的维度权重 + 市场状态。
+
+    ★ 前端本地评分引擎需同步该权重（2026-09-03：前端 scoringEngine.js 曾写死
+    静态 32/20/18/18/12，而引擎会随 regime 动态切到 27/23/23/17/11 等 →
+    同一股票前后端分数系统性漂移）。返回英文键 weights，前端注入 scoreStock。
+    """
+    _sync_regime_weights()   # 幂等：确保 engine 已切到当前 regime 的权重
+    from app.backtest.market_regime import get_regime_cache, get_regime_description
+    cache = get_regime_cache()
+    state = cache.get("state")
+    return {
+        "weights": dict(engine.weights),
+        "regime_state": state,
+        "regime_date": cache.get("date"),
+        "description": (get_regime_description(state) if state
+                        else "市场状态未判定（引擎用默认静态权重）"),
+    }
+
+
 @router.post("/weight-advice")
 async def weight_advice(data: dict):
     """
@@ -760,9 +782,32 @@ async def score_single(symbol: str):
         return {"error": f"未找到股票 {symbol}"}
 
     # 2. K线 + 技术指标
-    technical_data = get_kline(symbol, period="day", count=500)
+    # ★ 2026-09-03：详情每次实时拉腾讯 count=500 实测 90s 卡死（腾讯慢/超时），
+    #   且失败时降级导致分数与盘后快照不一致（成长/质量等维度表现异常）。
+    #   改为：非盘中优先读 kline_cache（读侧含当日 bar 合成与过期校验），
+    #   盘中实时拉取优先（腾讯日线含当日半根 bar），失败再兜缓存。
+    technical_data = None
+    try:
+        from app.tencent import _is_trading_hours
+        _trading_now = _is_trading_hours()
+    except Exception:
+        _trading_now = False
+    if not _trading_now:
+        try:
+            from app.scoring.kline_cache import get_cached_klines
+            technical_data = get_cached_klines(symbol)
+        except Exception:
+            pass
+    if not technical_data or len(technical_data) < 30:
+        technical_data = get_kline(symbol, period="day", count=500)
+    if (not technical_data or len(technical_data) < 30) and _trading_now:
+        try:
+            from app.scoring.kline_cache import get_cached_klines
+            technical_data = get_cached_klines(symbol)
+        except Exception:
+            pass
     # 数据足够时，复用技术指标计算逻辑（_calc_technical 在本文件底部）
-    if len(technical_data) >= 30:
+    if technical_data and len(technical_data) >= 30:
         technical_data = _calc_technical(technical_data)
 
     # 3. 基本面（从实时数据提取估值指标）

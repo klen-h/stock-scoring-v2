@@ -123,11 +123,39 @@ def filter_stock_pool(
 def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
     """
     获取K线并计算常用指标。
-    
+
     返回：
       K线列表，每根包含 {date, open, close, high, low, volume, change_pct, ...}
     """
-    klines = get_kline(code, period="day", count=count)
+    klines = None
+    # ★ DB 缓存优先（2026-09-03）：detail 短拉取（count=20/60）此前直连腾讯，
+    #   WAF 限流/偶发失败即 404（"未找到K线数据: xxx"）—— 而 kline_cache 里
+    #   明明有 484 根全量数据。非盘中时段缓存优先（读侧含当日 bar 合成与
+    #   过期校验）；盘中实时拉取优先（腾讯日线含当日半根 bar），失败再兜缓存。
+    try:
+        from app.tencent import _is_trading_hours
+        trading_now = _is_trading_hours()
+    except Exception:
+        trading_now = False
+    if not trading_now:
+        try:
+            from app.scoring.kline_cache import get_cached_klines
+            cached = get_cached_klines(code)
+            if cached and len(cached) >= 5:
+                klines = cached[-count:]
+        except Exception:
+            pass
+    if not klines:
+        klines = get_kline(code, period="day", count=count)
+    if not klines and trading_now:
+        # 盘中实时失败（WAF/网络）→ DB 缓存兜底，避免详情页 404
+        try:
+            from app.scoring.kline_cache import get_cached_klines
+            cached = get_cached_klines(code)
+            if cached and len(cached) >= 5:
+                klines = cached[-count:]
+        except Exception:
+            pass
     if not klines or len(klines) < 5:
         return []
     

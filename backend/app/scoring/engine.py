@@ -27,11 +27,10 @@
   而不是记 0 分。否则"尚未披露财报"会被当成"基本面极差"，
   导致这些股票被系统性低估、莫名掉榜。
 
-★ 已知局限（待 stock_industry 有数据后改进）：
-  资产负债率、毛利率的阈值是【绝对阈值】，但行业差异极大 ——
-  银行负债率 92% 属正常、白酒毛利率 90% 属正常。目前缺行业归类数据，
-  只能先按绝对值打分（阈值已刻意放宽，避免误伤金融/酒类）。
-  等个股→行业映射表建成后，应改为"行业内相对排名"打分。
+★ 行业内分位数（2026-09-03 已落地，替代下方旧局限）：
+  PE/PB/资产负债率/毛利率 已改为"行业内分位数"打分（_industry_pct_score），
+  银行负债率 92%、白酒毛利率 90% 不再被绝对阈值误伤——行业内相对便宜/优质
+  即高分。行业样本 <10 只或映射缺失时自动降级回绝对阈值曲线（曲线保留）。
 
 信号判定（基于综合分）：
   ≥ 80 → 强烈买入   |   ≥ 65 → 买入   |   45~65 → 观望
@@ -47,6 +46,32 @@ import math
 # 用 @dataclass 可以少写很多样板代码（自动生成 __init__ 等）
 from dataclasses import dataclass, field
 from typing import Optional
+
+# ── 行业内分位数打分（2026-09-03：还清"绝对阈值误伤银行/白酒"的技术债）──
+# 头部注释的已知局限：负债率/毛利率/PE/PB 是绝对阈值，但行业差异极大
+# （银行负债率 92% 正常、白酒毛利率 90% 正常）。stock_industry 映射已 100%
+# 覆盖，现改为"行业内分位数"打分：榜单排序本质是相对排名，同行业内相对
+# 便宜/优质即高分。数据：stock_industry × stock_finance，24h 刷新；
+# 行业样本 <10 只时降级回原绝对阈值曲线。
+IND_DIST_TTL = 86400
+IND_METRICS = ("pe", "pb", "debt_ratio", "gross_margin")
+_IND_DIST = {"ts": 0.0, "dist": {}, "code_ind": {}, "code_sub": {}}
+
+
+def _fin_sub_industry(name: str) -> str:
+    """金融行业二级细分。
+
+    新浪一级"金融行业"混银行/券商/保险，负债率（银行90%+ vs 券商75%）
+    和 PE（银行5x vs 券商20x）完全不可比，行业内分位会失真。按股票名称
+    关键词拆子桶；等映射表有申万二级细分后替换本函数。
+    """
+    if "银行" in name:
+        return "金融·银行"
+    if "证券" in name:
+        return "金融·证券"
+    if "保险" in name or "人寿" in name:
+        return "金融·保险"
+    return "金融·其他"
 
 
 @dataclass
@@ -230,7 +255,8 @@ class ScoreEngine:
         dim_cap  = self._score_capital(technical_data, stock_info)    # 资金面
         dim_fund = self._score_fundamental(stock_info, fundamental)   # 基本面
         dim_growth = self._score_growth(fundamental)                  # 成长
-        dim_quality = self._score_quality(fundamental)                # 质量
+        dim_quality = self._score_quality(fundamental,
+                                          code=stock_info.get("code"))  # 质量
 
         dimensions = [dim_tech, dim_cap, dim_fund, dim_growth, dim_quality]
         total = self._combine(dimensions)
@@ -980,7 +1006,7 @@ class ScoreEngine:
     #  质量评分 (12%)：ROE + 资产负债率 + 毛利率
     # ================================================================
 
-    def _score_quality(self, fundamental: dict) -> DimensionScore:
+    def _score_quality(self, fundamental: dict, code: str = None) -> DimensionScore:
         """
         质量维度：ROE(50) + 资产负债率(25) + 毛利率(25)。
 
@@ -998,11 +1024,37 @@ class ScoreEngine:
             details["ROE"] = {"分值": s, "满分": 50, "实际值": round(roe, 2)}
             parts.append((s, 50))
         if debt is not None:
-            s = self._debt_curve(debt)
+            # ★ 金融行业细分处理（2026-09-03，二轮修正）：
+            #   银行：负债率 90-95% 是商业模式（存款=负债），行业内也几乎无方差
+            #         （分位无意义），固定偏高好感分；
+            #   券商/保险：子行业内可比（同杠杆经营模式），用子行业分位；
+            #   多元金融：中性分。非金融：保留原绝对曲线（行业内分位有
+            #   "健康行业内互相压分"的副作用，如五粮液 34.6%→37 分）。
+            ind = _IND_DIST["code_ind"].get(code or "") if code else None
+            sub = _IND_DIST["code_sub"].get(code or "") if code else None
+            if ind == "金融行业":
+                if sub == "金融·银行":
+                    s = 75.0
+                elif sub in ("金融·证券", "金融·保险"):
+                    pct = self._industry_pct_score(code, "debt_ratio", debt)
+                    if pct is None:
+                        s = 70.0
+                    else:
+                        # 分位压缩到 [40,85]：券商高杠杆在紧缩期确实是风险应扣分，
+                        # 但极端分位（如中信证券 1 分）过狠 —— 杠杆高低不等于违约风险
+                        s = 40 + pct * 0.45
+                        s = _round1(s)
+                else:
+                    s = 65.0
+            else:
+                s = self._debt_curve(debt)
             details["资产负债率"] = {"分值": s, "满分": 25, "实际值": round(debt, 2)}
             parts.append((s, 25))
         if gross is not None:
-            s = self._gross_curve(gross)
+            # ★ 行业内分位优先（白酒 90% 毛利率不再被绝对阈值误伤）；样本不足降级
+            pct = self._industry_pct_score(code, "gross_margin", gross,
+                                           higher_better=True)
+            s = pct if pct is not None else self._gross_curve(gross)
             details["毛利率"] = {"分值": s, "满分": 25, "实际值": round(gross, 2)}
             parts.append((s, 25))
         raw = sum(s * w / 100 for s, w in parts) * 100 / sum(w for _, w in parts)
@@ -1058,6 +1110,95 @@ class ScoreEngine:
             return 45.0 + (g - 10) / 15 * 17
         return max(12.0, 45.0 - (10 - g) * 1.5)
 
+    # ================================================================
+    #  行业内分位数（PE/PB/负债率/毛利率 的行业内相对打分）
+    # ================================================================
+
+    @classmethod
+    def _industry_dist(cls) -> dict:
+        """行业指标分布 + code→行业映射（24h 缓存；失败时空缓存防打爆 DB）。"""
+        import time as _t
+        now = _t.time()
+        if _IND_DIST["dist"] and now - _IND_DIST["ts"] < IND_DIST_TTL:
+            return _IND_DIST
+        try:
+            from app.database import db
+            rows = db.fetch("""
+                SELECT si.code, si.main_industry AS ind, si.name AS sname,
+                       sf.debt_ratio, sf.gross_margin
+                FROM stock_industry si
+                JOIN stock_finance sf ON sf.code = si.code
+            """)
+            dist = {m: {} for m in IND_METRICS}
+            code_ind, code_sub = {}, {}
+            for r in rows or []:
+                ind = r.get("ind")
+                code = r.get("code")
+                if not ind or not code:
+                    continue
+                code_ind[code] = ind
+                # 金融股按名称拆子桶（银行/证券/保险不可比），指标进子行业分布
+                if ind == "金融行业":
+                    sub = _fin_sub_industry(r.get("sname") or "")
+                    code_sub[code] = sub
+                    bucket = sub
+                else:
+                    bucket = ind
+                for m in ("debt_ratio", "gross_margin"):
+                    v = r.get(m)
+                    if v is None:
+                        continue
+                    dist[m].setdefault(bucket, []).append(float(v))
+            # PE/PB：stock_finance 无此二列，取自全市场实时行情缓存（腾讯）。
+            # 缓存不可用（刚重启未刷新）时 PE/PB 分布为空 → 自动降级绝对曲线。
+            try:
+                from app.tencent import _cache as _tx_cache
+                for s in (_tx_cache.get("stocks") or {}).values():
+                    code = s.get("code")
+                    bucket = code_sub.get(code) or code_ind.get(code)
+                    if not bucket:
+                        continue
+                    for m in ("pe", "pb"):
+                        v = s.get(m)
+                        if v and float(v) > 0:
+                            dist[m].setdefault(bucket, []).append(float(v))
+            except Exception:
+                pass
+            for m in IND_METRICS:
+                for ind in dist[m]:
+                    dist[m][ind].sort()
+            _IND_DIST["ts"] = now
+            _IND_DIST["dist"] = dist
+            _IND_DIST["code_ind"] = code_ind
+            _IND_DIST["code_sub"] = code_sub
+            total = sum(len(v) for m in dist for v in dist[m].values())
+            print(f"[engine] 行业指标分布已加载: {total} 条 / "
+                  f"{len(code_ind)} 只 / {len(dist['pe'])} 行业")
+        except Exception as e:
+            print(f"[engine] 行业指标分布加载失败（本周期内降级绝对曲线）: {e}")
+            _IND_DIST["ts"] = now   # 失败也记 ts，避免每只股票都重试打爆 DB
+        return _IND_DIST
+
+    def _industry_pct_score(self, code: str, metric: str, value: float,
+                            higher_better: bool = False) -> Optional[float]:
+        """行业内分位数 → 0-100 分。样本不足/无行业返回 None（调用方降级绝对曲线）。
+
+        金融股自动落到子行业桶（金融·银行/证券/保险），避免混合分布失真。
+        """
+        if value is None or value <= 0:
+            return None
+        cache = self._industry_dist()
+        bucket = cache["code_sub"].get(code or "") or cache["code_ind"].get(code or "")
+        if not bucket:
+            return None
+        vals = cache["dist"].get(metric, {}).get(bucket)
+        if not vals or len(vals) < 10:
+            return None          # 行业样本太少，分位数不可靠
+        import bisect
+        pct = bisect.bisect_left(vals, value) / len(vals)   # 0~1
+        score = pct * 100 if higher_better else (1 - pct) * 100
+        return _round1(score)
+
     def _score_pe(self, stock_info: dict, fundamental: dict) -> float:
         """
         PE（市盈率）估值评分（满分 30）—— 市值分层版本。
@@ -1074,6 +1215,12 @@ class ScoreEngine:
         pe = stock_info.get("pe", 0) or 0
         if pe <= 0:
             return 40.0  # 亏损或无数据，中性偏低（详情页可见，但路由层会过滤出买入榜）
+
+        # ★ 行业内分位优先（2026-09-03 还清技术债）：行业内相对便宜即高分；
+        #   行业样本不足时降级回下方市值分层绝对曲线
+        pct_score = self._industry_pct_score(stock_info.get("code"), "pe", pe)
+        if pct_score is not None:
+            return pct_score
 
         # 市值（万元 → 亿元），用市值作为成长/价值的代理
         cap_yi = (stock_info.get("market_cap", 0) or 0) / 10000
@@ -1120,6 +1267,11 @@ class ScoreEngine:
         pb = stock_info.get("pb", 0) or 0
         if pb <= 0:
             return 40.0
+
+        # ★ 行业内分位优先；样本不足降级绝对区间
+        pct_score = self._industry_pct_score(stock_info.get("code"), "pb", pb)
+        if pct_score is not None:
+            return pct_score
 
         if pb < 1.0:
             return 95.0   # 破净

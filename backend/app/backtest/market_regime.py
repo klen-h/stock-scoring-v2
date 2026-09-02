@@ -26,6 +26,10 @@ import numpy as np
 OFFENSIVE = "offensive"
 NEUTRAL = "neutral"
 DEFENSIVE = "defensive"
+# 震荡偏空（2026-09-03 新增）：ADX 弱趋势 + MA 向下 + 宽度恶化/连续阴跌。
+# ★ 仅作状态标签与仓位警示，权重与 neutral 相同 —— 防御化权重已被回测否决
+#   （450 条快照双持有期口径，现震荡档全面最优，见 PLAN_REGIME_BEARISH.md）
+NEUTRAL_BEARISH = "neutral_bearish"
 
 # 判定参数（可调）
 ADX_THRESHOLD = 20.0          # ADX < 20 视为无趋势（震荡）
@@ -321,6 +325,106 @@ def _apply_hysteresis(raw_states: List[dict], min_days: int = 3) -> List[dict]:
     return result
 
 
+def _market_breadth_now() -> Optional[dict]:
+    """当日市场宽度（涨跌家数/涨跌停）。
+
+    取自行情内存缓存（主服务常驻，盘后仍持有当日收盘快照）；
+    独立脚本/缓存为空时返回 None，由调用方降级处理。
+    """
+    try:
+        from app.routers.market import _cache
+        stocks = _cache.get("stocks") or {}
+        if not stocks:
+            return None
+        up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0)
+        down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0)
+        limit_up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) >= 9.9)
+        limit_down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.9)
+        return {"up": up, "down": down, "limit_up": limit_up,
+                "limit_down": limit_down, "up_ratio": up / max(1, up + down)}
+    except Exception:
+        return None
+
+
+def _external_panic() -> tuple:
+    """外围恐慌（三选二，2026-09-03 新增：外部冲击主导的震荡偏空识别）。
+
+    数据源：宏观面板缓存（get_macro_panel，异常时返回不触发）：
+      - 日经单日 < -2%（亚太风险资产共振下跌）
+      - 布伦特 > +2% 且 黄金 < -1%（滞胀型紧缩：油胀金跌 = 实际利率上行）
+      - 美债 10Y 单日上行 > 5bp（全球贴现率冲击）
+    """
+    try:
+        from app.macro import get_macro_panel
+        p = get_macro_panel() or {}
+        d = p.get("derived") or {}
+        hits = []
+        nk = p.get("nikkei") or {}
+        if (nk.get("change_pct") or 0) < -2:
+            hits.append(f"日经{nk['change_pct']:.1f}%")
+        oil, gold = p.get("brent") or {}, p.get("gold") or {}
+        if (oil.get("change_pct") or 0) > 2 and (gold.get("change_pct") or 0) < -1:
+            hits.append(f"油{oil['change_pct']:.1f}%/金{gold['change_pct']:.1f}%")
+        bp = d.get("us10y_bp_change") or p.get("us10y_bp_change")
+        if bp is not None and bp > 5:
+            hits.append(f"美债10Y+{bp:.0f}bp")
+        return (len(hits) >= 2, "、".join(hits))
+    except Exception:
+        return (False, "")
+
+
+def _market_shrink_ratio() -> Optional[float]:
+    """市场缩量度：沪深300 当日额 / 20 日均额（<0.7 视为极端缩量）。
+
+    用 close×volume 作代理（比值与量纲无关）。仅供警示（detail 输出 +
+    日志），不改个股打分 —— _score_amount 本就是自相对指标，无需调整。
+    """
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT close, volume FROM backtest_prices "
+                        "WHERE code='sh000300' ORDER BY date DESC LIMIT 21")
+        if not rows or len(rows) < 21:
+            return None
+        amounts = [r["close"] * r["volume"] for r in rows]
+        avg20 = sum(amounts[1:]) / 20
+        return round(amounts[0] / avg20, 2) if avg20 > 0 else None
+    except Exception:
+        return None
+
+
+def _apply_bearish_refine(state: str, ma_trend: str = "") -> str:
+    """neutral + 重心下移 → neutral_bearish（仅状态标签，权重与 neutral 相同）。
+
+    判据（前提：state==neutral 且 ma_trend==down，满足其一即命中）：
+      1. 宽度恶化：上涨占比 < 0.40，或 跌停 ≥ 20 且跌停 > 涨停
+      2. 外围恐慌（三选二）：日京 -2% / 油胀金跌 / 美债 10Y +5bp
+      3. 降级判据（宽度缓存不可用）：沪深300 近 2 个交易日累计下跌
+    """
+    if state != NEUTRAL or ma_trend != "down":
+        return state
+    br = _market_breadth_now()
+    if br and (br["up_ratio"] < 0.40
+               or (br["limit_down"] >= 20 and br["limit_down"] > br["limit_up"])):
+        print(f"[market_regime] 宽度恶化（涨{br['up']}/跌{br['down']} "
+              f"涨停{br['limit_up']}/跌停{br['limit_down']}）→ neutral_bearish")
+        return NEUTRAL_BEARISH
+    panic, why = _external_panic()
+    if panic:
+        print(f"[market_regime] 外围恐慌触发（{why}）→ neutral_bearish")
+        return NEUTRAL_BEARISH
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT close FROM backtest_prices "
+                        "WHERE code='sh000300' ORDER BY date DESC LIMIT 3")
+        if rows and len(rows) >= 3 and rows[0]["close"] < rows[2]["close"]:
+            print("[market_regime] 沪深300 近2日累计下跌（宽度缓存不可用，降级判据）"
+                  " → neutral_bearish")
+            return NEUTRAL_BEARISH
+    except Exception:
+        pass
+    return state
+
+
 def get_regime_weights(state: str) -> dict:
     """
     根据市场状态返回五维度权重（和 = 1.0）。
@@ -344,6 +448,10 @@ def get_regime_weights(state: str) -> dict:
                      "growth": 0.12, "quality": 0.05},
         NEUTRAL:    {"technical": 0.27, "capital": 0.23, "fundamental": 0.23,
                      "growth": 0.17, "quality": 0.11},
+        # 与 neutral 相同：2026-09-03 回测（450 条快照，持有 2/5 日两口径）
+        # 防御化权重均跑输现震荡档，标签仅用于展示/仓位警示
+        NEUTRAL_BEARISH: {"technical": 0.27, "capital": 0.23, "fundamental": 0.23,
+                          "growth": 0.17, "quality": 0.11},
         DEFENSIVE:  {"technical": 0.12, "capital": 0.15, "fundamental": 0.25,
                      "growth": 0.13, "quality": 0.35},
     }
@@ -355,6 +463,7 @@ def get_regime_description(state: str) -> str:
     desc = {
         OFFENSIVE: "进攻型市场（牛市/强势上涨）",
         NEUTRAL:   "震荡型市场（盘整/无方向）",
+        NEUTRAL_BEARISH: "震荡偏空（无强趋势但重心下移，反弹宜减不宜追）",
         DEFENSIVE: "防御型市场（熊市/弱势下跌）",
     }
     return desc.get(state, "未知")
@@ -415,21 +524,30 @@ def refresh_regime_cache() -> Optional[dict]:
     if not states:
         return None
     latest = states[-1]
+    # neutral + 重心下移 + 宽度恶化 → neutral_bearish（仅标签，权重同 neutral）
+    refined_state = _apply_bearish_refine(latest.state, latest.ma_trend)
     _REGIME_CACHE["date"] = latest.date
-    _REGIME_CACHE["state"] = latest.state
-    _REGIME_CACHE["weights"] = get_regime_weights(latest.state)
+    _REGIME_CACHE["state"] = refined_state
+    _REGIME_CACHE["weights"] = get_regime_weights(refined_state)
     _REGIME_CACHE["detail"] = {
         "regime_score": latest.regime_score,
         "adx": latest.adx,
         "ma_trend": latest.ma_trend,
         "volatility_regime": latest.volatility_regime,
     }
+    # 极端缩量警示（仅 detail 输出 + 日志，不改打分）：sh000300 当日额 < 20日均额 70%
+    shrink = _market_shrink_ratio()
+    if shrink is not None:
+        _REGIME_CACHE["detail"]["volume_ratio_20d"] = shrink
+        if shrink < 0.7:
+            print(f"[market_regime] ⚠️ 极端缩量（沪深300 当日额=20日均额的 "
+                  f"{shrink:.0%}）：技术面信号可信度下降，建议降低仓位")
     try:
         _ensure_history_table()
         from app.database import db
         db.upsert("market_regime_history", {
             "date": latest.date,
-            "state": latest.state,
+            "state": refined_state,
             "regime_score": latest.regime_score,
             "adx": latest.adx,
             "ma_trend": latest.ma_trend,
@@ -438,7 +556,7 @@ def refresh_regime_cache() -> Optional[dict]:
         }, conflict_columns=["date"])
     except Exception as e:
         print(f"[market_regime] 状态落库失败: {e}")
-    print(f"[market_regime] 市场状态 {latest.date}: {latest.state} "
+    print(f"[market_regime] 市场状态 {latest.date}: {refined_state} "
           f"权重={_REGIME_CACHE['weights']}")
     return dict(_REGIME_CACHE)
 

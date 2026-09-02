@@ -15,7 +15,7 @@ import {
   getStockCount,
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
-import { getFinanceBatch } from '../api'
+import { getFinanceBatch, getScoreWeights } from '../api'
 import { scoreStock, roughScore } from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
@@ -198,6 +198,16 @@ export async function computeRanking(options = {}) {
   error.value = null
 
   try {
+    // ★ 0. 同步当前生效权重（后端会随 regime 动态切换，如震荡偏空
+    //   27/23/23/17/11）——拉取失败回退静态默认（scoringEngine 兜底）
+    let currentWeights = null
+    try {
+      const wres = await getScoreWeights()
+      currentWeights = (wres && wres.data && wres.data.weights) || null
+    } catch {
+      currentWeights = null
+    }
+
     // 1. 获取所有股票列表
     const allStocks = await getAllStocks()
 
@@ -243,7 +253,7 @@ export async function computeRanking(options = {}) {
     // 4. 简化评分快速排序
     const scored = stocksWithFin.map(s => ({
       ...s,
-      roughScore: roughScore(s),
+      roughScore: roughScore(s, null, currentWeights),
     }))
 
     // 5. 根据模式排序并取候选池
@@ -259,8 +269,8 @@ export async function computeRanking(options = {}) {
       candidates = scored.slice(0, Math.min(200, scored.length))
     }
 
-    // 6. 精算候选池（使用 Worker）
-    const preciseResults = await preciseScoreBatch(candidates)
+    // 6. 精算候选池（使用 Worker，同步当前生效权重）
+    const preciseResults = await preciseScoreBatch(candidates, currentWeights)
 
     // 7. 排序并取结果
     preciseResults.sort((a, b) => b.total_score - a.total_score)
@@ -326,11 +336,11 @@ export function appendTodayBar(klines, stock, now = new Date()) {
 /**
  * 批量精算评分（使用 Worker）
  */
-async function preciseScoreBatch(stocks) {
+async function preciseScoreBatch(stocks, weights) {
   if (!worker || !workerReady) {
     // Worker 不可用，降级到主线程计算
     console.warn('Worker 不可用，降级到主线程计算')
-    return preciseScoreBatchMainThread(stocks)
+    return preciseScoreBatchMainThread(stocks, weights)
   }
 
   const results = []
@@ -369,6 +379,7 @@ async function preciseScoreBatch(stocks) {
         name: stock.name,
         technicalData: wr.series,
         stockInfo: stock,
+        weights,
       })
 
       results.push(scoreResult)
@@ -381,7 +392,7 @@ async function preciseScoreBatch(stocks) {
 /**
  * 主线程降级计算
  */
-async function preciseScoreBatchMainThread(stocks) {
+async function preciseScoreBatchMainThread(stocks, weights) {
   const results = []
 
   for (const stock of stocks) {
@@ -399,6 +410,7 @@ async function preciseScoreBatchMainThread(stocks) {
         name: stock.name,
         technicalData,
         stockInfo: stock,
+        weights,
       })
 
       results.push(scoreResult)

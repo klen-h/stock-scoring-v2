@@ -67,6 +67,91 @@ def init_kline_cache_table():
 init_kline_cache_table()
 
 
+# ── K 线日期新鲜度（2026-09-03 新增，根治"缓存是新的、数据是旧的"）──
+# 2026-09-02 案例：15:30 刷新时腾讯日线尚未更新当日 bar（更新滞后数小时是
+# 常态，ETF 案例已证实），"截至 9/1 的 K 线"被打上 9/2 15:30 的新鲜
+# updated_at；旧逻辑只看 updated_at（36h）和条数，不看最后 K 线日期 →
+# 16:30 战法扫描推送的全是 9/1 收盘数据，且 9/3 白天仍被采信。
+def expected_kline_date() -> Optional[str]:
+    """当前时点 K 线应到达的最后交易日（仅交易日下午严格校验）。
+
+    - 交易日 15:00 之后 → 返回今天（收盘后当日 bar 应存在；腾讯日线滞后
+      时由 _append_today_bar 用实时行情合成）
+    - 盘中 / 盘前 / 非交易日 → None（不强校验：当日 bar 尚未生成，
+      昨日 K 线就是最新，属正常状态）
+    """
+    try:
+        from app.flash import rules
+        now = rules.beijing_now()
+        if now.hour >= 15 and rules.is_trading_day(now):
+            return now.strftime("%Y-%m-%d")
+    except Exception:
+        return None
+    return None
+
+
+def _prev_trading_date(date_str: str) -> str:
+    """date_str 的上一个交易日（最多回溯 15 天，覆盖长假）。"""
+    from datetime import datetime, timedelta
+    try:
+        from app.flash import rules
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        for i in range(1, 16):
+            cand = d - timedelta(days=i)
+            if rules.is_trading_day(cand):
+                return cand.strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return ""
+
+
+def _tencent_cache_key(code: str) -> str:
+    """腾讯行情缓存键（sh600906 / sz000001 / bj920xxx）。"""
+    if code.startswith("92") or code[0] in "48":
+        return f"bj{code}"
+    if code[0] in "569":
+        return f"sh{code}"
+    return f"sz{code}"
+
+
+def _append_today_bar(klines: List[Dict], code: str, expect_date: str) -> List[Dict]:
+    """K 线缺当日 bar 时，用腾讯实时行情快照合成（盘后价格已定格收盘）。
+
+    这是对"腾讯日线更新滞后"的根本兜底：日线接口当日 bar 常晚出数小时，
+    而 15:30 缓存刷新 / 15:40 战法扫描等不及。合成失败时原样返回，
+    由调用方决定降级策略（读侧视为过期走实时拉取）。
+    """
+    try:
+        if klines and (klines[-1].get("date") or "")[:10] == expect_date:
+            return klines
+        # ★ 连续性校验：只有缓存停在"前一交易日"才允许合成一根补齐。
+        #   缓存若停在更早（如 8/26 vs 期望 9/3，中间缺 8/27~9/2 多日），
+        #   补一根也无法修复序列的洞 —— 返回原数据，由读侧判过期走实时
+        #   拉取拿全量（宁可慢，不可序列有洞）。
+        prev_expect = _prev_trading_date(expect_date)
+        last_date = (klines[-1].get("date") or "")[:10]
+        if prev_expect and last_date < prev_expect:
+            print(f"[kline_cache] {code} K线停在 {last_date}，与 {expect_date} "
+                  f"之间缺多日，不合成（走实时拉取补全量）")
+            return klines
+        from app.tencent import _cache as tencent_cache
+        s = (tencent_cache.get("stocks") or {}).get(_tencent_cache_key(code)) or {}
+        price = s.get("price") or 0
+        if price <= 0:
+            return klines
+        bar = {
+            "date": expect_date,
+            "open": s.get("open") or price,
+            "close": price,
+            "high": max(s.get("high") or price, price),
+            "low": min(s.get("low") or price, price),
+            "volume": s.get("volume") or 0,
+        }
+        return list(klines) + [bar]
+    except Exception:
+        return klines
+
+
 def get_cached_klines(code: str) -> Optional[List[Dict]]:
     """
     从数据库获取K线缓存。
@@ -99,6 +184,17 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
     try:
         klines = json.loads(kline_json)
         if len(klines) >= 30:  # 至少30根K线才能评分
+            # ★ 读侧日期校验：盘后缓存最后 K 线必须到达期望交易日，落后则
+            #   用实时行情合成当日 bar 兜底；合成失败（行情缓存为空）视为
+            #   过期返回 None，上层走实时拉取 —— 宁可慢，不可旧。
+            expect = expected_kline_date()
+            if expect and (klines[-1].get("date") or "")[:10] < expect:
+                klines = _append_today_bar(klines, code, expect)
+                if (klines[-1].get("date") or "")[:10] < expect:
+                    print(f"[kline_cache] {code} 缓存停在"
+                          f"{(klines[-1].get('date') or '')[:10]}且无法合成当日bar，"
+                          f"判过期走实时拉取")
+                    return None
             return klines
         return None
     except (json.JSONDecodeError, TypeError):
@@ -122,16 +218,23 @@ def get_cached_klines_batch(codes: List[str]) -> Dict[str, List[Dict]]:
     """, tuple(codes))
     
     result = {}
+    expect = expected_kline_date()
     for row in rows:
         code = row["code"]
         kline_json = row.get("kline_data", "[]")
         try:
             klines = json.loads(kline_json)
             if len(klines) >= 30:
+                # ★ 读侧日期校验（同 get_cached_klines）：落后则合成当日 bar，
+                #   合成失败不返回该股（宁缺毋旧）
+                if expect and (klines[-1].get("date") or "")[:10] < expect:
+                    klines = _append_today_bar(klines, code, expect)
+                    if (klines[-1].get("date") or "")[:10] < expect:
+                        continue
                 result[code] = klines
         except (json.JSONDecodeError, TypeError):
             pass
-    
+
     return result
 
 
@@ -223,13 +326,21 @@ def refresh_kline_cache(codes: List[str] = None, progress_callback=None) -> Dict
         try:
             # 从腾讯API拉取K线
             klines = get_kline(code, period="day", count=CACHE_KLINE_COUNT)
-            
+
             if klines and len(klines) >= 30:
-                # 获取股票名称和市值
-                stock_info = tencent_cache.get("stocks", {}).get(code, {})
+                # ★ 写侧日期保障：腾讯日线当日 bar 更新滞后是常态，15:30 刷新
+                #   拉到的可能还停在昨日 —— 用实时行情合成当日 bar 再落库，
+                #   避免"截至昨日"的 K 线被打上新鲜 updated_at（2026-09-02 案例）
+                expect = expected_kline_date()
+                if expect:
+                    klines = _append_today_bar(klines, code, expect)
+                # 获取股票名称和市值（stocks 键为 sh600906 格式，需转换——
+                # 原代码 get(code) 纯 6 位永远取不到，name/market_cap 恒为空）
+                stock_info = tencent_cache.get("stocks", {}).get(
+                    _tencent_cache_key(code), {})
                 name = stock_info.get("name", "")
                 market_cap = stock_info.get("market_cap", 0) or 0
-                
+
                 save_kline_cache(code, name, klines, market_cap)
                 refreshed += 1
             else:

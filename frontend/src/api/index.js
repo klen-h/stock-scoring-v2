@@ -142,6 +142,8 @@ export const getBucketStats = (days = 120) => http.get('/score/bucket-stats', { 
 // 权重优化分析：不传 snapshots 时后端自动从每日快照库读取已验证记录（统一后推荐用法）
 export const getWeightAdvice = (snapshots = null) =>
   http.post('/score/weight-advice', snapshots ? { snapshots } : {}, { timeout: 30000 })
+// 当前引擎生效权重 + 市场状态（前端本地评分需同步，避免两套口径漂移）
+export const getScoreWeights = () => http.get('/score/weights', { timeout: 10000 })
 // 评分排行快照：后端每日自动落库（含维度分+价格），前端直接读取
 export const getSnapshots = (days = 30) => http.get('/score/snapshots', { params: { days } })
 // 手动立即记录当日快照（与调度器每日任务同源，同日幂等覆盖）

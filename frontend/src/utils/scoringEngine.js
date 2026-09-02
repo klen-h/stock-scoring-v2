@@ -22,12 +22,25 @@
  *   财报数据由调用方通过 getFinanceBatch(codes) 批量获取后传入。
  */
 
-// ── 权重配置（与后端 engine.py 严格一致，和为 1.0）──
+// ── 权重配置（默认与后端 engine.py 静态一致，和为 1.0）──
+// ★ 2026-09-03：后端会随市场状态（regime）动态切权重（震荡偏空 27/23/23/17/11
+//   等），若前端写死静态值会导致同一股票前后端分数漂移。scoreStock/roughScore
+//   现支持传入 weights（键 technical/capital/fundamental/growth/quality），
+//   由 useFrontendScoring.computeRanking 从 /api/score/weights 拉取注入；
+//   不传时回退本静态默认（行为不变）。
 const W_TECHNICAL = 0.32
 const W_CAPITAL = 0.20
 const W_FUNDAMENTAL = 0.18
 const W_GROWTH = 0.18
 const W_QUALITY = 0.12
+
+export const DEFAULT_WEIGHTS = {
+  technical: W_TECHNICAL,
+  capital: W_CAPITAL,
+  fundamental: W_FUNDAMENTAL,
+  growth: W_GROWTH,
+  quality: W_QUALITY,
+}
 
 // ── 工具函数 ──
 
@@ -56,13 +69,17 @@ function round2(v) {
  * @param {Object} params.stockInfo - 实时行情 { price, change_pct, pe, pb, market_cap, turnover_rate, ... }
  * @returns {Object} 评分结果
  */
-export function scoreStock({ code, name, technicalData, stockInfo, finance }) {
+export function scoreStock({ code, name, technicalData, stockInfo, finance, weights }) {
   technicalData = technicalData || []
   stockInfo = stockInfo || {}
   // finance: 财报数据 {revenue_yoy, profit_yoy, roe, debt_ratio, gross_margin}
   //   两种传入方式：① 显式 finance 参数 ② 合并进 stockInfo.finance（Worker 透明传递用）
   //   缺失时成长/质量维度为 null，归一化时跳过（不记 0 分）。
   finance = finance || (stockInfo && stockInfo.finance) || null
+
+  // 权重：优先用调用方注入的当前生效权重（键 technical/capital/...），
+  //   缺省回退静态默认 —— 与后端 regime 动态权重对齐的关键。
+  const w = { ...DEFAULT_WEIGHTS, ...(weights || {}) }
 
   // 五维度评分
   const dimTech = scoreTechnical(technicalData)
@@ -73,12 +90,12 @@ export function scoreStock({ code, name, technicalData, stockInfo, finance }) {
 
   // 构建维度列表（带权重，用于加权求和）
   const allDims = [
-    { name: '技术面', ...dimTech, weight: W_TECHNICAL },
-    { name: '资金面', ...dimCap, weight: W_CAPITAL },
-    { name: '基本面', ...dimFund, weight: W_FUNDAMENTAL },
+    { name: '技术面', ...dimTech, weight: w.technical },
+    { name: '资金面', ...dimCap, weight: w.capital },
+    { name: '基本面', ...dimFund, weight: w.fundamental },
   ]
-  if (dimGrowth) allDims.push({ name: '成长', ...dimGrowth, weight: W_GROWTH })
-  if (dimQuality) allDims.push({ name: '质量', ...dimQuality, weight: W_QUALITY })
+  if (dimGrowth) allDims.push({ name: '成长', ...dimGrowth, weight: w.growth })
+  if (dimQuality) allDims.push({ name: '质量', ...dimQuality, weight: w.quality })
 
   // ★ 加权求和 + 缺失归一化（与后端 _combine 一致）：
   //   score 为 null 的维度不参与，其权重按比例分摊给其余维度。
@@ -931,9 +948,11 @@ function generateSummary(name, total, signal, factorsUp, factorsDown) {
  * @param {Object} stockInfo - 实时行情
  * @returns {number} 简化评分（0-100）
  */
-export function roughScore(stockInfo, finance) {
+export function roughScore(stockInfo, finance, weights) {
   // 兜底 stockInfo.finance（调用方合并进来时）
   finance = finance || (stockInfo && stockInfo.finance) || null
+  // 权重对齐（同 scoreStock）：不传回退静态默认
+  const w = { ...DEFAULT_WEIGHTS, ...(weights || {}) }
   const changePct = stockInfo.change_pct || 0
   const turnover = stockInfo.turnover_rate || 0
   const pe = stockInfo.pe || 0
@@ -959,8 +978,8 @@ export function roughScore(stockInfo, finance) {
   if (finance) {
     const g = scoreGrowth(finance)
     const q = scoreQuality(finance)
-    if (g) extra.push({ score: g.score, weight: W_GROWTH })
-    if (q) extra.push({ score: q.score, weight: W_QUALITY })
+    if (g) extra.push({ score: g.score, weight: w.growth })
+    if (q) extra.push({ score: q.score, weight: w.quality })
   }
   const mainW = 1 - extra.reduce((s, d) => s + d.weight, 0)
   const dims = [{ score: mainScore, weight: Math.max(0, mainW) }, ...extra]
