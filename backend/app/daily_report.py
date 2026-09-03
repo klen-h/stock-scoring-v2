@@ -681,10 +681,13 @@ def _llm_interpret_markdown(data_md: str) -> str:
         return ""
 
 
-def run_daily_report(push: bool = True) -> dict:
+def run_daily_report(push: bool = False) -> dict:
     """
-    生成当日日报：硬数据 + LLM 解读 → 落盘 + 落库 + 推送。
-    push=False 时不推企微（测试用）。返回摘要 dict。
+    生成当日日报：硬数据 + LLM 解读 → 落盘 + 落库（+ 可选推送）。
+
+    企微推送默认关闭：日报已有前端阅读页（/report），每日推送会刷屏。
+    需要推送时显式开启：run_daily_report(push=True) 或环境变量 DAILY_REPORT_PUSH=1。
+    返回摘要 dict。
     """
     ensure_table()
     os.makedirs(_REVIEWS_DIR, exist_ok=True)
@@ -706,7 +709,8 @@ def run_daily_report(push: bool = True) -> dict:
     except Exception as e:
         print(f"[daily_report] 落库失败: {e}")
     pushed = False
-    if push and not os.environ.get("DAILY_REPORT_NO_PUSH"):
+    # 默认不推企微；需推送时 push=True 或 DAILY_REPORT_PUSH=1
+    if push or os.environ.get("DAILY_REPORT_PUSH") == "1":
         try:
             from app.flash import wechat
             wechat.push_markdown_batched(f"📋 A股日报 {date}", md)

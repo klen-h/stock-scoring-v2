@@ -5,8 +5,8 @@
 【文件作用】手动触发每日 A 股大盘日报（测试/补跑）
 ================================================================================
 用法：
-  python scripts/trigger_daily_report.py            # 生成并推送企微
-  python scripts/trigger_daily_report.py --no-push  # 只生成不推送
+  python scripts/trigger_daily_report.py            # 只生成（默认不推企微）
+  python scripts/trigger_daily_report.py --push     # 生成并推送企微
   python scripts/trigger_daily_report.py --date 2026-09-03   # 读某日（如已存在）
 ================================================================================
 """
@@ -36,7 +36,7 @@ sys.path.insert(0, BACKEND_DIR)
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--no-push", action="store_true", help="只生成不推送企微")
+    ap.add_argument("--push", action="store_true", help="推送企微（默认只生成不推送）")
     ap.add_argument("--date", default="", help="读取某日已生成的日报")
     args = ap.parse_args()
 
@@ -50,8 +50,8 @@ def main():
         print((r.get("markdown") or "")[:2000])
         return
 
-    if args.no_push:
-        os.environ["DAILY_REPORT_NO_PUSH"] = "1"
+    if args.push:
+        os.environ["DAILY_REPORT_PUSH"] = "1"
     from app.daily_report import run_daily_report
     res = run_daily_report()
     print("生成结果:", res)
