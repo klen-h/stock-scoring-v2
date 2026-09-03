@@ -74,14 +74,24 @@ def _macro_snapshot() -> dict:
 
 
 def _etf_pulse() -> list:
-    """关键 ETF 收盘涨跌（跟踪指数代理）。"""
+    """关键 ETF 收盘涨跌（跟踪指数代理）。
+
+    ★ 字段修正：get_etf_quotes() 返回的涨跌幅字段是 `change`（不是 change_pct），
+      旧代码读 change_pct 恒为 None → ETF 区块一直空。此处优先读 change，兼容 change_pct。
+    ★ 盘后兜底：实时源取不到（腾讯盘后偶发空）时回退 store.load_etf_close() 收盘快照。
+    """
     from app.signals import tracker
     market = tracker.get_market_data(force=True)
     holdings = market.get("holdings") or []
+    if not holdings:
+        close = store.load_etf_close()
+        holdings = close.get("holdings") or []
     out = []
     for h in holdings:
         p = h.get("price") or 0
-        c = h.get("change_pct")
+        c = h.get("change")
+        if c is None:
+            c = h.get("change_pct")  # 兼容旧字段
         if p > 0 and c is not None:
             out.append({"name": h.get("name"), "price": p, "change_pct": c})
     return sorted(out, key=lambda x: x["change_pct"], reverse=True)
