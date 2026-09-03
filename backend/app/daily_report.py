@@ -8,15 +8,18 @@
   「全市场 + 系统状态 + 用户持仓 + 模拟盘」的体系化复盘。
 
 组成（1-3 部分为硬数据直填 DB，LLM 不参与 → 保证准确；仅第 4 部分 LLM 解读）：
-  1. 今日市场脉冲：ETF 关键资产涨跌 + 全市场宽度（market_snapshot）
+  1. 今日市场脉冲：外围环境 + 指数结构 + ETF + 样本宽度（market_snapshot）
   2. 系统状态：regime 判定与权重 / 评分榜 Top10 及较昨日变化 / 板块资金流 / 战法命中 / 模拟盘
   3. 你的持仓：现价 / 浮盈亏（DB user_portfolio × 实时行情）
-  4. LLM 解读：今日主线 → 板块逻辑 → 明日预案 → 持仓操作建议（R1 单次调用，受日熔断保护）
+  4. LLM 解读：今日主线 → 板块逻辑 → 明日预案 → 持仓观察（R1 单次调用，受日熔断保护）
 
-存储与推送：
-  - 文件 backend/reviews/daily_YYYY-MM-DD.md
-  - 表 daily_reports(date PK, markdown, created_at)（供前端/历史回溯）
-  - 企微推送（设置环境变量 DAILY_REPORT_NO_PUSH=1 可关闭推送，便于测试）
+评审驱动改进（2026-09-03）：
+  - 外围环境必须纳入（macro_snapshot 已有）
+  - 指数结构 vs 个股结构必须分离（防"指数红=没跌"的误导）
+  - 样本范围必须标注（3230 只是有效交易样本，非全 A 5300+）
+  - ETF 缺失时明确警示信号可信度下降
+  - 模拟盘增加盈亏率/仓位/标的明细
+  - LLM 不给买卖指令，但给观察要点+关键位
 ================================================================================
 """
 
@@ -59,10 +62,19 @@ def _yesterday_trading_day() -> str:
 
 
 # ──────────────────────────────────────────────────────────────
-#  1. 今日市场脉冲（硬数据）
+#  1. 今日市场脉冲（硬数据：外围 + 指数结构 + ETF + 样本宽度）
 # ──────────────────────────────────────────────────────────────
+def _macro_snapshot() -> dict:
+    """宏观快照（含外围环境），失败返回空 dict。"""
+    try:
+        from app.macro import get_macro_snapshot
+        return get_macro_snapshot() or {}
+    except Exception:
+        return {}
+
+
 def _etf_pulse() -> list:
-    """关键 ETF 收盘涨跌（跟踪指数代理，列名 change_pct 缺失时返回空）。"""
+    """关键 ETF 收盘涨跌（跟踪指数代理）。"""
     from app.signals import tracker
     market = tracker.get_market_data(force=True)
     holdings = market.get("holdings") or []
@@ -72,12 +84,11 @@ def _etf_pulse() -> list:
         c = h.get("change_pct")
         if p > 0 and c is not None:
             out.append({"name": h.get("name"), "price": p, "change_pct": c})
-    # 按涨跌幅排序（极端涨跌更能说明问题）
     return sorted(out, key=lambda x: x["change_pct"], reverse=True)
 
 
 def _breadth() -> dict:
-    """全市场宽度：来自收盘行情快照（market_snapshot）。字段缺失自动降级。"""
+    """样本宽度：来自收盘行情快照（market_snapshot）。字段缺失自动降级。"""
     snap = store.load_market_snapshot()
     stocks = snap.get("stocks") or {}
     items = list(stocks.values()) if isinstance(stocks, dict) else list(stocks)
@@ -118,7 +129,6 @@ def _regime() -> dict:
             get_regime_cache, get_regime_description, restore_regime_cache_from_db)
         c = get_regime_cache()
         if not c or not c.get("state"):
-            # 独立进程/新起脚本无内存缓存 → 从 market_regime_history 恢复
             restore_regime_cache_from_db()
             c = get_regime_cache()
         if not c or not c.get("state"):
@@ -210,35 +220,30 @@ def _paper_summary() -> dict:
             "SELECT COUNT(*) AS n, COALESCE(SUM(pnl_amount), 0) AS pnl "
             "FROM paper_positions WHERE status = 'closed' AND exit_date = %s", (_today(),))
         acc = db.fetch_one("SELECT * FROM paper_account WHERE id = 1")
+        nav = (acc or {}).get("nav") or 0
+        init = (acc or {}).get("initial_capital") or 1
+        # 当日已平仓标的明细
+        closed_rows = db.fetch(
+            "SELECT code, name, pnl_amount, exit_reason "
+            "FROM paper_positions WHERE status = 'closed' AND exit_date = %s", (_today(),))
         return {
             "holding": (holding or {}).get("n") or 0,
             "cost": (holding or {}).get("cost") or 0,
             "closed_today": (closed or {}).get("n") or 0,
             "pnl_today": (closed or {}).get("pnl") or 0,
             "realized": (acc or {}).get("realized_pnl"),
+            "nav": nav,
+            "nav_pct": round((nav - init) / init * 100, 2) if init else None,
+            "closed_list": [{"code": r["code"], "name": r.get("name") or r["code"],
+                             "pnl": r.get("pnl_amount"), "reason": r.get("exit_reason") or ""}
+                            for r in (closed_rows or [])],
         }
     except Exception:
         return {}
 
 
-def _flash_events() -> list:
-    """今日快讯已推送簇的摘要（簇名→更新时间）。"""
-    try:
-        cutoff = rules.beijing_now().timestamp() - 12 * 3600
-        out = []
-        for c in store.load_state().get("pushedClusters", []):
-            try:
-                if datetime.fromisoformat(c["lastUpdateTime"]).timestamp() > cutoff:
-                    out.append(c.get("cluster", ""))
-            except Exception:
-                continue
-        return out[-8:]
-    except Exception:
-        return []
-
-
 # ──────────────────────────────────────────────────────────────
-#  3. 用户持仓（硬数据：DB × 实时行情）
+#  3. 用户持仓（硬数据：DB × 实时行情，按 code 聚合）
 # ──────────────────────────────────────────────────────────────
 def _portfolio() -> list:
     try:
@@ -254,7 +259,6 @@ def _portfolio() -> list:
                     quotes[str(q["code"])] = q
         except Exception:
             pass
-        # 按 code 聚合（同股多账户/多行 → 加权均价 + 总股数），避免表格重复行
         agg = {}
         for r in rows:
             code = str(r["code"])
@@ -293,29 +297,104 @@ def _fmt_money(v) -> str:
         return "-"
 
 
+def _fmt_pct(v) -> str:
+    try:
+        return f"{float(v):+.2f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def build_data_md() -> str:
     lines = []
     add = lines.append
 
     # ── 1 市场脉冲 ──
     add("## 一、今日市场脉冲\n")
+
+    # 1a 外围环境（macro_snapshot）
+    macro = _macro_snapshot()
+    panel = macro.get("panel") or {}
+    direction = macro.get("direction") or {}
+    derived = macro.get("derived") or {}
+    add("### 1.1 外围环境\n")
+    if panel:
+        brent = panel.get("brent", {})
+        nikkei = panel.get("nikkei", {})
+        nasdaq = panel.get("nasdaq", {})
+        us10 = panel.get("us10y", {})
+        us30 = panel.get("us30y", {})
+        dxy = panel.get("dxy", {})
+        parts = []
+        if nikkei.get("change_pct") is not None:
+            parts.append(f"日经 {nikkei['change_pct']:+.2f}%")
+        # 韩国无直接代码，用宏观方向分里的标签间接反映（若有）
+        tags = macro.get("tags") or []
+        global_bear = [t for t in tags if t.get("group") == "global" and t.get("direction") == "bear"]
+        if global_bear:
+            parts.append("全球风险偏好承压（" + "、".join(t.get("tag", "") for t in global_bear[:2]) + "）")
+        if brent.get("price"):
+            parts.append(f"布伦特 ${brent['price']:.2f}（{_fmt_pct(brent.get('change_pct'))}）")
+        if us10.get("price"):
+            parts.append(f"10Y美债 {us10['price']:.2f}%（{derived.get('us10y_bp_change', 0):+.0f}bp）")
+        if us30.get("price"):
+            parts.append(f"30Y美债 {us30['price']:.2f}%")
+        if dxy.get("price"):
+            parts.append(f"美元指数 {dxy['price']:.2f}")
+        if parts:
+            add("- " + " ｜ ".join(parts))
+        else:
+            add("- 外围数据暂缺（macro 面板未就绪）")
+    else:
+        add("- 外围数据暂缺（macro 面板未就绪）")
+    # 方向分一句话
+    if direction.get("level"):
+        add(f"- 宏观方向分：**{direction['level']}**（{direction.get('score', '-')} 分）"
+            f"{' → A股承压' if direction.get('score', 0) < 0 else ''}")
+
+    # 1b 指数结构 vs 个股结构（必须分离，防误导）
+    add("\n### 1.2 指数与个股结构\n")
     etf = _etf_pulse()
+    # 取沪深300/创业板/中证1000代理指数表现
+    idx_map = {"沪深300ETF": "沪深300", "创业板ETF": "创业板", "中证1000ETF": "中证1000",
+               "中证500ETF": "中证500", "科创板50ETF": "科创50"}
+    idx_perf = []
+    for e in etf:
+        alias = idx_map.get(e["name"])
+        if alias:
+            idx_perf.append(f"{alias} {e['change_pct']:+.2f}%")
+    if idx_perf:
+        add(f"- 指数表现：{' ｜ '.join(idx_perf)}")
+    else:
+        add("- 指数表现：ETF 数据缺失，指数层面无法验证")
+
+    breadth = _breadth()
+    if breadth.get("total"):
+        ratio = round(breadth["up"] / max(1, breadth["down"]), 2)
+        add(f"- 个股样本（有效交易）：{breadth['total']} 只 ｜ "
+            f"涨 {breadth['up']} / 跌 {breadth['down']} / 平 {breadth['flat']} "
+            f"｜ 涨跌比 {ratio} ｜ 平均 {breadth['avg']:+.2f}%"
+            f"（快照 {breadth.get('saved_at', '')[:16]}）")
+        # 关键结构判断：指数红 vs 个股绿
+        if idx_perf:
+            # 简单判断：若任一主要指数微红/涨但个股平均跌 → 权重护盘
+            any_up = any("+" in p for p in idx_perf)
+            avg_neg = (breadth.get("avg") or 0) < 0
+            if any_up and avg_neg:
+                add("- ⚠️ **结构失真**：指数红 / 个股平均绿 = 权重股护盘，小票失血。"
+                    "这不是健康市场，是磨底期典型特征。")
+    else:
+        add("- 个股样本数据暂缺（收盘快照未就绪）")
+
+    # 1c ETF 关键资产 + 缺失警示
+    add("\n### 1.3 ETF 关键资产\n")
     if etf:
         add("| 资产(ETF) | 现价 | 涨跌幅 |")
         add("|---|---|---|")
         for e in etf[:10]:
             add(f"| {e['name']} | {e['price']:.3f} | {e['change_pct']:+.2f}% |")
-    breadth = _breadth()
-    if breadth.get("total"):
-        add("")
-        add(f"- 全市场：{breadth['total']} 只 ｜ 涨 {breadth['up']} / 跌 {breadth['down']} "
-            f"/ 平 {breadth['flat']}"
-            + (f" ｜ 平均 {breadth['avg']:+.2f}%" if breadth.get("avg") is not None else "")
-            + f"（快照 {breadth.get('saved_at', '')[:16]}）")
-    if not etf and breadth.get("total"):
-        add("- ETF 行情未取到（保留快照宽度统计；可能为休市/源暂不可用）")
-    if not etf and not breadth.get("total"):
-        add("- 市场数据暂缺（收盘快照未就绪）")
+    else:
+        add("> ⚠️ **ETF 行情未取到**（可能为休市/数据源暂不可用）。"
+            "今日 ETF 相关信号可信度下降，建议以个股层面数据为主。")
 
     # ── 2 系统状态 ──
     add("\n## 二、系统状态\n")
@@ -365,9 +444,21 @@ def build_data_md() -> str:
     paper = _paper_summary()
     if paper:
         add("")
-        add(f"**模拟盘**：持仓 {paper['holding']} 笔（市值 {_fmt_money(paper['cost'])}），"
-            f"今日平仓 {paper['closed_today']} 笔盈亏 {float(paper.get('pnl_today') or 0):+,.0f} 元，"
+        nav_info = f"，NAV {float(paper.get('nav') or 0):,.0f}（{paper.get('nav_pct') or '-'}%）" if paper.get("nav") else ""
+        pnl_rate = ""
+        if paper.get("cost"):
+            try:
+                rate = float(paper.get("pnl_today") or 0) / max(1, float(paper["cost"])) * 100
+                pnl_rate = f"（{rate:+.3f}%）"
+            except Exception:
+                pass
+        add(f"**模拟盘**：持仓 {paper['holding']} 笔（市值 {_fmt_money(paper['cost'])}）{nav_info}，"
+            f"今日平仓 {paper['closed_today']} 笔盈亏 {float(paper.get('pnl_today') or 0):+,.0f} 元{pnl_rate}，"
             f"累计已实现 {float(paper.get('realized') or 0):+,.0f} 元")
+        if paper.get("closed_list"):
+            add("- 平仓明细：" + "、".join(
+                f"{c['name']}({float(c['pnl'] or 0):+,.0f}｜{c['reason']})"
+                for c in paper["closed_list"]))
 
     # ── 3 用户持仓 ──
     pos = _portfolio()
@@ -399,14 +490,27 @@ def _llm_interpret(data_md: str) -> str:
             "你是专业的 A 股投研助手。你只会基于用户提供的结构化数据做复盘解读，"
             "绝不编造数据或数字；数据中未出现的信息一律写 N/A。"
             "你是研究员而非交易顾问：绝不给出\"买入/加仓/补仓/卖出/减仓/止损\"等指令式操作建议，"
-            "只给出观察要点、关键位与风险提示。输出精炼的 Markdown。")
+            "只给出观察要点、关键位与风险提示。"
+            "特别注意：\n"
+            "1. 若系统判定为震荡偏空(neutral_bearish)，对\"突破信号\"应指出假突破概率高，而非\"机会\"。\n"
+            "2. 对\"涨但资金流出\"的板块，应指出\"拉高出货\"风险，而非\"数据波动\"。\n"
+            "3. 同一板块不能同时给出矛盾解读（如既\"利好\"又\"避险\"）；若缩量上涨，优先解读为护盘。\n"
+            "4. 持仓点评必须给出具体观察位（如\"跌破X元需警惕\"），不能只说\"关注支撑\"。\n"
+            "输出精炼的 Markdown。")
         user = (
             f"以下是 {_today()} A 股收盘后的系统数据。\n\n{data_md}\n\n"
             "请输出以下四个小节（每节 2-5 条，简练）:\n"
-            "## 今日主线\n（一句话定性 + 普跌/权重护盘等结构判断）\n"
-            "## 板块与资金\n（净流入/流出行业背后的可能逻辑，结合涨跌幅，保持审慎措辞）\n"
-            "## 系统信号解读\n（regime/评分榜 Top10 异动/战法命中/模拟盘盈亏的解读与验证）\n"
-            "## 明日预案与持仓观察\n（列出关键观察指标；对\"你的持仓\"每只给观察要点/风险，不给买卖指令）\n"
+            "## 今日主线\n"
+            "（一句话定性：分化/普跌/权重护盘/磨底等；必须区分\"指数表现\"和\"个股表现\"）\n"
+            "## 板块与资金\n"
+            "（净流入/流出行业背后的可能逻辑；对涨但资金流出的板块指出拉高出货风险；"
+            "对证券Ⅲ等子行业，若缩量上涨则解读为护盘而非市场自发看好）\n"
+            "## 系统信号解读\n"
+            "（regime/评分榜 Top10 异动/战法命中/模拟盘盈亏的解读；"
+            "若 regime=neutral_bearish 且出现突破信号，指出假突破概率高）\n"
+            "## 明日预案与持仓观察\n"
+            "（列出 3-5 个关键观察指标；对\"你的持仓\"每只给具体观察位/风险，"
+            "如\"跌破X元需警惕\"或\"反弹至Y元观察量能\"；不给买卖指令）\n"
             "最后用 **一句话风险提示** 收尾。")
         text = llm.call_llm(system, user, temperature=0.3)
         text = (text or "").strip()
