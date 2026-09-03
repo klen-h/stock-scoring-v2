@@ -304,6 +304,33 @@ def _fmt_pct(v) -> str:
         return "-"
 
 
+def _northbound() -> dict:
+    """北向资金当日净流入（收盘后取最终值），失败返回空 dict。"""
+    try:
+        from app.eastmoney import get_northbound
+        nb = get_northbound()
+        if not nb:
+            return {}
+        # 取 series 最后一根作为收盘最终值（休市时也是当日最终）
+        series = nb.get("series") or []
+        if series:
+            last = series[-1]
+            return {
+                "time": last.get("time"),
+                "sh_net": last.get("total_net", 0),  # series 里只有 total_net
+                "total_net": nb.get("total_net", 0),
+                "series_len": len(series),
+            }
+        return {
+            "time": nb.get("time"),
+            "sh_net": nb.get("sh_net", 0),
+            "sz_net": nb.get("sz_net", 0),
+            "total_net": nb.get("total_net", 0),
+        }
+    except Exception:
+        return {}
+
+
 def build_data_md() -> str:
     lines = []
     add = lines.append
@@ -385,8 +412,25 @@ def build_data_md() -> str:
     else:
         add("- 个股样本数据暂缺（收盘快照未就绪）")
 
-    # 1c ETF 关键资产 + 缺失警示
-    add("\n### 1.3 ETF 关键资产\n")
+    # 1c 北向资金（收盘最终值）
+    add("\n### 1.3 北向资金\n")
+    nb = _northbound()
+    if nb:
+        total = nb.get("total_net") or 0
+        sh = nb.get("sh_net") or 0
+        sz = nb.get("sz_net") or 0
+        sign = "+" if total >= 0 else ""
+        add(f"- 当日净流入：**{sign}{total/1e8:.1f}亿**（沪 {sh/1e8:+.1f}亿 / 深 {sz/1e8:+.1f}亿）"
+            f"（收盘 {nb.get('time', '-')}）")
+        if total > 5e8:
+            add("- 北向大幅净流入，外资态度积极")
+        elif total < -5e8:
+            add("- ⚠️ 北向大幅净流出，外资离场信号")
+    else:
+        add("- 北向资金数据暂缺")
+
+    # 1d ETF 关键资产 + 缺失警示
+    add("\n### 1.4 ETF 关键资产\n")
     if etf:
         add("| 资产(ETF) | 现价 | 涨跌幅 |")
         add("|---|---|---|")
@@ -496,6 +540,7 @@ def _llm_interpret(data_md: str) -> str:
             "2. 对\"涨但资金流出\"的板块，应指出\"拉高出货\"风险，而非\"数据波动\"。\n"
             "3. 同一板块不能同时给出矛盾解读（如既\"利好\"又\"避险\"）；若缩量上涨，优先解读为护盘。\n"
             "4. 持仓点评必须给出具体观察位（如\"跌破X元需警惕\"），不能只说\"关注支撑\"。\n"
+            "5. 北向资金大幅净流出（>5亿）时，必须指出外资离场风险；大幅净流入时，可指出外资态度积极但需结合市场整体量能判断。\n"
             "输出精炼的 Markdown。")
         user = (
             f"以下是 {_today()} A 股收盘后的系统数据。\n\n{data_md}\n\n"
@@ -504,7 +549,8 @@ def _llm_interpret(data_md: str) -> str:
             "（一句话定性：分化/普跌/权重护盘/磨底等；必须区分\"指数表现\"和\"个股表现\"）\n"
             "## 板块与资金\n"
             "（净流入/流出行业背后的可能逻辑；对涨但资金流出的板块指出拉高出货风险；"
-            "对证券Ⅲ等子行业，若缩量上涨则解读为护盘而非市场自发看好）\n"
+            "对证券Ⅲ等子行业，若缩量上涨则解读为护盘而非市场自发看好；"
+            "北向资金动向必须单独点评，与内资板块流向做对比）\n"
             "## 系统信号解读\n"
             "（regime/评分榜 Top10 异动/战法命中/模拟盘盈亏的解读；"
             "若 regime=neutral_bearish 且出现突破信号，指出假突破概率高）\n"
