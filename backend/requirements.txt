@@ -6,3 +6,5 @@ numpy==1.26.2
 psycopg2-binary==2.9.9
 PyJWT==2.8.0
 python-dotenv==1.0.0
+# 低频补充数据源（现金流/财报扩展因子，见 PLAN_ZZSHARE_INTEGRATION；可选，匿名可用）
+zzshare>=0.4.11
