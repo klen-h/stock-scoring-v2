@@ -564,3 +564,36 @@ def refresh_regime_cache() -> Optional[dict]:
 def get_regime_cache() -> dict:
     """读取当日市场状态缓存（未生成时返回空 dict，调用方回退默认/静态权重）。"""
     return dict(_REGIME_CACHE)
+
+
+def restore_regime_cache_from_db() -> Optional[dict]:
+    """
+    ★ 重启恢复：regime 缓存（_REGIME_CACHE）是进程内存，而调度器的
+    schedule_done 幂等标记会让「当日已判定」在重启后不再重算 → 评分回退
+    静态默认权重，与快照（regime 权重）产生数分漂移。此函数从
+    market_regime_history 读最近一次判定回填内存缓存。
+    返回 dict(_REGIME_CACHE) 或 None。
+    """
+    try:
+        _ensure_history_table()
+        from app.database import db
+        row = db.fetch_one(
+            "SELECT * FROM market_regime_history ORDER BY date DESC LIMIT 1")
+        if not row or not row.get("state"):
+            return None
+        _REGIME_CACHE["date"] = row["date"]
+        _REGIME_CACHE["state"] = row["state"]
+        _REGIME_CACHE["weights"] = get_regime_weights(row["state"])
+        _REGIME_CACHE["detail"] = {
+            "regime_score": row.get("regime_score"),
+            "adx": row.get("adx"),
+            "ma_trend": row.get("ma_trend"),
+            "volatility_regime": row.get("volatility_regime"),
+            "restored": True,   # 标记：来自历史表恢复而非当日重算
+        }
+        print(f"[market_regime] 重启恢复缓存: {_REGIME_CACHE['date']} "
+              f"{_REGIME_CACHE['state']} 权重={_REGIME_CACHE['weights']}")
+        return dict(_REGIME_CACHE)
+    except Exception as e:
+        print(f"[market_regime] 恢复缓存失败: {e}")
+        return None

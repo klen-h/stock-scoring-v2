@@ -142,6 +142,8 @@
           <tr>
             <th class="px-3 py-2 text-left">代码</th>
             <th class="px-3 py-2 text-left">名称</th>
+            <th class="px-3 py-2 text-left">战法</th>
+            <th class="px-3 py-2 text-right">买入时间</th>
             <th class="px-3 py-2 text-right">成交价</th>
             <th class="px-3 py-2 text-right">现价</th>
             <th class="px-3 py-2 text-right">浮盈</th>
@@ -160,6 +162,8 @@
             <td class="px-3 py-2">
               <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
             </td>
+            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
+            <td class="px-3 py-2 text-right font-mono text-muted">{{ r.fill_date || '-' }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
             <td class="px-3 py-2 text-right font-mono">{{ priceOf(r.code) ?? '-' }}</td>
             <td class="px-3 py-2 text-right font-mono" :class="pnlText(floatPnl(r))">
@@ -350,6 +354,7 @@ async function doClose(r) {
 function reasonText(r) {
   return {
     stop_loss: '止损', take_profit: '止盈', expire: '超期',
+    timeout_no_trigger: '超时未触发',
     manual: '手动', fill_rejected: '未成交', manual_cancel: '已取消',
   }[r] || r || '-'
 }

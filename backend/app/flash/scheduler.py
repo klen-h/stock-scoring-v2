@@ -1169,6 +1169,17 @@ async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
     status["started_at"] = rules.beijing_now().isoformat()
+    # ★ 重启恢复市场状态缓存：regime 是进程内存，schedule_done 幂等标记会让
+    #   「当日已判定」重启后不再重算 → 评分回退静态默认权重，与快照差数分。
+    #   启动即从 market_regime_history 恢复最近一次判定（评分的单一事实来源）。
+    try:
+        from app.backtest.market_regime import restore_regime_cache_from_db
+        _rc = restore_regime_cache_from_db()
+        if _rc and _rc.get("state"):
+            print(f"[scheduler] 重启恢复市场状态: {_rc['date']} {_rc['state']} "
+                  f"权重={_rc['weights']}")
+    except Exception as e:
+        print(f"[scheduler] 恢复市场状态缓存失败: {e}")
     tasks = [asyncio.create_task(flash_loop()),
              asyncio.create_task(track_loop()),
              asyncio.create_task(review_loop()),

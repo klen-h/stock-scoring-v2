@@ -574,7 +574,7 @@ def _close_position(pos: dict, exit_price: float, reason: str) -> None:
          1 if pnl_pct > 0 else 0, _now_iso(), pos["id"]))
     db.execute("UPDATE paper_account SET realized_pnl = realized_pnl + %s, updated_at=%s WHERE id=%s",
                (round(pnl_amount, 2), _now_iso(), ACCOUNT_ID))
-    # ★ 组合风控挂钩：G3 连亏冷却检测（只统计止损，manual/expire 不算）+ 净值峰值维护
+    # ★ 组合风控挂钩：G3 连亏冷却检测（只统计止损，manual/expire/timeout_no_trigger 不算）+ 净值峰值维护
     recent = db.fetch("SELECT exit_reason FROM paper_positions WHERE status='closed' "
                       "ORDER BY closed_at DESC LIMIT %s", (CONSEC_LOSS_COOLDOWN,))
     if (len(recent or []) >= CONSEC_LOSS_COOLDOWN
@@ -592,7 +592,10 @@ def track_positions(use_daily: bool = False) -> dict:
       use_daily=False → 盘中实时价触发（price<=stop 止损 / price>=target 止盈）
       use_daily=True  → 盘后兜底：用 backtest_prices 日线 low/high 校验（对齐回测
                         口径：同日止损优先、跳空按 min(open,stop)）
-    超期（MAX_HOLD_DAYS 日）未触发 → 按最新收盘价离场。
+    exit_reason 语义：
+      - stop_loss / take_profit：止损/止盈触发
+      - expire：持仓 ≥ MAX_HOLD_DAYS 日仍未触发（真·超期强平）
+      - timeout_no_trigger：止损止盈均未触发（盘后兜底离场）
     """
     holdings = db.fetch("SELECT * FROM paper_positions WHERE status='holding'")
     if not holdings:
@@ -624,7 +627,11 @@ def track_positions(use_daily: bool = False) -> dict:
                         reason, exit_p = "take_profit", target
                         break
                 if not reason:
-                    reason, exit_p = "expire", float(bars[-1]["close"] or 0)
+                    # 语义区分：满 MAX_HOLD_DAYS 真超期 → expire；否则止损止盈均未触发 → timeout_no_trigger
+                    if _hold_days(h["fill_date"], today) >= MAX_HOLD_DAYS:
+                        reason, exit_p = "expire", float(bars[-1]["close"] or 0)
+                    else:
+                        reason, exit_p = "timeout_no_trigger", float(bars[-1]["close"] or 0)
         else:
             q = quotes.get(h["code"]) or {}
             price = float(q.get("price") or 0)

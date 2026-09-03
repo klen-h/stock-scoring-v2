@@ -103,8 +103,10 @@ def cancel_position(pid: int):
 
 @router.get("/stats")
 def stats():
-    """分战法已平仓胜率统计。"""
-    return paper_trading.paper_stats()
+    """分战法已平仓胜率统计（key 已转中文战法名，仅展示用）。"""
+    raw = paper_trading.paper_stats()
+    from app.strategies.recommendation import STRATEGY_ZH
+    return {STRATEGY_ZH.get(k, k): v for k, v in raw.items()}
 
 
 @router.get("/account")
