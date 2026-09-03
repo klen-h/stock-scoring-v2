@@ -294,6 +294,33 @@ async def indicator_cache_refresh_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 每日 A 股大盘日报（16:20 起，等 market_snapshot/regime/score_snapshot 均落盘后）──
+DAILY_REPORT_WINDOW = (980, 1440)   # 北京时间 16:20-23:59
+
+
+async def daily_report_loop():
+    """盘后自动生成 A 股大盘日报（硬数据直填 + LLM 解读，见 app/daily_report.py）。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and DAILY_REPORT_WINDOW[0] <= t < DAILY_REPORT_WINDOW[1]
+                and not store.is_schedule_done("daily_report")):
+            try:
+                from app.daily_report import run_daily_report
+                res = await asyncio.to_thread(run_daily_report)
+                if res and res.get("date"):
+                    store.mark_schedule_done("daily_report")
+                    status["last_daily_report"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 每日日报已生成: {res['date']} len={res.get('len')} "
+                          f"pushed={res.get('pushed')}")
+                else:
+                    print("[scheduler] 每日日报生成异常")
+            except Exception as e:
+                print(f"[scheduler] 每日日报生成失败: {e}")
+                _notify_failure("每日日报", str(e))
+        await asyncio.sleep(120)
+
+
 # ── 回测价格库每日增量回填 ──
 # 16:10 起（错开 15:40 战法扫描高峰）：① 东财/腾讯的当日日线收盘后需 15-60 分钟
 # 结算才完整；② 15:40 回填/扫描/regime 三任务并发抢数据源 → 断连/WAF 成功率骤降
@@ -1195,6 +1222,7 @@ async def start():
              asyncio.create_task(backtest_report_loop()),
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
+             asyncio.create_task(daily_report_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(news_history_loop()),
              asyncio.create_task(calendar_loop()),
