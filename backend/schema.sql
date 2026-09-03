@@ -294,6 +294,34 @@ CREATE INDEX IF NOT EXISTS idx_user_watchlist_uid ON user_watchlist(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_trade_plans_uid ON user_trade_plans(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_portfolio_uid ON user_portfolio(user_id);
 
+-- ── 矛盾扫描引擎（三层矛盾模型：L1预期差 / L2行为背离 / L3信息断层）──
+-- 每日由调度器收盘后自动扫描，也支持手动触发。
+CREATE TABLE IF NOT EXISTS contradictions (
+    id SERIAL PRIMARY KEY,
+    date TEXT NOT NULL,
+    level TEXT NOT NULL CHECK(level IN ('L1','L2','L3')),
+    type TEXT NOT NULL,                 -- 矛盾类型标识，如 index_vs_breadth
+    severity TEXT NOT NULL CHECK(severity IN ('minor','obvious','severe')),
+    persistence INTEGER DEFAULT 1,
+    title TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,        -- 结构化证据（JSON字符串）
+    signal TEXT,                        -- 交易含义
+    resolved INTEGER DEFAULT 0,         -- 0/1
+    resolved_note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(date, type)
+);
+CREATE INDEX IF NOT EXISTS idx_contradictions_date ON contradictions(date DESC);
+CREATE INDEX IF NOT EXISTS idx_contradictions_level ON contradictions(level, severity);
+
+-- 矛盾扫描每日 LLM 解读报告
+CREATE TABLE IF NOT EXISTS contradiction_reports (
+    date TEXT PRIMARY KEY,
+    markdown TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ── 个股 → 行业板块映射（东财细分行业，含嵌套层级链）──
 -- 用途：给评分引擎算"个股相对所属板块的强弱"（板块分化因子）。
 -- 东财只提供"板块→成分股"正向查询，没有反查接口，故本地反建映射表。

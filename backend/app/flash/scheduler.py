@@ -321,6 +321,55 @@ async def daily_report_loop():
         await asyncio.sleep(120)
 
 
+# ── 矛盾扫描引擎（收盘后 15:35 扫描，15:40 生成报告）──
+CONTRADICTION_SCAN_WINDOW = (935, 1440)   # 15:35-23:59
+CONTRADICTION_REPORT_WINDOW = (940, 1440) # 15:40-23:59
+
+
+async def contradiction_scan_loop():
+    """每日收盘后自动运行 L2 行为背离扫描。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and CONTRADICTION_SCAN_WINDOW[0] <= t < CONTRADICTION_SCAN_WINDOW[1]
+                and not store.is_schedule_done("contradiction_scan")):
+            try:
+                from app.contradictions.scanner import scan_all
+                from app.contradictions.store import save_contradictions, _today
+                target = _today()
+                items = await asyncio.to_thread(scan_all, date=target)
+                saved = await asyncio.to_thread(save_contradictions, target, items)
+                store.mark_schedule_done("contradiction_scan")
+                status["last_contradiction_scan"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 矛盾扫描完成: {target} 识别 {len(items)} 条，保存 {saved}")
+            except Exception as e:
+                print(f"[scheduler] 矛盾扫描失败: {e}")
+                _notify_failure("矛盾扫描", str(e))
+        await asyncio.sleep(120)
+
+
+async def contradiction_report_loop():
+    """每日收盘后自动生成矛盾扫描解读报告。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and CONTRADICTION_REPORT_WINDOW[0] <= t < CONTRADICTION_REPORT_WINDOW[1]
+                and not store.is_schedule_done("contradiction_report")):
+            try:
+                from app.contradictions.report import run_report
+                res = await asyncio.to_thread(run_report)
+                if res and res.get("date"):
+                    store.mark_schedule_done("contradiction_report")
+                    status["last_contradiction_report"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] 矛盾报告已生成: {res['date']} len={res.get('len')}")
+                else:
+                    print("[scheduler] 矛盾报告生成异常")
+            except Exception as e:
+                print(f"[scheduler] 矛盾报告生成失败: {e}")
+                _notify_failure("矛盾报告", str(e))
+        await asyncio.sleep(120)
+
+
 # ── 回测价格库每日增量回填 ──
 # 16:10 起（错开 15:40 战法扫描高峰）：① 东财/腾讯的当日日线收盘后需 15-60 分钟
 # 结算才完整；② 15:40 回填/扫描/regime 三任务并发抢数据源 → 断连/WAF 成功率骤降
@@ -1223,6 +1272,8 @@ async def start():
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
              asyncio.create_task(daily_report_loop()),
+             asyncio.create_task(contradiction_scan_loop()),
+             asyncio.create_task(contradiction_report_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(news_history_loop()),
              asyncio.create_task(calendar_loop()),
@@ -1243,6 +1294,8 @@ async def start():
           f"主线日报每日16:05 / "
           f"板块快照交易日{SECTOR_SNAPSHOT_WINDOW[0] // 60}:"
           f"{SECTOR_SNAPSHOT_WINDOW[0] % 60:02d} / "
+          f"矛盾扫描每日{CONTRADICTION_SCAN_WINDOW[0] // 60}:"
+          f"{CONTRADICTION_SCAN_WINDOW[0] % 60:02d} / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")

@@ -20,6 +20,7 @@ const routes = [
   { path: '/trade-plans', name: 'TradePlans', component: () => import('../views/TradePlans.vue') },
   { path: '/capital', name: 'Capital', component: () => import('../views/CapitalView.vue') },
   { path: '/report', name: 'DailyReport', component: () => import('../views/DailyReport.vue') },
+  { path: '/contradictions', name: 'Contradictions', component: () => import('../views/ContradictionsView.vue') },
 ]
 
 const router = createRouter({

@@ -17,7 +17,7 @@
           </div>
           <div class="flex items-center gap-2">
             <!-- 用户信息 + 登出 -->
-            <div class="relative" ref="userMenuRef">
+            <div class="relative" ref="userMenuRef" style="display: none;">
               <button @click="showUserMenu = !showUserMenu"
                 class="px-2 py-1 rounded text-xs border border-border bg-bg hover:bg-white/5 transition-colors text-muted flex items-center gap-1">
                 <span>{{ currentUser?.username || '用户' }}</span>
@@ -106,6 +106,7 @@ const navItems = [
   { path: '/trade-plans', label: '交易计划' },
   { path: '/capital', label: '资金流向' },
   { path: '/report', label: '每日日报' },
+  { path: '/contradictions', label: '矛盾扫描' },
 ]
 
 // 导航高亮判断：

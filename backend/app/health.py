@@ -116,7 +116,7 @@ def record(source: str, ok: bool, error: str = "") -> None:
                     "title": pending_wechat["title"], "body": pending_wechat["body"],
                 })
                 _save_alerts()
-                print(f"[health] ⚠️ {name} 连续失败 {st['consec_fail']} 次，已告警")
+                print(f"[health] [WARN] {name} 连续失败 {st['consec_fail']} 次，已告警")
 
     # 东财主站等噪音源仍进页面通知铃铛，但不推企微
     if pending_wechat and source not in _NO_WECHAT_SOURCES:

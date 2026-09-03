@@ -1,0 +1,1283 @@
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2489 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日 K 线缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[kline_cache] 开始刷新 500 只股票的K线缓存...[scheduler] 开始每日指标缓存刷新...
+
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:63457 - "GET /api/score/weights HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:49850 - "GET /api/flash/notifications?since=2026-09-03T20:53:32.785893 HTTP/1.1" 200 OK
+[kline_cache] 601628 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 20/500 (成功20 失败0)
+[kline_cache] 000333 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 40/500 (成功39 失败1)
+[engine] 行业指标分布已加载: 38636 条 / 5720 只 / 51 行业
+INFO:     127.0.0.1:64655 - "GET /api/score/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49466 - "GET /api/flash/notifications?since=2026-09-03T20:55:34.802823 HTTP/1.1" 200 OK
+[kline_cache] 603993 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 60/500 (成功59 失败1)
+[kline_cache] 600276 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 80/500 (成功79 失败1)
+INFO:     127.0.0.1:58143 - "GET /api/score/batch/top?limit=50 HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+INFO:     127.0.0.1:51508 - "GET /api/flash/notifications?since=2026-09-03T20:56:27.769838 HTTP/1.1" 200 OK
+[kline_cache] 进度: 100/500 (成功97 失败3)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[indicator_cache] 进度: 50/300 (成功45 失败5)
+[kline_cache] 000338 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 120/500 (成功116 失败4)
+[kline_cache] 600690 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 603288 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 002938 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:49846 - "GET /api/flash/notifications?since=2026-09-03T20:57:28.566415 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60414 - "GET /api/score/weights HTTP/1.1" 200 OK
+[kline_cache] 进度: 140/500 (成功136 失败4)
+[kline_cache] 601668 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 160/500 (成功155 失败5)
+[关闭] K线缓存已持久化到磁盘
+[kline_cache] 600930 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 180/500 (成功174 失败6)
+[kline_cache] 进度: 200/500 (成功194 失败6)
+[kline_cache] 600809 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 220/500 (成功212 失败8)
+[indicator_cache] 进度: 100/300 (成功86 失败14)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600837 缓存停在2025-02-05且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600346 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601100 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 240/500 (成功231 失败9)
+[kline_cache] 600018 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000977 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001289 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 260/500 (成功251 失败9)
+[kline_cache] 600489 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600926 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601111 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 280/500 (成功271 失败9)
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 601989 缓存停在2025-08-12且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000166 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 300/500 (成功291 失败9)
+[kline_cache] 601868 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600011 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002600 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 320/500 (成功310 失败10)
+[kline_cache] 600015 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 150/300 (成功119 失败31)
+[kline_cache] 进度: 340/500 (成功329 失败11)
+[kline_cache] 进度: 360/500 (成功348 失败12)
+[kline_cache] 600585 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000425 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 380/500 (成功368 失败12)
+[kline_cache] 进度: 400/500 (成功387 失败13)
+[kline_cache] 601127 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 420/500 (成功406 失败14)
+[kline_cache] 进度: 440/500 (成功425 失败15)
+[kline_cache] 600549 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601669 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601077 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 460/500 (成功444 失败16)
+[indicator_cache] 进度: 200/300 (成功162 失败38)
+[kline_cache] 600705 K线停在 2025-04-02，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 进度: 480/500 (成功464 失败16)
+[kline_cache] 进度: 500/500 (成功484 失败16)
+[kline_cache] 刷新完成: 484成功 16失败 耗时700.9s
+[kline_cache] 600377 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600066 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600378 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601360 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000831 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 250/300 (成功204 失败46)
+[kline_cache] 600803 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001872 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000960 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601901 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600221 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600885 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002414 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601238 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600460 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 300/300 (成功245 失败55)
+[indicator_cache] 刷新完成: 245成功 55失败 耗时1004.5s
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2493 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日指标缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+INFO:     127.0.0.1:52434 - "GET /api/flash/notifications?since=2026-09-03T20:58:27.981542 HTTP/1.1" 200 OK
+[kline_cache] 601628 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51485 - "GET /api/flash/notifications?since=2026-09-03T21:13:34.420547 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51486 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 000333 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:49377 - "GET /api/flash/notifications?since=2026-09-03T21:14:30.485192 HTTP/1.1" 200 OK
+[kline_cache] 603993 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:53319 - "GET /api/flash/notifications?since=2026-09-03T21:15:27.929549 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62787 - "GET /api/flash/notifications?since=2026-09-03T21:16:28.958827 HTTP/1.1" 200 OK
+[kline_cache] 600276 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 50/300 (成功45 失败5)
+[kline_cache] 000338 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600690 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 603288 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002938 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601668 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600930 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600809 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 100/300 (成功86 失败14)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600837 缓存停在2025-02-05且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600346 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601100 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600018 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000977 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001289 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600489 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600926 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601111 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 601989 缓存停在2025-08-12且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000166 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601868 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600011 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002600 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600015 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 150/300 (成功119 失败31)
+[kline_cache] 600585 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000425 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601127 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600549 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601669 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601077 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 200/300 (成功162 失败38)
+[kline_cache] 600377 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600066 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600378 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601360 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000831 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 250/300 (成功204 失败46)
+[kline_cache] 600803 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001872 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000960 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601901 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600221 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600885 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002414 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601238 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600460 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 300/300 (成功245 失败55)
+[indicator_cache] 刷新完成: 245成功 55失败 耗时1922.4s
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2493 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日 K 线缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[kline_cache] 开始刷新 500 只股票的K线缓存...[scheduler] 开始每日指标缓存刷新...
+
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:53454 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49230 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55088 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56923 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63855 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62331 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64752 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59659 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52247 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54353 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52313 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57183 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53630 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62505 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53073 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54156 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60423 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53462 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53062 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63578 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59500 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63208 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55084 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53235 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52530 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49231 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61531 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57274 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64635 - "GET /api/flash/notifications?since=2026-09-03T21:17:26.933573 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59502 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52531 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 601628 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:64753 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56924 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 进度: 20/500 (成功20 失败0)
+INFO:     127.0.0.1:55013 - "GET /api/flash/notifications?since=2026-09-03T21:45:46.414768 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54354 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 000333 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 40/500 (成功39 失败1)
+[kline_cache] 603993 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 60/500 (成功59 失败1)
+INFO:     127.0.0.1:56402 - "GET /api/flash/notifications?since=2026-09-03T21:46:40.857136 HTTP/1.1" 200 OK
+[kline_cache] 进度: 80/500 (成功79 失败1)
+[kline_cache] 600276 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 100/500 (成功97 失败3)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+INFO:     127.0.0.1:64217 - "GET /api/flash/notifications?since=2026-09-03T21:47:40.011918 HTTP/1.1" 200 OK
+[indicator_cache] 进度: 50/300 (成功45 失败5)
+[kline_cache] 进度: 120/500 (成功116 失败4)
+[kline_cache] 000338 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600690 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 140/500 (成功136 失败4)
+[kline_cache] 603288 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002938 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:54975 - "GET /api/flash/notifications?since=2026-09-03T21:48:43.726504 HTTP/1.1" 200 OK
+[kline_cache] 进度: 160/500 (成功155 失败5)
+INFO:     127.0.0.1:54977 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 601668 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 180/500 (成功174 失败6)
+INFO:     127.0.0.1:55047 - "GET /api/flash/notifications?since=2026-09-03T21:49:38.687270 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[kline_cache] 进度: 200/500 (成功194 失败6)
+[kline_cache] 600930 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 220/500 (成功212 失败8)
+INFO:     127.0.0.1:59930 - "GET /api/flash/notifications?since=2026-09-03T21:50:28.241608 HTTP/1.1" 200 OK
+[kline_cache] 进度: 240/500 (成功231 失败9)
+[kline_cache] 600809 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 100/300 (成功86 失败14)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600837 缓存停在2025-02-05且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600346 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 260/500 (成功251 失败9)
+[kline_cache] 601100 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:50921 - "GET /api/flash/notifications?since=2026-09-03T21:51:37.779979 HTTP/1.1" 200 OK
+[kline_cache] 600018 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 280/500 (成功271 失败9)
+[kline_cache] 000977 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001289 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600489 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600926 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 300/500 (成功291 失败9)
+INFO:     127.0.0.1:61062 - "GET /api/flash/notifications?since=2026-09-03T21:52:34.137309 HTTP/1.1" 200 OK
+[kline_cache] 601111 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 601989 缓存停在2025-08-12且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000166 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 320/500 (成功310 失败10)
+[kline_cache] 601868 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 340/500 (成功329 失败11)
+[kline_cache] 600011 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:62667 - "GET /api/flash/notifications?since=2026-09-03T21:53:32.866116 HTTP/1.1" 200 OK
+[kline_cache] 002600 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:62668 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 进度: 360/500 (成功348 失败12)
+[kline_cache] 600015 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 150/300 (成功119 失败31)
+[kline_cache] 进度: 380/500 (成功368 失败12)
+INFO:     127.0.0.1:60182 - "GET /api/flash/notifications?since=2026-09-03T21:54:34.967726 HTTP/1.1" 200 OK
+[health] ⚠️ 东财主站 连续失败 3 次，已告警
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[kline_cache] 进度: 400/500 (成功387 失败13)
+[kline_cache] 600585 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000425 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 420/500 (成功406 失败14)
+INFO:     127.0.0.1:52112 - "GET /api/flash/notifications?since=2026-09-03T21:55:32.234588 HTTP/1.1" 200 OK
+[kline_cache] 进度: 440/500 (成功425 失败15)
+[kline_cache] 601127 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 460/500 (成功444 失败16)
+INFO:     127.0.0.1:63810 - "GET /api/flash/notifications?since=2026-09-03T21:56:34.397235 HTTP/1.1" 200 OK
+[kline_cache] 600705 K线停在 2025-04-02，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 进度: 480/500 (成功464 失败16)
+[kline_cache] 600549 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601669 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601077 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 500/500 (成功484 失败16)
+[kline_cache] 刷新完成: 484成功 16失败 耗时775.6s
+[scheduler] K 线缓存刷新完成: {'refreshed': 484, 'failed': 16, 'total': 500, 'duration_seconds': 775.6}
+INFO:     127.0.0.1:55817 - "GET /api/flash/notifications?since=2026-09-03T21:57:29.926234 HTTP/1.1" 200 OK
+[indicator_cache] 进度: 200/300 (成功162 失败38)
+INFO:     127.0.0.1:62270 - "GET /api/flash/notifications?since=2026-09-03T21:58:30.216723 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62271 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53967 - "GET /api/flash/notifications?since=2026-09-03T21:59:31.269148 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[kline_cache] 600377 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600066 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600378 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601360 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:54558 - "GET /api/flash/notifications?since=2026-09-03T22:00:38.228287 HTTP/1.1" 200 OK
+[kline_cache] 000831 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 250/300 (成功204 失败46)
+[kline_cache] 600803 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001872 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:54984 - "GET /api/flash/notifications?since=2026-09-03T22:01:33.119658 HTTP/1.1" 200 OK
+[kline_cache] 000960 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601901 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600221 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600885 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002414 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:50268 - "GET /api/flash/notifications?since=2026-09-03T22:02:36.642420 HTTP/1.1" 200 OK
+[kline_cache] 601238 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600460 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51995 - "GET /api/flash/notifications?since=2026-09-03T22:03:33.082675 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51996 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[indicator_cache] 进度: 300/300 (成功245 失败55)
+[indicator_cache] 刷新完成: 245成功 55失败 耗时1176.3s
+[scheduler] 指标缓存刷新完成: {'refreshed': 245, 'failed': 55, 'total': 300, 'duration_seconds': 1176.3}
+INFO:     127.0.0.1:64160 - "GET /api/flash/notifications?since=2026-09-03T22:04:33.777635 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:56847 - "GET /api/flash/notifications?since=2026-09-03T22:05:34.854746 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49318 - "GET /api/flash/notifications?since=2026-09-03T22:06:35.253959 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58467 - "GET /api/flash/notifications?since=2026-09-03T22:07:35.007153 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53165 - "GET /api/flash/notifications?since=2026-09-03T22:08:38.554030 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53166 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62853 - "GET /api/flash/notifications?since=2026-09-03T22:09:30.634908 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:60218 - "GET /api/flash/notifications?since=2026-09-03T22:10:33.021189 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49785 - "GET /api/flash/notifications?since=2026-09-03T22:11:37.061023 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52434 - "GET /api/flash/notifications?since=2026-09-03T22:12:33.335889 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50434 - "GET /api/flash/notifications?since=2026-09-03T22:13:33.737392 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50435 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59908 - "GET /api/flash/notifications?since=2026-09-03T22:14:33.285793 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:65231 - "GET /api/flash/notifications?since=2026-09-03T22:15:37.592989 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64898 - "GET /api/flash/notifications?since=2026-09-03T22:16:33.550109 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57770 - "GET /api/flash/notifications?since=2026-09-03T22:17:33.450325 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62518 - "GET /api/flash/notifications?since=2026-09-03T22:18:35.863527 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62519 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64287 - "GET /api/flash/notifications?since=2026-09-03T22:19:35.350878 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:50451 - "GET /api/flash/notifications?since=2026-09-03T22:20:35.850680 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58034 - "GET /api/flash/notifications?since=2026-09-03T22:21:40.929931 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57305 - "GET /api/flash/notifications?since=2026-09-03T22:22:35.804794 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59410 - "GET /api/flash/notifications?since=2026-09-03T22:23:36.317903 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59411 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53939 - "GET /api/flash/notifications?since=2026-09-03T22:24:34.505011 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:61116 - "GET /api/flash/notifications?since=2026-09-03T22:25:35.092901 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60297 - "GET /api/flash/notifications?since=2026-09-03T22:26:35.117934 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54295 - "GET /api/flash/notifications?since=2026-09-03T22:27:32.416150 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52996 - "GET /api/flash/notifications?since=2026-09-03T22:28:35.523649 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52997 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56945 - "GET /api/flash/notifications?since=2026-09-03T22:29:35.335764 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:50612 - "GET /api/flash/notifications?since=2026-09-03T22:30:28.079188 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53990 - "GET /api/flash/notifications?since=2026-09-03T22:31:33.367612 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51732 - "GET /api/flash/notifications?since=2026-09-03T22:32:29.576289 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60510 - "GET /api/flash/notifications?since=2026-09-03T22:33:28.206814 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60511 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58846 - "GET /api/flash/notifications?since=2026-09-03T22:34:29.839981 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:52819 - "GET /api/flash/notifications?since=2026-09-03T22:35:36.641262 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60694 - "GET /api/flash/notifications?since=2026-09-03T22:36:37.925731 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58276 - "GET /api/flash/notifications?since=2026-09-03T22:37:37.129484 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62950 - "GET /api/flash/notifications?since=2026-09-03T22:38:33.777736 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62951 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49266 - "GET /api/flash/notifications?since=2026-09-03T22:39:43.376943 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:63848 - "GET /api/flash/notifications?since=2026-09-03T22:40:36.376895 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58554 - "GET /api/flash/notifications?since=2026-09-03T22:41:35.886411 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58567 - "GET /api/flash/notifications?since=2026-09-03T22:42:34.633472 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51399 - "GET /api/flash/notifications?since=2026-09-03T22:43:36.190916 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56053 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64185 - "GET /api/flash/notifications?since=2026-09-03T22:44:33.746686 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:56237 - "GET /api/flash/notifications?since=2026-09-03T22:45:36.505891 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59228 - "GET /api/flash/notifications?since=2026-09-03T22:46:35.807776 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52087 - "GET /api/flash/notifications?since=2026-09-03T22:47:36.522975 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60215 - "GET /api/flash/notifications?since=2026-09-03T22:48:37.264927 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60216 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60348 - "GET /api/flash/notifications?since=2026-09-03T22:49:33.788440 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:64036 - "GET /api/flash/notifications?since=2026-09-03T22:50:31.633278 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63316 - "GET /api/flash/notifications?since=2026-09-03T22:51:30.524485 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57984 - "GET /api/flash/notifications?since=2026-09-03T22:52:38.436077 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63208 - "GET /api/flash/notifications?since=2026-09-03T22:53:36.244526 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63209 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62846 - "GET /api/flash/notifications?since=2026-09-03T22:54:37.632963 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:59932 - "GET /api/flash/notifications?since=2026-09-03T22:55:31.288798 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51624 - "GET /api/flash/notifications?since=2026-09-03T22:56:30.334191 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54202 - "GET /api/flash/notifications?since=2026-09-03T22:57:30.541335 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56038 - "GET /api/flash/notifications?since=2026-09-03T22:58:27.172413 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56039 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57483 - "GET /api/flash/notifications?since=2026-09-03T22:59:32.186565 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:57855 - "GET /api/flash/notifications?since=2026-09-03T23:00:34.310359 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52374 - "GET /api/flash/notifications?since=2026-09-03T23:01:35.107027 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56664 - "GET /api/flash/notifications?since=2026-09-03T23:02:34.130615 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52917 - "GET /api/market/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49920 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63618 - "GET /api/macro/daily?date=2026-09-03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54756 - "GET /api/macro/snapshot HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64342 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49156 - "GET /api/market/index-kline/000300?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52032 - "GET /api/market/realtime?page=1&size=50&sort_by=change_pct&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65379 - "GET /api/sector/snapshot-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50524 - "GET /api/sector/dispersion?date=2026-09-03&kind=industry HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50172 - "GET /api/sector/dispersion?date=2026-09-03&kind=industry HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50526 - "GET /api/sector/snapshot/2026-09-03?kind=industry HTTP/1.1" 200 OK
+[mainline] industry_mainline 表初始化完成
+INFO:     127.0.0.1:63822 - "GET /api/sector/snapshot/2026-09-03?kind=industry HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53655 - "GET /api/sector/mainline/summary?days=12 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56191 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62838 - "GET /api/market/temperature HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+INFO:     127.0.0.1:62840 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:54040 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57628 - "GET /api/flash/notifications?since=2026-09-03T23:03:40.446265 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49656 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52770 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53750 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:59207 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59208 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63024 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50322 - "GET /api/flash/notifications?since=2026-09-03T23:05:39.423761 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:61898 - "GET /api/sector/industry?limit=50 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:61899 - "GET /api/sector/industry-flow?limit=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64427 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54434 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62020 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49420 - "GET /api/flash/notifications?since=2026-09-03T23:05:41.848444 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62717 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57878 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53367 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50997 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59542 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59405 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59406 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63031 - "GET /api/stock/news/000567 HTTP/1.1" 200 OK
+[news_history] news_history 表已初始化
+INFO:     127.0.0.1:57163 - "GET /api/stock/news/000567/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57167 - "GET /api/stock/realtime/000567 HTTP/1.1" 200 OK
+[engine] 行业指标分布已加载: 38636 条 / 5720 只 / 51 行业
+INFO:     127.0.0.1:57170 - "GET /api/score/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57168 - "GET /api/stock/fundamental/000567 HTTP/1.1" 200 OK
+K线缓存持久化失败: dictionary changed size during iteration
+INFO:     127.0.0.1:57464 - "GET /api/stock/kline/000567?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53542 - "GET /api/strategies/000567/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57171 - "GET /api/strategies/000567/support-resistance?lookback=60 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53678 - "GET /api/stock/technical/000567?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54091 - "GET /api/score/rank-history/000567?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54320 - "GET /api/flash/notifications?since=2026-09-03T23:06:27.567409 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52383 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57462 - "GET /api/flash/notifications?since=2026-09-03T23:06:51.374023 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61123 - "GET /api/flash/notifications?since=2026-09-03T23:06:27.567409 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57909 - "GET /api/flash/notifications?since=2026-09-03T23:06:51.374023 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59821 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59383 - "GET /api/flash/notifications?since=2026-09-03T23:08:25.013079 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54404 - "GET /api/flash/notifications?since=2026-09-03T23:08:37.852341 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54168 - "GET /api/flash/notifications?since=2026-09-03T23:08:43.738683 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57491 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53153 - "GET /api/flash/notifications?since=2026-09-03T23:09:28.674063 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54406 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53300 - "GET /api/flash/notifications?since=2026-09-03T23:09:37.140773 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54033 - "GET /api/flash/notifications?since=2026-09-03T23:09:43.234521 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:52012 - "GET /api/flash/notifications?since=2026-09-03T23:10:28.163929 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55479 - "GET /api/flash/notifications?since=2026-09-03T23:10:35.019567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62960 - "GET /api/flash/notifications?since=2026-09-03T23:11:22.125316 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54994 - "GET /api/flash/notifications?since=2026-09-03T23:11:29.641865 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54995 - "GET /api/flash/notifications?since=2026-09-03T23:10:47.473792 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62961 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64326 - "GET /api/flash/notifications?since=2026-09-03T23:10:47.473792 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63200 - "GET /api/stock/news/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52048 - "GET /api/score/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52045 - "GET /api/stock/realtime/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52044 - "GET /api/stock/fundamental/000567 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56867 - "GET /api/stock/news/000567/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50148 - "GET /api/flash/notifications?since=2026-09-03T23:12:24.672366 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49744 - "GET /api/flash/notifications?since=2026-09-03T23:12:36.211731 HTTP/1.1" 200 OK
+K线缓存持久化失败: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'd:\\stock-scoring\\stock-scoring-v2\\backend\\app\\..\\kline_cache.json.tmp' -> 'd:\\stock-scoring\\stock-scoring-v2\\backend\\app\\..\\kline_cache.json'
+INFO:     127.0.0.1:58645 - "GET /api/strategies/000567/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52049 - "GET /api/strategies/000567/support-resistance?lookback=60 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50633 - "GET /api/stock/kline/000567?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51844 - "GET /api/stock/technical/000567?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62340 - "GET /api/score/rank-history/000567?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57238 - "GET /api/flash/notifications?since=2026-09-03T23:12:49.295150 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61192 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52627 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52624 - "GET /api/flash/notifications?since=2026-09-03T23:13:34.783359 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52626 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63102 - "GET /api/flash/notifications?since=2026-09-03T23:13:43.843722 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50976 - "GET /api/stock/news/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55074 - "GET /api/score/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55073 - "GET /api/stock/fundamental/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55071 - "GET /api/stock/news/000783/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55072 - "GET /api/stock/realtime/000783 HTTP/1.1" 200 OK
+K线缓存持久化失败: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'd:\\stock-scoring\\stock-scoring-v2\\backend\\app\\..\\kline_cache.json.tmp' -> 'd:\\stock-scoring\\stock-scoring-v2\\backend\\app\\..\\kline_cache.json'
+INFO:     127.0.0.1:61835 - "GET /api/strategies/000783/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50903 - "GET /api/strategies/000783/support-resistance?lookback=60 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58592 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2502 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日指标缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+INFO:     127.0.0.1:57679 - "GET /api/stock/kline/000783?period=week HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57106 - "GET /api/stock/technical/000783?period=week HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52140 - "GET /api/stock/kline/000783?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50226 - "GET /api/stock/technical/000783?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63036 - "GET /api/stock/news/600578 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63038 - "GET /api/stock/news/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63040 - "GET /api/stock/news/000617 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63044 - "GET /api/stock/news/603323 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63042 - "GET /api/stock/news/002074 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65109 - "GET /api/stock/news/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52499 - "GET /api/stock/news/000928 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59411 - "GET /api/stock/news/600368 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60407 - "GET /api/stock/news/000065 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57737 - "GET /api/stock/realtime/000617 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61505 - "GET /api/stock/realtime/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58007 - "GET /api/stock/realtime/600578 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60882 - "GET /api/stock/news/603565 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61965 - "GET /api/stock/realtime/000065 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53584 - "GET /api/stock/realtime/600368 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55654 - "GET /api/stock/realtime/603323 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58496 - "GET /api/stock/realtime/002074 HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[kline_cache] 601628 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000333 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[engine] 行业指标分布已加载: 38636 条 / 5720 只 / 51 行业
+INFO:     127.0.0.1:51191 - "GET /api/score/000617 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61299 - "GET /api/score/600578 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59664 - "GET /api/stock/realtime/603565 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56737 - "GET /api/stock/realtime/000928 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60922 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+[kline_cache] 600368 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:56548 - "GET /api/score/600368 HTTP/1.1" 200 OK
+[kline_cache] 603993 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:54175 - "GET /api/score/000783 HTTP/1.1" 200 OK
+[kline_cache] 000928 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51836 - "GET /api/score/000928 HTTP/1.1" 200 OK
+[kline_cache] 603323 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:56546 - "GET /api/score/603323 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54012 - "GET /api/score/002074 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51843 - "GET /api/stock/technical/600578?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63616 - "GET /api/stock/technical/000783?period=day HTTP/1.1" 200 OK
+[kline_cache] 603565 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51841 - "GET /api/score/603565 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64685 - "GET /api/stock/news/600578 HTTP/1.1" 200 OK
+[kline_cache] 000065 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51835 - "GET /api/score/000065 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57305 - "GET /api/stock/news/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57306 - "GET /api/stock/news/000617 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57079 - "GET /api/stock/realtime/600578 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51842 - "GET /api/score/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57080 - "GET /api/stock/realtime/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57082 - "GET /api/stock/realtime/000617 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63783 - "GET /api/stock/technical/000617?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50879 - "GET /api/stock/technical/600578?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61241 - "GET /api/score/000617 HTTP/1.1" 200 OK
+[kline_cache] 600276 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:61240 - "GET /api/score/000783 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54732 - "GET /api/stock/technical/000783?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61239 - "GET /api/score/600578 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51850 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51855 - "DELETE /api/user/portfolio/603565 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61077 - "DELETE /api/user/portfolio/002074 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62936 - "DELETE /api/user/portfolio/000928 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51851 - "GET /api/user/portfolio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60597 - "DELETE /api/user/portfolio/600368 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51857 - "DELETE /api/user/portfolio/000933 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59936 - "DELETE /api/user/portfolio/603323 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60596 - "DELETE /api/user/portfolio/000065 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64413 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51853 - "GET /api/flash/notifications?since=2026-09-03T23:14:34.664707 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51852 - "GET /api/flash/notifications?since=2026-09-03T23:14:50.197661 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61242 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51854 - "GET /api/flash/notifications?since=2026-09-03T23:14:35.152582 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50880 - "GET /api/user/portfolio HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53631 - "GET /api/flash/notifications?since=2026-09-03T23:14:34.664707 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55377 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50887 - "GET /api/flash/notifications?since=2026-09-03T23:14:50.197661 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50884 - "GET /api/flash/notifications?since=2026-09-03T23:14:35.152582 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53630 - "GET /api/flash/notifications?since=2026-09-03T23:14:50.197661 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50888 - "GET /api/flash/notifications?since=2026-09-03T23:14:34.664707 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53634 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53633 - "GET /api/flash/notifications?since=2026-09-03T23:14:35.152582 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50883 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62220 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64217 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51643 - "GET /api/market/temperature HTTP/1.1" 200 OK
+[indicator_cache] 进度: 50/300 (成功45 失败5)
+[ranking] ranking_history 表初始化完成
+[kline_cache] 000338 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+INFO:     127.0.0.1:51645 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63178 - "GET /api/flash/notifications?since=2026-09-03T23:19:34.152120 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57972 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62071 - "GET /api/flash/notifications?since=2026-09-03T23:19:49.763594 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57200 - "GET /api/flash/notifications?since=2026-09-03T23:19:38.144053 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59278 - "GET /api/flash/notifications?since=2026-09-03T23:20:34.041062 HTTP/1.1" 200 OK
+[kline_cache] 600690 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 603288 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002938 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601668 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600930 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600809 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 100/300 (成功86 失败14)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600837 缓存停在2025-02-05且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600346 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601100 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600018 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000977 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001289 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600489 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600926 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601111 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 601989 缓存停在2025-08-12且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000166 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601868 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600011 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002600 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600015 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 150/300 (成功119 失败31)
+[kline_cache] 600585 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000425 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601127 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600549 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601669 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601077 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 200/300 (成功162 失败38)
+[kline_cache] 600377 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600066 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600378 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601360 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000831 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 250/300 (成功204 失败46)
+[kline_cache] 600803 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 001872 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 000960 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601901 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600221 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600885 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 002414 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 601238 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[kline_cache] 600460 缓存停在2026-09-02且无法合成当日bar，判过期走实时拉取
+[indicator_cache] 进度: 300/300 (成功245 失败55)
+[indicator_cache] 刷新完成: 245成功 55失败 耗时1229.8s
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日 K 线缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[kline_cache] 开始刷新 500 只股票的K线缓存...
+[scheduler] 开始每日指标缓存刷新...
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:64735 - "GET /api/flash/notifications?since=2026-09-03T23:20:46.584050 HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:49821 - "GET /api/score/weights HTTP/1.1" 200 OK
+[kline_cache] 进度: 20/500 (成功20 失败0)
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[kline_cache] 进度: 40/500 (成功39 失败1)
+INFO:     127.0.0.1:53082 - "GET /api/flash/notifications?since=2026-09-03T23:38:27.800148 HTTP/1.1" 200 OK
+[kline_cache] 进度: 60/500 (成功59 失败1)
+[kline_cache] 进度: 80/500 (成功79 失败1)
+INFO:     127.0.0.1:56455 - "GET /api/flash/notifications?since=2026-09-03T23:39:27.800968 HTTP/1.1" 200 OK
+[kline_cache] 进度: 100/500 (成功97 失败3)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 进度: 120/500 (成功116 失败4)
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+INFO:     127.0.0.1:56456 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[indicator_cache] 进度: 50/300 (成功49 失败1)
+[kline_cache] 进度: 140/500 (成功136 失败4)
+INFO:     127.0.0.1:59963 - "GET /api/flash/notifications?since=2026-09-03T23:40:28.236168 HTTP/1.1" 200 OK
+[kline_cache] 进度: 160/500 (成功155 失败5)
+[kline_cache] 进度: 180/500 (成功174 失败6)
+INFO:     127.0.0.1:59021 - "GET /api/flash/notifications?since=2026-09-03T23:41:35.800493 HTTP/1.1" 200 OK
+[kline_cache] 进度: 200/500 (成功194 失败6)
+[kline_cache] 进度: 220/500 (成功212 失败8)
+[kline_cache] 进度: 240/500 (成功231 失败9)
+[kline_cache] 进度: 260/500 (成功251 失败9)
+[kline_cache] 进度: 280/500 (成功271 失败9)
+[indicator_cache] 进度: 100/300 (成功97 失败3)
+[kline_cache] 600837 K线停在 2025-02-05，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 600837 缓存停在2025-02-05且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 300/500 (成功291 失败9)
+[kline_cache] 进度: 320/500 (成功310 失败10)
+[kline_cache] 进度: 340/500 (成功329 失败11)
+[kline_cache] 601989 K线停在 2025-08-12，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 601989 缓存停在2025-08-12且无法合成当日bar，判过期走实时拉取
+[kline_cache] 进度: 360/500 (成功348 失败12)
+[kline_cache] 进度: 380/500 (成功368 失败12)
+[kline_cache] 进度: 400/500 (成功387 失败13)
+[indicator_cache] 进度: 150/300 (成功143 失败7)
+[kline_cache] 进度: 420/500 (成功406 失败14)
+[kline_cache] 进度: 440/500 (成功425 失败15)
+[kline_cache] 进度: 460/500 (成功444 失败16)
+[kline_cache] 600705 K线停在 2025-04-02，与 2026-09-03 之间缺多日，不合成（走实时拉取补全量）
+[kline_cache] 进度: 480/500 (成功464 失败16)
+[kline_cache] 进度: 500/500 (成功484 失败16)
+[kline_cache] 刷新完成: 484成功 16失败 耗时744.8s
+[indicator_cache] 进度: 200/300 (成功192 失败8)
+[indicator_cache] 进度: 250/300 (成功239 失败11)
+[indicator_cache] 进度: 300/300 (成功289 失败11)
+[indicator_cache] 刷新完成: 289成功 11失败 耗时1233.6s
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[scheduler] 开始每日 K 线缓存刷新...
+[kline_cache] kline_cache 表初始化完成
+[kline_cache] 开始刷新 500 只股票的K线缓存...
+[scheduler] 开始每日指标缓存刷新...
+[indicator_cache] indicator_cache 表初始化完成
+[indicator_cache] 开始刷新 300 只股票的指标缓存...
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+[kline_cache] 进度: 20/500 (成功20 失败0)
+INFO:     127.0.0.1:55924 - "GET /api/flash/notifications?since=2026-09-03T23:42:35.992076 HTTP/1.1" 200 OK
+[kline_cache] 进度: 40/500 (成功39 失败1)
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:55923 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 进度: 60/500 (成功59 失败1)
+INFO:     127.0.0.1:53391 - "GET /api/flash/notifications?since=2026-09-04T00:00:30.082857 HTTP/1.1" 200 OK
+[kline_cache] 进度: 80/500 (成功79 失败1)
+[kline_cache] 进度: 100/500 (成功97 失败3)
+[kline_cache] 进度: 120/500 (成功116 失败4)
+INFO:     127.0.0.1:54161 - "GET /api/flash/notifications?since=2026-09-04T00:01:32.779251 HTTP/1.1" 200 OK
+[kline_cache] 进度: 140/500 (成功136 失败4)
+[indicator_cache] 进度: 50/300 (成功49 失败1)
+[kline_cache] 进度: 160/500 (成功155 失败5)
+INFO:     127.0.0.1:53000 - "GET /api/flash/notifications?since=2026-09-04T00:02:32.366184 HTTP/1.1" 200 OK
+[kline_cache] 进度: 180/500 (成功174 失败6)
+INFO:     127.0.0.1:52859 - "GET /api/market/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52862 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65189 - "GET /api/macro/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65191 - "GET /api/macro/snapshot HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58425 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56707 - "GET /api/market/index-kline/000300?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49852 - "GET /api/market/realtime?page=1&size=50&sort_by=change_pct&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57346 - "GET /api/market/temperature HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+[kline_cache] 进度: 200/500 (成功194 失败6)
+INFO:     127.0.0.1:57348 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:57350 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63761 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58766 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60758 - "GET /api/flash/notifications?since=2026-09-04T00:03:35.580993 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58852 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[kline_cache] 进度: 220/500 (成功212 失败8)
+INFO:     127.0.0.1:53055 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53056 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+[kline_cache] 进度: 240/500 (成功231 失败9)
+[kline_cache] 进度: 260/500 (成功251 失败9)
+[kline_cache] 进度: 280/500 (成功271 失败9)
+[indicator_cache] 进度: 100/300 (成功97 失败3)
+[kline_cache] 进度: 300/500 (成功291 失败9)
+[kline_cache] 进度: 320/500 (成功310 失败10)
+[kline_cache] 进度: 340/500 (成功329 失败11)
+[kline_cache] 进度: 360/500 (成功348 失败12)
+[kline_cache] 进度: 380/500 (成功368 失败12)
+[kline_cache] 进度: 400/500 (成功387 失败13)
+[kline_cache] 进度: 420/500 (成功406 失败14)
+[indicator_cache] 进度: 150/300 (成功145 失败5)
+[kline_cache] 进度: 440/500 (成功425 失败15)
+[kline_cache] 进度: 460/500 (成功444 失败16)
+[kline_cache] 进度: 480/500 (成功464 失败16)
+[kline_cache] 进度: 500/500 (成功484 失败16)
+[kline_cache] 刷新完成: 484成功 16失败 耗时679.2s
+[indicator_cache] 进度: 200/300 (成功194 失败6)
+[indicator_cache] 进度: 250/300 (成功241 失败9)
+[indicator_cache] 进度: 300/300 (成功291 失败9)
+[indicator_cache] 刷新完成: 291成功 9失败 耗时1115.4s
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:58133 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59360 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52425 - "GET /api/flash/notifications?since=2026-09-04T00:20:06.218474 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52475 - "GET /api/flash/notifications?since=2026-09-04T00:21:06.542202 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63790 - "GET /api/flash/notifications?since=2026-09-04T00:22:06.190123 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59868 - "GET /api/flash/notifications?since=2026-09-04T00:23:06.110860 HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:50311 - "GET /api/flash/notifications?since=2026-09-04T00:24:07.194079 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60397 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64025 - "GET /api/flash/notifications?since=2026-09-04T00:24:07.194079 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51796 - "GET /api/flash/notifications?since=2026-09-04T00:26:16.383029 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64302 - "GET /api/flash/notifications?since=2026-09-04T00:27:04.372992 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62916 - "GET /api/flash/notifications?since=2026-09-04T00:28:32.994400 HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:64478 - "GET /api/paper/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64481 - "GET /api/paper/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64479 - "GET /api/paper/account HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60507 - "GET /api/score/batch-prices?codes=600035,600060,601658,002810,603889,601222,603587,601169,002241,600026,002637,603444,601699 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64482 - "GET /api/paper/risk HTTP/1.1" 200 OK
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:51341 - "GET /api/report/list?limit=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53929 - "GET /api/report/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56518 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49296 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53028 - "GET /api/report/daily?date=2026-09-03 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61652 - "GET /api/report/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62587 - "GET /api/flash/notifications?since=2026-09-04T00:32:29.112825 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61887 - "GET /api/report/list?limit=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52466 - "GET /api/report/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50362 - "GET /api/backtest/reports HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50361 - "GET /api/backtest/strategy?name=warfare HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63143 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49987 - "GET /api/backtest/reports/content?name=latest.md HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49618 - "GET /api/flash/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60190 - "GET /api/flash/review/premarket/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60337 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60192 - "GET /api/flash/review/lunchbreak/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60193 - "GET /api/flash/review/postmarket/history?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63425 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58354 - "GET /api/flash/events?page=1&size=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55658 - "GET /api/flash/signals HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62811 - "GET /api/flash/audit HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+[backtest] 后台刷新 warfare 完成
+[kline_cache] kline_cache 表初始化完成
+INFO:     127.0.0.1:59714 - "GET /api/score/bucket-stats?days=120 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:49221 - "GET /api/flash/notifications?since=2026-09-04T00:35:25.493344 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64110 - "GET /api/flash/notifications?since=2026-09-04T00:35:25.493344 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62021 - "GET /api/flash/notifications?since=2026-09-04T00:37:26.078531 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50350 - "GET /api/strategies/list HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61305 - "GET /api/strategies/advance2retreat1/watch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61299 - "GET /api/strategies/advance2retreat1/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61304 - "GET /api/strategies/advance2retreat1/persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50351 - "GET /api/strategies/market/regime HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61306 - "GET /api/strategies/advance2retreat1/backtest/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61307 - "GET /api/strategies/advance2retreat1/recommendation HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2505 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:58530 - "GET /api/flash/notifications?since=2026-09-04T00:38:26.476026 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63452 - "GET /api/market/overview HTTP/1.1" 200 OK
+[kline_cache] kline_cache 表初始化完成
+INFO:     127.0.0.1:63454 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65446 - "GET /api/macro/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51231 - "GET /api/macro/snapshot HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53716 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53395 - "GET /api/market/index-kline/000300?period=day HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+INFO:     127.0.0.1:62600 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62599 - "GET /api/market/temperature HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:57097 - "GET /api/score/weights HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49912 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65311 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64212 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52326 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52327 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58068 - "GET /api/flash/notifications?since=2026-09-04T00:41:42.130948 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64590 - "GET /api/paper/account HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64593 - "GET /api/paper/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64596 - "GET /api/paper/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61048 - "GET /api/score/batch-prices?codes=600035,600060,601658,002810,603889,601222,603587,601169,002241,600026,002637,603444,601699 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55322 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64594 - "GET /api/paper/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54639 - "GET /api/stock/news/002241 HTTP/1.1" 200 OK
+[news_history] news_history 表已初始化
+INFO:     127.0.0.1:54640 - "GET /api/stock/news/002241/history?days=30 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54641 - "GET /api/stock/realtime/002241 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54642 - "GET /api/stock/fundamental/002241 HTTP/1.1" 200 OK
+[engine] 行业指标分布已加载: 38636 条 / 5720 只 / 51 行业
+INFO:     127.0.0.1:54643 - "GET /api/score/002241 HTTP/1.1" 200 OK
+K线缓存持久化失败: dictionary changed size during iteration
+INFO:     127.0.0.1:55310 - "GET /api/stock/kline/002241?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53264 - "GET /api/strategies/002241/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64153 - "GET /api/paper/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62307 - "GET /api/paper/account HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63826 - "GET /api/paper/account HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63829 - "GET /api/paper/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50223 - "GET /api/paper/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54644 - "GET /api/strategies/002241/support-resistance?lookback=60 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49908 - "GET /api/flash/notifications?since=2026-09-04T00:41:42.130948 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63832 - "GET /api/paper/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52763 - "GET /api/flash/notifications?since=2026-09-04T00:43:36.193947 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63830 - "GET /api/paper/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54401 - "GET /api/score/batch-prices?codes=600035,600060,601658,002810,603889,601222,603587,601169,002241,600026,002637,603444,601699 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55306 - "GET /api/paper/risk HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55113 - "GET /api/strategies/list HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57536 - "GET /api/strategies/ma_convergence_breakout/backtest/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57535 - "GET /api/strategies/ma_convergence_breakout/watch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57537 - "GET /api/strategies/ma_convergence_breakout/recommendation HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64272 - "GET /api/strategies/ma_convergence_breakout/persistent-signals?min_days=2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57532 - "GET /api/strategies/ma_convergence_breakout/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55309 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53951 - "GET /api/strategies/ma_convergence_breakout/persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63236 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55114 - "GET /api/strategies/market/regime HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61630 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50462 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50200 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:55666 - "GET /api/flash/notifications?since=2026-09-04T00:45:50.774076 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51510 - "GET /api/flash/notifications?since=2026-09-04T00:46:07.969102 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50063 - "GET /api/flash/notifications?since=2026-09-04T00:46:49.501324 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61846 - "GET /api/flash/notifications?since=2026-09-04T00:47:08.298394 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61683 - "GET /api/flash/notifications?since=2026-09-04T00:47:48.598986 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63934 - "GET /api/flash/notifications?since=2026-09-04T00:48:11.224347 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51872 - "GET /api/flash/notifications?since=2026-09-04T00:48:51.450699 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51873 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52029 - "GET /api/flash/notifications?since=2026-09-04T00:49:09.822538 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52030 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62871 - "GET /api/flash/notifications?since=2026-09-04T00:49:46.983367 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55285 - "GET /api/flash/notifications?since=2026-09-04T00:50:10.192451 HTTP/1.1" 200 OK
+[health] ⚠️ 东财主站 连续失败 3 次，已告警
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:65148 - "GET /api/flash/notifications?since=2026-09-04T00:50:50.200696 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56058 - "GET /api/flash/notifications?since=2026-09-04T00:51:09.459533 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62770 - "GET /api/flash/notifications?since=2026-09-04T00:52:24.449358 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60982 - "GET /api/flash/notifications?since=2026-09-04T00:52:27.830226 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62374 - "GET /api/flash/notifications?since=2026-09-04T00:53:19.400630 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50572 - "GET /api/flash/notifications?since=2026-09-04T00:53:26.385562 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55334 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54453 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58825 - "GET /api/flash/notifications?since=2026-09-04T00:54:20.752392 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61260 - "GET /api/flash/notifications?since=2026-09-04T00:54:26.405963 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60536 - "GET /api/flash/notifications?since=2026-09-04T00:55:21.722837 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53462 - "GET /api/flash/notifications?since=2026-09-04T00:55:26.408899 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:53278 - "GET /api/flash/notifications?since=2026-09-04T00:56:23.016406 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62841 - "GET /api/flash/notifications?since=2026-09-04T00:56:26.698092 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59149 - "GET /api/flash/notifications?since=2026-09-04T00:57:25.176680 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62389 - "GET /api/flash/notifications?since=2026-09-04T00:57:32.637272 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59283 - "GET /api/flash/notifications?since=2026-09-04T00:58:32.772804 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57291 - "GET /api/flash/notifications?since=2026-09-04T00:58:28.051078 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52924 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61729 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57622 - "GET /api/flash/notifications?since=2026-09-04T00:59:27.395765 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57623 - "GET /api/flash/notifications?since=2026-09-04T00:59:29.394404 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57447 - "GET /api/flash/notifications?since=2026-09-04T01:00:31.545928 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57446 - "GET /api/flash/notifications?since=2026-09-04T01:00:28.689676 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:60427 - "GET /api/flash/notifications?since=2026-09-04T01:01:31.136697 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60428 - "GET /api/flash/notifications?since=2026-09-04T01:01:27.769098 HTTP/1.1" 200 OK
+K线缓存持久化失败: dictionary changed size during iterationK线缓存持久化失败: dictionary changed size during iteration
+
+INFO:     127.0.0.1:59794 - "GET /api/strategies/002537/support-resistance?lookback=60 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59795 - "GET /api/strategies/002537/rsi?period=14 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59796 - "GET /api/strategies/ma_convergence_breakout/detail/002537 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58190 - "GET /api/flash/notifications?since=2026-09-04T01:02:32.783615 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59248 - "GET /api/strategies/old_duck_head/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59254 - "GET /api/strategies/old_duck_head/backtest/result HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59249 - "GET /api/strategies/old_duck_head/watch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55376 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59256 - "GET /api/strategies/old_duck_head/persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59257 - "GET /api/strategies/old_duck_head/persistent-signals?min_days=2 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59255 - "GET /api/strategies/old_duck_head/recommendation HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62341 - "GET /api/flash/notifications?since=2026-09-04T01:02:27.426359 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49941 - "GET /api/flash/notifications?since=2026-09-04T01:02:50.448590 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62554 - "GET /api/flash/notifications?since=2026-09-04T01:03:09.097565 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52712 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60384 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57825 - "GET /api/flash/notifications?since=2026-09-04T01:03:48.055256 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57792 - "GET /api/flash/notifications?since=2026-09-04T01:04:28.318030 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52961 - "GET /api/flash/notifications?since=2026-09-04T01:05:29.795688 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52960 - "GET /api/flash/notifications?since=2026-09-04T01:05:27.094650 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:58685 - "GET /api/flash/notifications?since=2026-09-04T01:06:28.717536 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58687 - "GET /api/flash/notifications?since=2026-09-04T01:06:28.187299 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57274 - "GET /api/flash/notifications?since=2026-09-04T01:07:28.419263 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57275 - "GET /api/flash/notifications?since=2026-09-04T01:07:31.008515 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53005 - "GET /api/flash/notifications?since=2026-09-04T01:08:28.626610 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53006 - "GET /api/flash/notifications?since=2026-09-04T01:08:30.061110 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57389 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51853 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50203 - "GET /api/flash/notifications?since=2026-09-04T01:09:30.857803 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50202 - "GET /api/flash/notifications?since=2026-09-04T01:09:29.026171 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58688 - "GET /api/flash/notifications?since=2026-09-04T01:10:28.558730 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58689 - "GET /api/flash/notifications?since=2026-09-04T01:10:28.817597 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:55013 - "GET /api/flash/notifications?since=2026-09-04T01:11:30.202610 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55011 - "GET /api/flash/notifications?since=2026-09-04T01:11:28.410356 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58430 - "GET /api/flash/notifications?since=2026-09-04T01:12:28.100978 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58429 - "GET /api/flash/notifications?since=2026-09-04T01:12:29.939821 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53325 - "GET /api/flash/notifications?since=2026-09-04T01:13:30.932670 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53324 - "GET /api/flash/notifications?since=2026-09-04T01:13:38.505099 HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:54470 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55003 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50658 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51754 - "GET /api/flash/notifications?since=2026-09-04T01:18:31.249439 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51756 - "GET /api/flash/notifications?since=2026-09-04T01:18:28.478697 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61775 - "GET /api/flash/notifications?since=2026-09-04T01:19:27.048781 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61774 - "GET /api/flash/notifications?since=2026-09-04T01:19:31.749650 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57949 - "GET /api/flash/notifications?since=2026-09-04T01:20:30.942043 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57950 - "GET /api/flash/notifications?since=2026-09-04T01:20:28.517016 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64523 - "GET /api/flash/notifications?since=2026-09-04T01:21:29.403125 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64521 - "GET /api/flash/notifications?since=2026-09-04T01:21:40.136037 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64524 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52087 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:64770 - "GET /api/flash/notifications?since=2026-09-04T01:22:36.343677 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64771 - "GET /api/flash/notifications?since=2026-09-04T01:22:29.896015 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64688 - "GET /api/flash/notifications?since=2026-09-04T01:23:31.903234 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64687 - "GET /api/flash/notifications?since=2026-09-04T01:23:28.565998 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57130 - "GET /api/flash/notifications?since=2026-09-04T01:25:02.206714 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57129 - "GET /api/flash/notifications?since=2026-09-04T01:25:05.291979 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56107 - "GET /api/flash/notifications?since=2026-09-04T01:26:04.148584 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56106 - "GET /api/flash/notifications?since=2026-09-04T01:26:03.555608 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63909 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63911 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50796 - "GET /api/flash/notifications?since=2026-09-04T01:27:06.435023 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50795 - "GET /api/flash/notifications?since=2026-09-04T01:27:06.421348 HTTP/1.1" 200 OK
+[health] ⚠️ 东财主站 连续失败 3 次，已告警
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:55298 - "GET /api/flash/notifications?since=2026-09-04T01:28:06.894991 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55297 - "GET /api/flash/notifications?since=2026-09-04T01:28:06.189891 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64487 - "GET /api/flash/notifications?since=2026-09-04T01:29:07.886870 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64486 - "GET /api/flash/notifications?since=2026-09-04T01:29:07.707919 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65027 - "GET /api/flash/notifications?since=2026-09-04T01:30:07.973641 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65028 - "GET /api/flash/notifications?since=2026-09-04T01:30:06.993576 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60303 - "GET /api/flash/notifications?since=2026-09-04T01:31:09.626967 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51992 - "GET /api/contradictions/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52925 - "GET /api/contradictions/summary?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52926 - "GET /api/contradictions?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50965 - "GET /api/flash/notifications?since=2026-09-04T01:31:09.297809 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56161 - "GET /api/contradictions/report?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56238 - "GET /api/contradictions?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63420 - "GET /api/contradictions/report?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59481 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59480 - "GET /api/flash/notifications?since=2026-09-04T01:32:06.506982 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56968 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55253 - "GET /api/flash/notifications?since=2026-09-04T01:32:12.721457 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:61692 - "GET /api/flash/notifications?since=2026-09-04T01:32:30.015949 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52456 - "GET /api/contradictions/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61131 - "GET /api/contradictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59492 - "GET /api/contradictions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57062 - "GET /api/market/overview HTTP/1.1" 200 OK
+[kline_cache] kline_cache 表初始化完成
+INFO:     127.0.0.1:51968 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53472 - "GET /api/flash/notifications?since=2026-09-04T01:33:08.983135 HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+INFO:     127.0.0.1:52069 - "GET /api/strategies/list HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56257 - "GET /api/macro/daily?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52797 - "GET /api/macro/snapshot HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:52068 - "GET /api/strategies/market/regime HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52274 - "GET /api/flash/diagnosis?limit=1 HTTP/1.1" 200 OK
+[kline_cache] kline_cache 表初始化完成
+INFO:     127.0.0.1:49615 - "GET /api/market/index-kline/000300?period=day HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52071 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58305 - "GET /api/flash/notifications HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54946 - "GET /api/flash/notifications?since=2026-09-04T01:36:42.402296 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57640 - "GET /api/contradictions/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61375 - "GET /api/contradictions/summary?date=2026-09-04 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61377 - "GET /api/contradictions?date=2026-09-04 HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:49188 - "GET /api/contradictions/summary HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60341 - "GET /api/flash/notifications?since=2026-09-04T01:37:41.037863 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49931 - "GET /api/flash/notifications?since=2026-09-04T01:39:52.862033 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49932 - "GET /api/flash/backup HTTP/1.1" 200 OK
+[关闭] K线缓存已持久化到磁盘
+9aadfcc0-4a6e-4c89-a65b-a7c706ff98b6
+[启动] K线缓存从磁盘恢复: 2510 条
+[database] 使用 PostgreSQL 数据库
+[persistence] signal_history 表初始化完成
+[database] 数据表初始化完成
+[snapshot] 已从收盘快照恢复行情: 3230 只 (快照时间 2026-09-03T15:08:49.369413+08:00)
+[market_regime] 重启恢复缓存: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 重启恢复市场状态: 2026-09-02 neutral_bearish 权重={'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+[scheduler] 已启动: 快讯300s / 跟踪300s / 行情缓存120s / K线缓存每日15:30 / 指标缓存每日16:00 / 回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / 周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / 消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / 财经日历每日7:00 / 行业映射每月1号03:00 / 主线日报每日16:05 / 板块快照交易日15:10 / 矛盾扫描每日15:35 / 宏观锁定每日8:55 / 复盘窗口 {'premarket': (550, 690), 'lunchbreak': (692, 780), 'postmarket': (903, 1439)} | LLM✅ 金十✅ 微信✅
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:51768 - "GET /api/flash/notifications?since=2026-09-04T01:40:43.196132 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52769 - "GET /api/flash/notifications?since=2026-09-04T01:41:55.478635 HTTP/1.1" 200 OK
+[ranking] ranking_history 表初始化完成
+INFO:     127.0.0.1:65410 - "GET /api/score/snapshots?days=30 HTTP/1.1" 200 OK
+[scoring] 应用市场状态权重 2026-09-02 neutral_bearish: {'technical': 0.27, 'capital': 0.23, 'fundamental': 0.23, 'growth': 0.17, 'quality': 0.11}
+INFO:     127.0.0.1:50156 - "GET /api/score/weights HTTP/1.1" 200 OK
+[kline_cache] kline_cache 表初始化完成
+INFO:     127.0.0.1:65409 - "GET /api/market/temperature HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59496 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52058 - "POST /api/stock/finance/batch HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50229 - "POST /api/score/ranking-persistence HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50231 - "POST /api/strategies/exit-alerts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51391 - "GET /api/flash/notifications?since=2026-09-04T01:42:42.366201 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55439 - "GET /api/flash/notifications?since=2026-09-04T01:43:42.040926 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50194 - "GET /api/flash/backup HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63340 - "GET /api/flash/notifications?since=2026-09-04T01:45:27.499080 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58787 - "GET /api/flash/notifications?since=2026-09-04T01:45:50.030545 HTTP/1.1" 200 OK
+[eastmoney] 主站不可用，已切 delay 端点（行情延迟~15分钟）fs=m:90+t:2
+INFO:     127.0.0.1:55281 - "GET /api/flash/notifications?since=2026-09-04T01:46:43.472971 HTTP/1.1" 200 OK

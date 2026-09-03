@@ -109,6 +109,13 @@ export const getBacktestReportContent = (name) => http.get('/backtest/reports/co
 export const getDailyReportList = (limit = 30) => http.get('/report/list', { params: { limit } })
 export const getDailyReport = (date) => http.get('/report/daily', { params: date ? { date } : {} })
 
+// 矛盾扫描引擎
+export const getContradictions = (params = {}) => http.get('/contradictions', { params })
+export const getContradictionsSummary = (date) => http.get('/contradictions/summary', { params: date ? { date } : {} })
+export const getContradictionsReport = (date) => http.get('/contradictions/report', { params: date ? { date } : {} })
+export const triggerContradictionsScan = (date) => http.post('/contradictions/scan', {}, { params: date ? { date } : {} })
+export const triggerContradictionsReport = (date) => http.post('/contradictions/report', {}, { params: date ? { date } : {} })
+
 // 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
 export const getFlashBackup = () => http.get('/flash/backup')
 export const restoreFlashBackup = (files, headers) => http.post('/flash/restore', { files }, { headers })
