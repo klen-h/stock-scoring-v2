@@ -105,6 +105,10 @@ export const getBacktestStrategy = (name) => http.get('/backtest/strategy', { pa
 export const getBacktestReports = () => http.get('/backtest/reports')
 export const getBacktestReportContent = (name) => http.get('/backtest/reports/content', { params: { name } })
 
+// A股大盘日报（scheduler 每日 16:20 生成，落库 daily_reports）
+export const getDailyReportList = (limit = 30) => http.get('/report/list', { params: { limit } })
+export const getDailyReport = (date) => http.get('/report/daily', { params: date ? { date } : {} })
+
 // 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
 export const getFlashBackup = () => http.get('/flash/backup')
 export const restoreFlashBackup = (files, headers) => http.post('/flash/restore', { files }, { headers })

@@ -19,6 +19,7 @@ const routes = [
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },
   { path: '/trade-plans', name: 'TradePlans', component: () => import('../views/TradePlans.vue') },
   { path: '/capital', name: 'Capital', component: () => import('../views/CapitalView.vue') },
+  { path: '/report', name: 'DailyReport', component: () => import('../views/DailyReport.vue') },
 ]
 
 const router = createRouter({

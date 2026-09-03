@@ -105,6 +105,7 @@ const navItems = [
   { path: '/watchlist', label: '自选股' },
   { path: '/trade-plans', label: '交易计划' },
   { path: '/capital', label: '资金流向' },
+  { path: '/report', label: '每日日报' },
 ]
 
 // 导航高亮判断：

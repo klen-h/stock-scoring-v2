@@ -40,6 +40,7 @@ from app.routers import market, stock, capital, sector, scoring, macro, flash
 from app.routers import user as user_router
 from app.routers import auth as auth_router
 from app.routers import backtest as backtest_router
+from app.routers import daily_report as report_router
 from app.strategies.router import router as strategies_router
 from app.routers.paper import router as paper_router
 
@@ -145,6 +146,7 @@ app.include_router(strategies_router, prefix="/api/strategies", tags=["战法选
 app.include_router(paper_router, prefix="/api/paper", tags=["模拟盘"])  # 纸面交易（模拟盘）
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
+app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
 
 
 # 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL

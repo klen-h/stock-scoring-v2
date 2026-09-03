@@ -532,26 +532,131 @@ def build_data_md() -> str:
 # ──────────────────────────────────────────────────────────────
 #  4. LLM 解读 + 收尾
 # ──────────────────────────────────────────────────────────────
+_ORDER_WORDS = ("买入", "卖出", "加仓", "减仓", "补仓", "清仓", "止损", "止盈",
+                "追涨", "杀跌", "抄底", "做多", "做空", "建仓", "空仓")
+
+_SYSTEM = (
+    "你是专业的 A 股投研助手。你只会基于用户提供的结构化数据做复盘解读，"
+    "绝不编造数据或数字；数据中未出现的信息一律写 N/A。"
+    "你是研究员而非交易顾问：绝不给出\"买入/加仓/补仓/卖出/减仓/止损\"等指令式操作建议，"
+    "只给出观察要点、关键位与风险提示。"
+    "特别注意：\n"
+    "1. 若系统判定为震荡偏空(neutral_bearish)，对\"突破信号\"应指出假突破概率高，而非\"机会\"。\n"
+    "2. 对\"涨但资金流出\"的板块，应指出\"拉高出货\"风险，而非\"数据波动\"。\n"
+    "3. 同一板块不能同时给出矛盾解读（如既\"利好\"又\"避险\"）；若缩量上涨，优先解读为护盘。\n"
+    "4. 持仓点评必须给出具体观察位（如\"跌破X元需警惕\"），不能只说\"关注支撑\"。\n"
+    "5. 北向资金大幅净流出（>5亿）时，必须指出外资离场风险。\n"
+    "必须输出合法 JSON，不要输出 Markdown 或围栏。")
+
+
+def _valid_holdings_codes() -> set:
+    """真实持仓 code 集合（防 LLM 编造持仓观察）。"""
+    return {str(p["code"]) for p in _portfolio() if p.get("code")}
+
+
+def _render_llm_json(data: dict, valid_codes: set) -> str:
+    """把 LLM 结构化 JSON 渲染成 markdown（代码层校验 + 过滤）。"""
+    lines = []
+    add = lines.append
+
+    mainline = str(data.get("mainline") or "").strip()
+    if mainline:
+        add("## 今日主线")
+        add(mainline)
+        add("")
+
+    sector = [str(x).strip() for x in (data.get("sector_notes") or []) if str(x).strip()]
+    if sector:
+        add("## 板块与资金")
+        for n in sector[:5]:
+            add(f"- {n}")
+        add("")
+
+    system = [str(x).strip() for x in (data.get("system_notes") or []) if str(x).strip()]
+    if system:
+        add("## 系统信号解读")
+        for n in system[:5]:
+            add(f"- {n}")
+        add("")
+
+    watch = [str(x).strip() for x in (data.get("tomorrow_watch") or []) if str(x).strip()]
+    holdings = []
+    for h in (data.get("holdings") or []):
+        if not isinstance(h, dict):
+            continue
+        code = str(h.get("code") or "").strip()
+        note = str(h.get("note") or "").strip()
+        if code not in valid_codes or not note:       # 防幻觉：code 必须在真实持仓里
+            continue
+        if any(w in note for w in _ORDER_WORDS):       # 防指令：剔除含买卖指令词的点评
+            continue
+        name = str(h.get("name") or "").strip() or code
+        level = h.get("key_level")
+        lv = f"（关键位 {level:g}）" if isinstance(level, (int, float)) and level > 0 else ""
+        holdings.append(f"- {code} {name}：{note}{lv}")
+    if watch or holdings:
+        add("## 明日预案与持仓观察")
+        if watch:
+            add("**关键观察指标**：")
+            for i, w in enumerate(watch[:5], 1):
+                add(f"{i}. {w}")
+        if holdings:
+            add("")
+            add("**持仓观察位**：")
+            add("\n".join(holdings[:10]))
+        add("")
+
+    risk = str(data.get("risk") or "").strip()
+    if risk and not any(w in risk for w in _ORDER_WORDS):
+        add(f"**一句话风险提示**：{risk}")
+
+    return "\n".join(lines).rstrip()
+
+
 def _llm_interpret(data_md: str) -> str:
-    """R1 单次调用；失败/熔断返回空串（硬数据部分不受影响）。"""
+    """结构化 JSON 输出 + 代码层校验；JSON 失败回退纯 markdown。"""
     try:
         from app.flash import llm
         blocked = llm.llm_blocked_reason()
         if blocked:
             print(f"[daily_report] LLM 不可用: {blocked}")
             return f"\n> LLM 解读未生成（{blocked}）"
-        system = (
-            "你是专业的 A 股投研助手。你只会基于用户提供的结构化数据做复盘解读，"
-            "绝不编造数据或数字；数据中未出现的信息一律写 N/A。"
-            "你是研究员而非交易顾问：绝不给出\"买入/加仓/补仓/卖出/减仓/止损\"等指令式操作建议，"
-            "只给出观察要点、关键位与风险提示。"
-            "特别注意：\n"
-            "1. 若系统判定为震荡偏空(neutral_bearish)，对\"突破信号\"应指出假突破概率高，而非\"机会\"。\n"
-            "2. 对\"涨但资金流出\"的板块，应指出\"拉高出货\"风险，而非\"数据波动\"。\n"
-            "3. 同一板块不能同时给出矛盾解读（如既\"利好\"又\"避险\"）；若缩量上涨，优先解读为护盘。\n"
-            "4. 持仓点评必须给出具体观察位（如\"跌破X元需警惕\"），不能只说\"关注支撑\"。\n"
-            "5. 北向资金大幅净流出（>5亿）时，必须指出外资离场风险；大幅净流入时，可指出外资态度积极但需结合市场整体量能判断。\n"
-            "输出精炼的 Markdown。")
+        valid_codes = _valid_holdings_codes()
+        codes_hint = "、".join(sorted(valid_codes)) if valid_codes else "（无持仓）"
+        user = (
+            f"以下是 {_today()} A 股收盘后的系统数据。\n\n{data_md}\n\n"
+            f"真实持仓代码：{codes_hint}\n\n"
+            "请输出 JSON（不要 Markdown），字段：\n"
+            "{\n"
+            '  "mainline": "一句话定性（区分指数表现与个股表现）",\n'
+            '  "sector_notes": ["板块/资金解读 2-5 条"],\n'
+            '  "system_notes": ["regime/评分榜/战法/模拟盘解读 2-5 条"],\n'
+            '  "tomorrow_watch": ["明日关键观察指标 3-5 条"],\n'
+            '  "holdings": [{"code":"600578","name":"京能电力","key_level":5.40,"note":"跌破5.40需警惕"}],\n'
+            '  "risk": "一句话风险提示"\n'
+            "}\n"
+            "holdings 的 code 必须严格取自上面真实持仓代码，不得编造；"
+            "note 只能写观察位/风险（如\"跌破X元需警惕\"），不得含买入/卖出/止损等指令词。")
+        try:
+            data = llm._call_json(_SYSTEM, user, temperature=0.3)
+        except Exception as e:
+            print(f"[daily_report] _call_json 异常: {e}")
+            data = {}
+        if data:
+            md = _render_llm_json(data, valid_codes)
+            if md.strip():
+                return "\n" + md
+        return _llm_interpret_markdown(data_md)
+    except Exception as e:
+        print(f"[daily_report] LLM 解读失败: {e}")
+        return "\n> LLM 解读失败（硬数据部分不受影响）"
+
+
+def _llm_interpret_markdown(data_md: str) -> str:
+    """纯 markdown 兜底（结构化 JSON 失败时使用，保留原逻辑）。"""
+    try:
+        from app.flash import llm
+        system = _SYSTEM + "\n输出精炼的 Markdown。"
         user = (
             f"以下是 {_today()} A 股收盘后的系统数据。\n\n{data_md}\n\n"
             "请输出以下四个小节（每节 2-5 条，简练）:\n"
@@ -572,8 +677,8 @@ def _llm_interpret(data_md: str) -> str:
         text = (text or "").strip()
         return "\n" + text if text else ""
     except Exception as e:
-        print(f"[daily_report] LLM 解读失败: {e}")
-        return "\n> LLM 解读失败（硬数据部分不受影响）"
+        print(f"[daily_report] LLM markdown 兜底失败: {e}")
+        return ""
 
 
 def run_daily_report(push: bool = True) -> dict:
