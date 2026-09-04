@@ -7,6 +7,10 @@ data/
 # K线缓存（磁盘持久化，重启时恢复，不入库）
 kline_cache.json
 
+# 运行日志 / 归档的临时脚本（历史 scratch，保留本地不入库）
+*.log
+tmp_archive/
+
 # Python
 __pycache__/
 *.pyc

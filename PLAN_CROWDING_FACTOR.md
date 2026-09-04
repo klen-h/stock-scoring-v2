@@ -185,7 +185,27 @@ def crowding_multiplier(crowd_score: float) -> float:
 
 - [x] 0.1 `scripts/factor_analysis.py` + 正式相关性报告（含残差化口径，2026-09-03）
 - [x] 0.2 `app/backtest/crowding.py`（metrics/score/multiplier）+ 回顾性 A/B/C 三表（2026-09-03，结论见 0.4）
-- [ ] 0.4 D1 决策：惩罚作用域（Top10/20/50 三档 A/B 对比）+ D2 大跌前拥挤识别预检 → 9/4 盘后一并出
-- [ ] P0 9/4(五) 16:30 盘后：T+2 全量回测 + 相关性重跑 + 交互初版（含 D1/D2）
-- [ ] P0 9/9(三) 盘后：T+5 定版
-- [ ] 阶段 2 上线评审（是否默认 off、是否动 signal 口径）
+- [x] 0.4 D1 决策（2026-09-05 定版，**见下方 D1 结论**）
+- [ ] ~~P0 9/4 T+2 回测 + 阶段 2 上线~~ → **由 PLAN_MAINFORCE 主力筹码因子替代，本计划关闭**
+
+---
+
+## 九、D1 结论（2026-09-05，全池截面 2,314 样本定版）：拥挤度被主力筹码因子覆盖，计划关闭
+
+同一批截面（4 日 × 583 股）同时计算 `crowding_score`（价格代理）与
+`price_pos`（筹码位置，PLAN_MAINFORCE）的 5 日前瞻 IC：
+
+| 指标 | 数值 |
+|---|---|
+| IC(crowding_score, fwd5) | +0.123 |
+| IC(price_pos, fwd5) | **-0.343**（强度 3 倍） |
+| corr(crowding, price_pos) | -0.281（相关但不同源） |
+| **crowding 对 price_pos 残差化后 IC** | **+0.041 ≈ 0** |
+
+**结论**：拥挤度想要捕捉的「机构拥挤、高位无承接」信息，筹码位置因子以
+3 倍强度完整覆盖；残差化后拥挤度几乎无增量。**不再上线 CROWDING_MODE
+乘数**，高位风险统一由 `mainforce_overlay` 的出货嫌疑乘数（×0.85）承担
+——它同时携带了主力资金流与阶段信息，比纯价格代理更完整。
+
+`app/backtest/crowding.py` 保留（纯函数、被 factor_analysis 引用），不再接入线上。
+本计划由 **PLAN_MAINFORCE.md** 接棒。

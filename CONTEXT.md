@@ -1,6 +1,50 @@
 # 项目上下文摘要
 
-> 最后更新：2026-08-31
+> 最后更新：2026-09-05（夜间第二批）
+
+## 本轮新增：主力行为因子体系（2026-09-05）
+
+**背景**：回测验证阶段；因子诊断显示综合分 IC≈0、散户因子（技术/估值）解释力弱。
+**立场切换**：散户思维（股票好不好）→ 主力思维（筹码在谁手里、主力走到哪一步）。
+**完整假设/验收/上线记录**：`PLAN_MAINFORCE.md`；**下一阶段路线图**：`PLAN_NEXT_PHASE.md`。
+
+### 验证结论（全池 20 截面 × 10,744 样本，报告 `backtest_reports/mainforce_20260905_0124.md`）
+- **筹码位置是最强单因子**：price_pos 10日去超额 IC -0.236，五分位完美单调（底部 +1.88% vs 顶部 -1.81%）
+- **卖出组合 regime 稳健**：「高位高获利×主力流出」10日 -7.5pt（n=440）
+- **追主力资金流是反向指标**（倒U：温和流入最优、极端流入最差）——散户陷阱实锤
+- **IC 随 regime 翻转**（下跌段负、上涨段正）→ 不做常设维度，做 regime 闸门+风控乘数
+- **拥挤度因子被覆盖关闭**：残差化后 IC 仅 +0.041（PLAN_CROWDING_FACTOR 第九节定版）
+
+### 新增文件
+| 文件 | 作用 |
+|---|---|
+| `backend/app/mainforce/chips.py` | 筹码分布 CYQ 轮动模型（获利盘/集中度/价格位置，numpy） |
+| `backend/app/mainforce/flow.py` | 主力资金流（新浪主源；东财兜底已封禁勿高频）+ `mainflow_history` 表 + 快照股本反推 |
+| `backend/app/mainforce/phases.py` | 主力阶段标签（吸筹/洗盘/拉升/出货/下跌，向量化） |
+| `backend/app/mainforce/overlay.py` | 组合信号合成 + 出货乘数 0.85（MAINFORCE_MODE 开关 + regime 闸门） |
+| `backend/app/mainforce/state.py` | 日批全池计算 → `mainforce_state` 表（1,173 只/11 分钟，17:30 调度） |
+| `scripts/mainforce_factor_backtest.py` | 全池截面验证（IC/分桶/阶段/组合/分日稳定性） |
+| `scripts/news_score_validation.py` | 消息分 vs 未来收益验证（初步 T+2 IC +0.202，待 ≥20 快照日定版） |
+| `scripts/limitup_filter_compare.py` | 撮合现实化前后对照 |
+| `PLAN_NEXT_PHASE.md` | 下一阶段路线图（战法复健/龙虎榜/GH Actions 迁移等） |
+
+### 改动文件
+- `backend/app/backtest/engine.py`：**撮合现实化**——涨停一字买不进剔除（skipped_out）+ 跌停顺延次日开盘；test_backtest.py 补至 11 用例全通过
+- `backend/app/strategies/recommendation.py`：**白名单动态化**——从 strategy_results 重放撮合算实时胜率（6h 缓存），当前无一战法达 55%/30 样本 → 推送自动静默
+- `backend/app/strategies/paper_trading.py`：模拟盘买入涨停一字守卫（卖出侧顺延待做，见 PLAN_NEXT_PHASE）
+- `backend/app/contradictions/scanner.py`：+`scan_index_vs_mainflow`（指数涨跌 vs 全池主力资金流背离；9/4 实况即触发"绿盘+主力流入147亿=砸盘吸筹"）
+- `backend/app/flash/scheduler.py`：+mainflow_refresh_loop（17:00）+ mainforce_state_refresh_loop（17:30）
+- `backend/app/routers/scoring.py`：score_top/score_single 挂 `mainforce` 字段；auto 模式出货嫌疑 ×0.85 重排（默认 off）
+- `backend/app/daily_report.py`：日报新增"主力行为扫描"章节（出货/吸筹名单）
+- `frontend/src/views/ScoreRank.vue`：Top 榜"主力"列；`frontend/src/views/StockDetail.vue`：主力行为卡片
+- `backend/.gitignore`：+*.log、tmp_archive/；47 个 tmp_* 临时脚本归档至 `backend/tmp_archive/`
+
+### 数据源备忘
+- 新浪 MoneyFlow 历史资金流：稳定，逐股 ≥0.25s 限速；龙虎榜接口已探明未接（PLAN_NEXT_PHASE P1）
+- 东财 2026-09-05 被封 IP（~600 次高频请求触发，实测 24-48h）——fflow/clist 勿再高频直打
+- 流通股本：market_snapshot（float_cap/price 反推），与东财逐股核对一致
+
+---
 
 ## 项目概况
 
