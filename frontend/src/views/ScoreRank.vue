@@ -194,6 +194,7 @@
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">连续</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">可信度</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">消息</th>
+            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">主力</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">买入时机</th>
             <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">买入原因</th>
             <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">操作</th>
@@ -254,6 +255,19 @@
                        item.news_score < 0 ? 'bg-red-500/20 text-red-400' :
                        'bg-white/5 text-muted'">
                 {{ item.news_score > 0 ? '+' : '' }}{{ item.news_score }}
+              </span>
+              <span v-else class="text-xs text-muted">-</span>
+            </td>
+            <!-- 主力行为标注（筹码结构×资金流组合信号，日批计算；后端模式才有数据）
+                 distribution=出货嫌疑（高位高获利+主力流出，回测10日-7.5pt）
+                 accum=吸筹区（低位筹码密集+主力净流入，回测10日+1.1pt） -->
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+              <span v-if="item.mainforce?.signal"
+                class="px-1.5 py-0.5 rounded text-xs font-bold cursor-help"
+                :class="item.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' :
+                       'bg-emerald-500/20 text-emerald-400'"
+                :title="`${item.mainforce.phase === 'distribution' ? '出货' : item.mainforce.phase === 'accumulation' ? '吸筹' : item.mainforce.phase === 'markup' ? '拉升' : item.mainforce.phase === 'shakeout' ? '洗盘' : item.mainforce.phase === 'decline' ? '下跌' : '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力净流入 ${item.mainforce.flow5_amt ?? '-'}%`">
+                {{ item.mainforce.signal === 'distribution' ? '出货' : '吸筹' }}
               </span>
               <span v-else class="text-xs text-muted">-</span>
             </td>

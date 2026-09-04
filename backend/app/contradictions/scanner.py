@@ -563,6 +563,75 @@ def scan_today_calendar_focus(date: Optional[str] = None) -> Optional[Dict]:
     }
 
 
+# ── L2：指数 vs 全池主力资金流（mainforce 数据底座，2026-09-05 接入）──
+
+def scan_index_vs_mainflow(date: Optional[str] = None) -> Optional[Dict]:
+    """指数涨跌 vs 评分池主力资金净流向的背离。
+
+    逻辑（主力思维）：指数是"面子"，超大单+大单的净流向是主力真实进出。
+      - 指数红（≥+0.3%）但全池主力净流出 ≥60 亿 → 拉指数、主力撤（追高风险）
+      - 指数绿（≤-0.3%）但全池主力净流入 ≥60 亿 → 跌指数、主力接（砸盘吸筹）
+    阈值依据：544 股池日聚合主力净流量常态 ±50~150 亿（见 mainflow_history）。
+    """
+    indices = _load_index_quotes()
+    if not indices:
+        return None
+    try:
+        from app.database import db
+        rows = db.fetch(
+            "SELECT date, SUM(main_net) AS s FROM mainflow_history "
+            "WHERE date >= (SELECT MAX(date) FROM mainflow_history) "
+            "GROUP BY date ORDER BY date DESC LIMIT 6")
+        if not rows:
+            return None
+        latest_net = float(rows[0]["s"] or 0)
+        hist = [float(r["s"] or 0) / 1e8 for r in rows]   # 近几日（亿），供佐证
+    except Exception as e:
+        print(f"[contradiction] mainflow 读取失败: {e}")
+        return None
+
+    red = [i for i in indices if i.get("change_pct", 0) >= 0.3]
+    green = [i for i in indices if i.get("change_pct", 0) <= -0.3]
+    out_yi = latest_net / 1e8
+
+    if red and latest_net <= -6e9:
+        sev = "severe" if latest_net <= -1.2e10 else "obvious"
+        idx_str = "、".join(f"{i['name']}{i['change_pct']:+.2f}%" for i in red[:3])
+        return {
+            "level": "L2", "type": "index_vs_mainflow", "severity": sev,
+            "title": "指数红盘，主力资金净流出",
+            "summary": (f"{idx_str} 收红，但评分池 {544} 只主力资金（超大单+大单）"
+                        f"净流出 {abs(out_yi):.1f} 亿。指数是面子，主力净流向是里子——"
+                        f"权重护盘、主力借红盘出货的结构。"),
+            "evidence": {
+                "narrative": "主要指数收红，表面走强",
+                "actual": "主力资金大幅净流出，大单在卖",
+                "metrics": {"pool_main_net_yi": round(out_yi, 1),
+                            "recent_5d_yi": [round(x, 1) for x in hist],
+                            "red_indices": [i["name"] for i in red]},
+            },
+            "signal": "红盘+主力流出：不追高，警惕次日低开；持仓利用反弹减仓。",
+        }
+    if green and latest_net >= 6e9:
+        sev = "severe" if latest_net >= 1.2e10 else "obvious"
+        idx_str = "、".join(f"{i['name']}{i['change_pct']:+.2f}%" for i in green[:3])
+        return {
+            "level": "L2", "type": "index_vs_mainflow", "severity": sev,
+            "title": "指数下杀，主力资金净流入",
+            "summary": (f"{idx_str} 收绿，但评分池主力资金净流入 {out_yi:.1f} 亿。"
+                        f"恐慌盘被大单接走——砸盘吸筹的典型结构。"),
+            "evidence": {
+                "narrative": "指数下跌，表面走弱",
+                "actual": "主力资金逆势净流入，大单在买",
+                "metrics": {"pool_main_net_yi": round(out_yi, 1),
+                            "recent_5d_yi": [round(x, 1) for x in hist],
+                            "green_indices": [i["name"] for i in green]},
+            },
+            "signal": "绿盘+主力流入：观察吸筹区个股（低位筹码密集+净流入），避免恐慌割肉。",
+        }
+    return None
+
+
 # 扫描器注册表
 L1_SCANNERS = [scan_calendar_surprise, scan_today_calendar_focus]
 
@@ -571,6 +640,7 @@ L2_SCANNERS = [
     scan_sector_narrative_vs_flow,
     scan_price_vs_volume,
     scan_northbound_vs_index,
+    scan_index_vs_mainflow,
 ]
 
 ALL_SCANNERS = L1_SCANNERS + L2_SCANNERS

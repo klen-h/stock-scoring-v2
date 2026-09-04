@@ -190,6 +190,57 @@
           ≥4/5 趋势健康，回调大概率为洗盘，耐心持有；≤2/5 趋势恶化，真跌风险高，考虑减仓
         </div>
       </div>
+
+      <!-- 主力行为（筹码结构 × 资金流组合信号，全池截面回测验证） -->
+      <div v-if="scoreData.mainforce" class="mt-4 pt-4 border-t border-border">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">主力行为</h3>
+          <div class="flex items-center gap-2">
+            <span v-if="scoreData.mainforce.phase_cn"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-white/5 text-muted">
+              {{ scoreData.mainforce.phase_cn }}段
+            </span>
+            <span v-if="scoreData.mainforce.signal_cn"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold"
+              :class="scoreData.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'">
+              {{ scoreData.mainforce.signal_cn }}
+            </span>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          <div class="px-3 py-2 rounded-lg bg-white/5">
+            <div class="text-muted mb-1">获利盘</div>
+            <div class="font-mono font-bold"
+              :class="(scoreData.mainforce.chip?.winner_ratio ?? 0) > 0.7 ? 'text-red-400' : (scoreData.mainforce.chip?.winner_ratio ?? 0) < 0.3 ? 'text-emerald-400' : ''">
+              {{ ((scoreData.mainforce.chip?.winner_ratio ?? 0) * 100).toFixed(0) }}%
+            </div>
+          </div>
+          <div class="px-3 py-2 rounded-lg bg-white/5">
+            <div class="text-muted mb-1">筹码位置</div>
+            <div class="font-mono font-bold"
+              :class="(scoreData.mainforce.chip?.price_pos ?? 0) > 0.75 ? 'text-red-400' : (scoreData.mainforce.chip?.price_pos ?? 0) < 0.35 ? 'text-emerald-400' : ''">
+              {{ ((scoreData.mainforce.chip?.price_pos ?? 0) * 100).toFixed(0) }}%
+            </div>
+          </div>
+          <div class="px-3 py-2 rounded-lg bg-white/5">
+            <div class="text-muted mb-1">筹码集中度</div>
+            <div class="font-mono font-bold">{{ ((scoreData.mainforce.chip?.concentration ?? 0) * 100).toFixed(0) }}%</div>
+          </div>
+          <div class="px-3 py-2 rounded-lg bg-white/5">
+            <div class="text-muted mb-1">5日主力净流入</div>
+            <div class="font-mono font-bold"
+              :class="(scoreData.mainforce.flow5_amt ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+              {{ scoreData.mainforce.flow5_amt != null ? (scoreData.mainforce.flow5_amt > 0 ? '+' : '') + scoreData.mainforce.flow5_amt + '%' : '-' }}
+            </div>
+          </div>
+        </div>
+        <p v-if="scoreData.mainforce.reason" class="mt-2 text-[11px] text-muted leading-relaxed">
+          {{ scoreData.mainforce.reason }}
+        </p>
+        <div class="mt-2 text-[11px] text-muted">
+          高位高获利+主力流出 = 出货嫌疑（回测 10 日 -7.5pt）；低位筹码密集+主力净流入 = 吸筹区（10 日 +1.1pt）。均值成本 {{ scoreData.mainforce.chip?.avg_cost ?? '-' }}
+        </div>
+      </div>
       </div>
 
       <!-- 右列（1/3）：消息面情绪 -->

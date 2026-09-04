@@ -439,6 +439,65 @@ async def backtest_prices_refresh_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 主力资金流每日回填（mainforce/mainflow_history，17:00 起）──
+# 依赖 backtest_prices 回填后的池；新浪源逐股 ~0.75s，全池 544 只约 7 分钟。
+MAINFLOW_REFRESH_WINDOW = (1020, 1440)   # 北京时间 17:00-23:59
+
+
+async def mainflow_refresh_loop():
+    """每日盘后回填主力资金流（新浪主源），主力筹码/行为因子的数据底座。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "mainflow_backfill"
+        if (now.weekday() < 5 and MAINFLOW_REFRESH_WINDOW[0] <= t < MAINFLOW_REFRESH_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            try:
+                from app.mainforce.flow import backfill_all
+                stats = await asyncio.to_thread(backfill_all)
+                store.mark_schedule_done(task_key)
+                status["last_mainflow_backfill"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 主力资金流回填完成: {stats}")
+                if (stats.get("fail") or 0) > stats.get("codes", 1) * 0.3:
+                    _notify_failure("主力资金流回填",
+                                    f"失败率过高：{stats.get('fail')}/{stats.get('codes')} "
+                                    f"（新浪源可能限流，检查 mainflow_history 最新日期）")
+            except Exception as e:
+                print(f"[scheduler] 主力资金流回填失败: {e}")
+                _notify_failure("主力资金流回填", str(e))
+        await asyncio.sleep(600)
+
+
+# ── 主力行为状态每日计算（mainforce_state，17:30 起，资金流回填之后）──
+MAINFORCE_STATE_WINDOW = (1050, 1440)    # 北京时间 17:30-23:59
+
+
+async def mainforce_state_refresh_loop():
+    """每日盘后计算全池主力行为叠加（筹码结构/阶段/组合信号）→ mainforce_state。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "mainforce_state"
+        if (now.weekday() < 5 and MAINFORCE_STATE_WINDOW[0] <= t < MAINFORCE_STATE_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            try:
+                from app.mainforce.state import refresh_all
+                regime = None
+                try:
+                    from app.backtest.market_regime import get_regime_cache
+                    regime = (get_regime_cache() or {}).get("state")
+                except Exception:
+                    pass
+                stats = await asyncio.to_thread(refresh_all, None, regime)
+                store.mark_schedule_done(task_key)
+                status["last_mainforce_state"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 主力行为状态计算完成: {stats} (regime={regime})")
+            except Exception as e:
+                print(f"[scheduler] 主力行为状态计算失败: {e}")
+                _notify_failure("主力行为状态计算", str(e))
+        await asyncio.sleep(600)
+
+
 # ── 战法每日自动扫描 ──
 STRATEGY_SCAN_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（与回测回填同窗口，收盘后数据稳定）
 
@@ -1265,6 +1324,8 @@ async def start():
              asyncio.create_task(kline_cache_refresh_loop()),
              asyncio.create_task(indicator_cache_refresh_loop()),
              asyncio.create_task(backtest_prices_refresh_loop()),
+             asyncio.create_task(mainflow_refresh_loop()),
+             asyncio.create_task(mainforce_state_refresh_loop()),
              asyncio.create_task(backtest_preheat_loop()),
              asyncio.create_task(strategy_scan_loop()),
              asyncio.create_task(regime_cache_loop()),
@@ -1287,6 +1348,7 @@ async def start():
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
+          f"主力资金流每日17:00 / 主力行为状态每日17:30 / "
           f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "

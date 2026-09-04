@@ -18,6 +18,7 @@
 """
 
 from collections import defaultdict
+import math
 
 TRADING_DAYS = 244            # 年化交易日
 RISK_FREE = 0.02              # 无风险利率（年化）
@@ -29,12 +30,34 @@ DEFAULT_COSTS = {
 }
 
 
+def _round_tick(px: float) -> float:
+    """A股涨跌停价按分四舍五入（round() 是银行家舍入，可能差 1 分）。"""
+    return math.floor(px * 100 + 0.5) / 100
+
+
+def _limit_pct(code: str, name: str = "", is_etf: bool = False) -> float:
+    """涨跌停幅度：创业/科创 20%，北交所 30%，ST 5%，ETF/主板 10%。"""
+    if is_etf:
+        return 0.10
+    c = (code or "").lower()
+    bare = c.lstrip("shzbj") if len(c) > 6 else c
+    if bare.startswith(("688", "689", "300", "301", "302")):
+        return 0.20
+    if bare.startswith(("82", "83", "87", "88", "43", "92", "920")):
+        return 0.30
+    if "ST" in (name or "").upper():
+        return 0.05
+    return 0.10
+
+
 def match_signals(signals: list, prices_map: dict,
-                  costs: dict = None, default_hold_days: int = 5) -> list:
+                  costs: dict = None, default_hold_days: int = 5,
+                  skipped_out: list = None) -> list:
     """
     逐信号撮合。signals: [{date, code, direction, stop_loss?, take_profit?,
                            hold_days?, position_ratio?, is_etf?}]
     prices_map: {code: [{date, open, high, low, close}]}（升序）
+    skipped_out: 传入列表时收集被剔除的信号（涨停一字买不进等），不改变返回结构。
     返回 trades（含每日收益路径 daily）。
     """
     costs = costs or DEFAULT_COSTS
@@ -52,6 +75,24 @@ def match_signals(signals: list, prices_map: dict,
         if entry_price <= 0:
             continue
 
+        # ★ 涨停一字买不进（2026-09-05 现实化）：
+        #   T+1 开盘涨停且全天未开板（low 未低于涨停价）→ 排队买不到，剔除该信号。
+        #   开盘涨停但盘中开板（low < 涨停价）→ 视为可在开盘价成交。
+        limit_pct = _limit_pct(code, s.get("name"), s.get("is_etf", False))
+        if entry_i > 0 and limit_pct > 0:
+            prev_close = bars[entry_i - 1]["close"]
+            limit_up = _round_tick(prev_close * (1 + limit_pct))
+            eb = bars[entry_i]
+            if limit_up > 0 and eb["open"] >= limit_up and eb["low"] >= limit_up - 0.001:
+                if skipped_out is not None:
+                    skipped_out.append({
+                        "code": code, "name": s.get("name") or code,
+                        "strategy": s.get("strategy") or "",
+                        "signal_date": s.get("date"),
+                        "entry_date": eb["date"], "reason": "涨停一字买不进",
+                    })
+                continue
+
         direction = 1 if s.get("direction", "long") == "long" else -1
         stop = s.get("stop_loss")
         tp = s.get("take_profit")
@@ -63,12 +104,25 @@ def match_signals(signals: list, prices_map: dict,
 
         # 持仓期逐日检查触发（同日止损优先）
         # ★ T+1：A股当日买入当日不可卖出，最早 T+1 才能平仓 → 从入场次日起检查
+        # ★ 跌停一字卖不出（2026-09-05 现实化）：触发日若全天封死跌停，
+        #   卖单排队无法成交 → 顺延到下一交易日按其开盘价成交（可能更差，符合实盘）。
         exit_i, exit_price, reason = None, None, "持有到期"
         last_i = min(entry_i + hold - 1, len(bars) - 1)
         sellable_i = entry_i + 1
         if last_i < sellable_i:
             # 无可卖出交易日（持有期仅1天，或数据只到入场日）→ 无法模拟持仓，跳过
             continue
+
+        def _sellable(j: int) -> bool:
+            """跌停一字（全天封死跌停）无法卖出；涨停一字可以卖（买盘排队）。"""
+            if direction < 0 or limit_pct <= 0 or j <= 0:
+                return True
+            prev_close = bars[j - 1]["close"]
+            limit_down = _round_tick(prev_close * (1 - limit_pct))
+            b = bars[j]
+            return not (b["high"] <= limit_down + 0.001 and b["low"] <= limit_down + 0.001
+                        and b["high"] > 0)
+
         for j in range(sellable_i, last_i + 1):
             bar = bars[j]
             if direction > 0:
@@ -87,6 +141,18 @@ def match_signals(signals: list, prices_map: dict,
                     break
         if exit_i is None:
             exit_i, exit_price, reason = last_i, bars[last_i]["close"], "持有到期"
+
+        # 触发日跌停一字 → 顺延到下一个可卖日开盘价
+        if not _sellable(exit_i):
+            k = exit_i + 1
+            while k < len(bars) and not _sellable(k):
+                k += 1
+            if k < len(bars):
+                exit_i, exit_price = k, bars[k]["open"]
+                reason = f"{reason}·跌停顺延"
+            else:
+                exit_i, exit_price = len(bars) - 1, bars[-1]["close"]
+                reason = f"{reason}·跌停顺延至期末"
 
         gross = (exit_price / entry_price - 1) * direction
         pnl = gross - buy_cost - sell_cost

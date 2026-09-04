@@ -341,6 +341,33 @@ def _northbound() -> dict:
         return {}
 
 
+def _mainforce_summary() -> dict | None:
+    """当日主力行为汇总（mainforce_state 日批表，17:30 刷新）。"""
+    try:
+        from app.database import db
+        rows = db.fetch("""
+            SELECT code, name, phase, signal, flow5_amt, chip_json,
+                   (SELECT MAX(date) FROM mainforce_state) AS snap_date
+            FROM mainforce_state
+            WHERE date = (SELECT MAX(date) FROM mainforce_state)
+        """)
+        if not rows:
+            return None
+        dist, accum = [], []
+        for r in rows:
+            item = {"code": r["code"], "name": r.get("name") or r["code"],
+                    "phase": r.get("phase"), "flow5": r.get("flow5_amt")}
+            if r["signal"] == "distribution":
+                dist.append(item)
+            elif r["signal"] == "accum":
+                accum.append(item)
+        return {"date": str(rows[0].get("snap_date") or ""),
+                "total": len(rows), "dist": dist, "accum": accum}
+    except Exception as e:
+        print(f"[daily_report] 主力行为汇总失败: {e}")
+        return None
+
+
 def build_data_md() -> str:
     lines = []
     add = lines.append
@@ -485,6 +512,24 @@ def build_data_md() -> str:
         add("**行业主力净流出 Top5**：" + "、".join(
             f"{f['name']}({f['change_pct']:+.1f}%)" if f.get('change_pct') is not None else str(f['name'])
             for f in weak))
+
+    # 2.x 主力行为（筹码×资金流组合信号；全池截面回测 10,744 样本验证）
+    mf = _mainforce_summary()
+    if mf:
+        add("")
+        add("**主力行为扫描**（全池 "
+            f"{mf['total']} 只）：出货嫌疑 **{len(mf['dist'])}** 只、吸筹区 **{len(mf['accum'])}** 只")
+        if mf["dist"]:
+            names = "、".join(f"{d['name']}({d['flow5']:+.0f}%)" if d.get("flow5") is not None
+                              else d["name"] for d in mf["dist"][:8])
+            add(f"- ⚠️ 出货嫌疑（高位高获利+主力流出，回测 10 日 -7.5pt）：{names}"
+                + (" 等" if len(mf["dist"]) > 8 else ""))
+        if mf["accum"]:
+            names = "、".join(f"{d['name']}({d['flow5']:+.0f}%)" if d.get("flow5") is not None
+                              else d["name"] for d in mf["accum"][:8])
+            add(f"- 🎯 吸筹区（低位筹码密集+主力净流入，回测 10 日 +1.1pt）：{names}"
+                + (" 等" if len(mf["accum"]) > 8 else ""))
+
     scan = _strategy_scan()
     if scan:
         add("")

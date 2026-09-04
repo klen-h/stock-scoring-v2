@@ -807,6 +807,8 @@ async def score_single(symbol: str):
         except Exception:
             pass
     # 数据足够时，复用技术指标计算逻辑（_calc_technical 在本文件底部）
+    # ★ 保留原始 K 线：主力行为叠加（筹码分布）需要 OHLCV，_calc_technical 后只剩指标行
+    raw_bars = technical_data if technical_data and len(technical_data) >= 120 else None
     if technical_data and len(technical_data) >= 30:
         technical_data = _calc_technical(technical_data)
 
@@ -851,6 +853,30 @@ async def score_single(symbol: str):
     )
 
     # 5. 返回（把 dataclass 字段拍平成 dict 给前端）
+    # ★ 主力行为叠加：优先日批表（快，且仅当其日期与最新K线一致才算新鲜），
+    #   无新鲜记录时用原始 K 线现算（单股 ~100ms）
+    mainforce = None
+    try:
+        from app.mainforce.state import load_latest as _mf_load
+        mf = (_mf_load([symbol]) or {}).get(symbol)
+        if mf and mf.get("date") == _latest_bar_date(raw_bars):
+            mainforce = mf
+    except Exception:
+        mainforce = None
+    if mainforce is None and raw_bars:
+        try:
+            from app.mainforce.flow import load_flow as _mf_flow
+            from app.mainforce.overlay import mainforce_overlay
+            fs = None
+            fc = stock_info.get("float_cap") or 0
+            px = stock_info.get("price") or 0
+            if fc > 0 and px > 0:
+                fs = fc * 1e4 / px
+            mainforce = mainforce_overlay(raw_bars, flow_rows=_mf_flow(symbol),
+                                          float_shares=fs)
+        except Exception as e:
+            print(f"[mainforce] 详情页叠加失败 {symbol}: {e}")
+
     return {
         "code": result.code,
         "name": result.name,
@@ -863,7 +889,16 @@ async def score_single(symbol: str):
         "summary": result.summary,
         "buy_point": result.buy_point,
         "trend_health": result.trend_health,
+        "mainforce": mainforce,
     }
+
+
+def _latest_bar_date(bars) -> str | None:
+    """原始 K 线最后一根的日期（判断日批表新鲜度）。"""
+    try:
+        return bars[-1].get("date")
+    except (AttributeError, IndexError, TypeError):
+        return None
 
 
 def _record_ranking(result_data: list):
@@ -994,6 +1029,43 @@ async def score_top(
         news_scores = _batch_news_scores([r.code for r in top])
         for item in result_data:
             item["news_score"] = news_scores.get(item["code"], 0)
+
+        # ★ 主力行为标注（mainforce_state 日批表）：出货嫌疑/吸筹区标签 + 乘数。
+        #   乘数在读端现算（不信任批处理进程的 env）：MAINFORCE_MODE=auto 且
+        #   当前 regime 在闸门内时，出货嫌疑 ×0.85（只降不升）；
+        #   offensive 段高位常常继续涨 → 恒不惩罚。默认 off 只挂标签不动分。
+        #   信号判定仍用 raw total（与拥挤度同不变量）。
+        try:
+            from app.mainforce.overlay import DISTRIBUTION_MULT, GATE_REGIMES
+            from app.mainforce.overlay import _mode as _mf_mode
+            from app.mainforce.state import load_latest as _mf_load
+            _regime = ""
+            try:
+                from app.backtest.market_regime import get_regime_cache
+                _regime = (get_regime_cache() or {}).get("state") or ""
+            except Exception:
+                pass
+            _mf_eff = (_mf_mode() == "auto" and _regime in GATE_REGIMES)
+            _mf = _mf_load([r.code for r in top])
+            for item in result_data:
+                m = _mf.get(item["code"])
+                if m:
+                    item["mainforce"] = {
+                        "date": m["date"], "phase": m["phase"],
+                        "signal": m["signal"],
+                        "mult": DISTRIBUTION_MULT
+                        if (_mf_eff and m["signal"] == "distribution") else 1.0,
+                        "flow5_amt": m["flow5_amt"],
+                        "price_pos": (m.get("chip") or {}).get("price_pos"),
+                        "winner_ratio": (m.get("chip") or {}).get("winner_ratio"),
+                    }
+            if _mf_eff:
+                result_data.sort(
+                    key=lambda x: x["total_score"]
+                    * ((x.get("mainforce") or {}).get("mult") or 1.0),
+                    reverse=True)
+        except Exception as e:
+            print(f"[mainforce] 排行标注失败: {e}")
 
         # ★ 写入短期缓存
         _rank_result_cache["top"] = {
