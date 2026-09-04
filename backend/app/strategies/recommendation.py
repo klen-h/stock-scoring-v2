@@ -17,11 +17,18 @@
 """
 
 # ── 推送白名单 ──
-# 当前（2026-08-28 分层回测数据）：仅单阳不破 60.7%（56 样本）达标
-# （样本≥30 且 胜率≥55%）。其他战法：龙回头 13.2%/38、均线回踩 45.5%/11、
-# 均线粘合突破 37.5%/8 —— 均不满足。
-# ★ 数据积累后建议自动刷新：每次分层回测后，用样本≥30 且 胜率≥55% 覆盖此名单。
-PUSH_STRATEGY_WHITELIST = ["single_yang_unbroken"]
+# ★ 2026-09-05 起改为动态计算：从 strategy_results 重放撮合（T+1 开盘成交、
+#   涨停一字剔除，与 engine.match_signals 同口径），样本≥30 且 胜率≥55% 才推送。
+#   进程内缓存 6 小时（盘后扫描场景一次扫描只算一次）。
+#   原因：硬编码白名单已过时——单阳不破 56 样本时 60.7%，扩到 218 样本后
+#   实际胜率 48.6%，继续硬编码会把不达标的战法推给用户。
+#   STRATEGY_STATS 保留为「市场环境背书」的静态说明，动态胜率推送时覆盖。
+PUSH_STRATEGY_WHITELIST = ["single_yang_unbroken"]   # 动态计算失败时的兜底
+
+WHITELIST_MIN_SAMPLES = 30
+WHITELIST_MIN_WIN_RATE = 55.0
+_whitelist_cache = {"ts": 0.0, "list": None, "stats": {}}
+_WHITELIST_TTL = 6 * 3600
 
 # 战法中文名（推送标题用）
 STRATEGY_ZH = {
@@ -39,9 +46,76 @@ STRATEGY_STATS = {
 }
 
 
+def _recompute_whitelist() -> dict:
+    """从 strategy_results 重放撮合，计算各战法近期胜率（同步阻塞 ~10s，含 DB）。"""
+    import json as _json
+    import time as _t
+    from app.database import db
+    from app.backtest import engine as _bt_engine
+
+    rows = db.fetch("SELECT strategy_name, scan_date, results_json FROM strategy_results "
+                    "WHERE count > 0 ORDER BY scan_date ASC")
+    signals = []
+    from app.backtest.strategies import WARFARE_HOLD_DAYS
+    for r in rows or []:
+        try:
+            items = _json.loads(r["results_json"] or "[]")
+        except (ValueError, TypeError):
+            continue
+        for it in items or []:
+            code = str(it.get("code") or "").strip()
+            if len(code) != 6:
+                continue
+            signals.append({
+                "date": r["scan_date"], "code": code,
+                "name": str(it.get("name") or code),
+                "direction": "long",
+                "stop_loss": it.get("stop_loss"),
+                "take_profit": it.get("target_price"),
+                "hold_days": WARFARE_HOLD_DAYS,
+                "is_etf": False,
+                "strategy": r["strategy_name"],
+            })
+    stats = {}
+    if not signals:
+        return {"list": list(PUSH_STRATEGY_WHITELIST), "stats": stats}
+
+    codes = {s["code"] for s in signals}
+    # 复用 strategies 的价格加载（含 6h 进程缓存），避免重复传输
+    from app.backtest.strategies import _load_prices_map
+    prices_map = _load_prices_map(codes)
+    skipped = []
+    trades = _bt_engine.match_signals(signals, prices_map, skipped_out=skipped)
+    by = {}
+    for t in trades:
+        by.setdefault(t["strategy_en"] or t["strategy"], []).append(t)
+    for name, ts in by.items():
+        n = len(ts)
+        win = sum(1 for t in ts if t["pnl_pct"] > 0) / n * 100 if n else 0
+        stats[name] = {"win_rate": round(win, 1), "n": n}
+    wl = [k for k, v in stats.items()
+          if v["n"] >= WHITELIST_MIN_SAMPLES and v["win_rate"] >= WHITELIST_MIN_WIN_RATE]
+    return {"list": wl, "stats": stats}
+
+
 def get_push_whitelist() -> list:
-    """返回当前可推送的战法英文名列表。"""
-    return list(PUSH_STRATEGY_WHITELIST)
+    """当前可推送的战法英文名列表（动态胜率，6h 缓存；失败回退静态名单）。"""
+    import time as _t
+    now = _t.time()
+    if _whitelist_cache["list"] is not None and now - _whitelist_cache["ts"] < _WHITELIST_TTL:
+        return _whitelist_cache["list"]
+    try:
+        r = _recompute_whitelist()
+        _whitelist_cache["list"] = r["list"]
+        _whitelist_cache["stats"] = r["stats"]
+        _whitelist_cache["ts"] = now
+        if r["stats"]:
+            brief = {k: f"{v['win_rate']}%/{v['n']}" for k, v in r["stats"].items()}
+            print(f"[recommendation] 动态白名单: {r['list']}（各战法 {brief}）")
+        return r["list"]
+    except Exception as e:
+        print(f"[recommendation] 动态白名单计算失败，回退静态: {e}")
+        return list(PUSH_STRATEGY_WHITELIST)
 
 
 def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -> str:
@@ -269,16 +343,23 @@ def _target_derivation(strategy_name: str, d: dict, entry: float, target: float)
 
 
 def _market_backing(strategy_name: str, market: dict) -> str:
-    """市场环境背书：当前状态 + 战法优势市场 + 历史胜率。"""
+    """市场环境背书：当前状态 + 战法优势市场 + 历史胜率。
+    胜率优先用动态重算值（_whitelist_cache.stats），无则回退静态 STRATEGY_STATS。"""
     regime = market.get("regime")
     vol = market.get("volatility_regime")
     regime_desc = {"offensive": "进攻市", "neutral": "震荡市", "defensive": "防御市"}.get(regime, regime)
     vol_desc = {"high": "高波动", "normal": "波动正常", "low": "低波动"}.get(vol, vol)
 
-    stat = STRATEGY_STATS.get(strategy_name)
+    dyn = _whitelist_cache.get("stats") or {}
+    stat = None
+    if strategy_name in dyn:
+        stat = dict(STRATEGY_STATS.get(strategy_name) or {})
+        stat.update(dyn[strategy_name])
+    else:
+        stat = STRATEGY_STATS.get(strategy_name)
     backing = []
     if stat:
-        backing.append(f"历史胜率 {stat['win_rate']}%（样本{stat['n']}，{stat['regime']}）")
+        backing.append(f"历史胜率 {stat['win_rate']}%（样本{stat['n']}，{stat.get('regime', '近期全部信号')}）")
     backing.append(f"当前市场 {regime_desc}（{vol_desc}）")
     if stat and regime == {"single_yang_unbroken": "neutral",
                            "advance2retreat1": "offensive"}.get(strategy_name):

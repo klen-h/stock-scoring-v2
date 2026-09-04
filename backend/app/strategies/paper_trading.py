@@ -274,6 +274,19 @@ def _confirm_fill(sig: dict, quote: dict, vol_ratio: float) -> tuple:
     open_p = float(quote.get("open") or 0)
     if entry <= 0 or open_p <= 0:
         return "cancel", "无有效参考价/开盘价", open_p
+    # ★ 涨停一字买不进（与 backtest.engine.match_signals 同口径）：
+    #   开盘即涨停且现价仍封死在涨停价 → 买单排队无法成交，模拟盘直接放弃
+    try:
+        from app.backtest.engine import _limit_pct, _round_tick
+        pct = _limit_pct(str(sig.get("code") or ""), sig.get("name") or "", False)
+        prev_close = float(quote.get("prev_close") or 0)
+        price_now = float(quote.get("price") or 0)
+        if pct > 0 and prev_close > 0:
+            limit_up = _round_tick(prev_close * (1 + pct))
+            if open_p >= limit_up - 0.001 and price_now >= limit_up - 0.001:
+                return "cancel", f"涨停一字买不进（{limit_up:.2f} 封死，排队无法成交）", open_p
+    except Exception:
+        pass
     dev = (open_p - entry) / entry * 100
     hot = vol_ratio is not None and vol_ratio >= 1.5
     cold = vol_ratio is not None and vol_ratio < 0.6
