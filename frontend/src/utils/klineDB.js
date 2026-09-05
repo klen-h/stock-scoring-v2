@@ -1,20 +1,23 @@
 /**
  * K 线数据 IndexedDB 存储层
- * 
+ *
  * 功能：
  *   - 存储历史 K 线数据（约 100MB）
  *   - 支持完整数据包导入
  *   - 支持增量更新
  *   - 版本控制（记录数据日期）
- * 
+ *   - 存储预计算指标包（indicators-pack：_series 500 天口径，评分统一事实源）
+ *
  * 数据结构：
  *   stocks 表：{ code, name, market_cap, klines: [[date, open, high, low, close, volume], ...] }
+ *   indicators 表（DB v2）：{ code, ind: {ma5..._series: [近60天指标数组], _state} }
  *   meta 表：{ key, value } 用于存储版本信息
  */
 
 const DB_NAME = 'kline_data'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const STORE_STOCKS = 'stocks'
+const STORE_INDICATORS = 'indicators'
 const STORE_META = 'meta'
 
 let db = null
@@ -43,6 +46,11 @@ export async function initKlineDB() {
         const stockStore = database.createObjectStore(STORE_STOCKS, { keyPath: 'code' })
         stockStore.createIndex('name', 'name', { unique: false })
         stockStore.createIndex('market_cap', 'market_cap', { unique: false })
+      }
+
+      // v2：预计算指标包（_series，评分/详情页零现算的事实源）
+      if (!database.objectStoreNames.contains(STORE_INDICATORS)) {
+        database.createObjectStore(STORE_INDICATORS, { keyPath: 'code' })
       }
 
       // 创建 meta 对象仓库（用于存储版本信息）
@@ -169,19 +177,102 @@ export async function applyDelta(delta) {
  */
 function mergeKlines(existing, incoming) {
   const map = new Map()
-  
+
   // 先放现有的
   for (const kline of existing) {
     map.set(kline[0], kline)
   }
-  
+
   // 再放新的（覆盖同日期）
   for (const kline of incoming) {
     map.set(kline[0], kline)
   }
-  
+
   // 按日期排序
   return Array.from(map.values()).sort((a, b) => a[0].localeCompare(b[0]))
+}
+
+// ── 预计算指标包（indicators store，PLAN_PACK_MIGRATION Phase 2）──────────────
+
+/**
+ * 导入指标数据包
+ * @param {Object} data - { version, date, indicators: { code: {ma5..., _series: [...], _state} } }
+ * @param {Function} onProgress - 进度回调 (loaded, total)
+ * @returns {Promise<{ imported: number }>}
+ */
+export async function importIndicatorsPack(data, onProgress) {
+  if (!db) await initKlineDB()
+
+  const indicators = data.indicators || {}
+  const codes = Object.keys(indicators)
+  const total = codes.length
+  let imported = 0
+
+  const batchSize = 200
+  for (let i = 0; i < total; i += batchSize) {
+    const batch = codes.slice(i, i + batchSize)
+
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_INDICATORS], 'readwrite')
+      const store = tx.objectStore(STORE_INDICATORS)
+
+      for (const code of batch) {
+        store.put({ code, ind: indicators[code] })
+      }
+
+      tx.oncomplete = () => {
+        imported += batch.length
+        onProgress?.(imported, total)
+        resolve()
+      }
+      tx.onerror = () => reject(tx.error)
+    })
+  }
+
+  // 指标包日期独立记录（与 K 线包对齐时跳过重复下载）
+  await setMeta('ind_last_update', data.date)
+  await setMeta('ind_count', total)
+  return { imported }
+}
+
+/**
+ * 读取单只股票的预计算指标（含 _series）
+ * @returns {Promise<Object|null>}
+ */
+export async function getIndicator(code) {
+  if (!db) await initKlineDB()
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_INDICATORS], 'readonly')
+    const store = tx.objectStore(STORE_INDICATORS)
+    const request = store.get(code)
+
+    request.onsuccess = () => resolve(request.result?.ind || null)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+/**
+ * 指标包日期（YYYYMMDD，与 K 线包对齐时无需重复下载）
+ */
+export async function getIndicatorsDate() {
+  return getMeta('ind_last_update')
+}
+
+/**
+ * 已存指标股票数
+ */
+export async function getIndicatorsCount() {
+  if (!db) await initKlineDB()
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_INDICATORS], 'readonly')
+    const store = tx.objectStore(STORE_INDICATORS)
+    const request = store.count()
+
+    request.onsuccess = () => resolve(request.result || 0)
+    request.onerror = () => reject(request.error)
+  })
 }
 
 /**
@@ -338,8 +429,9 @@ export async function getStockCount() {
 export async function clearAll() {
   if (!db) await initKlineDB()
 
-  const tx = db.transaction([STORE_STOCKS, STORE_META], 'readwrite')
+  const tx = db.transaction([STORE_STOCKS, STORE_INDICATORS, STORE_META], 'readwrite')
   tx.objectStore(STORE_STOCKS).clear()
+  tx.objectStore(STORE_INDICATORS).clear()
   tx.objectStore(STORE_META).clear()
 
   return new Promise((resolve, reject) => {
@@ -446,16 +538,21 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
 
 /**
  * 解压 gzip 数据
+ * 优先 DecompressionStream（现代浏览器原生）；失败降级 pako 纯 JS 解压。
+ * ★ 实测部分内嵌浏览器（IAB）DecompressionStream 构造器存在但流读取必抛
+ *   "Failed to fetch" —— 因此 catch 后必须真降级，不能只判 typeof。
  */
 async function decompressGzip(blob) {
-  // 使用 DecompressionStream API（现代浏览器支持）
   if (typeof DecompressionStream !== 'undefined') {
-    const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'))
-    const decompressed = new Response(stream)
-    return decompressed.text()
+    try {
+      const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'))
+      const decompressed = new Response(stream)
+      return decompressed.text()
+    } catch (e) {
+      console.warn('[klineDB] DecompressionStream 失败，降级 pako:', e?.message)
+    }
   }
-  
-  // 降级：使用 pako 库（需要额外引入）
-  // 这里假设浏览器原生支持 DecompressionStream
-  throw new Error('浏览器不支持 gzip 解压')
+  const { ungzip } = await import('pako')
+  const buf = new Uint8Array(await blob.arrayBuffer())
+  return ungzip(buf, { to: 'string' })
 }

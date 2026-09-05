@@ -13,6 +13,10 @@ import {
   getKlines,
   getLastUpdateDate,
   getStockCount,
+  getIndicator,
+  getIndicatorsDate,
+  getIndicatorsCount,
+  importIndicatorsPack,
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
 import { getFinanceBatch, getScoreWeights } from '../api'
@@ -72,8 +76,12 @@ const error = ref(null)
 const FRONTEND_MODE_KEY = 'score_use_frontend_mode'
 const useFrontendMode = ref(false)
 
-// 数据包基础 URL（GitHub Pages 托管）
-const KLINE_DATA_BASE_URL = 'https://klen-h.github.io/stock-scoring-v2/data'
+// 数据包基础 URL（GitHub Pages 托管）。
+// localStorage 'kline_data_base_url' 可覆盖——本地端到端验收/私有部署用，
+// 不设置即走生产地址。
+const KLINE_DATA_BASE_URL = (typeof localStorage !== 'undefined'
+  && localStorage.getItem('kline_data_base_url'))
+  || 'https://klen-h.github.io/stock-scoring-v2/data'
 
 function loadFrontendModePreference() {
   try {
@@ -124,6 +132,14 @@ export async function initFrontendScoring() {
     if (lastUpdateDate.value !== todayStr) {
       console.log(`[前端评分] 数据过期（${lastUpdateDate.value}），后台静默更新...`)
       silentUpdate()
+    } else {
+      // K 线包已是今日，但指标包可能缺失（旧版包/首次升级 DB v2）→ 补拉
+      const indDate = await getIndicatorsDate()
+      if (indDate !== lastUpdateDate.value) {
+        ensureIndicatorsPack().then((r) => {
+          if (r.updated) console.log(`[前端评分] 指标包补拉完成: ${r.message}`)
+        })
+      }
     }
 
     return { needsDownload: false }
@@ -149,6 +165,9 @@ export async function downloadKlineData(baseUrl = KLINE_DATA_BASE_URL) {
     if (result.updated) {
       dbStockCount.value = await getStockCount()
       lastUpdateDate.value = await getLastUpdateDate()
+      // K 线包更新后同步拉指标包（评分统一事实源，失败不影响 K 线可用性）
+      const ind = await ensureIndicatorsPack(baseUrl)
+      if (ind.updated) console.log(`[前端评分] 指标包更新: ${ind.message}`)
     }
 
     return result
@@ -157,6 +176,40 @@ export async function downloadKlineData(baseUrl = KLINE_DATA_BASE_URL) {
     return { updated: false, message: e.message }
   } finally {
     isUpdating.value = false
+  }
+}
+
+/**
+ * 确保指标包与 K 线包同版本：缺/旧则下载 indicators-pack.json.gz 并导入。
+ * 失败只告警不抛错——评分会自动回退 150 根现算（现状兜底）。
+ * @returns {Promise<{ updated: boolean, message: string }>}
+ */
+export async function ensureIndicatorsPack(baseUrl = KLINE_DATA_BASE_URL) {
+  try {
+    const klineDate = await getLastUpdateDate()
+    const indDate = await getIndicatorsDate()
+    if (!klineDate || klineDate === indDate) {
+      return { updated: false, message: '指标包已是最新' }
+    }
+
+    updateProgress.value = { stage: 'download', message: '下载指标包...', loaded: 0, total: 0 }
+    const packUrl = `${baseUrl}/indicators-pack.json.gz?t=${Date.now()}`
+    const response = await fetch(packUrl, { cache: 'no-store' })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+    updateProgress.value = { stage: 'decompress', message: '解压指标包...', loaded: 0, total: 0 }
+    const blob = await response.blob()
+    const text = await decompressGzipText(blob)
+    const data = JSON.parse(text)
+
+    updateProgress.value = { stage: 'import', message: '导入指标包...', loaded: 0, total: 0 }
+    const result = await importIndicatorsPack(data, (loaded, total) => {
+      updateProgress.value = { stage: 'import', message: '导入指标包...', loaded, total }
+    })
+    return { updated: true, message: `导入 ${result.imported} 只指标` }
+  } catch (e) {
+    console.warn('[前端评分] 指标包下载失败（评分回退 150 根现算）:', e.message)
+    return { updated: false, message: e.message }
   }
 }
 
@@ -171,12 +224,40 @@ async function silentUpdate() {
       dbStockCount.value = await getStockCount()
       lastUpdateDate.value = await getLastUpdateDate()
       console.log(`[前端评分] 静默更新完成: ${result.message}`)
+      // K 线包换新后指标包同步更新（后台静默，失败自动回退现算）
+      const ind = await ensureIndicatorsPack(KLINE_DATA_BASE_URL)
+      if (ind.updated) console.log(`[前端评分] 指标包静默更新: ${ind.message}`)
     } else {
       console.log(`[前端评分] 静默更新: ${result.message}`)
+      // K 线未过期但指标缺失（DB v2 升级首次）→ 补拉
+      const indDate = await getIndicatorsDate()
+      if (lastUpdateDate.value && indDate !== lastUpdateDate.value) {
+        const ind = await ensureIndicatorsPack(KLINE_DATA_BASE_URL)
+        if (ind.updated) console.log(`[前端评分] 指标包补拉: ${ind.message}`)
+      }
     }
   } catch (e) {
     console.warn('[前端评分] 静默更新失败（不影响当前使用）:', e.message)
   }
+}
+
+/**
+ * 解压 gzip 为文本（DecompressionStream 现代浏览器可用）
+ */
+async function decompressGzipText(blob) {
+  // ★ 与 klineDB.decompressGzip 同款降级：部分内嵌浏览器（IAB）的
+  //   DecompressionStream 构造器存在但流读取必抛 —— catch 后必须真降级 pako
+  if (typeof DecompressionStream !== 'undefined') {
+    try {
+      const stream = blob.stream().pipeThrough(new DecompressionStream('gzip'))
+      return await new Response(stream).text()
+    } catch (e) {
+      console.warn('[前端评分] DecompressionStream 失败，降级 pako:', e?.message)
+    }
+  }
+  const { ungzip } = await import('pako')
+  const buf = new Uint8Array(await blob.arrayBuffer())
+  return ungzip(buf, { to: 'string' })
 }
 
 /**
@@ -334,7 +415,30 @@ export function appendTodayBar(klines, stock, now = new Date()) {
 }
 
 /**
- * 批量精算评分（使用 Worker）
+ * _series 是否新鲜（可直接喂评分，无需拼今日实时 bar）。
+ * 判定与 appendTodayBar 的拼接条件互为反证：
+ *   - 非交易日：包内最后一根就是最近交易日收盘 → 新鲜
+ *   - 交易日 09:25 前：集合竞价未出价，实时快照还是昨日 → 新鲜
+ *   - 交易日 ≥09:25 且 _series 末根 ≠ 今天（盘中/包未含今日）→ 不新鲜，回退现算
+ * @param {Array} series - 预计算指标数组（_series，元素含 date 字段）
+ */
+function seriesIsFresh(series) {
+  if (!series || !series.length) return false
+  const now = new Date()
+  if (!isTradingDay(now)) return true
+  if (now.getHours() * 60 + now.getMinutes() < 9 * 60 + 25) return true
+  const pad = n => String(n).padStart(2, '0')
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return series[series.length - 1].date === today
+}
+
+/**
+ * 批量精算评分
+ *
+ * ★ 优先读指标包（IndexedDB indicators store，_series 500 天口径、与后端
+ *   indicator_cache 同一引擎预计算）——零现算且与后端评分同源对齐；
+ *   指标缺失或含今日实时要求（盘中 _series 未含今日 bar）时，回退
+ *   150 根 K 线 + Worker 现算（现状兜底，仍零后端请求）。
  */
 async function preciseScoreBatch(stocks, weights) {
   if (!worker || !workerReady) {
@@ -344,11 +448,32 @@ async function preciseScoreBatch(stocks, weights) {
   }
 
   const results = []
+  const fallback = []   // 指标包不可用/不新鲜 → 走现算
 
-  // 分批发送给 Worker（每批 20 只）
+  // 1) 先尝试指标包直读（批量预热，逐只读 IndexedDB 很快）
+  for (const stock of stocks) {
+    let used = false
+    try {
+      const ind = await getIndicator(stock.code)
+      const series = ind && ind._series
+      if (series && seriesIsFresh(series)) {
+        results.push(scoreStock({
+          code: stock.code,
+          name: stock.name,
+          technicalData: series,
+          stockInfo: stock,
+          weights,
+        }))
+        used = true
+      }
+    } catch { used = false }
+    if (!used) fallback.push(stock)
+  }
+
+  // 2) 回退：150 根 K 线 + Worker 现算（现状兜底路径）
   const batchSize = 20
-  for (let i = 0; i < stocks.length; i += batchSize) {
-    const batch = stocks.slice(i, i + batchSize)
+  for (let i = 0; i < fallback.length; i += batchSize) {
+    const batch = fallback.slice(i, i + batchSize)
 
     // 获取每只股票的 K 线数据（150 天，与后端 500 天历史相比足以让 EMA 系列指标收敛）
     // 并拼接今日实时快照作为最后一根 K 线（盘中准实时指标）
@@ -808,6 +933,73 @@ export async function runLocalBacktest({
     periods,
     source: 'local',
   }
+}
+
+
+// ── 个股详情页本地数据（PLAN_PACK_MIGRATION Phase 2：消除 /api/stock/kline 并发爆发）──
+
+/**
+ * 详情页本地 K 线 + 指标叠加序列（零后端请求）。
+ * K 线来自 IndexedDB 包，指标叠加（MA/BOLL/MACD）本地现算（与 K 线逐根对齐），
+ * 交易日盘中自动拼接今日实时快照。
+ * @returns {Promise<{klines, technical}|null>} null = 本地数据不可用，调用方回退后端接口
+ */
+export async function loadLocalKline(code, stockInfo = {}, bars = 150) {
+  const klines = await getKlines(code, bars)
+  if (!klines || klines.length < 30) return null
+  const klinesWithToday = appendTodayBar(klines, stockInfo)
+  const technical = calcTechnicalSimple(klinesWithToday)
+  if (!technical) return null
+  // ★ 页面 klineData 期望「对象数组」（d.date / d.open / d.volume...，与后端
+  //   /api/stock/kline 一致），而 IndexedDB 包内存的是紧凑数组 [d,o,h,l,c,v] ——
+  //   calcTechnicalSimple 的输出行本身就是 OHLCV 对象 + 指标，且与 K 线逐根
+  //   对齐，直接复用为 klines（klineData 与 technicalData 天然同轴对齐）。
+  return { klines: technical, technical }
+}
+
+/**
+ * 详情页本地评分（与排行榜同一 scoreStock 引擎、同一指标包事实源）。
+ * 指标包 _series 新鲜（非盘中）直读；盘中回退 150 根现算 + 今日快照。
+ * @param {Object} finance - 扁平财报 {revenue_yoy, profit_yoy, roe, debt_ratio, gross_margin}
+ * @returns {Promise<Object|null>} scoreStock 结果（dimensions 已适配详情页数组模板）；null = 本地不可用
+ */
+export async function computeLocalScore(code, stockInfo = {}, finance = null, weights = null) {
+  let technical = null
+  try {
+    const ind = await getIndicator(code)
+    const series = ind && ind._series
+    if (series && seriesIsFresh(series)) technical = series
+  } catch { /* 指标包缺失 → 现算兜底 */ }
+  if (!technical) {
+    const klines = await getKlines(code, 150)
+    if (!klines || klines.length < 30) return null
+    technical = calcTechnicalSimple(appendTodayBar(klines, stockInfo))
+  }
+  if (!technical) return null
+
+  const result = scoreStock({
+    code,
+    name: stockInfo.name || code,
+    technicalData: technical,
+    stockInfo,
+    finance,
+    weights,
+  })
+
+  // 详情页模板期望 dimensions 为数组（后端 ScoreResult 形状）：
+  // scoreStock 返回对象 → 按展示顺序转数组，details 的 {分值/满分} 形状两端一致
+  const dimMap = result.dimensions || {}
+  const order = ['technical', 'capital', 'fundamental', 'growth', 'quality']
+  const nameMap = { technical: '技术面', capital: '资金面', fundamental: '基本面', growth: '成长', quality: '质量' }
+  result.dimensions = order
+    .filter(k => dimMap[k])
+    .map(k => ({
+      name: nameMap[k],
+      score: dimMap[k].score,
+      details: dimMap[k].details,
+      weighted_score: dimMap[k].weighted_score,
+    }))
+  return result
 }
 
 

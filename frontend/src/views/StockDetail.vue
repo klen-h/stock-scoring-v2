@@ -386,7 +386,8 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights } from '../api'
+import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
 
 const route = useRoute()
 const code = route.params.code
@@ -660,6 +661,21 @@ function changePeriod(p) {
 }
 
 async function loadKline() {
+  // ★ 本地优先（PLAN_PACK_MIGRATION Phase 2）：K 线包在本地时零后端请求，
+  //   消除 /api/stock/kline 的并发爆发（Render OOM 触发点）。
+  //   仅日 K 走本地（周K/月K 需重采样，回退后端）；失败自动回退后端接口。
+  if (period.value === 'day') {
+    try {
+      const local = await loadLocalKline(code, stockInfo.value)
+      if (local && local.klines?.length) {
+        klineData.value = local.klines
+        technicalData.value = local.technical
+        await nextTick()
+        renderKline()
+        return
+      }
+    } catch (e) { console.warn('[detail] 本地K线不可用，回退后端:', e) }
+  }
   try {
     const { data: kd } = await getStockKline(code, { period: period.value })
     klineData.value = kd
@@ -805,30 +821,75 @@ watch(activeTab, (t) => {
   })
 })
 
+/**
+ * 本地评分 + 本地K线一次取齐（PLAN_PACK_MIGRATION Phase 2）。
+ * K 线包在本地时：评分用指标包 _series（与后端同一事实源）、K 线用本地包——
+ * 零 /api/score/{code} 与 /api/stock/kline 调用（Render 0.1CPU 的 OOM 触发点）。
+ * 任一数据缺失返回 null，调用方回退后端接口。
+ */
+async function tryLoadLocalAll() {
+  const out = { score: null, klines: null, technical: null }
+  try {
+    // 财报（轻接口，本地库查询）：扁平形状与 scoreStock finance 参数一致
+    let finance = null
+    try {
+      const { data: fin } = await getStockFinance(code)
+      if (fin && (fin.revenue_yoy != null || fin.roe != null)) finance = fin
+    } catch { finance = null }
+    // 当前生效权重（与排行榜同源；失败用引擎默认）
+    let weights = null
+    try {
+      const w = await getScoreWeights()
+      weights = (w && w.data && w.data.weights) || null
+    } catch { weights = null }
+
+    out.score = await computeLocalScore(code, stockInfo.value, finance, weights)
+    const local = await loadLocalKline(code, stockInfo.value)
+    if (local) {
+      out.klines = local.klines
+      out.technical = local.technical
+    }
+  } catch (e) { console.warn('[detail] 本地评分/K线失败:', e) }
+  return out.score || out.klines ? out : { score: null, klines: null, technical: null }
+}
+
 onMounted(async () => {
   // 消息面独立加载（首次需拉东财快讯，不阻塞主数据渲染）
   getStockNews(code).then(({ data }) => { newsData.value = data }).catch(() => {})
   getStockNewsHistory(code, 30).then(({ data }) => { newsHistory.value = data.history || [] }).catch(() => {})
   try {
-    const [info, fund, score, sr, rsi] = await Promise.allSettled([
+    // ★ 本地优先：实时行情（轻）先行，评分/K线尝试全本地（零后端重接口）；
+    //   支撑阻力/RSI 为轻量查询照常并行。本地不可用再回退后端精算。
+    const [info, fund, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
       getStockFundamental(code),
-      getStockScore(code),
       getSupportResistance(code),
       getRSISignals(code),
     ])
     if (info.status === 'fulfilled') stockInfo.value = info.value.data || {}
     if (fund.status === 'fulfilled') fundamental.value = fund.value.data || {}
-    if (score.status === 'fulfilled' && score.value.data) scoreData.value = score.value.data
     if (sr.status === 'fulfilled' && sr.value.data) supportResistance.value = sr.value.data.data
     if (rsi.status === 'fulfilled' && rsi.value.data) rsiSignals.value = rsi.value.data.data
+
+    const local = await tryLoadLocalAll()
+    if (local.score) {
+      scoreData.value = local.score
+    } else {
+      // 本地不可用（未下 K 线包/该股不在包内）→ 后端精算兜底
+      const score = await getStockScore(code).catch(() => null)
+      if (score && score.data) scoreData.value = score.data
+    }
+    if (local.klines) {
+      klineData.value = local.klines
+      technicalData.value = local.technical
+    }
   } catch (e) { console.error(e) }
 
   // 先放开首屏（默认页签是"评分"，不依赖 K 线容器）；K 线数据并行加载，
   // 切到 K 线页签时由 watch(activeTab) 补渲染——数据已就绪则立即出图，
   // 用户抢先切页签（数据未回）时 loadKline 完成后也会兜底重画
   loaded.value = true
-  await loadKline()
+  if (!klineData.value.length) await loadKline()
 
   // 评分 vs 价格历史（独立加载，失败静默——数据积累需要时间）
   getRankHistory(code, 30)
