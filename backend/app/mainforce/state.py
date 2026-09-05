@@ -18,12 +18,17 @@
 
 import json
 import time
+from datetime import datetime
 
 from app.database import db
 
 from app.mainforce.flow import (get_float_shares_from_snapshot,
                                 load_flow_map)
 from app.mainforce.overlay import mainforce_overlay
+
+# 日线回看窗口（交易日数）。主力状态计算需求：chip warmup 60 / MA120 量代理 /
+# ret60 / phase ≥70 —— 260 根留足余量；再深对结果无增益，纯烧 Supabase egress。
+BARS_WINDOW = 260
 
 
 def ensure_table() -> None:
@@ -61,12 +66,40 @@ def _load_bars_all() -> dict:
       - kline_cache：评分精算路径写回的全量 K 线（~2200 只），
         但存在战法短拉取污染的 30 根行 → 只收 kline_count ≥ 250 的行
     返回 {code: (bars, name)}，冲突时取更长的一方（名字随最长来源）。
+
+    ★ egress 控制（2026-09-05）：本函数每天 17:30 全量跑一次，原先把
+      backtest_prices 整表（~71MB）+ kline_cache 大 JSON（~19MB）拖下来，
+      实测是 Supabase 出站流量的大头。而主力状态计算只需 ~120-250 根
+      （chip warmup 60 / MA120 量代理 / ret60 / phase ≥70），故：
+      ① backtest_prices 按日期窗口截断（BARS_WINDOW≈260 个交易日）；
+      ② kline_cache 回退只补 backtest_prices 没覆盖的代码 —— 覆盖了的
+         原来 750>500 必胜出，读了也白读（纯烧流量）。
     """
     bars: dict = {}
+
+    # ★ DATA_SOURCE=pack/local：整段直接读数据包（零 Supabase 流量）。
+    #   包内 500 根 ≥ 主力状态需求（~120-250 根），无需再合并 kline_cache。
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            for code in pack_source.get_codes():
+                b = pack_source.get_klines(code)
+                if b and len(b) >= 120:
+                    nm, _cap = pack_source.get_name_cap(code)
+                    bars[code] = (b, nm)
+            print(f"[mainforce_state] 数据源=pack: {len(bars)} 只")
+            return bars
+    except Exception as e:
+        print(f"[mainforce_state] pack 读取失败，回退数据库: {e}")
 
     def _put(code, rows, name=""):
         if rows and (code not in bars or len(rows) > len(bars[code][0])):
             bars[code] = (rows, name)
+
+    from datetime import timedelta
+    # 260 交易日 ≈ 372 个日历日（*8/5），再放宽到 380 防长假断层
+    cutoff = (datetime.now() - timedelta(days=max(BARS_WINDOW * 8 // 5, 380))
+              ).strftime("%Y-%m-%d")
 
     try:
         cn = db.fetch("SELECT code, MAX(name) AS name FROM backtest_prices "
@@ -77,7 +110,8 @@ def _load_bars_all() -> dict:
             chunk = codes[i:i + 120]
             rows = db.fetch(
                 "SELECT code, date, open, high, low, close, volume FROM backtest_prices "
-                "WHERE code = ANY(%s) ORDER BY code, date ASC", (chunk,))
+                "WHERE code = ANY(%s) AND date >= %s ORDER BY code, date ASC",
+                (chunk, cutoff))
             tmp = {}
             for r in rows:
                 tmp.setdefault(r["code"], []).append({
@@ -90,9 +124,11 @@ def _load_bars_all() -> dict:
 
     try:
         # kline_data 是大 JSON（整表一次查会 statement timeout）→ 分块 + 限列
+        # ★ 只补 backtest_prices 没覆盖的代码：被覆盖的原先 750>500 必胜出，
+        #   读了也白读（每行 ~9KB 的 kline_data 纯烧 egress）
         cnts = db.fetch("SELECT code FROM kline_cache WHERE kline_count >= 250 "
                         "ORDER BY code")
-        kcodes = [r["code"] for r in cnts]
+        kcodes = [r["code"] for r in cnts if r["code"] not in name_by]
         for i in range(0, len(kcodes), 150):
             chunk = kcodes[i:i + 150]
             rows = db.fetch("SELECT code, name, kline_data FROM kline_cache "

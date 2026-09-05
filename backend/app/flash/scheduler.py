@@ -243,12 +243,29 @@ async def kline_cache_refresh_loop():
         weekday = now.weekday()  # 0=周一, 6=周日
         
         # 工作日 15:30-23:59 触发刷新
-        if weekday < 5 and h >= 15 and m >= 30 and not KLINE_CACHE_REFRESHED_TODAY:
+        # ★ DATA_SOURCE=pack/local：K 线由 Actions 打包分发（kline-data 工作流），
+        #   本进程不再逐只拉腾讯写库（读侧 get_cached_klines 已直读数据包）
+        _pack_mode = False
+        try:
+            from app import pack_source as _ps
+            _pack_mode = _ps.enabled()
+        except Exception:
+            pass
+        if (weekday < 5 and h >= 15 and m >= 30
+                and not KLINE_CACHE_REFRESHED_TODAY and not _pack_mode):
             try:
                 print(f"[scheduler] 开始每日 K 线缓存刷新...")
                 from app.scoring.kline_cache import refresh_kline_cache
                 result = await asyncio.to_thread(refresh_kline_cache)
                 print(f"[scheduler] K 线缓存刷新完成: {result}")
+                # 成功率过低告警：9/2、9/3 曾静默失败到只剩 18/44 只（应 ~500），
+                # 读侧 36h 过期会让次日排行榜回退实时拉取（变慢且易触发WAF掉榜）
+                _total = result.get("total") or 0
+                _ok = result.get("refreshed") or 0
+                if _total and _ok < _total * 0.8:
+                    _notify_failure("K线缓存刷新",
+                                    f"成功率仅 {_ok}/{_total}（{_ok / _total:.0%}），"
+                                    f"明日评分将回退实时拉K线")
                 KLINE_CACHE_REFRESHED_TODAY = True
             except Exception as e:
                 print(f"[scheduler] K 线缓存刷新失败: {e}")
@@ -261,6 +278,11 @@ async def kline_cache_refresh_loop():
 
 
 # ── 指标数据库缓存每日刷新 ──
+# ★ 重活已外迁 GitHub Actions（.github/workflows/indicator-refresh.yml，北京 16:40）：
+#   指标刷新是纯 CPU 活（300 只 × 500 根 K 线算 MA/MACD/RSI/KDJ/BOLL），且只读数据库
+#   里的 kline_cache、不需要外网行情源，放 Actions（4 核）跑更合适。
+#   本进程只需"读表算分"，设 ENABLE_HEAVY_JOBS=0 即可关闭本循环（默认开启，向后兼容）。
+ENABLE_HEAVY_JOBS = os.environ.get("ENABLE_HEAVY_JOBS", "1").strip() != "0"
 INDICATOR_CACHE_REFRESHED_TODAY = False
 
 async def indicator_cache_refresh_loop():
@@ -294,8 +316,9 @@ async def indicator_cache_refresh_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
-# ── 每日 A 股大盘日报（16:20 起，等 market_snapshot/regime/score_snapshot 均落盘后）──
-DAILY_REPORT_WINDOW = (980, 1440)   # 北京时间 16:20-23:59
+# ── 每日 A 股大盘日报（19:30 起）──
+# ★ 必须晚于「评分快照(18:00)」：日报要读 ranking_history，先落库才能取到当日榜单。
+DAILY_REPORT_WINDOW = (1170, 1440)   # 北京时间 19:30-23:59
 
 
 async def daily_report_loop():
@@ -881,7 +904,9 @@ async def regime_cache_loop():
 
 
 # ── 回测预热：盘后自动计算三类策略并写持久缓存，用户访问秒回（冷启动不再 30s+）──
-BACKTEST_PREHEAT_WINDOW = (1605, 2359)   # 北京时间 16:05-23:59
+# ★ 原值 (1605, 2359) 是笔误：窗口用的是「当日分钟数」(0-1439)，1605 永远不满足，
+#   导致这个循环从未触发过。16:05 对应 965。
+BACKTEST_PREHEAT_WINDOW = (965, 1439)   # 北京时间 16:05-23:59
 
 async def backtest_preheat_loop():
     while True:
@@ -937,7 +962,12 @@ async def backtest_report_loop():
 
 
 # ── 评分排行快照每日保存 ──
-SCORE_SNAPSHOT_WINDOW = (915, 1020)   # 北京时间 15:15-17:00（收盘后评分稳定，窗口宽支持补跑）
+# ★ 时间从 15:15 挪到 18:00，必须晚于 K线刷新(15:30) + 指标刷新(Actions 16:40/17:40)：
+#   原先 15:15 就跑，此时指标缓存里还是"前一交易日收盘"的数据，于是每日权威快照
+#   变成「今日收盘价 + 昨日技术特征」的混合体 —— 而回测/日报/拥挤度因子都读它。
+#   Actions 万一没跑成，到 SCORE_SNAPSHOT_DEADLINE 就照旧用前一日指标跑，不会更差。
+SCORE_SNAPSHOT_WINDOW = (1080, 1140)      # 北京时间 18:00-19:00
+SCORE_SNAPSHOT_DEADLINE = 1125            # 18:45：等到这个点就不再等指标刷新，直接跑
 
 async def score_snapshot_loop():
     """
@@ -952,6 +982,21 @@ async def score_snapshot_loop():
         task_key = "score_snapshot"
         if (now.weekday() < 5 and SCORE_SNAPSHOT_WINDOW[0] <= t < SCORE_SNAPSHOT_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
+            # ★ 等指标缓存刷新到"今日"再跑（否则又退化成"今日价 + 昨日技术特征"）。
+            #   等到 SCORE_SNAPSHOT_DEADLINE 就不再等 —— Actions 若失败，保持旧行为。
+            if t < SCORE_SNAPSHOT_DEADLINE:
+                try:
+                    from app.scoring.indicator_cache import get_indicator_cache_status
+                    _ind_newest = (get_indicator_cache_status().get("newest_update") or "")
+                    if not _ind_newest.startswith(now.strftime("%Y-%m-%d")):
+                        print(f"[scheduler] 指标缓存尚未刷新到今日（最新="
+                              f"{_ind_newest or '空'}），评分快照等待中"
+                              f"（最迟 {SCORE_SNAPSHOT_DEADLINE // 60}:"
+                              f"{SCORE_SNAPSHOT_DEADLINE % 60:02d} 强制执行）")
+                        await asyncio.sleep(300)
+                        continue
+                except Exception as e:
+                    print(f"[scheduler] 读取指标缓存状态失败({e})，按原计划继续评分快照")
             print("[scheduler] 触发评分排行快照")
             last_err = ""
             for attempt in range(1, 4):   # 最多 3 次，间隔 90s（给行情缓存刷新留时间）
@@ -1099,7 +1144,8 @@ async def news_alert_loop():
 
 
 # ── 消息分每日历史快照（阶段 3 回测的数据积累）──
-NEWS_HISTORY_WINDOW = (920, 1020)   # 北京时间 15:20-17:00（与评分快照同窗口，宽窗口支持补跑）
+# ★ 晚于评分快照(18:00)：股票池里"当日评分 Top50"直接读 ranking_history，先落库才有
+NEWS_HISTORY_WINDOW = (1160, 1260)   # 北京时间 19:20-21:00
 
 
 def take_news_snapshot_once() -> int:
@@ -1232,8 +1278,9 @@ async def industry_map_loop():
 
 
 # ── 行业主线/共振日报（每个交易日收盘后分析 + 企微推送）──
-# ranking_history 15:15 落库、15:40 战法扫描，数据稳定后 16:05 分析最合适。
-MAINLINE_WINDOW = (965, 1020)   # 北京时间 16:05-17:00
+# ★ 晚于评分快照(18:00)：compute_mainline 直接读 ranking_history 的当日 Top50，
+#   当日无数据会返回 ok=False（不落库也不推送）。原先 16:05 依赖 15:15 的快照。
+MAINLINE_WINDOW = (1155, 1260)   # 北京时间 19:15-21:00
 
 
 async def mainline_loop():
@@ -1367,12 +1414,18 @@ async def start():
              asyncio.create_task(health_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
              asyncio.create_task(kline_cache_refresh_loop()),
-             asyncio.create_task(indicator_cache_refresh_loop()),
+             # 指标刷新已外迁 GitHub Actions；ENABLE_HEAVY_JOBS=0 时本进程不再自己算
+             *([] if not ENABLE_HEAVY_JOBS
+                else [asyncio.create_task(indicator_cache_refresh_loop())]),
              asyncio.create_task(backtest_prices_refresh_loop()),
              asyncio.create_task(mainflow_refresh_loop()),
              asyncio.create_task(mainforce_state_refresh_loop()),
              asyncio.create_task(lhb_refresh_loop()),
-             asyncio.create_task(backtest_preheat_loop()),
+             # 回测预热 = 3 个策略全量回测，要大量读 backtest_prices（71MB 表），
+             # 是 Supabase egress 大头之一 → 同受 ENABLE_HEAVY_JOBS 管控
+             # （此前 (1605,2359) 笔误导致它从未跑过，等于一直处于关闭状态）
+             *([] if not ENABLE_HEAVY_JOBS
+                else [asyncio.create_task(backtest_preheat_loop())]),
              asyncio.create_task(strategy_scan_loop()),
              asyncio.create_task(regime_cache_loop()),
              asyncio.create_task(backtest_report_loop()),
@@ -1392,14 +1445,15 @@ async def start():
              asyncio.create_task(paper_fill_loop()),
              asyncio.create_task(paper_track_loop())]
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
-          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
+          f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / "
+          f"指标缓存{'每日16:40 由 GitHub Actions 跑（本进程已关闭）' if not ENABLE_HEAVY_JOBS else '每日16:00（本进程）'} / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
           f"主力资金流每日17:00 / 主力行为状态每日17:30 / 龙虎榜每日17:45 / "
-          f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
-          f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
+          f"周度回测报告周五16:00 / 评分快照每日18:00 / 行情收盘快照每日15:05 / "
+          f"消息分快照每日19:20 / 持仓负面消息盘中每10分钟 / "
           f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "
           f"行业映射每月{INDUSTRY_MAP_DAY}号03:00 / "
-          f"主线日报每日16:05 / "
+          f"主线日报每日19:15 / "
           f"板块快照交易日{SECTOR_SNAPSHOT_WINDOW[0] // 60}:"
           f"{SECTOR_SNAPSHOT_WINDOW[0] % 60:02d} / "
           f"矛盾扫描每日{CONTRADICTION_SCAN_WINDOW[0] // 60}:"

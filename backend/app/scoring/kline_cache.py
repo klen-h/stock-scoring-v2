@@ -160,6 +160,17 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
       - K线列表 [{date, open, close, high, low, volume}, ...]
       - None 表示缓存不存在或已过期
     """
+    # ★ DATA_SOURCE=pack/local：优先读数据包（GitHub Pages/本地文件，零 Supabase 流量）；
+    #   pack 未命中的代码回退 DB 兜底（只对未覆盖代码产生少量流量）
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            _k = pack_source.get_klines(code)
+            if _k is not None:
+                return _k
+    except Exception:
+        pass
+
     row = db.fetch_one("""
         SELECT kline_data, updated_at, kline_count 
         FROM kline_cache WHERE code = %s
@@ -287,7 +298,14 @@ def refresh_kline_cache(codes: List[str] = None, progress_callback=None) -> Dict
       progress_callback: 可选的进度回调函数 callback(current, total, code)
     
     返回：
-      {"refreshed": N, "failed": M, "total": T, "duration_seconds": S}
+      {"refreshed": N, "failed": M, "total": T, "duration_seconds": S,
+       "success_rate": 0~1}
+
+    ★ 两轮重试 + 失败退避（照搬 scripts/generate-kline-pack.py 的成熟策略）：
+      2026-09-02/09/03 实测 15:30 定时刷新只写入 18/22 只（应 ~500）——
+      腾讯 WAF（HTTP 501）触发 120s 全局冷却后，单轮循环剩下全部瞬间判失败，
+      表现为"起了个头就断"。pack 脚本用「两轮 + 轮间停 8s + 连续失败递增冷却」
+      在同样数据源上每天稳定成功，故照搬。
     """
     from app.tencent import _cache as tencent_cache, get_kline, refresh_all_stocks
     
@@ -317,63 +335,120 @@ def refresh_kline_cache(codes: List[str] = None, progress_callback=None) -> Dict
         codes = [s.get("code") for s in stock_list[:CACHE_POOL_SIZE] if s.get("code")]
     
     total = len(codes)
-    refreshed = 0
-    failed = 0
-    
+    refreshed_set = set()
+    pending = list(codes)
+    consec_fail = 0
+
     print(f"[kline_cache] 开始刷新 {total} 只股票的K线缓存...")
-    
-    for i, code in enumerate(codes):
-        try:
-            # 从腾讯API拉取K线
-            klines = get_kline(code, period="day", count=CACHE_KLINE_COUNT)
 
-            if klines and len(klines) >= 30:
-                # ★ 写侧日期保障：腾讯日线当日 bar 更新滞后是常态，15:30 刷新
-                #   拉到的可能还停在昨日 —— 用实时行情合成当日 bar 再落库，
-                #   避免"截至昨日"的 K 线被打上新鲜 updated_at（2026-09-02 案例）
-                expect = expected_kline_date()
-                if expect:
-                    klines = _append_today_bar(klines, code, expect)
-                # 获取股票名称和市值（stocks 键为 sh600906 格式，需转换——
-                # 原代码 get(code) 纯 6 位永远取不到，name/market_cap 恒为空）
-                stock_info = tencent_cache.get("stocks", {}).get(
-                    _tencent_cache_key(code), {})
-                name = stock_info.get("name", "")
-                market_cap = stock_info.get("market_cap", 0) or 0
+    for round_no in (1, 2):
+        if not pending:
+            break
+        failed_round = []
+        n = len(pending)
+        print(f"[kline_cache] 第{round_no}轮：{n} 只待刷新")
 
-                save_kline_cache(code, name, klines, market_cap)
-                refreshed += 1
+        for i, code in enumerate(pending):
+            try:
+                ok = _refresh_one(code, tencent_cache, get_kline)
+            except Exception as e:
+                ok = False
+                if len(failed_round) <= 5:  # 只打印前5个错误
+                    print(f"[kline_cache] 刷新失败 {code}: {e}")
+
+            if ok:
+                refreshed_set.add(code)
+                consec_fail = 0
             else:
-                failed += 1
-                
-        except Exception as e:
-            failed += 1
-            if failed <= 5:  # 只打印前5个错误
-                print(f"[kline_cache] 刷新失败 {code}: {e}")
-        
-        # 进度回调
-        if progress_callback:
-            progress_callback(i + 1, total, code)
-        
-        # 每20只打印一次进度
-        if (i + 1) % 20 == 0:
-            print(f"[kline_cache] 进度: {i+1}/{total} (成功{refreshed} 失败{failed})")
-    
+                failed_round.append(code)
+                consec_fail += 1
+                # 连续失败 → 递增冷却：WAF 冷却期里每只都会"秒失败"，
+                # 不退避就是纯撞墙（2026-09-02/03 只写入 18/22 只的根因）
+                if consec_fail >= 10:
+                    wait = min(60, consec_fail * 5)
+                    print(f"[kline_cache] 连续失败 {consec_fail} 次，"
+                          f"暂停 {wait}s 等 WAF 冷却")
+                    time.sleep(wait)
+                    consec_fail = 0
+
+            # 进度回调
+            if progress_callback:
+                progress_callback(i + 1, n, code)
+
+            # 每20只打印一次进度
+            if (i + 1) % 20 == 0:
+                print(f"[kline_cache] 进度(第{round_no}轮): {i + 1}/{n} "
+                      f"(累计成功{len(refreshed_set)} 待重试{len(failed_round)})")
+
+        pending = failed_round
+        if round_no == 1 and pending:
+            print(f"[kline_cache] 第1轮结束：成功{len(refreshed_set)} / 失败{len(pending)}，"
+                  f"停 8s 等 WAF 松弛后重试")
+            time.sleep(8)
+
+    refreshed = len(refreshed_set)
+    failed = total - refreshed
     duration = time.time() - start_time
-    print(f"[kline_cache] 刷新完成: {refreshed}成功 {failed}失败 耗时{duration:.1f}s")
-    
+    rate = (refreshed / total) if total else 0.0
+    print(f"[kline_cache] 刷新完成: {refreshed}成功 {failed}失败 "
+          f"成功率{rate:.0%} 耗时{duration:.1f}s")
+
     return {
         "refreshed": refreshed,
         "failed": failed,
         "total": total,
         "duration_seconds": round(duration, 1),
+        "success_rate": round(rate, 3),
     }
+
+
+def _refresh_one(code: str, tencent_cache: dict, get_kline) -> bool:
+    """刷新单只：拉取 → 合成当日 bar → 落库。成功 True，失败 False。
+
+    ★ 失败不再落库（原实现会照写）：缺当日 bar 且实时合成失败时，若照常
+      save_kline_cache，会把"截至昨日"的 K 线盖上新鲜 updated_at —— 读侧
+      36h 内都当它新鲜，实为旧数据（静默污染）。计为失败留给第二轮重试。
+    """
+    klines = get_kline(code, period="day", count=CACHE_KLINE_COUNT)
+    if not klines or len(klines) < 30:
+        return False
+
+    # 写侧日期保障：腾讯日线当日 bar 更新滞后是常态，15:30 刷到的可能停在昨日
+    expect = expected_kline_date()
+    if expect:
+        klines = _append_today_bar(klines, code, expect)
+        if (klines[-1].get("date") or "")[:10] < expect:
+            return False
+
+    # 获取股票名称和市值（stocks 键为 sh600906 格式，需转换——
+    # 原代码 get(code) 纯 6 位永远取不到，name/market_cap 恒为空）
+    stock_info = tencent_cache.get("stocks", {}).get(_tencent_cache_key(code), {})
+
+    save_kline_cache(code, stock_info.get("name", ""), klines,
+                     stock_info.get("market_cap", 0) or 0)
+    return True
 
 
 def get_cache_status() -> Dict:
     """
     获取K线缓存状态。
     """
+    # ★ DATA_SOURCE=pack/local：用数据包的覆盖情况伪装状态
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            st = pack_source.status()
+            return {"total_cached": st.get("total", 0),
+                    "oldest_update": "",
+                    "newest_update": st.get("date", ""),
+                    "expired_count": 0,
+                    "pool_size": CACHE_POOL_SIZE,
+                    "kline_count": CACHE_KLINE_COUNT,
+                    "max_age_hours": MAX_CACHE_AGE_HOURS,
+                    "source": "pack"}
+    except Exception:
+        pass
+
     row = db.fetch_one("""
         SELECT COUNT(*) as total,
                MIN(updated_at) as oldest,

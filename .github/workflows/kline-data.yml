@@ -38,13 +38,21 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install requests
+          pip install -q requests numpy psycopg2-binary python-dotenv
       
-      - name: Generate K-line data package
+      - name: Generate K-line data package (frontend)
         run: |
           python scripts/generate-kline-pack.py \
             --output-dir ./data/kline \
             --days ${{ github.event.inputs.days || 150 }}
+      
+      # 后端数据包（500根K线+预计算指标）：DATA_SOURCE=pack/local 读取层用，
+      # 让 Render/本地不再读 Supabase 肥表（egress 根治）。
+      # DATABASE_URL 仅用于读代码清单（~11KB），未配置时自动退化为市值前800。
+      - name: Generate backend data pack (klines + indicators)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/generate_backend_pack.py --output-dir ./data/kline
       
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

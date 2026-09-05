@@ -69,6 +69,16 @@ def get_cached_indicators(code: str) -> Optional[Dict]:
       - 指标字典 {ma5, ma10, ..., _series: [近80天指标数组], _state: {...}}
       - None 表示缓存不存在或已过期
     """
+    # ★ DATA_SOURCE=pack/local：优先读数据包；未命中回退 DB（仅未覆盖代码有流量）
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            ind = pack_source.get_indicators(code)
+            if ind and (ind.get("_series") or ind.get("ma5") is not None):
+                return ind
+    except Exception:
+        pass
+
     row = db.fetch_one("""
         SELECT indicators, updated_at, kline_count 
         FROM indicator_cache WHERE code = %s
@@ -146,7 +156,23 @@ def get_cached_technical_batch_sql(codes: List[str]) -> Dict[str, List[Dict]]:
     """
     if not codes:
         return {}
-    
+
+    # ★ DATA_SOURCE=pack/local：从数据包批量取（零 DB 往返）；未命中的代码
+    #   不返回，由 _precise_score_sync 的逐只兜底路径处理（同 DB 未命中语义）
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            out = {}
+            for _c in codes:
+                ind = pack_source.get_indicators(_c)
+                if ind:
+                    series = ind.get("_series")
+                    if series and len(series) >= 30:
+                        out[_c] = series
+            return out
+    except Exception:
+        pass
+
     from datetime import timedelta
     cutoff = (datetime.now() - timedelta(hours=MAX_INDICATOR_AGE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
     

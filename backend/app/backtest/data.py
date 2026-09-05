@@ -177,6 +177,14 @@ def save_prices(code: str, name: str, rows: list) -> int:
 
 def load_prices(code: str, start: str = None, end: str = None) -> list:
     """读取日线（升序）。start/end 形如 '2023-08-01'。"""
+    # ★ DATA_SOURCE=pack/local：读数据包（零 Supabase 流量）；未命中返回 []
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            return pack_source.get_prices(code, start, end)
+    except Exception:
+        pass
+
     sql = "SELECT * FROM backtest_prices WHERE code = %s"
     params = [code]
     if start:
@@ -194,5 +202,14 @@ def load_prices(code: str, start: str = None, end: str = None) -> list:
 
 def get_all_codes() -> list:
     """已回填的代码列表（含名称）。"""
+    # ★ DATA_SOURCE=pack/local：数据包的代码清单
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            return [{"code": c, "name": pack_source.get_name_cap(c)[0]}
+                    for c in pack_source.get_codes()]
+    except Exception:
+        pass
+
     rows = db.fetch("SELECT DISTINCT code, name FROM backtest_prices ORDER BY code")
     return [{"code": r["code"], "name": r["name"]} for r in rows]
