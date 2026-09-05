@@ -127,6 +127,12 @@ def main():
             except Exception as e:
                 print(f"  指标计算失败 {code}: {e}")
 
+    # 完整性护栏 #2：指标计算启用却一只都没算出来 → 中止（发出无指标包 = 静默降级）
+    if compute_latest_indicators and klines_out and not ind_out:
+        print("::error::K线拉取成功但指标计算 0 只成功 —— 通常是依赖缺失，"
+              "检查工作流 pip install（需含 fastapi 等后端依赖）")
+        sys.exit(6)
+
     _write_packs(args.output_dir, codes_meta, klines_out, ind_out)
     print(f"\n=== 完成: K线 {len(klines_out)} 只 / 指标 {len(ind_out)} 只 ===")
 

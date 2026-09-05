@@ -37,8 +37,10 @@ jobs:
           cache: 'pip'
       
       - name: Install dependencies
-        run: |
-          pip install -q requests numpy psycopg2-binary python-dotenv
+        # 装完整 requirements（含 fastapi）：generate_backend_pack 复用后端
+        # compute_latest_indicators，其导入链会牵出 fastapi 等依赖，
+        # 精简安装会在指标计算步骤全军覆没（2026-09-05 实测）
+        run: pip install -q -r backend/requirements.txt
       
       - name: Generate K-line data package (frontend)
         run: |
