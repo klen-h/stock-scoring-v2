@@ -893,7 +893,7 @@ async def score_single(symbol: str):
     }
 
 
-def _latest_bar_date(bars) -> str | None:
+def _latest_bar_date(bars) -> Optional[str]:
     """原始 K 线最后一根的日期（判断日批表新鲜度）。"""
     try:
         return bars[-1].get("date")

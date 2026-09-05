@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations  # 兼容 Python 3.9（Render/Docker）：允许 -> list | None 注解
 """
 ================================================================================
 【文件作用】龙虎榜数据层（zzshare 源）—— 主力行为的"实名制"补强

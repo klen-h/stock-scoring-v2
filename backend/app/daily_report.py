@@ -23,6 +23,8 @@
 ================================================================================
 """
 
+from __future__ import annotations  # 兼容 Python 3.9（Render/Docker）：允许 -> dict | None 注解
+
 import json
 import os
 from datetime import datetime

@@ -26,6 +26,9 @@
 - **`incremental_update`（盘中 O(1) 滚动更新指标）目前是死代码**：只有 `POST /api/score/indicator-cache/incremental` 接口 + 前端 `api/index.js` 的 `incrementalIndicatorUpdate` 定义，**后端无调度任务、前端无任何页面调用**。想让盘中技术面动起来必须自己接线。
 - **⚠️ 每日权威快照早于数据刷新**：`score_snapshot_loop` 窗口 15:15，而 K 线刷新 15:30、指标刷新 16:00 → 每天写进 `ranking_history` 的"盘后权威快照"实际是**前一交易日收盘的指标 + 当日实时价**的混合体；而回测/日报/拥挤度因子全读 `ranking_history`。修法：把 `SCORE_SNAPSHOT_WINDOW` 挪到指标刷新之后（≥16:30），或加"等待刷新完成"的前置校验。
 
+## 项目约定
+- **生产 = Python 3.9**（backend/Dockerfile python:3.9-slim；本地开发是 3.12）。新代码**禁用 PEP 604 注解**（`x: str | None`），要么 `Optional[str]`，要么文件头加 `from __future__ import annotations`。ci.yml 的 `import app.main`（3.9）能拦住这类问题——本地 3.12 跑通不代表 3.9 可用。
+
 ## 用户偏好
 - 日报不推送企微，只在前端 `/report` 页查看（避免刷屏）。
 - 改动后倾向于"先验证再提交"；未明确要求时不要自动 git commit。
