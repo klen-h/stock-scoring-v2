@@ -498,6 +498,30 @@ async def mainforce_state_refresh_loop():
         await asyncio.sleep(600)
 
 
+# ── 龙虎榜每日同步（zzshare 源，17:45 起，主力状态 17:30 之后）──
+LHB_REFRESH_WINDOW = (1065, 1440)   # 北京时间 17:45-23:59
+
+
+async def lhb_refresh_loop():
+    """每日盘后同步龙虎榜（zzshare 低频补充源）：日榜全量 + 池内个股席位明细。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "lhb_backfill"
+        if (now.weekday() < 5 and LHB_REFRESH_WINDOW[0] <= t < LHB_REFRESH_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            try:
+                from app.mainforce.lhb import backfill_days
+                stats = await asyncio.to_thread(backfill_days, 10, 3)
+                store.mark_schedule_done(task_key)
+                status["last_lhb_backfill"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 龙虎榜同步完成: {stats}")
+            except Exception as e:
+                print(f"[scheduler] 龙虎榜同步失败: {e}")
+                _notify_failure("龙虎榜同步", str(e))
+        await asyncio.sleep(600)
+
+
 # ── 战法每日自动扫描 ──
 STRATEGY_SCAN_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（与回测回填同窗口，收盘后数据稳定）
 
@@ -1347,6 +1371,7 @@ async def start():
              asyncio.create_task(backtest_prices_refresh_loop()),
              asyncio.create_task(mainflow_refresh_loop()),
              asyncio.create_task(mainforce_state_refresh_loop()),
+             asyncio.create_task(lhb_refresh_loop()),
              asyncio.create_task(backtest_preheat_loop()),
              asyncio.create_task(strategy_scan_loop()),
              asyncio.create_task(regime_cache_loop()),
@@ -1369,7 +1394,7 @@ async def start():
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / 指标缓存每日16:00 / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "
-          f"主力资金流每日17:00 / 主力行为状态每日17:30 / "
+          f"主力资金流每日17:00 / 主力行为状态每日17:30 / 龙虎榜每日17:45 / "
           f"周度回测报告周五16:00 / 评分快照每日15:15 / 行情收盘快照每日15:05 / "
           f"消息分快照每日15:20 / 持仓负面消息盘中每10分钟 / "
           f"财经日历每日{CALENDAR_WINDOW[0] // 60}:{CALENDAR_WINDOW[0] % 60:02d} / "

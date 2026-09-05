@@ -23,7 +23,12 @@
 | `backend/app/mainforce/phases.py` | 主力阶段标签（吸筹/洗盘/拉升/出货/下跌，向量化） |
 | `backend/app/mainforce/overlay.py` | 组合信号合成 + 出货乘数 0.85（MAINFORCE_MODE 开关 + regime 闸门） |
 | `backend/app/mainforce/state.py` | 日批全池计算 → `mainforce_state` 表（1,173 只/11 分钟，17:30 调度） |
+| `backend/app/mainforce/gate.py` | 战法信号主力过滤闸门（剔高位+拉升段，推送/入池生效；重放验证 48.1%→50.3%） |
+| `backend/app/mainforce/lhb.py` | 龙虎榜数据层（zzshare 源）+ `lhb_history` 表（87 日/7,160 行；净买强度四桶单调，大额净卖 -6.28%/T5） |
 | `scripts/mainforce_factor_backtest.py` | 全池截面验证（IC/分桶/阶段/组合/分日稳定性） |
+| `scripts/strategy_mainforce_filter_test.py` | 战法 × 主力过滤历史重放（G 过滤器验收依据） |
+| `scripts/strategy_exit_sweep.py` | 战法退出参数网格扫描（v2 退出策略定版依据） |
+| `scripts/lhb_factor_check.py` | 龙虎榜净买强度快检（四桶单调） |
 | `scripts/news_score_validation.py` | 消息分 vs 未来收益验证（初步 T+2 IC +0.202，待 ≥20 快照日定版） |
 | `scripts/limitup_filter_compare.py` | 撮合现实化前后对照 |
 | `PLAN_NEXT_PHASE.md` | 下一阶段路线图（战法复健/龙虎榜/GH Actions 迁移等） |
@@ -33,7 +38,10 @@
 - `backend/app/strategies/recommendation.py`：**白名单动态化**——从 strategy_results 重放撮合算实时胜率（6h 缓存），当前无一战法达 55%/30 样本 → 推送自动静默
 - `backend/app/strategies/paper_trading.py`：模拟盘买入涨停一字守卫（卖出侧顺延待做，见 PLAN_NEXT_PHASE）
 - `backend/app/contradictions/scanner.py`：+`scan_index_vs_mainflow`（指数涨跌 vs 全池主力资金流背离；9/4 实况即触发"绿盘+主力流入147亿=砸盘吸筹"）
-- `backend/app/flash/scheduler.py`：+mainflow_refresh_loop（17:00）+ mainforce_state_refresh_loop（17:30）
+- `backend/app/flash/scheduler.py`：+mainflow_refresh_loop（17:00）+ mainforce_state_refresh_loop（17:30）+ lhb_refresh_loop（17:45）
+- `backend/app/backtest/strategies.py`：**退出策略 v2**（apply_exit_policy：持有3日/-7%止损/不设目标价，WARFARE_EXIT_POLICY 开关默认 v2；_run_warfare 回放应用）
+- `backend/app/strategies/paper_trading.py`：入池主力过滤 + v2 止损/目标覆盖 + 超期强平 3 日 + **卖出侧跌停顺延**（_limit_down_locked）
+- `backend/app/strategies/recommendation.py`：白名单重算与部署管线同口径（G 过滤+v2）——均线粘合突破 57.0%/114 恢复推送；推送消息附 v2 执行提示
 - `backend/app/routers/scoring.py`：score_top/score_single 挂 `mainforce` 字段；auto 模式出货嫌疑 ×0.85 重排（默认 off）
 - `backend/app/daily_report.py`：日报新增"主力行为扫描"章节（出货/吸筹名单）
 - `frontend/src/views/ScoreRank.vue`：Top 榜"主力"列；`frontend/src/views/StockDetail.vue`：主力行为卡片

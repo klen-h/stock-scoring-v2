@@ -368,6 +368,27 @@ def _mainforce_summary() -> dict | None:
         return None
 
 
+def _lhb_summary() -> dict | None:
+    """今日龙虎榜（评分池内上榜，zzshare 源 lhb_history）。"""
+    try:
+        from app.database import db
+        rows = db.fetch("""
+            SELECT code, name, date, net_buy, quote_change, up_reason
+            FROM lhb_history WHERE date = (SELECT MAX(date) FROM lhb_history)
+            ORDER BY net_buy DESC
+        """)
+        if not rows:
+            return None
+        return {"date": str(rows[0].get("date")),
+                "items": [{"code": r["code"], "name": r.get("name") or r["code"],
+                           "net_buy": float(r.get("net_buy") or 0),
+                           "chg": float(r.get("quote_change") or 0),
+                           "reason": (r.get("up_reason") or "")[:24]} for r in rows]}
+    except Exception as e:
+        print(f"[daily_report] 龙虎榜汇总失败: {e}")
+        return None
+
+
 def build_data_md() -> str:
     lines = []
     add = lines.append
@@ -529,6 +550,25 @@ def build_data_md() -> str:
                               else d["name"] for d in mf["accum"][:8])
             add(f"- 🎯 吸筹区（低位筹码密集+主力净流入，回测 10 日 +1.1pt）：{names}"
                 + (" 等" if len(mf["accum"]) > 8 else ""))
+
+    # 2.x 龙虎榜（评分池内上榜；席位"实名制"交叉验证主力行为）
+    lhb = _lhb_summary()
+    if lhb and lhb["items"]:
+        add("")
+        add(f"**龙虎榜**（评分池内 {len(lhb['items'])} 只上榜，{lhb['date']}）：")
+        buys = [x for x in lhb["items"] if x["net_buy"] > 0][:3]
+        sells = sorted(lhb["items"], key=lambda x: x["net_buy"])[:3]
+        if buys:
+            add("- 净买前列：" + "、".join(
+                f"{x['name']}({x['net_buy']/1e8:+.1f}亿,{x['chg']:+.1f}%)" for x in buys))
+        if sells:
+            add("- 净卖前列：" + "、".join(
+                f"{x['name']}({x['net_buy']/1e8:+.1f}亿,{x['chg']:+.1f}%)" for x in sells))
+        hi = [x for x in lhb["items"]
+              if x["name"] in {d["name"] for d in (mf or {}).get("dist", [])}]
+        if hi:
+            add(f"- ⚠️ 出货嫌疑∩龙虎榜（双重预警，撤退提醒强化）："
+                + "、".join(x["name"] for x in hi[:5]))
 
     scan = _strategy_scan()
     if scan:
