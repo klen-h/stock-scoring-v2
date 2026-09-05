@@ -1,8 +1,34 @@
 # 项目上下文摘要
 
-> 最后更新：2026-09-05（夜间第二批）
+> 最后更新：2026-09-06（第二批：Phase 2 pack 消费 + 先知雷达三模块）
 
-## 本轮新增：主力行为因子体系（2026-09-05）
+## 本轮新增：Phase 2 前端消费 pack + 先知雷达三模块（2026-09-06）
+
+### Phase 2 前端消费 pack（✅ 完成，用户已验收）
+- klineDB DB v2：+indicators store；ensureIndicatorsPack 与 K 线包日期对齐自动拉取
+  （indicators-pack.json.gz；localStorage 'kline_data_base_url' 可覆盖包地址）
+- 评分优先 _series（与后端同引擎预计算的事实源），盘中不新鲜回退 150 根现算
+  （seriesIsFresh 与 appendTodayBar 互为反证）
+- 详情页 K 线/指标叠加/评分全本地（loadLocalKline/computeLocalScore，dimensions
+  对象→数组适配），本地不可用回退后端——消除 /api/stock/kline 与 /api/score 并发 OOM
+- **对齐验证：同一 _series 两端打分 25 只 diff 全部 0.000**（verify_pack_score_parity.py）
+- 修复：DecompressionStream 在 IAB 内嵌浏览器坏（构造器在、流读取抛错）→ pako 降级
+
+### 先知雷达三模块（评估了 先知雷达_功能Plan_v1.0.md：重叠项已覆盖，缺口三项落地）
+- **L3 财报断层**（contradictions/l3_scanner.py）：净现比=OCF/扣非，现金失血型报警；
+  数据 stock_finance_zz 全池 1,991 只（zzshare，周一 04:30 zz_finance_sync_loop 周更）；
+  非银金融排除 + 报告期季节性阈值 + 异常值防护（华林证券 -46 教训）
+- **矛盾验证闭环**（contradictions/validator.py）：方向规则（指数/宽度/量价/北向→bearish，
+  主力资金流按标题判向）→ T+1 上证涨跌验证 → contradictions 验证五列回写 →
+  准确率统计（整体+分类型）入报告"预判验证"章节 + /validation-stats API + 前端徽章；
+  contradiction_scan_loop 每日扫描后自动验证
+- **持仓顾问**（daily_report._holdings_radar）：主力行为 × L3 断层 × 持仓交叉，
+  浮盈/浮亏差异化建议（出货嫌疑：浮盈"反弹减仓"/浮亏"观望不补仓"）
+- 评估结论：Plan 的 L1/L2 扫描、状态判定、拥挤度、行业分位均已覆盖（对照表在 Plan 文件头）
+
+---
+
+## 上一批：主力行为因子体系（2026-09-05）
 
 **背景**：回测验证阶段；因子诊断显示综合分 IC≈0、散户因子（技术/估值）解释力弱。
 **立场切换**：散户思维（股票好不好）→ 主力思维（筹码在谁手里、主力走到哪一步）。

@@ -84,6 +84,15 @@ def _render_markdown(date: str, items: List[Dict], llm_summary: Optional[Dict] =
                 add(f"  - {metric_cn(k)}：{fmt_metric_value(v, key=k)}")
         add("")
 
+    # 预判验证闭环（识别→预判→次日验证→准确率，先知雷达学习闭环）
+    try:
+        from app.contradictions.validator import render_stats_markdown
+        add("## 预判验证（学习闭环）")
+        add(render_stats_markdown())
+        add("")
+    except Exception:
+        pass
+
     # LLM 解读区（若有）
     if llm_summary:
         notes = llm_summary.get("notes") or []

@@ -391,6 +391,56 @@ def _lhb_summary() -> dict | None:
         return None
 
 
+def _holdings_radar() -> list:
+    """
+    持仓矛盾影响（先知雷达·持仓顾问）：
+    主力行为信号（mainforce_state）× L3 财报断层 × 用户持仓 交叉扫描。
+    只输出有信号/预警的持仓（无信号的不占版面）。
+    """
+    pos = _portfolio()
+    if not pos:
+        return []
+    codes = [p["code"] for p in pos]
+    try:
+        from app.mainforce.state import load_latest
+        mf = load_latest(codes)
+    except Exception:
+        mf = {}
+
+    # L3 财报断层样本（代码级匹配）
+    gap_codes = set()
+    try:
+        from app.contradictions.store import load_contradictions
+        items = load_contradictions(level="L3")
+        if items:
+            metrics = (items[0].get("evidence") or {}).get("metrics") or {}
+            for s in (metrics.get("ocf_ni_gap_samples") or []):
+                gap_codes.add(s.get("code"))
+            for s in (metrics.get("goodwill_risk_samples") or []):
+                gap_codes.add(s.get("code"))
+    except Exception:
+        pass
+
+    out = []
+    for p in pos:
+        code = p["code"]
+        pnl = p.get("pnl_pct")
+        flags, advice = [], "持有观察"
+        m = mf.get(code)
+        if m and m.get("signal") == "distribution":
+            flags.append("⚠️ 出货嫌疑（高位高获利+主力流出）")
+            advice = "利用反弹减仓" if (pnl or 0) > 0 else "持有观望，不补仓"
+        elif m and m.get("signal") == "accum":
+            flags.append("🎯 吸筹区（低位筹码密集+主力净流入）")
+            advice = "主力吸筹区，持有跟踪"
+        if code in gap_codes:
+            flags.append("⚠️ 财报断层（有利润但经营现金流为负）")
+            advice = "盈利质量预警，反弹减仓规避财报季"
+        if flags:
+            out.append({**p, "flags": flags, "advice": advice})
+    return out
+
+
 def build_data_md() -> str:
     lines = []
     add = lines.append
@@ -611,6 +661,16 @@ def build_data_md() -> str:
             pnl = f"{p['pnl_pct']:+.2f}%" if p["pnl_pct"] is not None else "-"
             add(f"| {p['code']} | {p['name']} | {p['shares']} | {p['cost']} | "
                 f"{p['price'] if p['price'] else '-'} | {pnl} | {p['note']} |")
+
+        # 3.x 持仓矛盾影响（先知雷达·持仓顾问：主力行为 × 财报质量交叉扫描）
+        radar = _holdings_radar()
+        if radar:
+            add("")
+            add("**持仓矛盾影响**（先知雷达交叉扫描，仅列有信号者）：")
+            for r in radar:
+                pnl_txt = f"{r['pnl_pct']:+.2f}%" if r.get("pnl_pct") is not None else "-"
+                add(f"- 【{r['name']}】浮盈 {pnl_txt} ｜ "
+                    + "；".join(r["flags"]) + f" → **{r['advice']}**")
     else:
         add("\n## 三、你的持仓\n- 暂无持仓记录（user_portfolio 为空）")
     return "\n".join(lines)

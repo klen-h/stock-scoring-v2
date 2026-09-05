@@ -124,6 +124,16 @@
                 <div v-if="item.signal" class="text-xs text-accent/90 bg-accent/5 border border-accent/10 rounded px-2 py-1.5">
                   {{ item.signal }}
                 </div>
+                <!-- 验证闭环：次日行情对方向预判的验证结果 -->
+                <div v-if="item.validated" class="mt-1.5 text-[10px] text-muted">
+                  <span :class="item.validation_result === 'correct' ? 'text-emerald-400' :
+                               item.validation_result === 'wrong' ? 'text-red-400' : ''">
+                    {{ item.validation_result === 'correct' ? '✓ 预判正确' :
+                       item.validation_result === 'wrong' ? '✗ 预判错误' : '— 次日平盘' }}
+                  </span>
+                  <span class="ml-1">次日上证 {{ item.actual_change > 0 ? '+' : '' }}{{ item.actual_change }}%
+                    （预判{{ item.predicted_direction === 'bearish' ? '走弱' : '走强' }}）</span>
+                </div>
               </div>
             </div>
             <div v-else class="text-xs text-muted">该日暂无矛盾记录。</div>

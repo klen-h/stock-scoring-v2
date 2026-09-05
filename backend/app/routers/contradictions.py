@@ -89,3 +89,19 @@ def mark_resolved(
     """标记矛盾已兑现或失效。"""
     ok = store.mark_resolved(date, ctype, note)
     return {"success": ok, "date": date, "type": ctype}
+
+
+@router.post("/validate")
+def trigger_validate():
+    """手动触发矛盾验证闭环（用次日行情验证历史矛盾的方向预判）。"""
+    from app.contradictions.validator import validate_yesterday, render_stats_markdown
+    stats = validate_yesterday()
+    return {**stats, "stats_markdown": render_stats_markdown()}
+
+
+@router.get("/validation-stats")
+def validation_stats(days: int = Query(30, ge=1, le=180)):
+    """矛盾预判验证准确率统计（整体 + 分类型）。"""
+    from app.contradictions.validator import render_stats_markdown
+    st = store.validation_stats(days=days)
+    return {**st, "stats_markdown": render_stats_markdown(days=days)}

@@ -3,7 +3,7 @@
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from app.database import db
 
@@ -45,6 +45,33 @@ def ensure_tables() -> None:
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # 验证闭环字段（2026-09-06）：predicted_direction/actual_change/validation_result
+    # 由 validator.validate_yesterday 回写，形成"识别→预判→验证→统计"学习闭环
+    _ensure_validation_columns()
+
+
+def _ensure_validation_columns() -> None:
+    cols = db._use_postgres and [
+        r["column_name"] for r in db.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='contradictions'")
+    ] or None
+    has = (lambda c: c in (cols or [])) if cols is not None else None
+    stmts = [
+        ("validated", "ALTER TABLE contradictions ADD COLUMN validated INTEGER DEFAULT 0"),
+        ("validation_date", "ALTER TABLE contradictions ADD COLUMN validation_date TEXT"),
+        ("predicted_direction", "ALTER TABLE contradictions ADD COLUMN predicted_direction TEXT"),
+        ("actual_change", "ALTER TABLE contradictions ADD COLUMN actual_change DOUBLE PRECISION"),
+        ("validation_result", "ALTER TABLE contradictions ADD COLUMN validation_result TEXT"),
+    ]
+    for name, sql in stmts:
+        if has is None:          # sqlite：直接尝试，重复列会报错吞掉
+            try:
+                db.execute(sql)
+            except Exception:
+                pass
+        elif not has(name):
+            db.execute(sql)
 
 
 def save_contradictions(date: str, items: List[Dict]) -> int:
@@ -136,9 +163,63 @@ def load_contradictions(date: Optional[str] = None,
             "signal": r.get("signal"),
             "resolved": bool(r.get("resolved")),
             "resolved_note": r.get("resolved_note"),
+            "validated": bool(r.get("validated")),
+            "validation_date": r.get("validation_date"),
+            "predicted_direction": r.get("predicted_direction"),
+            "actual_change": r.get("actual_change"),
+            "validation_result": r.get("validation_result"),
             "created_at": r.get("created_at"),
         })
     return out
+
+
+def load_unvalidated_before(before_date: str) -> List[Dict]:
+    """读取某日期之前所有未验证的矛盾（验证闭环用）。"""
+    ensure_tables()
+    rows = db.fetch(
+        "SELECT * FROM contradictions WHERE date < %s AND validated = 0 "
+        "ORDER BY date ASC", (before_date,))
+    out = []
+    for r in rows or []:
+        out.append({
+            "id": r.get("id"), "date": r.get("date"), "level": r.get("level"),
+            "type": r.get("type"), "title": r.get("title"),
+        })
+    return out
+
+
+def update_validation(cid: int, predicted_direction: str, actual_change: float,
+                      result: str, validation_date: str) -> bool:
+    """回写矛盾验证结果（预判方向 / 次日实际涨跌 / 正确与否）。"""
+    ensure_tables()
+    return db.execute(
+        "UPDATE contradictions SET validated = 1, predicted_direction = %s, "
+        "actual_change = %s, validation_result = %s, validation_date = %s "
+        "WHERE id = %s",
+        (predicted_direction, actual_change, result, validation_date, cid)) > 0
+
+
+def validation_stats(days: int = 30) -> Dict:
+    """验证闭环统计：整体 + 分类型的预判准确率。"""
+    ensure_tables()
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = db.fetch(
+        "SELECT type, validation_result, COUNT(*) AS n FROM contradictions "
+        "WHERE validated = 1 AND validation_date >= %s "
+        "GROUP BY type, validation_result", (cutoff,))
+    by_type = {}
+    total = {"correct": 0, "wrong": 0, "flat": 0}
+    for r in rows or []:
+        t = by_type.setdefault(r["type"], {"correct": 0, "wrong": 0, "flat": 0})
+        t[r["validation_result"]] = t.get(r["validation_result"], 0) + r["n"]
+        total[r["validation_result"]] = total.get(r["validation_result"], 0) + r["n"]
+    def _acc(d):
+        n = d["correct"] + d["wrong"] + d["flat"]
+        return round(d["correct"] / n * 100, 1) if n else None, n
+    for t in by_type.values():
+        t["accuracy"], t["n"] = _acc(t)
+    acc, n = _acc(total)
+    return {"overall": {**total, "accuracy": acc, "n": n}, "by_type": by_type}
 
 
 def load_latest_date() -> Optional[str]:

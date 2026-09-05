@@ -643,7 +643,12 @@ L2_SCANNERS = [
     scan_index_vs_mainflow,
 ]
 
-ALL_SCANNERS = L1_SCANNERS + L2_SCANNERS
+# L3 信息断层（财报季/结构性风险，低频更新，扫描时随全量一起跑）
+from app.contradictions.l3_scanner import scan_financial_gap  # noqa: E402
+
+L3_SCANNERS = [scan_financial_gap]
+
+ALL_SCANNERS = L1_SCANNERS + L2_SCANNERS + L3_SCANNERS
 
 
 def scan_all(date: Optional[str] = None, level: Optional[str] = None) -> List[Dict]:
@@ -657,6 +662,8 @@ def scan_all(date: Optional[str] = None, level: Optional[str] = None) -> List[Di
         scanners = L1_SCANNERS
     elif level == "L2":
         scanners = L2_SCANNERS
+    elif level == "L3":
+        scanners = L3_SCANNERS
 
     results = []
     for fn in scanners:

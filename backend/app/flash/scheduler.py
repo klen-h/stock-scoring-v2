@@ -365,6 +365,15 @@ async def contradiction_scan_loop():
                 store.mark_schedule_done("contradiction_scan")
                 status["last_contradiction_scan"] = rules.beijing_now().isoformat()
                 print(f"[scheduler] 矛盾扫描完成: {target} 识别 {len(items)} 条，保存 {saved}")
+                # ★ 矛盾验证闭环（先知雷达学习闭环）：扫描后用最新行情验证
+                #   历史矛盾的方向预判（T+1 上证涨跌），回写准确率
+                try:
+                    from app.contradictions.validator import validate_yesterday
+                    vstats = await asyncio.to_thread(validate_yesterday)
+                    if vstats.get("validated"):
+                        print(f"[scheduler] 矛盾验证闭环: {vstats}")
+                except Exception as ve:
+                    print(f"[scheduler] 矛盾验证失败（不影响扫描）: {ve}")
             except Exception as e:
                 print(f"[scheduler] 矛盾扫描失败: {e}")
                 _notify_failure("矛盾扫描", str(e))
@@ -542,6 +551,40 @@ async def lhb_refresh_loop():
             except Exception as e:
                 print(f"[scheduler] 龙虎榜同步失败: {e}")
                 _notify_failure("龙虎榜同步", str(e))
+        await asyncio.sleep(600)
+
+
+# ── zzshare 财报扩展因子每周同步（L3 财报断层扫描数据源，周一 04:30）──
+ZZ_FINANCE_SYNC_WINDOW = (270, 1440)   # 北京时间 04:30-23:59
+
+
+async def zz_finance_sync_loop():
+    """每周同步一次 zzshare 财报扩展（现金流/资产负债/扣非）→ stock_finance_zz。
+    L3 财报断层扫描（contradictions/l3_scanner）的数据底座；季度数据周更保活。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "zz_finance_sync"
+        if (now.weekday() == 0 and ZZ_FINANCE_SYNC_WINDOW[0] <= t < ZZ_FINANCE_SYNC_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            try:
+                from app.zzshare_finance import sync_latest_finance
+                from app.database import db as _db
+
+                def _sync():
+                    rows = _db.fetch(
+                        "SELECT DISTINCT code FROM stock_finance "
+                        "WHERE length(code) = 6 AND substr(code, 1, 1) IN ('0', '3', '6') "
+                        "ORDER BY code")
+                    return sync_latest_finance([r["code"] for r in (rows or [])])
+
+                stats = await asyncio.to_thread(_sync)
+                store.mark_schedule_done(task_key)
+                status["last_zz_finance_sync"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] zzshare 财报扩展同步完成: {stats}")
+            except Exception as e:
+                print(f"[scheduler] zzshare 财报同步失败: {e}")
+                _notify_failure("zzshare 财报同步", str(e))
         await asyncio.sleep(600)
 
 
@@ -1421,6 +1464,7 @@ async def start():
              asyncio.create_task(mainflow_refresh_loop()),
              asyncio.create_task(mainforce_state_refresh_loop()),
              asyncio.create_task(lhb_refresh_loop()),
+             asyncio.create_task(zz_finance_sync_loop()),
              # 回测预热 = 3 个策略全量回测，要大量读 backtest_prices（71MB 表），
              # 是 Supabase egress 大头之一 → 同受 ENABLE_HEAVY_JOBS 管控
              # （此前 (1605,2359) 笔误导致它从未跑过，等于一直处于关闭状态）

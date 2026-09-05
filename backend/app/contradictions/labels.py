@@ -27,6 +27,7 @@ TYPE_CN = {
     "index_vs_mainflow": "指数与主力资金流背离",
     "calendar_surprise": "宏观数据预期差",
     "today_calendar_focus": "今日重点关注数据",
+    "financial_report_gap": "财报断层（盈利质量）",
 }
 
 # evidence.metrics 键 → 中文标签
@@ -65,6 +66,13 @@ METRIC_CN = {
     "surprise_count": "超预期数据个数",
     "focus_count": "重点关注个数",
     "top_events": "重点事件",
+    # L3 财报断层
+    "checked_count": "检查公司数",
+    "ocf_ni_gap_count": "净现比断层只数",
+    "ocf_ni_severe_count": "大断层只数(<0.3)",
+    "ocf_ni_gap_samples": "断层样本",
+    "goodwill_risk_count": "商誉悬顶只数",
+    "goodwill_risk_samples": "商誉悬顶样本",
 }
 
 

@@ -68,18 +68,25 @@
 
 ---
 
-## 五、Phase 2：前端消费 pack（下周，P1）
+## 五、Phase 2：前端消费 pack（✅ 2026-09-06 完成，用户已验收）
 
 > 目标：两个用户切「本地计算」后，Render 的重接口调用频次大降。
 
-- [ ] IndexedDB 新增 indicators store；下载 indicators-pack.json.gz
-- [ ] Worker（indicatorWorker.js）优先读 _series（500 天口径），
-      缺失回退 150 根现算（现状兜底）
-- [ ] 个股详情页 K 线改读 IndexedDB（消除 /api/stock/kline 并发爆发——OOM 触发点）
-- [ ] 评分口径对齐验证：同一只股票，前端分数 vs 后端分数差 <1 分
-      （pack 指标成为两端的统一事实源）
+- [x] IndexedDB 新增 indicators store（DB v2 无损升级）；下载 indicators-pack.json.gz
+      （ensureIndicatorsPack 与 K 线包日期对齐自动拉取；localStorage
+      'kline_data_base_url' 可覆盖包地址，本地验收/私有部署用）
+- [x] 评分优先读 _series（与后端 indicator_cache 同一引擎预计算的事实源），
+      缺失/盘中不新鲜时回退 150 根现算（seriesIsFresh 与 appendTodayBar 互为反证）
+- [x] 个股详情页 K 线/指标叠加/评分全本地（loadLocalKline/computeLocalScore），
+      消除 /api/stock/kline 与 /api/score/{code} 并发爆发（OOM 触发点）；
+      本地不可用自动回退后端接口
+- [x] 评分口径对齐验证：**同一份 _series 两端打分，25 只市值前排股票 diff 全部
+      = 0.000**（scripts/verify_pack_score_parity.py + pack_score_parity.mjs）
+- [x] 附带修复：DecompressionStream 在部分内嵌浏览器构造器存在但流读取必抛
+      （"Failed to fetch"）→ klineDB 解压加 pako 纯 JS 降级
 
-**验收标准**：本地模式下，详情页/排行榜零后端重接口调用。
+**验收标准**：本地模式下，详情页/排行榜零后端重接口调用。✅ 用户已验收。
+**回滚**：本地模式是用户开关（localStorage score_use_frontend_mode），关掉即回后端。
 
 ---
 
