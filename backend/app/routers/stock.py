@@ -25,20 +25,24 @@ from app.tencent import get_stock, get_kline, search_stocks, _CODE_TO_PREFIX, _c
 router = APIRouter()
 
 
+# ★ 2026-09-06：以下接口全部是同步阻塞调用（腾讯 HTTP / numpy 重算），
+#   原来声明成 async def 会直接占住事件循环——一个腾讯慢请求（实测可 90s）
+#   把整个进程卡死，其它并发请求（含 preflight）全部 502，前端表现为
+#   "CORS blocked"。改成普通 def，FastAPI 自动放线程池执行，事件循环不再被卡。
 @router.get("/kline/{symbol}")
-async def stock_kline(symbol: str, period: str = "day"):
+def stock_kline(symbol: str, period: str = "day"):
     """个股 K线。symbol=股票代码，period=day/week/month"""
     return get_kline(symbol, period=period)
 
 
 @router.get("/realtime/{symbol}")
-async def stock_realtime(symbol: str):
+def stock_realtime(symbol: str):
     """个股实时行情"""
     return get_stock(symbol)
 
 
 @router.get("/search")
-async def stock_search(keyword: str = Query(default="")):
+def stock_search(keyword: str = Query(default="")):
     """
     股票搜索。
     Query(default="") 表示这是 URL 查询参数（?keyword=平安），默认空字符串。
@@ -49,7 +53,7 @@ async def stock_search(keyword: str = Query(default="")):
 
 
 @router.get("/technical/{symbol}")
-async def stock_technical(symbol: str, period: str = "day"):
+def stock_technical(symbol: str, period: str = "day"):
     """
     ★ 技术指标计算接口：MA / EMA / MACD / RSI / KDJ / BOLL
 
@@ -213,7 +217,7 @@ async def stock_technical(symbol: str, period: str = "day"):
 
 
 @router.get("/fundamental/{symbol}")
-async def stock_fundamental(symbol: str):
+def stock_fundamental(symbol: str):
     """
     基本面数据（从实时行情里提取估值指标）。
 
@@ -239,14 +243,14 @@ async def stock_fundamental(symbol: str):
 # ── 财务数据（成长/质量因子数据源；东财 F10，季度更新，本地库查询）──
 
 @router.get("/finance/{symbol}/history")
-async def stock_finance_history(symbol: str, limit: int = 12):
+def stock_finance_history(symbol: str, limit: int = 12):
     """个股财报历史序列（最新在前）。看营收/利润增速、ROE 的趋势变化。"""
     from app.finance import get_history
     return {"code": symbol, "history": get_history(symbol, min(max(limit, 1), 40))}
 
 
 @router.get("/finance/{symbol}")
-async def stock_finance(symbol: str, report_date: str = "", asof: str = ""):
+def stock_finance(symbol: str, report_date: str = "", asof: str = ""):
     """
     个股财报：营收/利润增速、ROE、负债率、毛利率、净利率等。
       - 默认：最新一期
@@ -262,7 +266,7 @@ async def stock_finance(symbol: str, report_date: str = "", asof: str = ""):
 
 
 @router.get("/finance-stats")
-async def finance_stats():
+def finance_stats():
     """财务数据表概况：覆盖股票数 / 各报告期条数 / 字段缺失率。"""
     from app.finance import stats
     return stats()
@@ -279,7 +283,7 @@ def finance_refresh(reports: int = 2):
 
 
 @router.post("/finance/batch")
-async def finance_batch(codes: list = Body(...)):
+def finance_batch(codes: list = Body(...)):
     """
     批量查财报（1 次 SQL + 30 分钟进程缓存），返回 {code: 财报行}。
 
@@ -301,7 +305,7 @@ _news_history_cache = {}
 # 注意：/news/{symbol}/history 必须定义在 /news/{symbol} 之前，
 # 否则 "history" 会被 {symbol} 捕获。
 @router.get("/news/{symbol}/history")
-async def stock_news_history(symbol: str, days: int = 30):
+def stock_news_history(symbol: str, days: int = 30):
     """消息分历史快照（每日盘后落库，供详情页走势图与阶段 3 回测）。
     无数据返回空列表（首次快照在下一个工作日 15:20 后生成）。缓存 300s。"""
     key = f"{symbol}:{days}"
@@ -322,7 +326,7 @@ async def stock_news_history(symbol: str, days: int = 30):
 
 
 @router.get("/news/{symbol}")
-async def stock_news(symbol: str):
+def stock_news(symbol: str):
     """
     消息面：个股新闻情绪分 + 相关快讯列表（阶段 1：东财快讯 + 关键词规则）。
     独立维度，不进入综合总分。结果缓存 60s。
@@ -346,7 +350,7 @@ async def stock_news(symbol: str):
 
 
 @router.get("/anomalies")
-async def stock_anomalies(
+def stock_anomalies(
     watch_codes: str = Query(default="", description="逗号分隔的关注代码（优先检测）"),
 ):
     """

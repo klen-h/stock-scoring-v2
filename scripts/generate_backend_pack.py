@@ -2,28 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-【文件作用】生成"后端数据包"（backend-pack，供 DATA_SOURCE=pack/local 读取层用）
+【文件作用】生成"后端数据包"backend-pack.db.gz（SQLite，DATA_SOURCE=pack/local 用）
 ================================================================================
 
-与 generate-kline-pack.py（前端 IndexedDB 用）并行的另一条分发线：
-后端不再读 Supabase 的 kline_cache/indicator_cache/backtest_prices（egress 大头），
-改读本脚本产出的数据包。
+为什么是 SQLite 而不是 JSON：
+  45MB 的 JSON 在 Python 里解析成 dict 后常驻 ~150-200MB（Render 512MB 直接 OOM）。
+  SQLite 落在磁盘上按需查单只（<5ms），常驻内存 ≈0。前端不读这个文件
+  （前端另有 indicators-pack.json.gz + kline-pack）。
 
-包内容：
-  codes      {code: {name, market_cap}}
-  klines     {code: [[date, o, h, l, c, v], ...]}  ← 腾讯 qfq 日线，≤500 根
-  indicators {code: {ma5..., "_series": [...]}}   ← 复用后端 compute_latest_indicators
-  date       数据日期
-
-股票池（取并集）：
-  1. Supabase kline_cache 现有代码清单（只读 code 列 ~11KB，egress 可忽略；
-     需要 DATABASE_URL，读不到就跳过）
-  2. 实时行情按市值前 800 只
+三张表：
+  klines      (code, date, open, high, low, close, volume)  PK(code, date)
+  indicators  (code PRIMARY KEY, json)                      ← 含 _series
+  codes       (code PRIMARY KEY, name, market_cap)
+  meta        (key PRIMARY KEY, value)                      ← pack_date
 
 运行（GitHub Actions 的 kline-data 工作流调用；也可本地手动）：
   python scripts/generate_backend_pack.py --output-dir ./data/kline
-产出：
-  backend-pack-YYYYMMDD.json.gz + backend-pack-latest.json.gz（随 Pages 发布）
+产出（只发 latest，避免历史版本在 Pages 上堆积）：
+  backend-pack.db.gz + indicators-pack.json.gz
 ================================================================================
 """
 
@@ -32,6 +28,7 @@ import gzip
 import importlib.util
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime
 
@@ -73,13 +70,50 @@ def supabase_kline_codes() -> list:
         return []
 
 
+def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict) -> None:
+    """K 线写 SQLite（行式，PK(code,date) 自带 code 索引）。"""
+    if os.path.exists(path):
+        os.remove(path)
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE klines (
+            code TEXT NOT NULL, date TEXT NOT NULL,
+            open REAL, high REAL, low REAL, close REAL, volume REAL,
+            PRIMARY KEY (code, date)
+        )""")
+    conn.execute("CREATE TABLE codes (code TEXT PRIMARY KEY, name TEXT, market_cap REAL)")
+    conn.execute("CREATE TABLE indicators (code TEXT PRIMARY KEY, json TEXT)")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    rows = []
+    for code, bars in klines_raw.items():
+        for b in bars:
+            rows.append((code, b[0], b[1], b[2], b[3], b[4], b[5]))
+    conn.executemany("INSERT OR REPLACE INTO klines VALUES (?,?,?,?,?,?,?)", rows)
+    conn.executemany(
+        "INSERT OR REPLACE INTO codes VALUES (?,?,?)",
+        [(c, (quotes.get(c) or {}).get("name", ""),
+          (quotes.get(c) or {}).get("market_cap", 0) or 0) for c in klines_raw])
+    conn.execute("INSERT OR REPLACE INTO meta VALUES ('pack_date', ?)", (date_str,))
+    conn.commit()
+    conn.close()
+    print(f"  SQLite: {path} ({os.path.getsize(path) / 1048576:.1f} MB)")
+
+
+def write_indicators_pack(path: str, date_str: str, ind_out: dict) -> None:
+    """前端评分 Worker 用的小包（只含指标，~几 MB）。"""
+    pack = {"version": 1, "date": date_str, "indicators": ind_out}
+    with gzip.open(path, "wt", encoding="utf-8") as f:
+        json.dump(pack, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"  指标包: {path} ({os.path.getsize(path) / 1048576:.1f} MB)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="./data/kline")
     ap.add_argument("--cap-top", type=int, default=CAP_TOP_N)
     args = ap.parse_args()
 
-    print("=== 后端数据包生成（backend-pack）===")
+    print("=== 后端数据包生成（backend-pack.db，SQLite）===")
     gkp = load_gkp()
 
     # 1. 实时行情（拿名称/市值 + 市值池）
@@ -107,67 +141,47 @@ def main():
         print(f"  ⚠️ 指标引擎不可用（{e}），包内将不含 indicators")
         compute_latest_indicators = None
 
-    codes_meta, klines_out, ind_out = {}, {}, {}
-    for code in pool:
-        bars = klines_raw.get(code)
-        if not bars or len(bars) < 30:
-            continue
-        q = quotes.get(code) or {}
-        codes_meta[code] = {"name": q.get("name", ""),
-                            "market_cap": q.get("market_cap", 0) or 0}
-        klines_out[code] = bars
-        if compute_latest_indicators:
+    ind_out = {}
+    if compute_latest_indicators:
+        for i, code in enumerate(klines_raw):
             try:
                 dict_bars = [{"date": b[0], "open": b[1], "high": b[2],
                               "low": b[3], "close": b[4], "volume": b[5]}
-                             for b in bars]
+                             for b in klines_raw[code]]
                 ind = compute_latest_indicators(dict_bars)
                 if ind and ind.get("ma5") is not None:
                     ind_out[code] = ind
             except Exception as e:
                 print(f"  指标计算失败 {code}: {e}")
+            if (i + 1) % 200 == 0:
+                print(f"  指标进度: {i + 1}/{len(klines_raw)}")
 
-    # 完整性护栏 #2：指标计算启用却一只都没算出来 → 中止（发出无指标包 = 静默降级）
-    if compute_latest_indicators and klines_out and not ind_out:
+    # 完整性护栏：K 线不足池的 80% 或指标启用却 0 只成功 → 报错中止（不发出残缺包）
+    if len(klines_raw) < len(pool) * 0.8:
+        print(f"::error::K线仅拉到 {len(klines_raw)}/{len(pool)} 只（<80%）"
+              f"—— 可能被腾讯限流，中止不发包")
+        sys.exit(5)
+    if compute_latest_indicators and klines_raw and not ind_out:
         print("::error::K线拉取成功但指标计算 0 只成功 —— 通常是依赖缺失，"
               "检查工作流 pip install（需含 fastapi 等后端依赖）")
         sys.exit(6)
 
-    _write_packs(args.output_dir, codes_meta, klines_out, ind_out)
-    print(f"\n=== 完成: K线 {len(klines_out)} 只 / 指标 {len(ind_out)} 只 ===")
-
-
-def _write_packs(output_dir, codes_meta, klines_out, ind_out):
     date_str = datetime.now().strftime("%Y%m%d")
-    os.makedirs(output_dir, exist_ok=True)
-    pack = {"version": 1, "date": date_str,
-            "codes": codes_meta, "klines": klines_out, "indicators": ind_out}
+    os.makedirs(args.output_dir, exist_ok=True)
+    db_path = os.path.join(args.output_dir, "backend-pack.db")
+    write_sqlite(db_path, date_str, quotes, klines_raw)
 
-    dated = os.path.join(output_dir, f"backend-pack-{date_str}.json.gz")
-    with gzip.open(dated, "wt", encoding="utf-8") as f:
-        json.dump(pack, f, ensure_ascii=False, separators=(",", ":"))
-    print(f"  完整包: {dated} ({os.path.getsize(dated) / 1048576:.1f} MB)")
+    gz_path = db_path + ".gz"
+    with open(db_path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+        f_out.write(f_in.read())
+    os.remove(db_path)
+    print(f"  压缩包: {gz_path} ({os.path.getsize(gz_path) / 1048576:.1f} MB)")
 
-    latest = os.path.join(output_dir, "backend-pack-latest.json.gz")
-    if os.path.exists(latest):
-        os.remove(latest)
-    try:
-        os.symlink(os.path.basename(dated), latest)
-    except OSError:
-        import shutil
-        shutil.copy2(dated, latest)
-
-    # 完整性护栏（与 generate-kline-pack 同思路）：本次显著少于上次时醒目警告
-    try:
-        with gzip.open(latest, "rt", encoding="utf-8") as f:
-            prev_n = len(json.load(f).get("klines") or {})
-        cur_n = len(klines_out)
-        if prev_n and cur_n < prev_n * 0.8:
-            print(f"\n  ⚠️ 警告: 本次仅 {cur_n} 只，上次 {prev_n} 只"
-                  f"（{cur_n / prev_n:.0%}）—— 可能被腾讯限流")
-    except Exception:
-        pass
+    write_indicators_pack(os.path.join(args.output_dir, "indicators-pack.json.gz"),
+                          date_str, ind_out)
+    print(f"\n=== 完成: K线 {len(klines_raw)} 只 / 指标 {len(ind_out)} 只 ===")
 
 
 if __name__ == "__main__":
     main()
+

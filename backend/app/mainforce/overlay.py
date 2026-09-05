@@ -62,6 +62,12 @@ def mainforce_overlay(bars: list, flow_rows: list = None,
       active: bool,             # 开关+闸门是否放行乘数
     }
     """
+    # ★ CPU/内存护栏：筹码/阶段计算只需 ~120-260 根（chip warmup 60 / MA120 量 /
+    #   ret60 / phase ≥70），更深的 K 线对结果无增益。
+    #   Render 0.1CPU 上曾因「500 根 × 150 档滚动 + 详情页并发」把实例打挂（502）。
+    if bars and len(bars) > 260:
+        bars = bars[-260:]
+
     chip = chip_metrics(bars, float_shares=float_shares)
     if not chip:
         return None

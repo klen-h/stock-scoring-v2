@@ -115,7 +115,7 @@ def _level_advisory(t: float):
 
 
 @router.get("/overview")
-async def market_overview(background_tasks: BackgroundTasks):
+def market_overview(background_tasks: BackgroundTasks):
     """
     市场概览：返回大盘指数 + 全市场涨跌统计。
 
@@ -268,7 +268,7 @@ def market_temperature():
 
 
 @router.get("/realtime")
-async def market_realtime(
+def market_realtime(
     page: int = 1, size: int = 50,
     sort_by: str = "change_pct", order: str = "desc"
 ):
@@ -320,7 +320,7 @@ async def market_realtime(
 
 
 @router.get("/index-kline/{symbol}")
-async def index_kline(symbol: str, period: str = "day"):
+def index_kline(symbol: str, period: str = "day"):
     """
     大盘指数 K线。
     symbol: 指数代码如 "000001"（上证）。路径参数用 {symbol} 占位。
@@ -329,7 +329,7 @@ async def index_kline(symbol: str, period: str = "day"):
 
 
 @router.get("/refresh-status")
-async def refresh_status():
+def refresh_status():
     """查询缓存刷新状态（前端轮询这个接口判断数据是否就绪）"""
     stocks = _cache.get("stocks", {})
     last = _cache.get("last_update", 0)
@@ -342,7 +342,7 @@ async def refresh_status():
 
 
 @router.get("/trigger-refresh")
-async def trigger_refresh(background_tasks: BackgroundTasks):
+def trigger_refresh(background_tasks: BackgroundTasks):
     """手动触发缓存刷新（force=True，忽略 60 秒冷却）"""
     background_tasks.add_task(refresh_all_stocks, force=True)
     return {"status": "refreshing"}

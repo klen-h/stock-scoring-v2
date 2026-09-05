@@ -356,7 +356,7 @@ async def _batch_with_precise_top(
 
 
 @router.get("/batch-prices")
-async def batch_prices(codes: str = Query(..., description="逗号分隔的股票代码")):
+def batch_prices(codes: str = Query(..., description="逗号分隔的股票代码")):
     """
     批量获取股票当前价格（用于前端快照/胜率回查）。
     返回：{code, name, price, change_pct} 列表。
@@ -536,8 +536,9 @@ async def backtest(
 
 
 @router.get("/rank-history/{code}")
-async def rank_history(code: str, days: int = Query(default=30, ge=7, le=90)):
-    """单股历史评分 vs 价格 + 未来5日收益（评分有效性个股级验证）。"""
+def rank_history(code: str, days: int = Query(default=30, ge=7, le=90)):
+    """单股历史评分 vs 价格 + 未来5日收益（评分有效性个股级验证）。
+    ★ 同步 DB 查询（跨区 RTT），必须跑线程池，不能占事件循环。"""
     from app.scoring.ranking_history import get_rank_history
     return get_rank_history(code, days=days)
 
@@ -548,7 +549,7 @@ _BUCKET_CACHE_TTL = 600
 
 
 @router.get("/bucket-stats")
-async def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
+def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     """
     评分分桶 × 持有期胜率统计（全局验证"评分越高，未来收益越好吗"）。
 
@@ -571,7 +572,7 @@ async def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
 
 
 @router.get("/snapshots")
-async def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
+def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
     """最近 N 天评分排行快照（含维度分/快照价/现价收益），供前端「胜率回查」面板。
     数据由调度器每天盘后自动落库（ranking_history），也可前端手动保存触发。"""
     from app.scoring.ranking_history import get_daily_rankings
@@ -630,7 +631,7 @@ def score_weights():
 
 
 @router.post("/weight-advice")
-async def weight_advice(data: dict):
+def weight_advice(data: dict):
     """
     权重优化分析：根据历史快照+实际收益，分析各维度预测力，建议权重调整。
 
@@ -764,7 +765,7 @@ async def weight_advice(data: dict):
 
 
 @router.get("/{symbol}")
-async def score_single(symbol: str):
+def score_single(symbol: str):
     """
     ★ 单只股票综合评分（最完整的评分，前端"个股详情页"调用）。
 
@@ -774,6 +775,10 @@ async def score_single(symbol: str):
       3. 组装基本面 fundamental
       4. 喂给 engine.score_stock() 算综合分
       5. 返回完整评分结果（含三维度明细、加分扣分因素、摘要）
+
+    ★ 2026-09-06：函数体无任何 await 却声明 async，会在事件循环上直接执行
+      同步的腾讯拉取/DB 查询/numpy 重算，把整个进程卡死（详情页并发请求
+      全部 502 → 前端误报 CORS）。改为普通 def，FastAPI 自动放线程池。
     """
     _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
     # 1. 实时行情
@@ -1395,7 +1400,7 @@ def _calc_technical_fast(klines: list) -> list:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/ranking-persistence")
-async def ranking_persistence(codes: list = Body(...)):
+def ranking_persistence(codes: list = Body(...)):
     """
     查询多只股票的排行榜连续上榜天数 + 可信度。
 
@@ -1414,7 +1419,7 @@ async def ranking_persistence(codes: list = Body(...)):
 
 
 @router.post("/ranking-record")
-async def ranking_record(stocks: list = Body(...)):
+def ranking_record(stocks: list = Body(...)):
     """
     手动记录当日排行榜（供调试或定时任务调用）。
     
@@ -1430,7 +1435,7 @@ async def ranking_record(stocks: list = Body(...)):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/kline-cache/status")
-async def kline_cache_status():
+def kline_cache_status():
     """
     获取K线数据库缓存状态。
     
@@ -1441,7 +1446,7 @@ async def kline_cache_status():
 
 
 @router.post("/kline-cache/refresh")
-async def kline_cache_refresh(background_tasks: BackgroundTasks):
+def kline_cache_refresh(background_tasks: BackgroundTasks):
     """
     触发K线缓存刷新（后台执行）。
     
@@ -1467,7 +1472,7 @@ def _do_refresh_kline_cache():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.get("/indicator-cache/status")
-async def indicator_cache_status():
+def indicator_cache_status():
     """
     获取指标数据库缓存状态。
     
@@ -1478,7 +1483,7 @@ async def indicator_cache_status():
 
 
 @router.post("/indicator-cache/refresh")
-async def indicator_cache_refresh(background_tasks: BackgroundTasks):
+def indicator_cache_refresh(background_tasks: BackgroundTasks):
     """
     触发指标缓存刷新（后台执行）。
     
@@ -1500,7 +1505,7 @@ def _do_refresh_indicator_cache():
 
 
 @router.post("/indicator-cache/incremental")
-async def indicator_incremental_update(data: dict = Body(...)):
+def indicator_incremental_update(data: dict = Body(...)):
     """
     增量更新指标（盘中只拉最新价，无需重算 500 根 K 线）。
     

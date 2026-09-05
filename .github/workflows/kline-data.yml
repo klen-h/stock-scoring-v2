@@ -22,7 +22,7 @@ concurrency:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120   # 前端包(3000只×150天) + 后端包(1394只×500天) 串行，放宽到 2h
     
     steps:
       - name: Checkout repository
