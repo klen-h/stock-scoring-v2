@@ -47,11 +47,13 @@ STRATEGY_STATS = {
 
 
 def _recompute_whitelist() -> dict:
-    """从 strategy_results 重放撮合，计算各战法近期胜率（同步阻塞 ~10s，含 DB）。"""
+    """从 strategy_results 重放撮合，计算各战法近期胜率（同步阻塞 ~30s，含 DB）。
+    ★ 与部署管线同口径：主力过滤闸门（剔高位+拉升段）+ 退出策略 v2。"""
     import json as _json
-    import time as _t
     from app.database import db
     from app.backtest import engine as _bt_engine
+    from app.backtest.strategies import apply_exit_policy, exit_policy
+    from app.mainforce.gate import gate_states_for_signals
 
     rows = db.fetch("SELECT strategy_name, scan_date, results_json FROM strategy_results "
                     "WHERE count > 0 ORDER BY scan_date ASC")
@@ -84,8 +86,30 @@ def _recompute_whitelist() -> dict:
     # 复用 strategies 的价格加载（含 6h 进程缓存），避免重复传输
     from app.backtest.strategies import _load_prices_map
     prices_map = _load_prices_map(codes)
-    skipped = []
-    trades = _bt_engine.match_signals(signals, prices_map, skipped_out=skipped)
+
+    # 主力过滤闸门（信号日当日状态，无前视）
+    if exit_policy() == "v2":
+        try:
+            states = gate_states_for_signals(signals)
+            signals = [s for s in signals
+                       if (states.get((s["code"], s["date"])) or {}).get("ok", True)]
+        except Exception as e:
+            print(f"[recommendation] 闸门状态计算失败（不过滤）: {e}")
+
+    # 退出策略 v2（止损基准 = 信号日收盘）
+    applied = []
+    for s in signals:
+        base = None
+        for b in prices_map.get(s["code"]) or []:
+            if b["date"] <= s["date"]:
+                base = b["close"]
+            else:
+                break
+        applied.append(apply_exit_policy(s, base_close=base))
+    signals = applied
+
+    sk = []
+    trades = _bt_engine.match_signals(signals, prices_map, skipped_out=sk)
     by = {}
     for t in trades:
         by.setdefault(t["strategy_en"] or t["strategy"], []).append(t)
@@ -139,6 +163,14 @@ def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -
     reason_lines = [f"- {seg.strip()}" for seg in reason.split("；") if seg.strip()]
     sig_date = signal.get("signal_date") or ""
     sig_date = f"{sig_date}收盘" if sig_date else "信号日收盘"
+    # 退出策略提示：v2 = 持有3日/-7%止损/不设固定目标（网格扫描定版）
+    exec_hint = "次日开盘按实际价介入，参考价仅作锚点；高开过多（>3%）建议放弃或减仓"
+    try:
+        from app.backtest.strategies import exit_policy
+        if exit_policy() == "v2":
+            exec_hint += "；离场按 v2 策略：持有 3 个交易日或 -7% 硬止损，不挂固定目标价"
+    except Exception:
+        pass
     lines = [
         f"## 🎯 战法买入信号 · {zh}",
         f"📈 **{name}({code})**  参考介入 **{entry:.2f}**（{sig_date}）",
@@ -147,7 +179,7 @@ def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -
         "📊 **买入逻辑：**",
         *reason_lines,
         "",
-        "📌 **执行提示：** 次日开盘按实际价介入，参考价仅作锚点；高开过多（>3%）建议放弃或减仓；止损以形态位为准",
+        f"📌 **执行提示：** {exec_hint}",
         "",
         f"⭐ 置信度：{conf_map.get(conf, conf)}",
     ]

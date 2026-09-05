@@ -572,7 +572,28 @@ def scan_all_strategies() -> dict:
             stats["signals"] += len(results)
             print(f"[scheduler] 战法 {key} 扫描完成: {len(results)} 只")
             if key in whitelist and results:
-                push_pool[key] = results
+                # ★ 主力过滤闸门（历史重放验证：剔高位+拉升段 胜率 48.1→50.3%、
+                #   均收益 +0.07→+0.44%、盈亏比 1.05→1.36）。信号照常落库，
+                #   仅推送路径过滤；开关 STRATEGY_MAINFORCE_GATE（默认 on）。
+                try:
+                    from app.mainforce.gate import strategy_gate
+                    kept, blocked = [], 0
+                    for r in results:
+                        g = strategy_gate(str(r.get("code") or ""),
+                                          r.get("name") or "")
+                        if g["ok"]:
+                            kept.append(r)
+                        else:
+                            blocked += 1
+                    if blocked:
+                        stats["gate_blocked"] = stats.get("gate_blocked", 0) + blocked
+                        print(f"[scheduler] 战法 {key} 主力过滤: 拦 {blocked}/{len(results)}"
+                              f"（高位/拉升段不放行）")
+                except Exception as e:
+                    kept = results
+                    print(f"[scheduler] 主力过滤异常（放行）: {e}")
+                if kept:
+                    push_pool[key] = kept
         except Exception as e:
             stats["failed"] += 1
             print(f"[scheduler] 战法 {key} 扫描失败: {e}")

@@ -47,6 +47,31 @@ MAX_PER_STRATEGY = 5            # 单战法最多入池数（避免一个战法�
 MAX_PENDING = 20                # 待确认池上限（按置信度截断）
 MAX_HOLD_DAYS = 20              # 超期强平天数
 
+
+def exit_policy_v2() -> bool:
+    """退出策略 v2 是否生效（与 backtest.strategies.exit_policy 同一开关）。"""
+    from app.backtest.strategies import exit_policy
+    return exit_policy() == "v2"
+
+
+def _max_hold() -> int:
+    """超期强平天数：v2 策略持有 3 个交易日（网格扫描定版），v1 用原 20 天。"""
+    return 3 if exit_policy_v2() else MAX_HOLD_DAYS
+
+
+def _limit_down_locked(bars: list, j: int) -> bool:
+    """bars[j] 是否跌停一字（全天封死跌停，卖单无法成交）。
+    判定：high==low 且收盘较前一日跌幅 ≥9.9%（主板口径，容忍 20cm 板漏判为
+    保守——漏判只是多持有一天，误判会错过真实止损）。"""
+    if j <= 0:
+        return False
+    b, prev = bars[j], bars[j - 1]
+    high, low = float(b.get("high") or 0), float(b.get("low") or 0)
+    close, prev_close = float(b.get("close") or 0), float(prev.get("close") or 0)
+    if high <= 0 or low <= 0 or prev_close <= 0:
+        return False
+    return high == low and (close / prev_close - 1) <= -0.099
+
 # ── 组合风控（PLAN_PAPER_RISK.md；阈值为专家经验初值，risk_events 攒数据后回调）──
 MAX_SAME_INDUSTRY = 2           # G1 同行业持仓上限（行业映射缺失视为独立行业不限制）
 DRAWDOWN_FREEZE_PCT = 5.0       # G2 净值自峰值回撤 ≥ 此值 → 冻结开新仓
@@ -196,7 +221,9 @@ def auto_ingest_signals() -> dict:
     today = _bj_date()
     whitelist = set(get_push_whitelist())
     stats = {"ingested": 0, "skipped_exist": 0, "skipped_low_conf": 0,
-             "skipped_bad_stop": 0, "pool_full": False, "non_whitelist": 0}
+             "skipped_bad_stop": 0, "skipped_mainforce_gate": 0,
+             "pool_full": False, "non_whitelist": 0}
+    gate_on = None
     for cfg in list_strategies():
         strategy_en = cfg["name_en"]        # 注册/查询用英文 key，name 只是显示名
         admitted, reason, _, _ = is_strategy_admitted(strategy_en)
@@ -233,6 +260,18 @@ def auto_ingest_signals() -> dict:
             if ingested_this >= MAX_PER_STRATEGY:
                 stats["skipped_exist"] += 1   # 该战法已达均衡上限，看下一个战法
                 break
+            # ★ 主力过滤闸门（与推送同一口径；历史重放验证见 mainforce/gate.py）：
+            #   高位（price_pos>0.75）或拉升段信号不入模拟池——形态相似但主力阶段不对
+            if gate_on is None:
+                from app.mainforce.gate import _mode_on as _gate_on
+                gate_on = _gate_on()
+            if gate_on:
+                from app.mainforce.gate import strategy_gate
+                g = strategy_gate(str(code), s.get("name") or "")
+                if not g["ok"]:
+                    stats["skipped_mainforce_gate"] += 1
+                    print(f"[paper] {code} {s.get('name')} 主力过滤拦截: {g['reason']}")
+                    continue
             entry = float(s.get("entry_price") or 0)
             stop = float(s.get("stop_loss") or 0)
             if entry > 0 and stop > 0 and stop >= entry:
@@ -247,6 +286,13 @@ def auto_ingest_signals() -> dict:
             if dup or holding:
                 stats["skipped_exist"] += 1
                 continue
+            # ★ 退出策略 v2（backtest.strategies.apply_exit_policy 同口径）：
+            #   止损=介入价×-7%、不设目标价（让利润奔跑，到期/止损离场）。
+            #   到期天数由 track 阶段的 _max_hold() 统一按策略取值。
+            if exit_policy_v2():
+                entry = float(s.get("entry_price") or 0)
+                if entry > 0:
+                    s = dict(s, stop_loss=round(entry * 0.93, 2), target_price=None)
             db.execute(
                 "INSERT INTO paper_positions (code, name, strategy_name, signal_date, entry_price, "
                 "stop_loss, target_price, status, confirmation_json, created_at) "
@@ -627,32 +673,41 @@ def track_positions(use_daily: bool = False) -> dict:
         reason, exit_p = None, 0.0
         if use_daily:
             # 盘后兜底：只用 fill_date 之后的日线（T+1 可卖日），排除买入当日
+            # ★ 跌停一字卖不出（与 engine.match_signals 同口径）：封死跌停的交易日
+            #   卖单排队无法成交 → 跳过该日，顺延到下一个可卖日
             from app.backtest.data import load_prices
             bars = [b for b in (load_prices(h["code"], start=h["fill_date"]) or [])
                     if b["date"] > h["fill_date"]]
             if bars:
-                for b in bars:
+                for j, b in enumerate(bars):
                     low, high = float(b["low"] or 0), float(b["high"] or 0)
                     if stop > 0 and low <= stop:
+                        if _limit_down_locked(bars, j):
+                            continue          # 封死跌停卖不出，看下一日
                         reason, exit_p = "stop_loss", min(float(b["open"] or 0), stop)
                         break
                     if target > 0 and high >= target:
                         reason, exit_p = "take_profit", target
                         break
                 if not reason:
-                    # 语义区分：满 MAX_HOLD_DAYS 真超期 → expire；否则止损止盈均未触发 → timeout_no_trigger
-                    if _hold_days(h["fill_date"], today) >= MAX_HOLD_DAYS:
+                    # 语义区分：满超期天数真超期 → expire；否则止损止盈均未触发 → timeout_no_trigger
+                    if _hold_days(h["fill_date"], today) >= _max_hold():
                         reason, exit_p = "expire", float(bars[-1]["close"] or 0)
                     else:
                         reason, exit_p = "timeout_no_trigger", float(bars[-1]["close"] or 0)
         else:
             q = quotes.get(h["code"]) or {}
             price = float(q.get("price") or 0)
-            if price > 0 and stop > 0 and price <= stop:
+            # 盘中：跌停封死（高=低且价格触及止损）→ 卖单无法成交，顺延下次跟踪
+            locked = (q.get("high") and q.get("low")
+                      and float(q["high"]) == float(q["low"]) and float(q["low"]) > 0)
+            if locked and price > 0 and stop > 0 and price <= stop:
+                print(f"[paper] {h['code']} 跌停封死（{price:.2f}），卖出顺延")
+            elif price > 0 and stop > 0 and price <= stop:
                 reason, exit_p = "stop_loss", price
             elif price > 0 and target > 0 and price >= target:
                 reason, exit_p = "take_profit", price
-            if not reason and _hold_days(h["fill_date"]) >= MAX_HOLD_DAYS:
+            if not reason and _hold_days(h["fill_date"]) >= _max_hold():
                 reason, exit_p = "expire", _latest_close(h["code"])
         if reason:
             _close_position(h, exit_p, reason)

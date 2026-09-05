@@ -16,9 +16,45 @@ from datetime import datetime
 from app.backtest import data, engine
 from app.database import db
 
-WARFARE_HOLD_DAYS = 5      # 战法默认持有交易日数
+WARFARE_HOLD_DAYS = 5      # 战法默认持有交易日数（v1 旧口径）
 MACRO_ETF = "sh510300"     # 宏观方向分回测标的：沪深300ETF
 MACRO_ETF_NAME = "沪深300ETF"
+
+# ================================================================
+#  退出策略 v2（2026-09-05 全信号网格扫描定版，546 信号 × 18 配置）
+#  报告：backtest_reports/strategy_exit_sweep_20260905_0803.md
+#  组合验证（G 过滤 + v2 退出，546→409 信号）：
+#    基线(原参数)          胜率 47.1% / 均收益 -0.039% / 盈亏比 0.97
+#    v2 退出               胜率 51.6% / 均收益 +0.378% / 盈亏比 1.29
+#    G过滤 + v2            胜率 52.3% / 均收益 +0.455% / 盈亏比 1.37
+#  结论：① 超额集中在前 3 日（h3 全面优于 h5/h10）
+#        ② 形态目标价止盈在截断利润（同格对比 tp=none 均更优）
+#        ③ -5% 紧止损在 h5/h10 全格亏损（原参数即亏损主因）
+#  开关：WARFARE_EXIT_POLICY=v1|v2（默认 v2；回退设 v1 即恢复旧口径）
+# ================================================================
+WARFARE_HOLD_DAYS_V2 = 3
+WARFARE_STOP_PCT_V2 = 0.07
+
+
+def exit_policy() -> str:
+    import os
+    return (os.environ.get("WARFARE_EXIT_POLICY") or "v2").strip().lower()
+
+
+def apply_exit_policy(signal: dict, base_close: float = None) -> dict:
+    """按当前退出策略改写信号撮合参数（返回副本；不修改原 dict）。
+    v2：持有 3 日、止损=基准收盘×-7%、不设目标价。
+    基准价优先级：base_close（回放传信号日收盘）> signal.entry_price（实时信号）。"""
+    s = dict(signal)
+    if exit_policy() != "v2":
+        s.setdefault("hold_days", WARFARE_HOLD_DAYS)
+        return s
+    base = base_close or float(s.get("entry_price") or 0)
+    s["hold_days"] = WARFARE_HOLD_DAYS_V2
+    s["stop_loss"] = round(base * (1 - WARFARE_STOP_PCT_V2), 2) if base > 0 \
+        else s.get("stop_loss")
+    s["take_profit"] = None            # 不止盈：让利润奔跑，到期/止损离场
+    return s
 
 # ================================================================
 #  一、LLM 信号绩效追踪（已发生交易统计，与 audit 同口径）
@@ -179,6 +215,18 @@ def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
     """撮合一组战法信号 → 结果 dict。prices_map 可复用（避免重复查库）。"""
     if prices_map is None:
         prices_map = _load_prices_map({s["code"] for s in signals})
+    # ★ 退出策略（v2 需要"信号日收盘"做 -7% 止损基准 → 在有价格处应用）
+    if exit_policy() == "v2":
+        applied = []
+        for s in signals:
+            base = None
+            for b in prices_map.get(s["code"]) or []:
+                if b["date"] <= s["date"]:
+                    base = b["close"]
+                else:
+                    break
+            applied.append(apply_exit_policy(s, base_close=base))
+        signals = applied
     trades = engine.match_signals(signals, prices_map)
     if not trades:
         return {"type": "warfare", "label": label, "trades": [], "metrics": None,
