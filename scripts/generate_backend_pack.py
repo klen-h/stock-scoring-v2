@@ -34,7 +34,10 @@ from datetime import datetime
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(SCRIPTS_DIR, "..", "backend")
-BACKEND_KLINE_COUNT = 500          # 与后端 CACHE_KLINE_COUNT 对齐
+# ★ fetch 的 days 语义是"日历天"（起点 now-(days+30)，再 [-days:] 截交易日根）：
+#   传 500 实际只得到 ~356 根交易日（起点被卡）。1100 日历天 ≈ 750 根交易日，
+#   与 DB backtest_prices 的深度对齐（手册回测 2 年目标 ≈ 500 交易日，留余量）。
+BACKEND_KLINE_CAL_DAYS = 1100
 CAP_TOP_N = 800                    # 市值兜底池上限
 
 sys.path.insert(0, BACKEND_DIR)
@@ -70,8 +73,9 @@ def supabase_kline_codes() -> list:
         return []
 
 
-def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict) -> None:
-    """K 线写 SQLite（行式，PK(code,date) 自带 code 索引）。"""
+def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict,
+                 ind_out: dict) -> None:
+    """K 线 + 指标 + 代码清单写 SQLite（PK 自带索引）。"""
     if os.path.exists(path):
         os.remove(path)
     conn = sqlite3.connect(path)
@@ -93,10 +97,14 @@ def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict) -> No
         "INSERT OR REPLACE INTO codes VALUES (?,?,?)",
         [(c, (quotes.get(c) or {}).get("name", ""),
           (quotes.get(c) or {}).get("market_cap", 0) or 0) for c in klines_raw])
+    conn.executemany(
+        "INSERT OR REPLACE INTO indicators VALUES (?,?)",
+        [(c, json.dumps(ind, ensure_ascii=False)) for c, ind in ind_out.items()])
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('pack_date', ?)", (date_str,))
     conn.commit()
     conn.close()
-    print(f"  SQLite: {path} ({os.path.getsize(path) / 1048576:.1f} MB)")
+    print(f"  SQLite: {path} ({os.path.getsize(path) / 1048576:.1f} MB, "
+          f"bars={len(rows)}, indicators={len(ind_out)})")
 
 
 def write_indicators_pack(path: str, date_str: str, ind_out: dict) -> None:
@@ -129,39 +137,42 @@ def main():
     print(f"\n[2/4] 股票池: Supabase 清单 {len(sb_codes)} ∪ 市值前 "
           f"{len(cap_codes)} = {len(pool)} 只")
 
-    # 3. 拉 500 根日线（复用两轮重试 + WAF 退避）
-    print("\n[3/4] 拉取 K 线（500 根/只，含 WAF 退避）...")
-    klines_raw = gkp.fetch_all_klines(pool, BACKEND_KLINE_COUNT)
+    # 3. 拉 ~750 根交易日线（复用两轮重试 + WAF 退避）
+    #    ★ fetch 的 days 参数是"日历天"（起点 now-(days+30)），500 会被起点卡成
+    #      ~356 根交易日 —— 传 1100 日历天才能拿到与 DB backtest_prices 对齐的
+    #      ~750 根（手册回测 2 年目标 ≈ 500 交易日，留足余量）
+    print("\n[3/4] 拉取 K 线（~750 根/只，含 WAF 退避）...")
+    klines_raw = gkp.fetch_all_klines(pool, BACKEND_KLINE_CAL_DAYS)
 
     # 4. 计算指标（复用后端引擎，与 indicator_cache 同口径）
     print("\n[4/4] 计算预计算指标...")
     try:
         from app.scoring.indicator_cache import compute_latest_indicators
     except Exception as e:
-        print(f"  ⚠️ 指标引擎不可用（{e}），包内将不含 indicators")
-        compute_latest_indicators = None
+        print("::error::指标引擎导入失败（%s）—— 依赖缺失，检查工作流 pip install "
+              "（需含 fastapi 等完整后端依赖）" % e)
+        sys.exit(6)
 
     ind_out = {}
-    if compute_latest_indicators:
-        for i, code in enumerate(klines_raw):
-            try:
-                dict_bars = [{"date": b[0], "open": b[1], "high": b[2],
-                              "low": b[3], "close": b[4], "volume": b[5]}
-                             for b in klines_raw[code]]
-                ind = compute_latest_indicators(dict_bars)
-                if ind and ind.get("ma5") is not None:
-                    ind_out[code] = ind
-            except Exception as e:
-                print(f"  指标计算失败 {code}: {e}")
-            if (i + 1) % 200 == 0:
-                print(f"  指标进度: {i + 1}/{len(klines_raw)}")
+    for i, code in enumerate(klines_raw):
+        try:
+            dict_bars = [{"date": b[0], "open": b[1], "high": b[2],
+                          "low": b[3], "close": b[4], "volume": b[5]}
+                         for b in klines_raw[code]]
+            ind = compute_latest_indicators(dict_bars)
+            if ind and ind.get("ma5") is not None:
+                ind_out[code] = ind
+        except Exception as e:
+            print(f"  指标计算失败 {code}: {e}")
+        if (i + 1) % 200 == 0:
+            print(f"  指标进度: {i + 1}/{len(klines_raw)}")
 
     # 完整性护栏：K 线不足池的 80% 或指标启用却 0 只成功 → 报错中止（不发出残缺包）
     if len(klines_raw) < len(pool) * 0.8:
         print(f"::error::K线仅拉到 {len(klines_raw)}/{len(pool)} 只（<80%）"
               f"—— 可能被腾讯限流，中止不发包")
         sys.exit(5)
-    if compute_latest_indicators and klines_raw and not ind_out:
+    if klines_raw and not ind_out:
         print("::error::K线拉取成功但指标计算 0 只成功 —— 通常是依赖缺失，"
               "检查工作流 pip install（需含 fastapi 等后端依赖）")
         sys.exit(6)
@@ -169,7 +180,7 @@ def main():
     date_str = datetime.now().strftime("%Y%m%d")
     os.makedirs(args.output_dir, exist_ok=True)
     db_path = os.path.join(args.output_dir, "backend-pack.db")
-    write_sqlite(db_path, date_str, quotes, klines_raw)
+    write_sqlite(db_path, date_str, quotes, klines_raw, ind_out)
 
     gz_path = db_path + ".gz"
     with open(db_path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:

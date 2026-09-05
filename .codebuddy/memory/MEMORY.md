@@ -19,7 +19,8 @@
 - **后端链路**：`kline_cache` / `indicator_cache` 两张 **Supabase 表** → 供后端 Python 评分（`batch/top`、`score_snapshot_loop`、日报、回测）。优势是可 `WHERE code IN (...)` 一条 SQL 取子集，服务端集中一致；成本是 Render→东京的跨境 RTT。
 - **前端本地评分链路（独立模式）**：`.github/workflows/kline-data.yml` 每工作日 **UTC 08:00（北京 16:00）** 跑 `scripts/generate-kline-pack.py` → 产出 `kline-pack-YYYYMMDD.json.gz`（全A股 150 天，5–10MB）+ `kline-delta-*.json`（~500KB）+ `kline-pack-latest.json.gz` → 用 `peaceiris/actions-gh-pages` 发布到 **GitHub Pages**（需 secret `GH_PAGES_TOKEN`）→ 前端 `KLINE_DATA_BASE_URL = https://klen-h.github.io/stock-scoring-v2/data` 下载存 **IndexedDB**，由 `useFrontendScoring.js` 在 Web Worker 里本地算排名，**零后端请求**。入口在 ScoreRank.vue 的「下载K线数据」按钮（可选模式，非默认）。
 - 两者**不是替代关系**：pack 只喂浏览器（浏览器查不了 DB），DB 只喂后端 Python（日报/快照/回测需要服务端落库，浏览器算的结果回不来）。可改进点：给前端 pack 增加预计算 `indicators` 字段（后端用 500 天算的更准），省掉浏览器端从 150 天 K 线算 MACD/KDJ。
-- ⚠️ **Render 免费档（512MB）不宜启用 `DATA_SOURCE=pack`**：后端包实测常驻 ~150-200MB（1394 只/49 万根 bars/45MB JSON），叠加详情页并发即 OOM（2026-09-05 实测进程重启）。pack 的 `local` 模式用于本地开发没问题。若 Render 要省 egress，先瘦身包（bars 500→260，内存减半）或升级实例。
+- ⚠️ **JSON 版 backend-pack 是内存炸弹**（45MB JSON → Python dict 常驻 150-200MB，512MB 实例 OOM 实测）→ **已废弃，改为 SQLite 版 `backend-pack.db.gz`**（2026-09-06）：常驻 ≈0，按需查单只 <5ms。Render 可安全启用 `DATA_SOURCE=pack`。
+- **三个包的归属（易混淆）**：`backend-pack.db.gz` 只给 Python 后端（Render 自动下载/本地 sync_local.py），**浏览器永远不读它**；浏览器只读 `kline-pack`（K线图表/本地评分，已有 delta 增量）和 `indicators-pack.json.gz`（前端指标，待接线）。页面无法直接观察 backend-pack 是否在用——去 Render/本地日志搜 `[pack_source]`，前提是设了 `DATA_SOURCE=pack/local`。
 
 ## 已知问题 / 待修（与评分数据时效性相关）
 - **盘中技术面是"昨收"的，不随行情变化**：排行榜 `batch/top` 命中 `indicator_cache` → 技术面、资金面（`_score_amount` 用 `tech_data[-10:]`）均基于上一交易日收盘；只有价格/涨跌幅/PE/PB/成交额/换手率来自实时快照。成长/质量是季度财报，本就静态。
