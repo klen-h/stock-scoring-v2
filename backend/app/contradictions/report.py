@@ -10,6 +10,9 @@ import os
 from typing import List, Dict, Optional
 
 from app.contradictions.store import _today
+from app.contradictions.labels import (
+    severity_cn, level_cn, type_cn, metric_cn, fmt_metric_value,
+)
 
 
 _SYSTEM = (
@@ -46,14 +49,14 @@ def _render_markdown(date: str, items: List[Dict], llm_summary: Optional[Dict] =
     obvious = [i for i in items if i.get("severity") == "obvious"]
     minor = [i for i in items if i.get("severity") == "minor"]
     add(f"## 摘要")
-    levels = ", ".join(sorted({i.get('level', 'L2') for i in items}))
+    levels = "、".join(sorted({level_cn(i.get('level', 'L2')) for i in items}))
     add(f"- 共识别 **{len(items)}** 个矛盾（{levels}）")
     if severe:
-        add(f"- 严重（severe）：{len(severe)} 个")
+        add(f"- 严重：{len(severe)} 个")
     if obvious:
-        add(f"- 明显（obvious）：{len(obvious)} 个")
+        add(f"- 明显：{len(obvious)} 个")
     if minor:
-        add(f"- 轻微（minor）：{len(minor)} 个")
+        add(f"- 轻微：{len(minor)} 个")
     if llm_summary and llm_summary.get("overview"):
         add(f"- AI 综述：{llm_summary['overview']}")
     add("")
@@ -61,12 +64,14 @@ def _render_markdown(date: str, items: List[Dict], llm_summary: Optional[Dict] =
     # 关键矛盾卡片
     add("## 关键矛盾")
     for idx, item in enumerate(items, 1):
-        level = item.get("level", "L2")
-        severity = item.get("severity", "minor")
+        level = level_cn(item.get("level", "L2"))
+        severity = severity_cn(item.get("severity", "minor"))
+        ctype = type_cn(item.get("type", ""))
         title = item.get("title", "")
         summary = item.get("summary", "")
         signal = item.get("signal", "")
-        add(f"### {idx}. [{level}/{severity}] {title}")
+        head = f"{level} · {severity}" + (f" · {ctype}" if ctype else "")
+        add(f"### {idx}. [{head}] {title}")
         add(f"- {summary}")
         if signal:
             add(f"- **交易含义**：{signal}")
@@ -74,10 +79,9 @@ def _render_markdown(date: str, items: List[Dict], llm_summary: Optional[Dict] =
         metrics = evidence.get("metrics") or {}
         if metrics:
             add(f"- **关键数据**：")
-            # 避免把整个列表塞进一行，选取核心标量
+            # 键与值都中文化；金额键按亿元渲染，计数键保持原样
             for k, v in metrics.items():
-                if isinstance(v, (int, float)):
-                    add(f"  - {k}: {v}")
+                add(f"  - {metric_cn(k)}：{fmt_metric_value(v, key=k)}")
         add("")
 
     # LLM 解读区（若有）
@@ -110,11 +114,11 @@ def _llm_summary(items: List[Dict]) -> Optional[Dict]:
             print(f"[contradiction_report] LLM 不可用: {blocked}")
             return None
 
-        # 只把标题、摘要、交易含义传给 LLM，避免 evidence 太长
+        # 只把标题、摘要、交易含义传给 LLM，避免 evidence 太长（severity 转中文）
         prompt_items = [
             {
                 "index": i + 1,
-                "severity": item.get("severity"),
+                "severity": severity_cn(item.get("severity")),
                 "title": item.get("title"),
                 "summary": item.get("summary"),
                 "signal": item.get("signal"),

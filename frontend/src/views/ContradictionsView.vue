@@ -6,7 +6,7 @@
         <div>
           <h1 class="text-lg font-bold text-gray-100">矛盾扫描引擎</h1>
           <p class="text-xs text-muted mt-0.5">
-            基于《Agent知识库》三层矛盾模型，当前落地 L2 行为背离扫描：指数/个股结构、板块叙事 vs 资金、量价背离、北向 vs 指数。
+            基于《Agent知识库》三层矛盾模型，当前落地「行为背离」扫描：指数与个股结构、板块叙事 vs 资金、量价背离、北向资金、主力资金流。
           </p>
         </div>
         <div class="flex gap-2">
@@ -37,13 +37,13 @@
         <div class="text-xs text-muted mb-1.5">严重度分布</div>
         <div class="flex gap-3 text-xs">
           <span class="px-2 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20">
-            severe {{ summary.breakdown?.severe || 0 }}
+            严重 {{ summary.breakdown?.severe || 0 }}
           </span>
           <span class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">
-            obvious {{ summary.breakdown?.obvious || 0 }}
+            明显 {{ summary.breakdown?.obvious || 0 }}
           </span>
           <span class="px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20">
-            minor {{ summary.breakdown?.minor || 0 }}
+            轻微 {{ summary.breakdown?.minor || 0 }}
           </span>
         </div>
       </div>
@@ -114,11 +114,11 @@
                   <div class="flex items-center gap-2">
                     <span class="px-1.5 py-0.5 rounded text-[10px] border"
                       :class="severityClass(item.severity)">
-                      {{ item.severity }}
+                      {{ severityLabel(item.severity) }}
                     </span>
                     <span class="text-xs font-medium text-gray-100">{{ item.title }}</span>
                   </div>
-                  <span class="text-[10px] text-muted">{{ item.type }}</span>
+                  <span class="text-[10px] text-muted">{{ typeLabel(item.type) }}</span>
                 </div>
                 <div class="text-xs text-muted mb-2">{{ item.summary }}</div>
                 <div v-if="item.signal" class="text-xs text-accent/90 bg-accent/5 border border-accent/10 rounded px-2 py-1.5">
@@ -156,10 +156,30 @@ const reportHtml = ref('')
 const scanning = ref(false)
 const reportLoading = ref(false)
 
+// 中文映射（与后端 app/contradictions/labels.py 同口径；新增扫描器两边同步补）
+const severityLabels = { severe: '严重', obvious: '明显', minor: '轻微' }
+const typeLabels = {
+  index_vs_breadth: '指数与个股结构背离',
+  sector_narrative_vs_flow: '板块叙事与资金流向背离',
+  price_vs_volume: '指数量价背离',
+  northbound_vs_index: '北向资金与指数背离',
+  index_vs_mainflow: '指数与主力资金流背离',
+  calendar_surprise: '宏观数据预期差',
+  today_calendar_focus: '今日重点关注数据',
+}
+
+function severityLabel(s) {
+  return severityLabels[s] || s || ''
+}
+
+function typeLabel(t) {
+  return typeLabels[t] || t || ''
+}
+
 const severities = [
-  { label: '严重 severe', value: 'severe' },
-  { label: '明显 obvious', value: 'obvious' },
-  { label: '轻微 minor', value: 'minor' },
+  { label: '严重', value: 'severe' },
+  { label: '明显', value: 'obvious' },
+  { label: '轻微', value: 'minor' },
 ]
 const selectedSeverities = ref(['severe', 'obvious', 'minor'])
 
