@@ -7,17 +7,41 @@
         <div class="max-w-[1600px] mx-auto px-4 h-12 flex items-center justify-between">
           <div class="flex items-center gap-6">
             <router-link to="/" class="font-bold text-accent text-sm tracking-wide">A股评分系统</router-link>
-            <div class="hidden md:flex gap-1">
-              <router-link v-for="item in navItems" :key="item.path" :to="item.path"
-                class="px-3 py-1 rounded text-xs transition-colors"
-                :class="isNavItemActive(item.path) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
-                {{ item.label }}
-              </router-link>
+            <div class="hidden md:flex gap-1 items-center" ref="navRef">
+              <template v-for="group in navGroups" :key="group.label">
+                <!-- 单页组（首页） -->
+                <router-link v-if="group.path" :to="group.path"
+                  class="px-3 py-1 rounded text-xs transition-colors"
+                  :class="isNavItemActive(group.path) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
+                  {{ group.label }}
+                </router-link>
+                <!-- 下拉聚合组 -->
+                <div v-else class="relative nav-group"
+                  @mouseenter="openMenu = group.label"
+                  @mouseleave="openMenu = null">
+                  <button @click="openMenu = group.label"
+                    class="px-3 py-1 rounded text-xs flex items-center gap-1 transition-colors"
+                    :class="isGroupActive(group) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
+                    {{ group.label }}<span class="text-[9px] leading-none">▼</span>
+                  </button>
+                  <div v-if="openMenu === group.label"
+                    class="absolute top-full left-0 pt-1 z-50 min-w-[104px]">
+                    <div class="bg-card border border-border rounded shadow-lg py-1">
+                      <router-link v-for="item in group.items" :key="item.path" :to="item.path"
+                        @click="openMenu = null"
+                        class="block px-3 py-2 text-xs transition-colors"
+                        :class="isNavItemActive(item.path) ? 'text-accent bg-accent/10' : 'text-muted hover:text-gray-200 hover:bg-white/5'">
+                        {{ item.label }}
+                      </router-link>
+                    </div>
+                  </div>
+                </div>
+              </template>
             </div>
           </div>
           <div class="flex items-center gap-2">
             <!-- 用户信息 + 登出 -->
-            <div class="relative" ref="userMenuRef" style="display: none;">
+            <div class="relative" ref="userMenuRef">
               <button @click="showUserMenu = !showUserMenu"
                 class="px-2 py-1 rounded text-xs border border-border bg-bg hover:bg-white/5 transition-colors text-muted flex items-center gap-1">
                 <span>{{ currentUser?.username || '用户' }}</span>
@@ -78,10 +102,13 @@ function handleLogout() {
   router.push('/login')
 }
 
-// 点击外部关闭用户菜单
+// 点击外部关闭用户菜单 / 导航下拉
 function handleClickOutside(e) {
   if (userMenuRef.value && !userMenuRef.value.contains(e.target)) {
     showUserMenu.value = false
+  }
+  if (navRef.value && !navRef.value.contains(e.target)) {
+    openMenu.value = null
   }
 }
 
@@ -89,25 +116,42 @@ onMounted(() => {
   document.addEventListener('click', handleClickOutside)
 })
 
-const navItems = [
+// ── 导航分组（17 个页面按工作流聚成 4 组，顶栏 5 项）──
+//   市场=盘面+消息（"现在市场怎么样"）；选股=找股；交易=操作；
+//   复盘=盘后总结与验证。要调整分组只改这个数组。
+const navGroups = [
   { path: '/', label: '首页' },
-  { path: '/market', label: '市场行情' },
-  { path: '/sector', label: '板块分化' },
-  { path: '/mainline', label: '行业主线' },
-  { path: '/score', label: '评分排行' },
-  { path: '/score/stats', label: '评分验证' },
-  { path: '/strategies', label: '战法选股' },
-  { path: '/monitor', label: '快讯监控' },
-  { path: '/calendar', label: '财经日历' },
-  { path: '/backtest', label: '回测中心' },
-  { path: '/paper', label: '模拟盘' },
-  { path: '/portfolio', label: '我的持仓' },
-  { path: '/watchlist', label: '自选股' },
-  { path: '/trade-plans', label: '交易计划' },
-  { path: '/capital', label: '资金流向' },
-  { path: '/report', label: '每日日报' },
-  { path: '/contradictions', label: '矛盾扫描' },
+  { label: '市场', items: [
+    { path: '/market', label: '市场行情' },
+    { path: '/sector', label: '板块分化' },
+    { path: '/mainline', label: '行业主线' },
+    { path: '/capital', label: '资金流向' },
+    { path: '/monitor', label: '快讯监控' },
+    { path: '/calendar', label: '财经日历' },
+  ]},
+  { label: '选股', items: [
+    { path: '/score', label: '评分排行' },
+    { path: '/strategies', label: '战法选股' },
+    { path: '/score/stats', label: '评分验证' },
+  ]},
+  { label: '交易', items: [
+    { path: '/watchlist', label: '自选股' },
+    { path: '/trade-plans', label: '交易计划' },
+    { path: '/portfolio', label: '我的持仓' },
+    { path: '/paper', label: '模拟盘' },
+  ]},
+  { label: '复盘', items: [
+    { path: '/report', label: '每日日报' },
+    { path: '/contradictions', label: '矛盾扫描' },
+    { path: '/backtest', label: '回测中心' },
+  ]},
 ]
+const openMenu = ref(null)
+const navRef = ref(null)
+
+function isGroupActive(group) {
+  return (group.items || []).some(i => isNavItemActive(i.path))
+}
 
 // 导航高亮判断：
 //   - 首页 '/' 与评分排行 '/score' 必须严格匹配（避免子路由 /score/stats 同时高亮两个 tab）
