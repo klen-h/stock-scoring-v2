@@ -742,6 +742,11 @@ const _ALERT_RULES = [
     } },
 ]
 async function checkMarketAlerts() {
+  // 休盘时数据冻结、警示不可能新触发 → 清空并停查（与项目"非交易时段不轮询"规范一致）
+  if (!isTradingTime()) {
+    marketAlerts.value = []
+    return
+  }
   try {
     const { data: o } = await getMarketOverview()
     const hits = _ALERT_RULES.map(r => r.test(o)).filter(Boolean)

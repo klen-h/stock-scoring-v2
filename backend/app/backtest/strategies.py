@@ -192,6 +192,22 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
         else:
             miss.append(c)
     if miss:
+        # ★ DATA_SOURCE=pack/local：走读取层（本地 sqlite，零 Supabase egress）——
+        #   此前直连 DB，本地每次测试进程重复拉 ~15-25MB（2026-09-06 egress 558M 主因之一）
+        try:
+            from app import pack_source
+            if pack_source.enabled():
+                for c in list(miss):
+                    bars = pack_source.get_prices(c, start)
+                    if bars:
+                        bars.sort(key=lambda b: b["date"])
+                        _PRICES_CACHE[(c, start)] = (now, bars)
+                        m[c] = bars
+                        miss.remove(c)
+            if not miss:
+                return m
+        except Exception:
+            pass
         sql = ("SELECT * FROM backtest_prices WHERE code IN (%s) "
                % ",".join(["%s"] * len(miss)))
         params = list(miss)
