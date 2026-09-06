@@ -16,6 +16,7 @@
 """
 
 import math
+import time as _time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
@@ -473,10 +474,29 @@ def get_regime_description(state: str) -> str:
 #  辅助：从数据库加载沪深300并判定（供后端调用）
 # ------------------------------------------------------------------------------
 
-def load_regime_history() -> List[MarketState]:
-    """从 backtest_prices 加载沪深300历史数据并判定状态序列。"""
+# 沪深300 K 线进程内缓存：regime 是慢信号，30 分钟内复用同一份，
+# 避免 pack 回退 DB 时每次 API 调用都全量拉 736 根（Supabase egress）。
+# 空结果不缓存——盘后回填未就绪时 5 分钟重试路径不受影响。
+_BARS_CACHE = {"ts": 0.0, "bars": None}
+_BARS_TTL = 1800
+
+
+def _load_index_bars(force: bool = False) -> list:
+    now = _time.time()
+    if not force and _BARS_CACHE["bars"] and now - _BARS_CACHE["ts"] < _BARS_TTL:
+        return _BARS_CACHE["bars"]
     from app.backtest import data
     bars = data.load_prices("sh000300")
+    if bars:
+        _BARS_CACHE["ts"] = now
+        _BARS_CACHE["bars"] = bars
+    return bars
+
+
+def load_regime_history(force: bool = False) -> List[MarketState]:
+    """从 backtest_prices 加载沪深300历史数据并判定状态序列。
+    force=True 跳过 30 分钟缓存（盘后正式判定必须看到当日收盘）。"""
+    bars = _load_index_bars(force=force)
     if not bars:
         return []
     return detect_market_regime(bars)
@@ -520,7 +540,7 @@ def refresh_regime_cache() -> Optional[dict]:
     数据未就绪时返回 None 并保留旧缓存，由调度器窗口内重试。
     成功时同步落库 market_regime_history（按日期覆盖），供状态切换追踪。
     """
-    states = load_regime_history()
+    states = load_regime_history(force=True)   # 盘后判定必须看到当日收盘
     if not states:
         return None
     latest = states[-1]
