@@ -82,6 +82,12 @@ def scan_financial_gap(date: Optional[str] = None) -> Optional[Dict]:
     except Exception:
         pass
 
+    try:
+        from app.mainforce.l3_history import bleeding_streak_map
+        streak_map = bleeding_streak_map()
+    except Exception:
+        streak_map = {}
+
     gaps, goodwill_risk, checked, anomalies = [], [], 0, 0
     for rep in reports:
         ni = rep["ind"].get("adjusted_profit") or rep["ind"].get("operating_profit")
@@ -102,7 +108,8 @@ def scan_financial_gap(date: Optional[str] = None) -> Optional[Dict]:
             scale = _period_scale(rep["report_date"])
             # 两档：现金失血（OCF 为负 = 报警主体）；弱净现比（只计数，不点名）
             if ratio < 0 or ratio < OCF_NI_SEVERE * scale:
-                gaps.append((rep["code"], name, ratio, rep["report_date"]))
+                gaps.append((rep["code"], name, ratio, rep["report_date"],
+                             streak_map.get(rep["code"], 0)))
 
         # 商誉悬顶
         if equity and goodwill and float(equity) > 0:
@@ -110,10 +117,12 @@ def scan_financial_gap(date: Optional[str] = None) -> Optional[Dict]:
             if g_ratio > GOODWILL_EQUITY_WARN:
                 goodwill_risk.append((rep["code"], name, g_ratio))
 
-    gaps.sort(key=lambda x: x[1])
+    # 连续失血（≥2 期 OCF 均为负）优先展示——结构性失血 vs 单季噪音
+    gaps.sort(key=lambda x: (-(x[4] if len(x) > 4 else 0), x[2]))
     goodwill_risk.sort(key=lambda x: -x[1])
     # 大断层 = 现金失血型（OCF 为负）：这才是"利润没变成钱"的报警主体
     n_severe_gap = sum(1 for g in gaps if g[2] < 0)
+    n_chronic = sum(1 for g in gaps if len(g) > 4 and g[4] >= 2)
     if n_severe_gap >= 8 or len(goodwill_risk) >= 8:
         severity = "severe"
     elif len(gaps) >= 3 or len(goodwill_risk) >= 3:
@@ -124,10 +133,11 @@ def scan_financial_gap(date: Optional[str] = None) -> Optional[Dict]:
     if not gaps and not goodwill_risk:
         return None
 
-    gap_desc = "、".join(f"{nm}({r:.2f})" for _, nm, r, _ in gaps[:6])
+    gap_desc = "、".join(f"{nm}({r:.2f})" for _, nm, r, _x, _y in gaps[:6])
     gw_desc = "、".join(f"{nm}({r:.0%})" for _, nm, r in goodwill_risk[:6])
     summary = (f"全池 {checked} 只盈利公司中，**现金失血**（有利润但经营现金流为负）"
-               f" **{n_severe_gap}** 只，弱净现比 {len(gaps) - n_severe_gap} 只，"
+               f" **{n_severe_gap}** 只，其中**连续 ≥2 期失血 {n_chronic}** 只"
+               f"（结构性失血，最高危），弱净现比 {len(gaps) - n_severe_gap} 只，"
                f"商誉/净资产>30% 悬顶 **{len(goodwill_risk)}** 只"
                + (f"，异常值剔除 {anomalies} 只" if anomalies else "") + "。"
                + (f" 失血最重：{gap_desc}。" if gap_desc else "")
@@ -147,8 +157,8 @@ def scan_financial_gap(date: Optional[str] = None) -> Optional[Dict]:
                 "ocf_ni_gap_count": len(gaps),
                 "ocf_ni_severe_count": n_severe_gap,
                 "ocf_ni_gap_samples": [
-                    {"code": c, "name": nm, "ratio": round(r, 2)}
-                    for c, nm, r, _ in gaps[:8]],
+                    {"code": g[0], "name": g[1], "ratio": round(g[2], 2),
+                     "streak": g[4] if len(g) > 4 else 0} for g in gaps[:8]],
                 "goodwill_risk_count": len(goodwill_risk),
                 "goodwill_risk_samples": [
                     {"code": c, "name": nm, "ratio": round(r, 3)}

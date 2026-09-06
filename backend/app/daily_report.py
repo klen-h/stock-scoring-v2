@@ -690,6 +690,27 @@ def build_data_md() -> str:
             add(f"| {p['code']} | {p['name']} | {p['shares']} | {p['cost']} | "
                 f"{p['price'] if p['price'] else '-'} | {pnl} | {p['note']} |")
 
+        # 3.x 自我冲突清单：评分≥65 买入信号 ∩ 主力出货嫌疑（层间联动第一例）
+        try:
+            from app.database import db as _db
+            conflict = _db.fetch("""
+                SELECT m.code, m.name, m.flow5_amt, r.total_score
+                FROM mainforce_state m
+                JOIN ranking_history r ON r.code = m.code
+                    AND r.rank_date = (SELECT MAX(rank_date) FROM ranking_history)
+                WHERE m.date = (SELECT MAX(date) FROM mainforce_state)
+                  AND m.signal = 'distribution' AND r.total_score >= 65
+                ORDER BY r.total_score DESC
+            """)
+            if conflict:
+                add("")
+                add(f"**⚠️ 自我冲突**（评分≥65 看多 ∩ 主力出货，{len(conflict)} 只——信号降权，回避）：")
+                for c in conflict:
+                    add(f"- {c['name']} 评分 {float(c['total_score']):.1f}｜"
+                        f"5日主力净流入 {float(c['flow5_amt'] or 0):+.0f}%")
+        except Exception as e:
+            print(f"[daily_report] 自我冲突清单失败: {e}")
+
         # 3.x 持仓矛盾影响（先知雷达·持仓顾问：主力行为 × 财报质量交叉扫描）
         radar = _holdings_radar()
         if radar:

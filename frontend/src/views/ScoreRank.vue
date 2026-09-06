@@ -237,6 +237,12 @@
                        'bg-amber-500/20 text-amber-400'">
                 {{ item.signal }}
               </span>
+              <!-- 自我冲突：评分说买但主力在出货（回测 10 日 -7.5pt） -->
+              <span v-if="item.signal.includes('买入') && item.mainforce?.signal === 'distribution'"
+                class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] bg-red-500/20 text-red-400 border border-red-500/30"
+                title="自我冲突：评分看多但主力资金在出货——回测 10 日 -7.5pt，信号降权">
+                ⚠ 冲突
+              </span>
             </td>
             <!-- 连续上榜天数 -->
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">

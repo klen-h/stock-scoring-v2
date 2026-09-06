@@ -59,6 +59,15 @@ def _render_markdown(date: str, items: List[Dict], llm_summary: Optional[Dict] =
         add(f"- 轻微：{len(minor)} 个")
     if llm_summary and llm_summary.get("overview"):
         add(f"- AI 综述：{llm_summary['overview']}")
+    # 层间联动（先知雷达规则）：L1+L2 severe 并存 = 高概率修正；+L3 = 剧烈修正
+    l1_sev = any(i.get("level") == "L1" and i.get("severity") == "severe" for i in items)
+    l2_sev = any(i.get("level") == "L2" and i.get("severity") == "severe" for i in items)
+    l3_any = any(i.get("level") == "L3" for i in items)
+    if l1_sev and l2_sev:
+        tag = "⚠️ **L1+L2 联动**：高概率修正" + ("，叠加 L3 断层 → 剧烈修正" if l3_any else "")
+        add(f"- {tag}")
+    elif l2_sev and l3_any:
+        add("- ⚠️ **L2+L3 联动**：行为背离叠加信息断层")
     add("")
 
     # 关键矛盾卡片
