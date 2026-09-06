@@ -96,6 +96,15 @@
       </div>
     </div>
 
+    <!-- 盘中警示条（12s 轮询市场总览：指数急跌/涨跌比/跌停，秒级滞后） -->
+    <div v-if="activeTab === 'top' && marketAlerts.length" class="mb-3 space-y-1.5">
+      <div v-for="(a, i) in marketAlerts" :key="i"
+        class="px-3 py-2 rounded text-xs border"
+        :class="a.sev === '🔴' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'">
+        {{ a.text }}
+      </div>
+    </div>
+
     <!-- 评分变动提醒（与上次快照对比） -->
     <div v-if="(scoreAlerts.upgrades.length || scoreAlerts.downgrades.length) && activeTab === 'top'"
       class="bg-card border border-border rounded-lg p-3 space-y-2">
@@ -708,6 +717,46 @@ async function loadWatchCodes() {
     watchCodes.value = new Set((data || []).map(x => x.code))
   } catch (e) { /* 未登录/无自选不阻塞排行 */ }
 }
+// ── 页内盘中警示条（12s 轮询市场总览：指数急跌/涨跌比/跌停，秒级滞后）──
+const marketAlerts = ref([])
+let alertTimer = null
+const _ALERT_RULES = [
+  { key: 'indexdrop', test: (o) => {
+      const idx = (o.indices || []).find(i => i.name === '上证指数')
+      if (!idx || idx.change_pct == null) return null
+      if (idx.change_pct <= -2.5) return { sev: '🔴', text: `上证急跌 ${idx.change_pct.toFixed(2)}%——不接飞刀、不加仓` }
+      if (idx.change_pct <= -1.5) return { sev: '🟡', text: `上证下跌 ${idx.change_pct.toFixed(2)}%——单边走弱` }
+      return null
+    } },
+  { key: 'breadth', test: (o) => {
+      const st = o.stats || {}
+      if (!st.up_count || !st.down_count) return null
+      const r = st.up_count / Math.max(1, st.down_count)
+      if (r < 0.25) return { sev: '🔴', text: `涨跌比 ${st.up_count}/${st.down_count}（${r.toFixed(2)}）——跌停潮式结构恶化` }
+      return null
+    } },
+  { key: 'limitdown', test: (o) => {
+      const ld = (o.stats || {}).limit_down
+      if (ld >= 30) return { sev: ld >= 60 ? '🔴' : '🟡', text: `跌停 ${ld} 只——恐慌蔓延，不抄底、不补仓` }
+      return null
+    } },
+]
+async function checkMarketAlerts() {
+  try {
+    const { data: o } = await getMarketOverview()
+    const hits = _ALERT_RULES.map(r => r.test(o)).filter(Boolean)
+    marketAlerts.value = hits
+  } catch { marketAlerts.value = [] }
+}
+function startMarketAlerts() {
+  stopMarketAlerts()
+  checkMarketAlerts()
+  alertTimer = setInterval(checkMarketAlerts, 12000)
+}
+function stopMarketAlerts() {
+  if (alertTimer) { clearInterval(alertTimer); alertTimer = null }
+}
+
 async function quickAddWatch(item) {
   try {
     await upsertUserWatch({ code: item.code, name: item.name,
@@ -1346,6 +1395,7 @@ function stopAutoRefresh() {
 
 onMounted(() => {
   loadWatchCodes()
+  startMarketAlerts()
   // 初始化前端评分系统（后台进行，不阻塞主流程）
   initFrontendScoring().then(result => {
     frontendInitialized.value = true
@@ -1375,6 +1425,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopMarketAlerts()
   if (autoSaveTimer) clearInterval(autoSaveTimer)
   stopAutoRefresh()
 })
