@@ -449,12 +449,19 @@ async function preciseScoreBatch(stocks, weights) {
 
   const results = []
   const fallback = []   // 指标包不可用/不新鲜 → 走现算
+  // ★ 主力行为标签（出货嫌疑/吸筹区）：随指标包一起下发，日批在打包时就地算好。
+  //   与 _series 不同的是它盘中不变（日频），所以盘中回退现算时同样可用。
+  const mfMap = {}
+  // ★ 消息面情绪分：打包时刻（收盘后）快照，只存非 0 的
+  const newsMap = {}
 
   // 1) 先尝试指标包直读（批量预热，逐只读 IndexedDB 很快）
   for (const stock of stocks) {
     let used = false
     try {
       const ind = await getIndicator(stock.code)
+      if (ind && ind.mainforce) mfMap[stock.code] = ind.mainforce
+      if (ind && ind.news_score != null) newsMap[stock.code] = ind.news_score
       const series = ind && ind._series
       if (series && seriesIsFresh(series)) {
         results.push(scoreStock({
@@ -511,6 +518,9 @@ async function preciseScoreBatch(stocks, weights) {
     }
   }
 
+  // 挂主力行为标签（直读 _series 与现算回退两条路径都挂）
+  attachMainforce(results, mfMap)
+  attachNewsScore(results, newsMap)
   return results
 }
 
@@ -519,9 +529,18 @@ async function preciseScoreBatch(stocks, weights) {
  */
 async function preciseScoreBatchMainThread(stocks, weights) {
   const results = []
+  const mfMap = {}
+  const newsMap = {}
 
   for (const stock of stocks) {
     try {
+      // 标签来自日频指标包，与评分是否现算无关 → 这里同样读取
+      try {
+        const ind = await getIndicator(stock.code)
+        if (ind && ind.mainforce) mfMap[stock.code] = ind.mainforce
+        if (ind && ind.news_score != null) newsMap[stock.code] = ind.news_score
+      } catch { /* 无标签不影响评分 */ }
+
       const klines = await getKlines(stock.code, 150)
       if (!klines || klines.length < 30) continue
 
@@ -544,7 +563,31 @@ async function preciseScoreBatchMainThread(stocks, weights) {
     }
   }
 
+  attachMainforce(results, mfMap)
+  attachNewsScore(results, newsMap)
   return results
+}
+
+/**
+ * 把日频主力行为标签挂到评分结果上（缺数据则不动，模板 v-if 自动隐藏）。
+ * 只挂标签不调分：排序乘数的闸门（MAINFORCE_MODE=auto + regime）在后端读端判定，
+ * 与后端默认 off 的行为保持一致。
+ */
+function attachMainforce(results, mfMap) {
+  if (!mfMap || !Object.keys(mfMap).length) return
+  for (const r of results) {
+    if (r && mfMap[r.code]) r.mainforce = mfMap[r.code]
+  }
+}
+
+/**
+ * 挂消息面情绪分（打包时刻快照，只存非 0 的）。缺数据显示 '-'，与后端一致。
+ */
+function attachNewsScore(results, newsMap) {
+  if (!newsMap || !Object.keys(newsMap).length) return
+  for (const r of results) {
+    if (r && newsMap[r.code] != null) r.news_score = newsMap[r.code]
+  }
 }
 
 /**
@@ -965,8 +1008,12 @@ export async function loadLocalKline(code, stockInfo = {}, bars = 150) {
  */
 export async function computeLocalScore(code, stockInfo = {}, finance = null, weights = null) {
   let technical = null
+  let mainforce = null
+  let trendHealth = null
   try {
     const ind = await getIndicator(code)
+    if (ind && ind.mainforce) mainforce = ind.mainforce
+    if (ind && ind.trend_health) trendHealth = ind.trend_health
     const series = ind && ind._series
     if (series && seriesIsFresh(series)) technical = series
   } catch { /* 指标包缺失 → 现算兜底 */ }
@@ -985,6 +1032,11 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
     finance,
     weights,
   })
+
+  // 主力行为（出货嫌疑/吸筹区）：日频标签，与评分现算与否无关
+  if (mainforce) result.mainforce = mainforce
+  // 趋势健康度（5 维度：量能/支撑/深度/动量/均线）——打包时后端已用同一函数算好
+  if (trendHealth) result.trend_health = trendHealth
 
   // 详情页模板期望 dimensions 为数组（后端 ScoreResult 形状）：
   // scoreStock 返回对象 → 按展示顺序转数组，details 的 {分值/满分} 形状两端一致

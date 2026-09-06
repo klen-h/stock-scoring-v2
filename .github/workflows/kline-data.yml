@@ -58,6 +58,9 @@ jobs:
           path: |
             ./data/kline/kline-pack-latest.json.gz
             ./data/kline/kline-pack-*.json.gz
+            # ★ 同步发布全市场行情：后端包已拆到独立 workflow（错峰 17:50），
+            #   无法再用 artifact 传递，改从 Pages 取（~150KB，1 请求）
+            ./data/kline/realtime-quotes.json
           retention-days: 3
 
       - name: Upload quotes artifact (backend reuse)
@@ -75,75 +78,24 @@ jobs:
           path: ./data/kline/
           retention-days: 7
 
-  # ── Job 2：后端包（质量池 ~750 只×750 根 + 预计算指标）─────────────
-  # needs frontend-pack：复用其落盘的全市场行情（artifact 传递，0 请求），
-  # 且 fresh runner 的 IP 配额独立——两个包不再叠加同一个 IP 的限流
-  backend-pack:
-    name: 后端包（K线 + 预计算指标）
-    needs: frontend-pack
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
-        # 装完整 requirements（含 fastapi）：generate_backend_pack 复用后端
-        # compute_latest_indicators，其导入链会牵出 fastapi 等依赖，
-        # 精简安装会在指标计算步骤全军覆没（2026-09-05 实测）
-        run: pip install -q -r backend/requirements.txt
-
-      - name: Smoke import (fail fast on scheduler/router breaks)
-        run: |
-          cd backend
-          python -c "import app.main; print('smoke import ok')"
-
-      - name: Download shared realtime quotes
-        uses: actions/download-artifact@v4
-        with:
-          name: realtime-quotes
-          path: ./data/kline
-
-      # 后端数据包（质量池 ~750 只×750根K线+预计算指标）：DATA_SOURCE=pack/local
-      # 读取层用，让 Render/本地不再读 Supabase 肥表（egress 根治）。
-      # DATABASE_URL 仅用于读代码清单（~11KB），未配置时自动退化为市值前800。
-      - name: Generate backend data pack (klines + indicators)
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python scripts/generate_backend_pack.py --output-dir ./data/kline
-
-      - name: Upload Pages artifacts (backend pack + indicators)
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-pages
-          path: |
-            ./data/kline/backend-pack.db.gz
-            ./data/kline/indicators-pack.json.gz
-          retention-days: 3
-
-  # ── Job 3：发布到 GitHub Pages（两包齐了再发，避免半包上线）─────────────
+  # ── 发布前端包到 GitHub Pages ──────────────────────────────────────
+  # ★ 后端包已拆到独立 workflow（backend-pack.yml，17:50 错峰）：
+  #   ① 腾讯是 IP 级限流，前端 1564 只跑完立刻接着跑后端 700 只×750 根，
+  #      后端必然大面积 501/超时（2026-09-06 实测：前端每次成功、后端必超时）；
+  #   ② 错峰 1h50m 后配额已恢复，且资金流（17:00 回填）已就绪，
+  #      mainforce 才能用当日强口径而不是 T-1。
   deploy-pages:
-    name: 发布 GitHub Pages
-    needs: [frontend-pack, backend-pack]
+    name: 发布 GitHub Pages（前端包）
+    needs: [frontend-pack]
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Download all pack artifacts
+      - name: Download pack artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: '*-pages'
+          name: kline-pages
           path: ./data/kline
-          merge-multiple: true
 
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

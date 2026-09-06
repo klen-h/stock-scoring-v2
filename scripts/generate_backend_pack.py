@@ -54,6 +54,173 @@ def load_gkp():
     return mod
 
 
+def _load_recent_flow(codes: list, days: int = 10) -> dict:
+    """读近 N 日主力资金流（只取 main_net/main_pct）——避免把 130 天整表拖下来。
+
+    mainforce 的强口径「高位高获利 × 主力流出」只需要近 5 日 main_pct；
+    免费版 Supabase 有出站流量预算，全表（700 只×130 天 ≈ 9 万行）没必要。
+    读取失败返回 {} —— mainforce 自动退化为弱口径（高位高获利 + 出货阶段），
+    与后端 overlay 的降级路径完全一致，不会失败。
+    """
+    if not codes:
+        return {}
+    try:
+        from app import db
+        from datetime import date as _date, timedelta
+        cutoff = (_date.today() - timedelta(days=days + 12)).isoformat()
+        sql = ("SELECT code, date, main_net, main_pct FROM mainflow_history "
+               "WHERE code = ANY(%s) AND date >= %s ORDER BY code, date ASC")
+        rows = db.fetch(sql, (list(codes), cutoff))
+        out = {}
+        for r in rows:
+            out.setdefault(r["code"], []).append({
+                "date": str(r["date"]),
+                "main_net": r["main_net"],
+                "main_pct": r["main_pct"],
+            })
+        print(f"  资金流: {len(out)} 只（窗口 {cutoff} 起）")
+        return out
+    except Exception as e:
+        print(f"  ⚠️ 资金流读取失败（mainforce 退化为弱口径）: {e}")
+        return {}
+
+
+def compute_trend_health_batch(ind_out: dict) -> dict:
+    """批量计算趋势健康度（5 维度：量能/支撑/深度/动量/均线 → 洗盘 vs 真跌）。
+
+    ★ 零外部数据依赖：输入只有指标序列 _series（含 close/high/volume/ma5/ma20/
+      ma60/dif），与后端 engine._calc_trend_health 同一函数、同一口径——
+      本地/前端无需再复刻一遍算法（避免又一处 JS↔Python 对齐负担）。
+    """
+    try:
+        from app.scoring.engine import ScoreEngine
+    except Exception as e:
+        print(f"  ⚠️ 评分引擎导入失败，跳过趋势健康度: {e}")
+        return {}
+
+    eng = ScoreEngine()
+    out = {}
+    for code, ind in ind_out.items():
+        series = ind.get("_series")
+        if not series or len(series) < 30:
+            continue
+        try:
+            th = eng._calc_trend_health(series)
+            if th and th.get("verdict"):
+                out[code] = th
+        except Exception as e:
+            print(f"  趋势健康度计算失败 {code}: {e}")
+
+    dist = {}
+    for v in out.values():
+        dist[v.get("verdict")] = dist.get(v.get("verdict"), 0) + 1
+    print(f"  趋势健康度: {len(out)} 只 " +
+          " / ".join(f"{k} {v}" for k, v in sorted(dist.items(), key=lambda x: -x[1])))
+    return out
+
+
+def compute_news_scores(codes: list) -> dict:
+    """批量消息面情绪分（东财 7×24 快讯）——与后端 _batch_news_scores 同口径。
+
+    ★ 只存非 0 的：绝大多数股票没有快讯，把 0 全存进包纯属浪费；前端模板用
+      `item.news_score != null` 判断，没存就显示 '-'，与"无消息"语义一致。
+    ★ 语义注意：这是「打包时刻（收盘后）」的快照。快讯 24h 滚动且分数带时间
+      衰减（decay_weight），本地模式不会实时刷新——所以它反映的是收盘时的
+      消息面，不是盘中实时值。不参与综合评分，仅榜单参考列。
+    """
+    try:
+        from app.eastmoney_news import get_global_news
+        from app.news_sentiment import score_stock_news
+    except Exception as e:
+        print(f"  ⚠️ 消息面模块导入失败，跳过: {e}")
+        return {}
+    try:
+        items = get_global_news()
+        by_code = {}
+        for it in items or []:
+            for c in (it.get("stocks") or []):
+                by_code.setdefault(c, []).append(it)
+        out = {}
+        for code in codes:
+            its = by_code.get(code)
+            if not its:
+                continue
+            try:
+                s = score_stock_news(its).get("score", 0)
+                if s:
+                    out[code] = s
+            except Exception:
+                continue
+        print(f"  消息面: 快讯 {len(items or [])} 条 → 非 0 分覆盖 {len(out)} 只")
+        return out
+    except Exception as e:
+        print(f"  ⚠️ 消息分计算失败（跳过，不影响其它字段）: {e}")
+        return {}
+
+
+def compute_mainforce_batch(klines_raw: dict, quotes: dict) -> dict:
+    """批量计算主力行为叠加（与后端 mainforce_state 日批同一 overlay 函数）。
+
+    ★ 时序根治：不再等 Render 17:30 的日批，而是打包时就地算——复用刚拉到的
+      当日 K 线 + 库里当日资金流，产出的就是「当日收盘口径」，与后端日批同源。
+    ★ regime 传 None：乘数闸门本就在后端读端判定（MAINFORCE_MODE=auto +
+      regime 命中才 ×0.85），这里只出标签，不影响排序口径。
+    """
+    try:
+        from app.mainforce.overlay import mainforce_overlay
+    except Exception as e:
+        print(f"  ⚠️ mainforce 引擎导入失败，跳过（排行榜将无出货/吸筹标签）: {e}")
+        return {}
+
+    flow_map = _load_recent_flow(list(klines_raw.keys()))
+    out = {}
+    t0 = time.time()
+    for i, (code, bars) in enumerate(klines_raw.items()):
+        q = quotes.get(code) or {}
+        # 流通股本：quotes 的 float_cap 单位是「亿元」（腾讯 fields[44]）
+        fs = None
+        try:
+            cap_yi = float(q.get("float_cap") or 0)
+            price = float(q.get("price") or 0)
+            if cap_yi > 0 and price > 0:
+                fs = cap_yi * 1e8 / price
+        except (TypeError, ValueError):
+            fs = None
+        try:
+            dict_bars = [{"date": b[0], "open": b[1], "high": b[2],
+                          "low": b[3], "close": b[4], "volume": b[5]} for b in bars]
+            ov = mainforce_overlay(dict_bars, flow_rows=flow_map.get(code),
+                                   float_shares=fs, regime=None)
+            if not ov:
+                continue
+            chip = ov.get("chip") or {}
+            out[code] = {
+                "phase": ov.get("phase"),
+                "phase_cn": ov.get("phase_cn"),
+                "signal": ov.get("signal"),
+                "signal_cn": ov.get("signal_cn"),
+                "reason": ov.get("reason"),
+                "flow5_amt": ov.get("flow5_amt"),
+                "mult": ov.get("mult") or 1.0,
+                "active": bool(ov.get("active")),
+                "chip": chip,
+                # ★ 前端 ScoreRank/StockDetail 直接读的扁平字段（避免嵌套取值的空判断）
+                "price_pos": chip.get("price_pos"),
+                "winner_ratio": chip.get("winner_ratio"),
+            }
+        except Exception as e:
+            print(f"  mainforce 计算失败 {code}: {e}")
+        if (i + 1) % 200 == 0:
+            print(f"  mainforce 进度: {i + 1}/{len(klines_raw)}")
+
+    n_dist = sum(1 for v in out.values() if v.get("signal") == "distribution")
+    n_acc = sum(1 for v in out.values() if v.get("signal") == "accum")
+    n_flow = sum(1 for v in out.values() if v.get("flow5_amt") is not None)
+    print(f"  主力行为: {len(out)} 只（出货嫌疑 {n_dist} / 吸筹区 {n_acc}；"
+          f"含资金流强口径 {n_flow} 只，其余弱口径），耗时 {time.time() - t0:.0f}s")
+    return out
+
+
 def supabase_kline_codes() -> list:
     """读 Supabase kline_cache 的代码清单（只取 code 列 ~11KB）。失败返回 []。"""
     url = (os.environ.get("DATABASE_URL") or "").strip()
@@ -122,6 +289,12 @@ def main():
     ap.add_argument("--cap-top", type=int, default=CAP_TOP_N)
     ap.add_argument("--quotes-file", default="./data/kline/realtime-quotes.json",
                     help="复用前端步骤已拉取的全市场行情（避免全市场拉两遍）")
+    ap.add_argument("--quotes-url", default=os.environ.get("PACK_QUOTES_URL", ""),
+                    help="行情来源 URL（与前端 job 拆到不同 workflow 后从 Pages 取）")
+    ap.add_argument("--workers", type=int, default=int(os.environ.get("PACK_WORKERS", 5)),
+                    help="K 线拉取并发数（默认 5；串行会顶穿 Actions 90 分钟上限）")
+    ap.add_argument("--no-mainforce", action="store_true",
+                    help="跳过主力行为计算（快速跑通 K 线+指标时用）")
     args = ap.parse_args()
 
     print("=== 后端数据包生成（backend-pack.db，SQLite）===")
@@ -138,6 +311,17 @@ def main():
                 print(f"\n[1/4] 实时行情：复用共享文件（{len(quotes)} 只，0 请求）")
         except Exception as e:
             print(f"\n[1/4] 共享行情读取失败，自拉: {e}")
+    # ★ 与前端 job 拆到不同 workflow 后没有本地文件 → 从 Pages 拉共享行情
+    #   （~150KB，1 个请求；比 1564 只重新批量拉便宜得多）
+    if quotes is None and args.quotes_url:
+        try:
+            import requests
+            r = requests.get(args.quotes_url, timeout=20)
+            r.raise_for_status()
+            quotes = r.json()
+            print(f"\n[1/4] 实时行情：复用 Pages 共享行情（{len(quotes)} 只，1 请求）")
+        except Exception as e:
+            print(f"\n[1/4] Pages 行情读取失败，自拉: {e}")
     if quotes is None:
         print("\n[1/4] 拉取实时行情...")
         quotes = gkp.fetch_realtime_batch(gkp.build_stock_pool())
@@ -192,8 +376,8 @@ def main():
     #    ★ fetch 的 days 参数是"日历天"（起点 now-(days+30)），500 会被起点卡成
     #      ~356 根交易日 —— 传 1100 日历天才能拿到与 DB backtest_prices 对齐的
     #      ~750 根（手册回测 2 年目标 ≈ 500 交易日，留足余量）
-    print("\n[3/4] 拉取 K 线（~750 根/只，含 WAF 退避）...")
-    klines_raw = gkp.fetch_all_klines(pool, BACKEND_KLINE_CAL_DAYS)
+    print(f"\n[3/4] 拉取 K 线（~750 根/只，并发 {args.workers}，含 WAF 退避）...")
+    klines_raw = gkp.fetch_all_klines(pool, BACKEND_KLINE_CAL_DAYS, workers=args.workers)
 
     # 4. 计算指标（复用后端引擎，与 indicator_cache 同口径）
     print("\n[4/4] 计算预计算指标...")
@@ -218,12 +402,53 @@ def main():
         if (i + 1) % 200 == 0:
             print(f"  指标进度: {i + 1}/{len(klines_raw)}")
 
+    # ★ 护栏基准必须先取：下面 mainforce 会给无指标的股票补挂标签条目，
+    #   若用合并后的 ind_out 判断，会在「指标全挂」时误判为成功而发出残缺包。
+    ind_count_raw = len(ind_out)
+
+    # 4.2 趋势健康度（5 维度诊断）——纯指标计算，零外部数据；入包后前端详情页
+    #     本地模式也能显示「趋势健康 4/5」，不再依赖 /api/score/{code}
+    print("\n[4.2/4] 计算趋势健康度...")
+    th_out = compute_trend_health_batch(ind_out)
+    for code, th in th_out.items():
+        ind_out[code]["trend_health"] = th
+
+    # 4.3 消息面情绪分（东财快讯，1 次全局请求）——只存非 0 的，失败静默跳过。
+    #     不参与综合评分，仅榜单参考列；值为打包时刻（收盘后）快照。
+    print("\n[4.3/4] 计算消息面情绪分...")
+    news_out = compute_news_scores(list(klines_raw.keys()))
+    for code, s in news_out.items():
+        if code in ind_out:
+            ind_out[code]["news_score"] = s
+        else:
+            ind_out[code] = {"news_score": s}
+
+    # 4.5 主力行为叠加（出货嫌疑/吸筹区标签）——就地算，不再依赖 Render 17:30 日批。
+    #    结果并入每只股票的指标对象：前端 indicators-pack 与后端 sqlite indicators
+    #    同一份数据，排行榜/详情页本地模式直接读，零后端请求。
+    mf_out = {}
+    if args.no_mainforce:
+        print("\n[4.5/4] 主力行为：已跳过（--no-mainforce）")
+    else:
+        print("\n[4.5/4] 计算主力行为叠加（筹码×资金流）...")
+        mf_out = compute_mainforce_batch(klines_raw, quotes)
+        merged = 0
+        for code, mf in mf_out.items():
+            if code in ind_out:
+                ind_out[code]["mainforce"] = mf
+                merged += 1
+            else:
+                # 指标缺失（<30 根等）但该股仍在包里 → 单独兜一个只含 mainforce 的对象，
+                # 保证排行榜能拿到标签（评分会走现算兜底路径）
+                ind_out[code] = {"mainforce": mf}
+        print(f"  并入指标包: {merged} 只（另有 {len(mf_out) - merged} 只无指标、仅挂标签）")
+
     # 完整性护栏：K 线不足池的 80% 或指标启用却 0 只成功 → 报错中止（不发出残缺包）
     if len(klines_raw) < len(pool) * 0.8:
         print(f"::error::K线仅拉到 {len(klines_raw)}/{len(pool)} 只（<80%）"
               f"—— 可能被腾讯限流，中止不发包")
         sys.exit(5)
-    if klines_raw and not ind_out:
+    if klines_raw and ind_count_raw == 0:
         print("::error::K线拉取成功但指标计算 0 只成功 —— 通常是依赖缺失，"
               "检查工作流 pip install（需含 fastapi 等后端依赖）")
         sys.exit(6)

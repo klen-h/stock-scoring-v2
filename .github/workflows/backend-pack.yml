@@ -1,0 +1,108 @@
+name: Generate Backend Data Pack
+
+on:
+  # 北京时间 17:50 = UTC 09:50（周一到周五）
+  # ★ 为什么不是跟着前端包 16:00 跑：
+  #   1) 腾讯 IP 级限流：前端包 1564 只跑完后立刻接着跑后端 700 只×750 根，
+  #      后端大面积 501 → 重试退避放大 → 顶穿 90 分钟 job 上限（实测必超时）。
+  #      错峰 1h50m 后配额已恢复。
+  #   2) 主力资金流 17:00 起回填（mainflow_history），17:50 已就绪 →
+  #      mainforce 用当日强口径（高位高获利×主力流出），而不是退化的弱口径。
+  schedule:
+    - cron: '50 9 * * 1-5'
+
+  workflow_dispatch:
+    inputs:
+      workers:
+        description: 'K线拉取并发数'
+        required: false
+        default: '5'
+      skip_mainforce:
+        description: '跳过主力行为计算(true/false)'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: backend-pack
+  cancel-in-progress: false
+
+jobs:
+  backend-pack:
+    name: 后端包（K线 + 预计算指标 + 主力行为）
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        # 装完整 requirements（含 fastapi）：复用后端 compute_latest_indicators
+        # 与 mainforce overlay，精简安装会在计算步骤全军覆没（2026-09-05 实测）
+        run: pip install -q -r backend/requirements.txt
+
+      - name: Smoke import (fail fast on scheduler/router breaks)
+        run: |
+          cd backend
+          python -c "import app.main; print('smoke import ok')"
+
+      # 后端数据包（质量池 ~700 只×750 根 + 预计算指标 + 主力行为）：
+      # DATA_SOURCE=pack/local 读取层用，让 Render 不再读 Supabase 肥表。
+      # DATABASE_URL 用于：读 kline_cache 代码清单 + 近 10 日 mainflow_history。
+      - name: Generate backend data pack (klines + indicators + mainforce)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # ★ 失败惩罚收紧（超时主因之一）：单只坏股票原最多 3 次重试
+          #   (退避 1+3+6s + 3×10s 超时) = 40s，几百只堆积即超时。
+          PACK_REQUEST_TIMEOUT: '6'
+          PACK_KLINE_RETRIES: '2'
+          PACK_RETRY_BACKOFF: '1,2'
+          PACK_CONSECUTIVE_COOLDOWN: '6'
+          PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
+          PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
+        run: |
+          python scripts/generate_backend_pack.py \
+            --output-dir ./data/kline \
+            ${{ github.event.inputs.skip_mainforce == 'true' && '--no-mainforce' || '' }}
+
+      - name: Upload Pages artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-pages
+          path: |
+            ./data/kline/backend-pack.db.gz
+            ./data/kline/indicators-pack.json.gz
+          retention-days: 3
+
+  deploy-pages:
+    name: 发布 GitHub Pages（后端包）
+    needs: backend-pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download pack artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-pages
+          path: ./data/kline
+
+      - name: Upload to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GH_PAGES_TOKEN }}
+          publish_dir: ./data/kline
+          publish_branch: gh-pages
+          destination_dir: data
+          keep_files: true  # 保留前端包等其它文件
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'chore: update backend data pack (klines + indicators + mainforce)'

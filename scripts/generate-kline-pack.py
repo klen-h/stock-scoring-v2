@@ -36,7 +36,9 @@ import json
 import os
 import random
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -46,11 +48,25 @@ import requests
 DEFAULT_DAYS = 150      # K 线天数（需足够长让 EMA26/DEA 系列指标收敛，与后端 500 天历史对齐）
 BATCH_SIZE = 50         # 批量请求行情每批数量
 KLINE_BATCH_SIZE = 10   # K 线请求每批数量（仅用于节流节奏，仍是串行请求）
-REQUEST_TIMEOUT = 10    # 请求超时（秒）
-WAF_COOLDOWN = 120      # WAF 触发后全局冷却（秒）——与后端 tencent.py 保持一致
-KLINE_RETRIES = 3       # 单只股票 K 线请求重试次数（含首次）
-RETRY_BACKOFF = [1, 3, 6]  # 重试退避（秒）
-CONSECUTIVE_COOLDOWN = 10  # 连续失败达到该次数后暂停（秒级退避）
+
+# ★ 以下四项可用环境变量覆盖（2026-09-06 后端包超时对策）：
+#   后端包 ~700 只×750 根，串行 + 单只最多 3 次重试(1+3+6s 退避 + 3×10s 超时)
+#   = 坏股票单只惩罚可达 40s，几百只堆积直接顶穿 90 分钟 job 上限。
+#   后端 workflow 用 PACK_REQUEST_TIMEOUT=6 / PACK_KLINE_RETRIES=2 /
+#   PACK_RETRY_BACKOFF=1,2 / PACK_CONSECUTIVE_COOLDOWN=6 收紧，
+#   前端包（150 根、失败率低）保持原默认值不变。
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+REQUEST_TIMEOUT = _env_int("PACK_REQUEST_TIMEOUT", 10)   # 请求超时（秒）
+WAF_COOLDOWN = _env_int("PACK_WAF_COOLDOWN", 120)        # WAF 触发后全局冷却（秒）
+KLINE_RETRIES = _env_int("PACK_KLINE_RETRIES", 3)        # 单只股票重试次数（含首次）
+RETRY_BACKOFF = [int(x) for x in
+                 (os.environ.get("PACK_RETRY_BACKOFF") or "1,3,6").split(",") if x]
+CONSECUTIVE_COOLDOWN = _env_int("PACK_CONSECUTIVE_COOLDOWN", 10)  # 连续失败暂停阈值
 
 # A 股代码池（与 backend/app/tencent.py 保持一致）
 DISABLED_PREFIXES = {"688", "300", "301"}
@@ -68,8 +84,11 @@ _session.headers.update({
 
 # ── WAF 全局限流状态（与后端 tencent.py 同策略）──
 # 腾讯 WAF 触发后（HTTP 501）需要暂停所有 K 线请求，避免被持续封禁。
+# ★ 并发拉取（后端包 workers>1）下这两个全局量必须加锁，否则多线程会
+#   同时读到过期状态、把冷却期内的请求全打出去（反而加剧封禁）。
 _waf_blocked_until = 0.0
 _consecutive_failures = 0
+_waf_lock = threading.Lock()
 
 
 def _is_valid_stock(name: str, pe: float = 0) -> bool:
@@ -199,8 +218,9 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     global _waf_blocked_until, _consecutive_failures
 
     # WAF 全局冷却中：直接跳过（避免继续撞墙浪费请求）
-    if time.time() < _waf_blocked_until:
-        return None
+    with _waf_lock:
+        if time.time() < _waf_blocked_until:
+            return None
 
     prefix = "sh" if code.startswith("6") else "sz"
     symbol = f"{prefix}{code}"
@@ -216,15 +236,17 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     last_err = None
     for attempt in range(KLINE_RETRIES):
         # 冷却中则中止本轮重试
-        if time.time() < _waf_blocked_until:
-            return None
+        with _waf_lock:
+            if time.time() < _waf_blocked_until:
+                return None
         try:
             resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
             # WAF 检测：腾讯返回 501 表示被防火墙拦截 → 全局冷却
             if resp.status_code == 501:
-                _waf_blocked_until = time.time() + WAF_COOLDOWN
-                _consecutive_failures = 0
+                with _waf_lock:
+                    _waf_blocked_until = time.time() + WAF_COOLDOWN
+                    _consecutive_failures = 0
                 print(f"\n  [WAF] K线请求被拦截 {symbol}，全局冷却 {WAF_COOLDOWN}s")
                 return None
 
@@ -252,20 +274,27 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
                     result.append([date, open_p, high, low, close, volume])
 
             if len(result) >= 30:
-                _consecutive_failures = 0
+                with _waf_lock:
+                    _consecutive_failures = 0
                 return result
             last_err = f"K线不足({len(result)}根)"
             time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
 
         except Exception as e:
             last_err = str(e)
-            _consecutive_failures += 1
             # 连续失败 → 退避冷却（避免触发更严格的封禁）
-            if _consecutive_failures >= CONSECUTIVE_COOLDOWN:
-                wait = min(60, _consecutive_failures * 5)
-                print(f"\n  连续失败 {_consecutive_failures} 次，暂停 {wait}s")
+            # ★ 加锁只保护计数，sleep 必须放在锁外（否则并发线程全被串成串行）
+            with _waf_lock:
+                _consecutive_failures += 1
+                _cf = _consecutive_failures
+                if _cf >= CONSECUTIVE_COOLDOWN:
+                    wait = min(60, _cf * 5)
+                    _consecutive_failures = 0
+                else:
+                    wait = 0
+            if wait:
+                print(f"\n  连续失败 {_cf} 次，暂停 {wait}s")
                 time.sleep(wait)
-                _consecutive_failures = 0
             elif attempt < len(RETRY_BACKOFF):
                 time.sleep(RETRY_BACKOFF[attempt])
 
@@ -273,43 +302,80 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
 
 
 def _throttle(index: int) -> None:
-    """节流：随机间隔避免固定节奏被识别为爬虫；每 50 只额外停顿让 WAF 松弛。"""
+    """节流：随机间隔避免固定节奏被识别为爬虫；每 50 只额外停顿让 WAF 松弛。
+
+    并发模式（workers>1）下线程本身已分摊节奏，这里只保留轻微抖动，
+    否则 N 个线程各睡 0.3~0.8s 会把并发收益又抵消掉。
+    """
     time.sleep(0.3 + random.random() * 0.5)
     if index % 50 == 0 and index > 0:
         time.sleep(1.5)
 
 
-def fetch_all_klines(codes: List[str], days: int) -> Dict:
+def _throttle_concurrent(index: int) -> None:
+    """并发模式下的轻量节流（每线程内仍保持随机性，但间隔短得多）。"""
+    time.sleep(random.random() * 0.15)
+
+
+def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
     """
     批量获取 K 线数据（最多两轮：首轮 + 失败重试，重试前整体停顿让 WAF 冷却）
+
+    workers: 并发线程数。默认 1 = 原串行行为（前端包 1564 只×150 天，稳定优先）。
+             后端包传 5~6：~700 只×750 根，串行实测顶穿 90 分钟 job 上限，
+             并发后压到 1/5 时长；WAF 冷却状态已加锁，触发时所有线程一起让路。
+             ★ 不建议 >8：腾讯是 IP 级限流，过高并发会直接撞 501 全局冷却。
     """
     result = {}
     total = len(codes)
     pending = list(codes)
+    workers = max(1, int(workers or 1))
 
     for round_no in range(2):
         if not pending:
             break
         failed = []
-        for i, code in enumerate(pending):
-            klines = fetch_kline(code, days)
-            if klines:
-                result[code] = klines
+        done_n = 0
+
+        def _one(idx_code):
+            idx, code = idx_code
+            kl = fetch_kline(code, days)
+            if workers > 1:
+                _throttle_concurrent(idx)
             else:
-                failed.append(code)
+                _throttle(idx)
+            return code, kl
 
-            # 进度显示（WAF 冷却中也会快速跳过，计数不撒谎）
-            if (i + 1) % 50 == 0 or i == len(pending) - 1:
-                print(f"  K线: {len(result)}/{total} 成功 (第{round_no+1}轮 {i+1}/{len(pending)})", end="\r")
-
-            _throttle(i)
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                for code, kl in pool.map(_one, enumerate(pending)):
+                    done_n += 1
+                    if kl:
+                        result[code] = kl
+                    else:
+                        failed.append(code)
+                    if done_n % 50 == 0 or done_n == len(pending):
+                        print(f"  K线: {len(result)}/{total} 成功 "
+                              f"(第{round_no+1}轮 {done_n}/{len(pending)})", end="\r")
+        else:
+            for i, code in enumerate(pending):
+                _, kl = _one((i, code))
+                done_n += 1
+                if kl:
+                    result[code] = kl
+                else:
+                    failed.append(code)
+                if (done_n) % 50 == 0 or done_n == len(pending):
+                    print(f"  K线: {len(result)}/{total} 成功 "
+                          f"(第{round_no+1}轮 {done_n}/{len(pending)})", end="\r")
 
         print(f"\n  第{round_no + 1}轮完成: {len(result)}/{total} 成功，"
               f"{len(failed)} 只待重试")
         if round_no == 0 and failed:
-            # 重试前停顿，让限流窗口恢复
-            print(f"  等待 8s 后重试失败股票...")
-            time.sleep(8)
+            # 重试前停顿，让限流窗口恢复（并发模式下给足冷却时间）
+            wait_s = 15 if workers > 1 else 8
+            print(f"  等待 {wait_s}s 后重试失败股票...")
+            time.sleep(wait_s)
         pending = failed
 
     print(f"  K线完成: {len(result)}/{total} 成功")
