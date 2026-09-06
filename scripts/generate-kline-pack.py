@@ -222,10 +222,15 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     """
     global _waf_blocked_until, _consecutive_failures
 
-    # WAF 全局冷却中：直接跳过（避免继续撞墙浪费请求）
+    # WAF 冷却中：睡满冷却再继续请求，而不是跳过。
+    # ★ 2026-09-07 实测教训：并发拉 1442 只时腾讯在 ~889 只处触发 501 → 全局冷却
+    #   120s。若这里直接 return None，冷却期间的股票全被计失败（553 只×两轮全丢，
+    #   889/1442=61.7% 触发 80% 护栏中止）。改为「睡满再拉」：只有触发 501 的那
+    #   一只损失，其余自动续上（代价是多等一个冷却周期，远端不损失股票）。
     with _waf_lock:
-        if time.time() < _waf_blocked_until:
-            return None
+        remain = _waf_blocked_until - time.time()
+    if remain > 0:
+        time.sleep(min(remain + 1.0, WAF_COOLDOWN + 5))
 
     prefix = "sh" if code.startswith("6") else "sz"
     symbol = f"{prefix}{code}"
@@ -325,8 +330,13 @@ def _throttle(index: int) -> None:
 
 
 def _throttle_concurrent(index: int) -> None:
-    """并发模式下的轻量节流（每线程内仍保持随机性，但间隔短得多）。"""
-    time.sleep(random.random() * 0.15)
+    """并发模式下的节流：每线程约 2~3 req/s（×5 线程 ≈ 10-15 req/s）。
+
+    ★ 2026-09-07 实测教训：0~0.15s 轻节流（≈50 req/s）在 ~889 只处触发腾讯 501；
+      前端包串行 ≈1.6 req/s 从不触发。并发必须配节流——否则只是把超时换成封禁。
+      若仍偶发 501，fetch_kline 开头的冷却等待会兜底续拉，不会整批丢失。
+    """
+    time.sleep(0.4 + random.random() * 0.3)
 
 
 def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
@@ -343,7 +353,7 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
     pending = list(codes)
     workers = max(1, int(workers or 1))
 
-    for round_no in range(2):
+    for round_no in range(3):
         if not pending:
             break
         failed = []

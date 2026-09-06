@@ -65,7 +65,7 @@ def _load_recent_flow(codes: list, days: int = 10) -> dict:
     if not codes:
         return {}
     try:
-        from app import db
+        from app.database import db  # 与 backend/app/mainforce/flow.py 同源
         from datetime import date as _date, timedelta
         cutoff = (_date.today() - timedelta(days=days + 12)).isoformat()
         sql = ("SELECT code, date, main_net, main_pct FROM mainflow_history "
