@@ -659,7 +659,14 @@ async def zz_finance_sync_loop():
                         "SELECT DISTINCT code FROM stock_finance "
                         "WHERE length(code) = 6 AND substr(code, 1, 1) IN ('0', '3', '6') "
                         "ORDER BY code")
-                    return sync_latest_finance([r["code"] for r in (rows or [])])
+                    main_stats = sync_latest_finance([r["code"] for r in (rows or [])])
+                    # L3 连续失血跟踪的数据底座：近 4 期全市场 OCF 历史
+                    try:
+                        from app.mainforce.l3_history import sync_ocf_history
+                        main_stats["ocf_hist"] = sync_ocf_history(4)
+                    except Exception as oe:
+                        print(f"[scheduler] OCF 历史同步失败（不影响主表）: {oe}")
+                    return main_stats
 
                 stats = await asyncio.to_thread(_sync)
                 store.mark_schedule_done(task_key)

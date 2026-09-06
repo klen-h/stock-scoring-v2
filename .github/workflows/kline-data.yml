@@ -4,7 +4,7 @@ on:
   # 每日收盘后自动运行（北京时间 16:00 = UTC 08:00）
   schedule:
     - cron: '0 8 * * 1-5'  # 周一到周五
-  
+
   # 支持手动触发（用于测试）
   # 注意：建议在收盘后（北京时间 16:00 后）运行，盘中拉取会被腾讯限流且当日K线不完整
   workflow_dispatch:
@@ -20,47 +20,131 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  generate:
+  # ── Job 1：前端包（全市场行情拉取 + 1564 只×150 天）─────────────
+  # 独立 runner = 独立出口 IP：与后端包的腾讯限流窗口不叠加
+  # （同 IP 串行双拉曾把后端行情批次打到全线超时，2026-09-06 实测）
+  frontend-pack:
+    name: 前端包（行情拉取 + K线包）
     runs-on: ubuntu-latest
-    timeout-minutes: 120   # 前端包(3000只×150天) + 后端包(1394只×500天) 串行，放宽到 2h
-    
+    timeout-minutes: 60
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
+
+      - name: Install dependencies
+        run: pip install -q -r backend/requirements.txt
+
+      - name: Generate K-line data package (frontend)
+        # ★ 全市场行情拉取后落盘 realtime-quotes.json——后端 job 通过 artifact 复用（0 请求）
+        run: |
+          python scripts/generate-kline-pack.py \
+            --output-dir ./data/kline \
+            --quotes-file ./data/kline/realtime-quotes.json \
+            --days ${{ github.event.inputs.days || 150 }}
+
+      - name: Upload Pages artifacts (kline packs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: kline-pages
+          path: |
+            ./data/kline/kline-pack-latest.json.gz
+            ./data/kline/kline-pack-*.json.gz
+          retention-days: 3
+
+      - name: Upload quotes artifact (backend reuse)
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtime-quotes
+          path: ./data/kline/realtime-quotes.json
+          retention-days: 3
+
+      - name: Upload artifact (for debugging)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kline-data-debug
+          path: ./data/kline/
+          retention-days: 7
+
+  # ── Job 2：后端包（质量池 ~750 只×750 根 + 预计算指标）─────────────
+  # needs frontend-pack：复用其落盘的全市场行情（artifact 传递，0 请求），
+  # 且 fresh runner 的 IP 配额独立——两个包不再叠加同一个 IP 的限流
+  backend-pack:
+    name: 后端包（K线 + 预计算指标）
+    needs: frontend-pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
       - name: Install dependencies
         # 装完整 requirements（含 fastapi）：generate_backend_pack 复用后端
         # compute_latest_indicators，其导入链会牵出 fastapi 等依赖，
         # 精简安装会在指标计算步骤全军覆没（2026-09-05 实测）
         run: pip install -q -r backend/requirements.txt
-      
+
       - name: Smoke import (fail fast on scheduler/router breaks)
         run: |
           cd backend
           python -c "import app.main; print('smoke import ok')"
-      
-      - name: Generate K-line data package (frontend)
-        run: |
-          python scripts/generate-kline-pack.py \
-            --output-dir ./data/kline \
-            --days ${{ github.event.inputs.days || 150 }}
-      
-      # 后端数据包（500根K线+预计算指标）：DATA_SOURCE=pack/local 读取层用，
-      # 让 Render/本地不再读 Supabase 肥表（egress 根治）。
+
+      - name: Download shared realtime quotes
+        uses: actions/download-artifact@v4
+        with:
+          name: realtime-quotes
+          path: ./data/kline
+
+      # 后端数据包（质量池 ~750 只×750根K线+预计算指标）：DATA_SOURCE=pack/local
+      # 读取层用，让 Render/本地不再读 Supabase 肥表（egress 根治）。
       # DATABASE_URL 仅用于读代码清单（~11KB），未配置时自动退化为市值前800。
       - name: Generate backend data pack (klines + indicators)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scripts/generate_backend_pack.py --output-dir ./data/kline
-      
+
+      - name: Upload Pages artifacts (backend pack + indicators)
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-pages
+          path: |
+            ./data/kline/backend-pack.db.gz
+            ./data/kline/indicators-pack.json.gz
+          retention-days: 3
+
+  # ── Job 3：发布到 GitHub Pages（两包齐了再发，避免半包上线）─────────────
+  deploy-pages:
+    name: 发布 GitHub Pages
+    needs: [frontend-pack, backend-pack]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download all pack artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-pages'
+          path: ./data/kline
+          merge-multiple: true
+
       - name: Upload to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -71,12 +155,4 @@ jobs:
           keep_files: true  # 保留其他文件，只更新 data 目录
           user_name: 'github-actions[bot]'
           user_email: 'github-actions[bot]@users.noreply.github.com'
-          commit_message: 'chore: update kline data package'
-      
-      - name: Upload artifact (for debugging)
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: kline-data
-          path: ./data/kline/
-          retention-days: 7
+          commit_message: 'chore: update kline data package (frontend + backend)'
