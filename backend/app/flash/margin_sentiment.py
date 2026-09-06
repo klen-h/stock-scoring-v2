@@ -29,6 +29,8 @@
 ================================================================================
 """
 
+from __future__ import annotations  # 兼容 Python 3.9（Render/Docker/CI）：允许 -> dict | None 注解
+
 import os
 import time
 from datetime import datetime, timedelta

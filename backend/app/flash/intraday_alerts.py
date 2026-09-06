@@ -25,6 +25,8 @@
 ================================================================================
 """
 
+from __future__ import annotations  # 兼容 Python 3.9（Render/Docker/CI）：允许 -> dict | None 注解
+
 from datetime import datetime, timedelta
 from typing import Dict, List
 

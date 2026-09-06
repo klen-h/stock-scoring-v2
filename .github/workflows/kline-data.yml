@@ -42,6 +42,11 @@ jobs:
         # 精简安装会在指标计算步骤全军覆没（2026-09-05 实测）
         run: pip install -q -r backend/requirements.txt
       
+      - name: Smoke import (fail fast on scheduler/router breaks)
+        run: |
+          cd backend
+          python -c "import app.main; print('smoke import ok')"
+      
       - name: Generate K-line data package (frontend)
         run: |
           python scripts/generate-kline-pack.py \
