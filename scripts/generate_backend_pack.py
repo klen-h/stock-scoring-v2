@@ -141,9 +141,38 @@ def main():
     except Exception:
         etf_codes = []
     sb_codes = [c for c in supabase_kline_codes() if c in quotes]
-    pool = list(dict.fromkeys(sb_codes + cap_codes + ["sh000300"] + etf_codes))
-    print(f"\n[2/4] 股票池: Supabase 清单 {len(sb_codes)} ∪ 市值前 "
-          f"{len(cap_codes)} ∪ 指数/ETF {1 + len(etf_codes)} = {len(pool)} 只")
+    pool_all = list(dict.fromkeys(sb_codes + cap_codes + ["sh000300"] + etf_codes))
+
+    # ★ 质量减法（2026-09-06，Actions 2h 超时对策）：剔除
+    #   科创/创业（688/689/300/301/302，评分与战法池本就排除）、
+    #   ST/亏损（PE<=0）、总市值<50亿（与战法扫描 50亿门槛对齐）。
+    #   这些股票在评分/排行/战法全链路都不会被消费，拉 750 根日线纯属
+    #   浪费腾讯配额与 Actions 时长（实测 1394 只 → 预计 ~700 只）。
+    #   指数/ETF（非 6 位码）不受过滤。
+    def _pack_quality(code: str, q: dict) -> bool:
+        if len(code) != 6 or not code.isdigit():
+            return True                      # 指数/ETF 保留
+        name = (q.get("name") or "").replace(" ", "").upper()
+        if name.startswith(("ST", "*ST", "SST")):
+            return False
+        if code.startswith(("688", "689", "300", "301", "302")):
+            return False
+        if (q.get("pe") or 0) <= 0:          # 亏损或无盈利数据
+            return False
+        if (q.get("market_cap") or 0) < 50:  # 亿元（gkp 实时行情口径）
+            return False
+        return True
+
+    kept_stocks = [c for c in pool_all
+                   if len(c) == 6 and c not in ("sh000300",)
+                   and _pack_quality(c, quotes.get(c) or {})]
+    # 市值降序拉取：即使超时中断，质量池（大市值优先）已完整落包
+    kept_stocks.sort(key=lambda c: (quotes.get(c) or {}).get("market_cap") or 0,
+                     reverse=True)
+    pool = ["sh000300"] + [c for c in etf_codes] + kept_stocks
+    dropped = len(pool_all) - len(pool)
+    print(f"\n[2/4] 股票池: 全量 {len(pool_all)} → 质量过滤后 {len(pool)} 只"
+          f"（剔除科创创业/ST/亏损/<50亿 共 {dropped} 只），市值降序拉取")
 
     # 3. 拉 ~750 根交易日线（复用两轮重试 + WAF 退避）
     #    ★ fetch 的 days 参数是"日历天"（起点 now-(days+30)），500 会被起点卡成
