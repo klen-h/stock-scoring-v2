@@ -70,7 +70,7 @@ def strategies_list():
 async def scan_strategy(
     strategy_name: str,
     background_tasks: BackgroundTasks,
-    min_market_cap: float = Query(20e8, description="最小市值（元）"),
+    min_market_cap: float = Query(50e8, description="最小市值（元）"),
     min_avg_volume: float = Query(1000e4, description="最小日均成交额（元）"),
     force: bool = Query(False, description="强制重新扫描（忽略缓存）"),
 ):
@@ -282,11 +282,19 @@ def get_stock_detail(strategy_name: str, code: str):
             signal = s
             break
     
+    # ★ 数据新鲜度标注（2026-09-06）：signal 来自扫描落库快照（含介入价/止损/目标），
+    #   klines 为实时拉取。落库快照若陈旧（历史 WAF 兜底遗留），前端据此提示。
+    item_klines = (signal or {}).get("klines") or []
+    kline_last = klines[-1]["date"] if klines else None
+    stale = bool(item_klines and kline_last
+                 and str(item_klines[-1].get("date", "")) < str(kline_last))
     return {
         "code": code,
-        "klines": klines[-10:],  # 最近10根K线
+        "klines": klines[-10:],  # 最近10根K线（实时拉取）
+        "kline_last_date": kline_last,
         "position_pct": position,
-        "signal": signal,  # 包含 entry_price, stop_loss, target_price 等
+        "signal": signal,  # 包含 entry_price, stop_loss, target_price 等（扫描时点计算）
+        "signal_stale": stale,
     }
 
 

@@ -171,6 +171,14 @@ def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -
             exec_hint += "；离场按 v2 策略：持有 3 个交易日或 -7% 硬止损，不挂固定目标价"
     except Exception:
         pass
+    # 买入三条件 + 建议仓位（主力筹码 × regime 规则化，mainforce/trade_gate）
+    try:
+        from app.mainforce.trade_gate import evaluate, render_advice
+        gate = evaluate(code)
+        if gate.get("active"):
+            exec_hint += f"｜{render_advice(gate)}"
+    except Exception:
+        pass
     lines = [
         f"## 🎯 战法买入信号 · {zh}",
         f"📈 **{name}({code})**  参考介入 **{entry:.2f}**（{sig_date}）",

@@ -25,6 +25,7 @@ TYPE_CN = {
     "price_vs_volume": "指数量价背离",
     "northbound_vs_index": "北向资金与指数背离",
     "index_vs_mainflow": "指数与主力资金流背离",
+    "sentiment_vs_margin": "散户情绪与两融背离",
     "calendar_surprise": "宏观数据预期差",
     "today_calendar_focus": "今日重点关注数据",
     "financial_report_gap": "财报断层（盈利质量）",
@@ -66,6 +67,11 @@ METRIC_CN = {
     "surprise_count": "超预期数据个数",
     "focus_count": "重点关注个数",
     "top_events": "重点事件",
+    # 情绪 vs 两融
+    "sentiment_score": "情绪温度计",
+    "margin_bal_yi": "两融余额(亿)",
+    "margin_chg5_yi": "两融5日净变化(亿)",
+    "hot_subs": "过热子项",
     # L3 财报断层
     "checked_count": "检查公司数",
     "ocf_ni_gap_count": "净现比断层只数",

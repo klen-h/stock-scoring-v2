@@ -436,6 +436,15 @@ def _holdings_radar() -> list:
         if code in gap_codes:
             flags.append("⚠️ 财报断层（有利润但经营现金流为负）")
             advice = "盈利质量预警，反弹减仓规避财报季"
+
+        # 建议仓位（买入三条件规则化：主力筹码 × regime，mainforce/trade_gate）
+        try:
+            from app.mainforce.trade_gate import evaluate
+            g = evaluate(code, mf=m)
+            if g.get("active"):
+                advice += f"（建议仓位 {g['position_pct']}%/{g['position_label']}）"
+        except Exception:
+            pass
         if flags:
             out.append({**p, "flags": flags, "advice": advice})
     return out
@@ -538,6 +547,19 @@ def build_data_md() -> str:
             add("- ⚠️ 北向大幅净流出，外资离场信号")
     else:
         add("- 北向资金数据暂缺")
+
+    # 1.3b 两融与情绪（金十：两融明细 + 情绪温度计，数据层补充的"融资+散户情绪"）
+    try:
+        from app.flash.margin_sentiment import margin_line, sentiment_line
+        m_line, s_line = margin_line(), sentiment_line()
+        if m_line or s_line:
+            add("\n### 1.3b 两融与情绪温度计\n")
+            if m_line:
+                add(f"- {m_line}")
+            if s_line:
+                add(f"- {s_line}")
+    except Exception as e:
+        print(f"[daily_report] 两融/情绪小节失败: {e}")
 
     # 1d ETF 关键资产 + 缺失警示
     add("\n### 1.4 ETF 关键资产\n")

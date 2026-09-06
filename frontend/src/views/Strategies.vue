@@ -353,6 +353,11 @@
           </div>
 
           <!-- 关键价位 -->
+          <div v-if="detailStale"
+            class="mb-2 px-3 py-2 rounded text-xs bg-amber-500/10 border border-amber-500/20 text-amber-400">
+            ⚠️ 介入价/止损/目标为扫描时点计算，当前 K 线已更新至 {{ detailKlineDate }}——
+            介入价 ≈ 扫描日收盘，请以最新价格复核盈亏比后再决策
+          </div>
           <div class="grid grid-cols-3 gap-4">
             <div class="bg-white/5 rounded-lg p-3">
               <div class="text-xs text-muted">介入价</div>
@@ -1024,12 +1029,14 @@ const rsiSignals = ref(null)
 
 // 筛选
 const filterConfidence = ref('')
-const filterMinCap = ref(20)
+const filterMinCap = ref(50)
 
 // 详情弹窗
 const showDetail = ref(false)
 const detailStock = ref(null)
 const detailKlines = ref([])
+const detailStale = ref(false)
+const detailKlineDate = ref('')
 
 // ── 加载战法列表 ──
 async function loadStrategies() {
@@ -1244,6 +1251,8 @@ async function saveWatchPool() {
 async function viewDetail(stock) {
   detailStock.value = stock
   detailKlines.value = stock.klines || []
+  detailStale.value = false
+  detailKlineDate.value = ''
   showDetail.value = true
   
   // 清空旧数据
@@ -1258,6 +1267,8 @@ async function viewDetail(stock) {
     try {
       const { data } = await getStrategyDetail(currentStrategy.value.name_en, stock.code)
       if (data?.klines?.length) detailKlines.value = data.klines
+      detailStale.value = !!data?.signal_stale
+      detailKlineDate.value = data?.kline_last_date || ''
     } catch (e) { /* 拉取失败保留扫描快照 */ }
   }
 }

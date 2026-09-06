@@ -348,6 +348,89 @@ async def daily_report_loop():
 CONTRADICTION_SCAN_WINDOW = (935, 1440)   # 15:35-23:59
 CONTRADICTION_REPORT_WINDOW = (940, 1440) # 15:40-23:59
 
+# ── 先知雷达·午间预警（盘中时效补充，11:35-13:00 跑一次）──
+# 只跑可用盘中数据判定的 L2 维度：指数vs宽度（实时缓存）、板块叙事vs资金
+# （东财 sector_flow 盘中实时）、北向vs指数（实时）。量价/主力资金流/两融
+# 情绪为 T-1/盘后口径，盘中跑是伪信号 → 留给 15:35 全量扫描。
+# 结果不落库（15:35 全量扫描才是当日正式记录），仅企微推送预警。
+MIDDAY_RADAR_WINDOW = (695, 780)   # 北京时间 11:35-13:00
+
+
+from app.flash.intraday_alerts import check_risk_alerts  # noqa: E402
+
+
+def _run_midday_scan() -> dict:
+    """午间雷达扫描（同步）：三个盘中可判维度，severe/obvious 才推。"""
+    from app.contradictions import scanner
+    # 北向维度已弃用（2024-05 起停止披露，数据恒 0）
+    from app.contradictions.scanner import (
+        scan_index_vs_breadth, scan_sector_narrative_vs_flow)
+    scanner.set_realtime_mode(True)
+    try:
+        items = [x for x in (scan_index_vs_breadth(),
+                             scan_sector_narrative_vs_flow()) if x]
+    finally:
+        scanner.set_realtime_mode(False)
+    alerts = [x for x in items if x.get("severity") in ("severe", "obvious")]
+    if alerts:
+        lines = []
+        for x in alerts:
+            sev = "🔴" if x["severity"] == "severe" else "🟡"
+            body = (f"{sev} **{x['title']}**（{x['severity']}）" + chr(10)
+                    + x['summary'] + chr(10) + "> " + x.get('signal', ''))
+            lines.append(body)
+        try:
+            from app.flash.wechat import push_markdown_batched
+            nl = chr(10)
+            push_markdown_batched(
+                "先知雷达·午间预警",
+                (nl * 2).join(lines) + nl * 2 + "> 午间快扫基于盘中实时数据，收盘 15:35 全量扫描为准",
+                force=True)
+        except Exception as e:
+            print(f"[scheduler] 午间预警推送失败: {e}")
+    return {"found": len(items), "alerted": len(alerts)}
+
+
+def _trading_session_now() -> bool:
+    """交易时段判断（含 9:40 后与尾盘）：供盘中警示循环使用。"""
+    from app.flash.intraday_alerts import _trading_session
+    return _trading_session()
+
+
+async def intraday_alert_loop():
+    """盘中风险警示：交易时段每 30 分钟检查一次（北向流出/涨跌比/跌停家数），
+    触发极端阈值才推企微（每类每日一次 + 全局 30 分钟最小间隔防骚扰）。"""
+    while True:
+        if _trading_session_now():
+            try:
+                stats = await asyncio.to_thread(check_risk_alerts)
+                if stats.get("pushed"):
+                    status["last_intraday_alert"] = rules.beijing_now().isoformat()
+            except Exception as e:
+                print(f"[scheduler] 盘中风险警示失败: {e}")
+        await asyncio.sleep(1800)
+
+
+async def midday_radar_loop():
+    """工作日午休触发一次午间雷达（盘中时效：下午开盘前给出预警）。"""
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and MIDDAY_RADAR_WINDOW[0] <= t < MIDDAY_RADAR_WINDOW[1]
+                and not store.is_schedule_done("midday_radar")):
+            try:
+                stats = await asyncio.to_thread(_run_midday_scan)
+                store.mark_schedule_done("midday_radar")
+                status["last_midday_radar"] = rules.beijing_now().isoformat()
+                print(f"[scheduler] 午间雷达完成: {stats}")
+            except Exception as e:
+                print(f"[scheduler] 午间雷达失败: {e}")
+                _notify_failure("午间雷达", str(e))
+        await asyncio.sleep(120)
+
+
+
+
 
 async def contradiction_scan_loop():
     """每日收盘后自动运行 L2 行为背离扫描。"""
@@ -656,7 +739,7 @@ def scan_all_strategies() -> dict:
             print(f"[scheduler] 战法 {key} 未准入（{admit_reason}），跳过扫描")
             continue
         try:
-            results = _do_scan(strategy, 20e8, 1000e4)
+            results = _do_scan(strategy, 50e8, 1000e4)
             save_scan_result(key, results)
             stats["scanned"] += 1
             stats["signals"] += len(results)
@@ -1476,6 +1559,8 @@ async def start():
              asyncio.create_task(score_snapshot_loop()),
              asyncio.create_task(market_snapshot_loop()),
              asyncio.create_task(daily_report_loop()),
+             asyncio.create_task(midday_radar_loop()),
+             asyncio.create_task(intraday_alert_loop()),
              asyncio.create_task(contradiction_scan_loop()),
              asyncio.create_task(contradiction_report_loop()),
              asyncio.create_task(news_alert_loop()),

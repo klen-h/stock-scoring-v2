@@ -27,8 +27,27 @@ def _today(date: Optional[str] = None) -> str:
     return beijing_now().strftime("%Y-%m-%d")
 
 
+# 午间扫描实时模式：True 时跳过 15:10 收盘快照（盘后落库），直接用
+# 内存实时缓存（stock_cache_refresh_loop 盘中每 2-3 分钟刷新）——
+# 否则午间会拿"昨日宽度 × 今日指数"的混口径数据
+_REALTIME_MODE = False
+
+
+def set_realtime_mode(on: bool) -> None:
+    global _REALTIME_MODE
+    _REALTIME_MODE = on
+
+
 def _load_market_snapshot() -> Dict:
-    """加载收盘行情快照；若不存在，回退到内存缓存。"""
+    """加载行情快照；实时模式下优先内存缓存，否则收盘快照优先、内存兜底。"""
+    if _REALTIME_MODE:
+        try:
+            from app.tencent import _cache
+            stocks = _cache.get("stocks", {})
+            if stocks:
+                return {"stocks": stocks, "saved_at": None}
+        except Exception:
+            pass
     try:
         from app.flash import store
         snap = store.load_market_snapshot()
@@ -343,9 +362,12 @@ def scan_price_vs_volume(date: Optional[str] = None) -> Optional[Dict]:
 
 
 def scan_northbound_vs_index(date: Optional[str] = None) -> Optional[Dict]:
-    """指数红盘 vs 北向大幅净流出。
+    """【已弃用 2026-09-06】指数红盘 vs 北向大幅净流出。
 
-    触发条件：任一主要指数涨 > 0，且北向净流出 > 5 亿。
+    ★ 交易所 2024-05-13 起取消北向盘中/净买入披露，东财 kamt.rtmin 接口
+    存活但全天返回 0 → 本扫描器永不触发，已从 L2_SCANNERS 注册表移除。
+    保留函数体仅为历史数据兼容；机构/杠杆行为改由
+    sentiment_vs_margin（两融）与 index_vs_mainflow（主力资金流）覆盖。
     """
     indices = _load_index_quotes()
     nb = _load_northbound()
@@ -563,6 +585,70 @@ def scan_today_calendar_focus(date: Optional[str] = None) -> Optional[Dict]:
     }
 
 
+# ── L2：散户情绪 vs 两融（金十情绪温度计 + 两融明细，六维背离的"散户"维度）──
+
+def scan_sentiment_vs_margin(date: Optional[str] = None) -> Optional[Dict]:
+    """情绪温度计 vs 杠杆资金的背离（L2 散户维度，此前数据源缺失已补）。
+
+    叙事层：情绪温度计（巴菲特指标/换手/开户数等 12 子项，金十打分 0-100）
+    行为层：两融余额 5 日净变化（杠杆资金真金白银的进退）
+    背离判定：
+      - 温度 ≥70（炎热）但两融 5 日净减 → 情绪热、杠杆撤 = 拉高出货结构（bearish）
+      - 温度 ≤30（寒冷）但两融 5 日净增 → 情绪冰点、杠杆进场 = 左侧吸筹（bullish）
+    """
+    from app.flash.margin_sentiment import get_margin, get_sentiment
+    sent = get_sentiment()
+    mgn = get_margin()
+    if not sent or not mgn:
+        return None
+    score = sent.get("score") or 0
+    chg5 = mgn.get("fund_bal_chg5")
+    if chg5 is None:
+        return None
+
+    if score >= 70 and chg5 < 0:
+        hot = [x for x in sent.get("subs") or [] if (x.get("score") or 0) >= 80]
+        hot_desc = "、".join(f"{x['name']}{x['score']:.0f}分" for x in hot[:3])
+        return {
+            "level": "L2",
+            "type": "sentiment_vs_margin",
+            "severity": "severe" if chg5 < -200 else "obvious",
+            "title": "情绪炎热，杠杆资金撤离",
+            "summary": (f"情绪温度计 {score:.0f} 分（炎热区）"
+                        + (f"，过热子项：{hot_desc}" if hot_desc else "")
+                        + f"，但两融余额 5 日净减 {abs(chg5):.0f} 亿。"
+                          f"散户情绪被点燃、杠杆资金在兑现——拉高出货的典型结构。"),
+            "evidence": {
+                "narrative": "情绪指标进入炎热区，市场亢奋",
+                "actual": "两融余额连续净减，杠杆资金离场",
+                "metrics": {"sentiment_score": round(score, 1),
+                            "margin_bal_yi": mgn.get("fund_bal"),
+                            "margin_chg5_yi": chg5,
+                            "hot_subs": [x["name"] for x in hot[:5]]},
+            },
+            "signal": "情绪顶多伴随杠杆退潮，反弹减仓而非追高；关注吸筹区个股的错杀机会。",
+        }
+    if score <= 30 and chg5 > 0:
+        return {
+            "level": "L2",
+            "type": "sentiment_vs_margin",
+            "severity": "obvious",
+            "title": "情绪冰点，杠杆资金进场",
+            "summary": (f"情绪温度计 {score:.0f} 分（寒冷区），"
+                        f"但两融余额 5 日净增 {chg5:.0f} 亿。"
+                        f"恐慌盘被杠杆资金接走——左侧吸筹结构。"),
+            "evidence": {
+                "narrative": "情绪指标进入寒冷区，市场恐慌",
+                "actual": "两融余额逆势净增，杠杆资金进场",
+                "metrics": {"sentiment_score": round(score, 1),
+                            "margin_bal_yi": mgn.get("fund_bal"),
+                            "margin_chg5_yi": chg5},
+            },
+            "signal": "冰点+杠杆进场：避免恐慌割肉，关注吸筹区与龙虎榜净买重叠标的。",
+        }
+    return None
+
+
 # ── L2：指数 vs 全池主力资金流（mainforce 数据底座，2026-09-05 接入）──
 
 def scan_index_vs_mainflow(date: Optional[str] = None) -> Optional[Dict]:
@@ -639,8 +725,9 @@ L2_SCANNERS = [
     scan_index_vs_breadth,
     scan_sector_narrative_vs_flow,
     scan_price_vs_volume,
-    scan_northbound_vs_index,
+    # scan_northbound_vs_index 已弃用：北向净流入 2024-05 起停止披露（数据恒为 0）
     scan_index_vs_mainflow,
+    scan_sentiment_vs_margin,
 ]
 
 # L3 信息断层（财报季/结构性风险，低频更新，扫描时随全量一起跑）

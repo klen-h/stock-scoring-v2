@@ -33,7 +33,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 # ================================================================
 
 def filter_stock_pool(
-    min_market_cap: float = 20e8,        # 最小市值（元），默认20亿
+    min_market_cap: float = 50e8,        # 最小市值（元），默认50亿（2026-09-06 调整）
     min_avg_volume: float = 1000e4,      # 最小日均成交额（元），默认1000万
     exclude_st: bool = True,             # 排除ST
     exclude_star: bool = True,           # 排除科创板（688开头）
@@ -120,6 +120,21 @@ def filter_stock_pool(
 #  K线分析工具
 # ================================================================
 
+def _expected_latest_trading_day() -> str:
+    """最近一个"收盘数据已出"的交易日（YYYY-MM-DD）。
+    收盘数据约 15:30 后才稳定（腾讯结算 + 缓存刷新 15:30）。"""
+    from datetime import datetime, timedelta
+    from app.flash import rules
+    now = rules.beijing_now()
+    d = now.date()
+    if now.hour < 15 or (now.hour == 15 and now.minute < 30):
+        d -= timedelta(days=1)
+    hol = rules.HOLIDAYS.get(d.year) or []
+    while d.weekday() >= 5 or any(s <= (d.month, d.day) <= e for s, e, *_ in hol):
+        d -= timedelta(days=1)
+    return d.isoformat()
+
+
 def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
     """
     获取K线并计算常用指标。
@@ -137,23 +152,34 @@ def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
         trading_now = _is_trading_hours()
     except Exception:
         trading_now = False
+    expected_day = None
     if not trading_now:
+        # ★ 缓存优先但必须新鲜（2026-09-06 修复）：旧版只要缓存有数据就用，
+        #   某股 kline_cache 停在 8/26 时，扫描/详情会基于 8 天前的 K 线计算
+        #   介入价/止损/目标（用户实测：详情先显示 8/26 再跳 9/4）。
+        expected_day = _expected_latest_trading_day()
         try:
             from app.scoring.kline_cache import get_cached_klines
             cached = get_cached_klines(code)
             if cached and len(cached) >= 5:
-                klines = cached[-count:]
+                if cached[-1].get("date") >= expected_day:
+                    klines = cached[-count:]
+                # 陈旧缓存不用 → 走下方实时拉取
         except Exception:
             pass
     if not klines:
         klines = get_kline(code, period="day", count=count)
-    if not klines and trading_now:
-        # 盘中实时失败（WAF/网络）→ DB 缓存兜底，避免详情页 404
+    if not klines:
+        # 实时拉取失败（WAF/网络）→ DB 缓存兜底，避免详情页 404。
+        # 缓存可能陈旧：标记 _stale_cache 供调用方识别（宁可用旧图也不 404）
         try:
             from app.scoring.kline_cache import get_cached_klines
             cached = get_cached_klines(code)
             if cached and len(cached) >= 5:
                 klines = cached[-count:]
+                if expected_day and cached[-1].get("date") < expected_day:
+                    for row in klines:
+                        row["_stale_cache"] = True
         except Exception:
             pass
     if not klines or len(klines) < 5:
