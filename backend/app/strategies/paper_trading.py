@@ -381,6 +381,20 @@ def fill_pending_positions() -> dict:
     pending = db.fetch("SELECT * FROM paper_positions WHERE status='pending' ORDER BY created_at ASC")
     if not pending:
         return {"filled": 0, "cancelled": 0, "watched": 0}
+    # ★ 黑天鹅熔断：全市场跌停 ≥100 家 → 暂停所有买入确认（先知雷达风控联动）
+    try:
+        from app.flash.intraday_alerts import black_swan_active
+        if black_swan_active():
+            for p in pending:
+                db.execute(
+                    "UPDATE paper_positions SET status='cancelled', exit_reason='black_swan', "
+                    "fill_note='全市场跌停≥100家，熔断暂停买入', closed_at=%s WHERE id=%s",
+                    (_now_iso(), p["id"]))
+            print(f"[paper] ⚠️ 黑天鹅熔断：{len(pending)} 笔待确认信号全部取消买入")
+            return {"filled": 0, "cancelled": len(pending), "watched": 0,
+                    "black_swan": True}
+    except Exception as e:
+        print(f"[paper] 黑天鹅检查失败（正常执行确认）: {e}")
     codes = [p["code"] for p in pending]
     quotes = {q.get("code"): q for q in get_stocks_batch(codes) if q.get("code")}
     ratios = _calc_vol_ratios(codes, quotes)

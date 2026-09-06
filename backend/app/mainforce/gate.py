@@ -26,7 +26,7 @@
 
 import time
 
-from app.mainforce.chips import chip_metrics
+from app.mainforce.chips import chip_metrics, chip_series
 from app.mainforce.phases import detect_phase
 
 HIGH_POS_THRESHOLD = 0.75   # 筹码区间顶部（与验证口径一致）
@@ -122,9 +122,12 @@ def gate_states_for_signals(signals: list) -> dict:
     flow_map = load_flow_map()
     fs_map = _float_map()
     out = {}
-    from app.backtest.data import load_prices
+    # ★ 批量加载（单 IN 查询 + 6h 进程缓存，与战法回放路径共享）——
+    #   逐股 load_prices 是 253 次独立查询，曾把绩效接口拖到 30s 超时
+    from app.backtest.strategies import _load_prices_map
+    bars_map = _load_prices_map(set(by_code))
     for code, dates in by_code.items():
-        bars = load_prices(code, start="2025-01-01")
+        bars = bars_map.get(code)
         if not bars or len(bars) < 130:
             continue
         valid = [d for d in dates if bars[69]["date"] <= d <= bars[-1]["date"]]

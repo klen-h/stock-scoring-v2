@@ -42,6 +42,8 @@ from app.routers import user as user_router
 from app.routers import auth as auth_router
 from app.routers import backtest as backtest_router
 from app.routers import daily_report as report_router
+from app.routers import system as system_router
+from app.routers import performance as performance_router
 from app.strategies.router import router as strategies_router
 from app.routers.paper import router as paper_router
 
@@ -99,6 +101,18 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"[main] 数据包预下载失败（读侧将回退 DB）: {e}")
         asyncio.create_task(_pack_bootstrap())
+
+    # ★ 系统绩效预热（首访冷路径 30-60s → 启动后台预计算进 1h 缓存）：
+    #   delay 30s 错开数据包下载；失败静默（首访用户会触发在线计算）
+    async def _performance_warmup():
+        await asyncio.sleep(30)
+        try:
+            from app.routers.performance import system_performance
+            await asyncio.to_thread(system_performance, {"user_id": 0})
+            print("[main] 系统绩效预热完成（缓存 1h）")
+        except Exception as e:
+            print(f"[main] 系统绩效预热失败（首访时在线计算）: {e}")
+    asyncio.create_task(_performance_warmup())
     yield
     # ★ DATA_SOURCE=pack：启动后台预下载数据包（非阻塞，不拖慢服务可用）；
     #   就绪前读侧自动回退 DB 模式（get_cached_klines 等均有兜底）
@@ -170,7 +184,9 @@ app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])
 app.include_router(contradictions_router.router, prefix="/api/contradictions", tags=["矛盾扫描"])  # 三层矛盾扫描引擎
 app.include_router(backtest_router.router, prefix="/api/backtest", tags=["回测"])  # 历史回测/绩效报告
 app.include_router(strategies_router, prefix="/api/strategies", tags=["战法选股"])  # 量化战法扫描
-app.include_router(paper_router, prefix="/api/paper", tags=["模拟盘"])  # 纸面交易（模拟盘）
+app.include_router(paper_router, prefix="/api/paper", tags=["模拟盘"])
+app.include_router(system_router.router, prefix="/api/system", tags=["系统状态"])  # 数据新鲜度仪表盘
+app.include_router(performance_router.router, prefix="/api/system", tags=["系统绩效"])  # 三轨绩效对照
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）

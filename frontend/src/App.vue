@@ -144,6 +144,7 @@ const navGroups = [
     { path: '/report', label: '每日日报' },
     { path: '/contradictions', label: '矛盾扫描' },
     { path: '/backtest', label: '回测中心' },
+    { path: '/performance', label: '系统绩效' },
   ]},
 ]
 const openMenu = ref(null)

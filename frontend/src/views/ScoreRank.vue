@@ -302,7 +302,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 操作列：仅 Top 50，一键添加到持仓 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center" @click.stop>
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center space-x-1" @click.stop>
               <button v-if="!portfolioCodes?.has(item.code)"
                 @click="quickAddPosition(item)"
                 class="px-2 py-0.5 rounded text-[11px] bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
@@ -310,6 +310,13 @@
                 + 持仓
               </button>
               <span v-else class="text-[11px] text-muted">已持有</span>
+              <button v-if="!watchCodes.has(item.code)"
+                @click="quickAddWatch(item)"
+                class="px-2 py-0.5 rounded text-[11px] bg-white/5 text-muted hover:text-gray-200 hover:bg-white/10 transition-colors"
+                title="加入自选股">
+                + 自选
+              </button>
+              <span v-else class="text-[11px] text-muted">已自选</span>
             </td>
           </tr>
           <tr v-if="!tableData.length">
@@ -658,6 +665,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
+import { upsertUserWatch, getUserWatchlist } from '../api'
 import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache, getSnapshots, captureScoreSnapshot } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
@@ -691,6 +699,22 @@ let refreshTimer = null
 // ── 持仓联动 ──
 const { positions } = usePortfolio()
 const portfolioCodes = computed(() => new Set(positions.value.map(p => p.code)))
+
+// ── 自选联动 ──
+const watchCodes = ref(new Set())
+async function loadWatchCodes() {
+  try {
+    const { data } = await getUserWatchlist()
+    watchCodes.value = new Set((data || []).map(x => x.code))
+  } catch (e) { /* 未登录/无自选不阻塞排行 */ }
+}
+async function quickAddWatch(item) {
+  try {
+    await upsertUserWatch({ code: item.code, name: item.name,
+                            note: `评分${item.total_score} ${item.signal}` })
+    watchCodes.value = new Set([...watchCodes.value, item.code])
+  } catch (e) { alert('加自选失败：' + (e.response?.data?.detail || e.message)) }
+}
 
 // ── 排行榜可信度（连续上榜天数） ──
 const persistenceMap = ref({})  // { code: { consecutive_days, trust_score, trust_grade, advice } }
@@ -1320,7 +1344,8 @@ function stopAutoRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null }
 }
 
-onMounted(async () => {
+onMounted(() => {
+  loadWatchCodes()
   // 初始化前端评分系统（后台进行，不阻塞主流程）
   initFrontendScoring().then(result => {
     frontendInitialized.value = true

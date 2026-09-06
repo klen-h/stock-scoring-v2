@@ -91,15 +91,45 @@
       <h3 class="text-sm font-semibold text-muted mb-3">沪深300走势</h3>
       <div ref="indexChartRef" class="h-72"></div>
     </div>
+
+    <!-- 数据新鲜度仪表盘：盘后任务链 11 个环节的"最后更新"，断链一眼可见 -->
+    <div v-if="sysStatus" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold text-muted">数据新鲜度</h3>
+        <span class="text-xs"
+          :class="sysStaleCount ? 'text-amber-400' : 'text-emerald-400'">
+          {{ sysStatus.summary }}
+        </span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+        <div v-for="src in sysStatus.sources" :key="src.name"
+          class="px-2.5 py-2 rounded text-xs cursor-default"
+          :class="src.status === 'ok' ? 'bg-emerald-500/10 border border-emerald-500/20'
+                 : src.status === 'stale' ? 'bg-amber-500/10 border border-amber-500/20'
+                 : 'bg-red-500/10 border border-red-500/20'"
+          :title="`${src.name}：最新 ${src.last || '无数据'}（${src.cadence}）`">
+          <div class="flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full shrink-0"
+              :class="src.status === 'ok' ? 'bg-emerald-400' : src.status === 'stale' ? 'bg-amber-400' : 'bg-red-400'"></span>
+            <span class="truncate">{{ src.name }}</span>
+          </div>
+          <div class="text-[10px] text-muted mt-1 font-mono">
+            {{ src.last || '无数据' }}<span v-if="src.lag_days"> · 落后{{ src.lag_days }}天</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis } from '../api'
+import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis, getSystemStatus } from '../api'
 
 const overview = ref({ indices: [], stats: {} })
+const sysStatus = ref(null)
+const sysStaleCount = ref(0)
 const temp = ref({})
 const macro = ref({})
 const flashDiag = ref(null)
@@ -142,7 +172,16 @@ function fmtScore(v) {
   return (n > 0 ? '+' : '') + n.toFixed(2)
 }
 
+async function loadSystemStatus() {
+  try {
+    const { data } = await getSystemStatus()
+    sysStatus.value = data
+    sysStaleCount.value = (data.sources || []).filter(x => x.status !== 'ok').length
+  } catch (e) { console.warn('数据新鲜度加载失败', e) }
+}
+
 onMounted(async () => {
+  loadSystemStatus()
   try {
     const { data } = await getMarketOverview()
     overview.value = data

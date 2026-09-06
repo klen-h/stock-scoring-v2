@@ -21,6 +21,7 @@ const routes = [
   { path: '/capital', name: 'Capital', component: () => import('../views/CapitalView.vue') },
   { path: '/report', name: 'DailyReport', component: () => import('../views/DailyReport.vue') },
   { path: '/contradictions', name: 'Contradictions', component: () => import('../views/ContradictionsView.vue') },
+  { path: '/performance', name: 'Performance', component: () => import('../views/Performance.vue') },
 ]
 
 const router = createRouter({

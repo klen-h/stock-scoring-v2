@@ -78,6 +78,24 @@ def _index_drop_alert() -> Dict | None:
     return None
 
 
+def limit_down_count() -> int:
+    """当前全市场跌停家数（跌幅 ≤-9.7% 近似，内存行情缓存）。"""
+    try:
+        from app.tencent import _cache
+        stocks = _cache.get("stocks", {}) or {}
+        if len(stocks) < 500:
+            return 0
+        return sum(1 for s in stocks.values()
+                   if (s.get("change_pct") or 0) <= -9.7 and (s.get("price") or 0) > 0)
+    except Exception:
+        return 0
+
+
+def black_swan_active() -> bool:
+    """黑天鹅熔断：全市场跌停 ≥100 家（供模拟盘禁开新仓等联动）。"""
+    return limit_down_count() >= 100
+
+
 def _breadth_alerts() -> List[Dict]:
     """涨跌比极值 + 跌停家数（内存行情缓存）。"""
     out = []
@@ -92,7 +110,7 @@ def _breadth_alerts() -> List[Dict]:
             return out
         up = sum(1 for s in valid if s["change_pct"] > 0)
         down = sum(1 for s in valid if s["change_pct"] < 0)
-        limit_down = sum(1 for s in valid if s["change_pct"] <= -9.7)
+        limit_down = limit_down_count()
         if down > 0 and up / down < 0.25:
             out.append({"key": "breadth", "sev": "🔴",
                         "text": f"涨跌比 **{up}/{down}**（{up/max(1,down):.2f}）——"
@@ -119,6 +137,15 @@ def check_risk_alerts() -> dict:
     if idx:
         candidates.append(idx)
     candidates.extend(_breadth_alerts())
+    # 黑天鹅熔断级（跌停 ≥100）：独立于普通跌停激增警示
+    try:
+        ld_all = limit_down_count()
+        if ld_all >= 100 and _can_push(today, "blackswan"):
+            candidates.append({"key": "blackswan", "sev": "🔴",
+                "text": f"**全市场熔断级**：跌停 {ld_all} 只——黑天鹅事件，"
+                        f"模拟盘已暂停买入信号，现金为王"})
+    except Exception:
+        pass
 
     to_push = [c for c in candidates if _can_push(today, c["key"])]
     if not to_push:

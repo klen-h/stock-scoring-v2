@@ -392,6 +392,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getStockRealtime, getStockScore, searchStock, getStockTechnical } from '../api'
 import { useNewsBadges } from '../composables/useNewsBadges'
+import { useFastQuotes } from '../composables/useFastQuotes'
 import {
   addPosition, removePosition, updatePosition,
   calcProfit, evaluateAlerts, evaluatePositionAction, calcPositionSize, updateHighWaterMark, useSummary,
@@ -428,6 +429,15 @@ const { positions } = usePortfolio()
 
 // ── 实时行情 & 评分缓存（响应式，刷新时更新）──
 const realtimeMap = ref({})   // { [code]: { price, change_pct, ... } }
+// ★ 关键标的快速轮询：持仓股 12 秒批量刷价（盈亏实时感），全池仍慢刷
+const fastQuotes = useFastQuotes(
+  () => (positions.value || []).map(p => p.code),
+  (quotes) => {
+    for (const [c, d] of Object.entries(quotes)) {
+      realtimeMap.value[c] = { ...(realtimeMap.value[c] || {}), ...d }
+    }
+  },
+)
 const scoreMap = ref({})      // { [code]: { total_score, signal, ... } }
 const predictionMap = ref({})    // { [code]: { scenarios, deviation, ... } }
 const predictionLoading = ref({}) // { [code]: true/false }
@@ -792,11 +802,13 @@ function goDetail(code) {
 onMounted(() => {
   // 初始刷新一次（显示最新数据）
   refresh()
+  fastQuotes.start()
   startTimer()  // 交易时段自动轮询，非交易时段不轮询
   // 从数据库同步持仓
   import('../composables/usePortfolio.js').then(m => m.syncFromServer())
 })
 onBeforeUnmount(() => {
+  fastQuotes.stop()
   stopTimer()
 })
 </script>

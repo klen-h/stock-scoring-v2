@@ -217,6 +217,8 @@ export const checkExitAlerts = (positions) => http.post('/strategies/exit-alerts
 export const getExitSummary = (positions) => http.post('/strategies/exit-summary', positions)
 
 // 用户数据（自选股/交易计划/持仓 → 数据库同步）
+export const getSystemStatus = () => http.get('/system/status')
+export const getSystemPerformance = () => http.get('/system/performance', { timeout: 120000 })  // 首访冷路径 ~60s
 export const getUserWatchlist = () => http.get('/user/watchlist')
 export const upsertUserWatch = (item) => http.post('/user/watchlist', item)
 export const deleteUserWatch = (code) => http.delete(`/user/watchlist/${code}`)

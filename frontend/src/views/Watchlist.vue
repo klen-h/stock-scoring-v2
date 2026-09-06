@@ -227,6 +227,7 @@ import {
   exportWatchlistJSON, importWatchlistJSON,
 } from '../composables/useWatchlist'
 import { isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
+import { useFastQuotes } from '../composables/useFastQuotes'
 import {
   supported as notifSupported, permission as notifPermission,
   enabled as notifEnabled, requestPermission, disable as disableNotification,
@@ -244,6 +245,15 @@ const { newsScores, loadNews, newsBadgeClass } = useNewsBadges()
 
 // ── 实时行情 & 评分缓存 ──
 const realtimeMap = ref({})
+// ★ 关键标的快速轮询：自选股 12 秒批量刷价（腾讯单请求），盘中实时
+const fastQuotes = useFastQuotes(
+  () => watchlist.value.map(w => w.code),
+  (quotes) => {
+    for (const [c, d] of Object.entries(quotes)) {
+      realtimeMap.value[c] = { ...(realtimeMap.value[c] || {}), ...d }
+    }
+  },
+)
 const scoreMap = ref({})
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
@@ -448,11 +458,13 @@ watch(() => watchlist.value.length, (n, old) => {
 
 onMounted(() => {
   refresh()
+  fastQuotes.start()
   startTimer()
   // 从数据库同步自选股
   import('../composables/useWatchlist.js').then(m => m.syncFromServer())
 })
 onBeforeUnmount(() => {
+  fastQuotes.stop()
   stopTimer()
 })
 </script>
