@@ -177,11 +177,16 @@ def save_prices(code: str, name: str, rows: list) -> int:
 
 def load_prices(code: str, start: str = None, end: str = None) -> list:
     """读取日线（升序）。start/end 形如 '2023-08-01'。"""
-    # ★ DATA_SOURCE=pack/local：读数据包（零 Supabase 流量）；未命中返回 []
+    # ★ DATA_SOURCE=pack/local：读数据包（零 Supabase 流量）。
+    #   ★ pack 未命中（[]）必须回退 DB：数据包只覆盖股票池（6 位代码），
+    #     指数基准（sh000300）与宏观 ETF 不在包内——漏了这一步，pack/local
+    #     模式下 regime 判定直接报"沪深300 历史数据不足"（2026-09-06 实测）
     try:
         from app import pack_source
         if pack_source.enabled():
-            return pack_source.get_prices(code, start, end)
+            bars = pack_source.get_prices(code, start, end)
+            if bars:
+                return bars
     except Exception:
         pass
 
@@ -202,12 +207,14 @@ def load_prices(code: str, start: str = None, end: str = None) -> list:
 
 def get_all_codes() -> list:
     """已回填的代码列表（含名称）。"""
-    # ★ DATA_SOURCE=pack/local：数据包的代码清单
+    # ★ DATA_SOURCE=pack/local：数据包的代码清单；空则回退 DB（同 load_prices）
     try:
         from app import pack_source
         if pack_source.enabled():
-            return [{"code": c, "name": pack_source.get_name_cap(c)[0]}
-                    for c in pack_source.get_codes()]
+            codes = pack_source.get_codes()
+            if codes:
+                return [{"code": c, "name": pack_source.get_name_cap(c)[0]}
+                        for c in codes]
     except Exception:
         pass
 

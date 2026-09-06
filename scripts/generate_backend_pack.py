@@ -131,11 +131,19 @@ def main():
                     key=lambda kv: kv[1].get("market_cap", 0) or 0, reverse=True)
     cap_codes = [c for c, _ in by_cap[:args.cap_top]]
 
-    # 2. 股票池 = Supabase 现有清单 ∪ 市值前 N
+    # 2. 股票池 = Supabase 现有清单 ∪ 市值前 N ∪ 指数基准/宏观 ETF
+    #    ★ 指数与 ETF 必须在包里：DATA_SOURCE=pack 模式下 regime 判定
+    #      （sh000300）与宏观回测（sh510300 等）都从包读——漏了会报
+    #      "沪深300 历史数据不足"（2026-09-06 实测，读取层已有 DB 兜底双保险）
+    try:
+        from app.signals.tracker import HOLDINGS_MAP
+        etf_codes = list(HOLDINGS_MAP.values())
+    except Exception:
+        etf_codes = []
     sb_codes = [c for c in supabase_kline_codes() if c in quotes]
-    pool = list(dict.fromkeys(sb_codes + cap_codes))
+    pool = list(dict.fromkeys(sb_codes + cap_codes + ["sh000300"] + etf_codes))
     print(f"\n[2/4] 股票池: Supabase 清单 {len(sb_codes)} ∪ 市值前 "
-          f"{len(cap_codes)} = {len(pool)} 只")
+          f"{len(cap_codes)} ∪ 指数/ETF {1 + len(etf_codes)} = {len(pool)} 只")
 
     # 3. 拉 ~750 根交易日线（复用两轮重试 + WAF 退避）
     #    ★ fetch 的 days 参数是"日历天"（起点 now-(days+30)），500 会被起点卡成
