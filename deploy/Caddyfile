@@ -1,0 +1,26 @@
+# Caddyfile：自动 HTTPS（Let's Encrypt 自动签发/续期）+ API 反代
+# 把 api.你的域名.com 替换为实际域名（A 记录指向本机公网 IP + ICP 备案完成）
+
+api.你的域名.com {
+	encode gzip
+
+	# API 反代到后端容器
+	reverse_proxy backend:8000
+
+	# 安全头
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# 请求体上限（评分排行批量等接口）
+	request_body {
+		max_size 10MB
+	}
+}
+
+# HTTP 自动跳转 HTTPS（Caddy 对未匹配站点默认行为，显式写出更清晰）
+http://api.你的域名.com {
+	redir https://api.你的域名.com{uri} permanent
+}

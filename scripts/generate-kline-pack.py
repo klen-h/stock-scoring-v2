@@ -67,6 +67,11 @@ KLINE_RETRIES = _env_int("PACK_KLINE_RETRIES", 3)        # 单只股票重试次
 RETRY_BACKOFF = [int(x) for x in
                  (os.environ.get("PACK_RETRY_BACKOFF") or "1,3,6").split(",") if x]
 CONSECUTIVE_COOLDOWN = _env_int("PACK_CONSECUTIVE_COOLDOWN", 10)  # 连续失败暂停阈值
+# ★ K 线 count 上限（2026-09-07 实测，见 fetch_kline 注释）：超 800 会被腾讯拒绝/截断
+KLINE_COUNT_CAP = _env_int("PACK_KLINE_COUNT_CAP", 800)
+# ★ 中途熔断：K 线前 N 只零成功即判定「参数被接口拒绝 / IP 被封」，立刻报错退出，
+#   不再空耗到 job 超时（原来 100% 失败要熬到 90-150 分钟上限才发现）
+MIDWAY_FAIL_FAST = _env_int("PACK_MIDWAY_FAIL_FAST", 80)
 
 # A 股代码池（与 backend/app/tencent.py 保持一致）
 DISABLED_PREFIXES = {"688", "300", "301"}
@@ -228,9 +233,16 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用
 
+    # ★ count 硬上限（2026-09-07 实测腾讯 fqkline）：
+    #   count=2200 → 0 根（服务端拒绝，0.1s 快速失败）
+    #   count=1600 → 仅 640 根（被截断）｜count=800 + 区间 1100 天 → 728 根（≈2.9 年）
+    #   ← 后端包 days=1100 时 days*2=2200 100% 拿不到数据，正是「后端一直超时」的根因
+    #     （单只 3 次重试×超时 ≈ 40s，千只必然顶穿 job 上限）。
+    #   前端包 days=150 → count=300，未触及上限，行为不变。
+    count = min(days * 2, KLINE_COUNT_CAP)
     url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
     params = {
-        "param": f"{symbol},day,{start_date},{end_date},{days * 2},qfq",
+        "param": f"{symbol},day,{start_date},{end_date},{count},qfq",
     }
 
     last_err = None
@@ -336,6 +348,15 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
             break
         failed = []
         done_n = 0
+        streak = 0  # 连续失败数（中途熔断用：零成功 + 连败过多 = 参数被拒/封禁）
+
+        def _fail_fast():
+            # ★ 中途熔断：前 MIDWAY_FAIL_FAST 只仍 0 成功 → 配置错误或 IP 被封。
+            #   直接报错，避免像旧版那样 100% 失败还空耗到 90-150 分钟 job 上限。
+            if streak >= MIDWAY_FAIL_FAST and not result:
+                raise RuntimeError(
+                    f"K线前 {done_n} 只全部失败（连续 {streak} 只）——大概率 count/区间参数"
+                    f"被腾讯拒绝，或出口 IP 被限流封禁。已中止，避免空耗到 job 超时。")
 
         def _one(idx_code):
             idx, code = idx_code
@@ -352,8 +373,11 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
                     done_n += 1
                     if kl:
                         result[code] = kl
+                        streak = 0
                     else:
                         failed.append(code)
+                        streak += 1
+                    _fail_fast()
                     if done_n % 50 == 0 or done_n == len(pending):
                         print(f"  K线: {len(result)}/{total} 成功 "
                               f"(第{round_no+1}轮 {done_n}/{len(pending)})", end="\r")
@@ -363,8 +387,11 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
                 done_n += 1
                 if kl:
                     result[code] = kl
+                    streak = 0
                 else:
                     failed.append(code)
+                    streak += 1
+                _fail_fast()
                 if (done_n) % 50 == 0 or done_n == len(pending):
                     print(f"  K线: {len(result)}/{total} 成功 "
                           f"(第{round_no+1}轮 {done_n}/{len(pending)})", end="\r")
