@@ -440,8 +440,28 @@ def main():
     print(f"  共 {len(all_codes)} 个代码")
     
     # 2. 拉取实时行情（获取市值排序）
-    print("\n[2/4] 拉取实时行情...")
-    quotes = fetch_realtime_batch(all_codes)
+    #    ★ --quotes-file：拉取后落盘，同工作流的后端包步骤直接复用
+    #      （此前前后端各拉一遍全市场 12000 只，白白翻倍且触发限流）
+    quotes = None
+    if args.quotes_file and os.path.exists(args.quotes_file):
+        try:
+            if time.time() - os.path.getmtime(args.quotes_file) < 6 * 3600:
+                with open(args.quotes_file, encoding="utf-8") as f:
+                    quotes = json.load(f)
+                print(f"\n[2/4] 实时行情：复用共享文件（{len(quotes)} 只，0 请求）")
+        except Exception as e:
+            print(f"\n[2/4] 共享行情文件读取失败，重新拉取: {e}")
+    if quotes is None:
+        print("\n[2/4] 拉取实时行情...")
+        quotes = fetch_realtime_batch(all_codes)
+    if args.quotes_file and quotes:
+        try:
+            os.makedirs(os.path.dirname(args.quotes_file) or ".", exist_ok=True)
+            with open(args.quotes_file, "w", encoding="utf-8") as f:
+                json.dump(quotes, f, ensure_ascii=False)
+            print(f"  实时行情已落盘: {args.quotes_file}（{len(quotes)} 只）")
+        except Exception as e:
+            print(f"  行情落盘失败（不影响本步骤）: {e}")
     
     # 按市值排序（可选取前 N 只，默认不限制）
     sorted_stocks = sorted(

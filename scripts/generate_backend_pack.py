@@ -128,8 +128,19 @@ def main():
     gkp = load_gkp()
 
     # 1. 实时行情（拿名称/市值 + 市值池）
-    print("\n[1/4] 拉取实时行情...")
-    quotes = gkp.fetch_realtime_batch(gkp.build_stock_pool())
+    #    ★ 优先复用前端包步骤落盘的共享行情文件（0 请求）；过期/缺失才自拉
+    quotes = None
+    if args.quotes_file and os.path.exists(args.quotes_file):
+        try:
+            if time.time() - os.path.getmtime(args.quotes_file) < 6 * 3600:
+                with open(args.quotes_file, encoding="utf-8") as f:
+                    quotes = json.load(f)
+                print(f"\n[1/4] 实时行情：复用共享文件（{len(quotes)} 只，0 请求）")
+        except Exception as e:
+            print(f"\n[1/4] 共享行情读取失败，自拉: {e}")
+    if quotes is None:
+        print("\n[1/4] 拉取实时行情...")
+        quotes = gkp.fetch_realtime_batch(gkp.build_stock_pool())
     by_cap = sorted(quotes.items(),
                     key=lambda kv: kv[1].get("market_cap", 0) or 0, reverse=True)
     cap_codes = [c for c, _ in by_cap[:args.cap_top]]
