@@ -538,6 +538,8 @@ def main():
     parser.add_argument("--top", type=int, default=0, help="取市值前 N 只（0=不限制，包含全部）")
     parser.add_argument("--quotes-file", default="./data/kline/realtime-quotes.json",
                         help="实时行情落盘/复用路径（与后端包共享，避免全市场拉两遍）")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="K 线拉取并发数（默认 1=串行，Actions 行为不变；本地可设 6+ 提速）")
     args = parser.parse_args()
     
     print(f"=== K 线数据包生成 ===")
@@ -604,7 +606,7 @@ def main():
               f"直接复用，跳过拉取")
         stocks_data = prev_data["stocks"]
     else:
-        klines_data = fetch_all_klines(top_codes, args.days)
+        klines_data = fetch_all_klines(top_codes, args.days, workers=args.workers)
 
         # 组装最终数据
         stocks_data = {}
