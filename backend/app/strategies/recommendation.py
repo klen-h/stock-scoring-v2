@@ -179,6 +179,13 @@ def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -
             exec_hint += f"｜{render_advice(gate)}"
     except Exception:
         pass
+    # 环境传导链（宏观→市场→板块→个股，先知雷达的层间联动）
+    try:
+        from app.mainforce.confluence import confluence_for_stock, confluence_line
+        cf_line = confluence_line(confluence_for_stock(code))
+        exec_hint += chr(10) + "🌐 " + cf_line
+    except Exception:
+        pass
     lines = [
         f"## 🎯 战法买入信号 · {zh}",
         f"📈 **{name}({code})**  参考介入 **{entry:.2f}**（{sig_date}）",

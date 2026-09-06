@@ -445,6 +445,12 @@ def _holdings_radar() -> list:
                 advice += f"（建议仓位 {g['position_pct']}%/{g['position_label']}）"
         except Exception:
             pass
+        # 环境传导链（宏观→市场→板块→个股）
+        try:
+            from app.mainforce.confluence import confluence_for_stock, confluence_line
+            advice += " " + confluence_line(confluence_for_stock(code, mf=m))
+        except Exception:
+            pass
         if flags:
             out.append({**p, "flags": flags, "advice": advice})
     return out
