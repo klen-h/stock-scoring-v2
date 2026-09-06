@@ -230,10 +230,18 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     with _waf_lock:
         remain = _waf_blocked_until - time.time()
     if remain > 0:
-        time.sleep(min(remain + 1.0, WAF_COOLDOWN + 5))
+        # ★ +随机抖动：5 个线程若同刻睡满同刻醒来，会同步齐发又触发一轮 501
+        #   （2026-09-07 两轮 WAF 风暴呈周期性）。错峰醒来打破同步化。
+        time.sleep(min(remain + 1.0, WAF_COOLDOWN + 5) + random.random() * 25)
 
-    prefix = "sh" if code.startswith("6") else "sz"
-    symbol = f"{prefix}{code}"
+    # 指数/ETF 代码自带前缀（sh000300 / sz159915 / sh510300）→ 不能再拼一次
+    # ★ 2026-09-07 实测 bug：原代码无条件拼前缀，把 sh000300 变成 szsh000300 →
+    #   腾讯对畸形 symbol 直接 501（第 2 轮 ETF/指数全被 WAF 拦截的根因）
+    if code.startswith(("sh", "sz", "bj")):
+        symbol = code
+    else:
+        prefix = "sh" if code.startswith("6") else "sz"
+        symbol = f"{prefix}{code}"
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用
@@ -336,7 +344,7 @@ def _throttle_concurrent(index: int) -> None:
       前端包串行 ≈1.6 req/s 从不触发。并发必须配节流——否则只是把超时换成封禁。
       若仍偶发 501，fetch_kline 开头的冷却等待会兜底续拉，不会整批丢失。
     """
-    time.sleep(0.4 + random.random() * 0.3)
+    time.sleep(0.5 + random.random() * 0.4)
 
 
 def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
