@@ -30,6 +30,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import datetime
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -119,6 +120,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="./data/kline")
     ap.add_argument("--cap-top", type=int, default=CAP_TOP_N)
+    ap.add_argument("--quotes-file", default="./data/kline/realtime-quotes.json",
+                    help="复用前端步骤已拉取的全市场行情（避免全市场拉两遍）")
     args = ap.parse_args()
 
     print("=== 后端数据包生成（backend-pack.db，SQLite）===")

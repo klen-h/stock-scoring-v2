@@ -425,6 +425,8 @@ def main():
     parser.add_argument("--output-dir", default="./data/kline", help="输出目录")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help="K 线天数")
     parser.add_argument("--top", type=int, default=0, help="取市值前 N 只（0=不限制，包含全部）")
+    parser.add_argument("--quotes-file", default="./data/kline/realtime-quotes.json",
+                        help="实时行情落盘/复用路径（与后端包共享，避免全市场拉两遍）")
     args = parser.parse_args()
     
     print(f"=== K 线数据包生成 ===")
