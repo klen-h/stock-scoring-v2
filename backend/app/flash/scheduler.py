@@ -937,7 +937,7 @@ async def paper_fill_loop():
                 r = await asyncio.to_thread(fill_pending_positions)
                 store.mark_schedule_done("paper_fill", date_str=day_key)
                 status["last_paper_fill"] = rules.beijing_now().isoformat()
-                if r.get("filled") or r.get("cancelled"):
+                if r.get("filled") or r.get("cancelled") or r.get("no_pending"):
                     _push_paper_summary(r)
             except Exception as e:
                 print(f"[scheduler] 模拟盘开盘确认失败: {e}")
@@ -964,12 +964,16 @@ async def paper_track_loop():
 
 
 def _push_paper_summary(r: dict) -> None:
-    """模拟盘成交摘要推送企微（重要通知，force=True 不受业务开关限制）。"""
+    """模拟盘开盘确认摘要推送企微（重要通知，force=True 不受业务开关限制）。"""
     try:
         from app.flash.wechat import push_markdown_batched
+        if r.get("no_pending"):
+            body = "- 今日无待确认买入信号（前一日战法扫描未产出高/中置信度信号入池）"
+        else:
+            body = (f"- 成交 {r.get('filled', 0)} 笔（按开盘价 + 量比验证）\n"
+                    f"- 放弃 {r.get('cancelled', 0) + r.get('watched', 0)} 笔（破位/高开/缩量）")
         lines = [f"**模拟盘开盘确认**（{rules.beijing_now().strftime('%m-%d %H:%M')}）",
-                 f"- 成交 {r.get('filled', 0)} 笔（按开盘价 + 量比验证）",
-                 f"- 放弃 {r.get('cancelled', 0) + r.get('watched', 0)} 笔（破位/高开/缩量）"]
+                 body]
         push_markdown_batched("📋 模拟盘", "\n".join(lines), force=True)
     except Exception as e:
         print(f"[scheduler] 模拟盘摘要推送失败: {e}")

@@ -380,7 +380,8 @@ def fill_pending_positions() -> dict:
     from app.tencent import get_stocks_batch
     pending = db.fetch("SELECT * FROM paper_positions WHERE status='pending' ORDER BY created_at ASC")
     if not pending:
-        return {"filled": 0, "cancelled": 0, "watched": 0}
+        # no_pending 供调度器推「池空」通知，让「没买入」可区分于「系统没跑」
+        return {"filled": 0, "cancelled": 0, "watched": 0, "no_pending": True}
     # ★ 黑天鹅熔断：全市场跌停 ≥100 家 → 暂停所有买入确认（先知雷达风控联动）
     try:
         from app.flash.intraday_alerts import black_swan_active
