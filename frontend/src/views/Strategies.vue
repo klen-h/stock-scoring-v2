@@ -976,7 +976,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import {
   getStrategiesList,
-  scanStrategy,
+  triggerDailyBatch,
   getStrategyResult,
   getStrategyWatch,
   updateStrategyWatch,
@@ -1096,19 +1096,14 @@ async function triggerScan() {
   scanning.value = true
   scanMessage.value = ''
   try {
-    const res = await scanStrategy(currentStrategy.value.name_en, {
-      min_market_cap: filterMinCap.value * 1e8,
-      force: true,
-    })
-    // ★ 战法准入：未准入时不轮询，直接显示原因
-    if (res.data?.admitted === false) {
-      scanResults.value = []
-      scanMessage.value = res.data?.message || '当前市场状态该战法未准入'
-      scanning.value = false
-      return
-    }
-    // 轮询扫描状态
-    await pollScanStatus()
+    // ★ 全量扫描转发 GitHub Actions（Render 512MB 跑全市场会 OOM 崩溃）
+    //   本地不再调 /strategies/{name}/scan，改为投递后等 Actions 写库
+    const res = await triggerDailyBatch('strategy_scan')
+    scanResults.value = []
+    scanMessage.value = res.data?.message
+      || '已提交「战法全量扫描」到 GitHub Actions，约 3-10 分钟完成后刷新查看'
+    scanning.value = false
+    return
   } catch (e) {
     console.error('扫描失败', e)
     scanning.value = false

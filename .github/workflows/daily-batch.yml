@@ -1,0 +1,68 @@
+name: Daily Batch
+
+on:
+  # 北京时间 18:20 = UTC 10:20（周一到周五）
+  # 排后端包（17:50）之后：日批统一读 backend-pack.db，必须等包就绪
+  schedule:
+    - cron: '20 10 * * 1-5'
+
+  # ★ 手动触发：前端「重算/扫描」按钮通过 GitHub API 转发到这里，
+  #   计算全程在 Actions（4核16G），Render 只负责之后读结果（不占内存）
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: '任务列表（逗号分隔，或 all）'
+        required: false
+        default: 'all'
+      force:
+        description: '忽略已完成标记强制重跑（true/false）'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: daily-batch
+  cancel-in-progress: false
+
+jobs:
+  daily-batch:
+    name: 日批（战法/矛盾/回填/快照/日报）
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        # 完整依赖：日批要 import 后端各模块（scoring/strategies/contradictions…）
+        run: pip install -q -r backend/requirements.txt
+
+      - name: Smoke import (fail fast)
+        run: |
+          cd backend
+          python -c "import app.main; print('smoke import ok')"
+
+      - name: Run daily batch
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
+          # ★ 数据源走数据包：K线/指标/主力行为全部读 pack，零回源 → 无 WAF 风险
+          DATA_SOURCE: pack
+        run: |
+          python scripts/daily_batch.py \
+            --tasks ${{ github.event.inputs.tasks || 'all' }} \
+            ${{ github.event.inputs.force == 'true' && '--force' || '' }}
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "日批任务结束，详见上方日志"
+          echo "失败项会打印 error 标记并推送企微告警"

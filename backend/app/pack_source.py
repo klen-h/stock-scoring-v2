@@ -31,6 +31,7 @@ SQLite 发 GitHub Pages（零流量费），本模块负责下载与按需查询
 import gzip
 import json
 import os
+import shutil
 import sqlite3
 import threading
 import time
@@ -87,11 +88,13 @@ def _download_and_unpack():
     with open(gz_tmp, "wb") as f:
         for chunk in r.iter_content(1 << 16):
             f.write(chunk)
-    with gzip.open(gz_tmp, "rb") as f_in:
-        data = f_in.read()
     db_tmp = _PACK_DB + ".tmp"
-    with open(db_tmp, "wb") as f:
-        f.write(data)
+    # ★ 流式解压：原来的 f_in.read() 会一次性把整个 db（实测 126MB）读进
+    #   Python bytes → 内存瞬间 +126MB。Render 免费实例仅 512MB（还要跑
+    #   FastAPI + 各定时任务），这个尖峰足以直接 OOM；且临时磁盘每次重启
+    #   都要重跑一遍 → 崩溃循环。分块拷贝后内存恒定 ≈1MB。
+    with gzip.open(gz_tmp, "rb") as f_in, open(db_tmp, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out, 1 << 20)
     os.replace(db_tmp, _PACK_DB)
     os.replace(gz_tmp, _PACK_DB_GZ)
     print(f"[pack_source] 已就绪: {_PACK_DB} ({os.path.getsize(_PACK_DB) / 1048576:.1f} MB)")
@@ -130,6 +133,15 @@ def _query(sql: str, params: tuple = (), fetch: str = "all") -> list:
     conn = sqlite3.connect(_PACK_DB)
     conn.row_factory = sqlite3.Row
     try:
+        # ★ 限制 SQLite 内存占用：容器的内存统计会算进 page cache / mmap，
+        #   126MB 的库若放任 mmap 会明显推高 RSS（512MB 实例扛不住）。
+        #   mmap_size=0 → 走普通 read（略慢但内存可控）；cache_size 限 ~8MB。
+        try:
+            conn.execute("PRAGMA mmap_size=0")
+            conn.execute("PRAGMA cache_size=-8000")
+            conn.execute("PRAGMA temp_store=FILE")
+        except Exception:
+            pass
         cur = conn.execute(sql, params)
         return cur.fetchall() if fetch == "all" else cur.fetchone()
     finally:

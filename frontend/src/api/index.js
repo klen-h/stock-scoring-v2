@@ -113,6 +113,12 @@ export const getDailyReport = (date) => http.get('/report/daily', { params: date
 export const getContradictions = (params = {}) => http.get('/contradictions', { params })
 export const getContradictionsSummary = (date) => http.get('/contradictions/summary', { params: date ? { date } : {} })
 export const getContradictionsReport = (date) => http.get('/contradictions/report', { params: date ? { date } : {} })
+// ★ 重任务统一走 GitHub Actions（Render 512MB 不再自己算）：
+//   本接口只投递任务，由 Actions 完成后写库，前端稍后刷新读结果即可
+export const triggerDailyBatch = (tasks = 'all', force = true) =>
+  http.post('/tasks/trigger', { task: tasks, force })
+export const getTaskConfig = () => http.get('/tasks/config')
+
 export const triggerContradictionsScan = (date) => http.post('/contradictions/scan', {}, { params: date ? { date } : {} })
 export const triggerContradictionsReport = (date) => http.post('/contradictions/report', {}, { params: date ? { date } : {} })
 

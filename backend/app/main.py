@@ -42,6 +42,7 @@ from app.routers import user as user_router
 from app.routers import auth as auth_router
 from app.routers import backtest as backtest_router
 from app.routers import daily_report as report_router
+from app.routers import tasks as tasks_router
 from app.routers import system as system_router
 from app.routers import performance as performance_router
 from app.strategies.router import router as strategies_router
@@ -190,6 +191,8 @@ app.include_router(performance_router.router, prefix="/api/system", tags=["系�
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
+# 重任务触发：转发给 GitHub Actions，本进程零计算（512MB 实例生存关键）
+app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触发"])
 
 
 # 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL

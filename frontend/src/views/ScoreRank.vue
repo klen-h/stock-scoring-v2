@@ -22,8 +22,11 @@
       <button @click="handleRefreshKlineCache" :disabled="klineCacheRefreshing"
         class="px-2 py-1 rounded text-xs transition-colors"
         :class="klineCacheRefreshing ? 'bg-white/5 text-muted cursor-not-allowed' : 'bg-accent/10 text-accent hover:bg-accent/20'">
-        {{ klineCacheRefreshing ? '刷新中...' : '刷新缓存' }}
+        {{ klineCacheRefreshing ? '提交中...' : '刷新缓存' }}
       </button>
+    </div>
+    <div v-if="klineCacheMsg" class="bg-card border border-border rounded-lg p-2 px-3 text-xs text-rise">
+      {{ klineCacheMsg }}
     </div>
 
     <!-- 前端评分系统状态 -->
@@ -681,7 +684,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, refreshKlineCache, getSnapshots, captureScoreSnapshot } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -803,6 +806,8 @@ const frontendInitialized = ref(false)
 // ── K线缓存状态 ──
 const klineCacheStatus = ref(null)
 const klineCacheRefreshing = ref(false)
+// 重任务已投递 GitHub Actions 的反馈文案
+const klineCacheMsg = ref('')
 
 function quickAddPosition(item) {
   // 以当前价 + 默认 100 股添加到持仓
@@ -890,14 +895,15 @@ async function handleRefreshKlineCache() {
   if (klineCacheRefreshing.value) return
   klineCacheRefreshing.value = true
   try {
-    await refreshKlineCache()
-    // 等待几秒后刷新状态
-    setTimeout(async () => {
-      await loadKlineCacheStatus()
-      klineCacheRefreshing.value = false
-    }, 3000)
+    // ★ K线/评分数据刷新是重活，转发 GitHub Actions（本地跑会打爆 512MB 实例）
+    //   backfill=回测价格回填，score_snapshot=评分 Top50 快照
+    const r = await triggerDailyBatch('backfill,score_snapshot')
+    klineCacheMsg.value = r.data?.message
+      || '已提交「数据回填 + 评分快照」到 GitHub Actions，约 5-10 分钟后刷新查看'
+    setTimeout(() => { klineCacheRefreshing.value = false }, 1000)
   } catch (e) {
-    console.error('刷新K线缓存失败', e)
+    console.error('提交刷新任务失败', e)
+    klineCacheMsg.value = '提交失败：' + (e.response?.data?.detail || e.message)
     klineCacheRefreshing.value = false
   }
 }

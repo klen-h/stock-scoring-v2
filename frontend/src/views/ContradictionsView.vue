@@ -89,6 +89,14 @@
           {{ error }}
         </div>
 
+        <!-- 重任务已投递 GitHub Actions 的提示（本地不再计算） -->
+        <div v-else-if="taskMsg" class="bg-card border border-border rounded-lg p-6 text-sm text-rise">
+          {{ taskMsg }}
+          <div class="mt-2 text-xs text-muted">
+            计算在 GitHub Actions（4核16G）进行，完成后自动入库，请稍后点「刷新」查看
+          </div>
+        </div>
+
         <template v-else>
           <!-- 报告区 -->
           <div class="bg-card border border-border rounded-lg p-4">
@@ -151,8 +159,7 @@ import {
   getContradictions,
   getContradictionsSummary,
   getContradictionsReport,
-  triggerContradictionsScan,
-  triggerContradictionsReport,
+  triggerDailyBatch,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -165,6 +172,8 @@ const summary = ref(null)
 const reportHtml = ref('')
 const scanning = ref(false)
 const reportLoading = ref(false)
+// 重任务已投递到 GitHub Actions 的提示（Render 512MB 实例不再本地计算）
+const taskMsg = ref('')
 
 // 中文映射（与后端 app/contradictions/labels.py 同口径；新增扫描器两边同步补）
 const severityLabels = { severe: '严重', obvious: '明显', minor: '轻微' }
@@ -246,11 +255,13 @@ async function loadReport() {
 
 async function triggerScan() {
   scanning.value = true
+  error.value = ''
   try {
-    await triggerContradictionsScan(currentDate.value || undefined)
-    await load(currentDate.value)
+    // ★ 重活转发 GitHub Actions：本进程不再扫描（Render 512MB 会被打爆）
+    const r = await triggerDailyBatch('contradiction_scan')
+    taskMsg.value = r.data?.message || '已提交「矛盾扫描」到 GitHub Actions'
   } catch (e) {
-    error.value = '扫描失败：' + (e.response?.data?.detail || e.message)
+    error.value = '提交失败：' + (e.response?.data?.detail || e.message)
   } finally {
     scanning.value = false
   }
@@ -258,11 +269,12 @@ async function triggerScan() {
 
 async function generateReport() {
   reportLoading.value = true
+  error.value = ''
   try {
-    await triggerContradictionsReport(currentDate.value || undefined)
-    await loadReport()
+    const r = await triggerDailyBatch('contradiction_report')
+    taskMsg.value = r.data?.message || '已提交「矛盾报告」到 GitHub Actions'
   } catch (e) {
-    error.value = '生成报告失败：' + (e.response?.data?.detail || e.message)
+    error.value = '提交失败：' + (e.response?.data?.detail || e.message)
   } finally {
     reportLoading.value = false
   }
