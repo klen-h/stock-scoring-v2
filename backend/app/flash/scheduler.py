@@ -283,6 +283,16 @@ async def kline_cache_refresh_loop():
 #   里的 kline_cache、不需要外网行情源，放 Actions（4 核）跑更合适。
 #   本进程只需"读表算分"，设 ENABLE_HEAVY_JOBS=0 即可关闭本循环（默认开启，向后兼容）。
 ENABLE_HEAVY_JOBS = os.environ.get("ENABLE_HEAVY_JOBS", "1").strip() != "0"
+
+# ★ 只读模式（2026-09-07 崩溃循环对策）：
+#   Render 免费实例仅 512MB 内存 + 临时磁盘（重启即清空）。每次重启都要重新
+#   下载 31MB 数据包并解压成 126MB SQLite，再叠加十几个定时任务（战法扫描
+#   2063 只、回测回填、资金流、主力行为…）→ 必然 OOM 崩溃 → 重启 → 重新下载
+#   解压 → 再次 OOM 的死循环（日志特征：Started server process [1] 反复出现）。
+#   RENDER_READ_ONLY=1 时只保留「API 服务 + 快讯 + 持仓跟踪 + 模拟盘」等必需
+#   循环，其余全部关闭（重活交给 GitHub Actions 的定时任务）。
+#   默认 0 = 行为完全不变，向后兼容。
+READ_ONLY = os.environ.get("RENDER_READ_ONLY", "0").strip() == "1"
 INDICATOR_CACHE_REFRESHED_TODAY = False
 
 async def indicator_cache_refresh_loop():
@@ -1544,46 +1554,59 @@ async def start():
                   f"权重={_rc['weights']}")
     except Exception as e:
         print(f"[scheduler] 恢复市场状态缓存失败: {e}")
+    # ★ 只读模式下的重任务包装：RENDER_READ_ONLY=1 时返回空列表（不启动）
+    def _heavy(loop_fn):
+        return [] if READ_ONLY else [asyncio.create_task(loop_fn())]
+
+    # 以下 9 个是「API 服务必需 / 交互相关 / 极轻量」→ 只读模式下仍保留
+    #   flash(快讯) track(持仓) health(健康检查) paper_*(模拟盘) open_confirmation
+    #   news_alert(持仓负面消息) regime(评分权重，每日一次很轻)
+    #   stock_cache(行情缓存，可用 STOCK_CACHE_INTERVAL 调频降载)
     tasks = [asyncio.create_task(flash_loop()),
              asyncio.create_task(track_loop()),
-             asyncio.create_task(review_loop()),
-             asyncio.create_task(macro_daily_loop()),
              asyncio.create_task(health_loop()),
+             asyncio.create_task(news_alert_loop()),
+             asyncio.create_task(regime_cache_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
-             asyncio.create_task(kline_cache_refresh_loop()),
+             asyncio.create_task(open_confirmation_loop()),
+             asyncio.create_task(paper_fill_loop()),
+             asyncio.create_task(paper_track_loop()),
+             # ── 以下均为重/耗时任务：只读模式（RENDER_READ_ONLY=1）下全部关闭 ──
+             *_heavy(review_loop),
+             *_heavy(macro_daily_loop),
+             *_heavy(kline_cache_refresh_loop),
              # 指标刷新已外迁 GitHub Actions；ENABLE_HEAVY_JOBS=0 时本进程不再自己算
-             *([] if not ENABLE_HEAVY_JOBS
+             *([] if (READ_ONLY or not ENABLE_HEAVY_JOBS)
                 else [asyncio.create_task(indicator_cache_refresh_loop())]),
-             asyncio.create_task(backtest_prices_refresh_loop()),
-             asyncio.create_task(mainflow_refresh_loop()),
-             asyncio.create_task(mainforce_state_refresh_loop()),
-             asyncio.create_task(lhb_refresh_loop()),
-             asyncio.create_task(zz_finance_sync_loop()),
+             *_heavy(backtest_prices_refresh_loop),
+             *_heavy(mainflow_refresh_loop),
+             *_heavy(mainforce_state_refresh_loop),
+             *_heavy(lhb_refresh_loop),
+             *_heavy(zz_finance_sync_loop),
              # 回测预热 = 3 个策略全量回测，要大量读 backtest_prices（71MB 表），
              # 是 Supabase egress 大头之一 → 同受 ENABLE_HEAVY_JOBS 管控
              # （此前 (1605,2359) 笔误导致它从未跑过，等于一直处于关闭状态）
-             *([] if not ENABLE_HEAVY_JOBS
+             *([] if (READ_ONLY or not ENABLE_HEAVY_JOBS)
                 else [asyncio.create_task(backtest_preheat_loop())]),
-             asyncio.create_task(strategy_scan_loop()),
-             asyncio.create_task(regime_cache_loop()),
-             asyncio.create_task(backtest_report_loop()),
-             asyncio.create_task(score_snapshot_loop()),
-             asyncio.create_task(market_snapshot_loop()),
-             asyncio.create_task(daily_report_loop()),
-             asyncio.create_task(midday_radar_loop()),
-             asyncio.create_task(intraday_alert_loop()),
-             asyncio.create_task(contradiction_scan_loop()),
-             asyncio.create_task(contradiction_report_loop()),
-             asyncio.create_task(news_alert_loop()),
-             asyncio.create_task(news_history_loop()),
-             asyncio.create_task(calendar_loop()),
-             asyncio.create_task(industry_map_loop()),
-             asyncio.create_task(mainline_loop()),
-             asyncio.create_task(sector_snapshot_loop()),
-             asyncio.create_task(finance_loop()),
-             asyncio.create_task(open_confirmation_loop()),
-             asyncio.create_task(paper_fill_loop()),
-             asyncio.create_task(paper_track_loop())]
+             *_heavy(strategy_scan_loop),
+             *_heavy(backtest_report_loop),
+             *_heavy(score_snapshot_loop),
+             *_heavy(market_snapshot_loop),
+             *_heavy(daily_report_loop),
+             *_heavy(midday_radar_loop),
+             *_heavy(intraday_alert_loop),
+             *_heavy(contradiction_scan_loop),
+             *_heavy(contradiction_report_loop),
+             *_heavy(news_history_loop),
+             *_heavy(calendar_loop),
+             *_heavy(industry_map_loop),
+             *_heavy(mainline_loop),
+             *_heavy(sector_snapshot_loop),
+             *_heavy(finance_loop)]
+    if READ_ONLY:
+        print("[scheduler] ★ 只读模式（RENDER_READ_ONLY=1）：已关闭全部重任务"
+              "（战法扫描/回测回填/资金流/主力行为/龙虎榜/快照/日报/矛盾扫描…），"
+              "仅保留 快讯/跟踪/健康检查/持仓消息/评分权重/行情缓存/模拟盘")
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / "
           f"指标缓存{'每日16:40 由 GitHub Actions 跑（本进程已关闭）' if not ENABLE_HEAVY_JOBS else '每日16:00（本进程）'} / "
