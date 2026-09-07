@@ -1,10 +1,17 @@
 name: Daily Batch
 
 on:
-  # 北京时间 18:20 = UTC 10:20（周一到周五）
-  # 排后端包（17:50）之后：日批统一读 backend-pack.db，必须等包就绪
+  # ★ 主触发：后端包 workflow 成功后自动跑（不再猜时间）。
+  #   后端包实测 1h43m，17:00 开始 → ~18:43 完成 → 本任务立即接棒，
+  #   拿到的必然是今天的新包。
+  workflow_run:
+    workflows: ["Generate Backend Data Pack"]
+    types: [completed]
+
+  # 兜底：backend-pack 失败/被跳过时，晚上仍补跑一次（写库幂等，重复无害）。
+  # 北京 20:30 = UTC 12:30。
   schedule:
-    - cron: '20 10 * * 1-5'
+    - cron: '30 12 * * 1-5'
 
   # ★ 手动触发：前端「重算/扫描」按钮通过 GitHub API 转发到这里，
   #   计算全程在 Actions（4核16G），Render 只负责之后读结果（不占内存）
@@ -24,8 +31,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ★ 守卫：workflow_run 触发时只在后端包「成功」后继续；定时/手动触发直接放行。
+  #   （后端包失败时新包没发出来，日批硬跑会拿昨天的数据，跑了也是白跑）
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream success
+        run: |
+          EVENT="${{ github.event_name }}"
+          CONC="${{ github.event.workflow_run.conclusion }}"
+          echo "event=$EVENT upstream_conclusion=$CONC"
+          if [ "$EVENT" = "workflow_run" ] && [ "$CONC" != "success" ]; then
+            echo "::error::上游 backend-pack 未成功（$CONC），跳过日批"
+            exit 1
+          fi
+
   daily-batch:
     name: 日批（战法/矛盾/回填/快照/日报）
+    needs: guard
     runs-on: ubuntu-latest
     timeout-minutes: 150
 

@@ -17,10 +17,11 @@
 name: Refresh Indicator Cache
 
 on:
-  schedule:
-    - cron: '40 8 * * 1-5'   # 北京 16:40（主跑）
-    - cron: '40 9 * * 1-5'   # 北京 17:40（兜底：应对主跑被延迟/丢弃）
-  workflow_dispatch:          # 支持手动触发（测试/补跑）
+  # ★ 2026-09-07 停用定时：DATA_SOURCE=pack 模式下指标读取层优先读数据包
+  #   （indicator_cache.py:75），pack 覆盖率 ~100% → DB 的 indicator_cache
+  #   几乎无消费方，此定时任务已是重复劳动（白烧 Actions 时长 + Supabase 流量）。
+  #   保留 workflow_dispatch：需要手动重建 DB 指标缓存时仍可触发。
+  workflow_dispatch:          # 仅手动触发（测试/补跑）
 
 # 同一时间只允许一个实例，避免上次没跑完又来一个
 concurrency:

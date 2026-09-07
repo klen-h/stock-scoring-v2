@@ -1,15 +1,13 @@
 name: Generate Backend Data Pack
 
 on:
-  # 北京时间 17:50 = UTC 09:50（周一到周五）
-  # ★ 为什么不是跟着前端包 16:00 跑：
-  #   1) 腾讯 IP 级限流：前端包 1564 只跑完后立刻接着跑后端 700 只×750 根，
-  #      后端大面积 501 → 重试退避放大 → 顶穿 90 分钟 job 上限（实测必超时）。
-  #      错峰 1h50m 后配额已恢复。
-  #   2) 主力资金流 17:00 起回填（mainflow_history），17:50 已就绪 →
-  #      mainforce 用当日强口径（高位高获利×主力流出），而不是退化的弱口径。
+  # 北京时间 17:00 = UTC 09:00（周一到周五）
+  # ★ 时间依据（2026-09-07 实测）：前端包约 32 分钟（16:00-16:32，quotes 16:34
+  #   生效）；后端包实测 1h43m。17:00 开始 → 18:43 完成 → 19:45 前日批必就绪。
+  #   与前端包错峰 ~30 分钟，配额已恢复；主力资金流 17:00 起回填，
+  #   mainforce 的资金流强口径会滞后一天时，overlay 自动退化弱口径（可接受）。
   schedule:
-    - cron: '50 9 * * 1-5'
+    - cron: '0 9 * * 1-5'
 
   workflow_dispatch:
     inputs:
@@ -57,6 +55,15 @@ jobs:
       # 后端数据包（质量池 ~700 只×750 根 + 预计算指标 + 主力行为）：
       # DATA_SOURCE=pack/local 读取层用，让 Render 不再读 Supabase 肥表。
       # DATABASE_URL 用于：读 kline_cache 代码清单 + 近 10 日 mainflow_history。
+      # ★ mainforce 强口径前置：Render 只读后资金流回填也迁到了 Actions。
+      #   新浪源逐股 ~0.75s，全池约 7 分钟；不跑这步 mainforce 会用昨日资金流
+      #   （弱口径）。写库幂等（UNIQUE(code,date)），日批再跑一遍无害。
+      - name: Backfill mainflow (mainforce 强口径前置)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATA_SOURCE: pack
+        run: python scripts/daily_batch.py --tasks mainflow --no-pack-check --no-quotes
+
       - name: Generate backend data pack (klines + indicators + mainforce)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}

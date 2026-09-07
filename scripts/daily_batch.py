@@ -188,6 +188,35 @@ def ensure_quotes():
     print(f"  行情就绪: {len(_cache.get('stocks') or {})} 只，耗时 {time.time() - t0:.0f}s")
 
 
+def ensure_pack_fresh(max_wait_min: float):
+    """★ 校验数据包日期，避免日批跑在昨天的包上。
+
+    daily-batch 排在 backend-pack 之后 30 分钟，但后端包要拉 1442 只×749 根
+    （约 10~30 分钟）+ 算指标 + 发布 Pages。若它延迟，日批就会拿着昨天的包
+    跑战法扫描 → 信号日期错位（且静默，不易发现）。这里等包更新到今天为止。
+    """
+    import app.pack_source as ps
+
+    want = datetime.now().strftime("%Y%m%d")
+    deadline = time.time() + max(0, max_wait_min) * 60
+    while True:
+        try:
+            got = ps._pack_date()
+        except Exception as e:
+            print(f"  读取数据包日期失败: {e}")
+            got = None
+        if got == want:
+            print(f"  数据包日期校验通过: {got}")
+            return True
+        if time.time() >= deadline:
+            print(f"::error::数据包仍为 {got}（期望 {want}）——后端包可能失败或延迟，"
+                  f"日批将基于旧数据运行，请检查 backend-pack workflow")
+            return False
+        print(f"  数据包日期 {got} != {want}，等待 3 分钟后重试（后端包可能尚未发布）…")
+        ps._ready_checked = False      # 允许下次重新检查/下载
+        time.sleep(180)
+
+
 def main():
     ap = argparse.ArgumentParser(description="日批合并（唯一计算入口）")
     ap.add_argument("--tasks", default="all",
@@ -196,6 +225,10 @@ def main():
                     help="忽略'当日已完成'标记，强制重跑")
     ap.add_argument("--no-quotes", action="store_true",
                     help="跳过全市场行情刷新（调试用）")
+    ap.add_argument("--no-pack-check", action="store_true",
+                    help="跳过数据包日期校验（调试用）")
+    ap.add_argument("--max-wait", type=float, default=30,
+                    help="等待数据包更新到今天的最长分钟数（默认 30）")
     ap.add_argument("--list", action="store_true", help="列出所有任务")
     args = ap.parse_args()
 
@@ -218,6 +251,10 @@ def main():
     print(f"=== 日批合并 ===")
     print(f"  任务: {', '.join(names)}")
     print(f"  数据源: pack（backend-pack.db）  强制重跑: {args.force}")
+
+    if not args.no_pack_check:
+        print("\n[0] 校验数据包新鲜度...")
+        ensure_pack_fresh(args.max_wait)
 
     try:
         if not args.no_quotes:
