@@ -723,7 +723,14 @@ def track_positions(use_daily: bool = False) -> dict:
             elif price > 0 and target > 0 and price >= target:
                 reason, exit_p = "take_profit", price
             if not reason and _hold_days(h["fill_date"]) >= _max_hold():
-                reason, exit_p = "expire", _latest_close(h["code"])
+                prev_c = float(q.get("prev_close") or 0)
+                if locked and price > 0 and prev_c > 0 and price < prev_c:
+                    # 一字跌停卖不出（涨停方向卖得出，不受此限）→ 顺延下次跟踪
+                    print(f"[paper] {h['code']} 跌停封死（{price:.2f}），到期强平顺延")
+                else:
+                    # 强平按实时价结算（与止损/止盈同口径）；_latest_close 盘中
+                    # 读到的是昨收，到期日一字涨跌停结算价会差出约 10%
+                    reason, exit_p = "expire", price if price > 0 else _latest_close(h["code"])
         if reason:
             _close_position(h, exit_p, reason)
             closed += 1
