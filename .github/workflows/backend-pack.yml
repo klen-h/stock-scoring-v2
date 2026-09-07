@@ -96,6 +96,10 @@ jobs:
     needs: backend-pack
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # ★ gh-pages 发布全局串行锁：与 kline-data 的发布共用（防 force push 互相覆盖）
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
 
     steps:
       - name: Download pack artifacts

@@ -283,7 +283,25 @@ def write_indicators_pack(path: str, date_str: str, ind_out: dict) -> None:
     print(f"  指标包: {path} ({os.path.getsize(path) / 1048576:.1f} MB)")
 
 
+def _load_env():
+    """加载 backend/.env（本地跑用；Actions 走 secrets 环境变量，不覆盖已有值）。
+
+    ★ 不加载的话：DATABASE_URL 缺失 → Supabase 代码清单拉不到（池子缩水）+
+      资金流读不到（mainforce 全弱口径）——本地打包的两大坑。
+    """
+    path = os.path.join(BACKEND_DIR, ".env")
+    if not os.path.exists(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
 def main():
+    _load_env()
     ap = argparse.ArgumentParser()
     ap.add_argument("--output-dir", default="./data/kline")
     ap.add_argument("--cap-top", type=int, default=CAP_TOP_N)

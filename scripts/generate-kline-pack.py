@@ -531,6 +531,56 @@ def load_previous_pack(output_dir: str) -> Optional[Dict]:
         return None
 
 
+# ── 失败黑名单：连续拉取失败的代码持久化记录，达到阈值直接硬过滤 ──────────────
+# 背景（2026-09-08）：池子里混着退市/被合并的历史代码（中国北车、美的电器…），
+#   腾讯行情接口还留着僵尸快照（假市值），但 K 线接口永远返回空 → 每天固定
+#   失败 27 只、白白消耗 3 轮重试。记录到 kline-failures.json，连续失败达到
+#   阈值后从池中剔除；某天成功拉到则自动"洗白"移除（防误杀复牌股）。
+
+FAILURES_FILENAME = "kline-failures.json"
+
+
+def _failures_path(output_dir: str) -> str:
+    return os.path.join(output_dir, FAILURES_FILENAME)
+
+
+def _load_failures(output_dir: str) -> dict:
+    p = _failures_path(output_dir)
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_failures(output_dir: str, fails: dict) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    with open(_failures_path(output_dir), "w", encoding="utf-8") as f:
+        json.dump(fails, f, ensure_ascii=False, indent=1)
+
+
+def _update_failures(output_dir: str, klines_data: dict, attempted: list,
+                     quotes: dict) -> None:
+    """本次最终失败的代码计数 +1；本次成功的代码洗白移除。"""
+    fails = _load_failures(output_dir)
+    today = datetime.now().strftime("%Y-%m-%d")
+    new_fails = []
+    for code in attempted:
+        if code in klines_data:
+            fails.pop(code, None)                      # 成功 → 洗白
+        else:
+            rec = fails.setdefault(code, {"fail_count": 0, "first_failed": today})
+            rec["fail_count"] = rec.get("fail_count", 0) + 1
+            rec["last_failed"] = today
+            rec["name"] = (quotes.get(code) or {}).get("name", "")
+            new_fails.append(code)
+    _save_failures(output_dir, fails)
+    if new_fails:
+        print(f"  失败记录更新: {len(new_fails)} 只 → {FAILURES_FILENAME}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="生成 K 线数据包")
     parser.add_argument("--output-dir", default="./data/kline", help="输出目录")
@@ -540,6 +590,8 @@ def main():
                         help="实时行情落盘/复用路径（与后端包共享，避免全市场拉两遍）")
     parser.add_argument("--workers", type=int, default=1,
                         help="K 线拉取并发数（默认 1=串行，Actions 行为不变；本地可设 6+ 提速）")
+    parser.add_argument("--fail-threshold", type=int, default=3,
+                        help="连续失败达该次数的代码硬过滤（默认 3；退市/合并股约 1 天即中）")
     args = parser.parse_args()
     
     print(f"=== K 线数据包生成 ===")
@@ -586,6 +638,15 @@ def main():
         sorted_stocks = sorted_stocks[:args.top]
     
     top_codes = [code for code, _ in sorted_stocks]
+
+    # ★ 失败黑名单过滤：连续拉取失败达阈值的代码（退市/合并/僵尸）直接剔除
+    _fails = _load_failures(args.output_dir)
+    _black = [c for c in top_codes
+              if (_fails.get(c) or {}).get("fail_count", 0) >= args.fail_threshold]
+    if _black:
+        print(f"  硬过滤 {len(_black)} 只连续失败≥{args.fail_threshold} 次的代码: "
+              f"{', '.join(_black[:12])}{'…' if len(_black) > 12 else ''}")
+        top_codes = [c for c in top_codes if c not in _black]
     print(f"  最终股票池: {len(top_codes)} 只")
     
     # 3. 加载上一次的数据包（用于生成增量）
@@ -607,6 +668,8 @@ def main():
         stocks_data = prev_data["stocks"]
     else:
         klines_data = fetch_all_klines(top_codes, args.days, workers=args.workers)
+        # ★ 失败记录：最终失败的计数+1（达阈值下次硬过滤），成功的洗白移除
+        _update_failures(args.output_dir, klines_data, top_codes, quotes)
 
         # 组装最终数据
         stocks_data = {}

@@ -37,6 +37,17 @@ PACK_FILES = [
     "kline-pack-latest.json.gz",
     "backend-pack.db.gz",
     "indicators-pack.json.gz",
+    # ★ 后端包 Actions 从 Pages 拉行情复用（缺了会 404 → 自拉兜底多花 3 分钟）
+    "realtime-quotes.json",
+]
+
+# ★ gh-pages 上的历史垃圾文件：发布时顺手删除。
+#   backend-pack-20260905.json.gz / backend-pack-latest.json.gz 是被 SQLite 版
+#   取代前的旧 JSON 格式后端包，且后者名字极易与真正在用的 backend-pack.db.gz
+#   混淆（2026-09-08 对账发现）。
+STALE_FILES = [
+    "backend-pack-20260905.json.gz",
+    "backend-pack-latest.json.gz",
 ]
 
 
@@ -88,7 +99,18 @@ def main():
             print("[dry-run] 不推送")
             return
 
+        # 顺手清理历史垃圾文件
+        for fn in STALE_FILES:
+            p = os.path.join(data_dir, fn)
+            if os.path.exists(p):
+                os.remove(p)
+                print(f"  [清理] gh-pages 上的旧格式文件: {fn}")
+
         _git(["add", "data"], cwd=tmp)
+        # 内容无变化则跳过 commit/push（否则 git commit 因空提交报错）
+        if not _git(["status", "--porcelain"], cwd=tmp).stdout.strip():
+            print("[publish] 内容无变化，跳过 commit/push")
+            return
         _git(["-c", "user.name=github-actions[bot]",
               "-c", "user.email=github-actions[bot]@users.noreply.github.com",
               "commit", "-m", "chore: update data package (local publish)"], cwd=tmp)

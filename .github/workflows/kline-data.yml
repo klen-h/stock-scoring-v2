@@ -89,6 +89,13 @@ jobs:
     needs: [frontend-pack]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # ★ gh-pages 发布全局串行锁（2026-09-08）：与 backend-pack 的发布共用一组。
+    #   peaceiris 是「clone 分支 → 改文件 → force push」，两个 workflow 并发发布时，
+    #   后 push 的会基于旧树把先 push 的文件覆盖掉（实测：新前端包被 backend-pack
+    #   的发布覆盖回 09-05 旧版）。串行化后 clone 总是最新树，互相保留对方的文件。
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
 
     steps:
       - name: Download pack artifacts

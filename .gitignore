@@ -1,3 +1,9 @@
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 打包产物（本地/Actions 生成，不入库）
+#   data/kline/           前端包、后端包、行情快照、失败黑名单等产物
+#   backend/data/         pack_source 下载落盘的数据包（Render 运行时目录）
+data/
+backend/data/
