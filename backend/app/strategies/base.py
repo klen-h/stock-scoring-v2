@@ -17,8 +17,20 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from abc import ABC, abstractmethod
+
+
+def _bj_today() -> str:
+    """★ 北京日期（UTC+8）——日期口径必须与 paper_trading._bj_date() 一致。
+
+    2026-09-08 事故：save_scan_result 原用 datetime.now()（UTC），而
+    paper_trading.auto_ingest_signals 用北京日期查 strategy_results。
+    日批在凌晨（北京 01:46 / UTC 前一日 17:46）运行时两者差一天 →
+    扫描结果存 UTC 日、入池查北京日 → 永远查不到 → 模拟盘 0 入池；
+    而企微推送走内存数据照常推送 → 表现为"推送了但模拟盘没买"。
+    """
+    return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 from typing import List, Dict, Optional, Any
 
 from app.tencent import get_kline, _cache as tencent_cache
@@ -330,7 +342,8 @@ class BaseStrategy(ABC):
 
 def save_scan_result(strategy_name: str, results: List[Dict]):
     """保存扫描结果到数据库"""
-    today = datetime.now().strftime("%Y-%m-%d")
+    # ★ 北京日期：与 auto_ingest_signals 的查询口径必须一致（否则模拟盘 0 入池）
+    today = _bj_today()
     try:
         db.upsert("strategy_results", {
             "strategy_name": strategy_name,
