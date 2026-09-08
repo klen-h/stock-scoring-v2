@@ -113,37 +113,43 @@ async def track_loop():
 async def review_loop():
     """三段复盘循环：交易日 + 到窗口 + 当日未跑 → 执行并标记。"""
     while True:
-        now = rules.beijing_now()
-        t = now.hour * 60 + now.minute
-        # 非交易日不跑：REVIEW_WINDOWS 只按"一天中的时刻"判断，周末/节假日开机
-        # 同样会命中 postmarket 的 15:03-23:59，白烧 LLM token 还会往复盘历史
-        # 里写入无意义的记录（此前周六照跑三段复盘就是这个原因）
-        if not rules.is_trading_day(now):
-            await asyncio.sleep(60)
-            continue
-        for phase, (start, end) in REVIEW_WINDOWS.items():
-            task_key = f"review_{phase}"
-            if start <= t < end and not store.is_schedule_done(task_key):
-                print(f"[scheduler] 触发复盘: {phase}")
-                result = await _run_sync(service.run_review, phase)
-                # 只有成功（无 error）才标记完成；失败则允许窗口内重试
-                if result and not result.get("error"):
-                    store.mark_schedule_done(task_key)
-                    status["last_reviews"][phase] = result.get("time")
-                    print(f"[scheduler] 复盘 {phase} 完成")
-                else:
-                    err = result.get("error") if result else "任务异常（返回 None）"
-                    print(f"[scheduler] 复盘 {phase} 失败，未标记完成（允许重试）: {err}")
-                    # 推送失败提醒到企微（force=True：任务失败告警不受业务推送开关限制，
-                    # 与 _notify_failure 语义一致；此前缺 force 导致复盘失败永远推不出去）
-                    try:
-                        from app.flash import wechat
-                        wechat.push_markdown_batched(
-                            f"⚠️ {phase} 复盘失败",
-                            f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}",
-                            force=True)
-                    except Exception as e:
-                        print(f"[scheduler] 推送失败提醒异常: {e}")
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            # 非交易日不跑：REVIEW_WINDOWS 只按"一天中的时刻"判断，周末/节假日开机
+            # 同样会命中 postmarket 的 15:03-23:59，白烧 LLM token 还会往复盘历史
+            # 里写入无意义的记录（此前周六照跑三段复盘就是这个原因）
+            if not rules.is_trading_day(now):
+                await asyncio.sleep(60)
+                continue
+            for phase, (start, end) in REVIEW_WINDOWS.items():
+                task_key = f"review_{phase}"
+                if start <= t < end and not store.is_schedule_done(task_key):
+                    print(f"[scheduler] 触发复盘: {phase}")
+                    result = await _run_sync(service.run_review, phase)
+                    # 只有成功（无 error）才标记完成；失败则允许窗口内重试
+                    if result and not result.get("error"):
+                        store.mark_schedule_done(task_key)
+                        status["last_reviews"][phase] = result.get("time")
+                        print(f"[scheduler] 复盘 {phase} 完成")
+                    else:
+                        err = result.get("error") if result else "任务异常（返回 None）"
+                        print(f"[scheduler] 复盘 {phase} 失败，未标记完成（允许重试）: {err}")
+                        # 推送失败提醒到企微（force=True：任务失败告警不受业务推送开关限制，
+                        # 与 _notify_failure 语义一致；此前缺 force 导致复盘失败永远推不出去）
+                        try:
+                            from app.flash import wechat
+                            wechat.push_markdown_batched(
+                                f"⚠️ {phase} 复盘失败",
+                                f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}",
+                                force=True)
+                        except Exception as e:
+                            print(f"[scheduler] 推送失败提醒异常: {e}")
+        except Exception as e:
+            # ★ 循环保命（2026-09-08 实测）：循环体内的 is_schedule_done 是裸的
+            #   Supabase 查询，一旦抛错整个任务静默死亡 → 当天三段复盘全不触发
+            #   （窗口开着、其它循环一切正常、也无失败告警，极难排查）
+            print(f"[scheduler] review_loop 单轮异常（循环继续）: {e}")
         await asyncio.sleep(60)
 
 

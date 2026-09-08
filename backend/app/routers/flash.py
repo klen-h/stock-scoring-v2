@@ -157,10 +157,19 @@ def flash_review_history(phase: str, limit: int = Query(20, ge=1, le=50)):
 
 @router.post("/review/{phase}/run")
 def flash_review_run(phase: str):
-    """手动触发一次复盘（测试用；正常由调度器按窗口执行）。"""
+    """手动触发一次复盘（测试/补跑用；正常由调度器按窗口执行）。"""
     if phase not in ("premarket", "lunchbreak", "postmarket"):
         return {"error": f"未知复盘阶段 {phase}"}
-    return service.run_review(phase)
+    result = service.run_review(phase)
+    # ★ 手动成功同样标记当日已完成：与调度器同语义。
+    #   否则（如 2026-09-08 盘前复盘补跑场景）手动跑完后调度循环恢复时
+    #   会在窗口内再跑一遍 → LLM 双烧、企微双推。
+    if result and not result.get("error"):
+        try:
+            store.mark_schedule_done(f"review_{phase}")
+        except Exception as e:
+            print(f"[flash] 手动复盘标记完成失败（不影响本次结果）: {e}")
+    return result
 
 
 @router.get("/signals")

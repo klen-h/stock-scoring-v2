@@ -431,12 +431,20 @@ def mark_schedule_done(task: str, date_str: str = None) -> None:
 
 
 def is_schedule_done(task: str, date_str: str = None) -> bool:
-    """检查任务是否已完成"""
+    """检查任务是否已完成。
+    ★ DB 查询失败按「未完成」处理（fail-open）：窗口循环下个周期会重试，
+      宁可极小概率多跑一次，也不要让调用方循环静默跳过/死亡
+      （2026-09-08 实测：盘前复盘窗口开着却整天不触发）。
+    """
     date = date_str or _bj_date()
-    row = db.fetch_one(
-        "SELECT done_date FROM schedule_state WHERE task = %s",
-        (task,)
-    )
+    try:
+        row = db.fetch_one(
+            "SELECT done_date FROM schedule_state WHERE task = %s",
+            (task,)
+        )
+    except Exception as e:
+        print(f"[store] is_schedule_done({task}) 查询失败，按未完成处理: {e}")
+        return False
     return row and row["done_date"] == date
 
 
