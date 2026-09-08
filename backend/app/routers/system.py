@@ -57,18 +57,19 @@ def _trading_days_ago(n: int) -> str:
 
 
 _SOURCES = [
-    # (名称, 查询SQL取最新日期, 预期节奏说明)
-    ("行情收盘快照", "SELECT MAX(saved_at) AS v FROM market_snapshot", "每日 15:05"),
-    ("回测价格库", "SELECT MAX(date) AS v FROM backtest_prices", "每日 15:40"),
-    ("主力资金流", "SELECT MAX(date) AS v FROM mainflow_history", "每日 17:00"),
-    ("主力行为状态", "SELECT MAX(date) AS v FROM mainforce_state", "每日 17:30"),
-    ("龙虎榜", "SELECT MAX(date) AS v FROM lhb_history", "每日 17:45"),
-    ("评分快照", "SELECT MAX(rank_date) AS v FROM ranking_history", "每日 18:00"),
-    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "每日 19:20"),
-    ("矛盾扫描", "SELECT MAX(date) AS v FROM contradictions", "每日 15:35"),
-    ("每日日报", "SELECT MAX(date) AS v FROM daily_reports", "每日 19:30"),
-    ("财报扩展(zzshare)", "SELECT MAX(updated_at) AS v FROM stock_finance_zz", "每周一同步"),
-    ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40"),
+    # (名称, 查询SQL取最新日期, 预期节奏说明, 容忍滞后交易日数(默认2))
+    ("行情收盘快照", "SELECT MAX(saved_at) AS v FROM market_snapshot", "每日 15:05", 2),
+    ("回测价格库", "SELECT MAX(date) AS v FROM backtest_prices", "每日 15:40", 2),
+    ("主力资金流", "SELECT MAX(date) AS v FROM mainflow_history", "每日 17:00", 2),
+    ("主力行为状态", "SELECT MAX(date) AS v FROM mainforce_state", "日批 19:00 后", 2),
+    ("龙虎榜", "SELECT MAX(date) AS v FROM lhb_history", "每日 17:45", 2),
+    ("评分快照", "SELECT MAX(rank_date) AS v FROM ranking_history", "每日 18:00", 2),
+    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "每日 19:20", 2),
+    ("矛盾扫描", "SELECT MAX(date) AS v FROM contradictions", "每日 15:35", 2),
+    ("每日日报", "SELECT MAX(date) AS v FROM daily_reports", "每日 19:30", 2),
+    # 周任务：季度数据周更保活，容忍窗口放宽到 8 个交易日（约两周）
+    ("财报扩展(zzshare)", "SELECT MAX(updated_at) AS v FROM stock_finance_zz", "每周一同步", 8),
+    ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2),
 ]
 
 
@@ -88,7 +89,8 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
 
     sources = []
     ok_count = 0
-    for name, sql, cadence in _SOURCES:
+    for name, sql, cadence, *rest in _SOURCES:
+        max_lag = rest[0] if rest else 2   # 容忍滞后交易日数（周任务放宽）
         last = None
         try:
             row = db.fetch_one(sql)
@@ -99,6 +101,17 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
             status, lag = "missing", None
         elif last >= latest:
             status, lag = "ok", 0
+        elif max_lag > 2:
+            # 低频任务（周同步等）：容忍窗口内一律 ok，不按日频误报 stale
+            if last >= _trading_days_ago(max_lag):
+                status, lag = "ok", max_lag
+            else:
+                status = "stale"
+                try:
+                    lag = (datetime.strptime(latest, "%Y-%m-%d")
+                           - datetime.strptime(last, "%Y-%m-%d")).days
+                except ValueError:
+                    lag = None
         elif last >= t1:
             status, lag = "ok", 1        # 深市两融这类 T+1 滞后属正常
         elif last >= t2:

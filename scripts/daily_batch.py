@@ -91,6 +91,52 @@ def task_market_snapshot():
     return "行情收盘快照已保存"
 
 
+def task_mainforce_state():
+    """主力行为状态日批（mainforce_state 表，原 Render 17:30 循环）。
+
+    ★ 2026-09-09 迁移：Render 只读模式（RENDER_READ_ONLY=1）下该循环在
+      _heavy() 里被关闭 → 表停更（09-04 起落后）。日批环境数据齐全：
+      bars 走 pack（零回源）+ mainflow_history（本日批 mainflow 任务产出）
+      + float_shares（market_snapshot 快照，故本任务必须排在它之后）。
+    消费方：后端排行榜主力标注 / trade_gate / confluence 吸筹+2出货-2 /
+    每日日报的主力汇总与 L3 交叉扫描。
+    """
+    from app.mainforce.state import refresh_all
+    regime = None
+    try:
+        from app.backtest.market_regime import get_regime_cache
+        regime = (get_regime_cache() or {}).get("state")
+    except Exception:
+        pass  # regime 缺省 None = 乘数闸门不生效，与 scheduler 行为一致
+    return f"主力行为状态: {refresh_all(None, regime)}"
+
+
+def task_zz_finance():
+    """zzshare 财报扩展周同步（原 Render 周一 04:30 循环，只读模式已停摆）。
+
+    仅周一执行（其余交易日直接跳过，返回即不计失败）——季度数据周更保活，
+    是 L3 财报断层扫描（contradictions/l3_scanner）的数据底座。
+    """
+    import datetime as _dt
+    bj = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
+    if bj.weekday() != 0:
+        return f"财报扩展: 周任务，今为周{bj.weekday() + 1} 跳过"
+    from app.zzshare_finance import sync_latest_finance
+    from app.database import db
+    rows = db.fetch(
+        "SELECT DISTINCT code FROM stock_finance "
+        "WHERE length(code) = 6 AND substr(code, 1, 1) IN ('0', '3', '6') "
+        "ORDER BY code")
+    stats = sync_latest_finance([r["code"] for r in (rows or [])])
+    try:
+        # L3 连续失血跟踪的数据底座：近 4 期全市场 OCF 历史
+        from app.mainforce.l3_history import sync_ocf_history
+        stats["ocf_hist"] = sync_ocf_history(4)
+    except Exception as oe:
+        print(f"[zzshare] OCF 历史同步失败（不影响主表）: {oe}")
+    return f"财报扩展: {stats}"
+
+
 def task_sector_snapshot():
     """板块每日快照（板块动量序列，非交易日自动跳过）。"""
     from app.sector_industry import take_snapshot
@@ -163,16 +209,23 @@ TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
     "mainflow": (task_mainflow, "主力资金流回填"),
     "market_snapshot": (task_market_snapshot, "全市场行情快照"),
+    # ★ 2026-09-09 迁入：Render 只读模式停掉了原 17:30 循环 → 表停在 09-04。
+    #   依赖 mainflow（资金流）与 market_snapshot（流通股本快照），故置其后。
+    "mainforce_state": (task_mainforce_state, "主力行为状态（排行榜标签/日报依赖）"),
     "sector_snapshot": (task_sector_snapshot, "板块快照"),
     "strategy_scan": (task_strategy_scan, "战法全量扫描"),
     "contradiction_scan": (task_contradiction_scan, "矛盾扫描"),
     "contradiction_report": (task_contradiction_report, "矛盾报告(LLM)"),
     "score_snapshot": (task_score_snapshot, "评分快照"),
     "lhb": (task_lhb, "龙虎榜同步"),
+    # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
+    #   判定仅周一执行，其余交易日秒过
+    "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
     "daily_report": (task_daily_report, "每日日报"),
 }
-DEFAULT_ORDER = ["backfill", "mainflow", "market_snapshot", "sector_snapshot",
-                 "strategy_scan", "contradiction_scan", "score_snapshot", "lhb",
+DEFAULT_ORDER = ["backfill", "mainflow", "market_snapshot", "mainforce_state",
+                 "sector_snapshot", "strategy_scan", "contradiction_scan",
+                 "contradiction_report", "score_snapshot", "lhb", "zz_finance",
                  "daily_report"]
 
 
