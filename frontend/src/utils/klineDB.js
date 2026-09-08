@@ -524,11 +524,18 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
       if ((data.version || 1) < REQUIRED_PACK_VERSION) {
         return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
       }
-      
+
+      // ★ 线上完整包与本地同日期 → 无新数据，跳过导入。
+      //   否则每天收盘前（lastUpdate≠今天）打开页面都会：增量 404 → 重下完整包
+      //   → 把 1500+ 只重新全量 put 进 IndexedDB，纯浪费（2026-09-08 实测）。
+      if (data.date && data.date === lastUpdate) {
+        return { updated: false, message: `线上包仍是 ${data.date}，暂无更新` }
+      }
+
       const result = await importKlinePack(data, (loaded, total) => {
         onProgress?.({ stage: 'import', loaded, total })
       })
-      
+
       return { updated: true, message: `导入 ${result.imported} 只股票` }
     }
   } catch (error) {
