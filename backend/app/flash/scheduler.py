@@ -1577,8 +1577,14 @@ async def start():
              asyncio.create_task(open_confirmation_loop()),
              asyncio.create_task(paper_fill_loop()),
              asyncio.create_task(paper_track_loop()),
+             # ★ LLM 叙事类（2026-09-08）：三段复盘/午间雷达/盘后日报在只读模式下
+             #   仍保留——它们只调 LLM + 少量行情请求，内存占用与战法扫描/回填不在
+             #   一个量级，不是 OOM 崩溃循环的元凶。误杀后果实测：快讯诊断（flash_loop）
+             #   还在跑、盘前复盘却整天不触发，且无任何报错（RENDER_READ_ONLY=1 当天）。
+             asyncio.create_task(review_loop()),
+             asyncio.create_task(midday_radar_loop()),
+             asyncio.create_task(daily_report_loop()),
              # ── 以下均为重/耗时任务：只读模式（RENDER_READ_ONLY=1）下全部关闭 ──
-             *_heavy(review_loop),
              *_heavy(macro_daily_loop),
              *_heavy(kline_cache_refresh_loop),
              # 指标刷新已外迁 GitHub Actions；ENABLE_HEAVY_JOBS=0 时本进程不再自己算
@@ -1598,8 +1604,6 @@ async def start():
              *_heavy(backtest_report_loop),
              *_heavy(score_snapshot_loop),
              *_heavy(market_snapshot_loop),
-             *_heavy(daily_report_loop),
-             *_heavy(midday_radar_loop),
              *_heavy(intraday_alert_loop),
              *_heavy(contradiction_scan_loop),
              *_heavy(contradiction_report_loop),
