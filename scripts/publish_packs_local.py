@@ -135,6 +135,30 @@ def main():
         # GitHub Pages 关闭 Jekyll 处理（与 peaceiris 行为一致）
         open(os.path.join(tmp, ".nojekyll"), "w").close()
 
+        # ★ 前端站点一起带上（2026-09-09 事故修复）：gh-pages 同时是前端站点
+        #   托管（deploy-preview 发布 index.html/assets 到根目录），orphan 只放
+        #   data/ 会把页面抹掉 → 网页 404。dist 存在则拷入（排除其 data/ 子
+        #   目录——那是旧小样本包残留位置，数据一律用本次发布的正式包）。
+        #   dist 不存在时提示先 pnpm build（或仅发数据、靠下次 push 补页面）。
+        dist_dir = os.path.join(REPO_DIR, "frontend", "dist")
+        if os.path.isdir(dist_dir):
+            n = 0
+            for root, _dirs, files in os.walk(dist_dir):
+                rel = os.path.relpath(root, dist_dir)
+                # dist/data/ 是 Vite 从 public/data 拷出的残留，绝不入树
+                if rel == "data" or rel.startswith("data" + os.sep):
+                    continue
+                for f in files:
+                    src_f = os.path.join(root, f)
+                    dst_f = os.path.join(tmp, rel, f) if rel != "." else os.path.join(tmp, f)
+                    os.makedirs(os.path.dirname(dst_f), exist_ok=True)
+                    shutil.copy2(src_f, dst_f)
+                    n += 1
+            print(f"  [站点] frontend/dist 并入 {n} 个文件（页面 + 数据一次发齐）")
+        else:
+            print("  ⚠️ frontend/dist 不存在——本次只发数据包，前端页面保持现状"
+                  "（如需页面一起更新：cd frontend && pnpm build 后重跑）")
+
         data_dir = os.path.join(tmp, "data")
         os.makedirs(data_dir, exist_ok=True)
 
