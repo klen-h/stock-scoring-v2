@@ -71,6 +71,10 @@ def main():
     for fn in ("kline-pack-latest.json.gz", "indicators-pack.json.gz"):
         p = os.path.join(OUT_DIR, fn)
         print(f"  {p} ({os.path.getsize(p) / 1048576:.1f} MB)")
+    # ★ 2026-09-08 事故：这两个文件名与线上正式包完全同名，同目录残留的它们曾被
+    #   publish_packs_local.py 一起推上 Pages，把线上前端池从 1564 只打到 118 只。
+    print("\n⚠️  这是本地验收小样本包（--n 默认 120），文件名与线上正式包同名。")
+    print("   用完后请删除这两个文件，切勿执行 publish_packs_local.py 发布它们。")
 
 
 if __name__ == "__main__":
