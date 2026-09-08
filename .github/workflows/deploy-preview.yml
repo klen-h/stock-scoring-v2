@@ -40,6 +40,14 @@ jobs:
         working-directory: ./frontend
         run: pnpm run build
 
+      # ★ 双保险（2026-09-08 第二次覆盖事故）：public/data/ 里残留的开发期
+      #   小样本包（270KB kline-pack / 464KB indicators-pack）被 Vite 原样拷进
+      #   dist，发布时把 gh-pages 上 2.7MB/5.7MB 的正式包覆盖回小包（前端
+      #   "下载数据"只剩 118 只）。根因已除（git rm public/data），这里再兜
+      #   一道：dist 里不允许出现任何 data/ 数据文件。
+      - name: Remove stray data packs from dist
+        run: rm -rf frontend/dist/data
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
