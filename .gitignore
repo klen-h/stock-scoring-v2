@@ -7,3 +7,9 @@ __pycache__/
 #   backend/data/         pack_source 下载落盘的数据包（Render 运行时目录）
 data/
 backend/data/
+
+# zzshare：通过 pip 安装（backend/requirements.txt），本地目录只是残留的子模块引用
+#   此前它在 git 索引中是 gitlink（160000）但 .gitmodules 缺失 → Actions 里
+#   `git submodule foreach` 报 "No url found for submodule path 'zzshare'" (exit 128)，
+#   干扰发布步骤。已从索引移除（git rm --cached zzshare），这里忽略本地目录。
+zzshare/

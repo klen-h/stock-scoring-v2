@@ -63,14 +63,8 @@ MIN_COUNTS = {
     "backend-pack.db.gz": 500,
 }
 
-# ★ gh-pages 上的历史垃圾文件：发布时顺手删除。
-#   backend-pack-20260905.json.gz / backend-pack-latest.json.gz 是被 SQLite 版
-#   取代前的旧 JSON 格式后端包，且后者名字极易与真正在用的 backend-pack.db.gz
-#   混淆（2026-09-08 对账发现）。
-STALE_FILES = [
-    "backend-pack-20260905.json.gz",
-    "backend-pack-latest.json.gz",
-]
+# ★ orphan 重建模式（2026-09-08）：发布不再 clone 旧 gh-pages 树，历史日期包/
+#   旧 JSON 垃圾随旧分支历史一起消失——旧 STALE_GLOBS 清理逻辑因此废弃删除。
 
 
 def _git(args, cwd=None, check=True):
@@ -128,15 +122,18 @@ def main():
 
     tmp = tempfile.mkdtemp(prefix="ghpages-")
     try:
-        # gh-pages 分支存在 → 浅克隆；不存在（首次）→ orphan 创建
-        probe = _git(["ls-remote", "--heads", url, "gh-pages"], check=False)
-        if probe.stdout.strip():
-            _git(["clone", "--depth", "1", "--branch", "gh-pages", url, tmp])
-        else:
-            print("[publish] 远端无 gh-pages 分支，orphan 创建")
-            _git(["clone", "--depth", "1", url, tmp])
-            _git(["checkout", "--orphan", "gh-pages"], cwd=tmp)
-            _git(["rm", "-rf", "."], cwd=tmp, check=False)
+        # ★ orphan 重建模式（2026-09-08）：彻底不再 clone 旧 gh-pages 树。
+        #   旧树 ~200MB（45 个历史日期包 + backend 31MB），国内下载 5-15 分钟，
+        #   是「发布卡很久」的根源；gh-pages 的 git 历史无保留价值（每天一个
+        #   30MB 提交），直接每次重建「单 commit 全新树」force push：
+        #   0 下载 + 只上传本次几个文件（~40MB），gh-pages 体积永不再膨胀。
+        #   与 Actions 的 peaceiris(keep_files) 不冲突：它 clone 我们的孤儿树 →
+        #   只更新 data/ → 保留其余文件；两写者靠 Concurrency 串行锁互斥。
+        _git(["init", "-q", tmp])
+        _git(["remote", "add", "origin", url], cwd=tmp)
+        _git(["checkout", "-q", "--orphan", "gh-pages"], cwd=tmp)
+        # GitHub Pages 关闭 Jekyll 处理（与 peaceiris 行为一致）
+        open(os.path.join(tmp, ".nojekyll"), "w").close()
 
         data_dir = os.path.join(tmp, "data")
         os.makedirs(data_dir, exist_ok=True)
@@ -193,24 +190,15 @@ def main():
             print("[dry-run] 不推送")
             return
 
-        # 顺手清理历史垃圾文件
-        for fn in STALE_FILES:
-            p = os.path.join(data_dir, fn)
-            if os.path.exists(p):
-                os.remove(p)
-                print(f"  [清理] gh-pages 上的旧格式文件: {fn}")
+        # （orphan 重建模式：新树只含本次发布的文件，历史日期包/旧 JSON 垃圾
+        #   随旧分支历史一起消失，无需再清理）
 
-        _git(["add", "data"], cwd=tmp)
-        # 内容无变化则跳过 commit/push（否则 git commit 因空提交报错）
-        if not _git(["status", "--porcelain"], cwd=tmp).stdout.strip():
-            print("[publish] 内容无变化，跳过 commit/push")
-            return
+        _git(["add", "-A"], cwd=tmp)
         _git(["-c", "user.name=github-actions[bot]",
               "-c", "user.email=github-actions[bot]@users.noreply.github.com",
-              "commit", "-m", "chore: update data package (local publish)"], cwd=tmp)
-        _git(["fetch", "origin", "gh-pages"], cwd=tmp)
-        _git(["rebase", "origin/gh-pages"], cwd=tmp, check=False)
-        _git(["push", "origin", "gh-pages"], cwd=tmp)
+              "commit", "-q", "-m", "chore: update data package (local publish, orphan rebuild)"],
+             cwd=tmp)
+        _git(["push", "--force", "origin", "gh-pages"], cwd=tmp)
         print(f"✅ 已发布 {len(published)} 个包到 GitHub Pages"
               f"（Pages 部署约 1 分钟后生效）")
     finally:

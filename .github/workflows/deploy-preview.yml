@@ -11,6 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # ★ gh-pages 发布全局串行锁：与 kline-data / backend-pack 的发布共用。
+    #   push 代码会触发本任务，若与数据包发布撞车（peaceiris force push
+    #   基于各自 clone 的旧树），后 push 的会把先 push 的数据包覆盖掉。
+    concurrency:
+      group: gh-pages-publish
+      cancel-in-progress: false
 
     steps:
       - name: Checkout code
