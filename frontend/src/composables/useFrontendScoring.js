@@ -576,7 +576,37 @@ async function preciseScoreBatchMainThread(stocks, weights) {
 function attachMainforce(results, mfMap) {
   if (!mfMap || !Object.keys(mfMap).length) return
   for (const r of results) {
-    if (r && mfMap[r.code]) r.mainforce = mfMap[r.code]
+    if (r && mfMap[r.code]) {
+      r.mainforce = mfMap[r.code]
+      applyOverextensionGate(r)
+    }
+  }
+}
+
+/**
+ * 透支惩罚（2026-09-09）：价格位置 >90%（贴着 60 日区间顶部）的买入信号降一档。
+ *
+ * 依据 BucketStats 分桶实测：买入桶（70-80 分）1 日中位数 -0.25%（快照时点
+ * 技术形态最强 = 已经涨过一段，次日反转概率高），持有 5 日才回升到 53.6%。
+ * price_pos 高位 = 反转风险最大的一批。与战法层「高位/拉升段不放行」同源逻辑。
+ *
+ * ★ 只降 signal 不动 total_score：分数仍反映「强度」，信号反映「可操作性」。
+ *   后端排行保持 raw total 口径（只挂标签 + mult 闸门），两边统计互不污染。
+ */
+function applyOverextensionGate(r) {
+  if (!r || !r.mainforce) return
+  const mf = r.mainforce
+  const pos = (mf.chip && mf.chip.price_pos != null) ? mf.chip.price_pos : mf.price_pos
+  if (pos == null || pos <= 0.9) return
+  const tag = '高位透支（价格位置>90%），买入信号降档'
+  if (r.signal === '强烈买入') {
+    r.signal = '买入'
+    r.signal_level = 1
+    r.factors_down = [...(r.factors_down || []), tag]
+  } else if (r.signal === '买入') {
+    r.signal = '观望'
+    r.signal_level = 0
+    r.factors_down = [...(r.factors_down || []), tag]
   }
 }
 
@@ -1034,7 +1064,10 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
   })
 
   // 主力行为（出货嫌疑/吸筹区）：日频标签，与评分现算与否无关
-  if (mainforce) result.mainforce = mainforce
+  if (mainforce) {
+    result.mainforce = mainforce
+    applyOverextensionGate(result)   // 高位透支（price_pos>0.9）买入降档
+  }
   // 趋势健康度（5 维度：量能/支撑/深度/动量/均线）——打包时后端已用同一函数算好
   if (trendHealth) result.trend_health = trendHealth
 

@@ -515,7 +515,17 @@
         <div v-else-if="optResult" class="space-y-4">
           <!-- 信号等级胜率 -->
           <div>
-            <h3 class="text-sm font-semibold mb-2">各信号等级历史胜率</h3>
+            <h3 class="text-sm font-semibold mb-2">
+              各信号等级历史胜率
+              <span class="text-xs font-normal text-muted">
+                {{ optResult.horizon_days ? `（固定持有 ${optResult.horizon_days} 个交易日）` : '（快照日→现价混合窗口）' }}
+              </span>
+            </h3>
+            <p class="text-[11px] text-muted mb-2">
+              口径说明：买入信号存在短期（1 日）反转效应——快照时点技术形态最强 = 已涨过一段，
+              次日回调概率高；持有拉长到 5 日后胜率显著回升（分桶实测 1日 39.7% → 5日 53.6%）。
+              本面板为固定 5 日口径，与"买入后拿一天就走"的实际体感不同。
+            </p>
             <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
               <div v-for="(stats, sig) in optResult.signal_analysis" :key="sig"
                 class="p-2 rounded-lg bg-bg text-center">

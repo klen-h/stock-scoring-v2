@@ -59,7 +59,7 @@
           <span class="text-[10px] text-muted">{{ row.countLabel }}</span>
         </div>
         <div v-for="h in stats.horizons || []" :key="h" class="px-3 py-2">
-          <div v-if="cell(row, h).n > 0" class="flex flex-col gap-1">
+          <div v-if="cell(row, h).n >= 20" class="flex flex-col gap-1">
             <div class="flex items-center gap-1.5">
               <span class="text-sm font-bold font-mono" :class="winColor(cell(row, h).win_rate)">{{ cell(row, h).win_rate }}%</span>
               <div class="flex-1 h-1 bg-bg rounded overflow-hidden">
@@ -73,6 +73,10 @@
               <span class="text-muted/70"> · n={{ cell(row, h).n }}</span>
             </div>
           </div>
+          <!-- ★ n<20 灰显：小样本胜率方差极大（如 <60 桶 n=6 显示 100%），不能当结论看 -->
+          <div v-else-if="cell(row, h).n > 0" class="text-xs text-muted/60 py-1">
+            n={{ cell(row, h).n }} · 样本不足
+          </div>
           <div v-else class="text-xs text-muted/50 py-1">—</div>
         </div>
       </div>
@@ -85,6 +89,7 @@
       <div>· “胜率”= 该分桶内收益为正的样本占比；“平均收益”= 持有 N 个交易日后的收益均值（前复权）。</div>
       <div>· “仅买入信号”只统计信号为“强烈买入/买入”的快照，是实际会执行的信号，更有参考意义。</div>
       <div>· 样本太少时胜率波动很大，请结合 n 一起看；数据每天自动积累，跑几周后才有统计意义。</div>
+      <div>· n &lt; 20 的格子已灰显为「样本不足」——小样本下 66%/100% 这类数字纯属噪声，不要据此决策。</div>
     </div>
   </div>
 </template>

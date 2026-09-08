@@ -772,11 +772,18 @@ def get_daily_rankings(days: int = 30) -> List[Dict]:
     return snapshots
 
 
-def get_verified_records(min_age_days: int = 2) -> List[Dict]:
+def get_verified_records(min_age_days: int = 2, horizon_days: int = None) -> List[Dict]:
     """
     读取已验证的历史快照记录（保存 ≥ min_age_days 天 + 现价可算收益），
     供权重优化分析直接使用（免前端人工验证）。
     返回：[{date, code, name, score, signal, dimensions, returnPct}, ...]
+
+    horizon_days: 收益窗口口径。
+      None（旧行为）= 快照价 → 现价，窗口随快照年龄漂移（2 天 ~ 数月混合）；
+      int N = 快照日后第 N 个交易日的收盘价（固定窗口）。
+      ★ 2026-09-09 信号质量分析改用固定 5 日：混合窗口被短期反转效应主导，
+        实测 1 日买入桶胜率 39.7%、5 日 53.6%——混合口径会系统性低估买入信号，
+        显示出"观望胜率反超买入"的假象（详见 BucketStats 分桶数据）。
     """
     cutoff = (datetime.now(_BEIJING_TZ) - timedelta(days=min_age_days)).strftime("%Y-%m-%d")
     rows = db.fetch("""
@@ -786,6 +793,9 @@ def get_verified_records(min_age_days: int = 2) -> List[Dict]:
           AND price IS NOT NULL AND price > 0
         ORDER BY rank_date DESC
     """, (cutoff,))
+
+    if horizon_days:
+        return _records_fixed_horizon(rows, horizon_days)
 
     # 现价三级兜底：内存行情 / backtest_prices / kline_cache（重启后也能算出收益）
     now_prices = _current_prices(list({r["code"] for r in rows}))
@@ -807,5 +817,60 @@ def get_verified_records(min_age_days: int = 2) -> List[Dict]:
             "signal": r.get("signal"),
             "dimensions": dims,
             "returnPct": round((now_p - price) / price * 100, 2),
+        })
+    return records
+
+
+def _records_fixed_horizon(rows: List[Dict], horizon_days: int) -> List[Dict]:
+    """固定 T+N 交易日收盘价收益（信号质量统计用）。
+
+    交易日历用 ranking_history 自身的去重日期（与 _trading_days 同源）；
+    目标日收盘价批量查 backtest_prices（每个目标日 1 次查询）。
+    T+N 尚未发生的快照（太新）自然跳过——它们还没有未来价格。
+    """
+    cal_asc = list(reversed(_trading_days(120)))   # 升序交易日
+    idx = {d: i for i, d in enumerate(cal_asc)}
+
+    # rank_date → T+N 目标日
+    pending = []          # [(target_date, row)]
+    targets = set()
+    for r in rows:
+        i = idx.get(r["rank_date"])
+        if i is None or i + horizon_days >= len(cal_asc):
+            continue      # 交易日历没有该日，或 T+N 未到
+        t = cal_asc[i + horizon_days]
+        targets.add(t)
+        pending.append((t, r))
+
+    # 批量取目标日收盘价：每个目标日 1 次查询
+    close_map = {}
+    for t in targets:
+        codes = list({r["code"] for _t, r in pending if _t == t})
+        try:
+            got = db.fetch(
+                "SELECT code, close FROM backtest_prices WHERE date = %s "
+                "AND code = ANY(%s)", (t, codes))
+        except Exception:
+            continue
+        for g in got or []:
+            close_map[(g["code"], t)] = g.get("close")
+
+    records = []
+    for t, r in pending:
+        price = r.get("price") or 0
+        c = close_map.get((r["code"], t)) or 0
+        if price <= 0 or not c or c <= 0:
+            continue      # 停牌/未上市等无价格，跳过
+        dims = _parse_dims(r)
+        if not dims:
+            continue
+        records.append({
+            "date": r["rank_date"],
+            "code": r["code"],
+            "name": r["name"],
+            "score": r.get("total_score"),
+            "signal": r.get("signal"),
+            "dimensions": dims,
+            "returnPct": round((c - price) / price * 100, 2),
         })
     return records

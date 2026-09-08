@@ -33,6 +33,15 @@ import subprocess
 import sys
 import tempfile
 
+# ★ Windows GBK 控制台打不出 ✅/⚠️ 会崩 print（2026-09-09 实测：push 都完成了
+#   却在最后的成功提示上 UnicodeEncodeError）。reconfigure 只降级编码不换语义。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR = os.path.join(SCRIPTS_DIR, "..")
 DATA_DIR = os.path.join(REPO_DIR, "backend", "data", "kline")

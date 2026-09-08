@@ -653,8 +653,10 @@ def weight_advice(data: dict):
                     records.append(s)
     else:
         # A. 后端自动模式：从每日快照（保存 ≥ 2 天）读取已验证记录
+        #    ★ 固定 5 交易日窗口（2026-09-09）：混合窗口被短期反转主导，
+        #      会显示"观望胜率反超买入"的假象（1日 39.7% vs 5日 53.6%）
         from app.scoring.ranking_history import get_verified_records
-        records = get_verified_records(min_age_days=2)
+        records = get_verified_records(min_age_days=2, horizon_days=5)
         if records:
             snapshot_count = len({r["date"] for r in records})
 
@@ -761,6 +763,9 @@ def weight_advice(data: dict):
         "advice": advice,
         "sample_size": len(records),
         "snapshot_count": len(snapshots),
+        # ★ 收益口径：后端自动模式=固定 5 交易日窗口（信号质量口径）；
+        #   前端传快照的兼容模式=快照价→现价（混合窗口，仅供参考）
+        "horizon_days": (None if snapshots else 5),
     }
 
 
