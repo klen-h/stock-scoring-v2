@@ -1,0 +1,1 @@
+function i(t){if(!t)return"SH";const r=String(t);return r.startsWith("6")||r.startsWith("9")?"SH":r.startsWith("0")||r.startsWith("2")||r.startsWith("3")?"SZ":"SH"}function s(t){return`https://xueqiu.com/S/${i(t)}${t}`}export{s as g};
