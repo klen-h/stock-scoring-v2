@@ -29,6 +29,10 @@ from contextlib import contextmanager
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 
+# ★ 进程内已执行的 DDL 集合（见 Database.execute 的去重逻辑）：
+#   避免循环里的建表语句反复触发 PostgREST schema cache 重载（流量黑洞）。
+_DDL_DONE = set()
+
 
 class Database:
     """
@@ -130,6 +134,18 @@ class Database:
         执行 SQL（INSERT/UPDATE/DELETE）。
         返回受影响的行数。连接异常时自动重建并重试一次。
         """
+        # ★ DDL 去重（2026-09-08）：各模块的 ensure_table() 被放进循环里调用
+        #   （资金流回填 544 只、矛盾扫描等），每秒 1-2 条 CREATE TABLE。
+        #   每条 DDL 都会触发 PostgREST 的 **schema cache 全量重载**（实测每次
+        #   ~1s、重新拉取全部 43 个关系）→ 这是 Supabase 日流量数百 MB 的元凶。
+        #   建表语句均为 IF NOT EXISTS 幂等，进程内执行一次就够，重复调用直接跳过。
+        _s = (sql or "").lstrip().upper()
+        if _s.startswith(("CREATE TABLE", "CREATE INDEX", "ALTER TABLE")):
+            _key = " ".join((sql or "").split())
+            if _key in _DDL_DONE:
+                return 0
+            _DDL_DONE.add(_key)
+
         # SQLite 使用 ? 占位符，PostgreSQL 使用 %s
         if not self._use_postgres:
             sql = sql.replace("%s", "?")

@@ -115,19 +115,6 @@ async def lifespan(app: FastAPI):
             print(f"[main] 系统绩效预热失败（首访时在线计算）: {e}")
     asyncio.create_task(_performance_warmup())
     yield
-    # ★ DATA_SOURCE=pack：启动后台预下载数据包（非阻塞，不拖慢服务可用）；
-    #   就绪前读侧自动回退 DB 模式（get_cached_klines 等均有兜底）
-    if _pack_source_enabled:
-        async def _pack_bootstrap():
-            try:
-                from app import pack_source
-                await asyncio.to_thread(pack_source._ensure_ready)
-                st = pack_source.status()
-                print(f"[main] 后端数据包就绪: {st.get('date')}，{st.get('total')} 只")
-            except Exception as e:
-                print(f"[main] 数据包预下载失败（读侧将回退 DB）: {e}")
-        asyncio.create_task(_pack_bootstrap())
-    yield
     scheduler.stop(_scheduler_tasks)
     # 关闭时取消未完成的快照引导任务（如有）
     if _snapshot_bootstrap and not _snapshot_bootstrap.done():

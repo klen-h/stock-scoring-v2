@@ -8,10 +8,9 @@ on:
     workflows: ["Generate Backend Data Pack"]
     types: [completed]
 
-  # 兜底：backend-pack 失败/被跳过时，晚上仍补跑一次（写库幂等，重复无害）。
-  # 北京 20:30 = UTC 12:30。
-  schedule:
-    - cron: '30 12 * * 1-5'
+  # 注：原 20:30 的兜底 schedule 已停用（2026-09-08）——后端包改由第三方定时
+  #   17:00 触发后，本任务由 workflow_run 接棒即可；保留 cron 会在同一天
+  #   重复跑一次日批（约 74 分钟）。若后端包整天没跑，手动 dispatch 本任务。
 
   # ★ 手动触发：前端「重算/扫描」按钮通过 GitHub API 转发到这里，
   #   计算全程在 Actions（4核16G），Render 只负责之后读结果（不占内存）

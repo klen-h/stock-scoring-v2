@@ -1,12 +1,11 @@
 name: Generate K-line Data Package
 
 on:
-  # 每日收盘后自动运行（北京时间 16:00 = UTC 08:00）
-  schedule:
-    - cron: '0 8 * * 1-5'  # 周一到周五
-
-  # 支持手动触发（用于测试）
-  # 注意：建议在收盘后（北京时间 16:00 后）运行，盘中拉取会被腾讯限流且当日K线不完整
+  # ★ 2026-09-08：GitHub 自带 schedule 已停用 —— 实测延迟可达 5 小时
+  #   （16:00 的定时任务 20:47 才启动），且与第三方定时服务重复触发 → 每天双跑。
+  #   现在统一由 https://console.cron-job.org/ 配置 `0 16 * * 1-5`
+  #   （北京时间 16:00，收盘后）调用本文件的 workflow_dispatch 触发，时间准时可控。
+  #   注意：仅收盘后运行，盘中拉取会被腾讯限流且当日 K 线不完整。
   workflow_dispatch:
     inputs:
       days:
