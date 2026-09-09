@@ -399,12 +399,36 @@ function scoreCapital(techData, stockInfo) {
   details['成交额'] = { 分值: amountScore, 满分: 25 }
   subScores.push([amountScore, 25])
 
-  const raw = subScores.reduce((sum, [s, w]) => sum + s * w / 100, 0)
+  // 5. 主力5日净流入（20 分，2026-09-09 新增，海德股份教训：量价因子对
+  //    主力持续流出不敏感）。数据：stockInfo.flow5_amt（pack mainforce），
+  //    缺失时退回原 4 因子。有第 5 因子时总权重 120，需归一化。
+  if (stockInfo && stockInfo.flow5_amt != null) {
+    const mfScore = scoreFlow5(Number(stockInfo.flow5_amt))
+    details['主力净流入'] = { 分值: mfScore, 满分: 20 }
+    subScores.push([mfScore, 20])
+  }
+
+  const totalW = subScores.reduce((sum, [, w]) => sum + w, 0)
+  const raw = subScores.reduce((sum, [s, w]) => sum + s * w / 100, 0) * (100 / totalW)
 
   return {
     score: clamp(round1(raw)),
     details,
   }
+}
+
+function scoreFlow5(flow5) {
+  const pts = [[-10, 0], [-6, 15], [-3, 30], [0, 55], [2, 80], [5, 100]]
+  if (flow5 <= pts[0][0]) return 0
+  if (flow5 >= pts[pts.length - 1][0]) return 100
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i]
+    const [x2, y2] = pts[i + 1]
+    if (flow5 >= x1 && flow5 <= x2) {
+      return round1(y1 + (flow5 - x1) / (x2 - x1) * (y2 - y1))
+    }
+  }
+  return 50
 }
 
 /**

@@ -1016,6 +1016,18 @@ async def score_top(
         # 质量门槛：流通市值 > 50 亿、股价 > 3 元
         valid = [s for s in valid if _pool_quality_filter(s)]
 
+        # ★ 主力5日净流入预载（2026-09-09）：资金面第 5 因子的数据源，
+        #   mainforce_state 批量读一次塞进行情 dict（评分线程直接取用）。
+        try:
+            from app.mainforce.state import load_latest as _mf_load
+            _mf_map = _mf_load([s["code"] for s in valid])
+            for s in valid:
+                m = _mf_map.get(s["code"])
+                if m and m.get("flow5_amt") is not None:
+                    s["flow5_amt"] = m["flow5_amt"]
+        except Exception:
+            pass  # 无数据时资金面退回 4 因子（兼容）
+
         top = await _batch_with_precise_top(
             valid, lambda results: results[:limit], limit=limit, side="top",
         )

@@ -462,6 +462,8 @@ async function preciseScoreBatch(stocks, weights) {
       const ind = await getIndicator(stock.code)
       if (ind && ind.mainforce) mfMap[stock.code] = ind.mainforce
       if (ind && ind.news_score != null) newsMap[stock.code] = ind.news_score
+      // ★ 主力5日净流入塞入评分输入（2026-09-09）：资金面第 5 因子的数据源
+      if (ind && ind.mainforce?.flow5_amt != null) stock.flow5_amt = ind.mainforce.flow5_amt
       const series = ind && ind._series
       if (series && seriesIsFresh(series)) {
         results.push(scoreStock({
@@ -539,6 +541,8 @@ async function preciseScoreBatchMainThread(stocks, weights) {
         const ind = await getIndicator(stock.code)
         if (ind && ind.mainforce) mfMap[stock.code] = ind.mainforce
         if (ind && ind.news_score != null) newsMap[stock.code] = ind.news_score
+        // ★ 主力5日净流入塞入评分输入（资金面第 5 因子）
+        if (ind && ind.mainforce?.flow5_amt != null) stock.flow5_amt = ind.mainforce.flow5_amt
       } catch { /* 无标签不影响评分 */ }
 
       const klines = await getKlines(stock.code, 150)
@@ -616,7 +620,21 @@ function applyOverextensionGate(r) {
 function attachNewsScore(results, newsMap) {
   if (!newsMap || !Object.keys(newsMap).length) return
   for (const r of results) {
-    if (r && newsMap[r.code] != null) r.news_score = newsMap[r.code]
+    if (r && newsMap[r.code] != null) {
+      r.news_score = newsMap[r.code]
+      // ★ 消息面强负面降档（2026-09-09，海德股份教训）：news_score <= -2
+      //   的买入信号降一档——消息面此前完全不影响评分，负面压不住技术分。
+      const tag = '消息面强负面（情绪分≤-2），买入降档'
+      if (newsMap[r.code] <= -2 && r.signal === '强烈买入') {
+        r.signal = '买入'
+        r.signal_level = 1
+        r.factors_down = [...(r.factors_down || []), tag]
+      } else if (newsMap[r.code] <= -2 && r.signal === '买入') {
+        r.signal = '观望'
+        r.signal_level = 0
+        r.factors_down = [...(r.factors_down || []), tag]
+      }
+    }
   }
 }
 
@@ -1044,6 +1062,8 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
     const ind = await getIndicator(code)
     if (ind && ind.mainforce) mainforce = ind.mainforce
     if (ind && ind.trend_health) trendHealth = ind.trend_health
+    // ★ 主力5日净流入塞入评分输入（资金面第 5 因子）
+    if (ind && ind.mainforce?.flow5_amt != null) stockInfo.flow5_amt = ind.mainforce.flow5_amt
     const series = ind && ind._series
     if (series && seriesIsFresh(series)) technical = series
   } catch { /* 指标包缺失 → 现算兜底 */ }

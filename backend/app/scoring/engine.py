@@ -695,7 +695,22 @@ class ScoreEngine:
         details["成交额"] = {"分值": amount_score, "满分": 25}
         sub_scores.append((amount_score, 25))
 
-        raw = sum(s * w / 100 for s, w in sub_scores)
+        # ── 5. 主力5日净流入 (满分 20，2026-09-09 新增) ──
+        #    海德股份教训：量价因子对主力持续流出不敏感，阴跌股照样高分。
+        #    数据：stock_info["flow5_amt"]（%），由调用方从 mainforce_state /
+        #    pack 塞入；缺失时退回原 4 因子（归一化后权重不变）。
+        flow5 = stock_info.get("flow5_amt")
+        if flow5 is not None:
+            try:
+                mf_score = _score_flow5(float(flow5))
+                details["主力净流入"] = {"分值": mf_score, "满分": 20}
+                sub_scores.append((mf_score, 20))
+            except (TypeError, ValueError):
+                pass
+
+        # 有第 5 因子时总权重 120，归一化回 100（无则不变，兼容旧口径）
+        total_w = sum(w for _s, w in sub_scores)
+        raw = sum(s * w / 100 for s, w in sub_scores) * (100 / total_w)
         score = _clamp(_round1(raw))
         return DimensionScore("资金面", score, self.w_capital,
                               _round1(score * self.w_capital), details)
@@ -1730,3 +1745,19 @@ class ScoreEngine:
             "verdict": verdict,
             "details": details,
         }
+
+def _score_flow5(flow5: float) -> float:
+    """主力5日净流入(%) -> 0-100（2026-09-09）。
+
+    锚点：>=+5 满分 / +2->80 / 0->55 / -3->30 / -6->15 / <=-10 零分，段内线性。
+    与前端 scoringEngine.scoreFlow5 同曲线，改一处必须同步另一处。
+    """
+    pts = [(-10, 0.0), (-6, 15.0), (-3, 30.0), (0, 55.0), (2, 80.0), (5, 100.0)]
+    if flow5 <= pts[0][0]:
+        return 0.0
+    if flow5 >= pts[-1][0]:
+        return 100.0
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:]):
+        if x1 <= flow5 <= x2:
+            return round(y1 + (flow5 - x1) / (x2 - x1) * (y2 - y1), 1)
+    return 50.0
