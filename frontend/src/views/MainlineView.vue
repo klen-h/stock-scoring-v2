@@ -95,12 +95,84 @@
         </div>
       </div>
     </div>
+
+    <!-- 跟主线能赚钱吗？（收益验证，2026-09-09 起积累） -->
+    <div v-if="perf.ok" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <h2 class="text-sm font-bold text-gray-200">🎯 跟主线能赚钱吗？</h2>
+        <span class="text-[10px] text-muted">
+          窗口 {{ perf.window?.[0] }} ~ {{ perf.window?.[1] }}（{{ perf.days }} 日）· 主线候选 {{ perf.mainline_pairs }} (次)
+        </span>
+      </div>
+      <p class="text-[11px] text-muted mb-3">
+        主线候选 = 当日 Top50 中所属行业扎堆（≥2 只）的股票。对照：同日全部 Top50（同池剔除入选偏差）与沪深300。
+      </p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-muted border-b border-border">
+              <th class="text-left py-1.5 px-2 font-normal">组合</th>
+              <th v-for="h in perf.horizons" :key="h" class="text-right py-1.5 px-2 font-normal">持有 {{ h }} 日</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in perfRows" :key="row.key" class="border-b border-border/50 last:border-b-0">
+              <td class="py-2 px-2">
+                <span class="font-medium" :class="row.cls">{{ row.label }}</span>
+              </td>
+              <td v-for="h in perf.horizons" :key="h" class="text-right py-2 px-2 font-mono">
+                <div :class="(perfData(row.key)[h]?.avg_ret ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                  {{ perfData(row.key)[h] ? fmtRet(perfData(row.key)[h].avg_ret) : '—' }}
+                </div>
+                <div class="text-[10px] text-muted">
+                  {{ perfData(row.key)[h] ? `胜率${perfData(row.key)[h].win_rate}% · n=${perfData(row.key)[h].n}` : '' }}
+                </div>
+              </td>
+            </tr>
+            <tr class="bg-white/[0.02]">
+              <td class="py-2 px-2 font-medium text-accent">超额 vs Top50</td>
+              <td v-for="h in perf.horizons" :key="'e'+h" class="text-right py-2 px-2 font-mono font-bold"
+                :class="(perf.excess_vs_top50?.[String(h)] ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                {{ fmtRet(perf.excess_vs_top50?.[String(h)]) }}
+              </td>
+            </tr>
+            <tr>
+              <td class="py-2 px-2 font-medium text-accent">超额 vs 沪深300</td>
+              <td v-for="h in perf.horizons" :key="'h'+h" class="text-right py-2 px-2 font-mono font-bold"
+                :class="(perf.excess_vs_hs300?.[String(h)] ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                {{ fmtRet(perf.excess_vs_hs300?.[String(h)]) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-muted mt-2">
+        判读：超额持续为正 → 「跟主线」有效，主线榜可作选股入口；超额≈0 或为负 → 主线只是事后描述，不构成选股优势。
+        数据 09-09 起积累，样本 &lt; 20 的窗口仅供参考。
+      </p>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, watch, onMounted } from 'vue'
-import { getMainlineSummary, buildMainlineDate, pushMainlineReport } from '../api'
+import { getMainlineSummary, buildMainlineDate, pushMainlineReport, getMainlinePerformance } from '../api'
+
+// ===== 跟主线能赚钱吗？（收益验证）=====
+const perf = ref({})
+const fmtRet = (v) => v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%'
+const perfRows = [
+  { key: 'ml', label: '主线候选', cls: 'text-gray-100' },
+  { key: 't50', label: 'Top50 全体', cls: 'text-muted' },
+  { key: 'hs', label: '沪深300', cls: 'text-muted' },
+]
+const perfData = (key) => perf.value[key === 'ml' ? 'mainline' : key === 't50' ? 'all_top50' : 'hs300'] || {}
+async function loadPerf() {
+  try {
+    const { data } = await getMainlinePerformance(30)
+    perf.value = data?.ok ? data : {}
+  } catch { perf.value = {} }
+}
 
 const days = ref(12)
 const summary = ref({})
@@ -156,5 +228,5 @@ async function doPush() {
 }
 
 watch(days, load)
-onMounted(load)
+onMounted(() => { load(); loadPerf() })
 </script>

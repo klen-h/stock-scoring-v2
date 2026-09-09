@@ -185,6 +185,27 @@ def task_score_snapshot():
     return f"评分快照: {n} 条（Top {len(data)}）"
 
 
+def task_mainline():
+    """行业主线/共振分析（industry_mainline，原 Render 16:05 循环）。
+
+    ★ 2026-09-09 迁移：Render 只读模式关闭了 mainline_loop（_heavy）→ 09-09 起断档。
+    依赖 score_snapshot（Top50 快照）先落库，故排在其后。
+    产出：主线榜（Top50 扎堆行业）+ 风格切换信号 + 企微日报。
+    """
+    from app.mainline import compute_mainline
+    r = compute_mainline()
+    if not r.get("ok"):
+        raise RuntimeError(f"主线分析失败: {r.get('error')}")
+    note = ""
+    try:
+        from app.mainline import push_mainline_report
+        p = push_mainline_report()
+        note = f"（企微 {p.get('mainlines', 0)} 条 / 切换 {p.get('switches', 0)}）"
+    except Exception as e:
+        note = f"（企微推送失败: {e}）"
+    return f"主线分析: {r['industries']} 行业 / 未知 {r['unknown_stocks']} 只 {note}"
+
+
 def task_lhb():
     """龙虎榜同步（日榜全量 + 池内个股席位明细）。"""
     from app.mainforce.lhb import backfill_days
@@ -219,6 +240,8 @@ TASKS = {
     "contradiction_scan": (task_contradiction_scan, "矛盾扫描"),
     "contradiction_report": (task_contradiction_report, "矛盾报告(LLM)"),
     "score_snapshot": (task_score_snapshot, "评分快照"),
+    # ★ 2026-09-09 迁入：依赖 score_snapshot 的 Top50，排其后
+    "mainline": (task_mainline, "行业主线/共振分析"),
     "lhb": (task_lhb, "龙虎榜同步"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
@@ -227,8 +250,8 @@ TASKS = {
 }
 DEFAULT_ORDER = ["backfill", "mainflow", "market_snapshot", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
-                 "contradiction_report", "score_snapshot", "lhb", "zz_finance",
-                 "daily_report"]
+                 "contradiction_report", "score_snapshot", "mainline", "lhb",
+                 "zz_finance", "daily_report"]
 
 
 def ensure_quotes():

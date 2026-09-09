@@ -200,6 +200,7 @@ export const getIndustryMapStats = () => http.get('/sector/industry-map/stats')
 export const getMainlineSummary = (days = 12) => http.get('/sector/mainline/summary', { params: { days } })
 export const buildMainlineDate = (date) => http.get('/sector/mainline/date', { params: { date } })
 export const pushMainlineReport = (days = 12) => http.post('/sector/mainline/push', {}, { params: { days } })
+export const getMainlinePerformance = (days = 30) => http.get('/sector/mainline/performance', { params: { days } })
 export const getNorthboundHoldings = () => Promise.resolve({ data: [] }) // 北向持股明细暂未实现
 
 // 战法选股

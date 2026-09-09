@@ -220,3 +220,114 @@ def push_mainline_report(days: int = 12) -> dict:
     push_markdown_batched("🧭 行业主线日报", "\n".join(lines))
     return {"ok": True, "mainlines": len(s["mainlines"]),
             "switches": len(s["switches"])}
+
+
+def get_mainline_performance(days: int = 30, horizons: tuple = (1, 5, 10)) -> dict:
+    """主线候选股后续收益 vs 全市场基准——验证「跟主线」是否有效。
+
+    ★ 2026-09-09 新增（诉求：把主线痕迹整合起来逐步验证）。
+
+    口径：
+      - 主线候选 = 当日 Top50 中、所属行业当日 stock_count>=2（扎堆）的股票。
+        当日扎堆才叫主线，孤零零 1 只不算（避免把噪音当主线）。
+      - baseline 组 = 同日全部 Top50 股票（同池对比，剔除入选偏差）。
+      - 市场基准 = 沪深300（sh000300）同期指数收益。
+      - 每条快照按 T+1/5/10 交易日收盘价算收益（与 BucketStats 同源价格序列）。
+    """
+    from app.scoring.ranking_history import _load_price_series, _stats
+
+    today = beijing_now().strftime("%Y-%m-%d")
+    dates = [r["rank_date"] for r in db.fetch(
+        "SELECT DISTINCT rank_date FROM ranking_history WHERE rank_date <= %s "
+        "ORDER BY rank_date DESC LIMIT %s", (today, days))]
+    dates.reverse()
+    if len(dates) < 3:
+        return {"ok": False, "error": f"快照天数不足（仅 {len(dates)} 天）"}
+
+    since = dates[0]
+    ml_rows = db.fetch(
+        "SELECT date, industry, stock_count, stocks_json FROM industry_mainline "
+        "WHERE date >= %s", (since,))
+    top_rows = db.fetch(
+        "SELECT rank_date, code FROM ranking_history WHERE rank_date >= %s",
+        (since,))
+
+    # 当日主线行业（扎堆阈值：当日 >=2 只 Top50 命中）
+    mainline_pairs = {}          # (date, code) -> industry
+    for r in ml_rows or []:
+        if (r.get("stock_count") or 0) < 2:
+            continue             # 单只不成主线
+        try:
+            stocks = json.loads(r.get("stocks_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for s in stocks:
+            c = s.get("code")
+            if c:
+                mainline_pairs[(r["date"], c)] = r["industry"]
+
+    if not mainline_pairs:
+        return {"ok": False, "error": "窗口内无主线候选（industry_mainline 数据不足？）"}
+
+    # 价格序列：主线候选 ∪ 全部 Top50 ∪ 沪深300（一次批量加载）
+    all_codes = ({c for (_d, c) in mainline_pairs}
+                 | {t["code"] for t in top_rows} | {"sh000300"})
+    series = _load_price_series(list(all_codes), since)
+    date_idx = {c: {d: i for i, (d, _) in enumerate(cl)} for c, cl in series.items()}
+
+    ml = {h: [] for h in horizons}
+    base50 = {h: [] for h in horizons}
+    hs300 = {h: [] for h in horizons}
+    for t in top_rows:
+        d, code = t["rank_date"], t["code"]
+        cl = series.get(code)
+        if not cl:
+            continue
+        i = date_idx.get(code, {}).get(d)
+        if i is None:
+            continue
+        in_ml = (d, code) in mainline_pairs
+        for h in horizons:
+            if i + h >= len(cl):
+                continue
+            b, tgt = cl[i][1], cl[i + h][1]
+            if not b or b <= 0 or not tgt:
+                continue
+            ret = (tgt - b) / b * 100
+            base50[h].append(ret)
+            if in_ml:
+                ml[h].append(ret)
+
+    # 沪深300 指数同期（每个快照日独立算 T+N）
+    cl300 = series.get("sh000300")
+    if cl300:
+        idx300 = {d: i for i, (d, _) in enumerate(cl300)}
+        for d in dates:
+            i = idx300.get(d)
+            if i is None:
+                continue
+            for h in horizons:
+                if i + h < len(cl300):
+                    b, tgt = cl300[i][1], cl300[i + h][1]
+                    if b and b > 0 and tgt:
+                        hs300[h].append((tgt - b) / b * 100)
+
+    return {
+        "ok": True,
+        "days": len(dates),
+        "window": [dates[0], dates[-1]],
+        "horizons": list(horizons),
+        "mainline_pairs": len(mainline_pairs),
+        "mainline": {str(h): _stats(ml[h]) for h in horizons},
+        "all_top50": {str(h): _stats(base50[h]) for h in horizons},
+        "hs300": {str(h): _stats(hs300[h]) for h in horizons},
+        "excess_vs_top50": {str(h): _excess(ml[h], base50[h]) for h in horizons},
+        "excess_vs_hs300": {str(h): _excess(ml[h], hs300[h]) for h in horizons},
+    }
+
+def _excess(a, b):
+    """超额收益差（主组均值 - 基准组均值），任一组无样本返回 None。"""
+    if not a or not b:
+        return None
+    return round(sum(a) / len(a) - sum(b) / len(b), 2)
+

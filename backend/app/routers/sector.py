@@ -133,6 +133,18 @@ def mainline_push(days: int = Query(12, ge=3, le=60)):
     return push_mainline_report(days)
 
 
+@router.get("/mainline/performance")
+def mainline_performance(days: int = Query(30, ge=5, le=120)):
+    """主线候选股后续收益 vs 全市场基准（验证「跟主线」是否有效）。
+
+    主线候选 = 当日 Top50 中所属行业当日扎堆（≥2 只）的股票；
+    对照组 = 同日全部 Top50 + 沪深300 指数；持有 1/5/10 交易日。
+    数据 09-09 起积累（此前 mainline_loop 被 Render 只读模式关闭）。
+    """
+    from app.mainline import get_mainline_performance
+    return get_mainline_performance(days)
+
+
 # ── 板块每日快照（历史序列：板块分化度 / 板块动量的数据基础）──
 
 @router.get("/snapshot-stats")
