@@ -14,7 +14,7 @@
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from app.auth import get_current_user
 from app.database import db
@@ -143,3 +143,15 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
         "sources": sources,
         "scheduler": sched,
     }
+
+
+@router.get("/trader-brief")
+def trader_brief(phase: str = Query(None), refresh: bool = False,
+                 user: dict = Depends(get_current_user)):
+    """交易员决策简报（PLAN_TRADER_WORKFLOW Phase 1）。
+
+    按当前时间自动选 phase（premarket/intraday/postmarket）；
+    默认读取当日已生成简报（幂等），refresh=true 强制重新生成（消耗 1 次 LLM 调用）。
+    """
+    from app.trader_brief import generate_trader_brief, current_phase
+    return generate_trader_brief(phase or current_phase(), force=refresh)
