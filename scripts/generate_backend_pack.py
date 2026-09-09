@@ -359,21 +359,19 @@ def main():
     sb_codes = [c for c in supabase_kline_codes() if c in quotes]
     pool_all = list(dict.fromkeys(sb_codes + cap_codes + ["sh000300"] + etf_codes))
 
-    # ★ 质量减法（2026-09-06，Actions 2h 超时对策）：剔除
-    #   科创/创业（688/689/300/301/302，评分与战法池本就排除）、
-    #   ST/亏损（PE<=0）、总市值<50亿（与战法扫描 50亿门槛对齐）。
-    #   这些股票在评分/排行/战法全链路都不会被消费，拉 750 根日线纯属
-    #   浪费腾讯配额与 Actions 时长（实测 1394 只 → 预计 ~700 只）。
-    #   指数/ETF（非 6 位码）不受过滤。
+    # ★ 质量过滤（2026-09-09 对齐战法池 filter_stock_pool 口径）：
+    #   剔 ST/*ST/SST、科创板（688）、总市值<50亿（与战法扫描 50亿门槛对齐）。
+    #   ★ 保留创业板（300/301/302）与亏损股（PE<=0）——战法池 filter_stock_pool
+    #     不剔这两类（2026-09-06 的旧口径多剔了它们，导致 pack 1442 vs 战法池
+    #     2081 的 ~640 只缺口 → 战法扫描每天回源撞 WAF + Supabase 流量暴涨，
+    #     正是 egress 超额的主因之一）。指数/ETF（非 6 位码）不受过滤。
     def _pack_quality(code: str, q: dict) -> bool:
         if len(code) != 6 or not code.isdigit():
             return True                      # 指数/ETF 保留
         name = (q.get("name") or "").replace(" ", "").upper()
         if name.startswith(("ST", "*ST", "SST")):
             return False
-        if code.startswith(("688", "689", "300", "301", "302")):
-            return False
-        if (q.get("pe") or 0) <= 0:          # 亏损或无盈利数据
+        if code.startswith("688"):           # 只剔科创板（对齐战法池）
             return False
         if (q.get("market_cap") or 0) < 50:  # 亿元（gkp 实时行情口径）
             return False

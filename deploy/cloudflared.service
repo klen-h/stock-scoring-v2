@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel (quick tunnel for stock API)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://127.0.0.1:8000 --no-autoupdate
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
