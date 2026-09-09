@@ -78,6 +78,11 @@ jobs:
           WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
           # ★ 数据源走数据包：K线/指标/主力行为全部读 pack，零回源 → 无 WAF 风险
           DATA_SOURCE: pack
+          # ★ LLM 解读（2026-09-09 补上：secrets 已在仓库配置，但此步骤之前
+          #   未引用 → 日报/矛盾报告的 AI 解读一直显示"未配置"）
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
         run: |
           python scripts/daily_batch.py \
             --tasks ${{ github.event.inputs.tasks || 'all' }} \
