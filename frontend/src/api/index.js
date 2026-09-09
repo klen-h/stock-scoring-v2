@@ -108,6 +108,7 @@ export const getBacktestReportContent = (name) => http.get('/backtest/reports/co
 // A股大盘日报（scheduler 每日 16:20 生成，落库 daily_reports）
 export const getDailyReportList = (limit = 30) => http.get('/report/list', { params: { limit } })
 export const getDailyReport = (date) => http.get('/report/daily', { params: date ? { date } : {} })
+export const getTraderBrief = (refresh) => http.get('/system/trader-brief', { params: refresh ? { refresh: true } : {} })
 
 // 矛盾扫描引擎
 export const getContradictions = (params = {}) => http.get('/contradictions', { params })

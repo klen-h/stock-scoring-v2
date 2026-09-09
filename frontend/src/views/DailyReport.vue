@@ -40,6 +40,19 @@
 
       <!-- 右侧正文 -->
       <div class="flex-1 min-w-0">
+        <!-- 决策简报（PLAN_TRADER_WORKFLOW Phase 1） -->
+        <div v-if="briefHtml" class="bg-card border border-accent/30 rounded-lg p-4 mb-3">
+          <div class="flex items-center justify-between mb-2">
+            <h2 class="text-sm font-bold text-accent">🎯 交易员决策简报
+              <span class="text-[10px] text-muted font-normal">{{ phaseLabel }} · {{ briefDate }}</span>
+            </h2>
+            <button @click="loadBrief(true)" :disabled="briefLoading"
+              class="px-2 py-1 rounded text-[10px] border border-border text-muted hover:text-gray-200 transition-colors disabled:opacity-50">
+              {{ briefLoading ? '生成中…' : '↻ 重新生成' }}
+            </button>
+          </div>
+          <div class="md-body text-xs" v-html="briefHtml"></div>
+        </div>
         <div v-if="loading" class="bg-card border border-border rounded-lg p-8 text-center">
           <div class="loading-spinner mx-auto mb-3"></div>
           <p class="text-xs text-muted">加载日报…</p>
@@ -62,8 +75,27 @@
 import { ref, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { getDailyReportList, getDailyReport } from '../api'
+import { getTraderBrief } from '../api'
 
 const reportList = ref([])
+// 决策简报（Phase 1）
+const briefHtml = ref('')
+const briefLoading = ref(false)
+const briefDate = ref('')
+const phaseLabel = ref('')
+const PHASE_LABELS = { premarket: '盘前', intraday: '盘中', postmarket: '盘后' }
+async function loadBrief(refresh = false) {
+  briefLoading.value = true
+  try {
+    const { data } = await getTraderBrief(refresh)
+    if (data?.ok) {
+      briefDate.value = data.date || ''
+      phaseLabel.value = PHASE_LABELS[data.phase] || data.phase || ''
+      briefHtml.value = mdRenderer.render(data.markdown || '')
+    }
+  } catch (e) { /* 简报失败不影响日报 */ }
+  finally { briefLoading.value = false }
+}
 const listLoading = ref(false)
 const listError = ref('')
 const currentDate = ref('')
@@ -122,6 +154,7 @@ function select(date) {
 }
 
 onMounted(loadList)
+loadBrief()
 </script>
 
 <style scoped>
