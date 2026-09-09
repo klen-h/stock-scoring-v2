@@ -171,18 +171,18 @@ def collect_brief_data(phase: str) -> dict:
         if c.get("severity") == "severe":
             hit = any(p["name"] and p["name"] in (c.get("title") or "")
                       for p in data.get("positions") or [])
-            add("R1", "high",
+            _add("R1", "high",
                 f"检查持仓敞口：{c['title']}（{c['date']}）" + ("——命中持仓" if hit else ""))
 
     for c in data.get("candidates") or []:
         if "买入" in (c.get("signal") or "") and \
                 c.get("mainforce_signal") == "distribution":
-            add("R2", "high", f"暂缓买入 {c['name']}({c['code']})：评分买入但主力标记出货（冲突）")
+            _add("R2", "high", f"暂缓买入 {c['name']}({c['code']})：评分买入但主力标记出货（冲突）")
 
     if phase == "premarket":
         for p in data.get("positions") or []:
             if p.get("status") == "pending":
-                add("R4", "medium", f"9:35 关注确认：{p['name']}({p['code']}) "
+                _add("R4", "medium", f"9:35 关注确认：{p['name']}({p['code']}) "
                                     f"（{p['strategy_name']}，信号日 {p['signal_date']}）")
 
     for r in risks:
