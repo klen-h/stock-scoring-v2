@@ -85,6 +85,8 @@ def init_ranking_history_table():
     for col_sql in (
         "ALTER TABLE ranking_history ADD COLUMN IF NOT EXISTS dimensions_json TEXT",
         "ALTER TABLE ranking_history ADD COLUMN IF NOT EXISTS price REAL",
+        # 2026-09-09：主力行为标签（distribution/accum）——供吸筹/出货胜率验证
+        "ALTER TABLE ranking_history ADD COLUMN IF NOT EXISTS mainforce_signal TEXT",
     ):
         try:
             db.execute(col_sql)
@@ -135,14 +137,18 @@ def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, re
             dims = stock.get("dimensions") or {}
             dims_json = json.dumps(dims, ensure_ascii=False) if dims else None
             price = stock.get("price") or 0
+            # 主力行为标签（2026-09-09）：兼容 dict（score_top 原样）与扁平字符串
+            mf = stock.get("mainforce")
+            mf_signal = (mf.get("signal") if isinstance(mf, dict) else mf) or None
             db.execute("""
-                INSERT INTO ranking_history 
-                (rank_date, code, name, rank_pos, total_score, signal, dimensions_json, price)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (rank_date, code) DO UPDATE 
+                INSERT INTO ranking_history
+                (rank_date, code, name, rank_pos, total_score, signal, dimensions_json, price, mainforce_signal)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (rank_date, code) DO UPDATE
                 SET name = EXCLUDED.name, rank_pos = EXCLUDED.rank_pos,
                     total_score = EXCLUDED.total_score, signal = EXCLUDED.signal,
-                    dimensions_json = EXCLUDED.dimensions_json, price = EXCLUDED.price
+                    dimensions_json = EXCLUDED.dimensions_json, price = EXCLUDED.price,
+                    mainforce_signal = EXCLUDED.mainforce_signal
             """, (
                 today,
                 code,
@@ -152,6 +158,7 @@ def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, re
                 stock.get("signal"),
                 dims_json,
                 price,
+                mf_signal,
             ))
             count += 1
         except Exception as e:
@@ -577,7 +584,7 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
     """
     since = (datetime.now(_BEIJING_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
     rows = db.fetch("""
-        SELECT rank_date, code, total_score, signal
+        SELECT rank_date, code, total_score, signal, mainforce_signal
         FROM ranking_history
         WHERE rank_date >= %s
         ORDER BY rank_date ASC
@@ -593,6 +600,11 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
         for b in _BUCKET_ORDER
     }
     baseline = {"all": {h: [] for h in horizons}, "buy": {h: [] for h in horizons}}
+    # ★ 主力行为分桶（2026-09-09）：验证吸筹/出货标签的预测力
+    #   distribution=出货嫌疑 / accum=吸筹区 / none=无标签
+    mf_buckets: Dict[str, Dict] = {
+        s: {h: [] for h in horizons} for s in ("distribution", "accum", "none")
+    }
     no_price = 0
     total_records = 0
 
@@ -611,6 +623,8 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
             continue
         closes = series[r["code"]]
         is_buy = (r.get("signal") or "") in _BUY_SIGNALS
+        mf_sig = r.get("mainforce_signal")
+        mf_key = mf_sig if mf_sig in ("distribution", "accum") else "none"
         for h in horizons:
             if i + h < len(closes):
                 base, target = closes[i][1], closes[i + h][1]
@@ -621,6 +635,8 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
                     if is_buy:
                         buckets[b]["buy"][h].append(ret)
                         baseline["buy"][h].append(ret)
+                    if mf_key != "none":
+                        mf_buckets[mf_key][h].append(ret)
 
     # ③ 汇总
     bucket_rows = []
@@ -642,6 +658,9 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
         "buckets": bucket_rows,
         "baseline": {"all": {str(h): _stats(baseline["all"][h]) for h in horizons},
                      "buy": {str(h): _stats(baseline["buy"][h]) for h in horizons}},
+        # ★ 主力行为分桶（吸筹/出货/无标签 × 持有期），数据 09-09 起积累
+        "mainforce": {sig: {str(h): _stats(g[h]) for h in horizons}
+                      for sig, g in mf_buckets.items()},
     }
     result["conclusion"] = _bucket_conclusion(bucket_rows, horizons[-1] if horizons else 5)
     return result

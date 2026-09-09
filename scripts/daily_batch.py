@@ -178,6 +178,8 @@ def task_score_snapshot():
         "total_score": r["total_score"], "signal": r["signal"],
         "rank": i + 1, "dimensions": r.get("dimensions") or {},
         "price": (stocks_map.get(r["code"]) or {}).get("price") or 0,
+        # 主力行为标签（2026-09-09）：供吸筹/出货胜率验证（BucketStats）
+        "mainforce_signal": ((r.get("mainforce") or {}).get("signal")),
     } for i, r in enumerate(data)]
     n = record_daily_ranking(stocks, False, True)
     return f"评分快照: {n} 条（Top {len(data)}）"

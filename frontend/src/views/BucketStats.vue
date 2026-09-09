@@ -82,6 +82,37 @@
       </div>
     </div>
 
+    <!-- 主力行为分桶（吸筹/出货预测力验证，2026-09-09 起积累数据） -->
+    <div v-if="stats.mainforce" class="bg-card border border-border rounded-lg overflow-hidden">
+      <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">
+        主力行为标签胜率（验证吸筹区/出货嫌疑的预测力 · 09-09 起积累）
+      </div>
+      <div class="grid grid-cols-[1.2fr_repeat(3,1fr)] border-b border-border">
+        <div class="px-3 py-2 text-xs text-muted">标签</div>
+        <div v-for="h in stats.horizons || []" :key="'mf'+h" class="px-3 py-2 text-xs text-muted text-center">
+          持有 {{ h }} 日
+        </div>
+      </div>
+      <div v-for="(label, key) in mfLabels" :key="key"
+        class="grid grid-cols-[1.2fr_repeat(3,1fr)] border-b border-border/50 last:border-b-0">
+        <div class="px-3 py-2 flex items-center gap-2">
+          <span class="text-sm font-medium" :class="key === 'distribution' ? 'text-fall' : key === 'accum' ? 'text-rise' : 'text-gray-300'">{{ label }}</span>
+          <span class="text-[10px] text-muted" v-if="stats.mainforce[key]">{{ mfCount(key) }} 条</span>
+        </div>
+        <div v-for="h in stats.horizons || []" :key="key+h" class="px-3 py-2">
+          <div v-if="mfCell(key, h).n >= 20" class="flex flex-col gap-1">
+            <span class="text-sm font-bold font-mono" :class="winColor(mfCell(key, h).win_rate)">{{ mfCell(key, h).win_rate }}%</span>
+            <span class="text-[11px] text-muted font-mono">
+              均 <span :class="retColor(mfCell(key, h).avg_ret)">{{ fmtRet(mfCell(key, h).avg_ret) }}</span>
+              <span class="text-muted/70"> · n={{ mfCell(key, h).n }}</span>
+            </span>
+          </div>
+          <div v-else-if="mfCell(key, h).n > 0" class="text-xs text-muted/60 py-1">n={{ mfCell(key, h).n }} · 样本不足</div>
+          <div v-else class="text-xs text-muted/50 py-1">—</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 说明 -->
     <div class="bg-card border border-border rounded-lg p-3 text-[11px] text-muted leading-relaxed space-y-1">
       <div>📌 口径说明</div>
@@ -149,6 +180,17 @@ function cell(row, h) {
     ? (row.group[mode.value] || {})
     : (row.group[mode.value] || {})
   return g[String(h)] || {}
+}
+
+// ===== 主力行为分桶（吸筹/出货预测力验证）=====
+const mfLabels = { distribution: '出货嫌疑', accum: '吸筹区', none: '无标签' }
+function mfCell(key, h) {
+  return stats.value.mainforce?.[key]?.[String(h)] || {}
+}
+function mfCount(key) {
+  const hs = stats.value.horizons || []
+  const last = hs[hs.length - 1]
+  return mfCell(key, last).n || 0
 }
 
 function fmtPct(v) {
