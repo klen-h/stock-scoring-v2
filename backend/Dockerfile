@@ -18,7 +18,10 @@ WORKDIR /app/backend
 # 技巧：单独复制 requirements.txt 是为了利用 Docker 缓存层 ——
 #       只要 requirements.txt 不变，依赖安装这一层就不会重复执行，构建更快。
 COPY ./requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt   # --no-cache-dir 减小镜像体积
+# 默认走清华源（2026-09-09 腾讯云实测：PyPI 官方源 ~25 kB/s，numpy 18MB 要下 12 分钟；
+#   清华源 1.36 MB/s）。境外机器可用 --build-arg PIP_INDEX=https://pypi.org/simple 覆盖。
+ARG PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir -i ${PIP_INDEX} -r requirements.txt   # --no-cache-dir 减小镜像体积
 
 # 再复制整个应用代码（src 变了才会重新执行这一层）
 COPY . .
