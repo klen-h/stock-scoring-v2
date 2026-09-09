@@ -222,6 +222,7 @@ def auto_ingest_signals() -> dict:
     whitelist = set(get_push_whitelist())
     stats = {"ingested": 0, "skipped_exist": 0, "skipped_low_conf": 0,
              "skipped_bad_stop": 0, "skipped_mainforce_gate": 0,
+             "skipped_at_limit": 0,
              "pool_full": False, "non_whitelist": 0}
     gate_on = None
     for cfg in list_strategies():
@@ -247,6 +248,13 @@ def auto_ingest_signals() -> dict:
             "SELECT COUNT(*) AS c FROM paper_positions WHERE strategy_name=%s "
             "AND status IN ('pending','holding')", (strategy_en,))
         if held and (held.get("c") or 0) >= MAX_PER_STRATEGY_POSITIONS:
+            # ★ 2026-09-09：此分支原本静默 continue（不记 stats），导致
+            #   "企微推送了 8 条但待确认一只没有"且日志 stats 全 0 无从排查
+            #   （实测 single_yang_unbroken holding=8 顶满上限）。
+            stats["skipped_at_limit"] += 1
+            print(f"[paper] {strategy_en} 的 pending+holding 已达上限 "
+                  f"{MAX_PER_STRATEGY_POSITIONS} 笔，今日新信号全部跳过——"
+                  f"需等持仓止损/止盈退出释放额度，或在模拟盘页手动平仓")
             continue
         ingested_this = 0
         for s in cands:
