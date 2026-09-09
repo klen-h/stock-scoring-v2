@@ -35,6 +35,9 @@ PHASES = {
 }
 
 
+MAX_ITEMS_PER_SECTION = 3
+
+
 def current_phase() -> str:
     now = beijing_now()
     t = now.hour * 60 + now.minute
