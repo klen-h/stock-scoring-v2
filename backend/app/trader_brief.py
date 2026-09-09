@@ -7,16 +7,19 @@
 数据（矛盾/主线/主力/持仓/候选信号），由 LLM 生成三段式决策简报：
 「该关注 / 该做 / 该防」——每条判断必须引用具体数据出处。
 
-原则（见 PLAN_TRADER_WORKFLOW.md）：
+原则（见 PLAN_TRADER_WORKFLOW.md，v2 采纳两份外部评审）：
   1. 只聚合已有表的数据，不为简报新建采集任务
-  2. AI 出观点，数据给出处（prompt 强制引用，防幻觉）
-  3. 未配置 LLM 时降级为纯数据清单（聚合部分照常可用）
+  2. AI 出观点，数据给出处（引用校验器对 6 位代码做成员检查，未命中标「待核实」）
+  3. LLM 不可用/失败 → 规则骨架简报，绝不用 LLM 常识补写
+  4. 「该做」段 = 确定性规则引擎渲染（LLM 永不发明动作），每条带 rule_id
+  5. 形态定死：每段 ≤3 条 + 严重度排序；边界：简报=面向动作，日报=面向复盘
 
 调度：Phase 1 先做 API 按需生成（前端加载时触发/手动刷新），
-      企微定时推送（盘前 9:10 / 盘后 19:35）列入 Phase 1 收尾。
+      企微推送（仅盘前 9:10 一次；19:35 不推——与 19:30 日报去重）列入收尾。
 ================================================================================
 """
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from app.database import db
@@ -141,6 +144,54 @@ def collect_brief_data(phase: str) -> dict:
     except Exception:
         pass
 
+    # 7) 持仓风险矩阵（确定性聚合，2026-09-10 自 Phase 2 前移）
+    risks = []
+    for p in data.get("positions") or []:
+        try:
+            r = db.fetch_one(
+                "SELECT mainforce_signal FROM ranking_history "
+                "WHERE code = %s ORDER BY rank_date DESC LIMIT 1", (p["code"],))
+            if r and r.get("mainforce_signal") == "distribution":
+                risks.append({"code": p["code"], "name": p["name"],
+                              "kind": "mainforce_distribution",
+                              "detail": "最新评级仍标记出货嫌疑",
+                              "severity": "high"})
+        except Exception:
+            pass
+    if risks:
+        data["position_risks"] = risks
+
+    # 8) ★ 确定性「该做」清单（规则引擎，LLM 永不发明动作；每条带 rule_id）
+    actions = []
+
+    def _add(rule_id, severity, text):
+        actions.append({"rule_id": rule_id, "severity": severity, "text": text})
+
+    for c in data.get("contradictions") or []:
+        if c.get("severity") == "severe":
+            hit = any(p["name"] and p["name"] in (c.get("title") or "")
+                      for p in data.get("positions") or [])
+            add("R1", "high",
+                f"检查持仓敞口：{c['title']}（{c['date']}）" + ("——命中持仓" if hit else ""))
+
+    for c in data.get("candidates") or []:
+        if "买入" in (c.get("signal") or "") and \
+                c.get("mainforce_signal") == "distribution":
+            add("R2", "high", f"暂缓买入 {c['name']}({c['code']})：评分买入但主力标记出货（冲突）")
+
+    if phase == "premarket":
+        for p in data.get("positions") or []:
+            if p.get("status") == "pending":
+                add("R4", "medium", f"9:35 关注确认：{p['name']}({p['code']}) "
+                                    f"（{p['strategy_name']}，信号日 {p['signal_date']}）")
+
+    for r in risks:
+        add("R5", "high", f"持仓 {r['name']}({r['code']})：{r['detail']}")
+
+    sev_order = {"high": 0, "medium": 1, "low": 2}
+    actions.sort(key=lambda a: sev_order.get(a["severity"], 3))
+    data["actions"] = actions          # 全量落库（data_json），渲染时取前 3
+
     return data
 
 
@@ -181,13 +232,54 @@ def _data_to_markdown(data: dict) -> str:
 _SYSTEM_PROMPT = (
     "你是一位严谨的A股短线交易员，管理一个模拟盘组合。"
     "只依据用户给出的数据做判断，禁止编造数据没有的信息；"
-    "每条结论必须引用具体数据（股票名/数值/日期）。"
-    "输出为中文 markdown，严格三段：\n"
-    "## 该关注\n（当前最值得注意的 2-4 个信号，按重要性排序）\n"
-    "## 该做\n（可执行的 1-3 条操作建议，含具体股票与条件；没有就写「无可执行建议，观望」）\n"
-    "## 该防\n（风险 1-3 条：矛盾信号/主力流出/消息负面/持仓风险）\n"
+    "禁止给出任何操作建议（系统会单独渲染操作清单，你只负责观察与风险叙述）；"
+    "禁止生成新的数字（引用数字时必须原样抄写输入中的数字）。"
+    "输出为中文 markdown，严格两段：\n"
+    "## 该关注\n（当前最值得注意的 2-3 个信号，按重要性排序，每条点名股票名或矛盾标题）\n"
+    "## 该防\n（风险 1-3 条：矛盾信号/主力流出/消息负面/持仓风险，每条点名涉及的股票）\n"
     "语气克制，不喊单，不给确定性承诺。"
 )
+
+
+
+
+def _render_actions_md(actions: list) -> str:
+    """确定性「该做」段：规则引擎输出渲染，≤3 条，严重度排序。"""
+    if not actions:
+        return "无可执行建议，观望。"
+    sev = {"high": "[高]", "medium": "[中]"}
+    return "\n".join(f"- {sev.get(a['severity'], '')} {a['text']}"
+                     for a in actions[:MAX_ITEMS_PER_SECTION])
+
+
+def _fallback_skeleton(data: dict, reason: str) -> str:
+    """LLM 不可用/失败时的规则骨架简报（绝不用 LLM 常识补写）。"""
+    lines = [f"> AI 暂不可用（{reason}），以下为规则版简报（仅确定性内容）", ""]
+    lines.append("## 该关注")
+    cons = (data.get("contradictions") or [])[:MAX_ITEMS_PER_SECTION]
+    lines += [f"- [{c['level']}|{c['severity']}] {c['title']}（{c['date']}）"
+              for c in cons] or ["- 无未解决矛盾"]
+    ml = (data.get("mainlines") or [])[:MAX_ITEMS_PER_SECTION]
+    if ml:
+        lines.append("- 主线：" + "、".join(
+            f"{m['industry']}({m['trend']})" for m in ml))
+    return "\n".join(lines)
+
+
+def _validate_refs(markdown: str, data: dict) -> str:
+    """引用校验：叙述中的 6 位代码必须是数据内实体，未命中标「(待核实)」。"""
+    known = set()
+    for c in data.get("candidates") or []:
+        known.add(c["code"])
+    for p in data.get("positions") or []:
+        known.add(p["code"])
+
+    def _check(m):
+        token = m.group(0)
+        return token if token in known else f"{token}(待核实)"
+
+    return re.sub(r"\b\d{6}\b", _check, markdown)
+
 
 
 def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
@@ -205,25 +297,29 @@ def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
 
     blocked = llm_blocked_reason()
     data = collect_brief_data(phase)
+    actions_md = _render_actions_md(data.get("actions") or [])
+    degraded = None
     if blocked:
-        # LLM 不可用 → 降级为纯数据清单
-        md = ("⚠️ LLM 未配置/被熔断，以下为原始数据清单：\n\n"
-              + _data_to_markdown(data))
-        db.execute("INSERT INTO trader_briefs (date, phase, markdown, data_json) "
-                   "VALUES (%s, %s, %s, %s) ON CONFLICT (date, phase) "
-                   "DO UPDATE SET markdown=EXCLUDED.markdown, "
-                   "data_json=EXCLUDED.data_json, created_at=CURRENT_TIMESTAMP",
-                   (today, phase, md, json.dumps(data, ensure_ascii=False)))
-        return {"ok": True, "date": today, "phase": phase, "markdown": md,
-                "degraded": blocked}
+        narrative = _fallback_skeleton(data, blocked)
+        degraded = blocked
+    else:
+        narrative = call_llm(_SYSTEM_PROMPT, _data_to_markdown(data), temperature=0.3)
+        if not narrative:
+            narrative = _fallback_skeleton(data, "LLM 调用失败（空响应）")
+            degraded = "llm_empty"
 
-    md = call_llm(_SYSTEM_PROMPT, _data_to_markdown(data), temperature=0.3)
-    if not md:
-        return {"ok": False, "error": "LLM 调用失败（空响应）"}
+    narrative = _validate_refs(narrative, data)
+    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n"
+          f"> 数据窗口：{data.get('candidates_date', today)}")
+
+    data_json = json.dumps(data, ensure_ascii=False)
     db.execute("INSERT INTO trader_briefs (date, phase, markdown, data_json) "
                "VALUES (%s, %s, %s, %s) ON CONFLICT (date, phase) "
                "DO UPDATE SET markdown=EXCLUDED.markdown, "
                "data_json=EXCLUDED.data_json, created_at=CURRENT_TIMESTAMP",
-               (today, phase, md, json.dumps(data, ensure_ascii=False)))
-    print(f"[trader_brief] {today}/{phase} 简报已生成")
-    return {"ok": True, "date": today, "phase": phase, "markdown": md}
+               (today, phase, md, data_json))
+    print(f"[trader_brief] {today}/{phase} 简报已生成"
+          + (f"（降级: {degraded}）" if degraded else ""))
+    items = (data.get("actions") or [])[:MAX_ITEMS_PER_SECTION]
+    return {"ok": True, "date": today, "phase": phase, "markdown": md,
+            "items": items, "degraded": degraded}
