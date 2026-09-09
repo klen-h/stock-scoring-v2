@@ -1,0 +1,25 @@
+# 打镜像时排除的内容（2026-09-09 腾讯云迁移）
+# .env 含 DATABASE_URL / JWT_SECRET 等凭证 —— 绝不能进镜像层
+.env
+.env.*
+!.env.example
+
+# 运行时数据（pack 下载目录、SQLite、日志等），由宿主机 volume 挂载提供
+data/
+**/data/
+*.db
+*.db.gz
+*.sqlite
+
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 本地开发残留
+.venv/
+venv/
+.git/
+.vscode/
+.idea/

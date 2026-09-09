@@ -298,7 +298,10 @@ ENABLE_HEAVY_JOBS = os.environ.get("ENABLE_HEAVY_JOBS", "1").strip() != "0"
 #   RENDER_READ_ONLY=1 时只保留「API 服务 + 快讯 + 持仓跟踪 + 模拟盘」等必需
 #   循环，其余全部关闭（重活交给 GitHub Actions 的定时任务）。
 #   默认 0 = 行为完全不变，向后兼容。
-READ_ONLY = os.environ.get("RENDER_READ_ONLY", "0").strip() == "1"
+# ★ 2026-09-09 迁移腾讯云：变量名新增通用别名 DEPLOY_READ_ONLY（RENDER_READ_ONLY
+#   在自建服务器上语义别扭）。两个变量任一为 1 即进入只读模式。
+READ_ONLY = (os.environ.get("RENDER_READ_ONLY", "0").strip() == "1"
+             or os.environ.get("DEPLOY_READ_ONLY", "0").strip() == "1")
 INDICATOR_CACHE_REFRESHED_TODAY = False
 
 async def indicator_cache_refresh_loop():

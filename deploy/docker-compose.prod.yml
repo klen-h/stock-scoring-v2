@@ -1,73 +1,47 @@
-version: '3.8'
-
-# ════════════════════════════════════════════════════════════════
-# 阿里云 ECS（2核2G）生产编排：backend + postgres + caddy
-# 用法见 deploy/checklist.md
-# ════════════════════════════════════════════════════════════════
-
+# ============================================================================
+# 生产部署（腾讯云轻量应用服务器 / Docker CE）
+#
+# 与根目录 docker-compose.yml 的区别：
+#   - 只起 backend（前端在 GitHub Pages，不需要在服务器跑）
+#   - 只监听 127.0.0.1:8000，对外 HTTPS 由 nginx 反代（见 nginx.conf）
+#   - 显式设只读模式：重活已在 GitHub Actions 日批，服务器只跑 API + 轻循环
+#
+# 用法（在服务器上）：
+#   git clone <repo> && cd stock-scoring-v2
+#   cp backend/.env.example backend/.env  &&  vi backend/.env   # 填凭证
+#   docker compose -f deploy/docker-compose.prod.yml up -d --build
+#   docker compose -f deploy/docker-compose.prod.yml logs -f
+#
+# 更新代码：git pull && docker compose -f deploy/docker-compose.prod.yml restart
+# （requirements.txt 变了才需要 --build）
+# ============================================================================
 services:
-  # ── 数据库（方案 B：同机自建，彻底脱离 Supabase 限额）──────────
-  # 数据量 <200MB，内存占用 ~200MB；备份：deploy/backup_db.sh 定时 pg_dump
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: stockapp
-      POSTGRES_USER: stockapp
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}   # 在 deploy/.env.prod 里设置
-      TZ: Asia/Shanghai
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U stockapp -d stockapp"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # ★ 不对公网开放端口——仅容器网络内可达
-
-  # ── 后端 + 调度器（25 个循环随 FastAPI 常驻）────────────────────
   backend:
     build:
-      context: .
-      dockerfile: ./backend/Dockerfile
-    restart: unless-stopped
-    # ★ 挂整个 backend 目录：data/ 状态文件（快讯状态/信号跟踪/宏观历史/
-    #   kline_cache.json）随宿主机持久化，容器重建不丢
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: stock-backend
+    ports:
+      # 只绑回环地址：外部一律走 nginx(443)，避免 http 明文暴露公网
+      - "127.0.0.1:8000:8000"
     volumes:
-      - ./backend:/app/backend
+      # 挂整个 backend：① git pull 后 restart 即生效（不用重建镜像）
+      # ② backend/data/ 里的 pack（126MB SQLite）与历史数据持久化，重启不重下
+      - ../backend:/app/backend
     env_file:
-      - ./backend/.env
+      - ../backend/.env
     environment:
       TZ: Asia/Shanghai
-      # 方案 B：同机 Postgres 容器（数据迁入后使用）
-      DATABASE_URL: postgresql://stockapp:${POSTGRES_PASSWORD}@postgres:5432/stockapp
-    depends_on:
-      postgres:
-        condition: service_healthy
-    expose:
-      - "8000"          # 仅容器网络内，由 Caddy 反代对外
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ── Caddy：自动 HTTPS（Let's Encrypt）+ API 反代 ────────────────
-  # 前置条件：域名 A 记录指向本机 + ICP 备案完成（国内服务器 80/443 必需）
-  caddy:
-    image: caddy:2-alpine
+      # 只读模式（服务器只做 API + 快讯/持仓/模拟盘；日批在 Actions）
+      DEPLOY_READ_ONLY: "1"
+      ENABLE_HEAVY_JOBS: "0"
+      # 数据源走包，杜绝回源拉 K 线（WAF 根治）
+      DATA_SOURCE: pack
+      # 2C2G 机器上把行情刷新降频（默认 120s 全市场刷新是内存尖峰来源之一）
+      STOCK_CACHE_INTERVAL: "300"
     restart: unless-stopped
-    ports:
-      - "80:80"         # ACME HTTP-01 挑战 + http→https 跳转
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data       # 证书存储
-      - caddy_config:/config
-    depends_on:
-      - backend
-
-volumes:
-  pgdata:
-  caddy_data:
-  caddy_config:
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

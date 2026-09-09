@@ -6,8 +6,9 @@
 # 对前端工程师：你可以把镜像理解成一个"装好运行环境的轻量虚拟机"。
 # Dockerfile 就是描述"如何装这个环境"的脚本。
 
-# 基础镜像：官方 Python 3.9 精简版（slim-buster 体积小，基于 Debian）
-FROM python:3.9-slim-buster
+# 基础镜像：官方 Python 3.11 精简版（2026-09-09 由 3.9 升级——与 GitHub Actions
+#   的 setup-python 3.11 保持一致，避免"本地/Actions 能跑、容器里报语法错"）
+FROM python:3.11-slim
 
 # 容器内的工作目录（后续命令都在这个目录下执行）
 # 类比：cd /app/backend

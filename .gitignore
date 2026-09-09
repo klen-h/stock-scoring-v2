@@ -13,3 +13,11 @@ backend/data/
 #   `git submodule foreach` 报 "No url found for submodule path 'zzshare'" (exit 128)，
 #   干扰发布步骤。已从索引移除（git rm --cached zzshare），这里忽略本地目录。
 zzshare/
+
+# 环境凭证：backend/.env 含 DATABASE_URL / JWT_SECRET / GITHUB_TOKEN 等，
+#   绝不入库（2026-09-09 腾讯云迁移：服务器上手工创建，模板见 .env.example）。
+#   此前仓库里没有显式规则，只靠"从没 add 过"兜底，风险太大。
+.env
+.env.local
+.env.*.local
+!.env.example
