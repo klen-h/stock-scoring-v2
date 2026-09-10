@@ -224,6 +224,7 @@ async def _batch_with_precise_top(
     limit: int = 50,
     side: str = "both",
     margin: int = 50,
+    extra_codes: Optional[set] = None,
 ) -> list:
     """
     批量评分的两阶段策略，【保证】返回的每一行都与详情页 /api/score/{symbol}
@@ -275,6 +276,13 @@ async def _batch_with_precise_top(
         candidate_codes |= {r.code for r in rough[:pool_size]}
     if side in ("bottom", "both") and len(rough) > pool_size:
         candidate_codes |= {r.code for r in rough[-pool_size:]}
+    if extra_codes:
+        # ★ 2026-09-11（002452 案例）：并入「全量精算榜」的代码。简化分只算
+        #   动量/换手/PE，基本面/质量型股票可能排在几百名开外 → 永不进候选池、
+        #   永不入榜（002452 简化 61.6/352 名 vs 精算 69.8）。把上一版全量榜的
+        #   代码并进来，这些股票盘中也能被重新精算。
+        _all = {s.get("code") for s in stocks}
+        candidate_codes |= (set(extra_codes) & _all)
 
     # 候选池的 stock_info 映射
     info_map = {s.get("code"): s for s in stocks}
@@ -791,6 +799,18 @@ def score_single(symbol: str):
     if not stock_info:
         return {"error": f"未找到股票 {symbol}"}
 
+    # ★ 资金面第 5 因子（主力 5 日净流入）：与榜单路径（score_top）同源注入。
+    #   2026-09-11 排查 002452 发现：榜单注入了 flow5、详情没注入 → 同一只股票
+    #   在「详情页」与「榜单」拿到两个资金面分（资金面 4 因子 vs 5 因子）。
+    if stock_info.get("flow5_amt") is None:
+        try:
+            from app.mainforce.state import load_latest as _mf_load
+            _m = (_mf_load([symbol]) or {}).get(symbol)
+            if _m and _m.get("flow5_amt") is not None:
+                stock_info["flow5_amt"] = _m["flow5_amt"]
+        except Exception as _e:
+            print(f"[score] flow5 注入失败 {symbol}（资金面退回 4 因子）: {_e}")
+
     # 2. K线 + 技术指标
     # ★ 2026-09-03：详情每次实时拉腾讯 count=500 实测 90s 卡死（腾讯慢/超时），
     #   且失败时降级导致分数与盘后快照不一致（成长/质量等维度表现异常）。
@@ -1028,9 +1048,30 @@ async def score_top(
         except Exception:
             pass  # 无数据时资金面退回 4 因子（兼容）
 
-        top = await _batch_with_precise_top(
-            valid, lambda results: results[:limit], limit=limit, side="top",
-        )
+        # ★★ 全量精算榜优先（2026-09-11，002452 案例）：日批已在 Actions 里对
+        #    「全部股票」做过完整精算并落库 ranking_live。当日榜单在库 → 直接服务
+        #    （零计算、零腾讯请求，且与前端本地榜同口径）；否则退化为在线两阶段，
+        #    但把库里那份榜的代码并进候选池，修掉"简化分盲区"。
+        _total = len(valid)
+        _stored = {"date": None, "data": []}
+        try:
+            from app.scoring.live_ranking import _today_bj, load as _load_live_ranking
+            _stored = _load_live_ranking(limit=500)   # 500 行够当候选池来源
+            if (_stored.get("data") or []) and _stored.get("date") == _today_bj():
+                top = [SimpleNamespace(**r) for r in _stored["data"]][:limit]
+                _total = _stored.get("pool_total") or len(valid)
+                print(f"[rank] 命中全量精算榜 {_stored['date']}"
+                      f"（{len(_stored['data'])} 行，池 {_total}）")
+            else:
+                top = await _batch_with_precise_top(
+                    valid, lambda results: results[:limit], limit=limit, side="top",
+                    extra_codes={r["code"] for r in (_stored.get("data") or [])},
+                )
+        except Exception as _e:
+            print(f"[rank] 全量精算榜不可用（回退在线两阶段）: {_e}")
+            top = await _batch_with_precise_top(
+                valid, lambda results: results[:limit], limit=limit, side="top",
+            )
 
         result_data = [{
             "code": r.code,
@@ -1093,7 +1134,7 @@ async def score_top(
         _rank_result_cache["top"] = {
             "data": result_data,
             "ts": _time.time(),
-            "total": len(valid),
+            "total": _total,
         }
 
         # 后台记录当日排行（用于计算连续上榜天数）
@@ -1102,7 +1143,7 @@ async def score_top(
 
         return {
             "data": result_data,
-            "total": len(valid),
+            "total": _total,
             "cache_status": "ready",
         }
     finally:

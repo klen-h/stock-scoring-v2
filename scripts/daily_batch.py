@@ -185,6 +185,22 @@ def task_score_snapshot():
     return f"评分快照: {n} 条（Top {len(data)}）"
 
 
+def task_rank_live():
+    """全量精算榜单（ranking_live）：后端 /batch/top 直接读，与前端本地榜同口径。
+
+    ★ 2026-09-11（002452 案例）：后端原榜是「简化分筛候选池 → 只精算候选」，
+      而简化分只看 动量+换手+PE —— 基本面/质量型股票（002452 简化 61.6/第352名、
+      精算 69.8）永远进不了候选池，导致"本地榜有、后端榜没有"。
+      这里在 Actions（4 核 + pack 预计算指标，零腾讯请求）做全量精算并落库：
+        · 收盘后后端直接读这张表（零计算、口径一致）
+        · 盘中后端把表内代码并入候选池（昨日上榜股今日必被重算，盲区消失）
+    依赖：market_snapshot（行情/Top池）+ mainforce_state（资金面第 5 因子 flow5），
+    故排在 mainforce_state 之后。
+    """
+    from app.scoring.live_ranking import compute_and_store
+    return compute_and_store(limit=300)
+
+
 def task_mainline():
     """行业主线/共振分析（industry_mainline，原 Render 16:05 循环）。
 
@@ -242,6 +258,9 @@ TASKS = {
     "score_snapshot": (task_score_snapshot, "评分快照"),
     # ★ 2026-09-09 迁入：依赖 score_snapshot 的 Top50，排其后
     "mainline": (task_mainline, "行业主线/共振分析"),
+    # ★ 2026-09-11 新增：全量精算榜（ranking_live）——后端 /batch/top 直接读。
+    #   依赖 mainforce_state（资金面第 5 因子 flow5）与全市场行情缓存。
+    "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
     "lhb": (task_lhb, "龙虎榜同步"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
@@ -250,8 +269,8 @@ TASKS = {
 }
 DEFAULT_ORDER = ["backfill", "mainflow", "market_snapshot", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
-                 "contradiction_report", "score_snapshot", "mainline", "lhb",
-                 "zz_finance", "daily_report"]
+                 "contradiction_report", "score_snapshot", "mainline", "rank_live",
+                 "lhb", "zz_finance", "daily_report"]
 
 
 def ensure_quotes():
