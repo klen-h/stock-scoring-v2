@@ -1030,12 +1030,32 @@ export async function runLocalBacktest({
 // ── 个股详情页本地数据（PLAN_PACK_MIGRATION Phase 2：消除 /api/stock/kline 并发爆发）──
 
 /**
+ * 期望的 K 线包日期（YYYYMMDD）：工作日 15:00 后为当日，否则为上一工作日。
+ * 与后端「包日期 = 生成日」同口径（周末/节假日按工作日近似）。
+ * 用于判定本地包是否缺最近交易日（前端包 18:00 生成时腾讯复权数据可能尚未补完）。
+ */
+function expectedPackDate() {
+  const d = new Date()
+  if (d.getHours() < 15) d.setDate(d.getDate() - 1)
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+}
+
+/**
  * 详情页本地 K 线 + 指标叠加序列（零后端请求）。
  * K 线来自 IndexedDB 包，指标叠加（MA/BOLL/MACD）本地现算（与 K 线逐根对齐），
  * 交易日盘中自动拼接今日实时快照。
  * @returns {Promise<{klines, technical}|null>} null = 本地数据不可用，调用方回退后端接口
  */
 export async function loadLocalKline(code, stockInfo = {}, bars = 150) {
+  // ★ 包新鲜度门（2026-09-11）：本地包日期落后于「期望的最近交易日」→ 直接回退
+  //   后端接口。否则详情页会拿"昨天口径"的本地 K 线画图/算分，与后端对不上
+  //   （实测 000567：本地 09-09 口径 68.8 分，后端 09-10 口径 72.6 分，图也少一根）。
+  try {
+    const packDate = await getLastUpdateDate()
+    if (packDate && packDate < expectedPackDate()) return null
+  } catch (e) { /* 日期读不到就按原有逻辑走（本地可用优先） */ }
   const klines = await getKlines(code, bars)
   if (!klines || klines.length < 30) return null
   const klinesWithToday = appendTodayBar(klines, stockInfo)

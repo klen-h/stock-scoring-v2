@@ -347,6 +347,46 @@ def _throttle_concurrent(index: int) -> None:
     time.sleep(0.5 + random.random() * 0.4)
 
 
+def refetch_stale_lastbar(klines_data: Dict, days: int, workers: int = 1,
+                          max_rounds: int = 2) -> Dict:
+    """末根落后于池内最新交易日的股票，补拉（腾讯复权序列收盘后是"逐只"补齐的）。
+
+    ★ 2026-09-11 实测：18:00 生成的前端包里 739/1534 只末根停在上一交易日
+      （000567 海德股份 前端包 09-09 / 后端包 09-10），而 20:30 生成的后端包
+      1425/1431 都是当日 —— 同一接口、同一交易日，差异只是拉取时刻。
+      后果：本地 K 线少一根 → 本地评分与后端对不上（实测 000567 本地 68.8 /
+      后端 72.6），详情页图形也停在昨天。这里对落后者补拉一轮（复用 WAF 冷却
+      与退避），仍缺的保留原数据，不做假 bar。
+    """
+    if not klines_data:
+        return klines_data
+    for rnd in range(max_rounds):
+        last = [v[-1][0] for v in klines_data.values() if v]
+        if not last:
+            break
+        newest = max(last)
+        lag = [c for c, v in klines_data.items() if v and v[-1][0] < newest]
+        if not lag:
+            break
+        # 全池几乎都落后 = 当日数据尚未发布（而非个别滞后），补拉没意义
+        if len(lag) > len(klines_data) * 0.9:
+            print(f"  末根补齐: {len(lag)}/{len(klines_data)} 只落后 —— 当日数据疑似"
+                  f"尚未发布，跳过补拉")
+            break
+        print(f"  末根补齐第 {rnd + 1} 轮: {len(lag)} 只停在 {newest} 之前，补拉…")
+        again = fetch_all_klines(lag, days, workers=workers)
+        fixed = 0
+        for c, bars in (again or {}).items():
+            cur = klines_data.get(c) or []
+            if bars and (not cur or bars[-1][0] > cur[-1][0]):
+                klines_data[c] = bars
+                fixed += 1
+        print(f"  末根补齐第 {rnd + 1} 轮: 修好 {fixed} 只（腾讯数据仍未更新的保留原样）")
+        if fixed == 0:
+            break
+    return klines_data
+
+
 def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
     """
     批量获取 K 线数据（最多两轮：首轮 + 失败重试，重试前整体停顿让 WAF 冷却）
@@ -668,6 +708,10 @@ def main():
         stocks_data = prev_data["stocks"]
     else:
         klines_data = fetch_all_klines(top_codes, args.days, workers=args.workers)
+        # ★ 末根补齐：18:00 生成时腾讯复权数据对近半股票还没补完（见函数说明），
+        #   不补就会产出"半数股票少一天"的包 → 本地评分/详情图与后端不一致
+        klines_data = refetch_stale_lastbar(klines_data, args.days,
+                                            workers=args.workers)
         # ★ 失败记录：最终失败的计数+1（达阈值下次硬过滤），成功的洗白移除
         _update_failures(args.output_dir, klines_data, top_codes, quotes)
 
