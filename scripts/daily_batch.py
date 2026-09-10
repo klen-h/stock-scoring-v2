@@ -91,6 +91,22 @@ def task_market_snapshot():
     return "行情收盘快照已保存"
 
 
+def task_market_regime():
+    """市场状态判定（评分动态权重 / 战法准入 / trade_gate / 主力乘数的事实来源）。
+
+    ★ 2026-09-11：该判定原为 Render 每日 15:40 循环（regime_cache_loop），只读模式
+      下被关，而日批任务清单漏了它 → market_regime_history 停在 09-08，日志里
+      「应用市场状态权重 2026-09-08 neutral」，评分权重/战法准入/闸门全是 3 天前的。
+      依赖 backfill 先写入沪深300当日数据，故紧排其后（strategy_scan/score_snapshot 之前）。
+    """
+    from app.backtest.market_regime import refresh_regime_cache
+    cache = refresh_regime_cache()
+    if not cache or not cache.get("state"):
+        raise RuntimeError("市场状态判定失败（沪深300当日数据未就绪？）")
+    return (f"市场状态: {cache.get('date')} {cache['state']} "
+            f"权重={cache.get('weights')}")
+
+
 def task_mainforce_state():
     """主力行为状态日批（mainforce_state 表，原 Render 17:30 循环）。
 
@@ -246,6 +262,9 @@ def task_daily_report():
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
+    # ★ 2026-09-11 迁入：原 Render 15:40 循环被只读模式关闭且日批漏配 → regime 停在 09-08。
+    #   依赖 backfill 的沪深300当日数据，且被 strategy_scan/score_snapshot 消费 → 紧排其后。
+    "market_regime": (task_market_regime, "市场状态判定（评分权重/准入/闸门来源）"),
     "mainflow": (task_mainflow, "主力资金流回填"),
     "market_snapshot": (task_market_snapshot, "全市场行情快照"),
     # ★ 2026-09-09 迁入：Render 只读模式停掉了原 17:30 循环 → 表停在 09-04。
@@ -267,7 +286,8 @@ TASKS = {
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
     "daily_report": (task_daily_report, "每日日报"),
 }
-DEFAULT_ORDER = ["backfill", "mainflow", "market_snapshot", "mainforce_state",
+DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
+                 "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline", "rank_live",
                  "lhb", "zz_finance", "daily_report"]
