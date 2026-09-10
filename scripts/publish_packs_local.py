@@ -76,6 +76,20 @@ MIN_COUNTS = {
 #   旧 JSON 垃圾随旧分支历史一起消失——旧 STALE_GLOBS 清理逻辑因此废弃删除。
 
 
+def _last_weekday_bj(now=None) -> str:
+    """上一个工作日（北京时间，YYYYMMDD）——发布新鲜度的下限。
+
+    周末/周日发布时按上一周周五算，所以「周五收盘的包周日再发」不会被误拦；
+    工作日发布时要求至少是前一天的收盘包（当日新包 16:00 Actions 后才会有）。
+    """
+    import datetime as _dt
+    d = (now or (_dt.datetime.utcnow() + _dt.timedelta(hours=8))).date()
+    d -= _dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= _dt.timedelta(days=1)
+    return d.strftime("%Y%m%d")
+
+
 def _git(args, cwd=None, check=True):
     r = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True)
     if check and r.returncode != 0:
@@ -197,12 +211,24 @@ def main():
                     f"{fn} 只有 {count} 条（下限 {floor}）——"
                     f"疑似 export_browser_packs_from_local.py 的本地验收小包")
 
-        # ── 护栏 2/2：同批包日期必须一致（混入陈旧包立即暴露）──────────────
+        # ── 护栏 2/3：同批包日期必须一致（混入陈旧包立即暴露）──────────────
         dates = {fn: d for fn, (d, _c) in infos.items() if d}
         if len(set(dates.values())) > 1:
             problems.append(
                 "包日期不一致（可能混入了陈旧包）："
                 + "、".join(f"{fn}={d}" for fn, d in dates.items()))
+
+        # ── 护栏 3/3：新鲜度（2026-09-10 事故）─────────────────────────────
+        #   09-09 两个工作流都成功产了 20260909 新包，却被 09-10 凌晨一次
+        #   orphan 重建的本地发布整批换成本地残留的 20260908 旧包（数据只到
+        #   09-07）。数量够、日期也一致 → 前两道护栏全放行。这里补最后一道：
+        #   包日期早于「上一个工作日」= 少了至少一个交易日的收盘数据，拒绝发布。
+        floor_date = _last_weekday_bj()
+        for fn, (date, _c) in infos.items():
+            if date and date < floor_date:
+                problems.append(
+                    f"{fn} 日期 {date} 早于上一个工作日 {floor_date}"
+                    f"——缺交易日数据，疑似本地残留旧包")
 
         if problems:
             print("\n⚠️  发布前护栏拦截：")
