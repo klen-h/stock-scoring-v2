@@ -25,7 +25,9 @@ jobs:
   backend-pack:
     name: 后端包（K线 + 预计算指标 + 主力行为）
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # ★ 2026-09-10 池扩容到战法池口径（1431 → ~2080 只，+45%）后实测需 ~130 分钟，
+    #   原 150 分钟余量太薄，放宽到 180。
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository

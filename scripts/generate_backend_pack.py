@@ -241,6 +241,65 @@ def supabase_kline_codes() -> list:
         return []
 
 
+def snapshot_market_pool() -> dict:
+    """从 Supabase market_snapshot（全市场 ~3235 只收盘快照）构建「战法池同口径」股票池。
+
+    ★ 2026-09-10 缺口根治：原池口径 = 前端行情文件 realtime-quotes.json ∩ kline_cache
+      ——那份行情是「前端包」的口径（流通市值≥50亿 + 非ST + 非亏损 + 股价≥3元），
+      只有 ~1530 只；而战法扫描的池子是「总市值≥50亿 + 成交额≥1000万 + 非ST」的
+      ~2050 只 → 每天约 650 只命中不了包，回源 DB（kline_cache 停在几天前）再走实时
+      拉腾讯 → WAF 拦截（[WAF] K线请求被拦截）+ Supabase egress 暴涨。实测：
+      backtest_prices 单只全历史查询 21 天 1100 万行返回、日批日志满屏"判过期走实时
+      拉取"，根因都在这里。
+      改为读日批每晚落库的 market_snapshot，按战法 filter_stock_pool 同口径过滤
+      （保留创业板与亏损股——它们不剔这两类）。
+
+    返回 {code: {"name", "market_cap"(亿元), "amount"(元)}}；任何失败返回 {}（退化为旧口径）。
+    """
+    url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not url:
+        print("  未配置 DATABASE_URL，跳过行情快照池（退化为旧口径）")
+        return {}
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT stocks_json FROM market_snapshot WHERE key = 'latest'")
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        print(f"  行情快照读取失败（退化为旧口径）: {e}")
+        return {}
+    if not row or not row[0]:
+        print("  行情快照为空（退化为旧口径）")
+        return {}
+    try:
+        snap = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except Exception as e:
+        print(f"  行情快照解析失败（退化为旧口径）: {e}")
+        return {}
+
+    out = {}
+    for code, info in (snap or {}).items():
+        if not (len(code) == 6 and code.isdigit()):
+            continue                                   # 指数/ETF 由调用方另行补
+        name = (info.get("name") or "").replace(" ", "")
+        if "ST" in name.upper():
+            continue                                   # 对齐 filter_stock_pool
+        if code.startswith(("688", "689")):
+            continue                                   # 科创板剔除
+        cap_yi = (info.get("market_cap") or 0) / 10000.0    # 万元 → 亿元
+        if cap_yi < 50:
+            continue
+        if (info.get("amount") or 0) < 1000e4:         # 日均成交额 1000 万
+            continue
+        if (info.get("price") or 0) <= 0:
+            continue
+        out[code] = {"name": name, "market_cap": round(cap_yi, 2),
+                     "amount": info.get("amount") or 0}
+    return out
+
+
 def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict,
                  ind_out: dict) -> None:
     """K 线 + 指标 + 代码清单写 SQLite（PK 自带索引）。"""
@@ -347,17 +406,33 @@ def main():
                     key=lambda kv: kv[1].get("market_cap", 0) or 0, reverse=True)
     cap_codes = [c for c, _ in by_cap[:args.cap_top]]
 
-    # 2. 股票池 = Supabase 现有清单 ∪ 市值前 N ∪ 指数基准/宏观 ETF
+    # 2. 股票池 = Supabase 现有清单 ∪ 市值前 N ∪ 行情快照（战法池口径）
+    #              ∪ 指数基准/宏观 ETF
     #    ★ 指数与 ETF 必须在包里：DATA_SOURCE=pack 模式下 regime 判定
     #      （sh000300）与宏观回测（sh510300 等）都从包读——漏了会报
     #      "沪深300 历史数据不足"（2026-09-06 实测，读取层已有 DB 兜底双保险）
+    #    ★ 2026-09-10 缺口根治：追加 market_snapshot 口径的 ~2050 只（见
+    #      snapshot_market_pool 说明）——原口径受前端行情文件限制只有 ~1530 只，
+    #      与战法池差 650 只，那批股票每天回源 DB + 实时拉腾讯撞 WAF。
     try:
         from app.signals.tracker import HOLDINGS_MAP
         etf_codes = list(HOLDINGS_MAP.values())
     except Exception:
         etf_codes = []
+    snap_pool = snapshot_market_pool()
+    if snap_pool:
+        # 快照池的行情补进 quotes（缺的才补：名称 + 总市值亿元），
+        # 后续质量过滤 / codes 表写入都复用这一份数据结构
+        added = 0
+        for c, s in snap_pool.items():
+            if c not in quotes:
+                quotes[c] = {"name": s["name"], "market_cap": s["market_cap"]}
+                added += 1
+        print(f"  行情快照池: {len(snap_pool)} 只（其中 {added} 只不在前端行情文件里，"
+              f"正是原口径的缺口）")
     sb_codes = [c for c in supabase_kline_codes() if c in quotes]
-    pool_all = list(dict.fromkeys(sb_codes + cap_codes + ["sh000300"] + etf_codes))
+    pool_all = list(dict.fromkeys(
+        sb_codes + cap_codes + list(snap_pool.keys()) + ["sh000300"] + etf_codes))
 
     # ★ 质量过滤（2026-09-09 对齐战法池 filter_stock_pool 口径）：
     #   剔 ST/*ST/SST、科创板（688）、总市值<50亿（与战法扫描 50亿门槛对齐）。
@@ -386,7 +461,11 @@ def main():
     pool = ["sh000300"] + [c for c in etf_codes] + kept_stocks
     dropped = len(pool_all) - len(pool)
     print(f"\n[2/4] 股票池: 全量 {len(pool_all)} → 质量过滤后 {len(pool)} 只"
-          f"（剔除科创创业/ST/亏损/<50亿 共 {dropped} 只），市值降序拉取")
+          f"（剔除科创板/ST/<50亿 共 {dropped} 只），市值降序拉取")
+    if snap_pool:
+        covered = len([c for c in pool if c in snap_pool])
+        print(f"  战法池口径覆盖: {covered}/{len(snap_pool)}"
+              f"（缺口 {len(snap_pool) - covered} 只，目标 0 —— 缺口即每日回源/撞 WAF 的量）")
 
     # 3. 拉 ~750 根交易日线（复用两轮重试 + WAF 退避）
     #    ★ fetch 的 days 参数是"日历天"（起点 now-(days+30)），500 会被起点卡成

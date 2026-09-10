@@ -290,9 +290,16 @@ def ensure_pack_fresh(max_wait_min: float):
             print(f"::error::数据包仍为 {got}（期望 {want}）——后端包可能失败或延迟，"
                   f"日批将基于旧数据运行，请检查 backend-pack workflow")
             return False
-        print(f"  数据包日期 {got} != {want}，等待 3 分钟后重试（后端包可能尚未发布）…")
-        ps._ready_checked = False      # 允许下次重新检查/下载
+        print(f"  数据包日期 {got} != {want}，3 分钟后强制重下重试"
+              f"（Pages 站点部署/CDN 有 1~2 分钟空窗，本地包 mtime 新鲜但内容是旧的）…")
         time.sleep(180)
+        # ★ 必须强制重下（2026-09-10 事故）：只置 _ready_checked 不够——_ensure_ready
+        #   用 _db_fresh()（文件 mtime）判新鲜，刚下载过的包永远算"新鲜"→ 重试 10 次
+        #   一次都不会再下载，30 分钟白等，最终拿着昨天的包跑完全程。
+        try:
+            ps.redownload()
+        except Exception as e:
+            print(f"  强制重下数据包失败: {e}")
 
 
 def main():
