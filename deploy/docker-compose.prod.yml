@@ -1,26 +1,70 @@
 # ============================================================================
 # 生产部署（腾讯云轻量应用服务器 / Docker CE）
 #
+# 2026-09-11 变更：加入本机 Postgres（Postgres → 自建，彻底摆脱 Supabase
+#   egress 配额与 402 风险）。后端与数据库同机，走 compose 内网，**不映射端口**
+#   （5432 永不暴露公网）。
+#
 # 与根目录 docker-compose.yml 的区别：
-#   - 只起 backend（前端在 GitHub Pages，不需要在服务器跑）
-#   - 只监听 127.0.0.1:8000，对外 HTTPS 由 nginx 反代（见 nginx.conf）
+#   - 只起 backend + postgres（前端在 GitHub Pages，不需要在服务器跑）
+#   - backend 只监听 127.0.0.1:8000，对外 HTTPS 由 nginx/Caddy/隧道反代
 #   - 显式设只读模式：重活已在 GitHub Actions 日批，服务器只跑 API + 轻循环
 #
 # 用法（在服务器上）：
-#   git clone <repo> && cd stock-scoring-v2
-#   cp backend/.env.example backend/.env  &&  vi backend/.env   # 填凭证
+#   cd /opt/stock-scoring-v2
+#   # ① backend/.env 里设好 POSTGRES_PASSWORD，并把 DATABASE_URL 指向本机库
 #   docker compose -f deploy/docker-compose.prod.yml up -d --build
 #   docker compose -f deploy/docker-compose.prod.yml logs -f
+#   # 一次性迁数据：SUPABASE_DUMP_URL="..." bash deploy/migrate_supabase.sh
 #
 # 更新代码：git pull && docker compose -f deploy/docker-compose.prod.yml restart
 # （requirements.txt 变了才需要 --build）
 # ============================================================================
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: stock-postgres
+    # ★ 不映射宿主端口：只有 backend 能通过 compose 内网访问（5432 不开公网）
+    expose:
+      - "5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 环境变量与后端共用 backend/.env（POSTGRES_DB/USER/PASSWORD）
+    env_file:
+      - ../backend/.env
+    environment:
+      TZ: Asia/Shanghai
+      # 2C2G 机器：给 Postgres 留出的内存预算偏保守，避免与 backend 抢内存
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    command: >
+      postgres
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c work_mem=8MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=60
+      -c log_min_duration_statement=2000
+    healthcheck:
+      # $$ = 转义，交给容器内 shell 展开（compose 不插值）
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-stockapp} -d $${POSTGRES_DB:-stockapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
   backend:
     build:
       context: ../backend
       dockerfile: Dockerfile
     container_name: stock-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       # 只绑回环地址：外部一律走 nginx(443)，避免 http 明文暴露公网
       - "127.0.0.1:8000:8000"
@@ -45,3 +89,7 @@ services:
       options:
         max-size: "20m"
         max-file: "5"
+
+volumes:
+  # 数据库数据卷（docker volume；备份走 deploy/backup_db.sh + crontab）
+  pgdata:

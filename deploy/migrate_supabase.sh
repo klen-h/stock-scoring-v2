@@ -1,55 +1,103 @@
 #!/usr/bin/env bash
-# ════════════════════════════════════════════════════════════════
-# Supabase → 同机 Postgres 一次性迁移脚本
-# 在【阿里云服务器】上执行（需要 pg_dump/pg_restore 客户端 + SUPABASE 直连串）
-# ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# Supabase → 服务器本机 Postgres 一次性迁移（腾讯云 Lighthouse）
 #
-# 用法：
+# 用法（在服务器项目根目录执行）：
 #   SUPABASE_DUMP_URL="postgresql://postgres:密码@db.xxx.supabase.co:5432/postgres" \
-#   bash migrate_supabase.sh
+#   bash deploy/migrate_supabase.sh
 #
-# ★ 连接串注意：pg_dump 必须用 Supabase 的【直连串】（db.xxx.supabase.co:5432，
-#   Session 模式），不能用 6543 事务池化串（pooler 不支持 pg_dump 所需的
-#   完整目录查询）。直连串在 Supabase 控制台 → Connect → Direct connection。
-# ════════════════════════════════════════════════════════════════
+# ★ 必须用 Supabase 的【直连串】（db.xxx.supabase.co:5432，Session 模式）：
+#   6543 事务池化串不支持 pg_dump 所需的完整目录查询。
+#   控制台 → Connect → Direct connection 里取。
+#
+# 设计要点（2026-09-11 重写）：
+#   · 服务器上**不需要装 postgresql-client**：pg_dump/pg_restore 全部用
+#     postgres:16-alpine 一次性容器执行（host 只需 docker）
+#   · 导出/恢复都走文件（custom 格式），中断可重跑；恢复前会清空目标库 public
+#   · 恢复完自动比对源/目标行数（不一致会红字提示）
+# ════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 SUPABASE_URL="${SUPABASE_DUMP_URL:?请设置 SUPABASE_DUMP_URL（Supabase 直连串）}"
-LOCAL_CONTAINER="deploy-postgres-1"       # compose 项目前缀可能不同，docker ps 核对
-LOCAL_DB="stockapp"
-LOCAL_USER="stockapp"
+PG_IMG="postgres:16-alpine"
+DUMP="/tmp/supabase_$(date +%Y%m%d_%H%M).dump"
 
-echo "── 1/3 从 Supabase 导出（-Fc 自定义格式，含大表 backtest_prices ~40MB）"
-pg_dump "${SUPABASE_URL}" \
-  --format=custom \
-  --no-owner --no-privileges \
-  --exclude-schema='storage' \
-  --exclude-schema='auth' \
-  --exclude-schema='extensions' \
-  --file /tmp/supabase.dump
-echo "   导出完成: $(du -h /tmp/supabase.dump | cut -f1)"
+# 目标库信息：从 backend/.env 读（与 compose 共用同一份配置）
+ENV_FILE="$(cd "$(dirname "$0")/.." && pwd)/backend/.env"
+LOCAL_DB="$(grep -E '^POSTGRES_DB=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+LOCAL_USER="$(grep -E '^POSTGRES_USER=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+LOCAL_DB="${LOCAL_DB:-stockapp}"
+LOCAL_USER="${LOCAL_USER:-stockapp}"
 
-echo "── 2/3 拷入 Postgres 容器"
-docker cp /tmp/supabase.dump "${LOCAL_CONTAINER}:/tmp/supabase.dump"
+# 目标容器（compose 起的是 stock-postgres，兼容 deploy-postgres-1 之类）
+CONTAINER="$(docker ps --format '{{.Names}}' | grep -i postgres | head -1 || true)"
+if [ -z "$CONTAINER" ]; then
+  echo "✗ 没有运行中的 Postgres 容器。先起库："
+  echo "    docker compose -f deploy/docker-compose.prod.yml up -d postgres"
+  exit 1
+fi
+echo "目标：容器=$CONTAINER 库=$LOCAL_DB 用户=$LOCAL_USER"
 
-echo "── 3/3 恢复到本地库（清掉同名的自动创建对象冲突由 --clean 处理）"
-docker exec "${LOCAL_CONTAINER}" psql -U "${LOCAL_USER}" -d "${LOCAL_DB}" \
-  -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null
-docker exec "${LOCAL_CONTAINER}" pg_restore \
-  -U "${LOCAL_USER}" -d "${LOCAL_DB}" \
-  --no-owner --no-privileges \
-  /tmp/supabase.dump
-docker exec "${LOCAL_CONTAINER}" rm /tmp/supabase.dump
-rm -f /tmp/supabase.dump
-
-echo "── 核对（行数应与 Supabase 控制台一致）"
-docker exec "${LOCAL_CONTAINER}" psql -U "${LOCAL_USER}" -d "${LOCAL_DB}" -c "
-  SELECT 'backtest_prices' t, COUNT(*) FROM backtest_prices
+CHECKS="SELECT 'backtest_prices', COUNT(*) FROM backtest_prices
   UNION ALL SELECT 'kline_cache', COUNT(*) FROM kline_cache
+  UNION ALL SELECT 'indicator_cache', COUNT(*) FROM indicator_cache
   UNION ALL SELECT 'ranking_history', COUNT(*) FROM ranking_history
+  UNION ALL SELECT 'mainforce_state', COUNT(*) FROM mainforce_state
+  UNION ALL SELECT 'mainflow_history', COUNT(*) FROM mainflow_history
   UNION ALL SELECT 'user_watchlist', COUNT(*) FROM user_watchlist
   UNION ALL SELECT 'user_portfolio', COUNT(*) FROM user_portfolio
   UNION ALL SELECT 'paper_positions', COUNT(*) FROM paper_positions
+  UNION ALL SELECT 'flash_news', COUNT(*) FROM flash_news
   ORDER BY 1;"
 
-echo "✅ 迁移完成。重启后端使连接生效：docker compose restart backend"
+echo
+echo "── 1/5 源库行数（Supabase）"
+docker run --rm "$PG_IMG" psql "$SUPABASE_URL" -t -A -F' | ' -c "$CHECKS" > /tmp/src_counts.txt
+cat /tmp/src_counts.txt
+
+echo
+echo "── 2/5 从 Supabase 导出（-Fc，含 ~81MB 的 backtest_prices）"
+# 排除 Supabase 平台自带的 schema（storage/auth/extensions 等我们不用）
+docker run --rm "$PG_IMG" pg_dump "$SUPABASE_URL" \
+  --format=custom --no-owner --no-privileges \
+  --exclude-schema='storage' --exclude-schema='auth' \
+  --exclude-schema='extensions' --exclude-schema='graphql' \
+  --exclude-schema='realtime' --exclude-schema='supabase_migrations' \
+  --exclude-schema='vault' --exclude-schema='pgbouncer' \
+  > "$DUMP"
+echo "    导出完成: $(du -h "$DUMP" | cut -f1) → $DUMP"
+
+echo
+echo "── 3/5 清空目标库 public（本机库当前数据会被覆盖）"
+docker exec "$CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 \
+  -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";" >/dev/null
+
+echo "── 4/5 拷入容器并恢复"
+docker cp "$DUMP" "$CONTAINER:/tmp/_migrate.dump"
+# pg_restore 对"对象已存在"之类会返回非 0，这里只记录不中断（真正的校验看下一步行数）
+docker exec "$CONTAINER" pg_restore -U "$LOCAL_USER" -d "$LOCAL_DB" \
+  --no-owner --no-privileges --exit-on-error /tmp/_migrate.dump \
+  || echo "    ⚠️ pg_restore 返回非 0（若为权限/扩展告警可忽略，请看行数比对）"
+docker exec "$CONTAINER" rm -f /tmp/_migrate.dump
+
+echo
+echo "── 5/5 行数比对（源 vs 目标）"
+docker exec "$CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" -t -A -F' | ' -c "$CHECKS" > /tmp/dst_counts.txt
+if diff -q /tmp/src_counts.txt /tmp/dst_counts.txt >/dev/null; then
+  echo "✅ 全部表行数一致"; cat /tmp/dst_counts.txt
+else
+  echo "⚠️ 行数有差异（左=Supabase，右=本机）："
+  diff -y /tmp/src_counts.txt /tmp/dst_counts.txt || true
+fi
+
+rm -f "$DUMP" /tmp/src_counts.txt /tmp/dst_counts.txt
+cat <<'EOF'
+
+下一步（切换连接串）：
+  1) backend/.env 里把 DATABASE_URL 改成：
+       DATABASE_URL=postgresql://<POSTGRES_USER>:<POSTGRES_PASSWORD>@postgres:5432/<POSTGRES_DB>
+     （host 用 compose 服务名 postgres；密码用同文件里的 POSTGRES_PASSWORD）
+  2) docker compose -f deploy/docker-compose.prod.yml restart backend
+  3) 验证：curl -s localhost:8000/api/health && 登录 + 排行榜 + 日报页
+  4) 观察 1 天后，Supabase 项目保留只读备份，再删除
+EOF
