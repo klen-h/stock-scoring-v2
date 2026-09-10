@@ -635,8 +635,10 @@ def get_bucket_stats(days: int = 120, horizons: tuple = (1, 5, 10)) -> Dict:
                     if is_buy:
                         buckets[b]["buy"][h].append(ret)
                         baseline["buy"][h].append(ret)
-                    if mf_key != "none":
-                        mf_buckets[mf_key][h].append(ret)
+                    # ★ 2026-09-11 修 bug：原条件 `if mf_key != "none"` 让 "none"
+                    #   桶永远装不进数据（mf_key 默认就是 "none"）→ 前端看到
+                    #   distribution/accum/none 全 n=0。三个桶都要累加。
+                    mf_buckets[mf_key][h].append(ret)
 
     # ③ 汇总
     bucket_rows = []

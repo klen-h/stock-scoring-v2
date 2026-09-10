@@ -607,7 +607,12 @@ async def capture_score_snapshot():
         {"code": r["code"], "name": r["name"], "total_score": r["total_score"],
          "signal": r["signal"], "rank": i + 1,
          "dimensions": r.get("dimensions") or {},
-         "price": (stocks_map.get(r["code"]) or {}).get("price") or 0}
+         "price": (stocks_map.get(r["code"]) or {}).get("price") or 0,
+         # ★ 2026-09-11：这条路径（前端保存快照/自动保存）此前漏写主力行为标签，
+         #   而它每天 15:10 先写、日批晚间再 replace_day 覆盖 —— 一旦日批中断，
+         #   当天快照就是无标签版本 → BucketStats 的吸筹/出货分桶恒为空（实测
+         #   850 行 mainforce_signal 全 NULL）。补齐后与日批口径一致。
+         "mainforce_signal": ((r.get("mainforce") or {}).get("signal"))}
         for i, r in enumerate(data)
     ]
     # 手动保存 = 当日权威快照：清空当天已有记录再写入，保证每日固定 Top50
