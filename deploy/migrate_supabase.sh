@@ -19,7 +19,9 @@
 set -euo pipefail
 
 SUPABASE_URL="${SUPABASE_DUMP_URL:?请设置 SUPABASE_DUMP_URL（Supabase 直连串）}"
-PG_IMG="postgres:16-alpine"
+# ★ 必须与源库版本对齐：Supabase 现为 PG 17.6，用 16 的 pg_dump 会直接
+#   "aborting because of server version mismatch"（2026-09-11 实测）。目标库 17。
+PG_IMG="postgres:17-alpine"
 DUMP="/tmp/supabase_$(date +%Y%m%d_%H%M).dump"
 
 # 目标库信息：从 backend/.env 读（与 compose 共用同一份配置）

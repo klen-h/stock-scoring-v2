@@ -22,7 +22,8 @@
 # ============================================================================
 services:
   postgres:
-    image: postgres:16-alpine
+    # ★ 与 Supabase 源库同大版本（17）：跨大版本 dump/restore 会有兼容性坑
+    image: postgres:17-alpine
     container_name: stock-postgres
     # ★ 不映射宿主端口：只有 backend 能通过 compose 内网访问（5432 不开公网）
     expose:
