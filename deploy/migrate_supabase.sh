@@ -71,15 +71,21 @@ echo "    导出完成: $(du -h "$DUMP" | cut -f1) → $DUMP"
 
 echo
 echo "── 3/5 清空目标库 public（本机库当前数据会被覆盖）"
+# ★ extensions schema 必须先建：Supabase 的 dump 里有
+#   `CREATE EXTENSION ... WITH SCHEMA extensions`（pg_stat_statements 等），
+#   目标库没有该 schema 会报 "schema extensions does not exist"（2026-09-11 实测）
 docker exec "$CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" -v ON_ERROR_STOP=1 \
-  -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";" >/dev/null
+  -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; CREATE SCHEMA IF NOT EXISTS extensions;" >/dev/null
 
 echo "── 4/5 拷入容器并恢复"
 docker cp "$DUMP" "$CONTAINER:/tmp/_migrate.dump"
-# pg_restore 对"对象已存在"之类会返回非 0，这里只记录不中断（真正的校验看下一步行数）
+# ★ 不能加 --exit-on-error：Supabase 平台自带的对象（PostgREST 的 pgrst_ddl_watch
+#   事件触发器、grant_pg_net_access、pg_stat_statements 等）在自建库里必然失败，
+#   但它们与业务数据无关；真正的验收看下一步行数比对。
 docker exec "$CONTAINER" pg_restore -U "$LOCAL_USER" -d "$LOCAL_DB" \
-  --no-owner --no-privileges --exit-on-error /tmp/_migrate.dump \
-  || echo "    ⚠️ pg_restore 返回非 0（若为权限/扩展告警可忽略，请看行数比对）"
+  --no-owner --no-privileges /tmp/_migrate.dump 2>&1 | tail -6 \
+  || true
+echo "    （上面若出现 Supabase 平台对象报错属正常，看行数比对）"
 docker exec "$CONTAINER" rm -f /tmp/_migrate.dump
 
 echo
