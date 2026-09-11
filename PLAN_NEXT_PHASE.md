@@ -24,7 +24,7 @@
 | # | 问题 | 根因 | 修复 | 状态 |
 |---|---|---|---|---|
 | 9 | 消息分快照落后 3 天（停在 09-08） | `news_history_loop` 在 `_heavy()` 里 → 只读模式同样被关；日批漏配 | 日批新增 `news_snapshot` 任务（排在 score_snapshot 后） | `e8f45f2`，**已手工补跑 09-11（54 只）** |
-| 10 | 回测中心最新报告停在 09-05 | `backtest_report_loop` 同样在 `_heavy()`；且报告只写文件，**Render 文件系统是临时的**（部署即清空） | 日批新增 `weekly_report`（周五）+ 报告正文落库 `backtest_reports`，前端库→文件兜底 | `e8f45f2` 待今晚首跑 |
+| 10 | 回测中心最新报告停在 09-05 | `backtest_report_loop` 同样在 `_heavy()`；且报告只写文件，**Render 文件系统是临时的**（部署即清空） | 日批新增 `weekly_report`（周五）+ 报告正文落库 `backtest_reports`，前端库→文件兜底；追加「本周无报任意工作日自愈 / `--tasks weekly_report` 点名即跑」；`regime_review` 逐股远程查询改批量加载 | ✅ **2026-09-11 23:49 已上线**（Actions run #9，83 秒完成，前端回测中心最新一份 = `backtest_report_weekly_20260911_154945.md`） |
 | 11 | 决策简报 AI 暂不可用（空响应） | `call_llm` 收到 HTTP 200 但 content 为空时**直接 return ""**（注释宣称重试实则没有）；推理模型思考与答案共用 `max_tokens` | 空响应纳入重试 + 2 次起切 `LLM_MODEL_FALLBACK` + `finish_reason=length` 时 max_tokens 翻倍（上限 32768）+ 失败原因透传到简报与 `/api/flash/status` | `e8f45f2`/`60d00ba`，本地实测真实简报提示词正常（Render 待部署后看 `last_error`） |
 | 12 | Supabase egress 364MB/天（免费档 5GB/月） | 大结果集读：`SELECT * backtest_prices WHERE code=$1`（18037 次/1112 万行）、`mainflow_history` 整表（99 次/724 万行）、`flash_news` 整行（6534 次/187 万行） | 列裁剪（去掉 id/code/name）+ `load_prices` 30min 进程缓存 + `load_flow_map`/`load_flow` 30min 缓存 + `load_raw_items` 120s 缓存（写入即失效）+ id 查询收窄到近 3 天 | `e8f45f2`；今晚起叠加"包覆盖 2052 只不再回源" |
 
