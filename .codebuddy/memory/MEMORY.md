@@ -3,13 +3,28 @@
 ## 架构与运行形态（稳定事实）
 - 单进程 FastAPI（`backend/app/main.py`）同时提供 `/api/*` 与前端静态页：`frontend/dist` 存在时由 `/{full_path:path}` 回退 `index.html`（Vue Router 接管）。生产用 `uvicorn app.main:app --host 0.0.0.0 --port 8000`（不要 `--reload`）。
 - 数据库：默认 SQLite（`backend/data/app.db`）；设了 `DATABASE_URL` 走 PostgreSQL（项目实际用 Supabase 东京节点）。%s 占位符由 `app/database.py` 自动转换，兼容两种库。
-- 调度器：`app/flash/scheduler.py` 的 `start()` 起 29 个 asyncio 常驻 loop，靠 `store.is_schedule_done/mark_schedule_done` 做当日幂等。**调度器随进程常驻，进程停则任务停**。
+- 调度器：`app/flash/scheduler.py` 的 `start()` 起约 30 个 asyncio 常驻 loop，靠 `store.is_schedule_done/mark_schedule_done` 做当日幂等。**调度器随进程常驻，进程停则任务停**。
+  - `start()` 里分两组：**"LLM 叙事类"直接用 `asyncio.create_task`（只读模式保留）**，重活类走 `*_heavy(...)`（`RENDER_READ_ONLY=1` 下全关）。新增轻量 LLM/推送类 loop 应放进前者。
+- 决策简报（`trader_briefs` 表，`PLAN_TRADER_WORKFLOW` Phase 1，2026-09-12 完成双轨）：**盘后**由日批 `trader_brief` 任务生成并推企微（Actions）；**盘前**由 Render 的 `trader_brief_premarket_loop`（09:10-11:30 窗口、当日幂等）生成并推企微。两者按 `(date, phase)` 分别落库、互不覆盖；前端 `GET /api/system/trader-brief` 按需读取。
   - 盘后依赖链（2026-09-05 重排后）：K线刷新 15:30 → **指标刷新 16:40 由 GitHub Actions 跑**（`.github/workflows/indicator-refresh.yml`，入口 `scripts/refresh_indicators.py`，批量版 300 只秒级；本进程设 `ENABLE_HEAVY_JOBS=0` 即跳过该 loop）→ 评分快照 **18:00**（等指标到"今日"，最迟 18:45 强制）→ 主线 19:15 / 消息分快照 19:20 / 日报 19:30（三者都读当日 ranking_history）。
   - 旧快照 15:15 的 bug 已修：原先快照早于数据刷新，`ranking_history` 长期是「今日价+昨日技术特征」。
 - K 线缓存：`app/scoring/kline_cache.py` `CACHE_POOL_SIZE=500`、`CACHE_KLINE_COUNT=500`、`MIN_SCORING_KLINE_COUNT=250`；`app/tencent.py` 另有内存 `KLINE_CACHE`（key 含 count，落盘 `backend/kline_cache.json`，加载时丢弃 >24h 条目）。
 - 指标缓存 `indicator_cache` **只服务评分链路**：`/score/batch/top` 与 `/score/batch/bottom`（`_batch_with_precise_top` → `get_cached_technical_batch_sql` 一条 SQL 批量预加载）、Top5 的买入时机/趋势健康度（`_compute_top5_extras`）、以及 `score_snapshot_loop` 每日快照。**个股详情页 `score_single` 与战法扫描都不读它**（详情页走 `kline_cache` 现算 `_calc_technical`）。有效期 `MAX_INDICATOR_AGE_HOURS=36`；`kline_count` 落在 (0,250) 视为短拉取截断、指标不可信直接跳过 → 指标刷新必须排在 K 线刷新之后。
 - 两层缓存的分工意义（不要合并）：`kline_cache` 存原始 OHLCV（详情页、筹码分布/主力行为叠加必须拿 raw bar），`indicator_cache` 存**预计算的近 80 天指标数组 `_series` + 增量状态 `_state`**，把评分从「实时拉腾讯 + numpy 全量重算 500 根」变成「一条 SQL 读 DB 直接喂 `engine.score_stock`」，一次性解决三个瓶颈：腾讯 WAF、CPU 配额、跨境 DB 的 N 次往返；额外收益是支持盘中 `incremental_update(code, price, high, low)` 做 O(1) 滚动更新。
 - 缓存命中与否直接决定评分吞吐：`use_db_cache`（`kline_cache.get_cache_status()["total_cached"]>50` 或预加载覆盖过半）为真时并发 10 且不 sleep，否则并发 3 + 每只 `sleep(0.3)` 防 WAF —— 差一个数量级。
+
+## egress 治理机制（2026-09-12 起，稳定事实）
+- **版本门控 `app/sync_meta.py`**：给"每天只变一次"的远端数据（如 `mainflow_history`）打版本号 —— 生产方写完 `touch(key)`，消费方缓存数据 + 版本号，TTL 到期先查版本（十几字节）：没变就续期（0 流量）、变了立刻重拉、表不可用则退化为长 TTL。比单纯 TTL 更省也更准，**跨进程可见**（渲染常驻进程 vs Actions 日批是两个进程）。
+- **研究脚本本机缓存 `app/research_cache.py`**：`backend/data/research-cache.db`，`ohlc_all()` / `flow_map()` 默认 24h 复用；K 线**优先从数据包取**（零 egress），包未覆盖的再分块查库。研究脚本（`mainforce_factor_backtest` / `strategy_mainforce_filter_test` / `factor_analysis`）都走它。
+- **进程内读缓存**（`flash/store.py` 的 market_snapshot/macro_history、`signals/tracker.py` 的 tracking、`mainforce/flow.py` 的浮筹）：统一模式 = **写入即失效 + TTL 短于数据变化周期**，返回深拷贝防调用方原地改写污染缓存。
+- 大结果集一律**显式列**（不再 `SELECT *`），`backtest_prices` 已去掉 id/code/name。
+
+## 战法推送白名单（2026-09-12 复核后）
+- 白名单是**动态算的**（`app/strategies/recommendation.py`）：从 `strategy_results` 重放撮合（T+1 开盘成交、涨停一字剔除、主力闸门 + 退出 v2），6h 进程缓存；`PUSH_STRATEGY_WHITELIST` 只是**计算异常时的兜底**。
+- **该体系是"低胜率 + 高盈亏比"型**（自家闸门验证：胜率 48.1→50.3%、均收益 +0.07→+0.44%、盈亏比 1.05→1.36）→ 用「胜率 ≥55%」当门槛会算出空集、推送静默。**看战法好不好一律看均收益/盈亏比，不看胜率**。
+- 判据可配：`WHITELIST_CRITERION=win_rate|expectancy`（默认 win_rate）、`WHITELIST_MIN_AVG_RET`（默认 0.3%，= A 股双边成本+滑点粗估，回放均收益是毛值）、`WHITELIST_MIN_PROFIT_FACTOR`（默认 1.2）、`WHITELIST_MIN_SAMPLES=30`。
+- 复核工具：`scripts/strategy_whitelist_review.py`（零行情回源，K 线走本机包）。
+- 实测基线（2026-08-20~09-11）：龙回头 136/48.5%/+0.46%/PF1.39 · 单阳不破 281/51.6%/+0.19%/PF1.13 · 均线粘合 198/39.9%/-0.32% · 均线回踩 27/37%/-0.99%。
 
 ## 资源占用基线（2026-09-05 实测）
 - 后端常驻 Working Set ≈ 100 MB（非交易时段、单进程）。盘后 15:15–16:30 批量窗口会明显升高。
