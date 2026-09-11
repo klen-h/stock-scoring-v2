@@ -14,7 +14,8 @@
 
 import json
 import os
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from app.database import db
 
 # ── 数据目录（兼容旧代码引用）──
@@ -87,8 +88,13 @@ def save_state(state: dict) -> None:
 
 def save_raw_data(all_items: list, new_items: list) -> None:
     """原始快讯落盘（保留最近 300 条，按 id 去重，新在前）。"""
-    # 获取现有 ID
-    existing = db.fetch("SELECT id FROM flash_news")
+    # 获取现有 ID（★ 2026-09-11 egress：只取近 3 天——表本身只保留最近 300 条，
+    #   全表读在 21 天里被调 8400 次、返回 238 万行）
+    try:
+        cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
+        existing = db.fetch("SELECT id FROM flash_news WHERE time >= %s", (cutoff,))
+    except Exception:
+        existing = db.fetch("SELECT id FROM flash_news")
     existing_ids = {row["id"] for row in existing}
     
     # 过滤新数据
@@ -113,18 +119,33 @@ def save_raw_data(all_items: list, new_items: list) -> None:
             SELECT id FROM flash_news ORDER BY time DESC LIMIT 300
         )
     """)
+    _RAW_CACHE["ts"] = 0.0      # ★ 写入即失效缓存（下面 load_raw_items 的 TTL 缓存）
+
+
+# ★ 进程内短缓存（2026-09-11 egress 治理）：load_raw_items 是「整行含正文」的
+#   300 条查询，21 天里被调 6534 次、返回 187 万行（≈ 每天 30MB Supabase 流量）——
+#   快讯轮询/诊断/前端轮询反复读同一批内容。写入侧（save_raw_data）会立刻失效，
+#   所以缓存窗口内不会漏掉新快讯。
+_RAW_CACHE = {"ts": 0.0, "data": []}
+_RAW_TTL = 120
 
 
 def load_raw_items() -> list:
     """加载原始快讯"""
-    rows = db.fetch("SELECT * FROM flash_news ORDER BY time DESC LIMIT 300")
-    return [{
+    if _RAW_CACHE["data"] and time.time() - _RAW_CACHE["ts"] <= _RAW_TTL:
+        return _RAW_CACHE["data"]
+    rows = db.fetch("SELECT id, content, time, cluster, is_pushed FROM flash_news "
+                    "ORDER BY time DESC LIMIT 300")
+    data = [{
         "id": r["id"],
         "content": r["content"],
         "time": r["time"],
         "cluster": r.get("cluster"),
         "isPushed": bool(r.get("is_pushed"))
     } for r in rows]
+    _RAW_CACHE["ts"] = time.time()
+    _RAW_CACHE["data"] = data
+    return data
 
 
 # ================================================================

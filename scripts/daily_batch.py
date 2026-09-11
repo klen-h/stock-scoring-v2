@@ -259,6 +259,52 @@ def task_daily_report():
     return f"日报已生成: {res['date']} len={res.get('len')}"
 
 
+def task_news_snapshot():
+    """消息分每日快照（news_history 表，消息面因子回测的数据积累）。
+
+    ★ 2026-09-11 迁入：原为 Render 19:20 循环（scheduler.news_history_loop），
+      RENDER_READ_ONLY=1 后落在 _heavy() 里被关闭 → 表停在 09-08（落后 3 天，
+      前端「消息分快照」卡片直接暴露）。日批侧依赖当日 ranking_history 的
+      Top50（score_snapshot 产出）+ user_portfolio，故必须排在 score_snapshot 之后。
+      零数据库重读：池子只有「持仓 + Top50」约 50-80 只，逐只拉东财搜索接口。
+    """
+    from app.flash.scheduler import take_news_snapshot_once
+    n = take_news_snapshot_once()
+    if not n:
+        raise RuntimeError("消息分快照写入 0 条（ranking_history 当日为空？）")
+    return f"消息分快照: {n} 只"
+
+
+def task_weekly_report():
+    """周度回测报告（报告落库 + 企微推送摘要；仅周五执行）。
+
+    ★ 2026-09-11 迁入：原为 Render 周五 16:00/周六的循环（scheduler.backtest_report_loop），
+      只读模式后同样被关闭 → 前端「回测中心」最新报告停在 09-05。
+      另外 Render 免费实例文件系统是临时的（每次部署/重启清空），报告只写文件
+      必丢 → save_report 现在同时落库 backtest_reports，前端从库里读。
+      报告生成只读数据包（DATA_SOURCE=pack），不产生 Supabase 流量。
+    """
+    import datetime as _dt
+    bj = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
+    if bj.weekday() != 4:
+        return f"周度回测报告: 周任务，今为周{bj.weekday() + 1} 跳过"
+    from app.backtest.run import generate_report, save_report, generate_summary
+    content = generate_report("all")
+    path = save_report(content, tag="weekly")
+    summary = ""
+    try:
+        summary = generate_summary()
+    except Exception as e:
+        print(f"  摘要生成失败（不影响报告）: {e}")
+    if summary:
+        try:
+            from app.flash.wechat import push_markdown_batched
+            push_markdown_batched("📊 周度回测报告", summary)
+        except Exception as e:
+            print(f"  企微推送失败（不影响报告）: {e}")
+    return f"周度回测报告: {os.path.basename(path)}（{len(content)} 字，已落库+推送）"
+
+
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
@@ -277,6 +323,9 @@ TASKS = {
     "score_snapshot": (task_score_snapshot, "评分快照"),
     # ★ 2026-09-09 迁入：依赖 score_snapshot 的 Top50，排其后
     "mainline": (task_mainline, "行业主线/共振分析"),
+    # ★ 2026-09-11 迁入：原 Render 19:20 循环被只读模式关闭 → news_history 停在 09-08。
+    #   依赖 score_snapshot 写入的当日 ranking_history Top50。
+    "news_snapshot": (task_news_snapshot, "消息分每日快照（消息面回测底座）"),
     # ★ 2026-09-11 新增：全量精算榜（ranking_live）——后端 /batch/top 直接读。
     #   依赖 mainforce_state（资金面第 5 因子 flow5）与全市场行情缓存。
     "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
@@ -284,13 +333,17 @@ TASKS = {
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
+    # ★ 2026-09-11 迁入：原 Render 周五循环被只读模式关闭 → 回测中心停在 09-05。
+    #   任务内部判定仅周五执行，其余交易日秒过。
+    "weekly_report": (task_weekly_report, "周度回测报告（仅周五，落库+推送）"),
     "daily_report": (task_daily_report, "每日日报"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
                  "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
-                 "contradiction_report", "score_snapshot", "mainline", "rank_live",
-                 "lhb", "zz_finance", "daily_report"]
+                 "contradiction_report", "score_snapshot", "mainline",
+                 "news_snapshot", "rank_live",
+                 "lhb", "zz_finance", "weekly_report", "daily_report"]
 
 
 def ensure_quotes():

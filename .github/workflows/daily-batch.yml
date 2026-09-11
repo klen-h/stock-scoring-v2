@@ -49,7 +49,9 @@ jobs:
     name: 日批（战法/矛盾/回填/快照/日报）
     needs: guard
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    # ★ 2026-09-11：新增 news_snapshot（+1 分钟）与 weekly_report（周五，全策略回测
+    #   +10~20 分钟）；叠加后端包扩容到战法池口径后扫描/精算榜耗时上升，放宽到 180。
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository

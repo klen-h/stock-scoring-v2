@@ -280,7 +280,13 @@ def generate_report(strategy: str) -> str:
 
 
 def save_report(content: str, tag: str = "") -> str:
-    """写 markdown 到 backtest_reports/，返回文件路径。"""
+    """写 markdown 到 backtest_reports/，**同时落库**，返回文件路径。
+
+    ★ 2026-09-11：Render 免费实例文件系统是临时的（每次部署/重启清空）→
+      只写文件的报告随时会消失（前端回测中心最新报告一度停在 09-05）。
+      这里在写文件之外把正文 upsert 进 backtest_reports 表，前端从库里读；
+      落库失败不影响主流程（文件仍是有效产物）。
+    """
     os.makedirs(REPORT_DIR, exist_ok=True)
     suffix = f"_{tag}" if tag else ""
     fname = f"backtest_report{suffix}_{time.strftime('%Y%m%d_%H%M%S')}.md"
@@ -289,6 +295,11 @@ def save_report(content: str, tag: str = "") -> str:
         f.write(content)
     with open(os.path.join(REPORT_DIR, "latest.md"), "w", encoding="utf-8") as f:
         f.write(content)
+    try:
+        from app.backtest import report_store
+        report_store.save_report(fname, content, tag=tag)
+    except Exception as e:
+        print(f"[backtest] 报告落库异常（文件已写）: {e}")
     return path
 
 

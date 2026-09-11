@@ -208,7 +208,10 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
                 return m
         except Exception:
             pass
-        sql = ("SELECT * FROM backtest_prices WHERE code IN (%s) "
+        # ★ 显式列（2026-09-11 egress）：原 SELECT * 连 id/code/name 一起传，
+        #   批量读 20 只股票就白传几十 KB，每天数百次。
+        sql = ("SELECT code, date, open, high, low, close, volume "
+               "FROM backtest_prices WHERE code IN (%s) "
                % ",".join(["%s"] * len(miss)))
         params = list(miss)
         if start:

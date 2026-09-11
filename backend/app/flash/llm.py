@@ -39,6 +39,21 @@ LLM_PRICE_OUT = float(os.environ.get("LLM_PRICE_OUT", "0") or 0)  # 输出价
 # 防事件风暴日（簇不停升爆重推）导致账单失控。默认 50 次/天，足够覆盖极端行情。
 LLM_DAILY_MAX_CALLS = int(os.environ.get("LLM_DAILY_MAX_CALLS", "50") or 50)
 
+# ★ 输出上限（2026-09-11 空响应事故）：推理模型（DeepSeek-R1 等）的思考过程
+#   与最终答案共用 max_tokens——思考啰嗦一点就把额度吃光，content 返回空串
+#   （调用方看到「LLM 调用失败（空响应）」）。这里可配，且空响应/截断时自动翻倍重试。
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "8192") or 8192)
+LLM_MAX_TOKENS_CAP = int(os.environ.get("LLM_MAX_TOKENS_CAP", "32768") or 32768)
+# 兜底模型（可选）：主模型连续空响应时切换（如推理模型 → 非推理模型，或换厂商）。
+LLM_FALLBACK_MODEL = (os.environ.get("LLM_MODEL_FALLBACK") or "").strip()
+
+# 最近一次调用失败原因（诊断用：/api/system/llm-usage 会带出来）
+_last_error = ""
+
+
+def last_llm_error() -> str:
+    return _last_error
+
 _session = requests.Session()
 _session.headers.update({"Authorization": f"Bearer {LLM_API_KEY}",
                          "Content-Type": "application/json"})
@@ -111,6 +126,11 @@ def get_llm_usage() -> dict:
             "daily_limit": LLM_DAILY_MAX_CALLS,
             "remaining_today": max(0, LLM_DAILY_MAX_CALLS - today_usage.get("calls", 0)),
             "blocked_reason": llm_blocked_reason(),
+            "model": LLM_MODEL,
+            "fallback_model": LLM_FALLBACK_MODEL or None,
+            "max_tokens": LLM_MAX_TOKENS,
+            # ★ 最近一次失败原因（含空响应时的 finish_reason / 思考字数），排障用
+            "last_error": last_llm_error() or None,
             "recent_days": recent,
             "estimated_cost_yuan": {d: _cost(u) for d, u in recent.items()},
             "prices_configured": bool(LLM_PRICE_IN or LLM_PRICE_OUT)}
@@ -125,39 +145,68 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
     """
     OpenAI 兼容 chat/completions 调用，带重试（3s/6s 退避）。
     返回文本内容；全部失败返回空字符串（调用方降级）。
+
+    ★ 2026-09-11 空响应修复：原先「HTTP 200 但 content 为空」被当作成功直接
+      return ""（注释写的"走重试"根本没实现）→ 调用方只看到「LLM 调用失败（空响应）」，
+      一次都不重试。推理模型下这是常态故障：思考过程（reasoning_content）与答案
+      共用 max_tokens，思考一啰嗦就把额度吃光。
+      现在：空响应纳入重试；第 2 次起可切 LLM_MODEL_FALLBACK；若 finish_reason=length
+      （被截断）则把 max_tokens 翻倍（上限 LLM_MAX_TOKENS_CAP）再试。
     """
+    global _last_error
     if not llm_configured():
+        _last_error = "未配置 LLM_API_KEY / LLM_MODEL"
         return ""
     blocked = llm_blocked_reason()
     if blocked:
         print(f"[llm] 熔断: {blocked}")
+        _last_error = blocked
         return ""
-    body = {
-        "model": LLM_MODEL,
-        "messages": [{"role": "system", "content": system},
-                     {"role": "user", "content": user}],
-        "temperature": temperature,
-        # 推理模型（如 DeepSeek-R1）的思考过程也消耗输出 token，8192 才够
-        # 「长推理 + 完整 JSON 答案」；4096 会出现答案被截断。
-        "max_tokens": 8192,
-    }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
+
+    models = [LLM_MODEL]
+    if LLM_FALLBACK_MODEL and LLM_FALLBACK_MODEL != LLM_MODEL:
+        models.append(LLM_FALLBACK_MODEL)
+
+    max_tokens = LLM_MAX_TOKENS
     for attempt in range(1, retries + 1):
+        model = models[min(attempt - 1, len(models) - 1)]   # 第 2 次起切兜底模型
+        body = {
+            "model": model,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
         try:
             # 推理模型较慢（长 prompt 可能思考数分钟），超时给足（原 JS 项目 1200s）
             r = _session.post(f"{LLM_BASE_URL}/chat/completions", json=body, timeout=600)
             r.raise_for_status()
             data = r.json()
-            _record_usage(data.get("usage") or {})      # 记录 token 用量
-            content = data["choices"][0]["message"].get("content") or ""
-            # 推理模型的思考在 reasoning_content 字段，content 即最终答案；
-            # 若 max_tokens 被思考耗尽，content 可能为空 → 视为失败走重试/降级
-            return content.strip()
+            usage = data.get("usage") or {}
+            _record_usage(usage)                         # 记录 token 用量
+            choice = (data.get("choices") or [{}])[0]
+            content = ((choice.get("message") or {}).get("content") or "").strip()
+            if content:
+                _last_error = ""
+                return content
+            # ── 空响应：记录可定位的诊断信息，并按情况升级参数后重试 ──
+            finish = choice.get("finish_reason")
+            reasoning = ((choice.get("message") or {}).get("reasoning_content") or "")
+            _last_error = (f"空响应(model={model} finish_reason={finish} "
+                           f"思考{len(reasoning)}字 completion_tokens="
+                           f"{usage.get('completion_tokens')} max_tokens={max_tokens})")
+            print(f"[llm] 第{attempt}次{_last_error}")
+            if finish == "length":                       # 思考把额度吃光 → 翻倍再试
+                max_tokens = min(max_tokens * 2, LLM_MAX_TOKENS_CAP)
+                print(f"[llm] 输出被截断，max_tokens 提升至 {max_tokens} 重试")
         except Exception as e:
-            print(f"[llm] 第{attempt}次调用失败: {str(e)[:200]}")
-            if attempt < retries:
-                time.sleep(attempt * 3)
+            _last_error = f"{type(e).__name__}: {str(e)[:180]}"
+            print(f"[llm] 第{attempt}次调用失败: {_last_error}")
+        if attempt < retries:
+            time.sleep(attempt * 3)
+    print(f"[llm] {retries} 次尝试均未取到内容（最后一次: {_last_error}）")
     return ""
 
 

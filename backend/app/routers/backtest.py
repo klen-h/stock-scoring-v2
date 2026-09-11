@@ -204,37 +204,65 @@ def preheat_all():
             print(f"[backtest] 预热 {name} 失败: {e}")
 
 
-# ── 周度回测报告归档（scheduler 每周五生成的 markdown 文件）──────────────
+# ── 周度回测报告归档（日批每周五生成；库为准，文件兜底）──────────────
+# ★ 2026-09-11：Render 容器文件系统是临时的（部署/重启即清空）→ 报告改为落库
+#   （backtest_reports 表，由日批的 weekly_report 任务写入），这里库 + 文件并集，
+#   避免换实例后前端「最新报告」退回几天前。
 
 @router.get("/reports")
 def list_reports():
     """列出已生成的回测报告归档（新→旧；latest.md 为副本不重复列出）。"""
+    items = {}
+    try:
+        from app.backtest import report_store
+        for r in report_store.list_reports():
+            items[r["name"]] = r
+    except Exception as e:
+        print(f"[backtest] 报告清单读库失败（只用文件）: {e}")
+
     from app.backtest.run import REPORT_DIR
-    if not os.path.isdir(REPORT_DIR):
-        return {"reports": []}
-    items = []
-    for fname in os.listdir(REPORT_DIR):
-        if not fname.endswith(".md") or fname == "latest.md":
-            continue
-        path = os.path.join(REPORT_DIR, fname)
-        items.append({
-            "name": fname,
-            "size": os.path.getsize(path),
-            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(path))),
-        })
-    items.sort(key=lambda x: x["mtime"], reverse=True)
-    return {"reports": items}
+    if os.path.isdir(REPORT_DIR):
+        for fname in os.listdir(REPORT_DIR):
+            if not fname.endswith(".md") or fname == "latest.md" or fname in items:
+                continue
+            path = os.path.join(REPORT_DIR, fname)
+            items[fname] = {
+                "name": fname,
+                "size": os.path.getsize(path),
+                "mtime": time.strftime("%Y-%m-%d %H:%M",
+                                       time.localtime(os.path.getmtime(path))),
+                "source": "file",
+            }
+    out = sorted(items.values(), key=lambda x: x["mtime"], reverse=True)
+    return {"reports": out}
 
 
 @router.get("/reports/content")
 def get_report_content(name: str = Query(..., description="报告文件名，如 latest.md")):
     """返回指定报告的 markdown 原文（前端 markdown-it 渲染）。
 
-    安全：basename 校验防路径穿越，只允许 .md 纯文件名。"""
+    安全：basename 校验防路径穿越，只允许 .md 纯文件名。
+    顺序：库 → 文件；latest.md 特判为「最新一份」。"""
     from app.backtest.run import REPORT_DIR
     safe = os.path.basename(name)
     if not safe.endswith(".md") or safe != name:
         return {"error": "非法文件名"}
+
+    try:
+        from app.backtest import report_store
+        if safe == "latest.md":
+            newest = report_store.list_reports(limit=1)
+            if newest:
+                content = report_store.get_report(newest[0]["name"])
+                if content:
+                    return {"name": newest[0]["name"], "content": content}
+        else:
+            content = report_store.get_report(safe)
+            if content:
+                return {"name": safe, "content": content}
+    except Exception as e:
+        print(f"[backtest] 报告读库失败（回退文件）: {e}")
+
     path = os.path.join(REPORT_DIR, safe)
     if not os.path.isfile(path):
         return {"error": f"报告不存在: {safe}"}

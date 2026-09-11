@@ -332,9 +332,22 @@ def get_float_shares(codes: list = None) -> dict:
     return out
 
 
+# ★ 进程内缓存（2026-09-11 egress 治理）：load_flow_map 是 mainflow_history 的
+#   整表读（21MB / 8.4 万行），pg_stat_statements 里 99 次调用返回 724 万行
+#   ≈ 每天 20MB 流量。资金流每日 19:00 才回填一次，30 分钟 TTL 完全安全；
+#   日批是独立进程，缓存天然是冷的（不会读到当日回填前的旧数据）。
+_FLOW_MAP_CACHE = {}      # {codes_key: (ts, map)}
+_FLOW_MAP_TTL = 1800
+_FLOW_MAP_CACHE_MAX = 6
+
+
 def load_flow_map(codes: list = None) -> dict:
     """读全表 {code: [{date, main_net, ...}]}（升序），供回测脚本用。"""
     ensure_table()
+    cache_key = "all" if not codes else ",".join(sorted(str(c) for c in codes))
+    hit = _FLOW_MAP_CACHE.get(cache_key)
+    if hit and time.time() - hit[0] <= _FLOW_MAP_TTL:
+        return hit[1]
     sql = ("SELECT code, date, main_net, super_net, big_net, main_pct, super_pct, "
            "close, pct_chg FROM mainflow_history")
     params = None
@@ -350,15 +363,30 @@ def load_flow_map(codes: list = None) -> dict:
             "big_net": r["big_net"], "main_pct": r["main_pct"], "super_pct": r["super_pct"],
             "close": r["close"], "pct_chg": r["pct_chg"],
         })
+    if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
+        _FLOW_MAP_CACHE.clear()          # 简易淘汰：整表缓存体积大，满了就清
+    _FLOW_MAP_CACHE[cache_key] = (time.time(), by_code)
     return by_code
+
+
+_FLOW_CACHE = {}      # {code: (ts, rows)} 单只缓存（战法闸门逐信号调用）
+_FLOW_TTL = 1800
+_FLOW_CACHE_MAX = 800
 
 
 def load_flow(code: str) -> list:
     """单只股票的资金流（升序），详情页/实时叠加用（避免全表加载）。"""
+    hit = _FLOW_CACHE.get(code)
+    if hit and time.time() - hit[0] <= _FLOW_TTL:
+        return hit[1]
     ensure_table()
     rows = db.fetch("SELECT date, main_net, super_net, big_net, main_pct, super_pct, "
                     "close, pct_chg FROM mainflow_history WHERE code = %s "
                     "ORDER BY date ASC", (code,))
-    return [{"date": str(r["date"]), "main_net": r["main_net"], "super_net": r["super_net"],
-             "big_net": r["big_net"], "main_pct": r["main_pct"], "super_pct": r["super_pct"],
-             "close": r["close"], "pct_chg": r["pct_chg"]} for r in rows]
+    out = [{"date": str(r["date"]), "main_net": r["main_net"], "super_net": r["super_net"],
+            "big_net": r["big_net"], "main_pct": r["main_pct"], "super_pct": r["super_pct"],
+            "close": r["close"], "pct_chg": r["pct_chg"]} for r in rows]
+    if len(_FLOW_CACHE) >= _FLOW_CACHE_MAX:
+        _FLOW_CACHE.clear()
+    _FLOW_CACHE[code] = (time.time(), out)
+    return out
