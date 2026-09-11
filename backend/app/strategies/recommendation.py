@@ -16,6 +16,8 @@
 ================================================================================
 """
 
+import os
+
 # ── 推送白名单 ──
 # ★ 2026-09-05 起改为动态计算：从 strategy_results 重放撮合（T+1 开盘成交、
 #   涨停一字剔除，与 engine.match_signals 同口径），样本≥30 且 胜率≥55% 才推送。
@@ -27,6 +29,19 @@ PUSH_STRATEGY_WHITELIST = ["single_yang_unbroken"]   # 动态计算失败时的�
 
 WHITELIST_MIN_SAMPLES = 30
 WHITELIST_MIN_WIN_RATE = 55.0
+
+# ★ 2026-09-12 复核：判据可配 —— 默认仍是「胜率 ≥55%」（= 不改变现有行为）。
+#   为什么需要可切换：实测该体系胜率天花板就在 50% 附近（主力闸门自证「胜率 48.1→50.3%
+#   但均收益 +0.07→+0.44%、盈亏比 1.05→1.36」）——**靠盈亏比赚钱的体系用胜率当门槛，
+#   会把白名单算成空集 → 战法推送静默**（2026-09-12 实测：6 个战法全部不达标）。
+#   期望判据 = 均收益 > WHITELIST_MIN_AVG_RET 且 盈亏比 ≥ WHITELIST_MIN_PROFIT_FACTOR。
+#   切换方式：环境变量 WHITELIST_CRITERION=expectancy（默认 win_rate）。
+WHITELIST_CRITERION = (os.environ.get("WHITELIST_CRITERION") or "win_rate").strip().lower()
+# 均收益门槛默认 0.3%：A股个股双边成本粗估（佣金~0.05% + 卖出印花税 0.05% + 滑点/冲击
+# 0.1~0.2%）≈ 0.2~0.3% —— **回放的均收益是毛值**，不扣掉成本就推送等于推"打平或亏"的信号。
+WHITELIST_MIN_AVG_RET = float(os.environ.get("WHITELIST_MIN_AVG_RET", "0.3") or 0.3)
+WHITELIST_MIN_PROFIT_FACTOR = float(
+    os.environ.get("WHITELIST_MIN_PROFIT_FACTOR", "1.2") or 1.2)
 _whitelist_cache = {"ts": 0.0, "list": None, "stats": {}}
 _WHITELIST_TTL = 6 * 3600
 
@@ -115,11 +130,31 @@ def _recompute_whitelist() -> dict:
         by.setdefault(t["strategy_en"] or t["strategy"], []).append(t)
     for name, ts in by.items():
         n = len(ts)
-        win = sum(1 for t in ts if t["pnl_pct"] > 0) / n * 100 if n else 0
-        stats[name] = {"win_rate": round(win, 1), "n": n}
-    wl = [k for k, v in stats.items()
-          if v["n"] >= WHITELIST_MIN_SAMPLES and v["win_rate"] >= WHITELIST_MIN_WIN_RATE]
-    return {"list": wl, "stats": stats}
+        pnl = [float(t.get("pnl_pct") or 0) for t in ts]
+        wins = [p for p in pnl if p > 0]
+        losses = [p for p in pnl if p <= 0]
+        win = len(wins) / n * 100 if n else 0
+        avg = sum(pnl) / n if n else 0
+        gross_win, gross_loss = sum(wins), abs(sum(losses))
+        pf = (gross_win / gross_loss) if gross_loss > 0 else (None if not gross_win else 999.0)
+        # ★ 2026-09-12：补期望类指标 —— 只看胜率会误杀「胜率 50% 但盈亏比 1.3+」的正期望战法
+        stats[name] = {"win_rate": round(win, 1), "n": n,
+                       "avg_ret": round(avg, 2),                  # 均收益 %（期望值）
+                       "profit_factor": (round(pf, 2) if pf is not None else None),
+                       "median_ret": round(sorted(pnl)[n // 2], 2) if n else 0,
+                       "wins": len(wins), "losses": len(losses)}
+
+    def _passes(v: dict) -> bool:
+        if (v.get("n") or 0) < WHITELIST_MIN_SAMPLES:
+            return False
+        if WHITELIST_CRITERION == "expectancy":
+            pf = v.get("profit_factor")
+            return ((v.get("avg_ret") or 0) > WHITELIST_MIN_AVG_RET
+                    and (pf is None or pf >= WHITELIST_MIN_PROFIT_FACTOR))
+        return (v.get("win_rate") or 0) >= WHITELIST_MIN_WIN_RATE
+
+    wl = [k for k, v in stats.items() if _passes(v)]
+    return {"list": wl, "stats": stats, "criterion": WHITELIST_CRITERION}
 
 
 def get_push_whitelist() -> list:
@@ -134,8 +169,14 @@ def get_push_whitelist() -> list:
         _whitelist_cache["stats"] = r["stats"]
         _whitelist_cache["ts"] = now
         if r["stats"]:
-            brief = {k: f"{v['win_rate']}%/{v['n']}" for k, v in r["stats"].items()}
-            print(f"[recommendation] 动态白名单: {r['list']}（各战法 {brief}）")
+            # 日志同时给出胜率/均收益/盈亏比 —— 白名单为空时也能一眼看出"差在哪"
+            brief = {k: f"{v['win_rate']}%/n{v['n']}/均{v.get('avg_ret')}%/"
+                        f"PF{v.get('profit_factor')}" for k, v in r["stats"].items()}
+            print(f"[recommendation] 动态白名单: {r['list']}"
+                  f"（判据={WHITELIST_CRITERION}；各战法 {brief}）")
+            if not r["list"]:
+                print("[recommendation] ⚠️ 白名单为空 → 战法信号不会推送企微"
+                      "（口径复核见 scripts/strategy_whitelist_review.py）")
         return r["list"]
     except Exception as e:
         print(f"[recommendation] 动态白名单计算失败，回退静态: {e}")
