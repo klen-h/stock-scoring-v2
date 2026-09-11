@@ -61,12 +61,15 @@ def _count_entries() -> int:
             print(f"[flash] 计数失败（{sql[:40]}…）: {e}")
             return 0
 
-    a = _count("SELECT COUNT(*) AS n FROM flash_analyses")
-    r = sum(_count("SELECT COUNT(*) AS n FROM flash_reviews WHERE phase = %s", (p,))
+    # LEAST(...) 与旧实现的 LIMIT 上限对齐 —— 保证"条目数签名"口径不变
+    # （镜像/服务端两侧比大小的判据，数值跳变会让恢复逻辑误判）
+    a = _count("SELECT LEAST(COUNT(*), 50) AS n FROM flash_analyses")
+    r = sum(_count("SELECT LEAST(COUNT(*), 20) AS n FROM flash_reviews WHERE phase = %s",
+                   (p,))
             for p in ("premarket", "lunchbreak", "postmarket"))
-    m = _count("SELECT COUNT(*) AS n FROM macro_history")
-    e = _count("SELECT COUNT(*) AS n FROM etf_close")
-    f = _count("SELECT COUNT(*) AS n FROM flash_news")
+    m = _count("SELECT LEAST(COUNT(*), 150) AS n FROM macro_history")
+    e = _count("SELECT LEAST(COUNT(*), 30) AS n FROM etf_close")
+    f = _count("SELECT LEAST(COUNT(*), 300) AS n FROM flash_news")
 
     # 信号跟踪数据仍留在 JSON 文件（未迁库，文件很小），保持原读取路径
     tr = store._load(store.PATHS["tracking"], {})
