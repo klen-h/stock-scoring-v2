@@ -29,6 +29,8 @@
 | 12 | Supabase egress 364→458MB/天（免费档 167MB/天） | 大结果集读：`SELECT * backtest_prices WHERE code=$1`（18037 次/1112 万行）、`mainflow_history` 整表（99 次/724 万行）、`flash_news` 整行（6534 次/187 万行） | 列裁剪（去掉 id/code/name）+ `load_prices` 30min 进程缓存 + `load_flow_map`/`load_flow` 30min 缓存 + `load_raw_items` 120s 缓存（写入即失效）+ id 查询收窄到近 3 天 | `e8f45f2`；今晚起叠加"包覆盖 2052 只不再回源" |
 | 13 | 09-12 复查 egress 仍 458MB | ① 09-11 含**一次性迁移 pg_dump 174MB**（01:25-01:40 执行）→ 常规约 284MB；② **`_count_entries()` 为取 `len()` 全文读 50 条诊断(2.3KB/条)+300 条快讯**，而前端每个开着的标签页**每 5 分钟**调 `/api/flash/backup` → `flash_analyses` 749 次/天≈40MB + `flash_news` 311 次/天≈19MB | `_count_entries` 改 `COUNT(*)`（LEAST 对齐原 LIMIT 上限，保证镜像判据不变）；快讯去重无新条目直接跳过；`save_raw_data` 收窄 | `b29ee00`/`dc39df3`；**下一验证点=09-14 周一完整日批** |
 | 14 | mainflow_history 整表读（8.7MB/次，~36MB/天） | `load_flow_map()` 全表读：日批 `mainforce_state` 1 次/天 + Render `gate_states_for_signals`（已 30min 缓存） | 彻底解法=让数据包携带资金流序列后从 pack 读（需改主力行为读取层，评估正确性后再做） | 观察项 |
+| 15 | 「浏览器镜像」空转 | 它保护的 9 个文件**全部已迁库**（flash_state/flash_analyses/flash_reviews/tracking_state/macro_history/etf_close/schedule_state），文件只剩空壳；**而真正还在文件里的 4 项（财经日历/LLM 用量/K线缓存/数据包）它从来没覆盖过** | 前端轮询退役；新增 `app/data_files.py`（清单+DB 水位+启动/每 6h 核对+关键项企微告警，每天最多一次）+ `GET /api/system/runtime-files`；`/flash/backup`、`/flash/restore` 降级为手动工具 | ✅ `848a0d5` |
+| 16 | 第 5 个「只读模式受害者」：财经日历停在 09-04 | `calendar_loop` 在 `_heavy()` 里被关，日批又漏配 → 扫描发现（新预警模块直接把「更新于 09-04」报了出来） | 日批新增 `calendar` 任务（实测 130 条/1 秒；失败保留旧缓存不抛异常） | ✅ `848a0d5` |
 
 ---
 
