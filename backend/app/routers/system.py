@@ -64,11 +64,13 @@ _SOURCES = [
     ("主力行为状态", "SELECT MAX(date) AS v FROM mainforce_state", "日批 19:00 后", 2),
     ("龙虎榜", "SELECT MAX(date) AS v FROM lhb_history", "每日 17:45", 2),
     ("评分快照", "SELECT MAX(rank_date) AS v FROM ranking_history", "每日 18:00", 2),
-    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "每日 19:20", 2),
+    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "日批 19:20 后", 2),
     ("矛盾扫描", "SELECT MAX(date) AS v FROM contradictions", "每日 15:35", 2),
     ("每日日报", "SELECT MAX(date) AS v FROM daily_reports", "每日 19:30", 2),
     # 周任务：季度数据周更保活，容忍窗口放宽到 8 个交易日（约两周）
     ("财报扩展(zzshare)", "SELECT MAX(updated_at) AS v FROM stock_finance_zz", "每周一同步", 8),
+    # ★ 2026-09-11：周度回测报告（日批周五生成，正文落库 backtest_reports）
+    ("周度回测报告", "SELECT MAX(created_at) AS v FROM backtest_reports", "日批 周五", 8),
     ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2),
 ]
 

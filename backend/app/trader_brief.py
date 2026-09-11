@@ -308,7 +308,16 @@ def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
     else:
         narrative = call_llm(_SYSTEM_PROMPT, _data_to_markdown(data), temperature=0.3)
         if not narrative:
-            narrative = _fallback_skeleton(data, "LLM 调用失败（空响应）")
+            # ★ 2026-09-11：原来只说「空响应」，无从判断是模型把 token 全花在思考上、
+            #   还是鉴权/网络异常（旧版 call_llm 三种失败都返回空串）。
+            #   现在把 call_llm 记录的最近失败原因带出来，前端/日志直接可定位。
+            err = ""
+            try:
+                from app.flash.llm import last_llm_error, LLM_MODEL
+                err = last_llm_error() or f"model={LLM_MODEL}"
+            except Exception:
+                pass
+            narrative = _fallback_skeleton(data, f"LLM 调用失败（空响应：{err}）")
             degraded = "llm_empty"
 
     narrative = _validate_refs(narrative, data)
