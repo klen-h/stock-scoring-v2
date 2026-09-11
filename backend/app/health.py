@@ -50,7 +50,10 @@ _alerts = []                 # [{type, time, title, body}]，最近 20 条
 
 
 def _now() -> str:
-    return datetime.now().isoformat()
+    """★ 2026-09-12：告警时间统一为北京时间（原来写服务器本地时间 = Render 上的 UTC，
+    与通知接口返回的 now / 事件时间不在同一把尺子上）。"""
+    from app.flash.rules import beijing_now_iso
+    return beijing_now_iso()
 
 
 def _load_alerts() -> None:
@@ -160,12 +163,24 @@ def get_health() -> dict:
 
 
 def recent_alerts(since: str = "") -> list:
-    """返回 since 之后的告警/恢复事件（供 notifications 接口）。"""
+    """返回 since 之后的告警/恢复事件（供 notifications 接口）。
+
+    ★ 2026-09-12：时间统一到北京时间后，这里用 rules.to_beijing 做归一化比较：
+      - 新告警写的是带 +08:00 的北京时间；
+      - since 也来自同一把尺子（通知接口的 now）；
+      - 历史告警文件里可能还有无时区标记的本地时间（Render 上 = UTC）→ 按 UTC 解释；
+      顺带修掉一个隐患：naive vs aware 比较会抛 TypeError，而原来只捕获了 ValueError
+      （等于通知接口 500）。
+    """
+    from app.flash.rules import to_beijing
     if not since:
         return _alerts[-10:]
-    try:
-        since_dt = datetime.fromisoformat(since)
-        return [a for a in _alerts
-                if datetime.fromisoformat(a.get("time", "2000-01-01")) > since_dt]
-    except ValueError:
+    since_dt = to_beijing(since)
+    if since_dt is None:
         return _alerts[-10:]
+    out = []
+    for a in _alerts:
+        t = to_beijing(a.get("time"))
+        if t and t > since_dt:
+            out.append(a)
+    return out

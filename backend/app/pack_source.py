@@ -227,17 +227,17 @@ def _parse_pack_date(date_str: str):
 
 
 def _pack_outdated() -> bool:
-    """包日期未覆盖到「上一个工作日」→ True（周末/节假日按工作日近似）。"""
-    from datetime import datetime, timedelta
+    """包日期落后于「此刻本应可用的最新包日期」→ True（触发重新下载）。
+
+    ★ 2026-09-12 修复：原实现和 _is_stale() 共用同一个错误公式（减自然日）——
+      周一会判定"周五的包已过期"，于是 `_maybe_refresh()` 的 30 分钟自检每次都会
+      **重下 127MB 包**（虽然走 Pages 不计 Supabase 流量，但白耗磁盘/时间/带宽）。
+      统一改用交易日历感知的 _latest_available_pack_day()。
+    """
     d = _parse_pack_date(_pack_date_raw())
     if d is None:
         return False
-    ref = datetime.now().date()
-    for _ in range(15):
-        if ref.weekday() < 5:
-            break
-        ref -= timedelta(days=1)
-    return d < (ref - timedelta(days=1))
+    return d < _latest_available_pack_day()
 
 
 def _maybe_refresh():
@@ -270,26 +270,59 @@ def _maybe_refresh():
             _warn_once(f"过期数据包刷新失败（继续用旧包）: {e}")
 
 
+# 包发布时间（工作日约 21:03 完成并推 gh-pages）→ 取 21:30 作为"当天包应已可用"的分界
+_PACK_READY_HHMM = (21, 30)
+
+
+def _latest_available_pack_day(now=None):
+    """此刻**本应拿到**的最新包日期 = 最近一个"包已发布"的交易日。
+
+    · 交易日 21:30 之后 → 当天
+    · 其余情况 → 上一个交易日（交易日历感知，含节假日）
+
+    ★ 2026-09-12 修复：原实现用「今天最近的工作日 - 1 个自然日」当基准，
+      周一/长假后第一个交易日会成立 `pack_date(周五) < 周日` → **整天判包陈旧**
+      → 所有 K 线读取（打分/战法闸门/详情页）全部回退查库。
+      实测：周一 09:00/12:00/15:00/20:00 stale=True，直到 21:30 当天包发布才转 False。
+      这是 kline_cache 单只回退读（30 万次 / ≈55MB/天）的主因。
+    """
+    from datetime import datetime, timedelta
+    from app.flash import rules
+    now = now or datetime.now()
+    d = now.date()
+    try:
+        if rules.is_trading_day(now) and (now.hour, now.minute) >= _PACK_READY_HHMM:
+            return d
+        for i in range(1, 366):
+            cand = datetime.combine(d - timedelta(days=i), datetime.min.time())
+            if rules.is_trading_day(cand):
+                return cand.date()
+    except Exception as e:
+        _warn_once(f"交易日历不可用，包新鲜度退化为按自然日判断: {e}")
+    # 兜底：自然日回退（周末跳过的近似）
+    for i in range(1, 8):
+        cand = d - timedelta(days=i)
+        if cand.weekday() < 5:
+            return cand
+    return d
+
+
 def _is_stale() -> bool:
-    """pack_date 未覆盖到「上一个工作日」→ 陈旧（Actions 连续失败时读侧回退 DB，
-    避免静默用两三天前的指标算分；DB 模式的 36h 过期自愈在 pack 模式靠这里补齐）。
-    周末/节假日按工作日近似（与全库其它判断同口径）。"""
+    """pack_date 落后于「此刻本应可用的最新包日期」→ 陈旧（读侧回退 DB，宁缺毋旧）。
+
+    ★ 2026-09-12 修复（见 _latest_available_pack_day）：原判定减自然日，
+      周一会把"周五的包"误判成陈旧一整天 → 全量回退查库。
+    """
     global _stale_cache
     now = time.time()
     ts, val = _stale_cache
     if now - ts < 600:
         return val
-    from datetime import datetime, timedelta
     d = _parse_pack_date(_pack_date())
     if d is None:
         _stale_cache = (now, False)
         return False
-    ref = datetime.now().date()
-    for _ in range(15):
-        if ref.weekday() < 5:
-            break
-        ref -= timedelta(days=1)
-    val = d < (ref - timedelta(days=1))
+    val = d < _latest_available_pack_day()
     _stale_cache = (now, val)
     return val
 

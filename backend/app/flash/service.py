@@ -19,8 +19,11 @@ from app.signals import tracker
 
 
 def _now_iso() -> str:
-    """北京时间 ISO（服务器可能跑在 UTC，时间戳统一北京时间）。"""
-    return rules.beijing_now().isoformat()
+    """北京时间 ISO（服务器可能跑在 UTC，时间戳统一北京时间）。
+
+    ★ 2026-09-12：直接复用 rules.beijing_now_iso()（全项目唯一时间戳来源）。
+    """
+    return rules.beijing_now_iso()
 
 
 # ================================================================

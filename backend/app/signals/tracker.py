@@ -17,6 +17,7 @@ llm.extract_structured_signals() 输出的结构化信号（build_signal_from_ll
 ================================================================================
 """
 
+import copy
 import json
 import time
 from datetime import datetime
@@ -159,7 +160,7 @@ def get_market_data(force: bool = False) -> dict:
     except Exception:
         pass
     return {"marketStatus": status, "isAOpen": status["is_open"], "oil": oil,
-            "holdings": holdings, "timestamp": datetime.now().isoformat()}
+            "holdings": holdings, "timestamp": rules.beijing_now_iso()}
 
 
 # ================================================================
@@ -299,6 +300,12 @@ def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUN
 #  四、tracking.json 读写 + 状态机
 # ================================================================
 
+# ★ 读缓存（2026-09-12 egress 治理③）：tracking JSON 97KB（压缩后过网 16.6KB），
+#   被通知轮询/信号页/对账反复整份读。写入侧 save_tracking 立即失效 → 同进程永远读到最新；
+#   TTL 仅作跨进程兜底（当前唯一写入方是 Render 自身）。
+_TRACK_CACHE = {"ts": 0.0, "data": None}
+_TRACK_TTL = 120
+
 _DEFAULT_TRACKING = {
     "activeSignals": [], "history": [], "priceHistory": {},
     "performance": {"total": 0, "wins": 0, "losses": 0, "winRate": 0},
@@ -306,23 +313,43 @@ _DEFAULT_TRACKING = {
 
 
 def load_tracking() -> dict:
-    """从数据库加载跟踪状态"""
+    """从数据库加载跟踪状态。
+
+    ★ 2026-09-12（egress 治理③）：这份 JSON 有 97KB（含 priceHistory 45KB /
+      rejectedSignals 29KB / history 20KB），压缩后过网仍约 16.6KB，却被通知轮询、
+      信号页、对账等路径反复整份读（实测 2 万次 ≈ 15MB/天）。
+      这里加进程内缓存：**写入侧 save_tracking 立即失效**，所以同进程读到的永远是最新
+      （跟踪状态的写入方只有 Render 自身：flash service 的 poll/add_signal/update_signals）；
+      120 秒 TTL 只是跨进程兜底（当前无其它写入方）。返回深拷贝，避免调用方原地改写污染缓存。
+    """
+    if _TRACK_CACHE["data"] is not None and time.time() - _TRACK_CACHE["ts"] <= _TRACK_TTL:
+        return copy.deepcopy(_TRACK_CACHE["data"])
     row = db.fetch_one("SELECT data_json FROM tracking_state WHERE id = 1")
+    data = None
     if row:
         try:
-            return json.loads(row["data_json"])
+            data = json.loads(row["data_json"])
         except (json.JSONDecodeError, KeyError):
-            pass
-    return dict(_DEFAULT_TRACKING)
+            data = None
+    if data is None:
+        data = dict(_DEFAULT_TRACKING)
+        _TRACK_CACHE["ts"] = time.time()
+        _TRACK_CACHE["data"] = data
+        return dict(data)
+    _TRACK_CACHE["ts"] = time.time()
+    _TRACK_CACHE["data"] = data
+    return copy.deepcopy(data)
 
 
 def save_tracking(tracking: dict) -> None:
-    """保存跟踪状态到数据库"""
+    """保存跟踪状态到数据库（写入即失效读缓存，见 load_tracking）"""
     try:
+        _TRACK_CACHE["ts"] = 0.0
+        _TRACK_CACHE["data"] = None
         db.upsert("tracking_state", {
             "id": 1,
             "data_json": json.dumps(tracking, ensure_ascii=False),
-            "updated_at": datetime.now().isoformat()
+            "updated_at": rules.beijing_now_iso()
         }, conflict_columns=["id"])
     except Exception as e:
         print(f"[signals] 保存跟踪状态失败: {e}")
@@ -384,7 +411,8 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
     signal = dict(signal)
     signal.update({
         "id": str(int(time.time() * 1000)),
-        "createdAt": datetime.now().isoformat(),
+        # ★ 2026-09-12：统一北京时间（原来写服务器本地时间 = UTC，与 flash 侧不一致）
+        "createdAt": rules.beijing_now_iso(),
         "status": "waiting" if validation["passed"] else "rejected",
         "entries": [], "exits": [],
         "validation": validation, "techScore": tech["score"], "techGrade": tech["grade"],
@@ -416,7 +444,7 @@ def record_price_history(market_data: dict) -> dict:
             prev_close_map[h["name"]] = hist[-1]["price"]
         if not hist or hist[-1].get("date") != today:
             hist.append({"date": today, "price": float(h["price"]),
-                         "timestamp": datetime.now().isoformat()})
+                         "timestamp": rules.beijing_now_iso()})
             ph[h["name"]] = hist[-60:]
     save_tracking(tracking)
     return prev_close_map
@@ -438,7 +466,7 @@ def update_signals(market_data: dict) -> dict:
     prev_close_map = record_price_history(market_data)
     tracking = load_tracking()
     holdings_map = {h["name"]: h for h in market_data.get("holdings", [])}
-    now = datetime.now().isoformat()
+    now = rules.beijing_now_iso()      # ★ 统一北京时间（入场/出场事件时间，通知管道直接比较它）
     alerts = {"entries": [], "exits": [], "updates": []}
 
     for signal in tracking["activeSignals"]:
@@ -454,8 +482,9 @@ def update_signals(market_data: dict) -> dict:
         # ── waiting 过期检查（安全网：正常情况下由论点失效机制管控，此处防止极端情况）──
         if signal["status"] == "waiting":
             try:
-                created = datetime.fromisoformat(signal["createdAt"])
-                age_days = (datetime.now() - created).days
+                # ★ 统一北京时间：老记录没有时区标记（当时写的是 UTC），用 to_beijing 归一化
+                created = rules.to_beijing(signal.get("createdAt"))
+                age_days = (rules.beijing_now() - created).days if created else 0
                 if age_days >= RISK_CONFIG["signal_expire_days"]:
                     signal["status"] = "expired"
                     signal["expireReason"] = f"等待超过{age_days}天未触发，自动过期"
@@ -667,11 +696,8 @@ def generate_pro_trader_report(account_size: int = ACCOUNT_SIZE) -> str:
 # ================================================================
 
 def _safe_dt(s):
-    from datetime import datetime as _dt
-    try:
-        return _dt.fromisoformat(s)
-    except (TypeError, ValueError):
-        return None
+    """ISO → 北京时间（tz-aware）；无法解析返回 None（历史 naive 值按 UTC 解释）。"""
+    return rules.to_beijing(s)
 
 
 def build_audit() -> dict:
@@ -762,16 +788,16 @@ def build_audit() -> dict:
             gates[key] = gates.get(key, 0) + 1
 
     # ── 僵尸等待：waiting 超过 5 天没触发的信号（理论上已被自动过期，此处做安全网）──
-    cutoff = datetime.now() - timedelta(days=5)
+    cutoff = rules.beijing_now() - timedelta(days=5)
     stale_waiting = [s.get("etfName") for s in active
                      if s.get("status") == "waiting"
-                     and (_safe_dt(s.get("createdAt")) or datetime.now()) < cutoff]
+                     and (_safe_dt(s.get("createdAt")) or rules.beijing_now()) < cutoff]
 
     # ── 过期信号统计（最近 30 天）──
-    expire_cutoff = datetime.now() - timedelta(days=30)
+    expire_cutoff = rules.beijing_now() - timedelta(days=30)
     recent_expired = [s for s in history
                       if s.get("status") == "expired"
-                      and (_safe_dt(s.get("createdAt")) or datetime.now()) > expire_cutoff]
+                      and (_safe_dt(s.get("createdAt")) or rules.beijing_now()) > expire_cutoff]
 
     closed_trades = [{
         "etfName": s.get("etfName"), "direction": s.get("direction"),
@@ -807,5 +833,5 @@ def build_audit() -> dict:
         "closed_trades": closed_trades,
         "note": None if len(closed) >= 20 else
         f"已平仓仅 {len(closed)} 笔，样本太小，胜率仅供方向参考（建议积累 20 笔以上再下结论）",
-        "generated_at": datetime.now().isoformat(),
+        "generated_at": rules.beijing_now_iso(),
     }

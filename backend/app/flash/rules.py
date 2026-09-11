@@ -26,6 +26,34 @@ def beijing_now() -> datetime:
     return datetime.now(_TZ8)
 
 
+def beijing_now_iso() -> str:
+    """当前北京时间 ISO 字符串（带 +08:00 偏移）。★ 全项目时间戳统一用它。"""
+    return beijing_now().isoformat()
+
+
+def to_beijing(value):
+    """datetime / ISO 字符串 → 北京时间（tz-aware）；无法解析返回 None。
+
+    ★ 2026-09-12 全链路时间统一到北京时间：此前 flash service/store 写北京时间、
+      tracker 写服务器本地时间（Render 上是 UTC）、health 告警写本地时间 —— 三套混用
+      导致通知管道里「事件时间 vs since」的比较要么漏报要么重复弹。
+      统一读数时把**无时区标记的历史值按 UTC 解释**再换算（那批就是用本地时间=UTC 写的），
+      于是新旧数据能在同一把尺子上比较，也不会因 naive/aware 混用抛 TypeError。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_TZ8)
+
+
 # ================================================================
 #  一、快讯过滤 / 聚类常量
 # ================================================================

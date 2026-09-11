@@ -12,6 +12,7 @@
 ================================================================================
 """
 
+import copy
 import json
 import os
 import time
@@ -54,9 +55,12 @@ def _save(path: str, data):
 
 
 def _now_iso() -> str:
-    """北京时间 ISO 时间戳（服务器可能跑在 UTC，落盘/展示统一用北京时间）。"""
-    from app.flash.rules import beijing_now
-    return beijing_now().isoformat()
+    """北京时间 ISO 时间戳（服务器可能跑在 UTC，落盘/展示统一用北京时间）。
+
+    ★ 2026-09-12：改为直接复用 rules.beijing_now_iso()，全项目时间戳只有这一个来源。
+    """
+    from app.flash.rules import beijing_now_iso
+    return beijing_now_iso()
 
 
 def _bj_date() -> str:
@@ -151,6 +155,26 @@ def load_raw_items() -> list:
     return data
 
 
+def load_raw_items_by_ids(ids: list) -> dict:
+    """按 id 取快讯原文，返回 {id: item}（id 统一成字符串）。
+
+    ★ 2026-09-12（egress 治理）：LLM 提示词构造（format_cluster_text）原来整取
+      300 条（约 210KB）只为引用其中几条 lastUpdateId → 改为按需取（单条 ~700B）。
+    """
+    want = [str(i) for i in (ids or []) if i not in (None, "")]
+    if not want:
+        return {}
+    rows = db.fetch("SELECT id, content, time, cluster, is_pushed FROM flash_news "
+                    "WHERE id = ANY(%s)", (list(dict.fromkeys(want)),))
+    return {str(r["id"]): {
+        "id": str(r["id"]),
+        "content": r["content"],
+        "time": r["time"],
+        "cluster": r.get("cluster"),
+        "isPushed": bool(r.get("is_pushed")),
+    } for r in rows}
+
+
 # ================================================================
 #  LLM 输出全文落盘
 # ================================================================
@@ -180,17 +204,31 @@ def save_analysis(analysis: dict, analyzed_clusters: list) -> None:
         print(f"[store] 保存诊断失败: {e}")
 
 
-def load_analyses(limit: int = 20) -> list:
+def load_analyses(limit: int = 20, since: str = "") -> list:
     """加载 LLM 诊断历史（最新在前），每条含 {time, model, clusters, output}。
 
     ★ 数据源必须是数据库表 flash_analyses：save_analysis() 早已迁移到 DB，
       但路由里有多处仍在读迁移前的 data/analyses.json——那个文件停留在迁移
       当天再没被写入，导致「今日诊断」永远显示十几天前的旧诊断（新诊断写进了
       表、接口却读文件）。读 JSON 的旧调用全部改走这里。
+
+    ★ 2026-09-12（egress 治理②）：加 since 下推。通知轮询（每分钟一次）原来固定
+      拉 20 条含 output_json 的完整诊断（每次约 50KB，实测 21 天被调 1.5 万次），
+      而它只用得到「比 since 新」的那几条。过滤推到 SQL 后，绝大多数轮询返回 0 行。
     """
-    rows = db.fetch(
-        "SELECT time, model, clusters_json, output_json FROM flash_analyses "
-        "ORDER BY time DESC LIMIT %s", (limit,))
+    if since:
+        # ★ 语义等价的关键：先按原口径取最新 limit 条（内层），再按 since 过滤（外层）。
+        #   直接写成 WHERE time > %s LIMIT limit 会在「最近 8 小时内不足 limit 条」时
+        #   把更旧的记录也带出来（与旧行为不一致）。
+        rows = db.fetch(
+            "SELECT time, model, clusters_json, output_json FROM ("
+            "  SELECT time, model, clusters_json, output_json FROM flash_analyses "
+            "  ORDER BY time DESC LIMIT %s) t "
+            "WHERE time > %s ORDER BY time DESC", (limit, since))
+    else:
+        rows = db.fetch(
+            "SELECT time, model, clusters_json, output_json FROM flash_analyses "
+            "ORDER BY time DESC LIMIT %s", (limit,))
     out = []
     for r in rows:
         try:
@@ -251,12 +289,26 @@ def load_review(phase: str) -> dict:
     }
 
 
-def load_review_history(phase: str, limit: int = 20) -> list:
-    """加载复盘历史（最新在前），供按日期搜索回溯 LLM 输出。"""
-    rows = db.fetch(
-        "SELECT * FROM flash_reviews WHERE phase = %s ORDER BY time DESC LIMIT %s",
-        (phase, limit)
-    )
+def load_review_history(phase: str, limit: int = 20, since: str = "") -> list:
+    """加载复盘历史（最新在前），供按日期搜索回溯 LLM 输出。
+
+    ★ 2026-09-12（egress 治理②）：加 since 下推 —— 通知轮询固定拉含 markdown
+      正文的复盘（3KB/条，实测 4.7 万次调用），而它只需要「比 since 新」的那条。
+    """
+    if since:
+        # ★ 同 load_analyses：先取最新 limit 条，再过滤（语义与旧实现完全一致）
+        rows = db.fetch(
+            "SELECT time, markdown, signals_json FROM ("
+            "  SELECT time, markdown, signals_json FROM flash_reviews "
+            "  WHERE phase = %s ORDER BY time DESC LIMIT %s) t "
+            "WHERE time > %s ORDER BY time DESC", (phase, limit, since)
+        )
+    else:
+        rows = db.fetch(
+            "SELECT time, markdown, signals_json FROM flash_reviews "
+            "WHERE phase = %s ORDER BY time DESC LIMIT %s",
+            (phase, limit)
+        )
     out = []
     for row in rows:
         out.append({
@@ -271,16 +323,31 @@ def load_review_history(phase: str, limit: int = 20) -> list:
 #  宏观历史（趋势上下文用）
 # ================================================================
 
+# ★ 进程内缓存（2026-09-12 egress 治理④）：宏观历史整段（150 条 / 约 42KB）被
+#   LLM 趋势上下文等路径反复整份读（实测 6,496 次 ≈ 8~13MB/天）。宏观快照每 3 分钟
+#   才写一次，300 秒缓存 + 写入侧失效足够；调用方只读不写（llm.py 趋势上下文）。
+_MACRO_CACHE = {"ts": 0.0, "data": []}
+_MACRO_TTL = 300
+
+
 def load_macro_history() -> list:
-    """加载宏观历史"""
-    rows = db.fetch("SELECT * FROM macro_history ORDER BY time DESC LIMIT 150")
+    """加载宏观历史（按时间正序）。
+
+    ★ 2026-09-12：加 300 秒进程缓存 + 写入侧失效（append_macro_history）。
+    """
+    if _MACRO_CACHE["data"] and time.time() - _MACRO_CACHE["ts"] <= _MACRO_TTL:
+        return _MACRO_CACHE["data"]
+    rows = db.fetch("SELECT data_json FROM macro_history ORDER BY time DESC LIMIT 150")
     result = []
     for r in rows:
         try:
             result.append(json.loads(r["data_json"]))
         except (json.JSONDecodeError, KeyError):
             pass
-    return list(reversed(result))  # 按时间正序
+    out = list(reversed(result))  # 按时间正序
+    _MACRO_CACHE["ts"] = time.time()
+    _MACRO_CACHE["data"] = out
+    return out
 
 
 def append_macro_history(panel: dict) -> None:
@@ -308,6 +375,7 @@ def append_macro_history(panel: dict) -> None:
 
     try:
         # 检查 3 分钟内是否已有记录（覆盖）
+        _MACRO_CACHE["ts"] = 0.0        # ★ 写入即失效读缓存（下面两处写路径共用）
         latest = db.fetch_one("SELECT id, time FROM macro_history ORDER BY time DESC LIMIT 1")
         if latest:
             try:
@@ -490,19 +558,32 @@ def save_market_snapshot(stocks: dict, valid_codes: list) -> bool:
             "valid_codes_json": json.dumps(valid_codes, ensure_ascii=False),
             "saved_at": _now_iso(),
         }, conflict_columns=["key"])
+        _SNAP_CACHE["ts"] = 0.0        # ★ 写入即失效读缓存（见 load_market_snapshot）
         return True
     except Exception as e:
         print(f"[store] 保存行情收盘快照失败: {e}")
         return False
 
 
+# ★ 进程内缓存（2026-09-12 egress 治理③）：这是全库最大的单行（1.1MB 文本，
+#   压缩后过网约 336KB），却被矛盾扫描 / 日报 / 浮筹反推 / 快照恢复等路径反复整份读
+#   （实测 1,141 次 ≈ 17MB/天）。收盘快照一天只落一次 → 300 秒缓存 + 写入侧失效。
+#   ★ 返回深拷贝：tencent.restore_market_snapshot() 会把 stocks 直接塞进行情缓存并被
+#     其它代码原地改写，共享同一对象会污染缓存。
+_SNAP_CACHE = {"ts": 0.0, "data": {}}
+_SNAP_TTL = 300
+
+
 def load_market_snapshot() -> dict:
     """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at}；无则空 dict。"""
-    row = db.fetch_one("SELECT * FROM market_snapshot WHERE key = %s", ("latest",))
+    if _SNAP_CACHE["data"] and time.time() - _SNAP_CACHE["ts"] <= _SNAP_TTL:
+        return copy.deepcopy(_SNAP_CACHE["data"])
+    row = db.fetch_one("SELECT stocks_json, valid_codes_json, saved_at "
+                       "FROM market_snapshot WHERE key = %s", ("latest",))
     if not row:
         return {}
     try:
-        return {
+        out = {
             "stocks": json.loads(row["stocks_json"]),
             "valid_codes": json.loads(row["valid_codes_json"]),
             "saved_at": row.get("saved_at", ""),
@@ -510,3 +591,6 @@ def load_market_snapshot() -> dict:
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         print(f"[store] 读取行情收盘快照失败: {e}")
         return {}
+    _SNAP_CACHE["ts"] = time.time()
+    _SNAP_CACHE["data"] = out
+    return copy.deepcopy(out)

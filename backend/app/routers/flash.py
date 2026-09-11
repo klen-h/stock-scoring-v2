@@ -19,9 +19,10 @@ URL 前缀 /api/flash：
 
 from fastapi import APIRouter, Query
 import os
-from datetime import datetime
 
-from app.flash import store, service, scheduler, wechat
+# ★ 2026-09-12：本文件所有时间戳统一走 rules.beijing_now*()（原来混用 datetime.now()，
+#   在 Render 上等于 UTC，与库里的北京时间对不上，见下方通知接口注释）
+from app.flash import store, service, scheduler, wechat, rules
 from app.signals import tracker
 
 router = APIRouter()
@@ -62,7 +63,7 @@ def flash_calendar_refresh(days_ahead: int = Query(14, ge=7, le=60)):
     """手动刷新财经日历缓存（测试/应急用；日常由调度器每日 07:00 自动刷新）。"""
     from app.flash import calendar
     n = calendar.refresh(days_ahead=days_ahead)
-    return {"refreshed": n, "time": datetime.now().isoformat()}
+    return {"refreshed": n, "time": rules.beijing_now_iso()}   # ★ 北京时间（原为服务器本地时间）
 
 
 @router.get("/events")
@@ -159,22 +160,23 @@ def flash_notifications(since: str = ""):
       diagnosis 新 LLM 诊断 / review 新复盘 / signal 信号入场或出场。
     前端页面开着时每分钟轮询本接口，有新事件就弹浏览器系统通知。
     """
-    from datetime import datetime as _dt
-
-    try:
-        since_dt = _dt.fromisoformat(since) if since else None
-    except ValueError:
-        since_dt = None
+    # ★ 2026-09-12：统一北京时间。原来 now 用服务器本地时间（Render 上是 UTC）、事件
+    #   时间用北京时间 → since 永远比事件早 8 小时，最近 8 小时的事件每轮都会被重新判定为
+    #   "新"（靠浏览器通知 tag 去重才没炸）。现在两端同一把尺子；历史无时区标记的记录按
+    #   UTC 解释（rules.to_beijing），naive/aware 混用也不会再抛异常漏事件。
+    since_dt = rules.to_beijing(since) if since else None
     events = []
 
     def _newer(t: str) -> bool:
-        try:
-            return not since_dt or _dt.fromisoformat(t) > since_dt
-        except (ValueError, TypeError):
-            return False
+        if not since_dt:
+            return True
+        t_dt = rules.to_beijing(t)
+        return bool(t_dt and t_dt > since_dt)
 
-    # 1. 新诊断
-    for a in store.load_analyses(20):
+    # 1. 新诊断（★ 2026-09-12：since 下推到 SQL —— 轮询每分钟一次，原来固定拉 20 条
+    #    含完整 output_json 的诊断（约 50KB/次）。过滤仍在"最新 20 条"窗口内做，
+    #    与旧行为逐字等价，见 store.load_analyses）
+    for a in store.load_analyses(20, since=since):
         if _newer(a.get("time", "")):
             out = a.get("output") or {}
             corr = out.get("correlation_diagnosis") or {}
@@ -189,7 +191,7 @@ def flash_notifications(since: str = ""):
     # 2. 新复盘
     phase_names = {"premarket": "盘前", "lunchbreak": "午盘", "postmarket": "盘后"}
     for phase in ("premarket", "lunchbreak", "postmarket"):
-        lst = store.load_review_history(phase, 1)
+        lst = store.load_review_history(phase, 1, since=since)
         if lst and _newer(lst[0].get("time", "")):
             events.append({
                 "type": "review", "time": lst[0].get("time"),
@@ -213,7 +215,7 @@ def flash_notifications(since: str = ""):
     from app import health
     events.extend(health.recent_alerts(since))
     events.sort(key=lambda x: x.get("time") or "")
-    return {"events": events[-20:], "now": _dt.now().isoformat()}
+    return {"events": events[-20:], "now": rules.beijing_now_iso()}
 
 
 @router.post("/wechat-test")
@@ -227,7 +229,7 @@ def flash_wechat_test():
         return {"ok": False, "error": "未配置 WECHAT_WEBHOOK 环境变量"}
     content = ("## ✅ 企微推送连通性测试\n"
                f"> **实例：** {os.environ.get('RENDER_INSTANCE_ID', 'local')}\n"
-               f"> **时间：** {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+               f"> **时间：** {rules.beijing_now().strftime('%Y-%m-%d %H:%M')}\n"
                f"> 收到此消息说明本实例的 WECHAT_WEBHOOK 配置有效，任务失败提醒将正常送达。")
     ok = wechat._send(content, "wechat-test")
     return {"ok": ok, "webhook_configured": True,
@@ -240,14 +242,15 @@ def flash_status():
     from app.flash.llm import get_llm_usage
     from app import health
     from app.flash import store as flash_store
-    from datetime import datetime
 
     # 当日统计：新推簇数 / 诊断次数（每天 LLM 消耗一目了然）
+    #   ★ 2026-09-12：统一北京时间 —— 落库的 firstTime / time 都是北京时间，而原来用
+    #     服务器本地时间（Render = UTC）取日期前缀，北京时间 00:00~08:00 会算成前一天。
     today = flash_store._bj_date()
     clusters_today = 0
     for c in flash_store.load_state().get("pushedClusters", []):
         t = c.get("firstTime", "")
-        if t[:10] == datetime.now().strftime("%Y-%m-%d"):
+        if t[:10] == today:
             clusters_today += 1
     # ★ 2026-09-12：原来读 data/analyses.json（迁移前的遗留文件，停在 08-17）→
     #   「今日诊断次数」恒为 0。改为直接 COUNT 数据库表 flash_analyses。
@@ -256,7 +259,7 @@ def flash_status():
         from app.database import db as _db
         row = _db.fetch_one(
             "SELECT COUNT(*) AS n FROM flash_analyses WHERE time LIKE %s",
-            (datetime.now().strftime("%Y-%m-%d") + "%",))
+            (today + "%",))
         analyses_today = int((row or {}).get("n") or 0)
     except Exception as e:
         print(f"[flash] 今日诊断次数统计失败: {e}")

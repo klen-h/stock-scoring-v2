@@ -707,10 +707,16 @@ def _calendar_context(days: int = 3) -> str:
 
 
 def format_cluster_text(clusters: list) -> str:
-    """事件簇列表 → 提示词文本（簇名 + 更新次数 + 原文引用）。"""
+    """事件簇列表 → 提示词文本（簇名 + 更新次数 + 原文引用）。
+
+    ★ 2026-09-12（egress 治理）：原来 `load_raw_items()` 整取 300 条快讯（约 210KB）
+      只为引用簇里的 lastUpdateId 原文 → 改成按 id 精确取（LLM 提示词一天跑几十次，
+      累计省下来的就是整表重复读）。
+    """
     if not clusters:
         return "暂无事件簇。"
-    raw_items = {i["id"]: i for i in store.load_raw_items()}
+    raw_items = store.load_raw_items_by_ids(
+        [c.get("lastUpdateId") for c in clusters])
     lines = []
     for idx, c in enumerate(clusters):
         urgent = "[⏰时间敏感]" if c.get("hadUrgent") else ""

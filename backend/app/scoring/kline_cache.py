@@ -215,20 +215,44 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
 def get_cached_klines_batch(codes: List[str]) -> Dict[str, List[Dict]]:
     """
     批量获取K线缓存。
-    
+
     返回：{code: [klines...], ...}
+
+    ★ 2026-09-12（egress 治理①）：这里**原先没有 pack 通道** —— 无条件查库，
+      一次 `WHERE code IN (…1567 只)` 就把 ~1567 × 6.6KB ≈ 10MB 的 kline_data
+      整包过网（实测 16 次调用合计返回 2.5 万行）。现在与单只读一致：
+      先读数据包（零流量），只有包未覆盖的代码才拼 IN 查库。
     """
     if not codes:
         return {}
-    
-    # 构建 IN 查询
-    placeholders = ",".join(["%s"] * len(codes))
+
+    codes = list(dict.fromkeys(codes))
+    result: Dict[str, List[Dict]] = {}
+    miss: List[str] = []
+    try:
+        from app import pack_source
+        if pack_source.enabled():
+            for c in codes:
+                k = pack_source.get_klines(c)
+                if k is not None:
+                    result[c] = k
+                else:
+                    miss.append(c)
+        else:
+            miss = list(codes)
+    except Exception:
+        miss = list(codes)
+
+    if not miss:
+        return result
+
+    # 构建 IN 查询（只查包未覆盖的部分）
+    placeholders = ",".join(["%s"] * len(miss))
     rows = db.fetch(f"""
         SELECT code, kline_data, updated_at, kline_count 
         FROM kline_cache WHERE code IN ({placeholders})
-    """, tuple(codes))
-    
-    result = {}
+    """, tuple(miss))
+
     expect = expected_kline_date()
     for row in rows:
         code = row["code"]

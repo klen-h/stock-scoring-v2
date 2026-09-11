@@ -273,8 +273,17 @@ def backfill_all(codes: list = None, gap: float = _SINA_GAP, verbose_every: int 
 #   近 120 日回测是可接受近似；东财 clist f85 直连已实测会被风控断连，
 #   仅作 get_float_shares 的在线兜底。
 
+# ★ 进程内缓存（2026-09-12 egress 治理③）：本函数整份读 market_snapshot（单行
+#   1.1MB 文本 / 压缩后过网约 336KB），而主力状态/回测/闸门会反复调用它。
+#   流通股本只在解禁/增发时变，30 分钟缓存零功能影响（与日批侧缓存口径一致）。
+_FS_CACHE = {"ts": 0.0, "data": {}}
+_FS_TTL = 1800
+
+
 def get_float_shares_from_snapshot() -> dict:
     """{code: 流通股本}，来源 market_snapshot 最新一份。"""
+    if _FS_CACHE["data"] and time.time() - _FS_CACHE["ts"] <= _FS_TTL:
+        return _FS_CACHE["data"]
     row = db.fetch_one("SELECT stocks_json, saved_at FROM market_snapshot "
                        "ORDER BY saved_at DESC LIMIT 1")
     if not row:
@@ -295,6 +304,9 @@ def get_float_shares_from_snapshot() -> dict:
         except (TypeError, ValueError):
             continue
     print(f"[float_shares] market_snapshot {row['saved_at']} → {len(out)} 只")
+    if out:                              # 空结果不缓存（快照未就绪时下次重试）
+        _FS_CACHE["ts"] = time.time()
+        _FS_CACHE["data"] = out
     return out
 
 def get_float_shares(codes: list = None) -> dict:
