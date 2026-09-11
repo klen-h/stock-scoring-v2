@@ -123,9 +123,11 @@ export const getTaskConfig = () => http.get('/tasks/config')
 export const triggerContradictionsScan = (date) => http.post('/contradictions/scan', {}, { params: date ? { date } : {} })
 export const triggerContradictionsReport = (date) => http.post('/contradictions/report', {}, { params: date ? { date } : {} })
 
-// 浏览器数据镜像（两人小团队的持久化兜底：定期备份到 localStorage，服务端清零后自动恢复）
-export const getFlashBackup = () => http.get('/flash/backup')
-export const restoreFlashBackup = (files, headers) => http.post('/flash/restore', { files }, { headers })
+// 【已退役 2026-09-12】浏览器数据镜像的前端调用（getFlashBackup / restoreFlashBackup）已移除：
+//   它保护的 9 个数据文件早已全部迁库、只剩空壳，却每 5 分钟驱动一次「读诊断正文只为计数」
+//   的 Supabase egress 消耗。现在改由后端启动检查 + `/api/system/runtime-files` 盯着仍在
+//   文件里的数据（财经日历/LLM 用量/K线缓存/数据包）。后端 /flash/backup、/flash/restore
+//   保留为手动导出/回填工具（不再被页面自动调用）。
 export const getMarketRealtime = (params) => http.get('/market/realtime', { params })
 export const getIndexKline = (symbol, period = 'day') => http.get(`/market/index-kline/${symbol}`, { params: { period } })
 export const getRefreshStatus = () => http.get('/market/refresh-status')

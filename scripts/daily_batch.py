@@ -91,6 +91,19 @@ def task_market_snapshot():
     return "行情收盘快照已保存"
 
 
+def task_calendar():
+    """财经日历刷新（金十）——原 Render 每日 07:00 循环（calendar_loop）被只读模式关闭，
+    缓存文件停在 09-04；而它是 LLM 复盘的「事件排期」输入（非农/CPI/FOMC 的时间与前值/预期），
+    也是前端日历页的数据源。
+
+    失败不抛异常（返回 0 条 + 保留旧缓存，日历是低频静态数据，过期一天远好于没有）；
+    连续失败由 health.record("jin10_calendar") 的既有机制告警。
+    """
+    from app.flash.calendar import refresh
+    n = refresh()
+    return f"财经日历: {n} 条" + ("" if n else "（⚠️ 本次未取到，保留旧缓存）")
+
+
 def task_market_regime():
     """市场状态判定（评分动态权重 / 战法准入 / trade_gate / 主力乘数的事实来源）。
 
@@ -352,6 +365,9 @@ TASKS = {
     "market_regime": (task_market_regime, "市场状态判定（评分权重/准入/闸门来源）"),
     "mainflow": (task_mainflow, "主力资金流回填"),
     "market_snapshot": (task_market_snapshot, "全市场行情快照"),
+    # ★ 2026-09-12 迁入：原 Render 每日 07:00 循环被只读模式关闭 → 日历停在 09-04。
+    #   放在 LLM 类任务（矛盾报告/日报）之前，保证复盘 prompt 里的事件排期是新的。
+    "calendar": (task_calendar, "财经日历刷新（LLM 事件排期来源）"),
     # ★ 2026-09-09 迁入：Render 只读模式停掉了原 17:30 循环 → 表停在 09-04。
     #   依赖 mainflow（资金流）与 market_snapshot（流通股本快照），故置其后。
     "mainforce_state": (task_mainforce_state, "主力行为状态（排行榜标签/日报依赖）"),
@@ -378,7 +394,7 @@ TASKS = {
     "daily_report": (task_daily_report, "每日日报"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
-                 "mainforce_state",
+                 "calendar", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live",

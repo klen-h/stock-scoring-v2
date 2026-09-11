@@ -28,75 +28,48 @@ from app.signals import tracker
 
 router = APIRouter()
 
-# ── 浏览器镜像（两人小团队的临时数据持久化方案）──
-# 原理：前端定期 GET /backup 把 backend/data/ 全部内容存进浏览器 localStorage；
-# Render 免费版每次部署会清零 data/，前端发现服务端条目数比镜像少 → POST /restore
-# 自动恢复。两个用户 = 两份镜像互为备份（数据缺口 = 最后一次镜像同步之后的部分）。
-_BOOT_ID = uuid.uuid4().hex                 # 进程标识（每次重启/部署都变，仅供前端观察）
-_BACKUP_FILES = list(store.PATHS.keys())    # 参与镜像的数据文件白名单
+# ── 运行时数据的手动导出/回填（★ 2026-09-12 由「浏览器镜像」退役后重写）──
+# 原功能：前端每 5 分钟 GET /backup 把 backend/data/*.json 存进 localStorage，
+# 服务端部署清零后自动 POST /restore 回传。**已退役**，原因有二：
+#   1) 它清单里的 9 个文件（flash/analyses/reviews/tracking/macro_history/etf_close/
+#      flash_state/schedule_state/strategies）早已全部迁进数据库，文件只剩空壳
+#      → 镜像不保护任何东西，恢复只是把空壳写回去；
+#   2) 代价却是每 5 分钟 × 每个标签页调一次 /api/flash/backup，而该接口为了算
+#      "条目数签名"把 50 条诊断正文读出来（实测 40MB/天 Supabase egress）。
+# 现在这两条接口只作为**手动**导出/回填工具，且只针对仍然留在文件里、体积很小的
+# 真数据（财经日历、LLM 用量基线）。缺失侦测与预警改由 app/data_files.py 负责
+# （启动核对 + 企微告警 + /api/system/runtime-files）。
+_BOOT_ID = uuid.uuid4().hex                 # 进程标识（每次重启/部署都变，仅供观察）
 
 
-def _count_entries() -> int:
-    """数据条目总数——恢复判定的签名：镜像比服务端多 = 服务端数据被清过。
-
-    ★ 2026-09-11 egress 事故（最大单项消耗）：这里原本用
-      `len(store.load_analyses(50))` / `load_review_history(p, 20)` / `load_raw_items()`
-      ——**把正文全读出来只为了取 len()**。诊断正文平均 2.3KB/条、复盘 markdown 更长、
-      快讯 300 条含正文。而前端 App.vue 每个开着的标签页**每 5 分钟**调一次
-      /api/flash/backup（浏览器镜像兜底），于是：
-        `SELECT time, model, clusters_json, output_json FROM flash_analyses ...`
-        实测 **749 次/天、返回 17 万行/天 ≈ 40MB/天**（pg_stat_statements），
-        再加 flash_news 整行读 311 次/天 ≈ 19MB/天——合计占了免费额度（167MB/天）
-        的一大块，而且这些数据前端镜像根本没用到。
-      改为 COUNT(*)：每次只回一行数字，数据量降到原来的 0.1% 以下。
-      语义不变（各表都有保留上限，COUNT 与原 len() 同量级，仍是单调的"条目数"签名）。
-    """
-    from app.database import db
-
-    def _count(sql: str, params: tuple = None) -> int:
-        try:
-            row = db.fetch_one(sql, params)
-            return int((row or {}).get("n") or 0)
-        except Exception as e:
-            print(f"[flash] 计数失败（{sql[:40]}…）: {e}")
-            return 0
-
-    # LEAST(...) 与旧实现的 LIMIT 上限对齐 —— 保证"条目数签名"口径不变
-    # （镜像/服务端两侧比大小的判据，数值跳变会让恢复逻辑误判）
-    a = _count("SELECT LEAST(COUNT(*), 50) AS n FROM flash_analyses")
-    r = sum(_count("SELECT LEAST(COUNT(*), 20) AS n FROM flash_reviews WHERE phase = %s",
-                   (p,))
-            for p in ("premarket", "lunchbreak", "postmarket"))
-    m = _count("SELECT LEAST(COUNT(*), 150) AS n FROM macro_history")
-    e = _count("SELECT LEAST(COUNT(*), 30) AS n FROM etf_close")
-    f = _count("SELECT LEAST(COUNT(*), 300) AS n FROM flash_news")
-
-    # 信号跟踪数据仍留在 JSON 文件（未迁库，文件很小），保持原读取路径
-    tr = store._load(store.PATHS["tracking"], {})
-    t = len(tr.get("history", [])) + len(tr.get("activeSignals", []))
-    return a + r + t + m + e + f
+def _backup_files() -> dict:
+    """手动导出白名单：{key: 文件绝对路径}。只收"仍在文件里且值得留一份"的小数据。"""
+    return {
+        "calendar": os.path.join(store.DATA_DIR, "calendar.json"),
+        "llm_usage": os.path.join(store.DATA_DIR, "llm_usage.json"),
+    }
 
 
 @router.get("/backup")
 def flash_backup():
-    """
-    导出全部运行数据（浏览器镜像用）。
-    返回 {boot_id, time, total_entries, files:{...}}。
-    files 为白名单内各数据文件的完整 JSON 内容（不含任何凭证，可安全存浏览器）。
+    """导出仍在文件里的运行时数据（手动工具；页面已不再自动调用）。
+
+    返回 {boot_id, time, files:{calendar, llm_usage}}。
+    ★ 不再返回 total_entries：那是给已退役的浏览器镜像比大小用的，没有消费方了。
     """
     files = {}
-    for key in _BACKUP_FILES:
-        data = store._load(store.PATHS[key], None)
+    for key, path in _backup_files().items():
+        data = store._load(path, None)
         if data is not None:
             files[key] = data
     return {"boot_id": _BOOT_ID, "time": datetime.now().isoformat(),
-            "total_entries": _count_entries(), "files": files}
+            "files": files}
 
 
 @router.post("/restore")
 def flash_restore(bundle: dict, x_backup_secret: str = Header(None)):
-    """
-    从浏览器镜像恢复数据（部署清零后的自动兜底）。
+    """把 /backup 导出的数据写回文件（手动回填工具，用于误删/清空后恢复）。
+
     可选安全：设置了 BACKUP_SECRET 环境变量时，请求头 X-Backup-Secret 必须匹配
     （防公开 URL 上被恶意覆写）；不设置则直接放行。
     """
@@ -106,13 +79,13 @@ def flash_restore(bundle: dict, x_backup_secret: str = Header(None)):
     files = bundle.get("files")
     if not isinstance(files, dict) or not files:
         return JSONResponse(status_code=400, content={"error": "bundle 为空"})
+    allow = _backup_files()
     restored = []
     for key, content in files.items():
-        if key in _BACKUP_FILES and content is not None:
-            store._save(store.PATHS[key], content)   # 原子写
+        if key in allow and content is not None:
+            store._save(allow[key], content)     # 原子写
             restored.append(key)
-    return {"restored": restored, "total_entries": _count_entries(),
-            "boot_id": _BOOT_ID}
+    return {"restored": restored, "boot_id": _BOOT_ID}
 
 
 @router.get("/calendar")
@@ -327,10 +300,17 @@ def flash_status():
         t = c.get("firstTime", "")
         if t[:10] == datetime.now().strftime("%Y-%m-%d"):
             clusters_today += 1
-    analyses_today = sum(
-        1 for a in flash_store._load(flash_store.PATHS["analyses"],
-                                     {"analyses": []})["analyses"]
-        if str(a.get("time", ""))[:10] == datetime.now().strftime("%Y-%m-%d"))
+    # ★ 2026-09-12：原来读 data/analyses.json（迁移前的遗留文件，停在 08-17）→
+    #   「今日诊断次数」恒为 0。改为直接 COUNT 数据库表 flash_analyses。
+    analyses_today = 0
+    try:
+        from app.database import db as _db
+        row = _db.fetch_one(
+            "SELECT COUNT(*) AS n FROM flash_analyses WHERE time LIKE %s",
+            (datetime.now().strftime("%Y-%m-%d") + "%",))
+        analyses_today = int((row or {}).get("n") or 0)
+    except Exception as e:
+        print(f"[flash] 今日诊断次数统计失败: {e}")
 
     result = dict(scheduler.status)
     result["sources"] = health.get_health()

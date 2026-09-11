@@ -85,7 +85,7 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { searchStock, getFlashNotifications, getFlashBackup, restoreFlashBackup, getUser, removeToken } from './api'
+import { searchStock, getFlashNotifications, getUser, removeToken } from './api'
 
 const router = useRouter()
 const route = useRoute()
@@ -213,69 +213,24 @@ async function pollNotifications() {
 onMounted(() => {
   if (notifOn.value && !('Notification' in window)) notifOn.value = false
   if (notifOn.value) notifTimer = setInterval(pollNotifications, 60 * 1000)
-  // 数据镜像：页面开着就是一台"备份机"，每 5 分钟同步一次
-  setTimeout(syncDataMirror, 5 * 1000)
-  mirrorTimer = setInterval(syncDataMirror, 5 * 60 * 1000)
 })
 onBeforeUnmount(() => {
   if (notifTimer) clearInterval(notifTimer)
-  if (mirrorTimer) clearInterval(mirrorTimer)
   document.removeEventListener('click', handleClickOutside)
 })
 
 // ──────────────────────────────────────────────────────────────
-// 浏览器数据镜像：把 backend/data 备份到 localStorage，
-// 服务端（Render 免费版）部署清零后自动恢复。
-// 判定：镜像条目数 > 服务端条目数 且镜像 7 天内 → 恢复。
+// 【已退役 2026-09-12】浏览器数据镜像（每 5 分钟把 backend/data 备份到 localStorage，
+// 部署清零后自动回传）：
+//   · 它保护的 9 个文件（flash/analyses/reviews/tracking/macro_history/etf_close/
+//     flash_state/schedule_state/strategies）早已全部迁进数据库，文件只剩空壳
+//     → 镜像实际不保护任何东西；
+//   · 代价却是每 5 分钟 × 每个打开的标签页调用 /api/flash/backup，而该接口为了
+//     取条目数会把 50 条诊断正文读出来（实测 40MB/天 Supabase egress）。
+//   现改为后端「文件型数据完整性检查」：启动即核对仍在文件里的数据
+//   （财经日历 / LLM 用量 / K线缓存 / 数据包），缺失即企微告警，
+//   接口 `/api/system/runtime-files` 可查（见 backend/app/data_files.py）。
 // ──────────────────────────────────────────────────────────────
-const MIRROR_KEY = 'flash_data_mirror'
-let mirrorTimer = null
-
-async function syncDataMirror() {
-  try {
-    const { data: server } = await getFlashBackup()
-    const stored = JSON.parse(localStorage.getItem(MIRROR_KEY) || 'null')
-    const saveMirror = (bundle) => {
-      try {
-        localStorage.setItem(MIRROR_KEY, JSON.stringify(bundle))
-        localStorage.setItem('flash_mirror_time',
-          new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }))
-      } catch (e) { console.warn('镜像写入失败（可能超出 localStorage 容量）', e) }
-    }
-
-    if (!stored || server.total_entries >= stored.total_entries) {
-      saveMirror(server)      // 服务端正常/更新 → 刷新本地镜像
-      return
-    }
-    // 服务端条目比镜像少 → 疑似部署清零 → 用镜像恢复
-    const ageHours = (Date.now() - new Date(stored.time || 0).getTime()) / 36e5
-    if (ageHours > 24 * 7) { saveMirror(server); return }   // 镜像太旧，不复活陈旧数据
-
-    const headers = {}
-    const sec = localStorage.getItem('backup_secret')
-    if (sec) headers['X-Backup-Secret'] = sec
-    let res
-    try {
-      res = await restoreFlashBackup(stored.files, headers)
-    } catch (err) {
-      if (err.response?.status === 401) {
-        const s = prompt('数据恢复需要密钥（服务端已配置 BACKUP_SECRET）')
-        if (!s) throw err
-        localStorage.setItem('backup_secret', s)
-        res = await restoreFlashBackup(stored.files, { 'X-Backup-Secret': s })
-      } else throw err
-    }
-    if ('Notification' in window && Notification.permission === 'granted' && res.data?.restored?.length) {
-      new Notification('♻️ 数据已从浏览器镜像恢复',
-        { body: `恢复 ${res.data.restored.length} 个数据文件（信号/诊断/历史）` })
-    }
-    console.log('[镜像] 已恢复:', res.data?.restored)
-    const { data: fresh } = await getFlashBackup()   // 恢复后重取作为新镜像基线
-    saveMirror(fresh)
-  } catch (e) {
-    console.error('数据镜像同步失败', e?.response?.status || e.message)
-  }
-}
 
 const keyword = ref('')
 const showSearch = ref(false)

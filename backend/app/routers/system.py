@@ -82,6 +82,19 @@ def _to_date(v) -> Optional[str]:
     return s[:10] if len(s) >= 10 else s
 
 
+@router.get("/runtime-files")
+def runtime_files(user: dict = Depends(get_current_user)) -> Dict:
+    """运行时「文件型数据」清单与完整性（数据库之外还靠文件的地方）。
+
+    ★ 2026-09-12：浏览器镜像退役（它保护的 9 个文件早已全部迁库、只剩空壳），
+      改由本接口 + 启动检查盯着真正还在文件里的数据：
+      财经日历 / LLM 用量与日熔断基线 / K线磁盘缓存 / 后端数据包。
+      字段：exists 是否存在、ok 内容是否可用、lost（最近 7 天见过但现在没了）、
+      last_seen（DB 水位记录的最后一次见到时间）。"""
+    from app import data_files
+    return data_files.check_all()
+
+
 @router.get("/status")
 def system_status(user: dict = Depends(get_current_user)) -> Dict:
     """数据新鲜度仪表盘：每类数据最后日期 + ok/stale/missing 判定 + 调度器最近运行。"""

@@ -114,6 +114,15 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[main] 系统绩效预热失败（首访时在线计算）: {e}")
     asyncio.create_task(_performance_warmup())
+
+    # ★ 文件型数据完整性检查（2026-09-12）：浏览器镜像退役后，仍留在文件里的数据
+    #   （财经日历/LLM 用量/K线缓存/数据包）由这里盯着——部署清空后能立刻知道丢了什么，
+    #   关键项按 key 每天最多告警一次。首查在启动后几十秒内完成，之后每 6 小时一次。
+    try:
+        from app import data_files
+        asyncio.create_task(data_files.periodic_loop())
+    except Exception as e:
+        print(f"[main] 文件数据完整性检查启动失败（不影响服务）: {e}")
     yield
     scheduler.stop(_scheduler_tasks)
     # 关闭时取消未完成的快照引导任务（如有）

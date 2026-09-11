@@ -41,6 +41,7 @@ ALLOWED_TASKS = {
     "daily_report", "all",
     "market_regime", "mainforce_state", "mainline", "rank_live",
     "contradiction_report", "zz_finance", "news_snapshot", "weekly_report",
+    "calendar",
 }
 
 
