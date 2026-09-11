@@ -17,7 +17,7 @@
 import asyncio
 import os
 
-from app.flash import service, store, rules, calendar
+from app.flash import service, store, rules, calendar, wechat
 from app.flash.source import FLASH_COOKIE
 from app.flash.llm import llm_configured
 from app.flash.wechat import WECHAT_WEBHOOK
@@ -360,6 +360,48 @@ async def daily_report_loop():
             except Exception as e:
                 print(f"[scheduler] 每日日报生成失败: {e}")
                 _notify_failure("每日日报", str(e))
+        await asyncio.sleep(120)
+
+
+# ── 交易员决策简报·盘前（9:10 起，只读模式保留：只调 LLM + 一次推送）──
+#   为什么放这里：简报要"开盘前"给出今日该关注/该防/该做；盘后那份由日批（Actions）
+#   生成并推送（scripts/daily_batch.py 的 trader_brief 任务），两者以 (date, phase)
+#   分别落库、互不覆盖。
+#   窗口放宽到 11:30：本机/免费实例不是 24 小时开机，上午任意时刻醒来都能补上
+#   （与 REVIEW_WINDOWS 的 premarket 同宽），配合 schedule_state 跨重启幂等。
+TRADER_BRIEF_PREMARKET_WINDOW = (550, 690)   # 北京时间 09:10-11:30
+
+
+async def trader_brief_premarket_loop():
+    """工作日盘前生成决策简报并推企微（当日一次，跨重启幂等）。
+
+    非交易日跳过：generate_trader_brief 以"当天日期"为键，周末跑会写出一条没有
+    数据支撑的错日期简报，推了只会刷屏。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            if (rules.is_trading_day(now)
+                    and TRADER_BRIEF_PREMARKET_WINDOW[0] <= t < TRADER_BRIEF_PREMARKET_WINDOW[1]
+                    and not store.is_schedule_done("trader_brief_premarket")):
+                from app.trader_brief import generate_trader_brief
+                res = await asyncio.to_thread(generate_trader_brief, "premarket")
+                md = (res or {}).get("markdown") or ""
+                if md:
+                    store.mark_schedule_done("trader_brief_premarket")
+                    status["last_trader_brief"] = rules.beijing_now().isoformat()
+                    # 推送走业务开关（用户在前端关掉业务推送就不打扰）
+                    if wechat.WECHAT_WEBHOOK and wechat.BUSINESS_ALERTS_ENABLED:
+                        await asyncio.to_thread(
+                            wechat.push_markdown_batched, "🧭 交易员决策简报（盘前）", md)
+                    print(f"[scheduler] 盘前决策简报已生成: {res.get('date')} {len(md)} 字"
+                          f"（降级={res.get('degraded')}）")
+                else:
+                    print("[scheduler] 盘前决策简报生成异常（正文为空），下轮重试")
+        except Exception as e:
+            print(f"[scheduler] 盘前决策简报失败: {e}")
+            _notify_failure("盘前决策简报", str(e))
         await asyncio.sleep(120)
 
 
@@ -1587,6 +1629,8 @@ async def start():
              asyncio.create_task(review_loop()),
              asyncio.create_task(midday_radar_loop()),
              asyncio.create_task(daily_report_loop()),
+             # ★ 2026-09-12：盘前决策简报（9:10-11:30）——同为 LLM 叙事类
+             asyncio.create_task(trader_brief_premarket_loop()),
              # ── 以下均为重/耗时任务：只读模式（RENDER_READ_ONLY=1）下全部关闭 ──
              *_heavy(macro_daily_loop),
              *_heavy(kline_cache_refresh_loop),

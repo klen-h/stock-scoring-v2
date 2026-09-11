@@ -357,6 +357,55 @@ def task_weekly_report():
     return f"周度回测报告: {os.path.basename(path)}（{len(content)} 字，已落库+推送）"
 
 
+def _force_requested() -> bool:
+    """命令行是否带 --force（语义=忽略"当日已完成"标记、强制重跑）。"""
+    return "--force" in sys.argv[1:]
+
+
+def task_trader_brief():
+    """交易员决策简报（盘后）+ 企微推送。
+
+    ★ 2026-09-12 迁入日批：此前简报只有「打开前端 /report 页才生成」
+      （`GET /api/system/trader-brief` 按需触发），计划里承诺的「盘后 19:35 推送」
+      一直缺 → 这是 PLAN_TRADER_WORKFLOW Phase 1 的收尾项。
+      日批由后端包完成接棒、19:xx 开跑，正好在盘后窗口，故固定生成 postmarket。
+      依赖：market_regime / contradictions / ranking_history(Top10) / mainline /
+            strategy_results / user_portfolio，全部是前面任务写好的 → 排在最后。
+
+    三条纪律：
+      · **非交易日直接跳过**：generate_trader_brief 以"当天日期"为键，周末跑会写出一条
+        没有数据支撑的错日期简报，推了只会刷屏
+      · **幂等**：命中当日已有简报就不再调 LLM（要重生成加 `--force`）
+      · **推送失败不影响主流程**：正文已落库，前端 /report 照常可见
+    """
+    from app.flash.rules import beijing_now, is_trading_day
+    bj = beijing_now()
+    if not is_trading_day(bj):
+        return f"交易员简报: {bj:%Y-%m-%d} 非交易日跳过"
+    from app.trader_brief import generate_trader_brief
+    res = generate_trader_brief(phase="postmarket", force=_force_requested())
+    md = res.get("markdown") or ""
+    if not md:
+        raise RuntimeError("交易员简报生成异常（正文为空）")
+    push_note = "未推送"
+    try:
+        from app.flash import wechat
+        if not wechat.WECHAT_WEBHOOK:
+            push_note = "未推送（未配置 WECHAT_WEBHOOK）"
+        elif not wechat.BUSINESS_ALERTS_ENABLED:
+            push_note = "未推送（业务推送开关已关）"
+        else:
+            wechat.push_markdown_batched("🧭 交易员决策简报（盘后）", md)
+            push_note = "已推送企微"
+    except Exception as e:
+        push_note = f"推送失败（不影响简报）: {str(e)[:80]}"
+        print(f"  企微推送失败（不影响简报）: {e}")
+    flag = f"降级({res['degraded']})" if res.get("degraded") else "正常"
+    cached = "，命中当日已有简报未重烧 LLM" if res.get("cached") else ""
+    return (f"交易员简报: {res.get('date')} postmarket {len(md)} 字"
+            f"（LLM {flag}{cached}；{push_note}）")
+
+
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
@@ -392,13 +441,17 @@ TASKS = {
     #   任务内部判定仅周五执行，其余交易日秒过。
     "weekly_report": (task_weekly_report, "周度回测报告（仅周五，落库+推送）"),
     "daily_report": (task_daily_report, "每日日报"),
+    # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
+    #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
+    "trader_brief": (task_trader_brief, "交易员决策简报（盘后，幂等+企微推送）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
                  "calendar", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live",
-                 "lhb", "zz_finance", "weekly_report", "daily_report"]
+                 "lhb", "zz_finance", "weekly_report", "daily_report",
+                 "trader_brief"]
 
 
 def ensure_quotes():

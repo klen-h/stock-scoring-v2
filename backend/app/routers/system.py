@@ -72,6 +72,8 @@ _SOURCES = [
     # ★ 2026-09-11：周度回测报告（日批周五生成，正文落库 backtest_reports）
     ("周度回测报告", "SELECT MAX(created_at) AS v FROM backtest_reports", "日批 周五", 8),
     ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2),
+    # ★ 2026-09-12：交易员决策简报（日批盘后生成 + 企微推送；此前只有前端按需生成）
+    ("交易员决策简报", "SELECT MAX(date) AS v FROM trader_briefs", "日批 盘后", 2),
 ]
 
 

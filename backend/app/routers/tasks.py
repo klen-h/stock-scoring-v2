@@ -42,6 +42,8 @@ ALLOWED_TASKS = {
     "market_regime", "mainforce_state", "mainline", "rank_live",
     "contradiction_report", "zz_finance", "news_snapshot", "weekly_report",
     "calendar",
+    # ★ 2026-09-12：决策简报进日批（盘后 + 企微推送），补上手动补跑入口
+    "trader_brief",
 }
 
 
