@@ -29,6 +29,7 @@
 - **⚠️ 每日权威快照早于数据刷新**：`score_snapshot_loop` 窗口 15:15，而 K 线刷新 15:30、指标刷新 16:00 → 每天写进 `ranking_history` 的"盘后权威快照"实际是**前一交易日收盘的指标 + 当日实时价**的混合体；而回测/日报/拥挤度因子全读 `ranking_history`。修法：把 `SCORE_SNAPSHOT_WINDOW` 挪到指标刷新之后（≥16:30），或加"等待刷新完成"的前置校验。
 
 ## 项目约定
+- **计划文档约定（2026-09-12 起）**：仓库根目录只保留两份 —— `PLAN_<日期>.md`（**唯一现行主计划**：遗留项 + 下一阶段 + 观察清单 + 风险回滚）与 `PLAN_ARCHIVE_<日期>.md`（历史 plan 原文归档：目录/处置表 + 逐字原文）。此前散落的 11 份专题 plan（`PLAN_MAINFORCE.md` / `PLAN_NEXT_PHASE.md` / `PLAN_PACK_MIGRATION.md` / `先知雷达_功能Plan_v1.0.md` …）已全部收拢进归档并从根目录删除。**代码注释里引用的旧 plan 文件名，内容在归档对应章节查**。新增计划沿用同一模式，不要再往根目录加散文件。
 - **生产 = Python 3.9**（backend/Dockerfile python:3.9-slim；本地开发是 3.12）。新代码**禁用 PEP 604 注解**（`x: str | None`），要么 `Optional[str]`，要么文件头加 `from __future__ import annotations`。ci.yml 的 `import app.main`（3.9）能拦住这类问题——本地 3.12 跑通不代表 3.9 可用。
 - **FastAPI 路由禁用"假 async"（2026-09-05 血泪教训）**：函数体没有 `await` 的路由必须写普通 `def`（FastAPI 自动放线程池），写成 `async def` 会让同步的腾讯 HTTP/DB/numpy 重算直接阻塞事件循环，一个慢请求卡死整个进程 → Render 网关 502（无 CORS 头）→ 前端误报 CORS blocked。2026-09-05 已把 stock.py/market.py 全部及 scoring.py 大部分路由改为 `def`；保留 async 的只有真用 asyncio 的（`_batch_with_precise_top`、score_top/bottom/by_signal、`backtest` 的嵌套 gather）。新路由默认写 `def`。
 
