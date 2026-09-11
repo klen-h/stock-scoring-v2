@@ -275,19 +275,58 @@ def task_news_snapshot():
     return f"消息分快照: {n} 只"
 
 
+def _explicitly_requested(task: str) -> bool:
+    """本任务是否被 --tasks 点名（点名 = 人工补跑，绕过时间窗守卫）。
+
+    ★ 2026-09-11：日批只在工作日跑（周末无触发源），若周五因故没跑成，
+      下周一日批必须能自动补——见 _weekly_due()；而人工 `--tasks weekly_report`
+      任何时候都该照跑。
+    """
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a == "--tasks" and i + 1 < len(args):
+            return task in [t.strip() for t in args[i + 1].split(",")]
+        if a.startswith("--tasks="):
+            return task in [t.strip() for t in a.split("=", 1)[1].split(",")]
+    return False
+
+
+def _weekly_due() -> bool:
+    """本周（ISO 周）还没有周报 → 需要生成（漏跑的周六/下一工作日自动补上）。"""
+    try:
+        from app.backtest import report_store
+        rows = report_store.list_reports(limit=1)
+    except Exception:
+        return True
+    if not rows:
+        return True
+    try:
+        last = datetime.strptime((rows[0].get("mtime") or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    return last.isocalendar()[:2] != datetime.now().isocalendar()[:2]
+
+
 def task_weekly_report():
-    """周度回测报告（报告落库 + 企微推送摘要；仅周五执行）。
+    """周度回测报告（报告落库 + 企微推送摘要）。
 
     ★ 2026-09-11 迁入：原为 Render 周五 16:00/周六的循环（scheduler.backtest_report_loop），
       只读模式后同样被关闭 → 前端「回测中心」最新报告停在 09-05。
       另外 Render 免费实例文件系统是临时的（每次部署/重启清空），报告只写文件
       必丢 → save_report 现在同时落库 backtest_reports，前端从库里读。
       报告生成只读数据包（DATA_SOURCE=pack），不产生 Supabase 流量。
+
+    触发条件（任一成立即生成，否则跳过）：
+      1) 周五（原设计的常规窗口）
+      2) 本周尚无报告（漏跑自愈——周末没有日批，周五失败只能靠下一个工作日补）
+      3) 被 --tasks 明确点名（人工补跑）
     """
     import datetime as _dt
     bj = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
-    if bj.weekday() != 4:
-        return f"周度回测报告: 周任务，今为周{bj.weekday() + 1} 跳过"
+    if (bj.weekday() != 4 and not _weekly_due()
+            and not _explicitly_requested("weekly_report")):
+        return (f"周度回测报告: 本周已生成，今为周{bj.weekday() + 1} 跳过"
+                f"（周五例行 / 本周缺报自愈 / --tasks weekly_report 可强制）")
     from app.backtest.run import generate_report, save_report, generate_summary
     content = generate_report("all")
     path = save_report(content, tag="weekly")

@@ -31,10 +31,14 @@ WORKFLOW = (os.environ.get("DAILY_BATCH_WORKFLOW") or "daily-batch.yml").strip()
 REF = (os.environ.get("GITHUB_REF_NAME") or "main").strip()
 
 # 与 scripts/daily_batch.py 的任务名保持一致（白名单，防止任意注入）
+# ★ 2026-09-11：补齐后来迁入日批的任务——漏一个，前端「远端重算」就少一个
+#   手动补跑入口（如 weekly_report 周五没跑成，周末/周一可从这里一键补）。
 ALLOWED_TASKS = {
     "backfill", "mainflow", "market_snapshot", "sector_snapshot",
     "strategy_scan", "contradiction_scan", "score_snapshot", "lhb",
     "daily_report", "all",
+    "market_regime", "mainforce_state", "mainline", "rank_live",
+    "contradiction_report", "zz_finance", "news_snapshot", "weekly_report",
 }
 
 

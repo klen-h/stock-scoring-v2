@@ -118,7 +118,18 @@ def run_review(days: int = 120, horizon: int = 5, index_code: str = "sh000300") 
                        "请先回填指数日线：python -m app.backtest.fill",
         }
 
+    # ★ 2026-09-11（周报卡死事故）：原来是「遍历榜单记录 → 逐只 data.load_prices」——
+    #   近 120 天榜单有数百只代码，每只一次独立查询；一旦某只不在数据包内就回源
+    #   远程 Supabase（池化连接下每次数秒）→ 实测本地跑 20 分钟仍未出报告，
+    #   线上日批的周报任务同样被拖到超时边缘。
+    #   改为一次性批量加载（单条 IN 查询 + 进程缓存，与战法回放同一路径）。
     price_cache = {}
+    try:
+        from app.backtest.strategies import _load_prices_map
+        codes = {r["code"] for r in records if r.get("code")}
+        price_cache = _load_prices_map(codes) if codes else {}
+    except Exception as e:
+        print(f"[regime_review] 批量加载日线失败，退回逐只读取: {e}")
 
     def _prices(code: str) -> list:
         if code not in price_cache:
