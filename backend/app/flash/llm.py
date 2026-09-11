@@ -22,6 +22,8 @@ import re
 import json
 import time
 import threading
+from datetime import datetime, timedelta
+
 import requests
 
 from app.flash import rules, store
@@ -64,9 +66,16 @@ def llm_configured() -> bool:
 
 
 def _today_calls() -> int:
-    """今日已成功调用的次数（读用量文件）。"""
-    daily = store._load(_USAGE_PATH, {"daily": {}}).get("daily", {})
-    return int(daily.get(store._bj_date(), {}).get("calls") or 0)
+    """今日已成功调用的次数（★ DB 为准，DB 不可用时回退旧文件）。"""
+    day = _iso_day()
+    try:
+        _ensure_usage_table()
+        _import_file_once()
+        row = db.fetch_one("SELECT calls FROM llm_usage_daily WHERE day = %s", (day,))
+        return int((row or {}).get("calls") or 0)
+    except Exception as e:
+        print(f"[llm] 用量读库失败（回退文件）: {e}")
+        return int((_file_daily().get(day) or {}).get("calls") or 0)
 
 
 def llm_blocked_reason():
@@ -83,35 +92,143 @@ def llm_blocked_reason():
 
 
 # ================================================================
-#  LLM 用量统计（每日调用次数 / token，落盘 data/llm_usage.json）
+#  LLM 用量统计（★ 2026-09-12 起以 DB 为准，data/llm_usage.json 降级为兜底副本）
 # ================================================================
-
+# 为什么迁库：这份用量是"日熔断"（LLM_DAILY_MAX_CALLS）的计数来源，也是唯一的
+# 成本保护；而它原先是文件存储 → Render 每次部署清零 = 当日计数归零、30 天历史
+# 不可恢复（文件型数据里唯一"不可自愈"的一项）。迁库后部署不再影响它。
+# 失败模式与旧版一致或更好：DB 写失败 → 退回文件（绝不丢账）；DB 读失败 → 读文件。
 _usage_lock = threading.Lock()
 _USAGE_PATH = os.path.join(store.DATA_DIR, "llm_usage.json")
 _USAGE_KEEP_DAYS = 30
+_USAGE_TABLE_READY = False
+_USAGE_IMPORTED = False
+
+
+def _iso_day(dt=None) -> str:
+    """北京时间 ISO 日期（YYYY-MM-DD，可正确排序/比较——旧文件用的 "YYYY/M/D"
+    格式做字典序比较是错的，顺带修掉）。"""
+    if dt is None:
+        return rules.beijing_now().strftime("%Y-%m-%d")
+    return dt.strftime("%Y-%m-%d")
+
+
+def _ensure_usage_table():
+    global _USAGE_TABLE_READY
+    if _USAGE_TABLE_READY:
+        return
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS llm_usage_daily (
+            day TEXT PRIMARY KEY,
+            calls INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens BIGINT NOT NULL DEFAULT 0,
+            completion_tokens BIGINT NOT NULL DEFAULT 0,
+            updated_at TEXT
+        )
+    """)
+    _USAGE_TABLE_READY = True
+
+
+def _file_daily() -> dict:
+    """兜底：读旧用量文件（key 为 "YYYY/M/D"），统一转成 ISO key。"""
+    daily = (store._load(_USAGE_PATH, {"daily": {}}) or {}).get("daily", {}) or {}
+    out = {}
+    for k, v in daily.items():
+        try:
+            y, m, d = str(k).split("/")
+            out[f"{int(y):04d}-{int(m):02d}-{int(d):02d}"] = v
+        except ValueError:
+            continue
+    return out
+
+
+def _import_file_once() -> None:
+    """表为空/缺天时把历史文件补齐进 DB（每进程只做一次；DO NOTHING 不会覆盖库里的值）。"""
+    global _USAGE_IMPORTED
+    if _USAGE_IMPORTED:
+        return
+    _USAGE_IMPORTED = True
+    daily = _file_daily()
+    if not daily:
+        return
+    try:
+        for day, v in daily.items():
+            db.execute("""
+                INSERT INTO llm_usage_daily
+                (day, calls, prompt_tokens, completion_tokens, updated_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (day) DO NOTHING
+            """, (day, int(v.get("calls") or 0), int(v.get("prompt_tokens") or 0),
+                  int(v.get("completion_tokens") or 0), datetime.now().isoformat()))
+        print(f"[llm] 用量历史已从文件导入 DB: {len(daily)} 天")
+    except Exception as e:
+        print(f"[llm] 用量历史导入失败（继续用文件兜底）: {e}")
 
 
 def _record_usage(usage: dict) -> None:
-    """记录一次调用的 token 用量到当日汇总（保留 30 天）。"""
-    day = store._bj_date()
+    """记录一次调用的 token 用量（DB 为准；DB 失败退回文件，绝不丢账；保留 30 天）。"""
+    day = _iso_day()
+    pt = int(usage.get("prompt_tokens") or 0)
+    ct = int(usage.get("completion_tokens") or 0)
     with _usage_lock:
+        try:
+            _ensure_usage_table()
+            _import_file_once()
+            if db._use_postgres:
+                sql = ("INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
+                       "completion_tokens, updated_at) VALUES (%s, 1, %s, %s, %s) "
+                       "ON CONFLICT (day) DO UPDATE SET "
+                       "calls = llm_usage_daily.calls + 1, "
+                       "prompt_tokens = llm_usage_daily.prompt_tokens "
+                       "+ EXCLUDED.prompt_tokens, "
+                       "completion_tokens = llm_usage_daily.completion_tokens "
+                       "+ EXCLUDED.completion_tokens, "
+                       "updated_at = EXCLUDED.updated_at")
+            else:
+                sql = ("INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
+                       "completion_tokens, updated_at) VALUES (?, 1, ?, ?, ?) "
+                       "ON CONFLICT(day) DO UPDATE SET calls = calls + 1, "
+                       "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
+                       "completion_tokens = completion_tokens "
+                       "+ excluded.completion_tokens, updated_at = excluded.updated_at")
+            db.execute(sql, (day, pt, ct, datetime.now().isoformat()))
+            # 只保留最近 30 天（ISO key 的字典序 = 时间序）
+            cutoff = _iso_day(rules.beijing_now() - timedelta(days=_USAGE_KEEP_DAYS))
+            db.execute("DELETE FROM llm_usage_daily WHERE day < %s", (cutoff,))
+            return
+        except Exception as e:
+            print(f"[llm] 用量写库失败，退回文件: {e}")
+
+        # ── 文件兜底（旧格式，保持与旧版一致）──
+        legacy = store._bj_date()
         data = store._load(_USAGE_PATH, {"daily": {}})
-        d = data["daily"].setdefault(day, {"calls": 0, "prompt_tokens": 0,
-                                           "completion_tokens": 0})
+        d = data["daily"].setdefault(legacy, {"calls": 0, "prompt_tokens": 0,
+                                              "completion_tokens": 0})
         d["calls"] += 1
-        d["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-        d["completion_tokens"] += int(usage.get("completion_tokens") or 0)
-        # 只保留最近 30 天
+        d["prompt_tokens"] += pt
+        d["completion_tokens"] += ct
         if len(data["daily"]) > _USAGE_KEEP_DAYS:
             data["daily"] = dict(sorted(data["daily"].items())[-_USAGE_KEEP_DAYS:])
         store._save(_USAGE_PATH, data)
 
 
 def get_llm_usage() -> dict:
-    """用量概览：今日 + 最近 7 天。配置了单价则附费用估算。"""
-    data = store._load(_USAGE_PATH, {"daily": {}})
-    daily = data.get("daily", {})
-    today = store._bj_date()
+    """用量概览：今日 + 最近 7 天（DB 为准，失败回退文件）。配置单价则附费用估算。"""
+    day = _iso_day()
+    daily = {}
+    try:
+        _ensure_usage_table()
+        _import_file_once()
+        rows = db.fetch("SELECT day, calls, prompt_tokens, completion_tokens "
+                        "FROM llm_usage_daily ORDER BY day DESC LIMIT 7")
+        daily = {r["day"]: {"calls": int(r.get("calls") or 0),
+                            "prompt_tokens": int(r.get("prompt_tokens") or 0),
+                            "completion_tokens": int(r.get("completion_tokens") or 0)}
+                 for r in (rows or [])}
+    except Exception as e:
+        print(f"[llm] 用量读库失败（回退文件）: {e}")
+    if not daily:
+        daily = dict(sorted(_file_daily().items())[-7:])
 
     def _cost(u):
         if not (LLM_PRICE_IN or LLM_PRICE_OUT):
@@ -120,8 +237,8 @@ def get_llm_usage() -> dict:
                       + u.get("completion_tokens", 0) / 1e6 * LLM_PRICE_OUT), 3)
 
     recent = dict(sorted(daily.items())[-7:])
-    today_usage = daily.get(today, {"calls": 0, "prompt_tokens": 0,
-                                    "completion_tokens": 0})
+    today_usage = daily.get(day, {"calls": 0, "prompt_tokens": 0,
+                                  "completion_tokens": 0})
     return {"today": today_usage,
             "daily_limit": LLM_DAILY_MAX_CALLS,
             "remaining_today": max(0, LLM_DAILY_MAX_CALLS - today_usage.get("calls", 0)),

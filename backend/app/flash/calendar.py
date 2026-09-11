@@ -33,6 +33,7 @@ import os
 import json
 import requests
 
+from app.database import db
 from app.flash import store
 
 # ── 接口配置（可用环境变量覆盖，方便金十轮换域名/鉴权时救急）──
@@ -185,16 +186,70 @@ def normalize(items: list) -> list:
 #  三、缓存读写 + 刷新入口
 # ================================================================
 
+# ── 缓存读写（★ 2026-09-12 起 DB 为准，文件降级为兼容副本）──
+# 为什么迁库：日历文件是"部署清零"的受害者之一（Render 容器重建即丢），而它是
+# LLM 复盘的「事件排期」输入 + 前端日历页数据源。文件型数据只剩它和 llm_usage
+# 两项，留着就是例外——而这次的坑正是"例外没人看、悄悄烂掉（停在 09-04）"。
+# 读取顺序：DB → 文件（读到内容就顺手导入 DB，完成历史数据一次性迁移）→ 空。
+_CAL_TABLE_READY = False
+
+
+def _ensure_table():
+    global _CAL_TABLE_READY
+    if _CAL_TABLE_READY:
+        return
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS flash_calendar (
+            key TEXT PRIMARY KEY,
+            updated_at TEXT,
+            range_json TEXT,
+            items_json TEXT
+        )
+    """)
+    _CAL_TABLE_READY = True
+
+
 def _read_cache() -> dict:
-    return store._load(CALENDAR_PATH, {}) or {}
+    try:
+        _ensure_table()
+        row = db.fetch_one("SELECT updated_at, range_json, items_json "
+                           "FROM flash_calendar WHERE key = 'latest'")
+        if row and row.get("items_json"):
+            return {"updated_at": row.get("updated_at") or "",
+                    "range": json.loads(row.get("range_json") or "{}"),
+                    "items": json.loads(row.get("items_json") or "[]")}
+    except Exception as e:
+        print(f"[calendar] DB 读取失败（回退文件）: {e}")
+
+    file_data = store._load(CALENDAR_PATH, {}) or {}
+    if file_data.get("items"):
+        # 旧版遗留文件 → 一次性导入 DB（此后以库为准，文件继续作为副本）
+        rng = file_data.get("range") or {}
+        _write_cache(file_data["items"], rng.get("start", ""), rng.get("end", ""),
+                     updated_at=file_data.get("updated_at"), to_file=False)
+    return file_data
 
 
-def _write_cache(items: list, start: str, end: str) -> None:
-    store._save(CALENDAR_PATH, {
-        "updated_at": store._now_iso(),
-        "range": {"start": start, "end": end},
-        "items": items,
-    })
+def _write_cache(items: list, start: str, end: str, updated_at: str = None,
+                 to_file: bool = True) -> None:
+    """写缓存：DB 为主，同时留一份文件（人工可读 + DB 不可用时的兜底）。"""
+    payload = {"updated_at": updated_at or store._now_iso(),
+               "range": {"start": start, "end": end}, "items": items}
+    try:
+        _ensure_table()
+        db.upsert("flash_calendar", {
+            "key": "latest",
+            "updated_at": payload["updated_at"],
+            "range_json": json.dumps(payload["range"], ensure_ascii=False),
+            "items_json": json.dumps(items, ensure_ascii=False),
+        }, conflict_columns=["key"])
+    except Exception as e:
+        print(f"[calendar] DB 写入失败（仅写文件）: {e}")
+    if to_file:
+        try:
+            store._save(CALENDAR_PATH, payload)
+        except Exception as e:
+            print(f"[calendar] 文件写入失败（DB 已写）: {e}")
 
 
 def refresh(days_back: int = DEFAULT_DAYS_BACK,
