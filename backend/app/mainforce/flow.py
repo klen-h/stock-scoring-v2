@@ -256,6 +256,13 @@ def backfill_all(codes: list = None, gap: float = _SINA_GAP, verbose_every: int 
             print(f"[mainflow] {i}/{len(codes)} ok={ok} fail={fail} rows={total_rows} "
                   f"({time.time() - t0:.0f}s)")
         time.sleep(gap)
+    # ★ 2026-09-12：打完版本号，消费方（Render 常驻进程）TTL 到期时据此判断
+    #   要不要重拉——数据没变就不必整表再过一次网（详见 app/sync_meta.py）
+    try:
+        from app import sync_meta
+        sync_meta.touch("mainflow", rows=total_rows, note=f"codes={len(codes)} ok={ok}")
+    except Exception as e:
+        print(f"[mainflow] 版本号写入失败（不影响回填）: {e}")
     return {"codes": len(codes), "ok": ok, "fail": fail, "rows": total_rows,
             "seconds": round(time.time() - t0, 1)}
 
@@ -332,13 +339,35 @@ def get_float_shares(codes: list = None) -> dict:
     return out
 
 
-# ★ 进程内缓存（2026-09-11 egress 治理）：load_flow_map 是 mainflow_history 的
-#   整表读（21MB / 8.4 万行），pg_stat_statements 里 99 次调用返回 724 万行
-#   ≈ 每天 20MB 流量。资金流每日 19:00 才回填一次，30 分钟 TTL 完全安全；
-#   日批是独立进程，缓存天然是冷的（不会读到当日回填前的旧数据）。
-_FLOW_MAP_CACHE = {}      # {codes_key: (ts, map)}
-_FLOW_MAP_TTL = 1800
+# ★ 进程内缓存（2026-09-12 版本门控版）：load_flow_map 是 mainflow_history 的
+#   整表读（21MB / 8.4 万行）。原先只有 30 分钟 TTL —— 但资金流每天 19:00 才回填
+#   一次，TTL 到期后的重拉全是白烧（4.7 次/天 × 8.7MB）。
+#   现在：5 分钟内直接用（零查询）；TTL 到期**先查版本号**（十几字节），
+#   版本没变就续期不重拉，变了才重拉 → 既省流量又能"数据一变立刻可见"
+#   （生产方在 Actions，消费方在 Render，两个进程只能靠版本号对齐）。
+#   版本表不可用时退化为长 TTL 兜底（绝不因此报错）。
+_FLOW_MAP_CACHE = {}          # {codes_key: {"ts": float, "ver": str|None, "rows": dict}}
+_FLOW_FAST_TTL = 300          # 5 分钟：零查询直接用
+_FLOW_LONG_TTL = 6 * 3600     # 版本号不可用时的兜底 TTL
 _FLOW_MAP_CACHE_MAX = 6
+
+
+def _cache_fresh(hit: dict) -> bool:
+    """缓存是否可继续用（版本门控）。见模块内 _FLOW_* 注释。"""
+    age = time.time() - hit["ts"]
+    if age <= _FLOW_FAST_TTL:
+        return True
+    try:
+        from app import sync_meta
+        ver = sync_meta.version("mainflow")
+    except Exception:
+        ver = None
+    if ver is None and hit.get("ver") is None:
+        return age <= _FLOW_LONG_TTL       # 双方都没有版本信息 → 长 TTL 兜底
+    if ver is not None and ver == hit.get("ver"):
+        hit["ts"] = time.time()            # 数据没变 → 续期，不重拉
+        return True
+    return False
 
 
 def load_flow_map(codes: list = None) -> dict:
@@ -346,8 +375,8 @@ def load_flow_map(codes: list = None) -> dict:
     ensure_table()
     cache_key = "all" if not codes else ",".join(sorted(str(c) for c in codes))
     hit = _FLOW_MAP_CACHE.get(cache_key)
-    if hit and time.time() - hit[0] <= _FLOW_MAP_TTL:
-        return hit[1]
+    if hit and _cache_fresh(hit):
+        return hit["rows"]
     sql = ("SELECT code, date, main_net, super_net, big_net, main_pct, super_pct, "
            "close, pct_chg FROM mainflow_history")
     params = None
@@ -365,20 +394,25 @@ def load_flow_map(codes: list = None) -> dict:
         })
     if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
         _FLOW_MAP_CACHE.clear()          # 简易淘汰：整表缓存体积大，满了就清
-    _FLOW_MAP_CACHE[cache_key] = (time.time(), by_code)
+    try:
+        from app import sync_meta
+        ver = sync_meta.version("mainflow")
+    except Exception:
+        ver = None
+    _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": by_code}
     return by_code
 
 
-_FLOW_CACHE = {}      # {code: (ts, rows)} 单只缓存（战法闸门逐信号调用）
-_FLOW_TTL = 1800
+_FLOW_CACHE = {}      # {code: {"ts", "ver", "rows"}} 单只缓存（战法闸门逐信号调用）
+_FLOW_TTL = 1800      # 单只数据小，保留固定 TTL（版本门控主要针对整表读）
 _FLOW_CACHE_MAX = 800
 
 
 def load_flow(code: str) -> list:
     """单只股票的资金流（升序），详情页/实时叠加用（避免全表加载）。"""
     hit = _FLOW_CACHE.get(code)
-    if hit and time.time() - hit[0] <= _FLOW_TTL:
-        return hit[1]
+    if hit and time.time() - hit["ts"] <= _FLOW_TTL:
+        return hit["rows"]
     ensure_table()
     rows = db.fetch("SELECT date, main_net, super_net, big_net, main_pct, super_pct, "
                     "close, pct_chg FROM mainflow_history WHERE code = %s "
@@ -388,5 +422,5 @@ def load_flow(code: str) -> list:
             "close": r["close"], "pct_chg": r["pct_chg"]} for r in rows]
     if len(_FLOW_CACHE) >= _FLOW_CACHE_MAX:
         _FLOW_CACHE.clear()
-    _FLOW_CACHE[code] = (time.time(), out)
+    _FLOW_CACHE[code] = {"ts": time.time(), "rows": out}
     return out

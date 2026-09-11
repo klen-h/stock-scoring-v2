@@ -61,10 +61,11 @@ load_env()
 sys.path.insert(0, BACKEND_DIR)
 
 from app.database import db                                   # noqa: E402
+from app import research_cache                                # noqa: E402
 from app.mainforce.chips import chip_series                   # noqa: E402
 from app.mainforce.phases import phase_series                 # noqa: E402
 from app.mainforce.flow import (                              # noqa: E402
-    load_flow_map, get_float_shares, get_float_shares_from_snapshot)
+    get_float_shares, get_float_shares_from_snapshot)
 
 import time as _time
 
@@ -123,24 +124,17 @@ def spearman(xs, ys):
     return {"rho": round(num / (dx * dy), 4), "n": len(pairs)}
 
 
-def load_ohlc_all():
+def load_ohlc_all(force=False):
     """{code: [{date, open, high, low, close, volume}]} 升序。
-    分块加载（整表 39 万行一次查会被连接池掐断）。"""
-    codes = [r["code"] for r in q(
-        "SELECT DISTINCT code FROM backtest_prices ORDER BY code")]
-    by_code = {}
-    CH = 120
-    for i in range(0, len(codes), CH):
-        chunk = codes[i:i + CH]
-        rows = q(
-            "SELECT code, date, open, high, low, close, volume FROM backtest_prices "
-            "WHERE code = ANY(%s) ORDER BY code, date ASC", (chunk,))
-        for r in rows:
-            by_code.setdefault(r["code"], []).append({
-                "date": str(r["date"]), "open": r["open"], "high": r["high"],
-                "low": r["low"], "close": r["close"], "volume": r["volume"],
-            })
-    return by_code
+
+    ★ 2026-09-12（egress 治理第三步）：改走本机缓存 app/research_cache ——
+      原先每次运行都整表拉远程库（48.9 万行，pg_stat_statements 里"返回 40 万行/次"
+      的那条就是它），而这是"历史冻结、只追加"的数据。
+      现在：K 线**优先从数据包取**（本地 sqlite≈零流量；包内每只 ~750 根 = 3 年，
+      与回测口径一致），包未覆盖的代码才从库补；结果落 backend/data/research-cache.db，
+      24 小时内复用。`--refresh` 强制重建。
+    """
+    return research_cache.ohlc_all(force=force)
 
 
 def load_float_shares():
@@ -216,11 +210,11 @@ def fmt_bucket(rows):
 # ──────────────────────────────────────────────────────────────
 #  主流程
 # ──────────────────────────────────────────────────────────────
-def build_samples(holds, step):
-    prices = load_ohlc_all()
-    print(f"[data] backtest_prices 股票数 {len(prices)}")
-    flow_map = load_flow_map()
-    print(f"[data] mainflow_history 覆盖 {len(flow_map)} 只")
+def build_samples(holds, step, refresh=False):
+    prices = load_ohlc_all(force=refresh)
+    print(f"[data] 日线覆盖 {len(prices)} 只（本地缓存/数据包优先）")
+    flow_map = research_cache.flow_map(force=refresh)
+    print(f"[data] 资金流覆盖 {len(flow_map)} 只")
     fs_map = load_float_shares()
 
     # 截面日：以资金流覆盖窗为准，前推 warmup 70 根，尾部留 max(hold) 前瞻
@@ -429,9 +423,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hold", type=int, nargs="+", default=[5, 10])
     ap.add_argument("--step", type=int, default=5)
+    ap.add_argument("--refresh", action="store_true",
+                    help="强制重建本地数据缓存（backend/data/research-cache.db）")
     args = ap.parse_args()
 
-    samples, sec_dates = build_samples(args.hold, args.step)
+    samples, sec_dates = build_samples(args.hold, args.step, refresh=args.refresh)
     report = analyze(samples, args.hold)
     out_dir = os.path.join(BACKEND_DIR, "backtest_reports")
     os.makedirs(out_dir, exist_ok=True)

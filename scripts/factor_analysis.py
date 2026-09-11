@@ -51,6 +51,7 @@ load_env()
 sys.path.insert(0, BACKEND_DIR)
 
 from app.database import db                                            # noqa: E402
+from app import research_cache                                        # noqa: E402
 from app.backtest.crowding import (                                  # noqa: E402
     crowding_metrics, crowding_score, crowding_multiplier)
 
@@ -133,28 +134,22 @@ def load_snapshots(since: str) -> list:
 
 
 def load_ohlc(codes: list) -> dict:
-    """批量加载 {code: [{date, open, high, low, close}...]}（升序）。"""
-    series: dict = {}
-    codes = list(dict.fromkeys(codes))
-    for i in range(0, len(codes), 200):
-        chunk = codes[i:i + 200]
-        ph = ",".join(["%s"] * len(chunk))
-        rows = db.fetch(
-            f"SELECT code, date, open, high, low, close FROM backtest_prices "
-            f"WHERE code IN ({ph}) AND date >= %s ORDER BY code, date",
-            (*chunk, SINCE_OHLC))
-        tmp = defaultdict(list)
-        for r in rows or []:
-            try:
-                tmp[r["code"]].append({
-                    "date": r["date"], "open": float(r["open"] or 0),
-                    "high": float(r["high"] or 0), "low": float(r["low"] or 0),
-                    "close": float(r["close"] or 0),
-                })
-            except (TypeError, ValueError):
-                continue
-        for c, lst in tmp.items():
-            series[c] = lst
+    """批量加载 {code: [{date, open, high, low, close}...]}（升序，仅 ≥ SINCE_OHLC）。
+
+    ★ 2026-09-12（egress 治理第三步）：改走本机缓存 app/research_cache ——
+      原先每次运行都按 200 只分块整表拉远程库（约 1.4 年 × 数百只）。
+      现在日线优先从**数据包**取（本地 sqlite，零回源），结果落
+      backend/data/research-cache.db 复用 24 小时。
+    """
+    all_bars = research_cache.ohlc_all()
+    want = set(codes)
+    series = {}
+    for c, bars in all_bars.items():
+        if c not in want:
+            continue
+        sub = [b for b in bars if str(b.get("date")) >= SINCE_OHLC]
+        if sub:
+            series[c] = sub
     return series
 
 

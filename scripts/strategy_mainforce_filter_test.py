@@ -44,11 +44,12 @@ with open(os.path.join(BACKEND_DIR, ".env"), encoding="utf-8") as f:
             os.environ.setdefault(k, v.strip())
 
 from app.database import db                                    # noqa: E402
+from app import research_cache                                 # noqa: E402
 from app.backtest import engine                                # noqa: E402
 from app.backtest.strategies import WARFARE_HOLD_DAYS, _load_prices_map  # noqa: E402
 from app.mainforce.chips import chip_series                    # noqa: E402
 from app.mainforce.phases import phase_series                  # noqa: E402
-from app.mainforce.flow import load_flow_map, get_float_shares_from_snapshot  # noqa: E402
+from app.mainforce.flow import get_float_shares_from_snapshot   # noqa: E402
 
 _orig = db.fetch
 
@@ -93,9 +94,15 @@ def load_signals() -> list:
 
 
 def mainforce_states(signals: list) -> dict:
-    """{(code, date): 状态dict}——信号日当日的主力状态（无前视）。"""
+    """{(code, date): 状态dict}——信号日当日的主力状态（无前视）。
+
+    ★ 2026-09-12（egress 治理第三步）：K 线与资金流改走本机缓存 app/research_cache ——
+      原先这里对每只代码发一条独立 SQL（253 条）且资金流是整表读，每次运行都以
+      远程库为数据源。现在日线优先从**数据包**取（零回源），两者都落本地 sqlite 复用。
+    """
     fs_map = get_float_shares_from_snapshot()
-    flow_map = load_flow_map()
+    flow_map = research_cache.flow_map()
+    bars_all = research_cache.ohlc_all()
     by_code = {}
     for s in signals:
         by_code.setdefault(s["code"], []).append(s["date"])
@@ -103,11 +110,7 @@ def mainforce_states(signals: list) -> dict:
     states = {}
     codes = sorted(by_code)
     for i, code in enumerate(codes, 1):
-        bars = q("SELECT date, open, high, low, close, volume FROM backtest_prices "
-                 "WHERE code=%s ORDER BY date ASC", (code,))
-        bars = [{"date": str(r["date"]), "open": r["open"], "high": r["high"],
-                 "low": r["low"], "close": r["close"], "volume": r["volume"]}
-                for r in bars]
+        bars = bars_all.get(code) or []
         if len(bars) < 130:
             continue
         dates_out = [d for d in by_code[code] if bars[69]["date"] <= d <= bars[-1]["date"]]
