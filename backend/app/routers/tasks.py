@@ -21,8 +21,10 @@ from __future__ import annotations
 import os
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -48,12 +50,18 @@ class TriggerIn(BaseModel):
 
 
 @router.post("/trigger")
-async def trigger_task(body: TriggerIn):
+async def trigger_task(body: TriggerIn, user: dict = Depends(get_current_user)):
     """触发远端日批任务（不阻塞、不等结果）。
 
     返回 queued=true 表示已成功投递给 Actions；实际完成时间取决于任务量
     （战法扫描约 3-10 分钟，全量 all 约 20-30 分钟），完成后数据写库，
     前端直接刷新结果接口即可看到。
+
+    ★ 2026-09-11 加鉴权：此接口原本**完全开放**（/api/tasks/trigger 无任何认证）——
+      公网任何人 POST 一次就能消耗 Actions 额度、反复触发 Actions 运行。
+      前端 axios 实例对每个请求都带 JWT（frontend/src/api/index.js 请求拦截器），
+      故加 Depends(get_current_user) 不影响页面按钮（未登录用户本就看不了这些页）。
+      /tasks/config 保留开放：它只暴露「是否配置了 token + 可选任务名」。
     """
     token = (os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:
