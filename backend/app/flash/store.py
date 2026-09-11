@@ -88,8 +88,11 @@ def save_state(state: dict) -> None:
 
 def save_raw_data(all_items: list, new_items: list) -> None:
     """原始快讯落盘（保留最近 300 条，按 id 去重，新在前）。"""
-    # 获取现有 ID（★ 2026-09-11 egress：只取近 3 天——表本身只保留最近 300 条，
-    #   全表读在 21 天里被调 8400 次、返回 238 万行）
+    # ★ 2026-09-11 egress：没有新快讯就直接返回——此前每轮轮询都先查一次
+    #   现有 ID 全表（实测 401 次/天、238 万行/21天），而绝大多数轮询并无新条目。
+    if not new_items:
+        return
+    # 获取现有 ID（只取近 3 天：表本身只保留最近 300 条）
     try:
         cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         existing = db.fetch("SELECT id FROM flash_news WHERE time >= %s", (cutoff,))

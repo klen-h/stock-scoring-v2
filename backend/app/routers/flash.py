@@ -37,16 +37,40 @@ _BACKUP_FILES = list(store.PATHS.keys())    # 参与镜像的数据文件白名�
 
 
 def _count_entries() -> int:
-    """数据条目总数——恢复判定的签名：镜像比服务端多 = 服务端数据被清过。"""
-    # 诊断与复盘均已迁移到数据库表，读迁移前的 JSON 文件会恒为旧值/0
-    a = len(store.load_analyses(50))
-    r = sum(len(store.load_review_history(p, 20))
+    """数据条目总数——恢复判定的签名：镜像比服务端多 = 服务端数据被清过。
+
+    ★ 2026-09-11 egress 事故（最大单项消耗）：这里原本用
+      `len(store.load_analyses(50))` / `load_review_history(p, 20)` / `load_raw_items()`
+      ——**把正文全读出来只为了取 len()**。诊断正文平均 2.3KB/条、复盘 markdown 更长、
+      快讯 300 条含正文。而前端 App.vue 每个开着的标签页**每 5 分钟**调一次
+      /api/flash/backup（浏览器镜像兜底），于是：
+        `SELECT time, model, clusters_json, output_json FROM flash_analyses ...`
+        实测 **749 次/天、返回 17 万行/天 ≈ 40MB/天**（pg_stat_statements），
+        再加 flash_news 整行读 311 次/天 ≈ 19MB/天——合计占了免费额度（167MB/天）
+        的一大块，而且这些数据前端镜像根本没用到。
+      改为 COUNT(*)：每次只回一行数字，数据量降到原来的 0.1% 以下。
+      语义不变（各表都有保留上限，COUNT 与原 len() 同量级，仍是单调的"条目数"签名）。
+    """
+    from app.database import db
+
+    def _count(sql: str, params: tuple = None) -> int:
+        try:
+            row = db.fetch_one(sql, params)
+            return int((row or {}).get("n") or 0)
+        except Exception as e:
+            print(f"[flash] 计数失败（{sql[:40]}…）: {e}")
+            return 0
+
+    a = _count("SELECT COUNT(*) AS n FROM flash_analyses")
+    r = sum(_count("SELECT COUNT(*) AS n FROM flash_reviews WHERE phase = %s", (p,))
             for p in ("premarket", "lunchbreak", "postmarket"))
+    m = _count("SELECT COUNT(*) AS n FROM macro_history")
+    e = _count("SELECT COUNT(*) AS n FROM etf_close")
+    f = _count("SELECT COUNT(*) AS n FROM flash_news")
+
+    # 信号跟踪数据仍留在 JSON 文件（未迁库，文件很小），保持原读取路径
     tr = store._load(store.PATHS["tracking"], {})
     t = len(tr.get("history", [])) + len(tr.get("activeSignals", []))
-    m = len(store.load_macro_history())
-    e = len(store.load_etf_close_history(30))
-    f = len(store.load_raw_items())
     return a + r + t + m + e + f
 
 
