@@ -334,6 +334,31 @@ def generate_summary() -> str:
     except Exception as e:
         lines.append(f"> 战法回测异常：{e}")
 
+    # 战法 × 市场状态 强制切片（为静默决策与 regime 准入矩阵背书）
+    try:
+        r = strategies.backtest_warfare_by_regime()
+        if r.get("status") == "ok":
+            lines += ["", "### ⚔️ 战法 × 市场状态（强制切片）",
+                      f"> 信号期：{r['window'][0]} ~ {r['window'][1]} | 总样本 {r['total']['n']} | "
+                      f"胜率 {r['total']['win_rate']}% | 盈亏比 {r['total']['profit_factor']}", "",
+                      "| 状态 | 样本 | 胜率% | 平均单笔% | 盈亏比 |",
+                      "|---|---|---|---|---|"]
+            for st, label in r["state_labels"].items():
+                stat = r["state_summary"].get(st) or {}
+                lines.append(
+                    f"| {label} | {stat.get('n', 0)} | {_pct(stat.get('win_rate'))} | "
+                    f"{_num(stat.get('avg_pnl_pct'))} | {_num(stat.get('profit_factor'))} |")
+            lines.append("")
+            # 高波动 vs 正常波动
+            high = r["vol_summary"].get("high") or {}
+            normal = r["vol_summary"].get("normal") or {}
+            if (high.get("n") or 0) >= 5 and (normal.get("n") or 0) >= 5:
+                lines.append(
+                    f"> 高波动：胜率 {high.get('win_rate')}%（{high.get('n')}）| "
+                    f"正常波动：胜率 {normal.get('win_rate')}%（{normal.get('n')}）")
+    except Exception as e:
+        lines.append(f"> 战法×市场状态切片异常：{e}")
+
     # 宏观方向分回测
     try:
         r = strategies.backtest_macro()
