@@ -124,6 +124,10 @@ def gate_states_for_signals(signals: list) -> dict:
     out = {}
     # ★ 批量加载（单 IN 查询 + 6h 进程缓存，与战法回放路径共享）——
     #   逐股 load_prices 是 253 次独立查询，曾把绩效接口拖到 30s 超时
+    # ★ 2026-09-13：**不要**给这里加 start 缩短历史！chip_series 的价格网格
+    #   由传入 bars 的 min/max 决定（chips.py L84-89），缩短历史会改变网格 →
+    #   price_pos 跨过 0.75 阈值 → 闸门判断漂移（实测 n 136→149）。要省这部分
+    #   egress 请走 `DATA_SOURCE=pack`（pack_source 命中则走本地 sqlite，零 egress）。
     from app.backtest.strategies import _load_prices_map
     bars_map = _load_prices_map(set(by_code))
     for code, dates in by_code.items():

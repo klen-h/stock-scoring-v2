@@ -116,9 +116,15 @@ def _recompute_whitelist() -> dict:
         return {"list": list(PUSH_STRATEGY_WHITELIST), "stats": stats}
 
     codes = {s["code"] for s in signals}
-    # 复用 strategies 的价格加载（含 6h 进程缓存），避免重复传输
+    # ★ 2026-09-13 egress 修复：**必须传 start**（最早信号日）。
+    #   撮合只需「信号日及之后」的 K 线（T+1 入场 + 信号日收盘作 -7% 止损基准），
+    #   不传 start 会拉每只的全部历史（~750 根 × 数百只 ≈ 20-40MB/次），
+    #   而 `get_push_whitelist` 的 6h 缓存意味着**每天最多触发 4 次**（日报/推送/
+    #   前端都会调）→ 工作日可累积 80-160MB/天。这正是 `_load_prices_map` 注释中
+    #   「start 过滤…传输量降 95%+」所针对的场景。
+    start = min(s["date"] for s in signals)
     from app.backtest.strategies import _load_prices_map
-    prices_map = _load_prices_map(codes)
+    prices_map = _load_prices_map(codes, start=start)
 
     # 主力过滤闸门（信号日当日状态，无前视）
     if exit_policy() == "v2":
