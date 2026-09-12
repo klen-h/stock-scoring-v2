@@ -102,6 +102,23 @@ def _collect_strategy_codes(days: int = 30) -> list:
     return list(codes.items())
 
 
+def _collect_rank_codes(days: int = 7) -> set:
+    """近 N 天评分上榜股（排行榜 T+5 绩效轨道的数据保障，2026-09-13）。
+
+    背景：performance 排行榜轨道要求每只上榜股凑满 T+5 日线才计入，
+    150 只/晚的配额推进下，上榜股可能排队数日 → 快照日整批缺席
+    （08-17~09-01 后 09-02 起全部缺席的实证）。上榜股插队到回填最前，
+    保证 T+5 窗口内数据必然就绪。
+    """
+    try:
+        since = (rules.beijing_now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        rows = db.fetch(
+            "SELECT DISTINCT code FROM ranking_history WHERE rank_date >= %s", (since,))
+        return {str(r["code"]).strip() for r in (rows or []) if len(str(r["code"]).strip()) == 6}
+    except Exception:
+        return set()
+
+
 def backfill_stocks() -> int:
     print("── 战法历史个股 ──")
     items = _collect_strategy_codes()
@@ -124,7 +141,7 @@ def _latest_date_map(codes: list) -> dict:
     return {r["code"]: r["d"] for r in rows}
 
 
-def backfill_daily() -> dict:
+def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     """每日增量回填（供调度器调用）：ETF 池 + 沪深300 + 战法新个股。
     已回填标的只补最新日期之后，新出现的个股全量。返回统计 dict。
 
@@ -136,7 +153,10 @@ def backfill_daily() -> dict:
     只数有限。若每晚都从池头顺序扫描，前面的股票会占完请求配额，
     池尾股票永远轮不到（实测 400 只池子里 334 只长期 0 数据）。
     因此：①已同步到基准的股票直接跳过不发请求；②无数据的排最前、滞后越久越前；
-    ③每晚限量 DAILY_STOCK_QUOTA 只，分批推进，几天内即可补齐。
+    ③每晚限量 quota 只（默认 DAILY_STOCK_QUOTA），分批推进。
+    ★ 2026-09-13：近 7 天评分上榜股插队到最前（rank_priority）——排行榜 T+5
+      绩效轨道依赖上榜股 5 日内日线就绪，普通排队可能让整批快照日缺席。
+      quota=None 时不限量（一次性补历史用，见 backfill_lagging）。
     """
     stats = {"codes": 0, "rows": 0}
 
@@ -185,7 +205,8 @@ def backfill_daily() -> dict:
     name_of = dict(stock_items)
     latest_map = _latest_date_map(codes)
 
-    # ①+② 优先队列：跳过已同步的，无数据排最前
+    # ①+② 优先队列：跳过已同步的，无数据排最前；近 7 天上榜股插队最优先
+    rank_codes = _collect_rank_codes(7)
     pending, skipped = [], 0
     for c in codes:
         latest = latest_map.get(c)
@@ -193,15 +214,18 @@ def backfill_daily() -> dict:
             skipped += 1
             continue
         pending.append((c, name_of.get(c) or c, latest or ""))
-    pending.sort(key=lambda x: x[2])  # ""（无数据）排最前，滞后越久越靠前
+    # 排序：上榜股(0)优先于普通股(1)，段内 ""（无数据）最前、滞后越久越靠前
+    pending.sort(key=lambda x: (0 if x[0] in rank_codes else 1, x[2]))
     stats["stock_skipped"] = skipped
     stats["stock_pending"] = len(pending)
+    stats["rank_priority"] = len([c for c in rank_codes
+                                  if any(p[0] == c for p in pending)])
 
-    # ③ 每晚限量推进
-    quota = pending[:DAILY_STOCK_QUOTA]
-    stats["stock_quota"] = DAILY_STOCK_QUOTA
+    # ③ 限量推进（quota=None = 不限量，补历史用）
+    batch = pending if quota is None else pending[:quota]
+    stats["stock_quota"] = quota if quota is not None else "unlimited"
     stats["stock_rows"] = 0
-    for code, name, _ in quota:
+    for code, name, _ in batch:
         stats["codes"] += 1
         stats["stock_rows"] += backfill(code, name)
 
@@ -215,6 +239,17 @@ def backfill_daily() -> dict:
                 stats["stock_missing"].append(f"{c}({name})")
     print(f"[backfill_daily] 完成: {stats}")
     return stats
+
+
+def backfill_lagging() -> dict:
+    """一次性补齐全部滞后个股（不限配额）。用于：
+    换库/迁移/长假期后的大面积滞后（2026-09-13 实测 643 只中 499 只滞后，
+    其中 141 只停 09-07 —— 排行榜 T+5 轨道 09-02 起整批缺席）。
+    复用 backfill_daily 的池与优先队列，quota=None 不限量；
+    499 只 × 1s 限速 ≈ 10 分钟。幂等，可重复跑（已同步的自动跳过）。
+    """
+    print("── 滞后个股全量补齐（不限配额）──")
+    return backfill_daily(quota=None)
 
 
 def check_signal_coverage(days: int = 3) -> dict:
@@ -255,8 +290,13 @@ def main():
     parser.add_argument("--etf", action="store_true", help="仅 ETF 池")
     parser.add_argument("--index", action="store_true", help="仅沪深300 基准")
     parser.add_argument("--stocks", action="store_true", help="仅战法个股")
+    parser.add_argument("--lagging", action="store_true",
+                        help="一次性补齐全部滞后个股（不限配额，换库/迁移后用）")
     args = parser.parse_args()
 
+    if args.lagging:
+        backfill_lagging()
+        return
     do_all = args.all or not (args.etf or args.index or args.stocks)
     if do_all or args.etf:
         backfill_etf()
