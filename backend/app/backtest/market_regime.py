@@ -393,37 +393,79 @@ def _market_shrink_ratio() -> Optional[float]:
         return None
 
 
-def _apply_bearish_refine(state: str, ma_trend: str = "") -> str:
+def _nb_condition_raw(state: str, ma_trend: str) -> bool:
+    """判断今日 raw 是否满足 neutral_bearish 条件（不计 hysteresis）。"""
+    if state != NEUTRAL or ma_trend != "down":
+        return False
+    br = _market_breadth_now()
+    if br and (br["up_ratio"] < 0.40
+               or (br["limit_down"] >= 20 and br["limit_down"] > br["limit_up"])):
+        return True
+    panic, _ = _external_panic()
+    if panic:
+        return True
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT close FROM backtest_prices "
+                        "WHERE code='sh000300' ORDER BY date DESC LIMIT 3")
+        if rows and len(rows) >= 3 and rows[0]["close"] < rows[2]["close"]:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _apply_bearish_refine(state: str, ma_trend: str, base_score: float,
+                          raw_nb: bool) -> Tuple[str, float]:
     """neutral + 重心下移 → neutral_bearish（仅状态标签，权重与 neutral 相同）。
+
+    ★ 2026-09-13：nb 进/出加"连续 2 日确认"，避免 9 天横跳 5 次的状态噪音。
+      读取 market_regime_history 最近一日：
+        - 进入 nb：昨日 raw_nb=True 且今日 raw_nb=True
+        - 退出 nb：昨日 raw_nb=False 且今日 raw_nb=False（昨天是 nb 时今天仍保持，
+          等明天二次确认）
+      同时给 nb 一个负的 regime_score（-10 ~ -30），解决 nb 恒为 0 的死字段问题。
 
     判据（前提：state==neutral 且 ma_trend==down，满足其一即命中）：
       1. 宽度恶化：上涨占比 < 0.40，或 跌停 ≥ 20 且跌停 > 涨停
       2. 外围恐慌（三选二）：日京 -2% / 油胀金跌 / 美债 10Y +5bp
       3. 降级判据（宽度缓存不可用）：沪深300 近 2 个交易日累计下跌
     """
-    if state != NEUTRAL or ma_trend != "down":
-        return state
-    br = _market_breadth_now()
-    if br and (br["up_ratio"] < 0.40
-               or (br["limit_down"] >= 20 and br["limit_down"] > br["limit_up"])):
-        print(f"[market_regime] 宽度恶化（涨{br['up']}/跌{br['down']} "
-              f"涨停{br['limit_up']}/跌停{br['limit_down']}）→ neutral_bearish")
-        return NEUTRAL_BEARISH
-    panic, why = _external_panic()
-    if panic:
-        print(f"[market_regime] 外围恐慌触发（{why}）→ neutral_bearish")
-        return NEUTRAL_BEARISH
+    prev_raw = None
+    prev_state = None
     try:
         from app.database import db
-        rows = db.fetch("SELECT close FROM backtest_prices "
-                        "WHERE code='sh000300' ORDER BY date DESC LIMIT 3")
-        if rows and len(rows) >= 3 and rows[0]["close"] < rows[2]["close"]:
-            print("[market_regime] 沪深300 近2日累计下跌（宽度缓存不可用，降级判据）"
-                  " → neutral_bearish")
-            return NEUTRAL_BEARISH
+        row = db.fetch_one(
+            "SELECT state, bearish_refine_raw FROM market_regime_history "
+            "ORDER BY date DESC LIMIT 1")
+        if row:
+            prev_state = row.get("state")
+            prev_raw = row.get("bearish_refine_raw")
     except Exception:
         pass
-    return state
+
+    # 进入：连续 2 日满足 raw 条件
+    if raw_nb and prev_raw is True:
+        why = "连续 2 日重心下移"
+        if _market_breadth_now():
+            why = "宽度恶化确认"
+        elif _external_panic()[0]:
+            why = "外围恐慌确认"
+        print(f"[market_regime] {why} → neutral_bearish")
+        return NEUTRAL_BEARISH, -20.0
+
+    # 已在 nb：今日仍满足 → 继续；今日不满足但昨日满足 → 保持，等明日确认
+    if prev_state == NEUTRAL_BEARISH:
+        if raw_nb:
+            return NEUTRAL_BEARISH, -20.0
+        if prev_raw is False:
+            # 昨日也不满足 → 连续 2 日不满足，退出
+            print("[market_regime] 连续 2 日不满足 nb 条件 → 退出 neutral_bearish")
+            return state, base_score
+        # 昨日满足、今日不满足 → 保持 nb（避免单日反弹噪音）
+        return NEUTRAL_BEARISH, -20.0
+
+    return state, base_score
 
 
 def get_regime_weights(state: str) -> dict:
@@ -443,6 +485,12 @@ def get_regime_weights(state: str) -> dict:
       - 防御市（熊市）：★ 质量权重拉到 35% —— 下跌市里财务健康、低负债的公司
         抗跌性最强；同时估值安全边际（基本面）权重提高，成长权重相应降低
         （熊市市场不为成长故事付费）。
+      - neutral_bearish 权重 = neutral：2026-09-03 回测（450 快照）否决了
+        "neutral→防御化权重"的调整（nb 标签不改变打分权重，仅作展示/仓位警示）。
+        这与 defensive 档的独立权重**不矛盾**——defensive 触发条件是高波动
+        或强趋势向下（`vol_high + ma_down` 或 `ma_down + moderate/strong`），
+        与 nb 的低波阴跌是两种市况；周一若跌破 4461 而 ATR 仍低 → 仍判 nb，
+        权重不变；若出现恐慌大跌 → 才切 defensive。
     """
     weights = {
         OFFENSIVE:  {"technical": 0.50, "capital": 0.25, "fundamental": 0.08,
@@ -526,10 +574,19 @@ def _ensure_history_table() -> None:
             adx REAL,
             ma_trend TEXT,
             volatility_regime TEXT,
+            bearish_refine_raw BOOLEAN,
             weights_json TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # 2026-09-13：nb 两日确认需要知道昨日 raw 条件；老表无此列则幂等补加
+    try:
+        db.execute("""
+            ALTER TABLE market_regime_history
+            ADD COLUMN IF NOT EXISTS bearish_refine_raw BOOLEAN
+        """)
+    except Exception:
+        pass
 
 
 def refresh_regime_cache() -> Optional[dict]:
@@ -545,12 +602,14 @@ def refresh_regime_cache() -> Optional[dict]:
         return None
     latest = states[-1]
     # neutral + 重心下移 + 宽度恶化 → neutral_bearish（仅标签，权重同 neutral）
-    refined_state = _apply_bearish_refine(latest.state, latest.ma_trend)
+    raw_nb = _nb_condition_raw(latest.state, latest.ma_trend)
+    refined_state, refined_score = _apply_bearish_refine(
+        latest.state, latest.ma_trend, latest.regime_score, raw_nb)
     _REGIME_CACHE["date"] = latest.date
     _REGIME_CACHE["state"] = refined_state
     _REGIME_CACHE["weights"] = get_regime_weights(refined_state)
     _REGIME_CACHE["detail"] = {
-        "regime_score": latest.regime_score,
+        "regime_score": refined_score,
         "adx": latest.adx,
         "ma_trend": latest.ma_trend,
         "volatility_regime": latest.volatility_regime,
@@ -568,10 +627,11 @@ def refresh_regime_cache() -> Optional[dict]:
         db.upsert("market_regime_history", {
             "date": latest.date,
             "state": refined_state,
-            "regime_score": latest.regime_score,
+            "regime_score": refined_score,
             "adx": latest.adx,
             "ma_trend": latest.ma_trend,
             "volatility_regime": latest.volatility_regime,
+            "bearish_refine_raw": raw_nb,
             "weights_json": str(_REGIME_CACHE["weights"]),
         }, conflict_columns=["date"])
     except Exception as e:
