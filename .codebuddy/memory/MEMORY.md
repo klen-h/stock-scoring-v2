@@ -25,6 +25,12 @@
 - 判据可配：`WHITELIST_CRITERION=win_rate|expectancy`（默认 win_rate）、`WHITELIST_MIN_AVG_RET`（默认 0.3%，= A 股双边成本+滑点粗估，回放均收益是毛值）、`WHITELIST_MIN_PROFIT_FACTOR`（默认 1.2）、`WHITELIST_MIN_SAMPLES=30`。
 - 复核工具：`scripts/strategy_whitelist_review.py`（零行情回源，K 线走本机包）。
 - 实测基线（2026-08-20~09-11）：龙回头 136/48.5%/+0.46%/PF1.39 · 单阳不破 281/51.6%/+0.19%/PF1.13 · 均线粘合 198/39.9%/-0.32% · 均线回踩 27/37%/-0.99%。
+- **双轨重放 + 半衰期监控（2026-09-13 起）**：判据同时跑「全期 + 近 `WHITELIST_ROLLING_DAYS`（默认 250）交易日」两轨，**任一轨跌破即暂停推送**（近轨样本 <30 视为不可评估→保守不通过）；另有**半衰期监控**（后半段胜率 < 前半段 ×`WHITELIST_HALF_LIFE_RATIO`=50% 时告警）。开关 `WHITELIST_ROLLING=0` 回退单轨。近轨日期 = trades 的 signal_date 去重末 N 个（不依赖交易日历）；交易日不足 N 时降级为全期单轨。实测已捕捉 `ma_convergence_breakout`（17.0% vs 49.5%）、`ma_pullback`（17.6% vs 50.0%）的后半段衰减。
+
+## 环境传导链（`app/mainforce/confluence.py`，2026-09-13 修复后）
+- 四层合成：宏观 direction.score(±2) + 市场 regime(offensive+2/neutral+1/nb-1/defensive-2) + 板块(资金流±1、在主线额外+1) + 个股(mainforce_state accum+2/distribution-2)，sum(-7~+7) → 顺流共振/偏多/中性拉锯/偏逆/逆流共振。快照 30min 进程缓存 `_env_cache`。
+- **⚠️ 2026-09-13 前该函数有两个致命 bug（已修）**：① 模块顶部**从未 `import db`** → `_env_snapshot` 里 `db.fetch(...)` 每次抛 `NameError` 被 `except Exception: pass` 吞掉 → **板块资金流表与主线名单长期恒为空**（板块层从未生效，flow 永远"未知"、in_mainline 永远 False；传导链实际只有三层）。修法：新增 `db_fetch()` 延迟导入 helper。② `sector_daily.name` 是**东财细分名**而 `stock_industry.main_industry` 是**新浪一级名** → key 对不上、资金层恒"未知"。修法：`_normalize_industry` 归一化并按一级行业**累加**净流入。**修复属行为变更**：板块层从"长期 0"恢复真实值，会改变推送环境链判级。
+- **拥挤主线（只减不加）**：`industry_mainline.crowded`（`mainline._crowding_flags`：行业内候选股命中 ret20>30%/ret60>50%/距250日高点<5% 的占比 ≥50% 判拥挤）→ 拥挤主线**不再给板块层 +1**（资金流出仍照常 -1）。回测背书：拥挤组 T+5 均 -1.411% vs 不拥挤 -0.292%（-7.6pp/-1.12pt）。
 
 ## 资源占用基线（2026-09-05 实测）
 - 后端常驻 Working Set ≈ 100 MB（非交易时段、单进程）。盘后 15:15–16:30 批量窗口会明显升高。

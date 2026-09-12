@@ -15,6 +15,8 @@
   市场层  offensive +2 ｜ neutral +1 ｜ neutral_bearish -1 ｜ defensive -2
   板块层  所属行业当日主力净流入 >0 → +1 ｜ <0 → -1；在当日主线名单 → 额外 +1
           （sector_daily 15:10 板块快照 + industry_mainline 主线识别）
+          ★ 2026-09-13：**拥挤主线不给 +1**（只减不加）—— 回测显示拥挤主线候选
+             T+5 均收益 -1.41% vs 不拥挤 -0.29%，是"涨太多"的末端陷阱
   个股层  mainforce_state 信号：吸筹 +2 ｜ 出货 -2 ｜ 其余 0
 
   合成 sum(-7~+7)：
@@ -54,7 +56,8 @@ def _env_snapshot(max_age: float = 1800) -> dict:
         return _env_cache["snap"]
 
     snap = {"macro_score": None, "macro_level": None,
-            "regime": None, "sector_flow": {}, "mainlines": set()}
+            "regime": None, "sector_flow": {}, "mainlines": set(),
+            "crowded_mainlines": set()}
 
     # 1. 宏观方向分
     try:
@@ -80,23 +83,49 @@ def _env_snapshot(max_age: float = 1800) -> dict:
 
     # 3. 板块当日主力净流入（亿元）+ 主线名单
     try:
-        rows = db.fetch("SELECT name, net_inflow FROM sector_daily "
+        from app.sector_industry import _normalize_industry
+        rows = db_fetch("SELECT name, net_inflow FROM sector_daily "
                         "WHERE date=(SELECT MAX(date) FROM sector_daily) AND kind='industry'")
+        # ★ 2026-09-13 修复（第二处）：sector_daily 的 name 是**东财细分板块名**
+        #   （如"通信线缆及配套/地面兵装Ⅲ"），而传给本函数的 industry 来自
+        #   stock_industry.main_industry（已归一化为**新浪一级**"电子信息/飞机制造"）
+        #   → 直接用东财名做 key 永远匹配不上、资金层恒为"未知"。这里统一归一化，
+        #   同一新浪一级下的多个细分板块净流入**累加**。
+        agg = {}
         for r in rows or []:
-            if r.get("net_inflow") is not None:
-                snap["sector_flow"][r["name"]] = float(r["net_inflow"]) / 1e8
+            if r.get("net_inflow") is None:
+                continue
+            nf = _normalize_industry(r["name"])
+            agg[nf] = agg.get(nf, 0.0) + float(r["net_inflow"]) / 1e8
+        snap["sector_flow"] = agg
     except Exception:
         pass
     try:
-        rows = db.fetch("SELECT industry FROM industry_mainline "
+        rows = db_fetch("SELECT industry, crowded FROM industry_mainline "
                         "WHERE date=(SELECT MAX(date) FROM industry_mainline)")
         snap["mainlines"] = {r["industry"] for r in (rows or []) if r.get("industry")}
+        # ★ 2026-09-13 P1-3：拥挤主线单独标记（只减不加，不给传导链 +1）
+        snap["crowded_mainlines"] = {
+            r["industry"] for r in (rows or [])
+            if r.get("industry") and r.get("crowded")}
     except Exception:
         pass
 
     _env_cache["ts"] = now
     _env_cache["snap"] = snap
     return snap
+
+
+def db_fetch(sql, params=None):
+    """延迟导入 db（避免模块级循环导入），供 _env_snapshot 的列表查询使用。
+
+    ★ 2026-09-13 修复：此前 _env_snapshot 直接写 `db.fetch(...)`，但本模块顶部
+      从未 `import db` → 每次调用都抛 `NameError` 被 `except Exception: pass` 吞掉
+      → **板块资金流表与主线名单长期恒为空**（板块层实际上从未生效：
+      flow 永远是"未知"、in_mainline 永远 False）。加本函数并替换调用点。
+    """
+    from app.database import db
+    return db.fetch(sql, params)
 
 
 def db_fetch_one(sql, params=None):
@@ -154,15 +183,24 @@ def confluence_for_stock(code: str, mf: Dict = None, fresh: dict = None) -> Dict
     industry = _industry_of(code)
     flow = snap["sector_flow"].get(industry) if industry else None
     in_mainline = industry in snap["mainlines"] if industry else False
+    # ★ 2026-09-13 P1-3：拥挤主线（涨太多=末端）不给 +1（回测：T+5 均收益 -1.41% vs
+    #   不拥挤 -0.29%）——"只减不加"：资金流出仍照常 -1，仅去掉主线加分
+    crowded_ml = (industry in (snap.get("crowded_mainlines") or set())
+                  if industry else False)
     sector_score = 0
     if flow is not None and flow != 0:
         sector_score += 1 if flow > 0 else -1
-    if in_mainline:
+    if in_mainline and not crowded_ml:
         sector_score += 1
     layers["sector"] = sector_score
     flow_txt = f"{flow:+.1f}亿" if flow is not None else "未知"
-    reasons.append(f"板块[{industry or '未知'}]资金{flow_txt}"
-                   + ("、在主线" if in_mainline else ""))
+    if crowded_ml:
+        ml_txt = "、拥挤主线(不加分)"
+    elif in_mainline:
+        ml_txt = "、在主线"
+    else:
+        ml_txt = ""
+    reasons.append(f"板块[{industry or '未知'}]资金{flow_txt}{ml_txt}")
 
     # 个股
     signal = mf.get("signal")
@@ -179,6 +217,7 @@ def confluence_for_stock(code: str, mf: Dict = None, fresh: dict = None) -> Dict
         "verdict": _verdict(total),
         "sector": industry,
         "in_mainline": in_mainline,
+        "crowded_mainline": crowded_ml,
         "reasons": reasons,
     }
 

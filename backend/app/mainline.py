@@ -27,6 +27,85 @@ MAINLINE_MIN_APPEAR = 0.5    # 行业出现率 ≥ 窗口一半才够格候选
 MAINLINE_MIN_AVG = 1.5       # 日均在 Top50 里 ≥ 1.5 只才够格候选
 SWITCH_DELTA = 1.5           # 风格切换判定：后1/4段日均 - 前段日均 ≥ 该值（只）
 
+# ★ 2026-09-13 P1-3 主线拥挤度否决：
+#   离线验证（scripts/mainline_crowding_backtest.py，630 条主线候选）——命中「拥挤」
+#   （ret20>30% / ret60>50% / 距 250 日高点<5% 任一）的候选 T+5 胜率 32.6%/均 -1.411%，
+#   显著差于不拥挤组 40.2%/-0.292%（差 -7.6pp / -1.12pt）；T+1 同向（-5.2pp / -0.40pt）。
+#   → 拥挤主线**不再给传导链 +1 分**，标签降级「拥挤主线（只减不加）」。
+CROWD_RET20 = 30.0               # 20 日涨幅阈值 %
+CROWD_RET60 = 50.0               # 60 日涨幅阈值 %
+CROWD_NEAR_HIGH = 5.0            # 距 250 日高点阈值 %
+CROWD_RATIO_THRESHOLD = 0.5      # 行业内拥挤候选股占比 ≥ 该值 → 行业判为拥挤主线
+
+
+def _load_bars_for_crowding(codes: list, date: str) -> dict:
+    """加载候选股历史收盘价 {code: [(date, close)]}（覆盖 250 交易日）。
+
+    起点取 date 前 400 自然日（足够 250 交易日 + 60 日窗口）。候选股不在
+    backtest_prices 的（未回填）自然缺席，由调用方按"可评估样本"处理。
+    """
+    from datetime import datetime, timedelta
+    try:
+        start = (datetime.strptime(date, "%Y-%m-%d")
+                 - timedelta(days=400)).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return {}
+    out = {}
+    codes = [c for c in codes if c]
+    for i in range(0, len(codes), 100):
+        chunk = codes[i:i + 100]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = db.fetch(
+                f"SELECT code, date, close FROM backtest_prices "
+                f"WHERE code IN ({ph}) AND date >= %s AND date <= %s "
+                f"ORDER BY code, date", (*chunk, start, date))
+        except Exception:
+            continue
+        for r in rows or []:
+            if (r.get("close") or 0) > 0:
+                out.setdefault(r["code"], []).append(
+                    (str(r["date"]), float(r["close"])))
+    return out
+
+
+def _crowding_flags(stocks: list, bars_map: dict, date: str) -> tuple:
+    """行业内候选股的拥挤比例 → (crowded:int, ratio:float|None)。
+
+    个股拥挤判据（全部用 date 及之前数据，无前视）：ret20>CROWD_RET20% 或
+    ret60>CROWD_RET60% 或 距 250 日高点 <CROWD_NEAR_HIGH%。行业拥挤 = 拥挤股占比
+    ≥ CROWD_RATIO_THRESHOLD。无任何可评估样本时返回 (0, None)（不误标拥挤）。
+    """
+    hit, total = 0, 0
+    for s in stocks:
+        bars = bars_map.get(s.get("code"))
+        if not bars:
+            continue
+        idx = next((i for i, (d, _c) in enumerate(bars) if d == date), None)
+        if idx is None or idx < 60:
+            continue
+        total += 1
+        close = bars[idx][1]
+
+        def _ret(n):
+            if idx - n < 0:
+                return None
+            b = bars[idx - n][1]
+            return (close / b - 1) * 100 if b > 0 else None
+
+        r20, r60 = _ret(20), _ret(60)
+        lo = max(0, idx - 249)
+        high = max(b[1] for b in bars[lo:idx + 1])
+        dist = (close / high - 1) * 100 if high > 0 else None
+        if ((r20 is not None and r20 > CROWD_RET20)
+                or (r60 is not None and r60 > CROWD_RET60)
+                or (dist is not None and dist > -CROWD_NEAR_HIGH)):
+            hit += 1
+    if total == 0:
+        return 0, None
+    ratio = hit / total
+    return (1 if ratio >= CROWD_RATIO_THRESHOLD else 0), round(ratio, 2)
+
 
 def init_mainline_table():
     """每日行业共振结果表（幂等，模块导入即建表）。"""
@@ -38,10 +117,18 @@ def init_mainline_table():
             stock_count INTEGER,
             sum_rank REAL,
             stocks_json TEXT,
+            crowded INTEGER DEFAULT 0,
+            crowd_ratio REAL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(date, industry)
         )
     """)
+    # ★ 2026-09-13 P1-3：老表幂等补列（拥挤主线标签）
+    for col in ("crowded INTEGER DEFAULT 0", "crowd_ratio REAL"):
+        try:
+            db.execute(f"ALTER TABLE industry_mainline ADD COLUMN IF NOT EXISTS {col}")
+        except Exception:
+            pass
     print("[mainline] industry_mainline 表初始化完成")
 
 
@@ -79,6 +166,11 @@ def compute_mainline(date: str = None) -> dict:
     if not agg:
         return {"ok": False, "error": "当日 Top50 全部无法映射行业（检查 stock_industry）"}
     now = beijing_now().isoformat(timespec="seconds")
+    # ★ 2026-09-13 P1-3：主线拥挤度判定（个股维度，盘后一次算完落库）
+    crowd_codes = [s["code"] for a in agg.values() for s in a["stocks"] if s.get("code")]
+    bars_map = _load_bars_for_crowding(crowd_codes, date)
+    for a in agg.values():
+        a["crowded"], a["crowd_ratio"] = _crowding_flags(a["stocks"], bars_map, date)
     # ★ 全量重算该日：先删旧行再插（行业名可能因映射更新而变更，残留旧名行
     # 会被汇总误判成"伪退出信号"，如农商行Ⅲ 4.0→1.0 实为映射升级非资金流出）
     db.execute("DELETE FROM industry_mainline WHERE date = %s", (date,))
@@ -86,14 +178,18 @@ def compute_mainline(date: str = None) -> dict:
         a["sum_rank"] = round(a["sum_rank"], 1)
         db.execute("""
             INSERT INTO industry_mainline
-                (date, industry, stock_count, sum_rank, stocks_json, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                (date, industry, stock_count, sum_rank, stocks_json,
+                 crowded, crowd_ratio, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (date, ind, a["stock_count"], a["sum_rank"],
-              json.dumps(a["stocks"], ensure_ascii=False), now))
+              json.dumps(a["stocks"], ensure_ascii=False),
+              a.get("crowded", 0), a.get("crowd_ratio"), now))
+    crowded_n = sum(1 for a in agg.values() if a.get("crowded"))
     print(f"[mainline] {date} 完成: {len(agg)} 行业 / 未知 {unknown} 只 / "
-          f"{int((time.time() - t0) * 1000)}ms")
+          f"拥挤主线 {crowded_n} 个 / {int((time.time() - t0) * 1000)}ms")
     return {"ok": True, "date": date, "industries": len(agg),
-            "unknown_stocks": unknown, "cost_ms": int((time.time() - t0) * 1000)}
+            "unknown_stocks": unknown, "crowded": crowded_n,
+            "cost_ms": int((time.time() - t0) * 1000)}
 
 
 def get_mainline_summary(days: int = 12) -> dict:
@@ -111,7 +207,8 @@ def get_mainline_summary(days: int = 12) -> dict:
     if not dates:
         return {"ok": False, "error": "无历史 Top50 数据"}
     rows = db.fetch(
-        "SELECT date, industry, stock_count, sum_rank, stocks_json "
+        "SELECT date, industry, stock_count, sum_rank, stocks_json, "
+        "crowded, crowd_ratio "
         "FROM industry_mainline WHERE date >= %s ORDER BY date", (dates[0],))
     seq = {}   # industry -> {date: row}
     for r in rows or []:
@@ -145,6 +242,9 @@ def get_mainline_summary(days: int = 12) -> dict:
             "avg_rank": round(ar), "trend": trend,
             "latest_count": latest.get("stock_count", 0),
             "latest_stocks": stocks[:8],
+            # ★ 2026-09-13 P1-3：拥挤主线（只减不加，传导链不给 +1）
+            "crowded": bool(latest.get("crowded")),
+            "crowd_ratio": latest.get("crowd_ratio"),
         })
     mains.sort(key=lambda x: (-x["recent"], -x["appear_num"], x["avg_rank"]))
     # 风格切换信号
@@ -204,7 +304,8 @@ def push_mainline_report(days: int = 12) -> dict:
     for m in s["mainlines"]:
         stocks = "、".join(f"{x['name']}({x['rank']})"
                            for x in m["latest_stocks"][:5])
-        lines.append(f"**{m['industry']}** {arrow.get(m['trend'])} "
+        crowd_tag = "（拥挤主线·只减不加）" if m.get("crowded") else ""
+        lines.append(f"**{m['industry']}**{crowd_tag} {arrow.get(m['trend'])} "
                      f"出现{m['appear']} 近日均**{m['recent']}**只(早{m['early']}) "
                      f"均排名{m['avg_rank']}")
         if stocks:
