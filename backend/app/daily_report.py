@@ -236,9 +236,15 @@ def _push_status_md() -> str:
         st = whitelist_status()
         wl = st.get("list") or []
         crit = st.get("criterion") or "win_rate"
+        # ★ 2026-09-13 §3b#6：半衰期告警（后半段胜率 < 前半段 50%）随推送状态一并展示
+        alerts = st.get("alerts") or []
+        alert_txt = ""
+        if alerts:
+            alert_txt = ("\n- ⚠️ **战法半衰期告警**（后半段胜率 < 前半段 50%）："
+                         + "；".join(alerts))
         if wl:
             return (f"- **战法推送白名单**：{'、'.join(wl)}（判据={crit}；"
-                    f"非白名单战法信号只攒样本不推送）")
+                    f"非白名单战法信号只攒样本不推送）{alert_txt}")
         # 静默分支：regime + 空仓对照
         regime = ""
         try:
@@ -264,7 +270,7 @@ def _push_status_md() -> str:
             pass
         regime_txt = f" · regime={regime}" if regime else ""
         return (f"- **战法推送：静默**（动态白名单空集 · 判据={crit}{regime_txt}）"
-                f"{bench_txt}")
+                f"{bench_txt}{alert_txt}")
     except Exception:
         return ""
 

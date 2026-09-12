@@ -46,7 +46,21 @@ WHITELIST_CRITERION = (os.environ.get("WHITELIST_CRITERION") or "win_rate").stri
 WHITELIST_MIN_AVG_RET = float(os.environ.get("WHITELIST_MIN_AVG_RET", "0.3") or 0.3)
 WHITELIST_MIN_PROFIT_FACTOR = float(
     os.environ.get("WHITELIST_MIN_PROFIT_FACTOR", "1.2") or 1.2)
-_whitelist_cache = {"ts": 0.0, "list": None, "stats": {}}
+
+# ★ 2026-09-13 §3b#6 白名单重放滚动窗口（双轨）：
+#   原口径只用**全历史** replay 算判据 —— 「全历史 replay 被牛市旧战绩撑住通过率」正是
+#   后 30% 样本胜率跌到 17.7% 却没被提前发现的机制性原因（09-12 周报）。
+#   现在改为：全期 + 近 N 交易日（默认 250）双轨，**任一轨跌破判据即暂停推送**；
+#   近轨样本 < WHITELIST_MIN_SAMPLES 时视为"不可评估"→ 保守不通过（宁可静默不推衰减信号）。
+#   另加半衰期监控：后半段胜率 < 前半段 × WHITELIST_HALF_LIFE_RATIO 时告警（不直接暂停）。
+#   开关 WHITELIST_ROLLING=0 可回退单轨（全期）行为。
+WHITELIST_ROLLING_ENABLED = (os.environ.get("WHITELIST_ROLLING", "1") or "1").strip() \
+    not in ("0", "false", "no", "off")
+WHITELIST_ROLLING_DAYS = int(os.environ.get("WHITELIST_ROLLING_DAYS", "250") or 250)
+WHITELIST_HALF_LIFE_RATIO = float(
+    os.environ.get("WHITELIST_HALF_LIFE_RATIO", "0.5") or 0.5)
+
+_whitelist_cache = {"ts": 0.0, "list": None, "stats": {}, "alerts": []}
 _WHITELIST_TTL = 6 * 3600
 
 # 战法中文名（推送标题用）
@@ -129,26 +143,9 @@ def _recompute_whitelist() -> dict:
 
     sk = []
     trades = _bt_engine.match_signals(signals, prices_map, skipped_out=sk)
-    by = {}
-    for t in trades:
-        by.setdefault(t["strategy_en"] or t["strategy"], []).append(t)
-    for name, ts in by.items():
-        n = len(ts)
-        pnl = [float(t.get("pnl_pct") or 0) for t in ts]
-        wins = [p for p in pnl if p > 0]
-        losses = [p for p in pnl if p <= 0]
-        win = len(wins) / n * 100 if n else 0
-        avg = sum(pnl) / n if n else 0
-        gross_win, gross_loss = sum(wins), abs(sum(losses))
-        pf = (gross_win / gross_loss) if gross_loss > 0 else (None if not gross_win else 999.0)
-        # ★ 2026-09-12：补期望类指标 —— 只看胜率会误杀「胜率 50% 但盈亏比 1.3+」的正期望战法
-        stats[name] = {"win_rate": round(win, 1), "n": n,
-                       "avg_ret": round(avg, 2),                  # 均收益 %（期望值）
-                       "profit_factor": (round(pf, 2) if pf is not None else None),
-                       "median_ret": round(sorted(pnl)[n // 2], 2) if n else 0,
-                       "wins": len(wins), "losses": len(losses)}
 
-    def _passes(v: dict) -> bool:
+    def _passes_criterion(v: dict) -> bool:
+        """单轨判据：样本量 + 胜率（默认）/ 期望（expectancy）。"""
         if (v.get("n") or 0) < WHITELIST_MIN_SAMPLES:
             return False
         if WHITELIST_CRITERION == "expectancy":
@@ -157,8 +154,83 @@ def _recompute_whitelist() -> dict:
                     and (pf is None or pf >= WHITELIST_MIN_PROFIT_FACTOR))
         return (v.get("win_rate") or 0) >= WHITELIST_MIN_WIN_RATE
 
-    wl = [k for k, v in stats.items() if _passes(v)]
-    return {"list": wl, "stats": stats, "criterion": WHITELIST_CRITERION}
+    def _calc(ts: list):
+        n = len(ts)
+        if not n:
+            return None
+        pnl = [float(t.get("pnl_pct") or 0) for t in ts]
+        wins = [p for p in pnl if p > 0]
+        losses = [p for p in pnl if p <= 0]
+        gross_win, gross_loss = sum(wins), abs(sum(losses))
+        pf = (gross_win / gross_loss) if gross_loss > 0 else (None if not gross_win else 999.0)
+        # ★ 2026-09-12：补期望类指标 —— 只看胜率会误杀「胜率 50% 但盈亏比 1.3+」的正期望战法
+        return {"n": n,
+                "win_rate": round(len(wins) / n * 100, 1),
+                "avg_ret": round(sum(pnl) / n, 2),             # 均收益 %（期望值）
+                "profit_factor": (round(pf, 2) if pf is not None else None),
+                "median_ret": round(sorted(pnl)[n // 2], 2),
+                "wins": len(wins), "losses": len(losses)}
+
+    def _half_life_alert(ts: list):
+        """半衰期监控：后半段胜率 < 前半段 × WHITELIST_HALF_LIFE_RATIO 时告警（不暂停）。"""
+        ordered = sorted(ts, key=lambda t: t.get("signal_date") or "")
+        mid = len(ordered) // 2
+        if mid < 15:            # 前后半段各需 ≥15 条才有统计意义
+            return None
+
+        def _wr(sub):
+            return sum(1 for t in sub if float(t.get("pnl_pct") or 0) > 0) / len(sub) * 100
+
+        wr_f, wr_s = _wr(ordered[:mid]), _wr(ordered[mid:])
+        if wr_f > 0 and wr_s < wr_f * WHITELIST_HALF_LIFE_RATIO:
+            return (f"后半段胜率 {wr_s:.1f}% < 前半段 {wr_f:.1f}% 的 "
+                    f"{WHITELIST_HALF_LIFE_RATIO:.0%}")
+        return None
+
+    # 近轨日期集合 = trades 的 signal_date 去重升序后末 N 个交易日（不依赖外部日历）
+    all_dates = sorted({t.get("signal_date") for t in trades if t.get("signal_date")})
+    if WHITELIST_ROLLING_ENABLED and len(all_dates) > WHITELIST_ROLLING_DAYS:
+        recent_dates = set(all_dates[-WHITELIST_ROLLING_DAYS:])
+        rolling_active = True
+    else:
+        recent_dates = set(all_dates)
+        rolling_active = False
+
+    by = {}
+    for t in trades:
+        by.setdefault(t["strategy_en"] or t["strategy"], []).append(t)
+
+    stats = {}
+    alerts = []
+    for name, ts in by.items():
+        full = _calc(ts)
+        if full is None:
+            continue
+        rec = _calc([t for t in ts if t.get("signal_date") in recent_dates])
+        recent_ok = bool(rec and rec["n"] >= WHITELIST_MIN_SAMPLES)
+        alert = _half_life_alert(ts)
+        if alert:
+            alerts.append(f"{name}: {alert}")
+        stats[name] = {
+            **full,
+            "pass_all_time": _passes_criterion(full),
+            # 近轨（滚动窗口）——任一轨不达标即暂停推送
+            "recent_n": (rec or {}).get("n", 0),
+            "recent_win_rate": (rec or {}).get("win_rate"),
+            "recent_avg_ret": (rec or {}).get("avg_ret"),
+            "recent_profit_factor": (rec or {}).get("profit_factor"),
+            "pass_recent": bool(recent_ok and _passes_criterion(rec)),
+            "recent_insufficient": not recent_ok,
+            "half_life_alert": alert,
+            "rolling_active": rolling_active,
+        }
+
+    if WHITELIST_ROLLING_ENABLED:
+        wl = [k for k, v in stats.items() if v["pass_all_time"] and v["pass_recent"]]
+    else:
+        wl = [k for k, v in stats.items() if v["pass_all_time"]]
+    return {"list": wl, "stats": stats, "criterion": WHITELIST_CRITERION,
+            "alerts": alerts, "rolling_active": rolling_active}
 
 
 def get_push_whitelist() -> list:
@@ -171,15 +243,28 @@ def get_push_whitelist() -> list:
         r = _recompute_whitelist()
         _whitelist_cache["list"] = r["list"]
         _whitelist_cache["stats"] = r["stats"]
+        _whitelist_cache["alerts"] = r.get("alerts") or []
         _whitelist_cache["ts"] = now
         if r["stats"]:
-            # 日志同时给出胜率/均收益/盈亏比 —— 白名单为空时也能一眼看出"差在哪"
-            brief = {k: f"{v['win_rate']}%/n{v['n']}/均{v.get('avg_ret')}%/"
-                        f"PF{v.get('profit_factor')}" for k, v in r["stats"].items()}
+            # 日志同时给出胜率/均收益/盈亏比 + 全期/近轨双轨 —— 白名单为空时能一眼定位差在哪一轨
+            brief = {}
+            for k, v in r["stats"].items():
+                tag = "全期通过" if v.get("pass_all_time") else "全期未过"
+                if v.get("pass_recent"):
+                    rtag = "近轨通过"
+                elif v.get("recent_insufficient"):
+                    rtag = "近轨样本不足"
+                else:
+                    rtag = "近轨未过"
+                brief[k] = (f"{v['win_rate']}%/n{v['n']}/均{v.get('avg_ret')}%/"
+                            f"PF{v.get('profit_factor')}｜{tag}{rtag}")
+            rolling = "开" if r.get("rolling_active") else "关(交易日不足)"
             print(f"[recommendation] 动态白名单: {r['list']}"
-                  f"（判据={WHITELIST_CRITERION}；各战法 {brief}）")
+                  f"（判据={WHITELIST_CRITERION}；双轨={rolling}；各战法 {brief}）")
+            for a in (r.get("alerts") or []):
+                print(f"[recommendation] [警告] 半衰期告警 {a}")
             if not r["list"]:
-                print("[recommendation] ⚠️ 白名单为空 → 战法信号不会推送企微"
+                print("[recommendation] [警告] 白名单为空 → 战法信号不会推送企微"
                       "（口径复核见 scripts/strategy_whitelist_review.py）")
         return r["list"]
     except Exception as e:
@@ -203,9 +288,10 @@ def whitelist_status() -> dict:
     if computed:
         return {"list": list(_whitelist_cache["list"] or []),
                 "criterion": WHITELIST_CRITERION,
-                "stats": dict(_whitelist_cache["stats"] or {})}
+                "stats": dict(_whitelist_cache["stats"] or {}),
+                "alerts": list(_whitelist_cache.get("alerts") or [])}
     return {"list": list(PUSH_STRATEGY_WHITELIST),
-            "criterion": "fallback", "stats": {}}
+            "criterion": "fallback", "stats": {}, "alerts": []}
 
 
 def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -> str:
