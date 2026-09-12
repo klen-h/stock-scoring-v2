@@ -48,6 +48,10 @@
 - **生产 = Python 3.9**（backend/Dockerfile python:3.9-slim；本地开发是 3.12）。新代码**禁用 PEP 604 注解**（`x: str | None`），要么 `Optional[str]`，要么文件头加 `from __future__ import annotations`。ci.yml 的 `import app.main`（3.9）能拦住这类问题——本地 3.12 跑通不代表 3.9 可用。
 - **FastAPI 路由禁用"假 async"（2026-09-05 血泪教训）**：函数体没有 `await` 的路由必须写普通 `def`（FastAPI 自动放线程池），写成 `async def` 会让同步的腾讯 HTTP/DB/numpy 重算直接阻塞事件循环，一个慢请求卡死整个进程 → Render 网关 502（无 CORS 头）→ 前端误报 CORS blocked。2026-09-05 已把 stock.py/market.py 全部及 scoring.py 大部分路由改为 `def`；保留 async 的只有真用 asyncio 的（`_batch_with_precise_top`、score_top/bottom/by_signal、`backtest` 的嵌套 gather）。新路由默认写 `def`。
 
+## 本机环境（Windows 开发机）
+- **Python 进程 DNS 间歇性故障**（2026-09-12 发现）：getaddrinfo 对 supabase pooler 等跨国域名间歇失败（报 "could not translate host name"），但 nslookup/Resolve-DnsName 正常、Dnscache 正常、无代理——根因指向路由器（192.168.0.1）DNS 转发抖动 + Windows 负缓存放大；已建议改网卡 DNS 为 223.5.5.5/119.29.29.29。**只影响本机开发/研究脚本，不影响生产**（Render 新加坡→pooler 同区域内网）。遇到时先重试一次即可自愈；长时间跑不通就别硬刚，改天再跑。
+- 执行命令被 `genie-ps-*.ps1`（Temp 下）PowerShell 包装器包裹——本机有管理进程的工具，stderr 会出现包装器报错噪音，忽略即可。
+
 ## 用户偏好
 - 日报不推送企微，只在前端 `/report` 页查看（避免刷屏）。
 - 改动后倾向于"先验证再提交"；未明确要求时不要自动 git commit。

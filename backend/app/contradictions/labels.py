@@ -21,6 +21,7 @@ LEVEL_CN = {
 
 TYPE_CN = {
     "index_vs_breadth": "指数与个股结构背离",
+    "breadth_collapse": "宽度崩塌（普跌日）",
     "sector_narrative_vs_flow": "板块叙事与资金流向背离",
     "price_vs_volume": "指数量价背离",
     "northbound_vs_index": "北向资金与指数背离",

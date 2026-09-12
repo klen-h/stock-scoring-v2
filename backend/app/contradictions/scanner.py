@@ -211,6 +211,80 @@ def scan_index_vs_breadth(date: Optional[str] = None) -> Optional[Dict]:
     }
 
 
+def scan_breadth_collapse(date: Optional[str] = None) -> Optional[Dict]:
+    """宽度崩塌（普跌日）：不限指数颜色，涨跌比 <0.3 即触发。
+
+    ★ 与 index_vs_breadth 的分工（PLAN_2026-09-12 §3b#6）：后者只抓
+      "指数红盘 + 个股失血"（护盘假象），指数同步下跌的普跌日是它的盲区——
+      2026-09-11 涨跌比 0.13（涨 354 / 跌 2668）未触发即为实证。
+      本扫描器补上普跌日；红盘日两者可能同时触发（叙事不同：护盘 vs 崩塌），
+      双落库无害，且让验证闭环各自积累样本。
+
+    钩子（contradictions/risk_hook.py）：severe 次日模拟盘新仓风险额减半 +
+    趋势类战法暂停推送/入池（开关 CONTRADICTION_RISK_HOOK，默认 off）。
+    """
+    snap = _load_market_snapshot()
+    stocks = snap.get("stocks") or {}
+    if not stocks:
+        return None
+
+    up = down = flat = 0
+    chgs = []
+    for s in stocks.values():
+        if not isinstance(s, dict):
+            continue
+        c = s.get("change_pct")
+        if c is None:
+            c = s.get("pct_chg") or s.get("pct")
+        if c is None:
+            continue
+        try:
+            c = float(c)
+        except (TypeError, ValueError):
+            continue
+        chgs.append(c)
+        if c > 0:
+            up += 1
+        elif c < 0:
+            down += 1
+        else:
+            flat += 1
+
+    # 样本不足（行情缓存未就绪/快照残缺）不判定，防误报
+    if len(chgs) < 500:
+        return None
+
+    avg = sum(chgs) / len(chgs)
+    ratio = up / max(down, 1)
+    if ratio >= 0.3:
+        return None
+
+    # severe：极端宽度崩塌（09-11 实测 ratio 0.13 / avg -1.86 双双命中）
+    if ratio < 0.15 or avg < -1.5:
+        severity = "severe"
+    else:
+        severity = "obvious"
+
+    return {
+        "level": "L2",
+        "type": "breadth_collapse",
+        "severity": severity,
+        "title": "宽度崩塌（普跌日）",
+        "summary": (f"全市场有效样本 {len(chgs)} 只中 涨 {up} / 跌 {down} / 平 {flat}，"
+                    f"涨跌比 {ratio:.2f}，平均 {avg:+.2f}%。普跌日宽度崩塌，"
+                    f"赚钱效应枯竭，防御行为特征。"),
+        "evidence": {
+            "narrative": "无论指数颜色，市场宽度极端恶化",
+            "actual": "涨跌比 <0.3，普跌结构，赚钱效应消失",
+            "metrics": {
+                "sample_size": len(chgs), "up": up, "down": down, "flat": flat,
+                "ratio": round(ratio, 2), "avg_pct": round(avg, 2),
+            },
+        },
+        "signal": "普跌日不开新仓：次日模拟盘风险额减半、趋势类战法暂停，等宽度修复再恢复。",
+    }
+
+
 def scan_sector_narrative_vs_flow(date: Optional[str] = None) -> Optional[Dict]:
     """板块叙事 vs 资金流向背离。
 
@@ -723,6 +797,7 @@ L1_SCANNERS = [scan_calendar_surprise, scan_today_calendar_focus]
 
 L2_SCANNERS = [
     scan_index_vs_breadth,
+    scan_breadth_collapse,
     scan_sector_narrative_vs_flow,
     scan_price_vs_volume,
     # scan_northbound_vs_index 已弃用：北向净流入 2024-05 起停止披露（数据恒为 0）

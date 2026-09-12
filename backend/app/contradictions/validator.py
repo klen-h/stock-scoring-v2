@@ -8,6 +8,7 @@
 
 方向规则（types 的"隐含次日方向"，与扫描器叙事一致）：
   index_vs_breadth      bearish（权重护盘假象 → 次日走弱）
+  breadth_collapse      bearish（普跌日宽度崩塌 → 次日延续弱势）
   price_vs_volume       bearish（缩量新高 → 假突破回落）
   northbound_vs_index   bearish（外资离场 → 承压）
   index_vs_mainflow     按标题判：净流出→bearish（红盘出货）；
@@ -31,6 +32,7 @@ from app.contradictions import store
 # 固定方向规则
 DIRECTION_RULES = {
     "index_vs_breadth": "bearish",
+    "breadth_collapse": "bearish",
     "price_vs_volume": "bearish",
     "northbound_vs_index": "bearish",
 }

@@ -223,6 +223,52 @@ def _strategy_scan() -> list:
         return []
 
 
+def _push_status_md() -> str:
+    """战法推送状态 + 静默绩效行（PLAN_2026-09-12 §3b#7：把"不交易"变成可度量绩效）。
+
+    - 白名单空集 = **静默（合法输出）**：报判据 + regime + "空仓 vs 沪深300
+      近 5 交易日"对照，让"这周什么都没推"成为可检验的绩效而非沉默。
+    - 白名单非空：一行列出当前白名单（非白名单战法只攒样本不推送）。
+    任何异常返回 ""，不阻塞日报。
+    """
+    try:
+        from app.strategies.recommendation import whitelist_status
+        st = whitelist_status()
+        wl = st.get("list") or []
+        crit = st.get("criterion") or "win_rate"
+        if wl:
+            return (f"- **战法推送白名单**：{'、'.join(wl)}（判据={crit}；"
+                    f"非白名单战法信号只攒样本不推送）")
+        # 静默分支：regime + 空仓对照
+        regime = ""
+        try:
+            row = db.fetch_one("SELECT state FROM market_regime_history "
+                               "ORDER BY date DESC LIMIT 1")
+            regime = (row or {}).get("state") or ""
+        except Exception:
+            pass
+        bench_txt = ""
+        try:
+            rows = db.fetch(
+                "SELECT close FROM backtest_prices WHERE code='sh000300' "
+                "ORDER BY date DESC LIMIT 6")
+            closes = [float(r["close"]) for r in (rows or []) if r.get("close")]
+            if len(closes) >= 2 and closes[-1] > 0:
+                # rows 按日期倒序 → closes[0]=最新、closes[-1]=5 个交易日前
+                bench = (closes[0] / closes[-1] - 1) * 100
+                edge = -bench
+                bench_txt = (f" · 空仓对照：沪深300 近 5 交易日 {bench:+.2f}%"
+                             f" → 空仓超额 {edge:+.2f}%"
+                             f"（{'跑赢' if edge > 0 else '跑输'}）")
+        except Exception:
+            pass
+        regime_txt = f" · regime={regime}" if regime else ""
+        return (f"- **战法推送：静默**（动态白名单空集 · 判据={crit}{regime_txt}）"
+                f"{bench_txt}")
+    except Exception:
+        return ""
+
+
 def _paper_summary() -> dict:
     try:
         holding = db.fetch_one(
@@ -660,6 +706,9 @@ def build_data_md() -> str:
                 seg += "(" + "、".join(s["samples"]) + ")"
             parts.append(seg)
         add("**今日战法扫描命中**：" + "、".join(parts))
+    push_line = _push_status_md()
+    if push_line:
+        add(push_line)
     paper = _paper_summary()
     if paper:
         add("")

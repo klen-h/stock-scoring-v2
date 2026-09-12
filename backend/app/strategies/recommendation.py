@@ -25,7 +25,11 @@ import os
 #   原因：硬编码白名单已过时——单阳不破 56 样本时 60.7%，扩到 218 样本后
 #   实际胜率 48.6%，继续硬编码会把不达标的战法推给用户。
 #   STRATEGY_STATS 保留为「市场环境背书」的静态说明，动态胜率推送时覆盖。
-PUSH_STRATEGY_WHITELIST = ["single_yang_unbroken"]   # 动态计算失败时的兜底
+# ★ 2026-09-12 §3b#7：兜底静态名单改为 expectancy 判据下的唯一达标者
+#   （复核脚本 strategy_whitelist_review 实测：龙回头 136样本/+0.46%/PF1.39；
+#   单阳不破 +0.19%/PF1.13 不达标）——动态计算异常时兜底名单必须与判据自洽，
+#   否则"回退"反而会推送判据下不合格的战法。
+PUSH_STRATEGY_WHITELIST = ["dragon_turnaround"]
 
 WHITELIST_MIN_SAMPLES = 30
 WHITELIST_MIN_WIN_RATE = 55.0
@@ -181,6 +185,27 @@ def get_push_whitelist() -> list:
     except Exception as e:
         print(f"[recommendation] 动态白名单计算失败，回退静态: {e}")
         return list(PUSH_STRATEGY_WHITELIST)
+
+
+def whitelist_status() -> dict:
+    """白名单当前状态（日报"静默绩效行"消费，PLAN_2026-09-12 §3b#7）。
+
+    复用 get_push_whitelist 的 6h 缓存；返回
+    {"list": [...], "criterion": "win_rate|expectancy", "stats": {...}}。
+    计算失败时 list 回退静态名单、criterion 标 "fallback"。
+    """
+    computed = False
+    try:
+        get_push_whitelist()          # 确保缓存新鲜（失败时缓存可能未写入）
+        computed = _whitelist_cache["list"] is not None
+    except Exception:
+        pass
+    if computed:
+        return {"list": list(_whitelist_cache["list"] or []),
+                "criterion": WHITELIST_CRITERION,
+                "stats": dict(_whitelist_cache["stats"] or {})}
+    return {"list": list(PUSH_STRATEGY_WHITELIST),
+            "criterion": "fallback", "stats": {}}
 
 
 def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -> str:

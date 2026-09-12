@@ -838,6 +838,22 @@ def scan_all_strategies() -> dict:
         except Exception as e:
             stats["failed"] += 1
             print(f"[scheduler] 战法 {key} 扫描失败: {e}")
+    # ★ 宽度崩塌钩子（PLAN_2026-09-12 §3b#6，CONTRADICTION_RISK_HOOK 默认 off）：
+    #   最近一个扫描日存在 severe 宽度崩塌（普跌日 breadth_collapse / 红盘护盘
+    #   index_vs_breadth）→ 次日趋势类战法暂停企微推送（信号照常落库攒样本；
+    #   模拟盘入池侧在 auto_ingest_signals 内同步挂钩）
+    try:
+        from app.contradictions.risk_hook import breadth_collapse_active, TREND_STRATEGIES
+        _hook = breadth_collapse_active()
+        if _hook.get("active"):
+            _blocked = [k for k in push_pool if k in TREND_STRATEGIES]
+            for _k in _blocked:
+                stats["risk_hook_blocked"] = stats.get("risk_hook_blocked", 0) + len(push_pool.pop(_k))
+            if _blocked:
+                print(f"[scheduler] 宽度崩塌钩子生效（{_hook.get('date')} {_hook.get('type')}）："
+                      f"趋势类 {_blocked} 暂停推送/入池")
+    except Exception as e:
+        print(f"[scheduler] 宽度崩塌钩子检查失败（放行）: {e}")
     _push_buy_signals(push_pool)
     # 模拟盘入池：与企微推送同一批信号（白名单 + 高/中置信度）
     try:

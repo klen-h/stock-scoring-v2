@@ -121,6 +121,13 @@ def _calc_shares(code: str, price: float, stop: float, entry: float, half: bool)
     半仓档 = 风险额减半（股数同减半，保留防诱多语义）。
     """
     risk_budget = INITIAL_CAPITAL * RISK_PER_TRADE_PCT * (0.5 if half else 1.0)
+    # ★ 宽度崩塌钩子（PLAN_2026-09-12 §3b#6，CONTRADICTION_RISK_HOOK 默认 off）：
+    #   最近一个扫描日存在 severe 宽度崩塌 → 次日新仓单笔风险额再减半（合计 0.4%）
+    try:
+        from app.contradictions.risk_hook import risk_multiplier
+        risk_budget *= risk_multiplier()
+    except Exception:
+        pass  # 钩子故障绝不挡开仓（fail-open）
     per_share_risk = 0.0
     if entry > 0 and stop > 0 and stop < entry:
         per_share_risk = entry - stop
@@ -218,6 +225,13 @@ def auto_ingest_signals() -> dict:
     from app.strategies import list_strategies
     from app.strategies.recommendation import get_push_whitelist
     from app.strategies.market_regime import is_strategy_admitted
+    # ★ 宽度崩塌钩子（CONTRADICTION_RISK_HOOK 默认 off）：severe 次日趋势类
+    #   战法暂停入池（信号照常落库攒样本，不影响回测数据积累）
+    try:
+        from app.contradictions.risk_hook import breadth_collapse_active, TREND_STRATEGIES
+        hook_active = breadth_collapse_active().get("active", False)
+    except Exception:
+        hook_active = False
     today = _bj_date()
     whitelist = set(get_push_whitelist())
     stats = {"ingested": 0, "skipped_exist": 0, "skipped_low_conf": 0,
@@ -229,6 +243,11 @@ def auto_ingest_signals() -> dict:
         strategy_en = cfg["name_en"]        # 注册/查询用英文 key，name 只是显示名
         admitted, reason, _, _ = is_strategy_admitted(strategy_en)
         if not admitted:
+            continue
+        if hook_active and strategy_en in TREND_STRATEGIES:
+            stats["risk_hook_paused"] = stats.get("risk_hook_paused", 0) + 1
+            print(f"[paper] 宽度崩塌钩子：趋势类 {strategy_en} 今日暂停入池"
+                  f"（信号照常落库）")
             continue
         row = db.fetch_one(
             "SELECT results_json FROM strategy_results WHERE strategy_name = %s AND scan_date = %s",
