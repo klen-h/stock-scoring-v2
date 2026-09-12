@@ -418,9 +418,11 @@ function scoreCapital(techData, stockInfo) {
 }
 
 function scoreFlow5(flow5) {
-  const pts = [[-10, 0], [-6, 15], [-3, 30], [0, 55], [2, 80], [5, 100]]
+  // 2026-09-13 倒U版：回测显示极端流入（散户陷阱）应降分而非满分。
+  // 锚点：-10→0 / -6→15 / -3→30 / 0→55 / +2→80 / +5→55 / +10→30 / +20→5。
+  const pts = [[-10, 0], [-6, 15], [-3, 30], [0, 55], [2, 80], [5, 55], [10, 30], [20, 5]]
   if (flow5 <= pts[0][0]) return 0
-  if (flow5 >= pts[pts.length - 1][0]) return 100
+  if (flow5 >= pts[pts.length - 1][0]) return 0
   for (let i = 0; i < pts.length - 1; i++) {
     const [x1, y1] = pts[i]
     const [x2, y2] = pts[i + 1]
