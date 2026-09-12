@@ -42,6 +42,7 @@
 # 类比 TS：没有这个的话，旧版 Python 不能写 `def f(x: list | None)`
 from __future__ import annotations
 import math
+import os
 # dataclass：Python 的数据类装饰器。类比 TS 的 interface + 构造函数
 # 用 @dataclass 可以少写很多样板代码（自动生成 __init__ 等）
 from dataclasses import dataclass, field
@@ -153,6 +154,19 @@ def _score_in_range(val: float, good_lo: float, good_hi: float,
         return _clamp(round(((bad_hi if bad_hi is not None else good_hi + span) - val) / span * 100, 1))
 
 
+# ★ 2026-09-13 P1-4 换手率 nb 钳制（带开关，可回滚）：
+#   低波阴跌市（neutral_bearish）里高换手 = 对倒出货温床——09-11 换手 20%+ 的高标
+#   当日 -10% 即标本。策略：neutral_bearish 下换手 > NB_TURNOVER_CAP_PCT 的个股，
+#   资金面维度**封顶** NB_TURNOVER_CAP_SCORE（在 `_score_capital` 加权求和之后钳制，
+#   **不改任何子指标锚点**，故可随时开关回滚、不影响其它市况）。
+#   开关：NB_TURNOVER_CAP=0 关闭；阈值/封顶值均可配。
+NB_TURNOVER_CAP_ENABLED = (os.environ.get("NB_TURNOVER_CAP", "1") or "1").strip() \
+    not in ("0", "false", "no", "off")
+NB_TURNOVER_CAP_PCT = float(os.environ.get("NB_TURNOVER_CAP_PCT", "8") or 8)
+NB_TURNOVER_CAP_SCORE = float(os.environ.get("NB_TURNOVER_CAP_SCORE", "40") or 40)
+_NB_STATE = "neutral_bearish"
+
+
 class ScoreEngine:
     """多因子评分引擎（无状态，可单例复用）"""
 
@@ -211,6 +225,8 @@ class ScoreEngine:
         self.w_fundamental = w["fundamental"]
         self.w_growth = w["growth"]
         self.w_quality = w["quality"]
+        # ★ 2026-09-13 P1-4：保存 regime 供「换手率 nb 钳制」等市况规则使用
+        self.regime = regime
 
     def set_weights(self, weights: dict | None = None, regime: str | None = None) -> dict:
         """
@@ -224,6 +240,7 @@ class ScoreEngine:
         self.w_fundamental = engine.w_fundamental
         self.w_growth = engine.w_growth
         self.w_quality = engine.w_quality
+        self.regime = regime
         return dict(self.weights)
 
     # ================================================================
@@ -712,6 +729,8 @@ class ScoreEngine:
         total_w = sum(w for _s, w in sub_scores)
         raw = sum(s * w / 100 for s, w in sub_scores) * (100 / total_w)
         score = _clamp(_round1(raw))
+        # ★ 2026-09-13 P1-4：低波阴跌市高换手钳制（只封顶资金面，不改子指标锚点）
+        score = self._apply_nb_turnover_cap(score, stock_info, details)
         return DimensionScore("资金面", score, self.w_capital,
                               _round1(score * self.w_capital), details)
 
@@ -853,6 +872,30 @@ class ScoreEngine:
             return 60.0   # 偏低但可接受
         else:
             return 30.0   # 极低
+
+    def _apply_nb_turnover_cap(self, score: float, stock_info: dict,
+                               details: dict) -> float:
+        """neutral_bearish（低波阴跌）下高换手个股 → 资金面封顶（P1-4，可开关）。
+
+        只在引擎持有 regime=neutral_bearish 时生效（生产由 routers/scoring 的
+        `_sync_regime_weights` 盘后按市场状态切换）——其它市况、未传 regime 的
+        调用路径完全不受影响。仅封顶资金面总分，**不改任何子指标锚点**。
+        """
+        if not NB_TURNOVER_CAP_ENABLED or self.regime != _NB_STATE:
+            return score
+        try:
+            turnover = float(stock_info.get("turnover_rate") or 0)
+        except (TypeError, ValueError):
+            return score
+        if turnover > NB_TURNOVER_CAP_PCT and score > NB_TURNOVER_CAP_SCORE:
+            # ★ details 契约：前端 StockDetail 会遍历 details 渲染 `val.分值`
+            #   （`_extract_factors` 也按 分值/100 判定加减分项）→ 必须带「分值」字段，
+            #   否则前端显示 "undefined"。分值取封顶值（40/100 → 中性，不误入加减分）。
+            details["高换手钳制"] = {
+                "分值": NB_TURNOVER_CAP_SCORE, "满分": 100,
+                "换手率": turnover, "原资金面": score, "市场": self.regime}
+            return float(NB_TURNOVER_CAP_SCORE)
+        return score
 
     def _score_amount(self, tech_data: list, stock_info: dict) -> float:
         """

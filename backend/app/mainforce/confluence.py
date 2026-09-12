@@ -91,11 +91,18 @@ def _env_snapshot(max_age: float = 1800) -> dict:
         #   stock_industry.main_industry（已归一化为**新浪一级**"电子信息/飞机制造"）
         #   → 直接用东财名做 key 永远匹配不上、资金层恒为"未知"。这里统一归一化，
         #   同一新浪一级下的多个细分板块净流入**累加**。
+        # ★ 2026-09-13 走查修复（第三处）：「其它行业」是兜底桶——聚合了 156 个无法识别
+        #   的东财板块（实测净流入 -250 亿，占 |总额| 16%），而 stock_industry 里有 687 只
+        #   个股归在该桶 → 会给它们**系统性打 -1**（兜底副作用，非真实信号）。跳过它，
+        #   这些个股退回"资金未知"（sector_score=0 中性），与 industry_mainline 的
+        #   "其它行业不参与主线判定"同一惯例。
         agg = {}
         for r in rows or []:
             if r.get("net_inflow") is None:
                 continue
             nf = _normalize_industry(r["name"])
+            if nf == "其它行业":
+                continue
             agg[nf] = agg.get(nf, 0.0) + float(r["net_inflow"]) / 1e8
         snap["sector_flow"] = agg
     except Exception:
@@ -103,11 +110,16 @@ def _env_snapshot(max_age: float = 1800) -> dict:
     try:
         rows = db_fetch("SELECT industry, crowded FROM industry_mainline "
                         "WHERE date=(SELECT MAX(date) FROM industry_mainline)")
-        snap["mainlines"] = {r["industry"] for r in (rows or []) if r.get("industry")}
+        # ★ 2026-09-13 走查修复：「其它行业」是兜底桶（687 只未识别个股），
+        #   `get_mainline_summary` 已明确"不参与主线判定"；这里同样排除，
+        #   否则这 687 只个股会因"在主线"白拿 +1（实测 301035 即 sector=+1）。
+        snap["mainlines"] = {r["industry"] for r in (rows or [])
+                             if r.get("industry") and r["industry"] != "其它行业"}
         # ★ 2026-09-13 P1-3：拥挤主线单独标记（只减不加，不给传导链 +1）
         snap["crowded_mainlines"] = {
             r["industry"] for r in (rows or [])
-            if r.get("industry") and r.get("crowded")}
+            if (r.get("industry") and r["industry"] != "其它行业"
+                and r.get("crowded"))}
     except Exception:
         pass
 

@@ -19,6 +19,7 @@
 ================================================================================
 """
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +37,12 @@ PHASES = {
 
 
 MAX_ITEMS_PER_SECTION = 3
+
+# ★ 2026-09-13 P1-6：盘前固定展示「两融 5 日净变化 + 情绪温度计」。
+#   两融 2.64 万亿历史高位仍在净增是磨底市常态；**转净减（≤ 该阈值）→
+#   触发 sentiment_vs_margin severe（情绪热但杠杆资金撤 → 拉高出货结构）**，
+#   是磨底市最关键的变盘领先指标。阈值可配（亿元）。
+MARGIN_DRAIN_ALERT = float(os.environ.get("MARGIN_DRAIN_ALERT_YI", "-200") or -200)
 
 
 def current_phase() -> str:
@@ -195,6 +202,30 @@ def collect_brief_data(phase: str) -> dict:
     actions.sort(key=lambda a: sev_order.get(a["severity"], 3))
     data["actions"] = actions          # 全量落库（data_json），渲染时取前 3
 
+    # 9) ★ 2026-09-13 P1-6：两融 5 日净变化 + 情绪温度计（**盘前固定展示**）。
+    #    磨底市最关键的变盘领先指标：**转净减（≤ MARGIN_DRAIN_ALERT）→
+    #    杠杆资金撤离，警惕拉高出货**。数据已在日报模板里，此处复用到盘前简报。
+    #    ★ 仅在盘前采集：金十 mp-api 超时 20s，盘中/盘后简报不渲染这段，
+    #      没必要为它们付出可能的等待成本（日报那边已有同样数据）。
+    if phase == "premarket":
+        try:
+            from app.flash.margin_sentiment import (get_margin, margin_line,
+                                                    sentiment_line)
+            m_line, s_line = margin_line(), sentiment_line()
+            if m_line or s_line:
+                data["margin_sentiment"] = {"margin": m_line, "sentiment": s_line}
+            mg = get_margin() or {}
+            if mg.get("fund_bal_chg5") is not None:
+                chg5 = float(mg["fund_bal_chg5"])
+                data["margin_chg5"] = chg5
+                if chg5 <= MARGIN_DRAIN_ALERT:
+                    data["margin_alert"] = (
+                        f"两融 5 日净减 {abs(chg5):.0f} 亿"
+                        f"（≤{abs(MARGIN_DRAIN_ALERT):.0f}）——杠杆资金撤离，"
+                        f"警惕拉高出货（sentiment_vs_margin severe 级）")
+        except Exception as e:
+            print(f"[trader_brief] 两融/情绪采集失败: {e}")
+
     return data
 
 
@@ -229,6 +260,16 @@ def _data_to_markdown(data: dict) -> str:
         lines.append("近2日战法信号数:")
         lines += [f"  - {s['strategy_name']} {s['scan_date']}: {s['count']}只"
                   for s in data["strategy_counts"]]
+    # ★ 2026-09-13 P1-6：两融 + 情绪温度计（喂给 LLM 判断"该防"段）
+    ms = data.get("margin_sentiment") or {}
+    if ms.get("margin") or ms.get("sentiment"):
+        lines.append("两融与情绪（磨底市领先指标）:")
+        if ms.get("margin"):
+            lines.append(f"  - {ms['margin']}")
+        if ms.get("sentiment"):
+            lines.append(f"  - {ms['sentiment']}")
+    if data.get("margin_alert"):
+        lines.append(f"  ⚠️ 资金警示: {data['margin_alert']}")
     return "\n".join(lines)
 
 
@@ -253,6 +294,27 @@ def _render_actions_md(actions: list) -> str:
     sev = {"high": "[高]", "medium": "[中]"}
     return "\n".join(f"- {sev.get(a['severity'], '')} {a['text']}"
                      for a in actions[:MAX_ITEMS_PER_SECTION])
+
+
+def _render_funding_md(data: dict, phase: str) -> str:
+    """★ 2026-09-13 P1-6：两融 5 日净变化 + 情绪温度计（**仅盘前**固定展示）。
+
+    磨底市最关键的变盘领先指标：两融高位仍在净增是常态，**转净减（≤阈值）
+    意味着杠杆资金撤离 → 拉高出货结构**（sentiment_vs_margin severe）。
+    """
+    if phase != "premarket":
+        return ""
+    ms = data.get("margin_sentiment") or {}
+    if not (ms.get("margin") or ms.get("sentiment")):
+        return ""
+    out = ["## 资金与情绪"]
+    if ms.get("margin"):
+        out.append(f"- {ms['margin']}")
+    if ms.get("sentiment"):
+        out.append(f"- {ms['sentiment']}")
+    if data.get("margin_alert"):
+        out.append(f"- ⚠️ **{data['margin_alert']}**")
+    return "\n".join(out) + "\n\n"
 
 
 def _fallback_skeleton(data: dict, reason: str) -> str:
@@ -321,7 +383,8 @@ def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
             degraded = "llm_empty"
 
     narrative = _validate_refs(narrative, data)
-    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n"
+    funding_md = _render_funding_md(data, phase)   # ★ P1-6：盘前固定展示两融+情绪
+    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n{funding_md}"
           f"> 数据窗口：{data.get('candidates_date', today)}")
 
     data_json = json.dumps(data, ensure_ascii=False)

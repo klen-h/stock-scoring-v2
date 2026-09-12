@@ -6,6 +6,7 @@
 - 调度器：`app/flash/scheduler.py` 的 `start()` 起约 30 个 asyncio 常驻 loop，靠 `store.is_schedule_done/mark_schedule_done` 做当日幂等。**调度器随进程常驻，进程停则任务停**。
   - `start()` 里分两组：**"LLM 叙事类"直接用 `asyncio.create_task`（只读模式保留）**，重活类走 `*_heavy(...)`（`RENDER_READ_ONLY=1` 下全关）。新增轻量 LLM/推送类 loop 应放进前者。
 - 决策简报（`trader_briefs` 表，`PLAN_TRADER_WORKFLOW` Phase 1，2026-09-12 完成双轨）：**盘后**由日批 `trader_brief` 任务生成并推企微（Actions）；**盘前**由 Render 的 `trader_brief_premarket_loop`（09:10-11:30 窗口、当日幂等）生成并推企微。两者按 `(date, phase)` 分别落库、互不覆盖；前端 `GET /api/system/trader-brief` 按需读取。
+  - ★ 2026-09-13：**盘前简报固定含「## 资金与情绪」段**（两融 5 日净变化 + 情绪温度计，复用 `flash/margin_sentiment`；净减 ≤`MARGIN_DRAIN_ALERT_YI`（默认 -200 亿）时追加"杠杆撤离→拉高出货"警示）。磨底市最关键的变盘领先指标。
   - 盘后依赖链（2026-09-05 重排后）：K线刷新 15:30 → **指标刷新 16:40 由 GitHub Actions 跑**（`.github/workflows/indicator-refresh.yml`，入口 `scripts/refresh_indicators.py`，批量版 300 只秒级；本进程设 `ENABLE_HEAVY_JOBS=0` 即跳过该 loop）→ 评分快照 **18:00**（等指标到"今日"，最迟 18:45 强制）→ 主线 19:15 / 消息分快照 19:20 / 日报 19:30（三者都读当日 ranking_history）。
   - 旧快照 15:15 的 bug 已修：原先快照早于数据刷新，`ranking_history` 长期是「今日价+昨日技术特征」。
 - K 线缓存：`app/scoring/kline_cache.py` `CACHE_POOL_SIZE=500`、`CACHE_KLINE_COUNT=500`、`MIN_SCORING_KLINE_COUNT=250`；`app/tencent.py` 另有内存 `KLINE_CACHE`（key 含 count，落盘 `backend/kline_cache.json`，加载时丢弃 >24h 条目）。

@@ -19,6 +19,7 @@ llm.extract_structured_signals() 输出的结构化信号（build_signal_from_ll
 
 import copy
 import json
+import os
 import time
 from datetime import datetime
 
@@ -93,6 +94,42 @@ RISK_CONFIG = {
     "signal_expire_days": 5,           # 安全网：waiting 超 N 天强制过期（正常情况由论点失效机制管控）
 }
 ACCOUNT_SIZE = 100000                  # 默认账户规模（元）
+
+# ★ 2026-09-13 P1-5 午盘信号治理（带开关，可回滚）：
+#   LLM 信号实测盘前 75%（8 笔）vs 午盘 **0%**（10 笔）——09-09 高开低走式轮动市里
+#   午盘追高即坟场（上午情绪高点已过，午后回落概率高）。
+#   规则：午盘（source=lunchbreak）信号**仅 offensive 市放行**，其它市况拒绝
+#   （进 rejectedSignals 攒样本、保留审计可见性，不是丢弃）。
+#   开关 MIDDAY_REGIME_GATE=0 回滚。
+MIDDAY_REGIME_GATE_ENABLED = (os.environ.get("MIDDAY_REGIME_GATE", "1") or "1").strip() \
+    not in ("0", "false", "no", "off")
+MIDDAY_ALLOWED_STATES = ("offensive",)
+
+
+def _midday_regime_gate(signal: dict) -> dict:
+    """午盘信号 regime 闸门（P1-5）：仅 offensive 市放行，其它市况拒绝。
+
+    fail-open：读不到 regime 缓存/状态时不拦截——绝不因规则引擎故障挡掉信号记录。
+    """
+    if not MIDDAY_REGIME_GATE_ENABLED:
+        return {"pass": True}
+    if (signal.get("source") or "") != "lunchbreak":
+        return {"pass": True}
+    try:
+        from app.backtest.market_regime import (get_regime_cache,
+                                                restore_regime_cache_from_db)
+        cache = get_regime_cache() or {}
+        if not cache.get("state"):
+            restore_regime_cache_from_db()
+            cache = get_regime_cache() or {}
+        state = cache.get("state")
+    except Exception:
+        return {"pass": True}
+    if not state or state in MIDDAY_ALLOWED_STATES:
+        return {"pass": True}
+    return {"pass": False,
+            "reason": f"午盘信号在 {state} 市不放行（仅进攻市；"
+                      f"午盘追高实测 0% 胜率）"}
 
 
 def holdings_text() -> str:
@@ -387,6 +424,12 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
     """
     tracking = load_tracking()
     validation = {"passed": True, "warnings": [], "reasons": []}
+
+    # ★ 2026-09-13 P1-5：午盘信号 regime 闸门（仅 offensive 放行，其它市况进 rejected）
+    mid = _midday_regime_gate(signal)
+    if not mid["pass"]:
+        validation["passed"] = False
+        validation["reasons"].append(mid["reason"])
 
     pos = _check_position_count(tracking["activeSignals"])
     if not pos["canAdd"]:

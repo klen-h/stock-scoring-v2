@@ -206,10 +206,19 @@ def get_mainline_summary(days: int = 12) -> dict:
     dates.reverse()
     if not dates:
         return {"ok": False, "error": "无历史 Top50 数据"}
-    rows = db.fetch(
-        "SELECT date, industry, stock_count, sum_rank, stocks_json, "
-        "crowded, crowd_ratio "
-        "FROM industry_mainline WHERE date >= %s ORDER BY date", (dates[0],))
+    # ★ 2026-09-13 走查修复：旧库可能没有 crowded/crowd_ratio 列（SQLite 不支持
+    #   `ADD COLUMN IF NOT EXISTS`，`init_mainline_table` 的 ALTER 会静默失败）→
+    #   直接查这两列会让**整个主线汇总**抛异常。降级为不含它们的基础查询
+    #   （`latest.get("crowded")` 取不到时视为 False，行为与迁移前一致）。
+    try:
+        rows = db.fetch(
+            "SELECT date, industry, stock_count, sum_rank, stocks_json, "
+            "crowded, crowd_ratio "
+            "FROM industry_mainline WHERE date >= %s ORDER BY date", (dates[0],))
+    except Exception:
+        rows = db.fetch(
+            "SELECT date, industry, stock_count, sum_rank, stocks_json "
+            "FROM industry_mainline WHERE date >= %s ORDER BY date", (dates[0],))
     seq = {}   # industry -> {date: row}
     for r in rows or []:
         seq.setdefault(r["industry"], {})[r["date"]] = r

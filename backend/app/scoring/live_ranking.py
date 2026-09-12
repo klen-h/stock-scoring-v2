@@ -108,6 +108,14 @@ def compute_full_ranking(limit: int = 300, pool_cap: Optional[int] = None) -> tu
     from app.routers.scoring import _precise_score_sync
     from app.scoring.indicator_cache import get_cached_technical_batch_sql
 
+    # ★ 2026-09-13 P1-4：确保引擎持有当日 regime（日批独立进程需先从库恢复）——
+    #   「换手率 nb 钳制」等市况规则依赖 engine.regime，否则日批全量精算榜不生效。
+    try:
+        from app.routers.scoring import _sync_regime_weights
+        _sync_regime_weights()
+    except Exception as e:
+        print(f"[live_ranking] regime 同步失败（市况规则不生效）: {e}")
+
     t0 = time.time()
     valid = _build_pool()
     # pool_cap：只精算市值最大的 N 只（冒烟测试/资源兜底用；None = 全量）

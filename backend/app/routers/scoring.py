@@ -34,10 +34,19 @@ _engine_weights_applied = {"date": None, "state": None}
 
 
 def _sync_regime_weights() -> None:
-    """读取市场状态缓存，缓存日期变化时切换引擎三维权重（幂等，失败静默回退静态权重）。"""
+    """读取市场状态缓存，缓存日期变化时切换引擎三维权重（幂等，失败静默回退静态权重）。
+
+    ★ 2026-09-13 P1-4：缓存为空时**先从历史表恢复**——日批（Actions）是独立进程，
+      `_REGIME_CACHE` 内存缓存为空；不恢复则 `engine.regime` 恒 None →
+      「换手率 nb 钳制」等市况规则在日批全量精算榜里不生效。
+    """
     try:
-        from app.backtest.market_regime import get_regime_cache
+        from app.backtest.market_regime import (get_regime_cache,
+                                                restore_regime_cache_from_db)
         cache = get_regime_cache()
+        if not cache or not cache.get("date"):
+            restore_regime_cache_from_db()
+            cache = get_regime_cache() or {}
         if not cache or not cache.get("date"):
             return
         if _engine_weights_applied["date"] == cache["date"]:
