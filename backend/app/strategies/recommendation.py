@@ -300,6 +300,33 @@ def whitelist_status() -> dict:
             "criterion": "fallback", "stats": {}, "alerts": []}
 
 
+def _buy_point_md(code: str) -> str:
+    """评分买入点位（买入区间/支撑位/时机）格式化成一串。
+
+    ★ 零网络：`_compute_top5_extras` 优先读 indicator_cache 预计算指标
+      （盘后=今日收盘），未命中才回退 K 线缓存。这是「什么价买、为什么」的
+      数据依据，补进买侧决策卡（W1.5）。
+    """
+    try:
+        from app.routers.scoring import _compute_top5_extras
+        bp = (_compute_top5_extras(code) or {}).get("buy_point") or {}
+        parts = []
+        rng = bp.get("buy_range")
+        if rng and rng[0] and rng[1]:
+            s = f"买入区间 {rng[0]:.2f} ~ {rng[1]:.2f}"
+            if bp.get("ref_price"):
+                s += f"（参考 {bp['ref_price']:.2f}）"
+            parts.append(s)
+        sups = bp.get("supports") or []
+        if sups:
+            parts.append("支撑 " + " / ".join(f"{s['name']} {s['price']:.2f}" for s in sups[:3]))
+        if bp.get("buy_timing"):
+            parts.append(f"时机 {bp['buy_timing']}（距支撑 {bp.get('deviation', 0):+.1f}%）")
+        return "；".join(parts) if parts else ""
+    except Exception:
+        return ""
+
+
 def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -> str:
     """
     把单条战法信号格式化成企微 markdown 消息（含买入理由，目标/止损带推导）。
@@ -351,6 +378,13 @@ def format_signal_message(strategy_en: str, signal: dict, market: dict = None) -
         "",
         "📊 **买入逻辑：**",
         *reason_lines,
+    ]
+    # ★ W1.5 买侧决策卡：评分买入点位（买入区间 + 支撑位 + 时机），把
+    #   「什么价买、为什么」补进卡片（零网络读 indicator_cache）
+    bp_md = _buy_point_md(code)
+    if bp_md:
+        lines += ["", f"📍 **买入点位：** {bp_md}"]
+    lines += [
         "",
         f"📌 **执行提示：** {exec_hint}",
         "",
