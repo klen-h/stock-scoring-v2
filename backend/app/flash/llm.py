@@ -21,6 +21,7 @@ import os
 import re
 import json
 import time
+import hashlib
 import threading
 from datetime import datetime, timedelta
 
@@ -64,6 +65,10 @@ LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").stri
 LLM_FREE_REASONING = (os.environ.get("LLM_FREE_REASONING_EFFORT") or "").strip().lower()
 LLM_TIMEOUT_FAST = int(os.environ.get("LLM_TIMEOUT_FAST", "90") or 90)
 LLM_TIMEOUT_SLOW = int(os.environ.get("LLM_TIMEOUT_SLOW", "600") or 600)
+# ★ 影子模式（2026-09-13）：LLM_FREE_SHADOW=1 时，正式推送仍 100% 走主力站（旧推送
+#   不变），免费站用同一 prompt 在后台线程跑一遍只记录不投喂——新旧模型质量/延迟/
+#   稳定性对比期用。对比满意后设 0（或删掉），免费站自动升为链首。
+LLM_FREE_SHADOW = os.environ.get("LLM_FREE_SHADOW", "") == "1"
 
 # 最近一次调用失败原因（诊断用：/api/system/llm-usage 会带出来）
 _last_error = ""
@@ -306,6 +311,7 @@ def get_llm_usage() -> dict:
             "free_model": LLM_FREE_MODEL or None,
             "circuit_open": any(st["fails"] >= 2 and time.time() < st["until"]
                                 for st in _provider_circuit.values()),
+            "shadow": _shadow_stats_24h(),
             "max_tokens": LLM_MAX_TOKENS,
             # ★ 最近一次失败原因（含空响应时的 finish_reason / 思考字数），排障用
             "last_error": last_llm_error() or None,
@@ -319,9 +325,11 @@ def get_llm_usage() -> dict:
 # ================================================================
 
 def _providers() -> list:
-    """按优先级返回 provider 列表：① 免费站（LLM_FREE_*）→ ② 主力站（LLM_BASE_URL）。"""
+    """按优先级返回 provider 列表。
+    ★ 影子模式（LLM_FREE_SHADOW=1）下免费站不进正式链（旧推送不变），仅后台影子调用。"""
     ps = []
-    if LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL:
+    if (LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL
+            and not LLM_FREE_SHADOW):
         ps.append({"name": "free", "base_url": LLM_FREE_BASE_URL.rstrip("/"),
                    "key": LLM_FREE_API_KEY,
                    "models": [m for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK) if m],
@@ -359,6 +367,99 @@ def _provider_mark(key: str, ok: bool, why: str = "") -> None:
         print(f"[llm] provider {key} 连续失败 {st['fails']} 次（{why}）→ 熔断 30min")
 
 
+# ── 影子模式（LLM_FREE_SHADOW=1）────────────────────────────────────────────
+# 正式推送 100% 走主力站（旧推送不变）；免费站用同一 prompt 后台线程跑一遍，
+# 只记录不投喂 → 新旧模型质量/延迟/稳定性可对比，满意后设 0 切换链路。
+
+_SHADOW_TABLE_READY = False
+
+
+def _ensure_shadow_table():
+    global _SHADOW_TABLE_READY
+    if _SHADOW_TABLE_READY:
+        return
+    try:
+        db.execute("""CREATE TABLE IF NOT EXISTS llm_shadow_log (
+            id SERIAL PRIMARY KEY,
+            task_key TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            ok INTEGER,
+            latency_ms INTEGER,
+            content TEXT,
+            err TEXT,
+            prompt_head TEXT,
+            created_at TEXT
+        )""")
+        _SHADOW_TABLE_READY = True
+    except Exception as e:
+        print(f"[llm] 影子表创建失败: {e}")
+
+
+def _shadow_record(task_key: str, provider: str, ok: bool, latency_ms: int,
+                   content: str, err: str, prompt_head: str = "") -> None:
+    try:
+        _ensure_shadow_table()
+        db.execute(
+            "INSERT INTO llm_shadow_log (task_key, provider, ok, latency_ms, "
+            "content, err, prompt_head, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (task_key, provider, 1 if ok else 0, latency_ms, (content or "")[:8000],
+             (err or "")[:300], prompt_head, rules.beijing_now().isoformat()))
+        cutoff = _iso_day(rules.beijing_now() - timedelta(days=7))
+        db.execute("DELETE FROM llm_shadow_log WHERE created_at < %s", (cutoff,))
+    except Exception as e:
+        print(f"[llm] 影子记录失败（不影响主流程）: {e}")
+
+
+def _shadow_run(task_key: str, system: str, user: str,
+                temperature: float, json_mode: bool) -> None:
+    """后台线程：免费站同题跑一遍（shadow 档思考=medium，模型默认），只记录不投喂。"""
+    try:
+        p = {"name": "free", "base_url": LLM_FREE_BASE_URL.rstrip("/"),
+             "key": LLM_FREE_API_KEY,
+             "models": [m for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK) if m],
+             "reasoning": True}
+        t0 = time.time()
+        ok, result = _call_provider(p, f"free:{LLM_FREE_MODEL}", system, user,
+                                    temperature, json_mode, retries=2,
+                                    timeout=LLM_TIMEOUT_SLOW, tier="shadow", mark=False)
+        latency = int((time.time() - t0) * 1000)
+        _shadow_record(task_key, "free", ok, latency,
+                       result if ok else "", "" if ok else result, user[:80])
+        print(f"[llm][shadow] free {'OK' if ok else 'FAIL'} {latency}ms "
+              f"{'len=' + str(len(result)) if ok else str(result)[:80]}")
+    except Exception as e:
+        print(f"[llm][shadow] 影子调用异常: {e}")
+
+
+def _shadow_spawn(task_key: str, system: str, user: str,
+                  temperature: float, json_mode: bool) -> None:
+    if not (LLM_FREE_SHADOW and LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL):
+        return
+    threading.Thread(target=_shadow_run,
+                     args=(task_key, system, user, temperature, json_mode),
+                     daemon=True).start()
+
+
+def _shadow_stats_24h():
+    """影子对比 24 小时统计（llm_status 消费；失败静默）。"""
+    if not LLM_FREE_SHADOW:
+        return {"enabled": False}
+    try:
+        _ensure_shadow_table()
+        since = (rules.beijing_now() - timedelta(hours=24)).isoformat()
+        rows = db.fetch("SELECT provider, COUNT(*) AS n, AVG(latency_ms) AS lat, "
+                        "SUM(ok) AS oks FROM llm_shadow_log WHERE created_at >= %s "
+                        "GROUP BY provider", (since,)) or []
+        return {"enabled": True,
+                "stats_24h": {r["provider"]: {"calls": int(r["n"]),
+                                              "avg_latency_ms": int(r["lat"] or 0),
+                                              "ok_rate": round(int(r["oks"] or 0) / int(r["n"]), 2)}
+                              for r in rows}}
+    except Exception:
+        return {"enabled": True, "stats_24h": {}}
+
+
 def call_llm(system: str, user: str, temperature: float = 0.3,
              json_mode: bool = False, retries: int = 3, tier: str = "slow") -> str:
     """
@@ -381,6 +482,8 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
         _last_error = blocked
         return ""
     timeout = LLM_TIMEOUT_FAST if tier == "fast" else LLM_TIMEOUT_SLOW
+    task_key = hashlib.md5((system + user).encode("utf-8")).hexdigest()[:12]
+    t0 = time.time()
     for p in providers:
         pkey = f"{p['name']}:{p['models'][0]}"
         if _provider_circuit_open(pkey):
@@ -390,15 +493,26 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
                                     json_mode, retries, timeout, tier)
         if ok:
             _last_error = ""
+            if LLM_FREE_SHADOW and p["name"] == "main":
+                # ★ 影子模式：主站结果入对比表，同题触发免费站后台调用（只记录不投喂）
+                _shadow_record(task_key, "main", True, int((time.time() - t0) * 1000),
+                               result, "", user[:80])
+                _shadow_spawn(task_key, system, user, temperature, json_mode)
             return result
         _last_error = result
+    if LLM_FREE_SHADOW:
+        _shadow_record(task_key, "main", False, int((time.time() - t0) * 1000),
+                       "", _last_error, user[:80])
+        _shadow_spawn(task_key, system, user, temperature, json_mode)
     print(f"[llm] 所有 provider 均失败（最后: {_last_error}）")
     return ""
 
 
 def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: float,
-                   json_mode: bool, retries: int, timeout: int, tier: str) -> tuple:
-    """单 provider 内部重试。返回 (ok, content | 最后错误)。"""
+                   json_mode: bool, retries: int, timeout: int, tier: str,
+                   mark: bool = True) -> tuple:
+    """单 provider 内部重试。返回 (ok, content | 最后错误)。
+    mark=False（影子调用）不计入熔断。"""
     global _last_error
     max_tokens = LLM_MAX_TOKENS
     for attempt in range(1, retries + 1):
@@ -413,9 +527,10 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         if p.get("reasoning"):
-            # 思考开关仅注入支持 reasoning_effort 的站（deepseek-v4-flash 默认
-            # medium 思考；渲染任务 fast 档关思考、slow 档轻思考）
-            body["reasoning_effort"] = LLM_FREE_REASONING or ("none" if tier == "fast" else "low")
+            # 思考开关仅注入支持 reasoning_effort 的站：fast→none（保窗口）/
+            # shadow→medium（模型默认，对比期测真实质量）/ slow→low
+            body["reasoning_effort"] = LLM_FREE_REASONING or {
+                "fast": "none", "shadow": "medium"}.get(tier, "low")
         try:
             r = _session.post(f"{p['base_url']}/chat/completions", json=body,
                               headers={"Authorization": f"Bearer {p['key']}"},
@@ -424,7 +539,8 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
                 # 站点级故障 → 站内重试无意义，直接降级下一 provider。
                 # ★ 计入熔断（401/429 这类不会自愈的故障正是熔断的目标场景）
                 _last_error = f"{pkey} HTTP {r.status_code}"
-                _provider_mark(pkey, False, _last_error)
+                if mark:
+                    _provider_mark(pkey, False, _last_error)
                 print(f"[llm] [{pkey}] {_last_error} → 降级下一 provider")
                 return False, _last_error
             r.raise_for_status()
@@ -434,7 +550,8 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
             choice = (data.get("choices") or [{}])[0]
             content = ((choice.get("message") or {}).get("content") or "").strip()
             if content:
-                _provider_mark(pkey, True)
+                if mark:
+                    _provider_mark(pkey, True)
                 return True, content
             # ── 空响应：记录可定位的诊断信息，并按情况升级参数后重试 ──
             finish = choice.get("finish_reason")
@@ -451,7 +568,8 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
             print(f"[llm] 第{attempt}次调用失败: {_last_error}")
         if attempt < retries:
             time.sleep(attempt * 3)
-    _provider_mark(pkey, False, _last_error)
+    if mark:
+        _provider_mark(pkey, False, _last_error)
     return False, _last_error
 
 
