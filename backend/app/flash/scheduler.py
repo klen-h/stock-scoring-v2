@@ -1238,7 +1238,13 @@ async def score_snapshot_loop():
                              "total_score": r["total_score"], "signal": r["signal"],
                              "rank": i + 1,
                              "dimensions": r.get("dimensions") or {},
-                             "price": (stocks_map.get(r["code"]) or {}).get("price") or 0}
+                             "price": (stocks_map.get(r["code"]) or {}).get("price") or 0,
+                             # ★ 2026-09-13 体检报告发现：日批组装漏 mainforce 字段，
+                             #   且本路径 replace_day=True 会把 15:10 前端保存的带标签
+                             #   版本覆盖成无标签版本 → 主力标签覆盖率仅 3%（584/600
+                             #   为 none），BucketStats 吸筹/出货分桶失去统计意义。
+                             #   补齐后与 scoring.py 保存路径口径一致。
+                             "mainforce": r.get("mainforce")}
                             for i, r in enumerate(result["data"])
                         ]
                         # 盘后权威快照：清空当天记录再写入，避免盘中 background 记录的残留

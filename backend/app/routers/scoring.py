@@ -588,6 +588,36 @@ def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     return result
 
 
+# 组合因子前瞻统计缓存（复用 bucket-stats 模式：批量价格加载较重，10 分钟复用）
+_composite_cache = {"ts": 0.0, "data": None}
+
+
+@router.get("/composite-stats")
+def composite_stats(days: int = Query(default=90, ge=30, le=365),
+                    horizon: int = Query(default=5, ge=1, le=20)):
+    """组合因子前瞻统计（2026-09-13 v1 对照实验）。
+
+    背景：引擎体检发现 total_score IC≈0（排序失效），组合因子
+    rank(基本面)+rank(资金面)-rank(技术面) in-sample IC=+0.195。
+    本接口是**前瞻对照实验**：组合分 vs 总分在同样本上按 30/40/30 分位
+    对照固定 T+horizon 收益，每天现算随快照积累自动扩样。
+    组合分前瞻持续优于总分 → 才谈进选股链路；否则丢弃，零沉没成本。
+    附带当日快照的组合分 Top15（展示用）。
+    """
+    import time as _time
+    now = _time.time()
+    if _composite_cache["data"] is not None and now - _composite_cache["ts"] < _BUCKET_CACHE_TTL:
+        data = dict(_composite_cache["data"])
+        data["cached"] = True
+        return data
+    from app.scoring.ranking_history import get_composite_stats
+    result = get_composite_stats(days=days, horizon=horizon)
+    result["cached"] = False
+    _composite_cache["ts"] = now
+    _composite_cache["data"] = result
+    return result
+
+
 @router.get("/snapshots")
 def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
     """最近 N 天评分排行快照（含维度分/快照价/现价收益），供前端「胜率回查」面板。
@@ -621,7 +651,11 @@ async def capture_score_snapshot():
          #   而它每天 15:10 先写、日批晚间再 replace_day 覆盖 —— 一旦日批中断，
          #   当天快照就是无标签版本 → BucketStats 的吸筹/出货分桶恒为空（实测
          #   850 行 mainforce_signal 全 NULL）。补齐后与日批口径一致。
-         "mainforce_signal": ((r.get("mainforce") or {}).get("signal"))}
+         # ★ 2026-09-13 体检报告发现 09-11 修复未生效：键名传了 "mainforce_signal"，
+         #   但 record_daily_ranking 读的是 "mainforce"（兼容 dict/扁平字符串）→
+         #   静默丢弃。改传原始 mainforce dict，由 record 端统一解析。09-04/07/09
+         #   三天有标签是当时日批中断、前端旧路径写入了带标签版本的残留。
+         "mainforce": r.get("mainforce")}
         for i, r in enumerate(data)
     ]
     # 手动保存 = 当日权威快照：清空当天已有记录再写入，保证每日固定 Top50

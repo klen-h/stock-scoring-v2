@@ -28,7 +28,7 @@
 import json
 import time
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 
 from app.database import db
@@ -895,3 +895,117 @@ def _records_fixed_horizon(rows: List[Dict], horizon_days: int) -> List[Dict]:
             "returnPct": round((c - price) / price * 100, 2),
         })
     return records
+
+
+# ── 组合因子前瞻统计（2026-09-13 v1 对照实验）──────────────────────────
+# 背景（引擎体检报告 v0 结论，见 scripts/engine_diagnosis_v0.py）：
+#   total_score IC≈+0.016（排序失效），而组合因子
+#   rank(基本面)+rank(资金面)-rank(技术面) IC=+0.195（in-sample，550 条，单一阴跌市）。
+#   in-sample 必然偏乐观（多组合择优 + 单一市况），因此本函数定位是**前瞻对照实验**：
+#   每天用最新快照重算，组合分前瞻胜率持续 > 总分才谈进选股链路；否则丢弃，零沉没成本。
+# ★ 组合分是 dimensions 的确定性函数 → 无需落库，每天现算，随快照积累自动扩充样本。
+_COMPOSITE_DIMS = ("基本面", "资金面", "技术面")
+_COMPOSITE_CACHE = {"ts": 0.0, "key": None, "data": None}
+
+
+def _composite_score_of(dims: Dict) -> Optional[float]:
+    """原始分组合分（单条可算，用于「当日 Top15」展示）：基本面+资金面-技术面。"""
+    vals = [dims.get(k) for k in _COMPOSITE_DIMS]
+    if any(not isinstance(v, (int, float)) for v in vals):
+        return None
+    f, c, t = (float(v) for v in vals)
+    return round(f + c - t, 3)
+
+
+def get_composite_stats(days: int = 90, horizon: int = 5) -> Dict:
+    """组合因子前瞻统计（固定 T+horizon 收益，组合分 vs 总分同样本对照）。
+
+    口径：
+      - 样本：快照带维度分 + 固定 horizon 个交易日收益可算（复用 get_verified_records）
+      - 组合分：三因子**跨样本秩归一化**后 (基本面+资金面-技术面) 平均 ∈ [0,1]
+        （与诊断脚本同源；秩归一化消除量纲差异）
+      - 对照：同一样本上，组合分与总分各自按 30/40/30 分位切桶——
+        同口径对照，避免"组合用秩、总分用绝对分桶"的不公平比较
+    """
+    records = get_verified_records(min_age_days=2, horizon_days=horizon)
+    # 过滤：三因子齐备
+    recs = []
+    for r in records:
+        dims = r.get("dimensions") or {}
+        if all(isinstance(dims.get(k), (int, float)) for k in _COMPOSITE_DIMS):
+            recs.append(r)
+    n = len(recs)
+    result = {
+        "horizon": horizon, "days": days,
+        "sample": n,
+        "note": None,
+    }
+    if n < 30:
+        result["note"] = f"有效样本 {n} < 30，等快照积累（组合分随 dimensions_json 自动现算，无需落库）"
+        return result
+
+    # 三因子各自秩归一化（0~1）
+    k = len(recs)
+    ranks = {c: [0.0] * k for c in _COMPOSITE_DIMS}
+    for c in _COMPOSITE_DIMS:
+        order = sorted(range(k), key=lambda i: float(recs[i]["dimensions"][c]))
+        for pos, i in enumerate(order):
+            ranks[c][i] = pos / (k - 1) if k > 1 else 0.5
+    comp = [(ranks["基本面"][i] + ranks["资金面"][i] - ranks["技术面"][i]) / 3.0
+            for i in range(k)]
+    total = [float(r["score"]) for r in recs]
+    rets = [float(r["returnPct"]) for r in recs]
+
+    def _quantile_buckets(values):
+        """同一样本按 30/40/30 分位切三桶（返回三段索引）。"""
+        order = sorted(range(k), key=lambda i: values[i])
+        m = max(1, k * 3 // 10)
+        return {"low": order[:m], "mid": order[m:k - m], "high": order[k - m:]}
+
+    def _seg_stats(idx):
+        vals = [rets[i] for i in idx]
+        return _stats(vals)
+
+    out_buckets = {}
+    for label, values in (("composite", comp), ("total_score", total)):
+        segs = _quantile_buckets(values)
+        out_buckets[label] = {seg: _seg_stats(ix) for seg, ix in segs.items()}
+
+    hi_c, hi_t = out_buckets["composite"]["high"], out_buckets["total_score"]["high"]
+    lo_c, lo_t = out_buckets["composite"]["low"], out_buckets["total_score"]["low"]
+    spread_c = (hi_c["avg_ret"] or 0) - (lo_c["avg_ret"] or 0)
+    spread_t = (hi_t["avg_ret"] or 0) - (lo_t["avg_ret"] or 0)
+    if spread_c > spread_t + 0.5:
+        verdict = "组合分分离度显著优于总分 → 继续前瞻积累"
+    elif spread_c > 0:
+        verdict = "组合分有正向分离但与总分差距不大 → 继续观察"
+    else:
+        verdict = "组合分暂无正向分离（in-sample 结论未获前瞻支持）→ 保持观察，勿进选股链路"
+    result.update({
+        "buckets": out_buckets,
+        "spread": {"composite": round(spread_c, 2), "total_score": round(spread_t, 2)},
+        "conclusion": (f"持有{horizon}日：组合分高30% {hi_c['win_rate']}%/{hi_c['avg_ret']:+.2f}% "
+                       f"vs 低30% {lo_c['win_rate']}%/{lo_c['avg_ret']:+.2f}%（分离 {spread_c:+.2f}pp）；"
+                       f"总分高30% {hi_t['win_rate']}%/{hi_t['avg_ret']:+.2f}% "
+                       f"vs 低30% {lo_t['win_rate']}%/{lo_t['avg_ret']:+.2f}%（分离 {spread_t:+.2f}pp）—— {verdict}"),
+    })
+    # 当日最新快照的组合分 Top15（展示用，原始分口径，前瞻统计不受此影响）
+    try:
+        today_rows = db.fetch("""
+            SELECT rank_date, code, name, total_score, dimensions_json
+            FROM ranking_history
+            WHERE rank_date = (SELECT MAX(rank_date) FROM ranking_history)
+              AND dimensions_json IS NOT NULL AND dimensions_json != ''
+        """) or []
+        ranked = []
+        for r in today_rows:
+            cs = _composite_score_of(_parse_dims(r))
+            if cs is not None:
+                ranked.append({"code": r["code"], "name": r.get("name"),
+                               "score": r.get("total_score"), "composite": cs})
+        ranked.sort(key=lambda x: -x["composite"])
+        result["latest_top"] = ranked[:15]
+        result["latest_date"] = today_rows[0].get("rank_date") if today_rows else None
+    except Exception as e:
+        print(f"[composite] 当日 Top15 计算失败: {e}")
+    return result
