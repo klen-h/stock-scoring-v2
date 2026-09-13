@@ -21,14 +21,9 @@ const STORE_INDICATORS = 'indicators'
 const STORE_META = 'meta'
 
 let db = null
+let _recoverAttempted = false   // 自愈只试一次，防循环
 
-/**
- * 初始化 IndexedDB
- * @returns {Promise<IDBDatabase>}
- */
-export async function initKlineDB() {
-  if (db) return db
-
+function _openDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
 
@@ -59,6 +54,40 @@ export async function initKlineDB() {
       }
     }
   })
+}
+
+function _deleteDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME)
+    req.onsuccess = () => resolve()
+    req.onerror = () => reject(req.error)
+    req.onblocked = () => reject(new Error('删除被其他标签页阻塞：请关闭本站的其他标签页后刷新重试'))
+  })
+}
+
+/**
+ * 初始化 IndexedDB
+ * ★ 2026-09-13：Chrome 存储损坏（UnknownError: Internal error）自愈——
+ *   打开失败时删除本地库重建（代价：数据包需重新下载），重建仍失败才上抛。
+ * @returns {Promise<IDBDatabase>}
+ */
+export async function initKlineDB() {
+  if (db) return db
+
+  try {
+    return await _openDB()
+  } catch (e) {
+    if (_recoverAttempted) {
+      throw new Error(`本地存储不可用（${e?.message || e}）：请清除本站数据后重试`)
+    }
+    _recoverAttempted = true
+    console.warn('[klineDB] IndexedDB 打开失败，疑似本地存储损坏，尝试删除重建:', e?.message || e)
+    db = null
+    await _deleteDB()
+    db = await _openDB()
+    console.warn('[klineDB] 本地库已重建（数据包需重新下载）')
+    return db
+  }
 }
 
 /**
