@@ -6,5 +6,9 @@ numpy==1.26.2
 psycopg2-binary==2.9.9
 PyJWT==2.8.0
 python-dotenv==1.0.0
+# Coach 规则配置（app/coach/rules.yaml，2026-09-13）。★ 此前环境里"碰巧有"
+# （某依赖的传递依赖），requirements 未声明 → CI（python 3.9 干净环境）会
+# 因 `import yaml` 失败而让 `import app.main` 挂掉。显式声明。
+PyYAML==6.0.2
 # 低频补充数据源（现金流/财报扩展因子，见 PLAN_ZZSHARE_INTEGRATION；可选，匿名可用）
 zzshare>=0.4.11

@@ -519,6 +519,15 @@ def fill_pending_positions() -> dict:
             "UPDATE paper_positions SET status='holding', fill_price=%s, fill_date=%s, "
             "shares=%s, cost=%s, fill_note=%s WHERE id=%s",
             (price, _bj_date(), shares, cost, note, p["id"]))
+        # ★ Coach 预承诺退出计划（简报 §3.3 / PLAN §2.4）：**成交瞬间**写死
+        #   "什么时候走"（止损/第3日复核/移动止损/提前退出），把"临场决策"
+        #   变成"事前决策"——这是教练对抗犹豫的核心机制。
+        try:
+            from app.coach.monitor import write_plan
+            write_plan(p["id"], p["code"], p.get("name") or p["code"],
+                       price, float(sig.get("stop_loss") or 0), _bj_date())
+        except Exception as e:
+            print(f"[paper] Coach 剧本写入失败（不影响成交）: {e}")
         filled += 1
     print(f"[paper] 开盘确认: filled={filled} cancelled={cancelled} watched={watched}")
     return {"filled": filled, "cancelled": cancelled, "watched": watched}

@@ -1628,6 +1628,9 @@ async def start():
     def _heavy(loop_fn):
         return [] if READ_ONLY else [asyncio.create_task(loop_fn())]
 
+    # ★ 交易员教练（Coach W1，2026-09-13）：延迟导入（COACH_ENABLED=off 时可不加载）
+    from app.coach.monitor import coach_loop
+
     # 以下 9 个是「API 服务必需 / 交互相关 / 极轻量」→ 只读模式下仍保留
     #   flash(快讯) track(持仓) health(健康检查) paper_*(模拟盘) open_confirmation
     #   news_alert(持仓负面消息) regime(评分权重，每日一次很轻)
@@ -1641,6 +1644,9 @@ async def start():
              asyncio.create_task(open_confirmation_loop()),
              asyncio.create_task(paper_fill_loop()),
              asyncio.create_task(paper_track_loop()),
+             # ★ Coach W1（评审 ③）：盘中保留循环，不被 RENDER_READ_ONLY 关 ——
+             #   生产只读模式下恰恰最需要纪律提醒；日批只挂"收盘回写 + 结果回填"。
+             asyncio.create_task(coach_loop()),
              # ★ LLM 叙事类（2026-09-08）：三段复盘/午间雷达/盘后日报在只读模式下
              #   仍保留——它们只调 LLM + 少量行情请求，内存占用与战法扫描/回填不在
              #   一个量级，不是 OOM 崩溃循环的元凶。误杀后果实测：快讯诊断（flash_loop）

@@ -1,0 +1,98 @@
+# ==============================================================================
+# Coach 规则配置（W1 纯规则骨架，2026-09-13）
+# ==============================================================================
+# ★ 红线（PLAN §2.4 评审）：阈值集中在此文件（可调、可回滚），判据的**输入**
+#   一律取现有信号源（regime / macro / margin_sentiment / breadth / 持仓），
+#   代码里不写死点位或行情常量。
+#
+# 字段：
+#   id       规则标识（实现注册在 app/coach/rules.py 的 EVALUATORS）
+#   label    中文名（落库/推送用）
+#   enabled  总开关（false = 完全不评估）
+#   push     true = 触发时推企微；false = 只落库攒样本（逐周放开）
+#   severity alert(硬警报) / warn(提示) / info
+#   params   可调阈值（外部顾问建议值 → 可随时改，不改代码）
+#
+# 上线纪律（简报 §3.5 / PLAN §2.4）：
+#   **第一周仅 stop_loss_hit + hold_3d_review 两条推送**，其余只落库；
+#   逐周放开，防止警报密集导致用户第三天免疫。
+# ==============================================================================
+version: coach-rules-v1
+
+rules:
+  # ── A. 持仓纪律（教练核心：把"临场决策"变成"事前决策"）───────────────────
+  - id: stop_loss_hit
+    label: 止损触发
+    enabled: true
+    push: true                 # ← 第一周开放
+    severity: alert
+    params: {}
+
+  - id: hold_3d_review
+    label: 持有满3日强制评估
+    enabled: true
+    push: true                 # ← 第一周开放
+    severity: alert
+    params:
+      hold_days: 3             # 对齐退出 v2 的到期天数（paper_trading._max_hold）
+
+  - id: loss_over_7pct
+    label: 浮亏超7%
+    enabled: true
+    push: false                # 第一周只落库
+    severity: warn
+    params:
+      loss_pct: 7.0            # 简报 §2.1
+
+  - id: crowded_trim
+    label: 拥挤赛道借反弹减仓
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      ret20_pct: 30.0          # 简报 §2.1「近 20 日涨幅 >30%」
+
+  - id: distribution_cut
+    label: 高位+主力出货（不等7%直接砍）
+    enabled: true
+    push: false
+    severity: alert
+    params:
+      price_pos: 0.75          # 简报 §2.1
+
+  # ── B. 市场闸门（引用 regime/breadth/macro/margin，不写死点位）─────────────
+  - id: gate_no_add
+    label: 环境不支持加仓
+    enabled: true
+    push: false
+    severity: info
+    params: {}                 # 判据取自 regime（无硬编码）
+
+  - id: gate_reduce
+    label: 减仓条件命中
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      us10y_pct: 5.0           # 简报 §2.3 减仓①
+      dxy: 100.0
+      margin_cold: 30.0        # 简报 §2.3 减仓③（margin_sentiment 寒冷区）
+
+  - id: gate_add
+    label: 加仓条件命中
+    enabled: true
+    push: false
+    severity: info
+    params:
+      up_down_ratio: 0.8       # 简报 §2.3 加仓①
+      limit_down_max: 10
+      consecutive_days: 2
+
+  # ── C. 情绪熔断（W1 只落库标记；LLM 闭嘴逻辑属 W2 explainer）───────────────
+  - id: emotion_fuse
+    label: 当日浮亏超阈值（情绪熔断）
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      day_loss_pct: 2.0        # 简报 §3.4

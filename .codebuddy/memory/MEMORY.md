@@ -2,6 +2,7 @@
 
 ## 架构与运行形态（稳定事实）
 - 单进程 FastAPI（`backend/app/main.py`）同时提供 `/api/*` 与前端静态页：`frontend/dist` 存在时由 `/{full_path:path}` 回退 `index.html`（Vue Router 接管）。生产用 `uvicorn app.main:app --host 0.0.0.0 --port 8000`（不要 `--reload`）。
+- **前端生产部署 = GitHub Pages（CI 自动，无需手动 build）**：`.github/workflows/deploy-preview.yml` 每次 push main 自动 `pnpm run build`（项目用 **pnpm**，不是 npm）+ `peaceiris/actions-gh-pages` 部署到 gh-pages（`keep_files:true` 保留数据包、`concurrency: gh-pages-publish` 与数据包发布共用锁）。**改前端源码 push 即自动生效**，主入口 `https://klen-h.github.io/stock-scoring-v2`；Render 后端 serve `frontend/dist` 只是并存兜底（本机/DEPLOY.md 方式）。前端环境变量/构建检查见 `ci.yml`（node 18 + pnpm 9）。
 - 数据库：默认 SQLite（`backend/data/app.db`）；设了 `DATABASE_URL` 走 PostgreSQL（项目实际用 Supabase 东京节点）。%s 占位符由 `app/database.py` 自动转换，兼容两种库。
 - 调度器：`app/flash/scheduler.py` 的 `start()` 起约 30 个 asyncio 常驻 loop，靠 `store.is_schedule_done/mark_schedule_done` 做当日幂等。**调度器随进程常驻，进程停则任务停**。
   - `start()` 里分两组：**"LLM 叙事类"直接用 `asyncio.create_task`（只读模式保留）**，重活类走 `*_heavy(...)`（`RENDER_READ_ONLY=1` 下全关）。新增轻量 LLM/推送类 loop 应放进前者。
@@ -49,6 +50,14 @@
 - **详情页与排行榜盘中会给出不同分**：`score_single` 盘中 `_trading_now=True` 时**跳过缓存直接实时拉 500 根 K 线**（含当日半根 bar），而 `batch/top` 走缓存 → 同一只股票盘中两处分数不一致（既有行为，非 bug 引入）。
 - **`incremental_update`（盘中 O(1) 滚动更新指标）目前是死代码**：只有 `POST /api/score/indicator-cache/incremental` 接口 + 前端 `api/index.js` 的 `incrementalIndicatorUpdate` 定义，**后端无调度任务、前端无任何页面调用**。想让盘中技术面动起来必须自己接线。
 - **⚠️ 每日权威快照早于数据刷新**：`score_snapshot_loop` 窗口 15:15，而 K 线刷新 15:30、指标刷新 16:00 → 每天写进 `ranking_history` 的"盘后权威快照"实际是**前一交易日收盘的指标 + 当日实时价**的混合体；而回测/日报/拥挤度因子全读 `ranking_history`。修法：把 `SCORE_SNAPSHOT_WINDOW` 挪到指标刷新之后（≥16:30），或加"等待刷新完成"的前置校验。
+
+## 交易员教练 Coach（2026-09-13 起，W1 纯规则骨架）
+- 模块 `backend/app/coach/`：`rules.yaml`（阈值集中配置）· `rules.py`（求值器，纯代码可单测）· `audit.py`（coach_plans/coach_alerts 表 + 执行一致性度量）· `monitor.py`（coach_loop 轮询 + 硬警报 + 体检卡 + 预承诺剧本）。W1 **不含 LLM**（explainer 属 W2）。
+- **核心红线（评审 4 处）**：① 事前无权——数字由代码注入，LLM 只能渲染；② 30s 轮询**只读 `routers/market._cache["stocks"]`**（零网络），重规则（ret20/price_pos）归 `tier="all"` 低频路径；③ 挂 `asyncio.create_task(coach_loop())`（盘中保留、不被 READ_ONLY 关）；④ 执行一致性度量第一版口径在 `audit.execution_consistency`（分母=已决策，未响应单列）。
+- **数据源**：行情=`routers/market._cache`；两融/情绪=`flash.margin_sentiment`（24h 缓存）；出货=`mainforce.overlay.mainforce_overlay`；regime=`backtest.market_regime` 缓存。**持仓 = paper_positions（模拟盘）+ `user_portfolio`（真实持仓）合并**：real 的 `cost` 是成本价（每股）、无止损字段 → 默认止损=成本×0.92（`REAL_STOP_LOSS_PCT=-8%`，与前端 ALERT_CONFIG 一致）；持有日用 `created_at` 近似；按 code 去重（后端 upsert 设计「一码一条」但历史有重复，如 000567）。
+- **开关**：`COACH_ENABLED`（默认 on）；第一周仅「止损触发 + 持有满3日」两条 `push:true`，其余只落库攒样本。
+- **预承诺剧本**：`paper_trading.fill_pending_positions` 成交处调 `write_plan` 写 `coach_plans`。
+- `requirements.txt` 已显式声明 `PyYAML==6.0.2`（此前是传递依赖，CI 干净环境会挂）。
 
 ## 项目约定
 - **计划文档约定（2026-09-12 起）**：仓库根目录只保留两份 —— `PLAN_<日期>.md`（**唯一现行主计划**：遗留项 + 下一阶段 + 观察清单 + 风险回滚）与 `PLAN_ARCHIVE_<日期>.md`（历史 plan 原文归档：目录/处置表 + 逐字原文）。此前散落的 11 份专题 plan（`PLAN_MAINFORCE.md` / `PLAN_NEXT_PHASE.md` / `PLAN_PACK_MIGRATION.md` / `先知雷达_功能Plan_v1.0.md` …）已全部收拢进归档并从根目录删除。**代码注释里引用的旧 plan 文件名，内容在归档对应章节查**。新增计划沿用同一模式，不要再往根目录加散文件。
