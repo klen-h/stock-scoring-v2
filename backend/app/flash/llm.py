@@ -201,12 +201,16 @@ def _import_file_once() -> None:
         print(f"[llm] 用量历史导入失败（继续用文件兜底）: {e}")
 
 
-def _record_usage(usage: dict, provider: str = "main") -> None:
+def _record_usage(usage: dict, provider: str = "main",
+                  toward_budget: bool = True) -> None:
     """记录一次调用的 token 用量（DB 为准；DB 失败退回文件，绝不丢账；保留 30 天）。
-    ★ 2026-09-13：另记 per-provider 明细（llm_usage_by_provider）——免费额度对账用。"""
+    ★ 2026-09-13：另记 per-provider 明细（llm_usage_by_provider）——免费额度对账用。
+    ★ toward_budget=False（影子调用）：token 照记，但不计入 llm_usage_daily.calls
+      （日熔断预算只统计正式调用——否则影子期预算双倍消耗，风暴日会误熔断主链）。"""
     day = _iso_day()
     pt = int(usage.get("prompt_tokens") or 0)
     ct = int(usage.get("completion_tokens") or 0)
+    calls_val = 1 if toward_budget else 0
     now = datetime.now().isoformat()
     with _usage_lock:
         try:
@@ -215,14 +219,14 @@ def _record_usage(usage: dict, provider: str = "main") -> None:
             if db._use_postgres:
                 db.execute(
                     "INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
-                    "completion_tokens, updated_at) VALUES (%s, 1, %s, %s, %s) "
+                    "completion_tokens, updated_at) VALUES (%s, %s, %s, %s, %s) "
                     "ON CONFLICT (day) DO UPDATE SET "
-                    "calls = llm_usage_daily.calls + 1, "
+                    "calls = llm_usage_daily.calls + EXCLUDED.calls, "
                     "prompt_tokens = llm_usage_daily.prompt_tokens "
                     "+ EXCLUDED.prompt_tokens, "
                     "completion_tokens = llm_usage_daily.completion_tokens "
                     "+ EXCLUDED.completion_tokens, "
-                    "updated_at = EXCLUDED.updated_at", (day, pt, ct, now))
+                    "updated_at = EXCLUDED.updated_at", (day, calls_val, pt, ct, now))
                 db.execute(
                     "INSERT INTO llm_usage_by_provider (day, provider, calls, "
                     "prompt_tokens, completion_tokens, updated_at) "
@@ -237,12 +241,12 @@ def _record_usage(usage: dict, provider: str = "main") -> None:
             else:
                 db.execute(
                     "INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
-                    "completion_tokens, updated_at) VALUES (?, 1, ?, ?, ?) "
-                    "ON CONFLICT(day) DO UPDATE SET calls = calls + 1, "
+                    "completion_tokens, updated_at) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(day) DO UPDATE SET calls = calls + excluded.calls, "
                     "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
                     "completion_tokens = completion_tokens "
                     "+ excluded.completion_tokens, updated_at = excluded.updated_at",
-                    (day, pt, ct, now))
+                    (day, calls_val, pt, ct, now))
                 db.execute(
                     "INSERT INTO llm_usage_by_provider (day, provider, calls, "
                     "prompt_tokens, completion_tokens, updated_at) "
@@ -413,7 +417,8 @@ def _shadow_record(task_key: str, provider: str, ok: bool, latency_ms: int,
 
 def _shadow_run(task_key: str, system: str, user: str,
                 temperature: float, json_mode: bool) -> None:
-    """后台线程：免费站同题跑一遍（shadow 档思考=medium，模型默认），只记录不投喂。"""
+    """后台线程：免费站同题跑一遍（shadow 档思考=medium，模型默认），只记录不投喂。
+    toward_budget=False：影子不计入日熔断预算（预算只统计正式调用）。"""
     try:
         p = {"name": "free", "base_url": LLM_FREE_BASE_URL.rstrip("/"),
              "key": LLM_FREE_API_KEY,
@@ -422,7 +427,8 @@ def _shadow_run(task_key: str, system: str, user: str,
         t0 = time.time()
         ok, result = _call_provider(p, f"free:{LLM_FREE_MODEL}", system, user,
                                     temperature, json_mode, retries=2,
-                                    timeout=LLM_TIMEOUT_SLOW, tier="shadow", mark=False)
+                                    timeout=LLM_TIMEOUT_SLOW, tier="shadow",
+                                    mark=False, toward_budget=False)
         latency = int((time.time() - t0) * 1000)
         _shadow_record(task_key, "free", ok, latency,
                        result if ok else "", "" if ok else result, user[:80])
@@ -432,13 +438,34 @@ def _shadow_run(task_key: str, system: str, user: str,
         print(f"[llm][shadow] 影子调用异常: {e}")
 
 
+_shadow_threads = []   # 存活影子线程（供批处理进程退出前 join——否则 daemon 线程被杀，影子记录丢失）
+
+
 def _shadow_spawn(task_key: str, system: str, user: str,
                   temperature: float, json_mode: bool) -> None:
     if not (LLM_FREE_SHADOW and LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL):
         return
-    threading.Thread(target=_shadow_run,
-                     args=(task_key, system, user, temperature, json_mode),
-                     daemon=True).start()
+    t = threading.Thread(target=_shadow_run,
+                         args=(task_key, system, user, temperature, json_mode),
+                         daemon=True)
+    _shadow_threads.append(t)
+    t.start()
+
+
+def wait_shadow_threads(timeout: float = 180) -> None:
+    """等待在飞的影子线程结束（有界）。日批（Actions）进程退出前调用——
+    daemon 线程会在进程退出时被直接杀死，不 join 则盘后简报等末尾任务的
+    影子记录必丢。Render 常驻进程不受影响（永不退出）。"""
+    alive = [t for t in _shadow_threads if t.is_alive()]
+    if not alive:
+        return
+    print(f"[llm] 等待 {len(alive)} 个影子调用结束（上限 {timeout:.0f}s）...")
+    deadline = time.time() + timeout
+    for t in alive:
+        t.join(max(1, deadline - time.time()))
+    done = sum(1 for t in alive if not t.is_alive())
+    print(f"[llm] 影子线程结束 {done}/{len(alive)}"
+          + ("" if done == len(alive) else "（超时放弃，个别影子记录缺失）"))
 
 
 def _shadow_stats_24h():
@@ -510,9 +537,9 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
 
 def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: float,
                    json_mode: bool, retries: int, timeout: int, tier: str,
-                   mark: bool = True) -> tuple:
+                   mark: bool = True, toward_budget: bool = True) -> tuple:
     """单 provider 内部重试。返回 (ok, content | 最后错误)。
-    mark=False（影子调用）不计入熔断。"""
+    mark=False（影子调用）不计入熔断；toward_budget=False 不计日熔断预算。"""
     global _last_error
     max_tokens = LLM_MAX_TOKENS
     for attempt in range(1, retries + 1):
@@ -546,7 +573,7 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
             r.raise_for_status()
             data = r.json()
             usage = data.get("usage") or {}
-            _record_usage(usage, provider=p["name"])      # 记录 token 用量（分站）
+            _record_usage(usage, provider=p["name"], toward_budget=toward_budget)
             choice = (data.get("choices") or [{}])[0]
             content = ((choice.get("message") or {}).get("content") or "").strip()
             if content:

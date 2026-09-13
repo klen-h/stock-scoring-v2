@@ -577,6 +577,15 @@ def main():
             print(f"  ❌ {desc} 失败（{cost:.0f}s）: {e}", flush=True)
             traceback.print_exc()
 
+    # ★ 2026-09-13（时序审计）：LLM 影子线程是 daemon——日批最后一个任务
+    #   （trader_brief）的影子调用会在进程退出时被直接杀死，盘后简报的新模型
+    #   对比记录必丢。退出前有界等待在飞影子线程结束。
+    try:
+        from app.flash.llm import wait_shadow_threads
+        wait_shadow_threads(timeout=180)
+    except Exception as e:
+        print(f"  ⚠️ 影子线程等待失败（忽略）: {e}")
+
     print(f"\n=== 汇总: 成功 {len(ok_list)} / 失败 {len(fail_list)} ===")
     for desc, cost in ok_list:
         print(f"  ✅ {desc} ({cost:.0f}s)")
