@@ -416,11 +416,13 @@ def _nb_condition_raw(state: str, ma_trend: str) -> bool:
 
 
 def _apply_bearish_refine(state: str, ma_trend: str, base_score: float,
-                          raw_nb: bool) -> Tuple[str, float]:
+                          raw_nb: bool, as_of_date=None) -> tuple:
     """neutral + 重心下移 → neutral_bearish（仅状态标签，权重与 neutral 相同）。
 
     ★ 2026-09-13：nb 进/出加"连续 2 日确认"，避免 9 天横跳 5 次的状态噪音。
-      读取 market_regime_history 最近一日：
+      读取 market_regime_history 里 **早于 as_of_date 的最近一日**（审查 P0-1：
+      此前无日期下限，同日第二次重算会把"昨日"读到当日行，两日确认退化单日；
+      as_of_date=None 时保持旧查询，兼容测试桩）：
         - 进入 nb：昨日 raw_nb=True 且今日 raw_nb=True
         - 退出 nb：昨日 raw_nb=False 且今日 raw_nb=False（昨天是 nb 时今天仍保持，
           等明天二次确认）
@@ -435,12 +437,19 @@ def _apply_bearish_refine(state: str, ma_trend: str, base_score: float,
     prev_state = None
     try:
         from app.database import db
-        row = db.fetch_one(
-            "SELECT state, bearish_refine_raw FROM market_regime_history "
-            "ORDER BY date DESC LIMIT 1")
+        if as_of_date:
+            row = db.fetch_one(
+                "SELECT state, bearish_refine_raw FROM market_regime_history "
+                "WHERE date < %s ORDER BY date DESC LIMIT 1", (as_of_date,))
+        else:
+            row = db.fetch_one(
+                "SELECT state, bearish_refine_raw FROM market_regime_history "
+                "ORDER BY date DESC LIMIT 1")
         if row:
             prev_state = row.get("state")
-            prev_raw = row.get("bearish_refine_raw")
+            _raw = row.get("bearish_refine_raw")
+            # SQLite 返回 int（1/0/None），is True/False 身份比较会失败 → 统一转 bool
+            prev_raw = None if _raw is None else bool(_raw)
     except Exception:
         pass
 
@@ -456,6 +465,10 @@ def _apply_bearish_refine(state: str, ma_trend: str, base_score: float,
 
     # 已在 nb：今日仍满足 → 继续；今日不满足但昨日满足 → 保持，等明日确认
     if prev_state == NEUTRAL_BEARISH:
+        if state != NEUTRAL:
+            # 今日状态机已切档（如恐慌大跌 → defensive）：尊重当日判定，
+            # 不再保持 nb（审查 P1-1：原保持分支会把 defensive 降级为 nb 一整天）
+            return state, base_score
         if raw_nb:
             return NEUTRAL_BEARISH, -20.0
         if prev_raw is False:
@@ -589,22 +602,50 @@ def _ensure_history_table() -> None:
         pass
 
 
-def refresh_regime_cache() -> Optional[dict]:
+def refresh_regime_cache(force: bool = False) -> Optional[dict]:
     """
     盘后计算最新市场状态并缓存（同步函数，供调度器线程池调用）。
 
     数据源：backtest_prices 中的沪深300（由回测价格回填任务先写入当日数据）；
     数据未就绪时返回 None 并保留旧缓存，由调度器窗口内重试。
     成功时同步落库 market_regime_history（按日期覆盖），供状态切换追踪。
+
+    ★ 2026-09-13（审查 P0-1）同日幂等：当日已有判定行时不再重算（force=True 可
+      强制）。此前 Render 15:40（regime_cache_loop）与日批 19:30（task_market_regime）
+      双写者各跑一次，第二次重算会把"昨日"读到当日行 → 两日确认退化为单日、
+      同一天可能写出两个不同 state（读表方与读缓存方口径分叉）。
     """
     states = load_regime_history(force=True)   # 盘后判定必须看到当日收盘
     if not states:
         return None
     latest = states[-1]
+    if not force:
+        try:
+            _ensure_history_table()
+            from app.database import db
+            _row = db.fetch_one(
+                "SELECT * FROM market_regime_history WHERE date = %s", (latest.date,))
+            if _row and _row.get("state"):
+                _REGIME_CACHE["date"] = _row["date"]
+                _REGIME_CACHE["state"] = _row["state"]
+                _REGIME_CACHE["weights"] = get_regime_weights(_row["state"])
+                _REGIME_CACHE["detail"] = {
+                    "regime_score": _row.get("regime_score"),
+                    "adx": _row.get("adx"),
+                    "ma_trend": _row.get("ma_trend"),
+                    "volatility_regime": _row.get("volatility_regime"),
+                    "idempotent_skip": True,   # 当日已有判定，直接复用落库结果
+                }
+                print(f"[market_regime] {latest.date} 已有判定（{_row['state']}）"
+                      f"→ 幂等跳过重算")
+                return dict(_REGIME_CACHE)
+        except Exception as e:
+            print(f"[market_regime] 幂等检查失败（继续重算）: {e}")
     # neutral + 重心下移 + 宽度恶化 → neutral_bearish（仅标签，权重同 neutral）
     raw_nb = _nb_condition_raw(latest.state, latest.ma_trend)
     refined_state, refined_score = _apply_bearish_refine(
-        latest.state, latest.ma_trend, latest.regime_score, raw_nb)
+        latest.state, latest.ma_trend, latest.regime_score, raw_nb,
+        as_of_date=latest.date)
     _REGIME_CACHE["date"] = latest.date
     _REGIME_CACHE["state"] = refined_state
     _REGIME_CACHE["weights"] = get_regime_weights(refined_state)

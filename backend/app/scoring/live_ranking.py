@@ -33,7 +33,11 @@ _BJ = timezone(timedelta(hours=8))
 
 _TABLE_READY = False
 _load_cache: Dict = {"ts": 0.0, "date": None, "data": None, "pool_total": 0}
-_LOAD_TTL = 300          # 读取缓存 5 分钟（榜单每日一变，够用且省往返）
+_LOAD_TTL = 300          # 快路径：窗口内零 DB 访问
+_LOAD_TTL_LONG = 3600    # ★ 2026-09-13（审查 P0-3）：同日续用上限。榜单按 rank_date
+                         #   日更、同日内容不可变；快路径过期后先用 1 行
+                         #   MAX(rank_date) 探测校验日期，没变就续用缓存——旧逻辑
+                         #   每 5min 全量重拉 500 行 payload ≈ 420KB/次 ≈ 20MB/天。
 
 
 def _today_bj() -> str:
@@ -177,6 +181,7 @@ def compute_and_store(limit: int = 300) -> str:
 def save(rank_date: str, rows: List[dict], pool_total: int = 0) -> int:
     """整体替换当日榜单（先删后批量插）。"""
     init_table()
+    _load_cache["ts"] = 0.0   # 写入即失效（本进程读缓存；跨进程由 TTL_LONG 兜底）
     try:
         db.execute("DELETE FROM ranking_live WHERE rank_date = %s", (rank_date,))
     except Exception as e:
@@ -231,6 +236,14 @@ def load(limit: int = 300, use_cache: bool = True) -> Dict:
         init_table()
         row = db.fetch_one("SELECT MAX(rank_date) AS d FROM ranking_live")
         latest = (row or {}).get("d")
+        if (use_cache and latest and latest == _load_cache["date"]
+                and _load_cache["data"] is not None
+                and now - _load_cache["ts"] < _LOAD_TTL_LONG):
+            # 同日榜单不可变 → 只花一次 1 行探测即续用缓存
+            _load_cache["ts"] = now
+            return {"date": _load_cache["date"],
+                    "data": _load_cache["data"][:limit],
+                    "pool_total": _load_cache["pool_total"]}
         if not latest:
             _load_cache.update({"ts": now, "date": None, "data": [], "pool_total": 0})
             return {"date": None, "data": [], "pool_total": 0}

@@ -1098,7 +1098,9 @@ REGIME_CACHE_WINDOW = (940, 1440)   # 北京时间 15:40-23:59（沪深300收盘
 async def regime_cache_loop():
     """工作日盘后判定市场状态并缓存/落库，评分接口据此动态切换三维权重。
     依赖 backtest_prices 中当日沪深300数据（回填任务先写入）；数据未就绪则
-    不 mark_done，窗口内每 5 分钟重试（回填完成后即成功）。"""
+    不 mark_done，窗口内每 5 分钟重试（回填完成后即成功）。
+    ★ 与日批 task_market_regime 双写安全：refresh_regime_cache 同日幂等
+      （当日已有判定行即跳过重算），不会破坏 nb 两日确认。"""
     from app.backtest.market_regime import refresh_regime_cache
     while True:
         now = rules.beijing_now()

@@ -146,9 +146,17 @@ def _load_bars_all() -> dict:
     return bars
 
 
+# ★ 2026-09-13（审查 P0-3）：load_latest 读缓存 —— mainforce_state 是日批日更表，
+#   此前榜单每 3min 重算会全池回源（~2000 行 chip_json ≈ 0.6MB/次 ≈ 40-55MB/天）。
+#   只查缓存缺失的 code；本进程 _save/refresh_all 落库即失效（跨进程由 TTL 兜底）。
+_LATEST_TTL_SEC = 1800
+_latest_cache = {"ts": 0.0, "data": {}}   # {code: state_dict}
+
+
 def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100) -> dict:
     """全池计算当日主力行为状态（幂等覆盖当日）。"""
     ensure_table()
+    _latest_cache.update({"ts": 0.0, "data": {}})   # 写入即失效
     bars_map = _load_bars_all()
     if codes:
         bars_map = {c: bars_map[c] for c in codes if c in bars_map}
@@ -191,30 +199,37 @@ def _save(code: str, name: str, date: str, ov: dict) -> None:
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """, (code, name, date, ov.get("phase"), ov.get("signal"),
               ov.get("mult", 1.0), chip_json, ov.get("flow5_amt")))
+    _latest_cache["data"].pop(code, None)   # 写入即失效（读缓存）
 
 
 def load_latest(codes: list) -> dict:
-    """{code: state_dict}——每只取最新日期的一条。"""
+    """{code: state_dict}——每只取最新日期的一条（30min 进程缓存，见模块注释）。"""
     if not codes:
         return {}
-    rows = db.fetch("""
-        SELECT DISTINCT ON (code) code, name, date, phase, signal, mult,
-               chip_json, flow5_amt
-        FROM mainforce_state WHERE code = ANY(%s)
-        ORDER BY code, date DESC
-    """, (codes,))
-    out = {}
-    for r in rows:
-        try:
-            chip = (json.loads(r["chip_json"])
-                    if isinstance(r["chip_json"], str) else (r["chip_json"] or {}))
-        except (TypeError, ValueError):
-            chip = {}
-        out[r["code"]] = {
-            "date": str(r["date"]), "phase": r["phase"], "signal": r["signal"],
-            "mult": r["mult"] or 1.0, "chip": chip, "flow5_amt": r["flow5_amt"],
-        }
-    return out
+    now = time.time()
+    if _latest_cache["ts"] and now - _latest_cache["ts"] > _LATEST_TTL_SEC:
+        _latest_cache.update({"ts": 0.0, "data": {}})
+    cached = _latest_cache["data"]
+    missing = [c for c in dict.fromkeys(codes) if c not in cached]
+    if missing:
+        rows = db.fetch("""
+            SELECT DISTINCT ON (code) code, name, date, phase, signal, mult,
+                   chip_json, flow5_amt
+            FROM mainforce_state WHERE code = ANY(%s)
+            ORDER BY code, date DESC
+        """, (missing,))
+        for r in rows or []:
+            try:
+                chip = (json.loads(r["chip_json"])
+                        if isinstance(r["chip_json"], str) else (r["chip_json"] or {}))
+            except (TypeError, ValueError):
+                chip = {}
+            cached[r["code"]] = {
+                "date": str(r["date"]), "phase": r["phase"], "signal": r["signal"],
+                "mult": r["mult"] or 1.0, "chip": chip, "flow5_amt": r["flow5_amt"],
+            }
+        _latest_cache["ts"] = now
+    return {c: cached[c] for c in codes if c in cached}
 
 
 if __name__ == "__main__":

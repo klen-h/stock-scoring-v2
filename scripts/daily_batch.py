@@ -111,6 +111,8 @@ def task_market_regime():
       下被关，而日批任务清单漏了它 → market_regime_history 停在 09-08，日志里
       「应用市场状态权重 2026-09-08 neutral」，评分权重/战法准入/闸门全是 3 天前的。
       依赖 backfill 先写入沪深300当日数据，故紧排其后（strategy_scan/score_snapshot 之前）。
+    ★ 2026-09-13：refresh_regime_cache 已改同日幂等（当日已有判定行即跳过），
+      与 Render 15:40 常驻循环双跑不再互相污染"昨日"（两日确认不再退化单日）。
     """
     from app.backtest.market_regime import refresh_regime_cache
     cache = refresh_regime_cache()

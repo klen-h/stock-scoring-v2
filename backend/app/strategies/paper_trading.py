@@ -707,8 +707,10 @@ def track_positions(use_daily: bool = False) -> dict:
                         口径：同日止损优先、跳空按 min(open,stop)）
     exit_reason 语义：
       - stop_loss / take_profit：止损/止盈触发
-      - expire：持仓 ≥ MAX_HOLD_DAYS 日仍未触发（真·超期强平）
-      - timeout_no_trigger：止损止盈均未触发（盘后兜底离场）
+      - expire：持有到期（v2 = 含成交日的第 N 个交易日收盘，由盘后兜底执行；
+                v1 = 超期盘中强平）
+      - timeout_no_trigger：已废弃不再产生（2026-09-13 审查 P0-2：旧盘后兜底
+        会把未到期仓位提前平掉并记此原因）；保留枚举兼容历史数据统计
     """
     holdings = db.fetch("SELECT * FROM paper_positions WHERE status='holding'")
     if not holdings:
@@ -744,11 +746,20 @@ def track_positions(use_daily: bool = False) -> dict:
                         reason, exit_p = "take_profit", target
                         break
                 if not reason:
-                    # 语义区分：满超期天数真超期 → expire；否则止损止盈均未触发 → timeout_no_trigger
-                    if _hold_days(h["fill_date"], today) >= _max_hold():
+                    # 持有到期才离场（engine 口径：含成交日在内的第 N 个交易日收盘）。
+                    # bars 不含成交日、且兜底时当日 K 线尚未回填（16:10 才回填），
+                    # 故已持有交易日 = len(bars) + 1（今日）。
+                    # ★ 2026-09-13 审查 P0-2 修复：未满持有期绝不平仓——旧逻辑两个
+                    #   分支都会平仓，未到期仓位被按 timeout_no_trigger 以「昨日
+                    #   收盘价」提前离场，实际持有期退化为 ~2 日，与回测 v2 口径分叉。
+                    if 1 + len(bars) >= _max_hold():
                         reason, exit_p = "expire", float(bars[-1]["close"] or 0)
                     else:
-                        reason, exit_p = "timeout_no_trigger", float(bars[-1]["close"] or 0)
+                        continue   # 未满持有期且未触发止损止盈 → 顺延明日兜底
+            elif _hold_days(h["fill_date"], today) >= _max_hold() + 2:
+                # 安全网：日线数据长期缺失（回填持续失败）时按最新收盘价强平，
+                # 防止仓位永久挂起；正常情况走不到这里。
+                reason, exit_p = "expire", _latest_close(h["code"])
         else:
             q = quotes.get(h["code"]) or {}
             price = float(q.get("price") or 0)
@@ -761,7 +772,12 @@ def track_positions(use_daily: bool = False) -> dict:
                 reason, exit_p = "stop_loss", price
             elif price > 0 and target > 0 and price >= target:
                 reason, exit_p = "take_profit", price
-            if not reason and _hold_days(h["fill_date"]) >= _max_hold():
+            # ★ 2026-09-13 审查 P0-2：v2 的到期离场统一由盘后兜底按 engine 口径
+            #   （含成交日第 N 个交易日收盘价）执行；盘中不再按自然日强平——
+            #   否则周五成交的仓位周一（仅 1 个交易日）就会被自然日计数误判到期。
+            #   v1（20 日超期）维持盘中自然日近似强平不变。
+            if (not reason and not exit_policy_v2()
+                    and _hold_days(h["fill_date"]) >= _max_hold()):
                 prev_c = float(q.get("prev_close") or 0)
                 if locked and price > 0 and prev_c > 0 and price < prev_c:
                     # 一字跌停卖不出（涨停方向卖得出，不受此限）→ 顺延下次跟踪
