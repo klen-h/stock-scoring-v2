@@ -45,7 +45,7 @@ from app.backtest import engine                                # noqa: E402
 from app.backtest import data as bt_data                       # noqa: E402
 from app.backtest.market_regime import detect_market_regime    # noqa: E402
 from app.backtest.strategies import (                          # noqa: E402
-    _load_prices_map, apply_exit_policy,
+    WARFARE_HOLD_DAYS, _load_prices_map, apply_exit_policy, exit_policy,
 )
 from app.mainforce.gate import gate_states_for_signals         # noqa: E402
 from app.strategies.market_regime import (                     # noqa: E402
@@ -158,16 +158,24 @@ def main():
         tagged.append({**s, "state": state, "ma_trend": ma_trend, "vol": vol})
 
     # 2) 与生产同口径：G 闸门 + 退出 v2，全部一次性算好挂到信号上
+    # ★ 2026-09-13 口径对齐（审查发现）：生产 `_recompute_whitelist` 的 G 闸门
+    #   有 `if exit_policy() == "v2"` 前置条件，持有期取 `WARFARE_HOLD_DAYS` 常量。
+    #   此处同步，避免将来改 `WARFARE_EXIT_POLICY`/持有期后脚本静默分叉。
+    gate_on = exit_policy() == "v2"
     gate = {}
-    try:
-        gate = gate_states_for_signals(tagged)
-    except Exception as e:
-        print(f"[gate] 闸门状态计算失败（不过滤）: {e}")
+    if gate_on:
+        try:
+            gate = gate_states_for_signals(tagged)
+        except Exception as e:
+            print(f"[gate] 闸门状态计算失败（不过滤）: {e}")
+    else:
+        print(f"[gate] exit_policy={exit_policy()}（非 v2）→ 按生产口径跳过 G 闸门")
     start = min(s["date"] for s in tagged)
     codes = {s["code"] for s in tagged}
     prices_map = _load_prices_map(codes, start=start)
     prepared = []
     for s in tagged:
+        # gate_on=False 时 gate 为空 dict → 默认 True（不过滤），与生产一致
         ok = (gate.get((s["code"], s["date"])) or {}).get("ok", True)
         base = None
         for b in prices_map.get(s["code"]) or []:
@@ -176,7 +184,7 @@ def main():
             else:
                 break
         v2 = apply_exit_policy(
-            {**s, "direction": "long", "hold_days": 5, "is_etf": False,
+            {**s, "direction": "long", "hold_days": WARFARE_HOLD_DAYS, "is_etf": False,
              "strategy": s["strategy_en"]}, base_close=base)
         prepared.append({**s, "gate_ok": ok, "v2": v2})
 

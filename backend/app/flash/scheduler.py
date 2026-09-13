@@ -801,7 +801,10 @@ def scan_all_strategies() -> dict:
             stats["failed"] += 1
             continue
         # ★ P3 战法准入：未准入战法不进调度器（不调 _do_scan、不写空结果，单独计 skipped）
-        admitted, admit_reason, _, _ = is_strategy_admitted(key)
+        # ★ 2026-09-13 B 方案：扫描层传 for_scan=True —— 阴跌段照常扫描并落库攒样本
+        #   （不再让「阴跌全禁」落到扫描层造成样本永久断档）；推送仍由下面的
+        #   whitelist 独立把关，入池由 paper_trading 走完整判定。
+        admitted, admit_reason, _, _ = is_strategy_admitted(key, for_scan=True)
         if not admitted:
             stats["skipped"] += 1
             print(f"[scheduler] 战法 {key} 未准入（{admit_reason}），跳过扫描")

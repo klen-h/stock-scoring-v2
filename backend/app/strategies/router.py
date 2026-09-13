@@ -85,7 +85,10 @@ async def scan_strategy(
         raise HTTPException(status_code=404, detail=f"未找到战法: {strategy_name}")
 
     # ★ P3 战法准入：非准入战法直接返回，不启动后台扫描
-    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(strategy.name_en)
+    # ★ 2026-09-13 B 方案：扫描层传 for_scan=True —— 阴跌段照常扫描攒样本，
+    #   收紧只作用于入场/推送层（推送由 get_push_whitelist 独立把关）。
+    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(
+        strategy.name_en, for_scan=True)
     if not admitted:
         return {
             "data": [],
@@ -169,7 +172,10 @@ async def _run_scan(strategy_name: str, min_market_cap: float, min_avg_volume: f
 def _do_scan(strategy, min_market_cap: float, min_avg_volume: float):
     """同步执行扫描（在线程池中运行）"""
     # ★ P3 战法准入：非准入战法禁止扫描（手动 /scan 与盘后全量扫描共用此函数）
-    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(strategy.name_en)
+    # ★ 2026-09-13 B 方案：for_scan=True —— 阴跌段照常扫描、写库攒样本；
+    #   入池/推送收紧在 paper_trading 与白名单层完成。
+    admitted, admit_reason, admit_regime, admit_vol = is_strategy_admitted(
+        strategy.name_en, for_scan=True)
     if not admitted:
         print(f"[strategies] {strategy.name} 未准入（{admit_reason}），跳过扫描")
         return []

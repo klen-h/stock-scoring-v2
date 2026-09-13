@@ -478,15 +478,31 @@ ADMISSION_MATRIX = {
 # （信号全史 volatility=low 的阴跌信号 0 条），故 key 在 ma_trend，低波是其子集。
 STRATEGY_GRIND_GATE = (os.environ.get("STRATEGY_GRIND_GATE", "on").strip() != "off")
 
+# ── 扫描层放宽（B 方案，2026-09-13）──
+# on（默认）：**扫描层**只判 base 类型准入（进攻→趋势类、震荡→震荡类、防御→禁），
+#   阴跌闸门与高波白名单**只作用于入场/推送层** → 阴跌段照常扫描、照常写
+#   strategy_results **攒样本**，但不推企微（`get_push_whitelist` 独立把关）、
+#   不进模拟盘（`paper_trading` 走完整判定）。
+# off：回退旧行为（扫描层即完整准入 → 阴跌段完全不扫描）。
+# 理由：#7 白名单的哲学是「非白名单战法照常扫描攒样本、只不推送」；而阴跌全禁
+#   原先落在**扫描层**（`_do_scan` 直接 return []，不写库）→ 阴跌期间
+#   strategy_results 永久断档，未来无法复盘「阴跌段是否有逆势战法」。
+#   推送层本就由白名单独立把关，扫描层无需重复收紧。
+STRATEGY_WIDE_SCAN = (os.environ.get("STRATEGY_WIDE_SCAN", "on").strip() != "off")
+
 
 def is_strategy_admitted(strategy_name: str, regime: str = None,
-                         volatility: str = None) -> tuple:
+                         volatility: str = None, for_scan: bool = False) -> tuple:
     """
     判断战法在给定市场状态下是否准入。
 
     返回 (admitted: bool, reason: str, regime, volatility)。
     regime/volatility 缺省时自动检测当前市场状态。
-    非准入战法禁止扫描（由 _do_scan / scan 接口调用）。
+
+    for_scan=False（默认，**入场/推送层**）：完整判定 = base 类型 + 阴跌闸门 + 高波白名单。
+    for_scan=True（**扫描层**，`_do_scan` / 调度器 / 手动 scan 接口）：只判 base 类型，
+      阴跌闸门与高波白名单不再拦截 → 「照常扫描攒样本」。受 `STRATEGY_WIDE_SCAN`
+      控制，设 off 可回退为扫描层完整判定。
     """
     info = detect_market_regime()
     regime = regime or info.get("regime")
@@ -509,6 +525,10 @@ def is_strategy_admitted(strategy_name: str, regime: str = None,
     if strategy_type != base:
         return False, (f"当前为{REGIME_LABELS.get(regime, regime)}市，"
                        f"{TYPE_LABELS.get(strategy_type, strategy_type)}战法不准入"), regime, volatility
+
+    # ── 扫描层到此为止（B 方案）：base 类型对了就放行扫描，样本照常落库 ──
+    if for_scan and STRATEGY_WIDE_SCAN:
+        return True, "准入（扫描层·攒样本）", regime, volatility
 
     # ── 阴跌子档（PLAN P2②）：震荡 + MA 向下 = 慢性失血，与高波震荡是两种市况。
     #    回测：阴跌段全战法期望为负（见 STRATEGY_GRIND_GATE 注释）→ 全禁。

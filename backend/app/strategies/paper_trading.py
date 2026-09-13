@@ -241,6 +241,9 @@ def auto_ingest_signals() -> dict:
     gate_on = None
     for cfg in list_strategies():
         strategy_en = cfg["name_en"]        # 注册/查询用英文 key，name 只是显示名
+        # ★ 2026-09-13 B 方案：此处是**入场层**（模拟盘入池），保持完整判定
+        #   （不传 for_scan）→ 阴跌市全禁、高波白名单照常生效。扫描层已放宽
+        #   （for_scan=True 照常攒样本），收紧只在这里与推送白名单层发生。
         admitted, reason, _, _ = is_strategy_admitted(strategy_en)
         if not admitted:
             continue
