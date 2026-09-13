@@ -3,8 +3,10 @@ name: Generate K-line Data Package
 on:
   # ★ 2026-09-08：GitHub 自带 schedule 已停用 —— 实测延迟可达 5 小时
   #   （16:00 的定时任务 20:47 才启动），且与第三方定时服务重复触发 → 每天双跑。
-  #   现在统一由 https://console.cron-job.org/ 配置 `0 16 * * 1-5`
-  #   （北京时间 16:00，收盘后）调用本文件的 workflow_dispatch 触发，时间准时可控。
+  #   现在统一由 https://console.cron-job.org/ 配置 `0 18 * * 1-5`
+  #   （北京时间 18:00）调用本文件的 workflow_dispatch 触发，时间准时可控。
+  # ★ 2026-09-13：由 16:00 推迟到 18:00 —— 腾讯当日 K 线在 16:00 时常未更新完整，
+  #   会把「缺末根」的当日数据打进去（历史上专门为此写过"末根补齐重试"）。
   #   注意：仅收盘后运行，盘中拉取会被腾讯限流且当日 K 线不完整。
   workflow_dispatch:
     inputs:

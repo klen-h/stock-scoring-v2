@@ -270,8 +270,18 @@ def _maybe_refresh():
             _warn_once(f"过期数据包刷新失败（继续用旧包）: {e}")
 
 
-# 包发布时间（工作日约 21:03 完成并推 gh-pages）→ 取 21:30 作为"当天包应已可用"的分界
-_PACK_READY_HHMM = (21, 30)
+# 包发布时间：后端包工作日 **19:00 触发**（cron-job.org，见 backend-pack.yml），
+# 约 1h43m → **~20:43 完成并推 gh-pages**。
+# → 取 **22:00** 作为"当天包应已可用"的分界（比推算完成时间晚约 77 分钟，
+#   给 Actions 排队/构建耗时波动留余量）。
+#
+# ★ 为什么阈值必须留足余量（2026-09-13，本地踩坑后修订）：
+#   本阈值决定 `_latest_available_pack_day()` 从几点起认为"今天该有新包了"。
+#   若设得过早而包因排队延迟尚未发布，`_is_stale()` 会判为陈旧 →
+#   **所有 K 线/指标/回测价格读取回退查 Supabase**（本地开发实测单日近 600MB）。
+#   宁可多半天用旧包（不判陈旧），也不要触发全量回退——旧包只损失一点新鲜度，
+#   回退则是 egress 灾难。原值 21:30（注释写"21:03 完成"）在 19:00 触发制下余量仅 47 分钟，偏紧。
+_PACK_READY_HHMM = (22, 0)
 
 
 def _latest_available_pack_day(now=None):
@@ -322,7 +332,17 @@ def _is_stale() -> bool:
     if d is None:
         _stale_cache = (now, False)
         return False
-    val = d < _latest_available_pack_day()
+    latest = _latest_available_pack_day()
+    val = d < latest
+    # ★ 2026-09-13 根治（防复发）：local 模式下包陈旧是**静默回退 DB**——
+    #   本地开发跑几个脚本就能拉出几百 MB Supabase egress（09-12 实测 596MB），
+    #   而用户毫无感知。这里显式警告，提示重跑 sync_local.py（走 Pages，零 Supabase 流量）。
+    #   pack 模式有 `_maybe_refresh` 自动重下，不会走到这个静默路径。
+    if val and _DATA_SOURCE == "local":
+        _warn_once(
+            f"本地数据包陈旧（pack_date={_pack_date_raw()} < 应可用 {latest}）→ "
+            f"K线/指标/回测价格读取将**回退查 Supabase**（egress 暴涨！）。"
+            f"请运行 `python scripts/sync_local.py --force` 更新本地包")
     _stale_cache = (now, val)
     return val
 

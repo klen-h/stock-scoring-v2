@@ -2,10 +2,12 @@ name: Generate Backend Data Pack
 
 on:
   # ★ 2026-09-08：GitHub 自带 schedule 已停用（延迟大 + 与第三方重复触发导致双跑）。
-  #   现在由 https://console.cron-job.org/ 配置 `0 17 * * 1-5`（北京时间 17:00）
-  #   调用 workflow_dispatch 触发 —— 排在前端包（16:00，约 37 分钟）之后，
-  #   配额已恢复、quotes 已生效；后端包约 1h43m，19:00 前完成，
-  #   daily-batch 由 workflow_run 自动接棒。
+  #   现在由 https://console.cron-job.org/ 配置 `0 19 * * 1-5`（北京时间 19:00）
+  #   调用 workflow_dispatch 触发 —— 排在前端包（18:00，约 37 分钟）之后，
+  #   配额已恢复、quotes 已生效；后端包约 1h43m，**~20:43 完成**，
+  #   daily-batch 由 workflow_run 自动接棒（约 74 分钟 → ~21:57 结束）。
+  # ★ 2026-09-13：整体由 16:00/17:00 推迟到 18:00/19:00 —— 腾讯当日 K 线在 16:00
+  #   时常未更新完整，会打出「缺末根」的当日数据。
   workflow_dispatch:
     inputs:
       workers:

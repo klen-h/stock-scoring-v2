@@ -9,7 +9,15 @@
 然后本地开发零 Supabase 流量的用法：backend/.env 里加一行 DATA_SOURCE=local
 （K线/指标/backtest_prices 读取层自动改读本地 SQLite；业务小表如模拟盘/自选
  走本地 SQLite——DATABASE_URL 留空即可，与生产数据分叉）
-更新数据：隔几天重跑本脚本（包每天 16:00 由 GitHub Actions 重新生成）。
+更新数据：隔几天重跑本脚本（**每个交易日**由 GitHub Actions 重新生成：
+K 线包 18:00 触发、后端包 19:00 触发（均走 cron-job.org，北京时间），
+后端包约 1h43m → **~20:43 完成**。详见 `.github/workflows/kline-data.yml` /
+`backend-pack.yml`）。
+
+★ 2026-09-13 血泪教训：**包陈旧时不更新会导致本地所有 K 线读取静默回退查
+  Supabase**（本地开发一天能拉出近 600MB egress）。包日期落后于"此刻本应可用的
+  最新交易日"即判陈旧，此时 `pack_source` 会打印 [WARN] 提示——看到就立刻重跑本脚本。
+  周一/长假后第一个交易日尤其容易踩到（"应可用日"已前移，旧包必然判陈旧）。
 """
 
 import argparse

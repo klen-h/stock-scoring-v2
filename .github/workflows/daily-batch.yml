@@ -2,14 +2,14 @@ name: Daily Batch
 
 on:
   # ★ 主触发：后端包 workflow 成功后自动跑（不再猜时间）。
-  #   后端包实测 1h43m，17:00 开始 → ~18:43 完成 → 本任务立即接棒，
+  #   后端包实测 1h43m，19:00 开始 → ~20:43 完成 → 本任务立即接棒，
   #   拿到的必然是今天的新包。
   workflow_run:
     workflows: ["Generate Backend Data Pack"]
     types: [completed]
 
   # 注：原 20:30 的兜底 schedule 已停用（2026-09-08）——后端包改由第三方定时
-  #   17:00 触发后，本任务由 workflow_run 接棒即可；保留 cron 会在同一天
+  #   19:00 触发后，本任务由 workflow_run 接棒即可；保留 cron 会在同一天
   #   重复跑一次日批（约 74 分钟）。若后端包整天没跑，手动 dispatch 本任务。
 
   # ★ 手动触发：前端「重算/扫描」按钮通过 GitHub API 转发到这里，
