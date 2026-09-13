@@ -559,7 +559,7 @@ def _log_risk_event(event_type: str, code: str, message: str) -> None:
         print(f"[paper] 风控事件落库失败: {e}")
     try:
         from app.flash.wechat import push_markdown_batched
-        push_markdown_batched("🛡 模拟盘风控", f"**{event_type}**\n{message}", force=True)
+        push_markdown_batched("🛡 模拟盘风控", f"**{event_type}**\n{message}", force=True, category="risk")
     except Exception as e:
         print(f"[paper] 风控事件推送失败: {e}")
 

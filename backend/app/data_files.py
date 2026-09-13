@@ -259,7 +259,7 @@ def _notify(items: list) -> None:
     print(f"[data_files] ⚠️ 运行时数据不健康: {[i['key'] for i in items]}")
     try:
         from app.flash.wechat import push_markdown_batched
-        push_markdown_batched("⚠️ 运行时数据检查异常", body, force=True)
+        push_markdown_batched("⚠️ 运行时数据检查异常", body, force=True, category="alert")
     except Exception as e:
         print(f"[data_files] 告警推送失败: {e}")
 

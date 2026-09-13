@@ -964,7 +964,7 @@ def run_daily_report(push: bool = False) -> dict:
     if push or os.environ.get("DAILY_REPORT_PUSH") == "1":
         try:
             from app.flash import wechat
-            wechat.push_markdown_batched(f"📋 A股日报 {date}", md)
+            wechat.push_markdown_batched(f"📋 A股日报 {date}", md, category="brief")
             pushed = True
         except Exception as e:
             print(f"[daily_report] 推送失败: {e}")

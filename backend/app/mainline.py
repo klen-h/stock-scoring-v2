@@ -327,7 +327,7 @@ def push_mainline_report(days: int = 12) -> dict:
     if s["unknown_latest"] > 0:
         lines.append(f"\n> ⚠️ 最新一天 {s['unknown_latest']} 只 Top50 股票无行业映射")
     from app.flash.wechat import push_markdown_batched
-    push_markdown_batched("🧭 行业主线日报", "\n".join(lines))
+    push_markdown_batched("🧭 行业主线日报", "\n".join(lines), category="brief")
     return {"ok": True, "mainlines": len(s["mainlines"]),
             "switches": len(s["switches"])}
 

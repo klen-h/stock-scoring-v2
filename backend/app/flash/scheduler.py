@@ -76,7 +76,7 @@ def _notify_failure(task: str, err: str):
             f"⚠️ {task}失败",
             f"> **任务：** {task}\n> **时间：** {rules.beijing_now().strftime('%H:%M')}\n"
             f"> **错误：** {err}\n\n请查看后端日志排查（数据源可能临时不可用，次日窗口内自动重试）。",
-            force=True)
+            force=True, category="alert")
     except Exception as e:
         print(f"[scheduler] 企微通知失败: {e}")
 
@@ -142,7 +142,7 @@ async def review_loop():
                             wechat.push_markdown_batched(
                                 f"⚠️ {phase} 复盘失败",
                                 f"复盘阶段 **{phase}** 执行失败，将在窗口内重试。\n\n错误：{err}",
-                                force=True)
+                                force=True, category="alert")
                         except Exception as e:
                             print(f"[scheduler] 推送失败提醒异常: {e}")
         except Exception as e:
@@ -392,9 +392,11 @@ async def trader_brief_premarket_loop():
                     store.mark_schedule_done("trader_brief_premarket")
                     status["last_trader_brief"] = rules.beijing_now().isoformat()
                     # 推送走业务开关（用户在前端关掉业务推送就不打扰）
-                    if wechat.WECHAT_WEBHOOK and wechat.BUSINESS_ALERTS_ENABLED:
+                    if wechat.BUSINESS_ALERTS_ENABLED and (
+                            wechat.WECHAT_WEBHOOK or wechat._hook_for("brief")):
                         await asyncio.to_thread(
-                            wechat.push_markdown_batched, "🧭 交易员决策简报（盘前）", md)
+                            wechat.push_markdown_batched, "🧭 交易员决策简报（盘前）", md,
+                            category="brief")
                     print(f"[scheduler] 盘前决策简报已生成: {res.get('date')} {len(md)} 字"
                           f"（降级={res.get('degraded')}）")
                 else:
@@ -446,7 +448,7 @@ def _run_midday_scan() -> dict:
             push_markdown_batched(
                 "先知雷达·午间预警",
                 (nl * 2).join(lines) + nl * 2 + "> 午间快扫基于盘中实时数据，收盘 15:35 全量扫描为准",
-                force=True)
+                force=True, category="risk")
         except Exception as e:
             print(f"[scheduler] 午间预警推送失败: {e}")
     return {"found": len(items), "alerted": len(alerts)}
@@ -1060,7 +1062,7 @@ def _push_paper_summary(r: dict) -> None:
                     f"- 放弃 {r.get('cancelled', 0) + r.get('watched', 0)} 笔（破位/高开/缩量）")
         lines = [f"**模拟盘开盘确认**（{rules.beijing_now().strftime('%m-%d %H:%M')}）",
                  body]
-        push_markdown_batched("📋 模拟盘", "\n".join(lines), force=True)
+        push_markdown_batched("📋 模拟盘", "\n".join(lines), force=True, category="brief")
     except Exception as e:
         print(f"[scheduler] 模拟盘摘要推送失败: {e}")
 
@@ -1178,7 +1180,7 @@ async def backtest_report_loop():
                 result = await asyncio.to_thread(run_weekly_backtest_report)
                 store.mark_schedule_done("backtest_report", date_str=week_key)
                 status["last_backtest_report"] = rules.beijing_now().isoformat()
-                push_markdown_batched("📊 周度回测报告", result["summary"])
+                push_markdown_batched("📊 周度回测报告", result["summary"], category="brief")
                 print(f"[scheduler] 周度回测报告完成: {result['path']}")
             except Exception as e:
                 print(f"[scheduler] 周度回测报告失败: {e}")
@@ -1356,7 +1358,7 @@ def _check_holding_news_once():
             _news_alerted["codes"].add(code)
             alerts.append((r.get("name") or code, code, res["score"], res["items"]))
     for name, code, score, items in alerts:
-        push_markdown_batched(f"🚨 持仓负面消息 {name}", _news_alert_markdown(name, code, score, items))
+        push_markdown_batched(f"🚨 持仓负面消息 {name}", _news_alert_markdown(name, code, score, items), category="risk")
     return len(alerts)
 
 

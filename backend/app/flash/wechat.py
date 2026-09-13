@@ -7,14 +7,17 @@
 企业微信 markdown 消息上限 4096 字节，超长自动按段落分批。
 
 ★ 2026-09-13 分类推送层（notify）：
-  自建应用消息（个人项目企业，支持按人路由/多应用分类）优先，
-  发送失败自动回落群机器人 webhook——自建应用有「可信IP」限制
-  （动态出口 IP 的 Render/Actions/本机都可能被 60020 拦），回落保证不丢通知。
+  解析顺序：① 分类群机器人 WECHAT_HOOK_{RISK|COACH|BRIEF|ALERT}（webhook 无
+  IP 限制，Render/Actions 直接可用，**生产分类靠它**）→ ② 自建应用消息
+  （WECHAT_NOTIFY_*，有「可信IP」限制，动态出口 IP 会被 60020 拦，尽力而为）
+  → ③ 主群 webhook（WECHAT_WEBHOOK）兜底。任一通道失败自动降级，通知不丢。
   配置：
-    WECHAT_APP_CORP_ID=wwXXXX                     # 项目企业 ID（全局）
-    WECHAT_NOTIFY_RISK/COACH/BRIEF/ALERT=agentid:secret   # 分应用（未建的应用不配）
+    WECHAT_WEBHOOK=...                            # 主群（兜底）
+    WECHAT_HOOK_RISK/COACH/BRIEF/ALERT=...        # 分类群机器人（推荐，生产可用）
+    WECHAT_APP_CORP_ID=wwXXXX                     # 项目企业 ID（应用消息通道）
+    WECHAT_NOTIFY_RISK/COACH/BRIEF/ALERT=agentid:secret   # 分应用（可选）
     WECHAT_NOTIFY_DEFAULT=agentid:secret          # 未专属配置的分类共用
-    WECHAT_NOTIFY_TOUSER=HuangHeLiang|user2       # 默认接收人（通讯录账号）
+    WECHAT_NOTIFY_TOUSER=HuangHeLiang|user2       # 应用消息接收人（通讯录账号）
 ================================================================================
 """
 
@@ -41,6 +44,14 @@ _APP_COOLDOWN_SEC = 1800
 
 _token_cache = {"key": None, "token": None, "ts": 0.0}
 _circuit = {"key": None, "fails": 0, "until": 0.0}
+
+
+def _hook_for(category: str):
+    """分类 → 专属群机器人 webhook（WECHAT_HOOK_{CAT}；webhook 无 IP 限制）。"""
+    cat = (category or "").strip().lower()
+    if not cat:
+        return None
+    return (os.environ.get(f"WECHAT_HOOK_{cat.upper()}") or "").strip() or None
 
 
 def _app_for(category: str):
@@ -111,13 +122,23 @@ def _send_app(agentid: str, secret: str, touser: str, content: str, label: str) 
 
 def notify(category: str, title: str, content: str, force: bool = False,
            touser: str = None) -> bool:
-    """分类推送统一入口：自建应用消息优先 → 失败/未配置回落群 webhook。
+    """分类推送统一入口（解析顺序见文件头）。
 
-    category: risk / coach / brief / alert（决定用哪个应用 + 接收人语义）
+    category: risk / coach / brief / alert（决定专属群机器人与应用/接收人）
     返回是否至少有一条通道送达（供调用方记日志/告警）。
     """
     if not force and not BUSINESS_ALERTS_ENABLED:
         return False   # 与 push_markdown_batched 的业务开关语义一致
+
+    # ① 分类群机器人：无 IP 限制，失败回落主群 webhook
+    hook = _hook_for(category)
+    if hook and _send_batched(hook, title, content):
+        return True
+    if hook and WECHAT_WEBHOOK:
+        print(f"[wechat] [{category}] 分类群推送失败，回落主 webhook")
+        return _send_batched(WECHAT_WEBHOOK, title, content)
+
+    # ② 自建应用（可信IP 限制，尽力而为）→ ③ 主群 webhook 兜底
     full = f"## {title}\n---\n{content}"
     app = _app_for(category)
     key = f"{app[0]}:{app[1][:6]}" if app else None
@@ -147,16 +168,16 @@ def notify(category: str, title: str, content: str, force: bool = False,
                 _circuit.update(key=None, fails=0, until=0.0)
                 return True
             _mark_app_fail(key, title[:30])
-    # 回落：群机器人（原有逻辑，force 语义一致）
     push_markdown_batched(title, content, force=force)
     return bool(WECHAT_WEBHOOK)
 
 
-def _send(content: str, label: str) -> bool:
-    if not WECHAT_WEBHOOK or not content or not content.strip():
+def _send(content: str, label: str, hook: str = None) -> bool:
+    target = hook or WECHAT_WEBHOOK
+    if not target or not content or not content.strip():
         return False
     try:
-        r = _session.post(WECHAT_WEBHOOK,
+        r = _session.post(target,
                           json={"msgtype": "markdown", "markdown": {"content": content}},
                           timeout=30)
         ok = r.json().get("errcode") == 0
@@ -164,7 +185,7 @@ def _send(content: str, label: str) -> bool:
         print(f"[wechat] {label} 推送失败: {e}")
         return False
     # print 放 try 外，避免控制台编码问题（如 Windows GBK 下的 emoji）影响发送结果
-    print(f"[wechat] [{'OK' if ok else 'FAIL'}] {label}")
+    print(f"[wechat] [{'OK' if ok else 'FAIL'}] {label}" + ("（分类群）" if hook else ""))
     return ok
 
 
@@ -176,17 +197,12 @@ def _truncate(text: str, max_bytes: int) -> str:
     return raw[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def push_markdown_batched(title: str, content: str, force: bool = False) -> None:
-    """按段落边界分批推送长 Markdown（每批 ≤4KB，标题带序号）。
-    force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。"""
-    if not WECHAT_WEBHOOK:
-        return
-    if not force and not BUSINESS_ALERTS_ENABLED:
-        return
+def _send_batched(hook: str, title: str, content: str) -> bool:
+    """分批推送到指定 webhook（每批 ≤4KB，优先段落边界断开）。全部批次成功 True。"""
     full = f"## {title}\n---\n{content}"
     if len(full.encode("utf-8")) <= MAX_CONTENT_BYTES:
-        _send(full, title)
-        return
+        return _send(full, title, hook)
+    ok_all = True
     remaining, idx = content, 0
     while remaining.strip():
         idx += 1
@@ -197,13 +213,31 @@ def push_markdown_batched(title: str, content: str, force: bool = False) -> None
         cut = batch.rfind("\n\n")
         if cut > len(batch) * 0.5:
             batch = batch[:cut]
-        _send(header + batch + ("\n\n...(续)" if idx > 1 else ""), f"{title}({idx})")
+        if not _send(header + batch + ("\n\n...(续)" if idx > 1 else ""), f"{title}({idx})", hook):
+            ok_all = False
         remaining = remaining[len(batch):].strip()
+    return ok_all
+
+
+def push_markdown_batched(title: str, content: str, force: bool = False,
+                          category: str = None) -> None:
+    """按段落边界分批推送长 Markdown 到主群 webhook（每批 ≤4KB，标题带序号）。
+    force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。
+    category 传入时改走 notify()（分类群 → 应用 → 主群 解析链）。"""
+    if category:
+        notify(category, title, content, force=force)
+        return
+    if not WECHAT_WEBHOOK:
+        return
+    if not force and not BUSINESS_ALERTS_ENABLED:
+        return
+    _send_batched(WECHAT_WEBHOOK, title, content)
 
 
 def push_analysis(analysis: dict, clusters: list) -> None:
-    """诊断流三段推送：诊断+情景 / 重点事件 / 策略+合规。"""
-    if not WECHAT_WEBHOOK:
+    """诊断流三段推送：诊断+情景 / 重点事件 / 策略+合规（→ brief 分类群）。"""
+    hook = _hook_for("brief") or WECHAT_WEBHOOK
+    if not hook:
         return
     if not BUSINESS_ALERTS_ENABLED:
         return
@@ -221,7 +255,7 @@ def push_analysis(analysis: dict, clusters: list) -> None:
     for s in (analysis.get("scenarios") or [])[:3]:
         p1 += (f"> **{s.get('scenario_name')}** ({s.get('probability_qualitative')})\n"
                f"> 路径: {s.get('oil_path', '无')} | 触发: {s.get('trigger_to_watch')}\n\n")
-    _send(p1, "诊断摘要")
+    _send(p1, "诊断摘要", hook)
 
     events = analysis.get("top_events") or []
     if events:
@@ -232,7 +266,7 @@ def push_analysis(analysis: dict, clusters: list) -> None:
                    f"**事件：** {e.get('cluster_name')} ({e.get('value_score')}分)\n"
                    f"**逻辑：** {e.get('why')}\n"
                    f"**链条：** {e.get('transmission_chain')}\n\n")
-        _send(p2, "事件分析")
+        _send(p2, "事件分析", hook)
 
     strategy = analysis.get("daily_strategy") or {}
     comp = analysis.get("d_state_compliance") or {}
@@ -242,12 +276,12 @@ def push_analysis(analysis: dict, clusters: list) -> None:
           f"> **禁入标的：** {' | '.join(strategy.get('do_not_touch') or []) or '无'}\n---\n"
           f"**D状态合规：** {comp.get('compliance_note', '已通过逻辑检查')}\n"
           f"**数据缺失：** {' | '.join(diag.get('missing_items') or []) or '无'}")
-    _send(p3, "每日策略")
+    _send(p3, "每日策略", hook)
 
 
 def push_alerts(alerts: dict) -> None:
     """信号跟踪提醒（入场/出场/接近目标）。"""
-    if not WECHAT_WEBHOOK:
+    if not WECHAT_WEBHOOK and not _hook_for("risk"):
         return
     if not BUSINESS_ALERTS_ENABLED:
         return
@@ -257,7 +291,7 @@ def push_alerts(alerts: dict) -> None:
     for a in alerts.get("exits", []):
         lines.append(a["message"])
     if lines:
-        push_markdown_batched("🎯 交易信号提醒", "\n".join(lines))
+        push_markdown_batched("🎯 交易信号提醒", "\n".join(lines), category="risk")
 
 
 def push_strategy_signals(messages: list) -> None:
@@ -268,10 +302,10 @@ def push_strategy_signals(messages: list) -> None:
     业务推送开关限制——只要配置了 WECHAT_WEBHOOK 即推送（与失败告警同等级）。
     消息由 strategies.recommendation.format_signal_message 生成（含买入逻辑/目标推导）。
     """
-    if not WECHAT_WEBHOOK:
-        print("[wechat] 未配置 WECHAT_WEBHOOK，跳过战法信号推送")
+    if not WECHAT_WEBHOOK and not _hook_for("risk"):
+        print("[wechat] 未配置 WECHAT_WEBHOOK/风险群，跳过战法信号推送")
         return
     if not messages:
         return
     for m in messages:
-        _send(m, "战法买入信号")
+        notify("risk", "🎯 战法买入信号", m, force=True)

@@ -157,7 +157,7 @@ def check_risk_alerts() -> dict:
         push_markdown_batched(
             "先知雷达·盘中风险警示",
             body + "\n\n> 盘中快照警示（每类每日一次）。收盘 15:35 全量扫描为准。",
-            force=True)
+            force=True, category="risk")
         for c in to_push:
             _mark_pushed(today, c["key"])
         print(f"[intraday_alert] 盘中风险警示推送 {len(to_push)} 条: "

@@ -189,13 +189,13 @@ def run_review(phase: str) -> dict:
         track = tracker.update_signals(market_data)
         result["alerts"] = track["alerts"]
 
-        # 6. 推送
+        # 6. 推送（→ brief 分类群；信号提醒自路由 risk）
         title = llm._PHASE_TITLES.get(phase, phase)
-        wechat.push_markdown_batched(title, markdown)
+        wechat.push_markdown_batched(title, markdown, category="brief")
         if track["alerts"]["entries"] or track["alerts"]["exits"]:
             wechat.push_alerts(track["alerts"])
         wechat.push_markdown_batched("🎯 专业交易员报告",
-                                     tracker.generate_pro_trader_report())
+                                     tracker.generate_pro_trader_report(), category="brief")
     except Exception as e:
         result["error"] = str(e)[:300]
         print(f"[review] {phase} 复盘异常: {e}")
