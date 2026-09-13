@@ -34,6 +34,8 @@
 ================================================================================
 """
 
+import os
+
 import numpy as np
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -466,6 +468,16 @@ ADMISSION_MATRIX = {
     ("defensive", "low"): [],
 }
 
+# ── 阴跌子档开关（PLAN P2②，Coach 上游前置）──
+# STRATEGY_GRIND_GATE=on（默认）：震荡市 + MA 向下 → 战法全禁；设 off 恢复旧行为。
+# 回测背书（backtest_reports/strategy_lowvol_admission_20260913_1226.md，
+# G 闸门+退出 v2 与生产白名单重放同口径）：阴跌 20 交易日 923 信号、562 笔成交
+# 41.5% / -0.505% / PF 0.72，分战法无一期望为正（单阳不破最接近仍 -0.17%/PF0.90），
+# 高波同款白名单（morning_star/ma_pullback）在阴跌段更差（33 笔 33.3%/-1.465%）
+# → 阴跌段全禁，ma_trend 修复后自动恢复。PLAN 原假设的"低波"维度无历史样本
+# （信号全史 volatility=low 的阴跌信号 0 条），故 key 在 ma_trend，低波是其子集。
+STRATEGY_GRIND_GATE = (os.environ.get("STRATEGY_GRIND_GATE", "on").strip() != "off")
+
 
 def is_strategy_admitted(strategy_name: str, regime: str = None,
                          volatility: str = None) -> tuple:
@@ -497,6 +509,13 @@ def is_strategy_admitted(strategy_name: str, regime: str = None,
     if strategy_type != base:
         return False, (f"当前为{REGIME_LABELS.get(regime, regime)}市，"
                        f"{TYPE_LABELS.get(strategy_type, strategy_type)}战法不准入"), regime, volatility
+
+    # ── 阴跌子档（PLAN P2②）：震荡 + MA 向下 = 慢性失血，与高波震荡是两种市况。
+    #    回测：阴跌段全战法期望为负（见 STRATEGY_GRIND_GATE 注释）→ 全禁。
+    #    覆盖 (neutral, high) 白名单——阴跌比高波更严，先判阴跌再判波动档。
+    if (STRATEGY_GRIND_GATE and regime == "neutral"
+            and (info.get("ma_trend") or "") == "down"):
+        return False, "阴跌市（震荡+MA向下）战法全禁，等趋势修复自动恢复", regime, volatility
 
     rule = ADMISSION_MATRIX.get((regime, volatility))
     if rule == []:

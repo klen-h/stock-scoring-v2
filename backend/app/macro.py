@@ -249,7 +249,12 @@ def get_macro_panel() -> dict:
 #
 # 阈值是 v1 初值（按各品种日均波幅的量级设定），后续需用历史数据回测校准：
 # 触发偏多的次日上证上涨比例 ≥55% 保留、50~55% 降权、<50% 删除。
-RULES_VERSION = "macro-rules-v2"
+RULES_VERSION = "macro-rules-v3"
+
+# v3 新增（2026-09-13）：US10Y 日变化（>6bp 空）+ 水平（>4.6% 空），强度 1.5——
+#   10Y 4.92~4.93% 高位是近两周主要压制变量，us30y>5% 太远端；
+#   多头侧（大幅下行=宽松）留待回测校准后再放。
+
 
 # v2 调整（外部利率冲击成为主要矛盾）：global 上调、commodity 下调、internal 上调
 #   global ↑0.30→0.35：新增美债 2Y/曲线/30Y 三条规则，利率是当前定价核心
@@ -323,6 +328,16 @@ RULES = [
      "bull": None, "bear": {"op": ">", "v": 5.0}, "strength": 1.0,
      "tag_bull": None, "tag_bear": "美债长端高位(估值压制)",
      "why": "30Y 是全球折现率锚，持续高位系统性压制高估值/长久期资产（水平值规则）"},
+    # v3 新增 US10Y 两条：10Y 才是全球风险资产的实时定价锚（外资再配置门槛），
+    # us30y>5% 那条太远端——2026-09 上旬 10Y 4.92~4.93% 高位是近两周主要压制变量
+    {"id": "us10y_surge", "group": "global", "metric": "us10y_bp_change",
+     "bull": None, "bear": {"op": ">", "v": 6}, "strength": 1.5,
+     "tag_bull": None, "tag_bear": "美债10Y快速上行(压制A股估值)",
+     "why": "10Y 单日上行 >6bp=全球定价锚快速抬升，外资风险偏好回落、成长股估值承压（先只设空头侧，多头侧待回测校准）"},
+    {"id": "us10y_high", "group": "global", "metric": "us10y.price",
+     "bull": None, "bear": {"op": ">", "v": 4.6}, "strength": 1.5,
+     "tag_bull": None, "tag_bear": "美债10Y高位(4.6%上方)",
+     "why": "4.6% 是 2024-2026 箱体上沿/外资再配置门槛，持续高位=全球流动性收紧常态化，系统性压制 A 股风险偏好（水平值规则）"},
 
     # ── 商品/需求 ──
     {"id": "copper_demand", "group": "commodity", "metric": "copper.change_pct",
