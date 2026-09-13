@@ -23,7 +23,7 @@ function clamp(v, lo = 0, hi = 100) {
 /**
  * 生成今日多场景预测
  */
-export function generatePrediction(technicalData, stockInfo, position) {
+export function generatePrediction(technicalData, stockInfo, position, env = null) {
   if (!technicalData || technicalData.length < 30) {
     return { error: '技术指标数据不足，无法生成预测' }
   }
@@ -179,6 +179,15 @@ export function generatePrediction(technicalData, stockInfo, position) {
   if (turnover > 0) {
     if (turnover > 15) { bearish += 3 }       // 异常换手
     else if (turnover >= 1 && turnover <= 5) { bullish += 2 }  // 温和换手
+  }
+
+  // ─── 2.5 环境调整（W1.5 数据联动：主力/regime 来自 position_sizing 个股层）───
+  //   env = { position_pct }（已含 regime + 筹码 + 主力根据的合成档位）
+  if (env && typeof env.position_pct === 'number') {
+    const pct = env.position_pct
+    if (pct === 0) { bullish -= 10; bearish += 10 }       // 禁止（主力出货/防御市）
+    else if (pct <= 10) { bullish -= 3; bearish += 3 }    // 轻仓试探
+    else if (pct >= 50) { bullish += 4 }                  // 半仓/积极（有主力根据）
   }
 
   // ─── 3. 归一化概率 ───

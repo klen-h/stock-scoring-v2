@@ -209,18 +209,18 @@
               </span>
               <span v-else class="text-muted text-xs">-</span>
             </td>
-            <!-- 趋势健康度：5 格指示器，绿色=健康维度，红色=不健康 -->
+            <!-- 趋势健康度：5 格指示器（本地计算，复用 technical） -->
             <td class="py-2 px-3 text-center">
-              <div v-if="row.score?.trend_health?.verdict" class="inline-flex flex-col items-center gap-1">
+              <div v-if="row.trendHealth?.verdict" class="inline-flex flex-col items-center gap-1">
                 <div class="flex gap-0.5">
                   <span v-for="i in 5" :key="i" class="w-2.5 h-2.5 rounded-full"
-                    :class="i <= (row.score.trend_health.score || 0)
-                      ? healthDotColor(row.score.trend_health.score)
+                    :class="i <= (row.trendHealth.score || 0)
+                      ? healthDotColor(row.trendHealth.score)
                       : 'bg-gray-700'"
-                    :title="healthDetail(row.score.trend_health)"></span>
+                    :title="healthDetail(row.trendHealth)"></span>
                 </div>
-                <span class="text-[10px]" :class="healthVerdictColor(row.score.trend_health.verdict)">
-                  {{ row.score.trend_health.verdict }}
+                <span class="text-[10px]" :class="healthVerdictColor(row.trendHealth.verdict)">
+                  {{ row.trendHealth.verdict }}
                 </span>
               </div>
               <span v-else class="text-muted text-xs">-</span>
@@ -395,11 +395,11 @@ import { useNewsBadges } from '../composables/useNewsBadges'
 import { useFastQuotes } from '../composables/useFastQuotes'
 import {
   addPosition, removePosition, updatePosition,
-  calcProfit, evaluateAlerts, evaluatePositionAction, calcPositionSize, updateHighWaterMark, useSummary,
+  calcProfit, evaluateAlerts, evaluatePositionAction, updateHighWaterMark, useSummary,
   exportJSON, importJSON, usePortfolio, ALERT_CONFIG,
   isTradingTime, getRefreshInterval,
 } from '../composables/usePortfolio'
-import { getMarketTemperature } from '../api'
+import { getMarketTemperature, getUserPositionSizing } from '../api'
 import {
   supported as notifSupported, permission as notifPermission,
   enabled as notifEnabled, requestPermission, disable as disableNotification,
@@ -407,6 +407,7 @@ import {
 } from '../composables/useNotifications'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { generatePrediction } from '../utils/predictionEngine'
+import { calcTrendHealth } from '../utils/trendHealth'
 
 const router = useRouter()
 
@@ -441,7 +442,9 @@ const fastQuotes = useFastQuotes(
 const scoreMap = ref({})      // { [code]: { total_score, signal, ... } }
 const predictionMap = ref({})    // { [code]: { scenarios, deviation, ... } }
 const predictionLoading = ref({}) // { [code]: true/false }
+const trendHealthMap = ref({})   // { [code]: { score, verdict, details } }（本地计算，复用 technical）
 const marketTemp = ref({})    // 市场温度
+const sizingMap = ref(null)   // 仓位建议（后端数据联动：regime+宏观+情绪+宽度+主力筹码）
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
 const tradingNow = ref(isTradingTime())  // 当前是否交易时段（用于 UI 提示）
@@ -455,11 +458,17 @@ const tableRows = computed(() => {
   return positions.value.map(p => {
     const realtime = realtimeMap.value[p.code]
     const score = scoreMap.value[p.code]
+    // 趋势健康：优先本地计算（复用 technical 那次 K 线），fallback 到 getStockScore 返回值
+    const trendHealth = trendHealthMap.value[p.code] || score?.trend_health
     const price = realtime?.price || 0
     const profit = calcProfit(p.cost, p.shares, price)
     const alerts = evaluateAlerts(p, realtime, score)
-    const posAction = evaluatePositionAction(p, score, realtime)
-    const posSize = calcPositionSize(score, marketTemp.value, positions.value.length)
+    // ★ W1.5：建议仓位 + 智能建议数据联动（position_sizing 个股层：regime/主力/筹码）
+    const sz = sizingMap.value?.positions?.find(s => s.code === p.code)
+    const posAction = evaluatePositionAction(p, score, realtime, sz)
+    const posSize = sz
+      ? { perStock: sz.suggested_pct, totalLimit: sizingMap.value.total_limit_pct, reason: sz.position_label }
+      : null
     const prediction = predictionMap.value[p.code] || null
     let predDeviation = null
     if (prediction && realtime && prediction.price) {
@@ -485,7 +494,7 @@ const tableRows = computed(() => {
         }
       }
     }
-    return { position: p, realtime, score, profit, alerts, posAction, posSize, prediction, predDeviation, loadingPred: predictionLoading.value[p.code] }
+    return { position: p, realtime, score, trendHealth, profit, alerts, posAction, posSize, prediction, predDeviation, loadingPred: predictionLoading.value[p.code] }
   })
 })
 
@@ -643,6 +652,10 @@ async function refresh() {
   const tempPromise = getMarketTemperature().then(({ data }) => {
     if (data) marketTemp.value = data
   }).catch(() => {})
+  // 仓位建议（W1.5：后端数据联动，替代前端 calcPositionSize 写死规则）
+  getUserPositionSizing().then(res => {
+    if (res && res.data) sizingMap.value = res.data
+  }).catch(() => {})
 
   Promise.allSettled([...realtimePromises, ...scorePromises, tempPromise]).finally(() => {
     // 行情 + 评分都到位后，检查并发送桌面通知（内部做 diff 去重）
@@ -676,8 +689,14 @@ async function fetchPrediction(code) {
     }
     const realtime = realtimeMap.value[code]
     const position = positions.value.find(p => p.code === code)
-    const prediction = generatePrediction(techData, realtime, position)
+    // ★ W1.5：预测数据联动——传 position_sizing 个股层（regime+主力+筹码），
+    //   让三场景概率叠加环境因素（若 sizing 尚未返回则 env=null，纯技术面）
+    const sz = sizingMap.value?.positions?.find(s => s.code === code)
+    const prediction = generatePrediction(techData, realtime, position, sz)
     predictionMap.value[code] = prediction
+    // ★ 趋势健康度本地计算（复用本次 techData，替代 getStockScore 里的 trend_health，
+    //   与预测共用同一次 K 线请求，盘中刷新不额外拉取）
+    trendHealthMap.value[code] = calcTrendHealth(techData)
   } catch (e) {
     predictionMap.value[code] = { error: e.message }
   } finally {

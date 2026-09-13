@@ -209,6 +209,23 @@ def delete_portfolio(code: str, user: dict = Depends(get_current_user)):
     return {"success": True}
 
 
+@router.get("/position-sizing")
+def get_position_sizing(user: dict = Depends(get_current_user)):
+    """持仓仓位建议（W1.5，数据联动）：regime + 宏观 + 情绪温度计 + 宽度 +
+    主力筹码/阶段 → 总仓位上限 + 每只建议仓位。替代前端写死的 calcPositionSize。"""
+    rows = db.fetch(
+        "SELECT code FROM user_portfolio WHERE user_id = %s ORDER BY created_at ASC",
+        (user["user_id"],))
+    codes, seen = [], set()
+    for r in rows or []:
+        c = str(r.get("code") or "").strip()
+        if c and c not in seen:
+            seen.add(c)
+            codes.append(c)
+    from app.coach.position_sizing import position_sizing
+    return position_sizing(codes)
+
+
 # ================================================================
 #  批量同步（全量覆盖，用于初次迁移或设备间强制同步）
 # ================================================================

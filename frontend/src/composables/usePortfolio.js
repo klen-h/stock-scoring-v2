@@ -251,11 +251,19 @@ export function evaluateAlerts(position, realtime, score) {
 
 // ── 智能加减仓建议（结合趋势健康度 + 盈亏 + 评分）──
 // 返回：{ action: string, reason: string, level: 'success'|'warning'|'danger'|'info' }
-export function evaluatePositionAction(position, score, realtime) {
+export function evaluatePositionAction(position, score, realtime, sizing = null) {
   const price = realtime?.price || 0
   if (!price || !position) return { action: '持有', reason: '数据不足', level: 'info' }
 
   const { profitPct } = calcProfit(position.cost, position.shares, price)
+
+  // ★ W1.5 数据联动：主力/regime 否决（来自 position_sizing 个股层），优先于技术面——
+  //   主力出货/防御市 = 禁止持仓，不等技术面止损线（简报 §2.1「price_pos>0.75+出货→直接砍」）
+  if (sizing && sizing.position_pct === 0) {
+    const why = (sizing.reasons || []).join('；') || '主力出货/防御市，禁止持仓'
+    return { action: '清仓', reason: why, level: 'danger' }
+  }
+
   const health = score?.trend_health || {}
   const healthScore = health.score ?? 0
   const verdict = health.verdict || ''

@@ -57,6 +57,8 @@
 - **数据源**：行情=`routers/market._cache`；两融/情绪=`flash.margin_sentiment`（24h 缓存）；出货=`mainforce.overlay.mainforce_overlay`；regime=`backtest.market_regime` 缓存。**持仓 = paper_positions（模拟盘）+ `user_portfolio`（真实持仓）合并**：real 的 `cost` 是成本价（每股）、无止损字段 → 默认止损=成本×0.92（`REAL_STOP_LOSS_PCT=-8%`，与前端 ALERT_CONFIG 一致）；持有日用 `created_at` 近似；按 code 去重（后端 upsert 设计「一码一条」但历史有重复，如 000567）。
 - **开关**：`COACH_ENABLED`（默认 on）；第一周仅「止损触发 + 持有满3日」两条 `push:true`，其余只落库攒样本。
 - **预承诺剧本**：`paper_trading.fill_pending_positions` 成交处调 `write_plan` 写 `coach_plans`。
+- **仓位建议 `position_sizing.py`（W1.5，2026-09-13）**：市场层 = `trade_gate.REGIME_POSITION[regime]` 基准 × 降档因子（10Y>5%/两融净减/情绪过热/跌停/普跌）→ 总上限档位；个股层复用 `trade_gate.evaluate`（regime+筹码+主力+矛盾）；组合层 `suggested = snap(min(个股, 总上限))`（**不按持仓数稀释**）。路由 `/api/user/position-sizing`，前端 Portfolio「建议仓位」列已接入（替代写死的 `calcPositionSize`）。
+- **前端持仓页本地化（2026-09-13）**：趋势健康度移植成 `frontend/src/utils/trendHealth.js`（与后端 `engine._calc_trend_health` 同口径，改一处须同步），复用 `getStockTechnical` 的 techData 本地算、与预测共用同一次 K 线请求；智能建议 `evaluatePositionAction` 加 `sizing` 参数（主力出货/防御→强制清仓）、预测 `generatePrediction` 加 `env` 参数（position_pct 调三场景概率）。
 - `requirements.txt` 已显式声明 `PyYAML==6.0.2`（此前是传递依赖，CI 干净环境会挂）。
 
 ## 项目约定
