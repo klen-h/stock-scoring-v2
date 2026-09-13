@@ -47,6 +47,7 @@ from app.routers import system as system_router
 from app.routers import performance as performance_router
 from app.strategies.router import router as strategies_router
 from app.routers.paper import router as paper_router
+from app.routers.coach import router as coach_router
 
 # ──────────────────────────────────────────────────────────────
 # lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
@@ -186,6 +187,7 @@ app.include_router(system_router.router, prefix="/api/system", tags=["系统状�
 app.include_router(performance_router.router, prefix="/api/system", tags=["系统绩效"])  # 三轨绩效对照
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
+app.include_router(coach_router, prefix="/api/coach", tags=["交易员教练"])  # 建议/执行回写/一致性（W1 补漏）
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
 # 重任务触发：转发给 GitHub Actions，本进程零计算（512MB 实例生存关键）
 app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触发"])

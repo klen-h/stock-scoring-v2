@@ -399,6 +399,43 @@ def _ev_gate_reduce(pos, params, ctx):
     }
 
 
+def _today_str() -> str:
+    try:
+        from app.flash import rules as flash_rules
+        return flash_rules.beijing_now().strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _gate_add_prev_day_hit(today_str: str) -> bool:
+    """上一个交易日 `gate_add` 是否命中（查 coach_alerts 的市场级落库记录）。
+
+    ★ 连续 2 日确认的实现**零新增存储**：gate_add 每命中一天就落一条
+      （dedupe_key = 日|规则|-，每天至多一条），今日命中时回查昨日记录即可。
+      昨日无记录（未命中 / 宽度数据缺失）→ False（保守方向：不加仓）。
+    """
+    try:
+        from datetime import datetime, timedelta
+
+        from app.database import db
+        from app.flash import rules as flash_rules
+        d = datetime.strptime(today_str, "%Y-%m-%d").date()
+        for _ in range(10):
+            d -= timedelta(days=1)
+            try:
+                if not flash_rules.is_trading_day(datetime(d.year, d.month, d.day)):
+                    continue
+            except Exception:
+                pass   # 交易日历不可用 → 按自然日近似（周末不会有落库记录，自然跳过）
+            row = db.fetch_one(
+                "SELECT id FROM coach_alerts WHERE rule_id='gate_add' "
+                "AND alert_date=%s LIMIT 1", (d.strftime("%Y-%m-%d"),))
+            return bool(row)
+    except Exception:
+        return False
+    return False
+
+
 def _ev_gate_add(pos, params, ctx):
     b = ctx.get("breadth") or {}
     ratio, ld = b.get("up_down_ratio"), b.get("limit_down")
@@ -407,11 +444,21 @@ def _ev_gate_add(pos, params, ctx):
     if ratio is None or ld is None:
         return None
     if ratio > thr_r and ld < thr_ld:
+        # ★ 连续 2 日确认（简报 §2.3 加仓①）：昨日 gate_add 命中过 → 今日再命中
+        #   = 确认成立；否则为第 1 日命中，只提示不确认（W1 占位已补齐）。
+        confirmed = _gate_add_prev_day_hit(_today_str())
+        if confirmed:
+            return {
+                "message": (f"【加仓条件确认（连续 2 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
+                            f"且跌停 {ld} 家（<{thr_ld}），昨日已命中 → 确认成立。"
+                            f"按计划从准空仓向中性加仓。"),
+                "numbers": {"up_down_ratio": ratio, "limit_down": ld, "confirmed": True},
+            }
         return {
-            "message": (f"【加仓条件部分命中】涨跌比 {ratio:.2f}（>{thr_r}）且跌停 "
-                        f"{ld} 家（<{thr_ld}）。"
-                        f"★ 需连续 2 日确认（本规则暂单日判定，第二日确认由 W2 补）。"),
-            "numbers": {"up_down_ratio": ratio, "limit_down": ld},
+            "message": (f"【加仓条件部分命中（第 1 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
+                        f"且跌停 {ld} 家（<{thr_ld}）。★ 需连续 2 日确认，"
+                        f"明日再命中才成立。"),
+            "numbers": {"up_down_ratio": ratio, "limit_down": ld, "confirmed": False},
         }
     return None
 

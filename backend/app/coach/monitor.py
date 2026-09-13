@@ -207,12 +207,13 @@ def _card_due(now: datetime) -> Optional[str]:
 
 
 async def coach_loop() -> None:
-    """盘中 30s 轮询（light 规则）+ 关键时点体检卡。"""
+    """盘中 30s 轮询（light 规则）+ 关键时点体检卡 + 盘后收盘回写。"""
     print(f"[coach] 教练循环启动（enabled={COACH_ENABLED}, 轮询 {POLL_SECONDS}s）")
     while True:
         try:
             if COACH_ENABLED:
                 now = flash_rules.beijing_now()
+                t = now.hour * 60 + now.minute
                 is_open = False
                 try:
                     is_open = bool(flash_rules.get_china_market_status().get("is_open"))
@@ -226,6 +227,17 @@ async def coach_loop() -> None:
                         if not store.is_schedule_done(key):
                             await asyncio.to_thread(push_health_card)
                             store.mark_schedule_done(key)
+                elif now.weekday() < 5 and 940 <= t < 1440:
+                    # ★ W1 补漏（2026-09-13）：盘后一次性收盘回写 = 全量（含 heavy）
+                    #   求值落库 + T+5 结果回填。此前 `daily_close_job` 无任何调用点 →
+                    #   heavy 规则（拥挤减仓/出货砍）永不落库、outcome_pct 永远空。
+                    #   挂 coach_loop 内（评审③：不被 READ_ONLY 关），与
+                    #   paper_track_loop 的盘后兜底同模式（schedule_done 幂等）。
+                    from app.flash import store
+                    if not store.is_schedule_done("coach_daily_close"):
+                        r = await asyncio.to_thread(daily_close_job)
+                        store.mark_schedule_done("coach_daily_close")
+                        print(f"[coach] 盘后收盘回写完成: {r}")
         except Exception as e:
             # 循环保命：单轮异常绝不能让教练循环静默死亡（同 review_loop 教训）
             print(f"[coach] 单轮异常（循环继续）: {e}")

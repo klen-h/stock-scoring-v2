@@ -114,8 +114,20 @@ def main():
     a = _run("gate_reduce", _ctx(margin={"chg5": -150.0, "score": 55.0}))
     check("[16] 两融净减但情绪不冷 → 不触发", bool(a), False)
 
+    orig_prev = cr._gate_add_prev_day_hit
+    cr._gate_add_prev_day_hit = lambda today: True
     a = _run("gate_add", _ctx(breadth={"up_down_ratio": 0.85, "limit_down": 5}))
-    check("[17] 涨跌比0.85且跌停5家 → 加仓", bool(a), True, a)
+    check("[17] 命中+昨日命中 → 连续2日确认", bool(a), True, a)
+    if a and "确认（连续 2 日）" in a[0].message:
+        print("      文案含「确认（连续 2 日）」 ✓")
+        _passed += 1
+    cr._gate_add_prev_day_hit = lambda today: False
+    a = _run("gate_add", _ctx(breadth={"up_down_ratio": 0.85, "limit_down": 5}))
+    check("[17b] 命中+昨日未命中 → 第1日提示", bool(a), True, a)
+    if a and "第 1 日" in a[0].message:
+        print("      文案含「第 1 日」 ✓")
+        _passed += 1
+    cr._gate_add_prev_day_hit = orig_prev
     a = _run("gate_add", _ctx(breadth={"up_down_ratio": 0.60, "limit_down": 30}))
     check("[18] 涨跌比0.60且跌停30家 → 不触发", bool(a), False)
 
