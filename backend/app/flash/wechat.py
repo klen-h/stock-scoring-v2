@@ -5,10 +5,22 @@
 
 环境变量：WECHAT_WEBHOOK（未配置时所有推送静默跳过，只走 Web 界面）。
 企业微信 markdown 消息上限 4096 字节，超长自动按段落分批。
+
+★ 2026-09-13 分类推送层（notify）：
+  自建应用消息（个人项目企业，支持按人路由/多应用分类）优先，
+  发送失败自动回落群机器人 webhook——自建应用有「可信IP」限制
+  （动态出口 IP 的 Render/Actions/本机都可能被 60020 拦），回落保证不丢通知。
+  配置：
+    WECHAT_APP_CORP_ID=wwXXXX                     # 项目企业 ID（全局）
+    WECHAT_NOTIFY_RISK/COACH/BRIEF/ALERT=agentid:secret   # 分应用（未建的应用不配）
+    WECHAT_NOTIFY_DEFAULT=agentid:secret          # 未专属配置的分类共用
+    WECHAT_NOTIFY_TOUSER=HuangHeLiang|user2       # 默认接收人（通讯录账号）
 ================================================================================
 """
 
 import os
+import time as _time
+
 import requests
 
 WECHAT_WEBHOOK = os.environ.get("WECHAT_WEBHOOK", "")
@@ -19,6 +31,125 @@ MAX_CONTENT_BYTES = 4000
 BUSINESS_ALERTS_ENABLED = os.environ.get("WECHAT_BUSINESS_ALERTS", "0") == "1"
 
 _session = requests.Session()
+
+# ── 自建应用通道（2026-09-13）────────────────────────────────────────────────
+WECHAT_APP_CORP_ID = os.environ.get("WECHAT_APP_CORP_ID", "")
+WECHAT_NOTIFY_TOUSER = os.environ.get("WECHAT_NOTIFY_TOUSER", "")
+_APP_MSG_MAX_BYTES = 1900          # 应用消息 markdown 上限 2048 字节，留余量
+_APP_FAIL_THRESHOLD = 3            # 连续失败 N 次 → 熔断冷却（避免每次都白等超时）
+_APP_COOLDOWN_SEC = 1800
+
+_token_cache = {"key": None, "token": None, "ts": 0.0}
+_circuit = {"key": None, "fails": 0, "until": 0.0}
+
+
+def _app_for(category: str):
+    """分类 → (agentid, secret)：专属 env 优先 → DEFAULT → None（走 webhook）。"""
+    cat = (category or "").strip().lower()
+    for env in (f"WECHAT_NOTIFY_{cat.upper()}", "WECHAT_NOTIFY_DEFAULT"):
+        raw = (os.environ.get(env) or "").strip()
+        if raw and ":" in raw:
+            agentid, secret = raw.split(":", 1)
+            if agentid.strip() and secret.strip() and WECHAT_APP_CORP_ID:
+                return agentid.strip(), secret.strip()
+    return None
+
+
+def _get_token(secret: str) -> str:
+    now = _time.time()
+    if (_token_cache["token"] and _token_cache["key"] == secret
+            and now - _token_cache["ts"] < 7000):
+        return _token_cache["token"]
+    r = _session.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                     params={"corpid": WECHAT_APP_CORP_ID, "corpsecret": secret},
+                     timeout=15)
+    j = r.json()
+    if j.get("errcode") != 0 or not j.get("access_token"):
+        raise RuntimeError(f"gettoken {j.get('errcode')}: {(j.get('errmsg') or '')[:80]}")
+    _token_cache.update(key=secret, token=j["access_token"], ts=now)
+    return j["access_token"]
+
+
+def _circuit_open(key: str) -> bool:
+    if _circuit["key"] != key:
+        return False
+    if _circuit["fails"] >= _APP_FAIL_THRESHOLD and _time.time() < _circuit["until"]:
+        return True
+    if _time.time() >= _circuit["until"]:
+        _circuit.update(key=None, fails=0, until=0.0)
+    return False
+
+
+def _mark_app_fail(key: str, why: str) -> None:
+    if _circuit["key"] != key:
+        _circuit.update(key=key, fails=0, until=0.0)
+    _circuit["fails"] += 1
+    if _circuit["fails"] >= _APP_FAIL_THRESHOLD:
+        _circuit["until"] = _time.time() + _APP_COOLDOWN_SEC
+        print(f"[wechat] 应用通道连续失败 {_circuit['fails']} 次（{why}）→ 熔断 30min，回落群 webhook")
+
+
+def _send_app(agentid: str, secret: str, touser: str, content: str, label: str) -> bool:
+    """单条应用消息（markdown）。成功 True；任何异常/非 0 errcode 都 False。"""
+    try:
+        tok = _get_token(secret)
+        r = _session.post(
+            "https://qyapi.weixin.qq.com/cgi-bin/message/send",
+            params={"access_token": tok},
+            json={"touser": touser, "msgtype": "markdown", "agentid": int(agentid),
+                  "markdown": {"content": _truncate(content, _APP_MSG_MAX_BYTES)}},
+            timeout=15)
+        j = r.json()
+        ok = j.get("errcode") == 0
+    except Exception as e:
+        print(f"[wechat] 应用消息失败 {label}: {e}")
+        return False
+    if not ok:
+        print(f"[wechat] 应用消息拒绝 {label}: {j.get('errcode')} {(j.get('errmsg') or '')[:60]}")
+    return ok
+
+
+def notify(category: str, title: str, content: str, force: bool = False,
+           touser: str = None) -> bool:
+    """分类推送统一入口：自建应用消息优先 → 失败/未配置回落群 webhook。
+
+    category: risk / coach / brief / alert（决定用哪个应用 + 接收人语义）
+    返回是否至少有一条通道送达（供调用方记日志/告警）。
+    """
+    if not force and not BUSINESS_ALERTS_ENABLED:
+        return False   # 与 push_markdown_batched 的业务开关语义一致
+    full = f"## {title}\n---\n{content}"
+    app = _app_for(category)
+    key = f"{app[0]}:{app[1][:6]}" if app else None
+    if app and not _circuit_open(key):
+        receiver = (touser or WECHAT_NOTIFY_TOUSER or "").strip()
+        if not receiver:
+            print(f"[wechat] [{category}] 未配置 WECHAT_NOTIFY_TOUSER，跳过应用通道")
+        else:
+            # 长内容分批（应用通道上限更小）；任一批失败即整体回落 webhook
+            ok_all = True
+            remaining, idx = full, 0
+            while remaining.strip():
+                idx += 1
+                header = f"## {title} ({idx}/?)\n---\n" if idx > 1 else ""
+                budget = _APP_MSG_MAX_BYTES - len(header.encode("utf-8")) - 20
+                batch = _truncate(remaining, budget)
+                cut = batch.rfind("\n\n")
+                if cut > len(batch) * 0.5:
+                    batch = batch[:cut]
+                if not _send_app(app[0], app[1], receiver,
+                                 header + batch + ("\n\n...(续)" if idx > 1 else ""),
+                                 f"{title}({idx})"):
+                    ok_all = False
+                    break
+                remaining = remaining[len(batch):].strip()
+            if ok_all:
+                _circuit.update(key=None, fails=0, until=0.0)
+                return True
+            _mark_app_fail(key, title[:30])
+    # 回落：群机器人（原有逻辑，force 语义一致）
+    push_markdown_batched(title, content, force=force)
+    return bool(WECHAT_WEBHOOK)
 
 
 def _send(content: str, label: str) -> bool:

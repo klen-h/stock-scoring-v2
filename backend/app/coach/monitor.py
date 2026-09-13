@@ -44,9 +44,10 @@ def _push(title: str, body: str) -> None:
     if not body.strip():
         return
     try:
-        from app.flash.wechat import push_markdown_batched
+        from app.flash.wechat import notify
         # force=True：教练警报是"触发式硬通知"，与模拟盘风控同级，不受业务开关限制
-        push_markdown_batched(title, body, force=True)
+        # ★ 2026-09-13：走分类通道 coach（自建应用优先、群 webhook 兜底）
+        notify("coach", title, body, force=True)
     except Exception as e:
         print(f"[coach] 推送失败: {e}")
 

@@ -12,3 +12,5 @@ python-dotenv==1.0.0
 PyYAML==6.0.2
 # 低频补充数据源（现金流/财报扩展因子，见 PLAN_ZZSHARE_INTEGRATION；可选，匿名可用）
 zzshare>=0.4.11
+# 企微自建应用接收消息回调（AES-256-CBC echostr 验证，2026-09-13）
+pycryptodome==3.20.0

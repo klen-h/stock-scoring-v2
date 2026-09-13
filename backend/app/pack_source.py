@@ -85,12 +85,11 @@ def _alert_pack_issue(msg: str) -> None:
         if _last_pack_alert_date == today:
             return
         _last_pack_alert_date = today
-        from app.flash.wechat import push_markdown_batched
-        push_markdown_batched(
-            "数据包告警",
-            f"**[pack_source]** {msg}\\n> 读侧将回退 DB / 陈旧包，"
-            f"请检查 backend-pack workflow 是否失败",
-            force=True)
+        from app.flash.wechat import notify
+        notify("alert", "数据包告警",
+               f"**[pack_source]** {msg}\n> 读侧将回退 DB / 陈旧包，"
+               f"请检查 backend-pack workflow 是否失败",
+               force=True)
     except Exception as e:
         print(f"[pack_source] 告警推送失败: {e}")
 

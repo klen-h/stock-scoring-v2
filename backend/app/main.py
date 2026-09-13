@@ -48,6 +48,7 @@ from app.routers import performance as performance_router
 from app.strategies.router import router as strategies_router
 from app.routers.paper import router as paper_router
 from app.routers.coach import router as coach_router
+from app.routers import wecom_callback as wecom_callback_router
 
 # ──────────────────────────────────────────────────────────────
 # lifespan：应用启动/关闭时执行（快讯监控调度器的启停）
@@ -193,6 +194,8 @@ app.include_router(paper_router, prefix="/api/paper", tags=["模拟盘"])
 app.include_router(system_router.router, prefix="/api/system", tags=["系统状态"])  # 数据新鲜度仪表盘
 app.include_router(performance_router.router, prefix="/api/system", tags=["系统绩效"])  # 三轨绩效对照
 app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"])  # 注册/登录
+# 企微自建应用「接收消息服务器」回调（解锁可信IP配置；2026-09-13）
+app.include_router(wecom_callback_router.router, prefix="/api/wecom", tags=["企微回调"])
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 app.include_router(coach_router, prefix="/api/coach", tags=["交易员教练"])  # 建议/执行回写/一致性（W1 补漏）
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
