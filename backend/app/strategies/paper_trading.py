@@ -55,8 +55,10 @@ def exit_policy_v2() -> bool:
 
 
 def _max_hold() -> int:
-    """超期强平天数：v2 策略持有 3 个交易日（网格扫描定版），v1 用原 20 天。"""
-    return 3 if exit_policy_v2() else MAX_HOLD_DAYS
+    """超期强平天数：v2 策略持有 3 个交易日（网格扫描定版），v1 用原 20 天。
+    ★ 审查 P1-8：天数/止损常量统一引用 backtest.strategies，防止两处静默漂移。"""
+    from app.backtest.strategies import exit_policy, WARFARE_HOLD_DAYS_V2
+    return WARFARE_HOLD_DAYS_V2 if exit_policy() == "v2" else MAX_HOLD_DAYS
 
 
 def _limit_down_locked(bars: list, j: int) -> bool:
@@ -144,7 +146,13 @@ def _calc_shares(code: str, price: float, stop: float, entry: float, half: bool)
     if shares * price > MAX_POSITION_VALUE:
         shares = int(MAX_POSITION_VALUE / price / 100) * 100
     if shares * price < MIN_POSITION_VALUE:
-        shares = max(shares, int(MIN_POSITION_VALUE / price / 100) * 100)
+        floored = int(MIN_POSITION_VALUE / price / 100) * 100
+        # ★ 审查 P2-⑪：下限钳位不得**放大**单笔风险——此前 floor 会把风险预算
+        #   算出的小仓位顶回 ≥2 万市值，severe 钩子/半仓档的减半在高波动票上
+        #   被静默抵消。现允许 floor 吃掉减份额度，但实际风险不得超过常规
+        #   预算（INITIAL_CAPITAL × RISK_PER_TRADE_PCT）对应的股数。
+        budget_shares = int((INITIAL_CAPITAL * RISK_PER_TRADE_PCT) / per_share_risk / 100) * 100
+        shares = max(shares, min(floored, budget_shares))
     return shares
 
 
@@ -282,13 +290,15 @@ def auto_ingest_signals() -> dict:
         for s in cands:
             code = s.get("code")
             if not code:
-                stats["skipped_low_conf"] += 1
+                # ★ 审查 P2-⑥：标签修正（此前误记为 skipped_low_conf）
+                stats["skipped_no_code"] += 1
                 continue
             if stats["ingested"] >= MAX_PENDING:
                 stats["pool_full"] = True
                 break
             if ingested_this >= MAX_PER_STRATEGY:
-                stats["skipped_exist"] += 1   # 该战法已达均衡上限，看下一个战法
+                # ★ 审查 P2-⑥：标签修正（此前误记为 skipped_exist）
+                stats["skipped_strategy_limit"] += 1
                 break
             # ★ 主力过滤闸门（与推送同一口径；历史重放验证见 mainforce/gate.py）：
             #   高位（price_pos>0.75）或拉升段信号不入模拟池——形态相似但主力阶段不对
@@ -317,12 +327,15 @@ def auto_ingest_signals() -> dict:
                 stats["skipped_exist"] += 1
                 continue
             # ★ 退出策略 v2（backtest.strategies.apply_exit_policy 同口径）：
-            #   止损=介入价×-7%、不设目标价（让利润奔跑，到期/止损离场）。
-            #   到期天数由 track 阶段的 _max_hold() 统一按策略取值。
+            #   止损=介入价×(1-WARFARE_STOP_PCT_V2)、不设目标价（让利润奔跑，
+            #   到期/止损离场）。到期天数由 track 阶段的 _max_hold() 统一取值。
+            #   ★ 审查 P1-8：止损比例引用 backtest 常量（此前写死 0.93）。
             if exit_policy_v2():
+                from app.backtest.strategies import WARFARE_STOP_PCT_V2
                 entry = float(s.get("entry_price") or 0)
                 if entry > 0:
-                    s = dict(s, stop_loss=round(entry * 0.93, 2), target_price=None)
+                    s = dict(s, stop_loss=round(entry * (1 - WARFARE_STOP_PCT_V2), 2),
+                             target_price=None)
             db.execute(
                 "INSERT INTO paper_positions (code, name, strategy_name, signal_date, entry_price, "
                 "stop_loss, target_price, status, confirmation_json, created_at) "

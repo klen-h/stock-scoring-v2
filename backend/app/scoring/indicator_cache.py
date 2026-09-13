@@ -57,11 +57,20 @@ def init_indicator_cache_table():
     print("[indicator_cache] indicator_cache 表初始化完成")
 
 
-# 启动时初始化
-init_indicator_cache_table()
+# ★ 2026-09-13 审查 P1-18：DDL 懒执行（同 kline_cache 注释）。
+_init_done = False
+
+
+def ensure_indicator_cache_table() -> None:
+    """幂等建表（进程内仅一次；失败不置位，下次调用重试）。"""
+    global _init_done
+    if not _init_done:
+        init_indicator_cache_table()
+        _init_done = True
 
 
 def get_cached_indicators(code: str) -> Optional[Dict]:
+    ensure_indicator_cache_table()
     """
     从数据库获取指标缓存。
     
@@ -118,6 +127,7 @@ def get_cached_indicators(code: str) -> Optional[Dict]:
 
 
 def get_cached_technical(code: str) -> Optional[List[Dict]]:
+    ensure_indicator_cache_table()
     """
     ★ 评分专用：从数据库直接获取近 80 天指标数组（可直接喂给 engine.score_stock）。
     
@@ -138,6 +148,7 @@ def get_cached_technical(code: str) -> Optional[List[Dict]]:
 
 
 def get_cached_technical_batch(codes: List[str]) -> Dict[str, List[Dict]]:
+    ensure_indicator_cache_table()
     """批量获取指标数组（评分候选池预热用）"""
     result = {}
     for code in codes:
@@ -148,6 +159,7 @@ def get_cached_technical_batch(codes: List[str]) -> Dict[str, List[Dict]]:
 
 
 def get_cached_technical_batch_sql(codes: List[str]) -> Dict[str, List[Dict]]:
+    ensure_indicator_cache_table()
     """
     ★ 评分加速核心：一条 SQL 批量读取多只股票的指标数组。
     
@@ -202,6 +214,7 @@ def get_cached_technical_batch_sql(codes: List[str]) -> Dict[str, List[Dict]]:
 
 
 def get_cached_indicators_batch(codes: List[str]) -> Dict[str, Dict]:
+    ensure_indicator_cache_table()
     """
     批量获取指标缓存。
     
@@ -232,6 +245,7 @@ def get_cached_indicators_batch(codes: List[str]) -> Dict[str, Dict]:
 
 
 def save_indicator_cache(code: str, name: str, indicators: Dict, kline_count: int = 0, market_cap: float = 0):
+    ensure_indicator_cache_table()
     """
     保存指标数据到数据库缓存。
     """
@@ -384,6 +398,7 @@ def compute_latest_indicators(klines: list) -> Dict:
 
 
 def refresh_indicator_cache(codes: List[str] = None, progress_callback=None) -> Dict:
+    ensure_indicator_cache_table()
     """
     批量刷新指标缓存（从 K 线缓存计算并写入数据库）。
     
@@ -412,6 +427,8 @@ def refresh_indicator_cache(codes: List[str] = None, progress_callback=None) -> 
         else:
             # 行情缓存为空（非交易时段/重启后），回退到 K 线缓存中已有的代码
             print("[indicator_cache] 行情缓存为空，回退到 K 线缓存中的代码")
+            from app.scoring.kline_cache import ensure_kline_cache_table
+            ensure_kline_cache_table()   # ★ P1-18 补漏：直查 kline_cache 前确保表存在
             rows = db.fetch("SELECT code FROM kline_cache LIMIT %s", (INDICATOR_POOL_SIZE,))
             codes = [r["code"] for r in (rows or [])]
             if not codes:
@@ -471,6 +488,7 @@ def refresh_indicator_cache(codes: List[str] = None, progress_callback=None) -> 
 
 
 def get_indicator_cache_status() -> Dict:
+    ensure_indicator_cache_table()
     """
     获取指标缓存状态。
     """
@@ -656,6 +674,7 @@ def incremental_update(code: str, new_price: float, new_high: float = None, new_
 
 
 def save_incremental_update(code: str, indicators: Dict, name: str = "", market_cap: float = 0):
+    ensure_indicator_cache_table()
     """
     保存增量更新后的指标到数据库。
     """

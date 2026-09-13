@@ -172,6 +172,13 @@ def _warfare_signal_stream(strategy_name: str = None) -> list:
 _PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存（回测价格每日一更，长驻减少 Supabase 传输）
 _PRICES_TTL = 21600       # 6 小时：每日回填一次，无需短 TTL 反复重拉
 
+
+def invalidate_prices_cache() -> None:
+    """★ 审查 P2-⑳：backtest_prices 回填落库后由 data.invalidate_price_caches
+    调用（写入即失效）——此前 6h 缓存无失效，晚间撮合最长读到回填前的旧价。"""
+    _PRICES_CACHE.clear()
+
+
 def _load_prices_map(codes: set, start: str = None) -> dict:
     """一次 IN 查询加载多只股票日线。
 
@@ -233,7 +240,10 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
 def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
     """撮合一组战法信号 → 结果 dict。prices_map 可复用（避免重复查库）。"""
     if prices_map is None:
-        prices_map = _load_prices_map({s["code"] for s in signals})
+        # ★ 审查 P1-19：撮合只需信号日及之后的 K 线 → start=最早信号日
+        prices_map = (_load_prices_map({s["code"] for s in signals},
+                                       start=min(s["date"] for s in signals))
+                      if signals else {})
     # ★ 退出策略（v2 需要"信号日收盘"做 -7% 止损基准 → 在有价格处应用）
     if exit_policy() == "v2":
         applied = []
@@ -368,6 +378,25 @@ def backtest_warfare_by_regime() -> dict:
 
     prices_map = _load_prices_map({s["code"] for s in signals} | {"sh000300"},
                                   start=min(x["date"] for x in signals))
+    # ★ 2026-09-13 审查 P1-8：套主力闸门 + 退出策略 v2，与白名单重放/生产准入同口径
+    #   （此前 by_regime 用引擎默认撮合参数（5日/-5%/目标价）→ 周报 regime 切片与
+    #   高波白名单的调优依据是旧口径）。先闸门（与 recommendation 重放同序）、后 exit。
+    try:
+        from app.mainforce.gate import _mode_on, gate_states_for_signals
+        if _mode_on():
+            _gs = gate_states_for_signals(signals)
+            signals = [s for s in signals
+                       if (_gs.get((s["code"], s["date"])) or {}).get("ok", True)]
+    except Exception as e:
+        print(f"[by_regime] 主力闸门过滤失败（不过滤）: {e}")
+    if exit_policy() == "v2":
+        _close_idx = {}
+        for s in signals:
+            if s["code"] not in _close_idx:
+                _close_idx[s["code"]] = {b["date"]: float(b.get("close") or 0)
+                                         for b in (prices_map.get(s["code"]) or [])}
+        signals = [apply_exit_policy(s, base_close=_close_idx.get(s["code"], {}).get(s["date"]))
+                   for s in signals]
     trades = engine.match_signals(signals, prices_map)
     if not trades:
         return {"status": "error", "message": "撮合无成交"}

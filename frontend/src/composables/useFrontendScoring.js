@@ -20,7 +20,7 @@ import {
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
 import { getFinanceBatch, getScoreWeights } from '../api'
-import { scoreStock, roughScore } from '../utils/scoringEngine'
+import { scoreStock, roughScore, setRegimeState } from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
 /**
@@ -284,9 +284,13 @@ export async function computeRanking(options = {}) {
     let currentWeights = null
     try {
       const wres = await getScoreWeights()
-      currentWeights = (wres && wres.data && wres.data.weights) || null
+      const wdata = (wres && wres.data) || wres || {}
+      currentWeights = wdata.weights || null
+      // ★ 审查 P1-13：同步 regime 给 nb 高换手钳制（scoringEngine 模块内状态）
+      setRegimeState(wdata.regime_state)
     } catch {
       currentWeights = null
+      setRegimeState(null)
     }
 
     // 1. 获取所有股票列表

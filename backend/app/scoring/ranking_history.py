@@ -716,6 +716,8 @@ def _current_prices(codes: List[str]) -> Dict[str, float]:
     still = [c for c in missing if c not in prices][:50]
     if still:
         try:
+            from app.scoring.kline_cache import ensure_kline_cache_table
+            ensure_kline_cache_table()   # ★ P1-18 补漏：直查 kline_cache 前确保表存在
             ph2 = ",".join(["%s"] * len(still))
             rows = db.fetch(
                 f"SELECT code, kline_data FROM kline_cache WHERE code IN ({ph2})",

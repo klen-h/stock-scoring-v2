@@ -16,7 +16,11 @@
 ================================================================================
 """
 
+import json
 import os
+
+from app.database import db
+from app.flash import rules as flash_rules
 
 # ── 推送白名单 ──
 # ★ 2026-09-05 起改为动态计算：从 strategy_results 重放撮合（T+1 开盘成交、
@@ -62,6 +66,62 @@ WHITELIST_HALF_LIFE_RATIO = float(
 
 _whitelist_cache = {"ts": 0.0, "list": None, "stats": {}, "alerts": []}
 _WHITELIST_TTL = 6 * 3600
+
+# ★ 2026-09-13 审查 P1-20：白名单结果落库缓存 —— 进程内 6h 缓存随 Render 重启
+#   丢失，重启后第一次推送/日报都会触发整表重算（strategy_results 全表 + 闸门
+#   全历史，db 模式 12-15MB/次）。结果落 whitelist_state 单行后跨进程/重启复用。
+_STATE_TABLE_READY = False
+
+
+def _ensure_state_table() -> None:
+    global _STATE_TABLE_READY
+    if _STATE_TABLE_READY:
+        return
+    try:
+        db.execute("""CREATE TABLE IF NOT EXISTS whitelist_state (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL)""")
+        _STATE_TABLE_READY = True
+    except Exception as e:
+        print(f"[recommendation] whitelist_state 建表失败（忽略，走内存缓存）: {e}")
+
+
+def _load_whitelist_state() -> dict:
+    """读落库的白名单结果；过期/判据变更/读失败 → None（走重算）。"""
+    try:
+        _ensure_state_table()
+        row = db.fetch_one(
+            "SELECT value_json, updated_at FROM whitelist_state WHERE key='whitelist'")
+        if not row:
+            return None
+        val = json.loads(row["value_json"]) if isinstance(row["value_json"], str) else row["value_json"]
+        if not isinstance(val, dict) or val.get("criterion") != WHITELIST_CRITERION:
+            return None
+        from datetime import datetime
+        age = (flash_rules.beijing_now()
+               - datetime.fromisoformat(str(row["updated_at"]))).total_seconds()
+        if age > _WHITELIST_TTL:
+            return None
+        return val
+    except Exception:
+        return None
+
+
+def _save_whitelist_state(r: dict) -> None:
+    try:
+        _ensure_state_table()
+        val = {"list": r.get("list"), "stats": r.get("stats") or {},
+               "alerts": r.get("alerts") or [], "criterion": WHITELIST_CRITERION,
+               "computed_at": flash_rules.beijing_now().isoformat()}
+        db.execute(
+            """INSERT INTO whitelist_state (key, value_json, updated_at)
+               VALUES ('whitelist', %s, %s)
+               ON CONFLICT (key) DO UPDATE SET value_json=EXCLUDED.value_json,
+                   updated_at=EXCLUDED.updated_at""",
+            (json.dumps(val, ensure_ascii=False), val["computed_at"]))
+    except Exception as e:
+        print(f"[recommendation] 白名单结果落库失败（不影响返回）: {e}")
 
 # 战法中文名（推送标题用）
 STRATEGY_ZH = {
@@ -127,13 +187,17 @@ def _recompute_whitelist() -> dict:
     prices_map = _load_prices_map(codes, start=start)
 
     # 主力过滤闸门（信号日当日状态，无前视）
-    if exit_policy() == "v2":
-        try:
+    # ★ 2026-09-13 审查 P1-10：与运行时闸门同一开关（STRATEGY_MAINFORCE_GATE，
+    #   即 gate._mode_on）——此前耦合在 exit_policy=="v2" 上，一旦回退 v1，
+    #   重放不再剔高位/拉升段，白名单样本集 ≠ 实际推送/入池样本集。
+    try:
+        from app.mainforce.gate import _mode_on
+        if _mode_on():
             states = gate_states_for_signals(signals)
             signals = [s for s in signals
                        if (states.get((s["code"], s["date"])) or {}).get("ok", True)]
-        except Exception as e:
-            print(f"[recommendation] 闸门状态计算失败（不过滤）: {e}")
+    except Exception as e:
+        print(f"[recommendation] 闸门状态计算失败（不过滤）: {e}")
 
     # 退出策略 v2（止损基准 = 信号日收盘）
     applied = []
@@ -245,12 +309,23 @@ def get_push_whitelist() -> list:
     now = _t.time()
     if _whitelist_cache["list"] is not None and now - _whitelist_cache["ts"] < _WHITELIST_TTL:
         return _whitelist_cache["list"]
+    # ★ 审查 P1-20：进程缓存失效后先读落库结果（跨进程/重启复用，同 6h TTL），
+    #   命中则免去一次整表重算（strategy_results 全表 + 闸门全历史）
+    cached = _load_whitelist_state()
+    if cached is not None and cached.get("list") is not None:
+        _whitelist_cache.update({"list": cached.get("list"),
+                                 "stats": cached.get("stats") or {},
+                                 "alerts": cached.get("alerts") or [],
+                                 "ts": now})
+        print(f"[recommendation] 动态白名单（落库缓存）: {cached.get('list')}")
+        return _whitelist_cache["list"]
     try:
         r = _recompute_whitelist()
         _whitelist_cache["list"] = r["list"]
         _whitelist_cache["stats"] = r["stats"]
         _whitelist_cache["alerts"] = r.get("alerts") or []
         _whitelist_cache["ts"] = now
+        _save_whitelist_state(r)
         if r["stats"]:
             # 日志同时给出胜率/均收益/盈亏比 + 全期/近轨双轨 —— 白名单为空时能一眼定位差在哪一轨
             brief = {}

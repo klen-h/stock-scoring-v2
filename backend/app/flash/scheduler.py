@@ -660,8 +660,14 @@ async def mainforce_state_refresh_loop():
                 from app.mainforce.state import refresh_all
                 regime = None
                 try:
-                    from app.backtest.market_regime import get_regime_cache
+                    from app.backtest.market_regime import (
+                        get_regime_cache, restore_regime_cache_from_db)
                     regime = (get_regime_cache() or {}).get("state")
+                    if not regime:
+                        # ★ 审查 P1-5：与 trade_gate/confluence/tracker 一致——缓存
+                        #   为空先从历史表恢复，避免主力出货乘数闸门静默失效
+                        restore_regime_cache_from_db()
+                        regime = (get_regime_cache() or {}).get("state")
                 except Exception:
                     pass
                 stats = await asyncio.to_thread(refresh_all, None, regime)

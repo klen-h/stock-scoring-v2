@@ -36,8 +36,8 @@ COACH_ENABLED = (os.environ.get("COACH_ENABLED", "on").strip() != "off")
 POLL_SECONDS = 30                      # 轮询间隔（只读内存缓存，零额外网络）
 CARD_TIMES = ((10, 30), (14, 45))      # 关键时点体检卡（简报 §3.3）
 CARD_WINDOW_MIN = 5                    # 窗口宽度（错过则不补，避免午休后连推）
-TRAIL_TRIGGER_PCT = 15.0               # 浮盈达此值后移动止损至成本（简报 §3.3）
-MAX_HOLD_REVIEW_DAYS = 3               # 第 N 个交易日强制评估（对齐退出 v2）
+TRAIL_TRIGGER_PCT = 15.0               # 浮盈移动止损缺省值（实际读 rules.yaml plan.trail_trigger_pct）
+MAX_HOLD_REVIEW_DAYS = 3               # 强制评估日数缺省值（实际读 rules.yaml hold_3d_review.hold_days）
 
 
 def _push(title: str, body: str) -> None:
@@ -133,15 +133,37 @@ def _nth_trading_day(start: datetime, n: int) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _yaml_param(rule_id: str, key: str, default):
+    """读 rules.yaml 单个规则参数（审查 P2-12：阈值一律 yaml，代码不留死值）。"""
+    try:
+        for r in (coach_rules.load_config() or {}).get("rules") or []:
+            if r.get("id") == rule_id:
+                return (r.get("params") or {}).get(key, default)
+    except Exception:
+        pass
+    return default
+
+
+def _yaml_plan(key: str, default):
+    """读 rules.yaml 顶层 plan 段（剧本阈值）。"""
+    try:
+        return ((coach_rules.load_config() or {}).get("plan") or {}).get(key, default)
+    except Exception:
+        return default
+
+
 def write_plan(position_id: int, code: str, name: str, entry_price: float,
                stop_loss: float, fill_date: Optional[str] = None) -> dict:
     """写入入场剧本（幂等：同 code+日期只写一条）。
 
     剧本内容全部来自**规则**（不临场判断）：
-      1. 止损价（-7%，与退出 v2 同口径）
-      2. 第 3 个交易日强制评估
-      3. 浮盈 ≥15% 后止损上移至成本
-      4. price_pos>0.8 且主力出货 → 不等止损直接离场
+      1. 止损价（v2 = 介入价×(1-WARFARE_STOP_PCT_V2)，与退出 v2 同口径）
+      2. 第 N 个交易日强制评估（N = rules.yaml hold_3d_review.hold_days）
+      3. 浮盈 ≥ trail_trigger_pct 后止损上移至成本（提醒口径）
+      4. price_pos>plan.price_pos_cut 且主力出货 → 不等止损直接离场
+    ★ 审查 P2-12：此前剧本三处与规则/执行打架——评估日数代码写死 3（yaml 改了
+      不跟随）、price_pos 文本写死 0.80（yaml 是 0.75）、移动止损是无人执行的
+      空头支票（现标注提醒口径）。
     """
     audit.ensure_tables()
     today = fill_date or audit._today()
@@ -149,12 +171,17 @@ def write_plan(position_id: int, code: str, name: str, entry_price: float,
         base = datetime.strptime(today, "%Y-%m-%d")
     except (ValueError, TypeError):
         base = datetime.now()
+    review_days = int(_yaml_param("hold_3d_review", "hold_days", MAX_HOLD_REVIEW_DAYS))
+    trail = float(_yaml_plan("trail_trigger_pct", TRAIL_TRIGGER_PCT))
+    pp_cut = float(_yaml_plan("price_pos_cut", 0.75))
     conditions = {
-        "止损": f"跌破 {stop_loss:.2f} 离场",
-        "强制评估": f"第 {MAX_HOLD_REVIEW_DAYS} 个交易日（{_nth_trading_day(base, MAX_HOLD_REVIEW_DAYS)}）"
+        "止损": (f"跌破 {stop_loss:.2f} 离场" if stop_loss and stop_loss > 0
+                 else "信号未提供止损位（★ 无止损纪律保护，请手动设定）"),
+        "强制评估": f"第 {review_days} 个交易日（{_nth_trading_day(base, review_days)}）"
                     f"无条件复核：到期/破位/移动止损任一未触发即离场",
-        "移动止损": f"浮盈达 {TRAIL_TRIGGER_PCT:.0f}% 后止损上移至成本 {entry_price:.2f}",
-        "提前退出": "price_pos>0.80 且命中主力出货 → 不等止损直接离场",
+        "移动止损": f"浮盈达 {trail:.0f}% 后止损上移至成本 {entry_price:.2f}"
+                    f"（教练提醒口径，不自动改单）",
+        "提前退出": f"price_pos>{pp_cut:.2f} 且命中主力出货 → 不等止损直接离场",
     }
     try:
         exist = audit.db.fetch_one(
@@ -167,7 +194,7 @@ def write_plan(position_id: int, code: str, name: str, entry_price: float,
             "stop_loss, review_date, trail_trigger_pct, exit_conditions, created_at) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (code, name, position_id, today, entry_price, stop_loss,
-             _nth_trading_day(base, MAX_HOLD_REVIEW_DAYS), TRAIL_TRIGGER_PCT,
+             _nth_trading_day(base, review_days), trail,
              json.dumps(conditions, ensure_ascii=False), audit._now()))
         print(f"[coach] 已写入入场剧本 {code} {name}（止损 {stop_loss:.2f}）")
         return {"ok": True, "existing": False}
@@ -227,12 +254,13 @@ async def coach_loop() -> None:
                         if not store.is_schedule_done(key):
                             await asyncio.to_thread(push_health_card)
                             store.mark_schedule_done(key)
-                elif now.weekday() < 5 and 940 <= t < 1440:
+                elif flash_rules.is_trading_day(now) and 940 <= t < 1440:
                     # ★ W1 补漏（2026-09-13）：盘后一次性收盘回写 = 全量（含 heavy）
                     #   求值落库 + T+5 结果回填。此前 `daily_close_job` 无任何调用点 →
                     #   heavy 规则（拥挤减仓/出货砍）永不落库、outcome_pct 永远空。
                     #   挂 coach_loop 内（评审③：不被 READ_ONLY 关），与
                     #   paper_track_loop 的盘后兜底同模式（schedule_done 幂等）。
+                    #   ★ 审查 P2-17：weekday 判定改 is_trading_day（节假日不再落库）。
                     from app.flash import store
                     if not store.is_schedule_done("coach_daily_close"):
                         r = await asyncio.to_thread(daily_close_job)

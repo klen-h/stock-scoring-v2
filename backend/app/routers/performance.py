@@ -89,15 +89,29 @@ def _ranking_track(fwd: int = 5) -> Dict:
                 {"code": r["code"], "price": price})
     dates = sorted(by_date)
 
+    # ★ 审查 P2-㉑：一次批量取回全部 (code, date≥最早快照日) 收盘序列，
+    #   替代此前 per-(day,code) 循环查询（~60 天 × Top10 ≈ 600 次往返/调用）
+    _codes_all = sorted({it["code"] for d in dates for it in by_date[d]})
+    try:
+        _px_rows = db.fetch(
+            "SELECT code, date, close FROM backtest_prices WHERE code = ANY(%s) "
+            "AND date >= %s ORDER BY code, date ASC", (_codes_all, dates[0])) or []
+    except Exception:
+        _px_rows = []
+    _px: Dict[str, list] = {}
+    for _r in _px_rows:
+        _px.setdefault(_r["code"], []).append((str(_r["date"]), float(_r["close"] or 0)))
+
+    import bisect
     per_day = []
     for d in dates:
         rets = []
         for it in by_date[d]:
-            b = db.fetch(
-                "SELECT date, close FROM backtest_prices WHERE code=%s AND date >= %s "
-                "ORDER BY date ASC LIMIT %s", (it["code"], d, fwd + 1))
-            if b and len(b) == fwd + 1 and float(b[0]["close"]) > 0:
-                rets.append((float(b[fwd]["close"]) / float(b[0]["close"]) - 1) * 100)
+            series = _px.get(it["code"]) or []
+            ds = [x[0] for x in series]
+            i = bisect.bisect_left(ds, d)
+            if (i + fwd < len(series) and series[i][0] == d and series[i][1] > 0):
+                rets.append((series[i + fwd][1] / series[i][1] - 1) * 100)
         if len(rets) >= 5:
             per_day.append({"date": d, "mean": sum(rets) / len(rets),
                             "win": sum(1 for x in rets if x > 0) / len(rets) * 100,
@@ -183,7 +197,11 @@ def _replay_track() -> Dict:
     signals = _warfare_signal_stream()
     if not signals:
         return {"label": "战法回放（样本内）", "available": False, "note": "无历史信号"}
-    prices_map = _load_prices_map({s["code"] for s in signals})
+    # ★ 审查 P1-19：撮合只需「信号日及之后」的 K 线 → 传 start（与
+    #   recommendation 重放同手法）。注意 gate_states_for_signals 内部自己
+    #   全历史加载（筹码网格语义，见 gate.py 注释），不受此影响。
+    prices_map = _load_prices_map({s["code"] for s in signals},
+                                  start=min(s["date"] for s in signals))
 
     baseline = _replay_metrics(signals, prices_map)
     try:

@@ -115,13 +115,14 @@ def main():
     check("[16] 两融净减但情绪不冷 → 不触发", bool(a), False)
 
     orig_prev = cr._gate_add_prev_day_hit
-    cr._gate_add_prev_day_hit = lambda today: True
+    # ★ 2026-09-13 审查 P2-⑧：_gate_add_prev_day_hit 现接收 (today, need_days)
+    cr._gate_add_prev_day_hit = lambda today, need_days=2: True
     a = _run("gate_add", _ctx(breadth={"up_down_ratio": 0.85, "limit_down": 5}))
     check("[17] 命中+昨日命中 → 连续2日确认", bool(a), True, a)
     if a and "确认（连续 2 日）" in a[0].message:
         print("      文案含「确认（连续 2 日）」 ✓")
         _passed += 1
-    cr._gate_add_prev_day_hit = lambda today: False
+    cr._gate_add_prev_day_hit = lambda today, need_days=2: False
     a = _run("gate_add", _ctx(breadth={"up_down_ratio": 0.85, "limit_down": 5}))
     check("[17b] 命中+昨日未命中 → 第1日提示", bool(a), True, a)
     if a and "第 1 日" in a[0].message:

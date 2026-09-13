@@ -127,7 +127,11 @@ def run_review(days: int = 120, horizon: int = 5, index_code: str = "sh000300") 
     try:
         from app.backtest.strategies import _load_prices_map
         codes = {r["code"] for r in records if r.get("code")}
-        price_cache = _load_prices_map(codes) if codes else {}
+        # ★ 审查 P1-19：复盘只算快照日之后的 5 日收益 → start=最早快照日，
+        #   不再拉全历史（快照窗口 120 天，省 80%+ 传输）
+        _dates = [r["rank_date"] for r in records if r.get("rank_date")]
+        price_cache = (_load_prices_map(codes, start=min(_dates))
+                       if codes and _dates else {})
     except Exception as e:
         print(f"[regime_review] 批量加载日线失败，退回逐只读取: {e}")
 

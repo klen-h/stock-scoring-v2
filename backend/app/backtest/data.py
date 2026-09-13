@@ -172,6 +172,8 @@ def save_prices(code: str, name: str, rows: list) -> int:
                    f"VALUES {values_sql}")
         db.execute(sql, tuple(params))
         n += len(batch)
+    if n:
+        invalidate_price_caches()   # ★ 审查 P2-⑳：回填落库即失效进程内价格缓存
     return n
 
 
@@ -183,6 +185,18 @@ def save_prices(code: str, name: str, rows: list) -> int:
 _PRICES_CACHE = {}        # {(code, start, end): (ts, bars)}
 _PRICES_TTL = 1800        # 30 分钟
 _PRICES_CACHE_MAX = 200
+
+
+def invalidate_price_caches() -> None:
+    """★ 审查 P2-⑳：backtest_prices 落库（save_prices/回填）后调用——
+    本模块 30min 缓存与 strategies 模块 6h 缓存此前都无「回填即失效」，
+    晚间撮合/白名单基准最长读到回填前的旧价。strategies 用局部导入防循环。"""
+    _PRICES_CACHE.clear()
+    try:
+        from app.backtest import strategies as _st
+        _st.invalidate_prices_cache()
+    except Exception:
+        pass
 
 
 def _prices_cache_get(key):

@@ -176,11 +176,29 @@ def _backtest_stock(strategy, code: str, days: int) -> List[Dict]:
             entry_price = signal.get("entry_price") or klines[idx]["close"]
             stop_loss = signal.get("stop_loss", entry_price * 0.95)
             target_price = signal.get("target_price", entry_price * 1.10)
-            
+
+            # ★ 2026-09-13 审查 P1-8：退出策略 v2（与白名单重放/模拟盘同口径）——
+            #   持有 3 交易日、止损=信号日收盘×-7%、不设目标价；v1 保持原口径。
+            #   此前端到端页面回测用 10日/-5%/目标价旧参数，与同页的白名单重放
+            #   （v2）结论互相打架。
+            max_hold = BACKTEST_CONFIG["max_hold_days"]
+            try:
+                from app.backtest.strategies import (
+                    exit_policy as _exit_policy,
+                    WARFARE_HOLD_DAYS_V2, WARFARE_STOP_PCT_V2)
+                if _exit_policy() == "v2":
+                    base = float(klines[idx].get("close") or 0)   # 信号日收盘作止损基准
+                    if base > 0:
+                        stop_loss = round(base * (1 - WARFARE_STOP_PCT_V2), 2)
+                    target_price = None
+                    max_hold = WARFARE_HOLD_DAYS_V2
+            except ImportError:
+                pass
+
             # 跟踪后续走势
             trade = _track_trade(
-                code, klines, idx, entry_price, stop_loss, target_price
-            )
+                code, klines, idx, entry_price, stop_loss, target_price,
+                max_hold=max_hold)
             if trade:
                 trades.append(trade)
     
@@ -197,6 +215,7 @@ def _track_trade(
     entry_price: float,
     stop_loss: float,
     target_price: float,
+    max_hold: int = None,
 ) -> Optional[Dict]:
     """
     跟踪一笔交易的后续走势（★ 与 app/backtest/engine.match_signals 同口径）。
@@ -205,10 +224,12 @@ def _track_trade(
       - 信号日 T 盘后产生 → T+1 开盘价成交（entry_price 参数仅作信号参考，不用于成交）
       - ★ T+1 制度：当日买入当日不可卖出 → 从 T+2（entry_idx+1）起检查触发
       - 同日止损优先（引擎口径）：跳空破止损按 min(开盘, 止损) 成交
-      - 最高价 >= target_price → 止盈；最低价 <= stop_loss → 止损
+      - 最高价 >= target_price → 止盈（v2 下 target_price=None 不止盈）；
+        最低价 <= stop_loss → 止损
       - 持有到期（max_hold）未触发 → 末日收盘价退出
+      - max_hold 缺省用 BACKTEST_CONFIG（v1 口径 10 日）；v2 由调用方传 3
     """
-    max_hold = BACKTEST_CONFIG["max_hold_days"]
+    max_hold = max_hold or BACKTEST_CONFIG["max_hold_days"]
     entry_idx = signal_idx + 1                    # T+1 开盘价成交
     if entry_idx >= len(klines):
         return None

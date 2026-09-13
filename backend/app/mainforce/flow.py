@@ -280,6 +280,12 @@ _FS_CACHE = {"ts": 0.0, "data": {}}
 _FS_TTL = 1800
 
 
+def invalidate_fs_cache() -> None:
+    """★ 审查 P2-⑲：market_snapshot 落库方（store.save_market_snapshot）调用，
+    写入即失效浮筹缓存——此前两缓存不联动，新快照后浮筹最长 30min 旧值。"""
+    _FS_CACHE["ts"] = 0.0
+
+
 def get_float_shares_from_snapshot() -> dict:
     """{code: 流通股本}，来源 market_snapshot 最新一份。"""
     if _FS_CACHE["data"] and time.time() - _FS_CACHE["ts"] <= _FS_TTL:

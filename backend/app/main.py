@@ -106,9 +106,16 @@ async def lifespan(app: FastAPI):
 
     # ★ 系统绩效预热（首访冷路径 30-60s → 启动后台预计算进 1h 缓存）：
     #   delay 30s 错开数据包下载；失败静默（首访用户会触发在线计算）
+    #   ★ 审查 P1-19：READ_ONLY（Render 常驻）跳过——system_performance 内部
+    #     `_load_prices_map` 无 start 会拉全历史日线+资金流（db 模式 20-40MB/次），
+    #     Render 免费档每天至少重启 1 次，等于每天白付；db 模式且非只读才预热。
     async def _performance_warmup():
         await asyncio.sleep(30)
         try:
+            from app.flash import scheduler as _sched
+            if getattr(_sched, "READ_ONLY", False):
+                print("[main] READ_ONLY 模式跳过系统绩效预热（省 egress）")
+                return
             from app.routers.performance import system_performance
             await asyncio.to_thread(system_performance, {"user_id": 0})
             print("[main] 系统绩效预热完成（缓存 1h）")

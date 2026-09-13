@@ -32,6 +32,7 @@
 """
 
 import os
+import time as _time
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
 
@@ -110,7 +111,14 @@ def _breadth() -> Optional[dict]:
         return None
     up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0)
     down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0)
-    ld = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.9)
+
+    def _ld_thr(code: str) -> float:
+        # ★ 审查 P2-14：创业板(30)/科创板(68) 为 20cm 涨跌幅——-9.9% 未封死
+        #   跌停的票不应计入跌停家数（北交所 30cm 未单独处理，样本极少）
+        return -19.9 if str(code).startswith(("30", "68")) else -9.9
+
+    ld = sum(1 for c, s in stocks.items()
+             if (s.get("change_pct") or 0) <= _ld_thr(c))
     return {"total": len(stocks), "up": up, "down": down, "limit_down": ld,
             "up_down_ratio": round(up / max(1, up + down), 3)}
 
@@ -131,15 +139,27 @@ def _regime() -> dict:
     return {}
 
 
+_macro_cache = {"ts": 0.0, "val": {}}
+
+
 def _macro() -> dict:
-    """宏观面板关键项（us10y / dxy；面板自带缓存）。"""
+    """宏观面板关键项（us10y / dxy；面板自带缓存 + 本地 10min 结果缓存）。
+
+    ★ 审查 P2-18：30s 轮询下 macro 面板 60s TTL 过期即重建（回源外网多源请求），
+      与「light 层零额外网络」不符 → 结果缓存 10min，盘中至多 6 次重建/小时。
+    """
+    now = _time.time()
+    if _macro_cache["val"] and now - _macro_cache["ts"] < 600:
+        return _macro_cache["val"]
     try:
         from app.macro import get_macro_panel
         p = get_macro_panel() or {}
-        return {"us10y": (p.get("us10y") or {}).get("price"),
-                "dxy": (p.get("dxy") or {}).get("price")}
+        val = {"us10y": (p.get("us10y") or {}).get("price"),
+               "dxy": (p.get("dxy") or {}).get("price")}
     except Exception:
-        return {}
+        return _macro_cache["val"]   # 重建失败沿用旧值（fail-open）
+    _macro_cache.update(ts=now, val=val)
+    return val
 
 
 def _margin() -> dict:
@@ -273,18 +293,33 @@ def _holdings(heavy: bool = False) -> List[dict]:
     return out
 
 
+_day_realized_cache = {"key": None, "val": None}
+
+
 def build_context(tier: str = "light") -> dict:
     ctx = {"regime": _regime(), "breadth": _breadth(), "macro": _macro(),
            "margin": _margin(), "positions": _holdings(heavy=(tier == "all"))}
     ctx["day_pnl_pct"] = None
     try:
-        from app.strategies.paper_trading import get_account, INITIAL_CAPITAL
-        acc = get_account() or {}
-        realized = float(acc.get("realized_pnl") or 0)
+        from app.strategies.paper_trading import INITIAL_CAPITAL, _bj_date
+        # ★ 审查 P1-15：「当日浮亏」= **当日已实现盈亏**（exit_date=今天）+ 当前
+        #   浮盈亏。此前用 paper_account.realized_pnl（账户终身累计）→ 熔断跨日
+        #   不重置、历史盈亏永久污染当日口径（真实持仓浮盈亏已含在 unreal 内；
+        #   真实持仓的卖出不入账，属已知口径边界）。
+        from app.flash import rules as flash_rules
+        key = f"{_bj_date()}:{flash_rules.beijing_now().strftime('%H%M')}"
+        if _day_realized_cache["key"] != key:
+            from app.database import db
+            _row = db.fetch_one(
+                "SELECT COALESCE(SUM(pnl_amount), 0) AS v FROM paper_positions "
+                "WHERE status='closed' AND exit_date = %s", (_bj_date(),))
+            _day_realized_cache["key"] = key
+            _day_realized_cache["val"] = float((_row or {}).get("v") or 0)
+        day_realized = _day_realized_cache["val"]
         unreal = sum((p["price"] - p["fill_price"]) / p["fill_price"]
                      * float(p.get("shares") or 0) * p["fill_price"]
                      for p in ctx["positions"])
-        ctx["day_pnl_pct"] = round((realized + unreal) / INITIAL_CAPITAL * 100, 2)
+        ctx["day_pnl_pct"] = round((day_realized + unreal) / INITIAL_CAPITAL * 100, 2)
     except Exception:
         pass
     return ctx
@@ -311,7 +346,10 @@ def _ev_stop_loss_hit(pos, params, ctx):
 def _ev_hold_3d_review(pos, params, ctx):
     n = int(params.get("hold_days") or 3)
     hd = pos.get("hold_days") or 0
-    if hd < n:
+    # ★ 审查 P1-16：只在第 n 日触发一次（旧 hd >= n 会对存量老持仓**每天**推送，
+    #   几天即造成警报免疫）。真实持仓以 created_at 近似买入日，hd 只会 > n
+    #   → 上线前就持有的老票不会再被此规则重复轰炸。
+    if hd != n:
         return None
     tag = "真实持仓 " if pos.get("source") == "real" else ""
     return {
@@ -407,20 +445,21 @@ def _today_str() -> str:
         return ""
 
 
-def _gate_add_prev_day_hit(today_str: str) -> bool:
-    """上一个交易日 `gate_add` 是否命中（查 coach_alerts 的市场级落库记录）。
-
-    ★ 连续 2 日确认的实现**零新增存储**：gate_add 每命中一天就落一条
-      （dedupe_key = 日|规则|-，每天至多一条），今日命中时回查昨日记录即可。
-      昨日无记录（未命中 / 宽度数据缺失）→ False（保守方向：不加仓）。
-    """
+def _gate_add_prev_day_hit(today_str: str, need_days: int = 2) -> bool:
+    """近 need_days-1 个交易日 gate_add 是否均命中（连续 need_days 日确认）。
+    任一日无记录（未命中 / 宽度数据缺失）→ False（保守方向：不加仓）。
+    ★ 审查 P2-⑧：此前 yaml consecutive_days 参数不被读取、代码固定回看 1 日。"""
     try:
         from datetime import datetime, timedelta
 
         from app.database import db
         from app.flash import rules as flash_rules
+        need = max(1, int(need_days) - 1)
         d = datetime.strptime(today_str, "%Y-%m-%d").date()
-        for _ in range(10):
+        confirmed = 0
+        for _ in range(30):
+            if confirmed >= need:
+                return True
             d -= timedelta(days=1)
             try:
                 if not flash_rules.is_trading_day(datetime(d.year, d.month, d.day)):
@@ -430,10 +469,12 @@ def _gate_add_prev_day_hit(today_str: str) -> bool:
             row = db.fetch_one(
                 "SELECT id FROM coach_alerts WHERE rule_id='gate_add' "
                 "AND alert_date=%s LIMIT 1", (d.strftime("%Y-%m-%d"),))
-            return bool(row)
+            if not row:
+                return False
+            confirmed += 1
+        return confirmed >= need
     except Exception:
         return False
-    return False
 
 
 def _ev_gate_add(pos, params, ctx):
@@ -441,24 +482,28 @@ def _ev_gate_add(pos, params, ctx):
     ratio, ld = b.get("up_down_ratio"), b.get("limit_down")
     thr_r = float(params.get("up_down_ratio") or 0.8)
     thr_ld = int(params.get("limit_down_max") or 10)
+    need_days = int(params.get("consecutive_days") or 2)
     if ratio is None or ld is None:
         return None
     if ratio > thr_r and ld < thr_ld:
-        # ★ 连续 2 日确认（简报 §2.3 加仓①）：昨日 gate_add 命中过 → 今日再命中
-        #   = 确认成立；否则为第 1 日命中，只提示不确认（W1 占位已补齐）。
-        confirmed = _gate_add_prev_day_hit(_today_str())
+        # ★ 连续 N 日确认（简报 §2.3 加仓①，N = yaml consecutive_days）：
+        #   昨日（及此前 N-1 日）gate_add 命中过 → 今日再命中 = 确认成立；
+        #   否则为第 1 日命中，只提示不确认（W1 占位已补齐）。
+        confirmed = _gate_add_prev_day_hit(_today_str(), need_days)
         if confirmed:
             return {
-                "message": (f"【加仓条件确认（连续 2 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
-                            f"且跌停 {ld} 家（<{thr_ld}），昨日已命中 → 确认成立。"
+                "message": (f"【加仓条件确认（连续 {need_days} 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
+                            f"且跌停 {ld} 家（<{thr_ld}），此前已连续命中 → 确认成立。"
                             f"按计划从准空仓向中性加仓。"),
-                "numbers": {"up_down_ratio": ratio, "limit_down": ld, "confirmed": True},
+                "numbers": {"up_down_ratio": ratio, "limit_down": ld,
+                            "confirmed": True, "consecutive_days": need_days},
             }
         return {
             "message": (f"【加仓条件部分命中（第 1 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
-                        f"且跌停 {ld} 家（<{thr_ld}）。★ 需连续 2 日确认，"
+                        f"且跌停 {ld} 家（<{thr_ld}）。★ 需连续 {need_days} 日确认，"
                         f"明日再命中才成立。"),
-            "numbers": {"up_down_ratio": ratio, "limit_down": ld, "confirmed": False},
+            "numbers": {"up_down_ratio": ratio, "limit_down": ld,
+                        "confirmed": False, "consecutive_days": need_days},
         }
     return None
 

@@ -135,8 +135,14 @@ def task_mainforce_state():
     from app.mainforce.state import refresh_all
     regime = None
     try:
-        from app.backtest.market_regime import get_regime_cache
+        from app.backtest.market_regime import (
+            get_regime_cache, restore_regime_cache_from_db)
         regime = (get_regime_cache() or {}).get("state")
+        if not regime:
+            # ★ 审查 P1-5：独立进程缓存为空，先从历史表恢复（task_market_regime
+            #   在本批更早处已写入当日缓存，此处只是兜底）
+            restore_regime_cache_from_db()
+            regime = (get_regime_cache() or {}).get("state")
     except Exception:
         pass  # regime 缺省 None = 乘数闸门不生效，与 scheduler 行为一致
     return f"主力行为状态: {refresh_all(None, regime)}"
@@ -477,7 +483,11 @@ def ensure_pack_fresh(max_wait_min: float):
     """
     import app.pack_source as ps
 
-    want = datetime.now().strftime("%Y%m%d")
+    # ★ 审查 P2-3：包日期由 cron-job.org 北京 19:00 的 backend-pack 生成（北京日期），
+    #   Actions 本地时钟是 UTC——北京 00:00-08:00 窗口触发时 UTC 日期比北京小一天，
+    #   会误判包过期空转 30 分钟。统一用北京时间比对（同 _bj_now 风格）。
+    import datetime as _dt
+    want = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).strftime("%Y%m%d")
     deadline = time.time() + max(0, max_wait_min) * 60
     while True:
         try:

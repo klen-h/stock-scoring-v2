@@ -72,7 +72,8 @@ def detect_market_regime(index_code: str = "sh000300") -> Dict:
 
     返回：
       {
-        "regime": "offensive" | "neutral" | "defensive",
+        "regime": "offensive" | "neutral" | "neutral_bearish" | "defensive",
+        #   ★ 2026-09-13 起返回细化态（含 nb 两日确认），与评分权重/refresh 同源
         "confidence": 0-100,             # 置信度
         "adx": 18.5,
         "regime_score": -100~+100,       # 连续分
@@ -87,18 +88,23 @@ def detect_market_regime(index_code: str = "sh000300") -> Dict:
     """
     from app.backtest.market_regime import (
         load_regime_history, get_regime_weights, get_regime_description,
+        refine_state,
     )
     states = load_regime_history()
     if not states:
         return _default_result("沪深300（backtest_prices）历史数据不足（<70 条），"
                                "请先回填指数日线：python -m app.backtest.fill")
     latest = states[-1]
-    regime = latest.state
+    # ★ 2026-09-13（审查 P1-4）：返回**细化态**（含 neutral_bearish）——此前恒返回
+    #   原始判定，nb 档对战法准入/推荐/市况展示完全不可见。与 refresh_regime_cache
+    #   （生产细化唯一写者）同源：as_of=latest.date，prev 取历史表中更早的行。
+    regime, refined_score = refine_state(
+        latest.state, latest.ma_trend, latest.regime_score, as_of_date=latest.date)
     return {
         "regime": regime,
-        "confidence": _state_confidence(latest),
+        "confidence": (_state_confidence(latest) if regime == latest.state else 50),
         "adx": round(latest.adx or 0, 2),
-        "regime_score": round(latest.regime_score or 0, 2),
+        "regime_score": round(refined_score or 0, 2),
         "ma_trend": latest.ma_trend,
         "volatility_regime": latest.volatility_regime,
         "atr_percentile": round(latest.atr_percentile or 0, 1),
@@ -329,7 +335,8 @@ def _get_recommended_strategies(regime: str) -> List[str]:
     - 防御市 → 不推荐（准入收紧由策略层 gate 实现）"""
     if regime == "offensive":
         return TRENDING_STRATEGIES
-    elif regime == "neutral":
+    elif regime in ("neutral", "neutral_bearish"):
+        # nb 权重/准入同震荡类（入场层由阴跌闸门另行全禁）
         return OSCILLATING_STRATEGIES
     elif regime == "defensive":
         return []
@@ -418,9 +425,11 @@ def get_strategy_recommendation(strategy_name: str) -> Dict:
     elif current_regime == "offensive" and strategy_type == "trending":
         suitability = "high"
         advice = "当前为进攻市，适合趋势类战法"
-    elif current_regime == "neutral" and strategy_type == "oscillating":
+    elif current_regime in ("neutral", "neutral_bearish") and strategy_type == "oscillating":
         suitability = "high"
-        advice = "当前为震荡市，适合震荡类战法"
+        advice = ("当前为震荡偏空市（阴跌），战法推送已由阴跌闸门全禁，"
+                  "仅建议观察" if current_regime == "neutral_bearish"
+                  else "当前为震荡市，适合震荡类战法")
     elif current_regime == "defensive":
         suitability = "low"
         advice = "当前为防御市，建议暂停战法入场"
@@ -449,7 +458,8 @@ def get_strategy_recommendation(strategy_name: str) -> Dict:
 # 状态基本准入：进攻→趋势类、震荡→震荡类、防御→全禁。
 # 「高波动常态」调节：震荡市 + 高波动只放行低吸/反转类（止损明确）。
 
-REGIME_LABELS = {"offensive": "进攻", "neutral": "震荡", "defensive": "防御"}
+REGIME_LABELS = {"offensive": "进攻", "neutral": "震荡",
+                 "neutral_bearish": "震荡偏空（阴跌）", "defensive": "防御"}
 TYPE_LABELS = {"trending": "趋势类", "oscillating": "震荡类"}
 
 # 高波动常态调节白名单：key=(regime, volatility)，
@@ -519,6 +529,7 @@ def is_strategy_admitted(strategy_name: str, regime: str = None,
         return False, "未分类战法，无准入规则", regime, volatility
 
     base = {"offensive": "trending", "neutral": "oscillating",
+            "neutral_bearish": "oscillating",   # nb 权重/准入同震荡（审查 P1-4 配套）
             "defensive": None}.get(regime)
     if base is None:
         return False, f"当前为{REGIME_LABELS.get(regime, regime)}市，禁止战法入场", regime, volatility
@@ -533,7 +544,10 @@ def is_strategy_admitted(strategy_name: str, regime: str = None,
     # ── 阴跌子档（PLAN P2②）：震荡 + MA 向下 = 慢性失血，与高波震荡是两种市况。
     #    回测：阴跌段全战法期望为负（见 STRATEGY_GRIND_GATE 注释）→ 全禁。
     #    覆盖 (neutral, high) 白名单——阴跌比高波更严，先判阴跌再判波动档。
-    if (STRATEGY_GRIND_GATE and regime == "neutral"
+    #    ★ 2026-09-13（审查 P1-3）：detect 现返回细化态——nb（两日确认后）直接命中；
+    #      neutral + 当日 MA 向下（尚未两日确认）保留 D+0 保守先禁：入场层宁可
+    #      错禁一天，也不放行阴跌第一天的信号。两层语义差异见审查文档 §2.1。
+    if (STRATEGY_GRIND_GATE and regime in ("neutral", "neutral_bearish")
             and (info.get("ma_trend") or "") == "down"):
         return False, "阴跌市（震荡+MA向下）战法全禁，等趋势修复自动恢复", regime, volatility
 

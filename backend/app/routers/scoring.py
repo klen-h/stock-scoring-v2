@@ -49,11 +49,14 @@ def _sync_regime_weights() -> None:
             cache = get_regime_cache() or {}
         if not cache or not cache.get("date"):
             return
-        if _engine_weights_applied["date"] == cache["date"]:
+        if (_engine_weights_applied.get("date") == cache["date"]
+                and _engine_weights_applied.get("state") == cache["state"]):
             return
         engine.set_weights(regime=cache["state"])
         _engine_weights_applied["date"] = cache["date"]
         _engine_weights_applied["state"] = cache["state"]
+        # ★ 审查 P1-6：判重 key 由 date 改为 (date, state)——同日 state 变化
+        #   （如 force 重算切档）也要重切权重并作废排行缓存。
         # 权重切换后，旧排行缓存作废（下次访问重新精算）
         _rank_result_cache["top"]["data"] = None
         print(f"[scoring] 应用市场状态权重 {cache['date']} {cache['state']}: {cache['weights']}")
@@ -1170,11 +1173,12 @@ async def score_top(
                         "price_pos": (m.get("chip") or {}).get("price_pos"),
                         "winner_ratio": (m.get("chip") or {}).get("winner_ratio"),
                     }
-            if _mf_eff:
-                result_data.sort(
-                    key=lambda x: x["total_score"]
-                    * ((x.get("mainforce") or {}).get("mult") or 1.0),
-                    reverse=True)
+            # ★ 2026-09-13 审查 P1-12（×0.85 语义裁决 = 方案A「只挂标签不动分」）：
+            #   移除排序乘法。此前仅此处（score_top 排序）乘 mult，详情页/live_ranking/
+            #   前端本地计算均 raw total → 四个面三个口径互相矛盾。现统一为：
+            #   mult 只作 mainforce 标签字段展示，排序/分数全用 raw total
+            #   （与 useFrontendScoring.js「后端排行保持 raw total 口径」注释一致）。
+            #   信号判定与排序同不变量，出货嫌疑股不再被静默降位。
         except Exception as e:
             print(f"[mainforce] 排行标注失败: {e}")
 

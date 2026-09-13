@@ -158,10 +158,11 @@ def main():
         tagged.append({**s, "state": state, "ma_trend": ma_trend, "vol": vol})
 
     # 2) 与生产同口径：G 闸门 + 退出 v2，全部一次性算好挂到信号上
-    # ★ 2026-09-13 口径对齐（审查发现）：生产 `_recompute_whitelist` 的 G 闸门
-    #   有 `if exit_policy() == "v2"` 前置条件，持有期取 `WARFARE_HOLD_DAYS` 常量。
-    #   此处同步，避免将来改 `WARFARE_EXIT_POLICY`/持有期后脚本静默分叉。
-    gate_on = exit_policy() == "v2"
+    # ★ 2026-09-13 审查 P1-10：生产 `_recompute_whitelist` 的 G 闸门已解耦——
+    #   跟随运行时开关 STRATEGY_MAINFORCE_GATE（gate._mode_on），不再挂靠
+    #   exit_policy。此处同步，保证回测脚本与生产重放口径一致。
+    from app.mainforce.gate import _mode_on   # noqa: E402
+    gate_on = _mode_on()
     gate = {}
     if gate_on:
         try:
@@ -169,7 +170,7 @@ def main():
         except Exception as e:
             print(f"[gate] 闸门状态计算失败（不过滤）: {e}")
     else:
-        print(f"[gate] exit_policy={exit_policy()}（非 v2）→ 按生产口径跳过 G 闸门")
+        print(f"[gate] STRATEGY_MAINFORCE_GATE=off → 按生产口径跳过 G 闸门")
     start = min(s["date"] for s in tagged)
     codes = {s["code"] for s in tagged}
     prices_map = _load_prices_map(codes, start=start)

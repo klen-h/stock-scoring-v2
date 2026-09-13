@@ -63,8 +63,19 @@ def init_kline_cache_table():
     print("[kline_cache] kline_cache 表初始化完成")
 
 
-# 启动时初始化
-init_kline_cache_table()
+# ★ 2026-09-13 审查 P1-18：DDL 懒执行（原为 import 即建表）——每个进程启动
+# （Render 重启 / 每个 Actions job / 本地脚本）都重放一轮 DDL，每次 DDL 触发
+# PostgREST schema cache 全量重载（~1200 行内省 ≈ 120KB/次，纯结构性流量）。
+# 改为首次使用时执行一次；mainforce/state.py 等外部直查方也调 ensure。
+_init_done = False
+
+
+def ensure_kline_cache_table() -> None:
+    """幂等建表（进程内仅一次；失败不置位，下次调用重试）。"""
+    global _init_done
+    if not _init_done:
+        init_kline_cache_table()
+        _init_done = True
 
 
 # ── K 线日期新鲜度（2026-09-03 新增，根治"缓存是新的、数据是旧的"）──
@@ -153,6 +164,7 @@ def _append_today_bar(klines: List[Dict], code: str, expect_date: str) -> List[D
 
 
 def get_cached_klines(code: str) -> Optional[List[Dict]]:
+    ensure_kline_cache_table()
     """
     从数据库获取K线缓存。
     
@@ -213,6 +225,7 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
 
 
 def get_cached_klines_batch(codes: List[str]) -> Dict[str, List[Dict]]:
+    ensure_kline_cache_table()
     """
     批量获取K线缓存。
 
@@ -274,6 +287,7 @@ def get_cached_klines_batch(codes: List[str]) -> Dict[str, List[Dict]]:
 
 
 def get_cache_codes(limit: int = 100) -> List[str]:
+    ensure_kline_cache_table()
     """有 K 线缓存的股票代码（按市值降序）。
 
     用途：服务重启/休眠后内存行情缓存为空时，用它兜底构建回测股票池，
@@ -288,6 +302,7 @@ def get_cache_codes(limit: int = 100) -> List[str]:
 
 
 def save_kline_cache(code: str, name: str, klines: List[Dict], market_cap: float = 0):
+    ensure_kline_cache_table()
     """
     保存K线数据到数据库缓存。
     """
@@ -314,6 +329,7 @@ def save_kline_cache(code: str, name: str, klines: List[Dict], market_cap: float
 
 
 def refresh_kline_cache(codes: List[str] = None, progress_callback=None) -> Dict:
+    ensure_kline_cache_table()
     """
     批量刷新K线缓存（从腾讯API拉取并写入数据库）。
     
@@ -454,6 +470,7 @@ def _refresh_one(code: str, tencent_cache: dict, get_kline) -> bool:
 
 
 def get_cache_status() -> Dict:
+    ensure_kline_cache_table()
     """
     获取K线缓存状态。
     """

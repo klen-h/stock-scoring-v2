@@ -42,6 +42,16 @@ export const DEFAULT_WEIGHTS = {
   quality: W_QUALITY,
 }
 
+// ── 市场状态注入（2026-09-13 审查 P1-13）──
+// neutral_bearish 高换手钳制需要知道当前 regime。useFrontendScoring 在拉取
+// /api/score/weights（权重与 regime_state 同源）时调用 setRegimeState 注入；
+// 未注入（null）时钳制不生效，行为与旧版一致。
+let _regimeState = null
+
+export function setRegimeState(state) {
+  _regimeState = state || null
+}
+
 // ── 工具函数 ──
 
 function clamp(v, lo = 0, hi = 100) {
@@ -410,9 +420,25 @@ function scoreCapital(techData, stockInfo) {
 
   const totalW = subScores.reduce((sum, [, w]) => sum + w, 0)
   const raw = subScores.reduce((sum, [s, w]) => sum + s * w / 100, 0) * (100 / totalW)
+  let score = clamp(round1(raw))
+
+  // ★ 2026-09-13 审查 P1-13：neutral_bearish 高换手钳制（与后端
+  //    engine._apply_nb_turnover_cap 同口径：nb 市 + 换手>8% → 资金面封顶 40，
+  //    只封顶总分、不改子指标锚点）。regime 由 setRegimeState 注入
+  //    （useFrontendScoring 拉 /score/weights 时同步），未注入则不生效。
+  if (_regimeState === 'neutral_bearish') {
+    const turnover = Number(stockInfo && stockInfo.turnover_rate) || 0
+    if (turnover > 8 && score > 40) {
+      details['高换手钳制'] = {
+        分值: 40, 满分: 100,
+        换手率: turnover, 原资金面: score, 市场: _regimeState,
+      }
+      score = 40
+    }
+  }
 
   return {
-    score: clamp(round1(raw)),
+    score,
     details,
   }
 }

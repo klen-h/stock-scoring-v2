@@ -559,6 +559,13 @@ def save_market_snapshot(stocks: dict, valid_codes: list) -> bool:
             "saved_at": _now_iso(),
         }, conflict_columns=["key"])
         _SNAP_CACHE["ts"] = 0.0        # ★ 写入即失效读缓存（见 load_market_snapshot）
+        # ★ 审查 P2-⑲：联动失效浮筹缓存（flow._FS_CACHE 同读这一行，TTL 30min
+        #   且此前不联动 → 15:10 新快照落库后浮筹最长 30min 旧值 + 重复回源）
+        try:
+            from app.mainforce import flow as _flow
+            _flow.invalidate_fs_cache()
+        except Exception:
+            pass
         return True
     except Exception as e:
         print(f"[store] 保存行情收盘快照失败: {e}")

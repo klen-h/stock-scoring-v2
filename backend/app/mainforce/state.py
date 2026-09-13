@@ -60,6 +60,11 @@ def ensure_table() -> None:
 
 
 def _load_bars_all() -> dict:
+    try:
+        from app.scoring.kline_cache import ensure_kline_cache_table
+        ensure_kline_cache_table()   # ★ 审查 P1-18：直查 kline_cache 前确保表存在
+    except Exception:
+        pass
     """
     合并两个日线来源（优先 backtest_prices，kline_cache 补覆盖）：
       - backtest_prices：544+ 只 × 750 根，16:10 每日回填（最深最新）

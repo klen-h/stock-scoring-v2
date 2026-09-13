@@ -24,7 +24,9 @@ from app.flash import rules as flash_rules
 
 
 def _now() -> str:
-    return datetime.now().isoformat()
+    # ★ 审查 P2-⑫：统一北京时间（唯一时间源 beijing_now），此前本地时区在
+    #   未设 TZ 的环境跨 8:00 会日期错位
+    return flash_rules.beijing_now().isoformat()
 
 
 def _today() -> str:
@@ -39,6 +41,7 @@ def ensure_tables() -> None:
     global _table_ready
     if _table_ready:
         return
+    _ok = True
     for sql in (
         """CREATE TABLE IF NOT EXISTS coach_plans (
             id SERIAL PRIMARY KEY,
@@ -73,12 +76,19 @@ def ensure_tables() -> None:
             outcome_date TEXT,
             created_at TEXT
         )""",
+        # ★ 审查 P2-⑩：dedupe_key 加唯一索引——此前「先 SELECT 后 INSERT」非原子，
+        #   Render 部署重叠期两进程可同时 miss → 同警报双行、企微双推。
+        #   历史重复行会让索引创建失败（非致命，打印后下轮重试）。
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_coach_alerts_dedupe "
+        "ON coach_alerts (dedupe_key)",
     ):
         try:
             db.execute(sql)
         except Exception as e:
             print(f"[coach] 建表: {e}")
-    _table_ready = True
+            _ok = False
+    if _ok:
+        _table_ready = True   # ★ 审查 P2-⑨：仅全部成功才置位，失败下轮重试
 
 
 # ==============================================================================
@@ -110,6 +120,9 @@ def record_advices(advices: List[dict], push: bool = False) -> List[dict]:
                  1 if push else 0, now))
             fresh.append({**a, "dedupe_key": key})
         except Exception as e:
+            # ★ 审查 P2-⑩：唯一索引冲突 = 另一进程（部署重叠期）已落库 → 静默跳过
+            if "duplicate key" in str(e).lower() or "unique" in str(e).lower():
+                continue
             print(f"[coach] 建议落库失败 {key}: {e}")
     if fresh:
         print(f"[coach] 新增建议 {len(fresh)} 条（推送={push}）")
@@ -241,4 +254,5 @@ def backfill_outcome(days_after: int = 5) -> int:
 
 def _days_ago(days: int) -> str:
     from datetime import timedelta
-    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # ★ 审查 P2-⑫：与 _now/_today 统一北京时间
+    return (flash_rules.beijing_now() - timedelta(days=days)).strftime("%Y-%m-%d")

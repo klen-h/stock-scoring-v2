@@ -71,6 +71,30 @@ def _warn_once(msg):
         print(f"[pack_source] [WARN] {msg}")
 
 
+_last_pack_alert_date = None
+
+
+def _alert_pack_issue(msg: str) -> None:
+    """★ 审查 P1-21：包缺失/陈旧回退不再静默——每天至多一次企微告警。
+    此前只有一次性 print（进程重启即丢），读侧回退 DB 后用户无感知，
+    egress 超预算时无法归因到「当天包没就绪」。"""
+    global _last_pack_alert_date
+    try:
+        from app.flash import rules as _rules
+        today = _rules.beijing_now().strftime("%Y-%m-%d")
+        if _last_pack_alert_date == today:
+            return
+        _last_pack_alert_date = today
+        from app.flash.wechat import push_markdown_batched
+        push_markdown_batched(
+            "数据包告警",
+            f"**[pack_source]** {msg}\\n> 读侧将回退 DB / 陈旧包，"
+            f"请检查 backend-pack workflow 是否失败",
+            force=True)
+    except Exception as e:
+        print(f"[pack_source] 告警推送失败: {e}")
+
+
 def _db_fresh() -> bool:
     if not os.path.exists(_PACK_DB):
         return False
@@ -119,6 +143,7 @@ def _ensure_ready() -> bool:
         if _DATA_SOURCE == "local" and not os.path.exists(_PACK_DB):
             _warn_once(f"DATA_SOURCE=local 但本地无数据包：请先运行 "
                        f"`python scripts/sync_local.py`（期望路径 {_PACK_DB}）")
+            _alert_pack_issue("DATA_SOURCE=local 但本地无数据包")
             _ready_checked = True
             return False
         if _DATA_SOURCE == "pack" and not _db_fresh():
@@ -127,9 +152,11 @@ def _ensure_ready() -> bool:
             except Exception as e:
                 if not os.path.exists(_PACK_DB):
                     _warn_once(f"数据包下载失败且无本地缓存: {e}")
+                    _alert_pack_issue(f"数据包下载失败且无本地缓存: {e}")
                     _ready_checked = True
                     return False
                 _warn_once(f"数据包下载失败（{e}），使用本地陈旧缓存")
+                _alert_pack_issue(f"数据包下载失败，正在使用本地陈旧缓存（{e}）")
         _ready_checked = True
         return os.path.exists(_PACK_DB)
 

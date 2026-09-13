@@ -15,10 +15,12 @@
 ================================================================================
 """
 
+import json
 import math
 import time as _time
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -481,6 +483,19 @@ def _apply_bearish_refine(state: str, ma_trend: str, base_score: float,
     return state, base_score
 
 
+def refine_state(state: str, ma_trend: str, base_score: float,
+                 as_of_date=None) -> tuple:
+    """公开封装：对单日原始判定套用 nb 两日确认细化，返回 (state, score)。
+
+    ★ 2026-09-13（审查 P1-4）：strategies 侧 detect_market_regime 此前只读原始
+      判定，neutral_bearish 对战法准入/推荐/市况展示完全不可见。本封装让
+      strategies 侧与 refresh_regime_cache（生产细化唯一写者）同源。
+    """
+    raw_nb = _nb_condition_raw(state, ma_trend)
+    return _apply_bearish_refine(state, ma_trend, base_score, raw_nb,
+                                 as_of_date=as_of_date)
+
+
 def get_regime_weights(state: str) -> dict:
     """
     根据市场状态返回五维度权重（和 = 1.0）。
@@ -673,7 +688,9 @@ def refresh_regime_cache(force: bool = False) -> Optional[dict]:
             "ma_trend": latest.ma_trend,
             "volatility_regime": latest.volatility_regime,
             "bearish_refine_raw": raw_nb,
-            "weights_json": str(_REGIME_CACHE["weights"]),
+            # ★ 审查 P2-2：存 JSON（此前 str(dict) 是单引号 repr，任何 json.loads
+            #   都会炸；当前无消费方，防患于未然）
+            "weights_json": json.dumps(_REGIME_CACHE["weights"], ensure_ascii=False),
         }, conflict_columns=["date"])
     except Exception as e:
         print(f"[market_regime] 状态落库失败: {e}")
@@ -702,6 +719,19 @@ def restore_regime_cache_from_db() -> Optional[dict]:
             "SELECT * FROM market_regime_history ORDER BY date DESC LIMIT 1")
         if not row or not row.get("state"):
             return None
+        # ★ 2026-09-13（审查 P1-6）：恢复前校验新鲜度——停更的历史状态会静默喂给
+        #   scoring/coach/daily_report/tracker/trade_gate/confluence 等消费方。
+        try:
+            from app.flash.rules import beijing_now
+            _d = str(row.get("date"))[:10]
+            _stale_days = (beijing_now().date()
+                           - datetime.strptime(_d, "%Y-%m-%d").date()).days
+            if _stale_days >= 3:
+                print(f"[market_regime] ⚠️ 恢复的 regime 状态已停更 {_stale_days} 天"
+                      f"（{_d}），评分权重/战法准入/闸门基于旧状态，"
+                      f"请检查日批 task_market_regime 是否失败")
+        except Exception:
+            pass
         _REGIME_CACHE["date"] = row["date"]
         _REGIME_CACHE["state"] = row["state"]
         _REGIME_CACHE["weights"] = get_regime_weights(row["state"])
