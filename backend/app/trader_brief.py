@@ -368,7 +368,10 @@ def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
         narrative = _fallback_skeleton(data, blocked)
         degraded = blocked
     else:
-        narrative = call_llm(_SYSTEM_PROMPT, _data_to_markdown(data), temperature=0.3)
+        # ★ 2026-09-13：盘前 9:10 窗口时间敏感 → tier="fast"（LLM_TIMEOUT_FAST 短超时，
+        #   免费站思考关闭；慢了立刻降级主力站）；盘后/周报走默认 slow
+        narrative = call_llm(_SYSTEM_PROMPT, _data_to_markdown(data), temperature=0.3,
+                             tier="fast" if phase == "premarket" else "slow")
         if not narrative:
             # ★ 2026-09-11：原来只说「空响应」，无从判断是模型把 token 全花在思考上、
             #   还是鉴权/网络异常（旧版 call_llm 三种失败都返回空串）。

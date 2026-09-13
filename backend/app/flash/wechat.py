@@ -43,7 +43,7 @@ _APP_FAIL_THRESHOLD = 3            # 连续失败 N 次 → 熔断冷却（避�
 _APP_COOLDOWN_SEC = 1800
 
 _token_cache = {"key": None, "token": None, "ts": 0.0}
-_circuit = {"key": None, "fails": 0, "until": 0.0}
+_circuit = {}   # {app_key: {"fails": int, "until": float}}（按应用分槽；2026-09-13 修单槽隐患）
 
 
 def _hook_for(category: str):
@@ -82,22 +82,22 @@ def _get_token(secret: str) -> str:
 
 
 def _circuit_open(key: str) -> bool:
-    if _circuit["key"] != key:
+    st = _circuit.get(key)
+    if not st:
         return False
-    if _circuit["fails"] >= _APP_FAIL_THRESHOLD and _time.time() < _circuit["until"]:
-        return True
-    if _time.time() >= _circuit["until"]:
-        _circuit.update(key=None, fails=0, until=0.0)
+    if st["fails"] >= _APP_FAIL_THRESHOLD:
+        if _time.time() < st["until"]:
+            return True
+        _circuit.pop(key, None)   # 冷却结束，恢复尝试
     return False
 
 
 def _mark_app_fail(key: str, why: str) -> None:
-    if _circuit["key"] != key:
-        _circuit.update(key=key, fails=0, until=0.0)
-    _circuit["fails"] += 1
-    if _circuit["fails"] >= _APP_FAIL_THRESHOLD:
-        _circuit["until"] = _time.time() + _APP_COOLDOWN_SEC
-        print(f"[wechat] 应用通道连续失败 {_circuit['fails']} 次（{why}）→ 熔断 30min，回落群 webhook")
+    st = _circuit.setdefault(key, {"fails": 0, "until": 0.0})
+    st["fails"] += 1
+    if st["fails"] >= _APP_FAIL_THRESHOLD:
+        st["until"] = _time.time() + _APP_COOLDOWN_SEC
+        print(f"[wechat] 应用通道连续失败 {st['fails']} 次（{why}）→ 熔断 30min，回落群 webhook")
 
 
 def _send_app(agentid: str, secret: str, touser: str, content: str, label: str) -> bool:
@@ -165,7 +165,7 @@ def notify(category: str, title: str, content: str, force: bool = False,
                     break
                 remaining = remaining[len(batch):].strip()
             if ok_all:
-                _circuit.update(key=None, fails=0, until=0.0)
+                _circuit.pop(key, None)
                 return True
             _mark_app_fail(key, title[:30])
     push_markdown_batched(title, content, force=force)

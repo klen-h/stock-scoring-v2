@@ -49,6 +49,22 @@ LLM_MAX_TOKENS_CAP = int(os.environ.get("LLM_MAX_TOKENS_CAP", "32768") or 32768)
 # 兜底模型（可选）：主模型连续空响应时切换（如推理模型 → 非推理模型，或换厂商）。
 LLM_FALLBACK_MODEL = (os.environ.get("LLM_MODEL_FALLBACK") or "").strip()
 
+# ── Provider 链（2026-09-13）────────────────────────────────────────────────
+# 解析顺序：① 免费站 LLM_FREE_*（如 SenseNova 日日新，OpenAI 兼容；未配置则跳过）
+# → ② 主力站 LLM_BASE_URL/LLM_MODEL（站内重试 + LLM_MODEL_FALLBACK 切换）。
+# 任一站连续失败 2 次熔断 30min（与 wechat.notify 同模式），全部失败返回空串。
+# 任务分级：tier="fast"（盘前简报等时间敏感 → 短超时）/ "slow"（默认，长超时）。
+# 不配置 LLM_FREE_* 时行为与旧版完全一致（env 门控）。
+LLM_FREE_BASE_URL = (os.environ.get("LLM_FREE_BASE_URL") or "").strip()
+LLM_FREE_API_KEY = (os.environ.get("LLM_FREE_API_KEY") or "").strip()
+LLM_FREE_MODEL = (os.environ.get("LLM_FREE_MODEL") or "").strip()
+LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").strip()
+# 免费站思考模式（deepseek-v4-flash 默认 medium 思考，渲染任务需显式压低）：
+# 空 = 按 tier 自动（fast→none / slow→low）；显式设置则恒用该值（none/low/medium/high）。
+LLM_FREE_REASONING = (os.environ.get("LLM_FREE_REASONING_EFFORT") or "").strip().lower()
+LLM_TIMEOUT_FAST = int(os.environ.get("LLM_TIMEOUT_FAST", "90") or 90)
+LLM_TIMEOUT_SLOW = int(os.environ.get("LLM_TIMEOUT_SLOW", "600") or 600)
+
 # 最近一次调用失败原因（诊断用：/api/system/llm-usage 会带出来）
 _last_error = ""
 
@@ -57,12 +73,15 @@ def last_llm_error() -> str:
     return _last_error
 
 _session = requests.Session()
-_session.headers.update({"Authorization": f"Bearer {LLM_API_KEY}",
-                         "Content-Type": "application/json"})
+# ★ 2026-09-13：Authorization 改为每次请求按 provider 注入（原 import 期绑定
+#   主力站 key，多 provider 链下免费站会带错鉴权）
+_session.headers.update({"Content-Type": "application/json"})
 
 
 def llm_configured() -> bool:
-    return bool(LLM_API_KEY and LLM_MODEL)
+    """任一 provider 配置完整即可用（免费站或主力站）。"""
+    return bool((LLM_API_KEY and LLM_MODEL)
+                or (LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL))
 
 
 def _today_calls() -> int:
@@ -126,6 +145,18 @@ def _ensure_usage_table():
             updated_at TEXT
         )
     """)
+    # ★ 2026-09-13：分站用量明细（免费额度对账）
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS llm_usage_by_provider (
+            day TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            calls INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens BIGINT NOT NULL DEFAULT 0,
+            completion_tokens BIGINT NOT NULL DEFAULT 0,
+            updated_at TEXT,
+            PRIMARY KEY (day, provider)
+        )
+    """)
     _USAGE_TABLE_READY = True
 
 
@@ -165,36 +196,61 @@ def _import_file_once() -> None:
         print(f"[llm] 用量历史导入失败（继续用文件兜底）: {e}")
 
 
-def _record_usage(usage: dict) -> None:
-    """记录一次调用的 token 用量（DB 为准；DB 失败退回文件，绝不丢账；保留 30 天）。"""
+def _record_usage(usage: dict, provider: str = "main") -> None:
+    """记录一次调用的 token 用量（DB 为准；DB 失败退回文件，绝不丢账；保留 30 天）。
+    ★ 2026-09-13：另记 per-provider 明细（llm_usage_by_provider）——免费额度对账用。"""
     day = _iso_day()
     pt = int(usage.get("prompt_tokens") or 0)
     ct = int(usage.get("completion_tokens") or 0)
+    now = datetime.now().isoformat()
     with _usage_lock:
         try:
             _ensure_usage_table()
             _import_file_once()
             if db._use_postgres:
-                sql = ("INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
-                       "completion_tokens, updated_at) VALUES (%s, 1, %s, %s, %s) "
-                       "ON CONFLICT (day) DO UPDATE SET "
-                       "calls = llm_usage_daily.calls + 1, "
-                       "prompt_tokens = llm_usage_daily.prompt_tokens "
-                       "+ EXCLUDED.prompt_tokens, "
-                       "completion_tokens = llm_usage_daily.completion_tokens "
-                       "+ EXCLUDED.completion_tokens, "
-                       "updated_at = EXCLUDED.updated_at")
+                db.execute(
+                    "INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
+                    "completion_tokens, updated_at) VALUES (%s, 1, %s, %s, %s) "
+                    "ON CONFLICT (day) DO UPDATE SET "
+                    "calls = llm_usage_daily.calls + 1, "
+                    "prompt_tokens = llm_usage_daily.prompt_tokens "
+                    "+ EXCLUDED.prompt_tokens, "
+                    "completion_tokens = llm_usage_daily.completion_tokens "
+                    "+ EXCLUDED.completion_tokens, "
+                    "updated_at = EXCLUDED.updated_at", (day, pt, ct, now))
+                db.execute(
+                    "INSERT INTO llm_usage_by_provider (day, provider, calls, "
+                    "prompt_tokens, completion_tokens, updated_at) "
+                    "VALUES (%s, %s, 1, %s, %s, %s) "
+                    "ON CONFLICT (day, provider) DO UPDATE SET "
+                    "calls = llm_usage_by_provider.calls + 1, "
+                    "prompt_tokens = llm_usage_by_provider.prompt_tokens "
+                    "+ EXCLUDED.prompt_tokens, "
+                    "completion_tokens = llm_usage_by_provider.completion_tokens "
+                    "+ EXCLUDED.completion_tokens, "
+                    "updated_at = EXCLUDED.updated_at", (day, provider, pt, ct, now))
             else:
-                sql = ("INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
-                       "completion_tokens, updated_at) VALUES (?, 1, ?, ?, ?) "
-                       "ON CONFLICT(day) DO UPDATE SET calls = calls + 1, "
-                       "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
-                       "completion_tokens = completion_tokens "
-                       "+ excluded.completion_tokens, updated_at = excluded.updated_at")
-            db.execute(sql, (day, pt, ct, datetime.now().isoformat()))
+                db.execute(
+                    "INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "
+                    "completion_tokens, updated_at) VALUES (?, 1, ?, ?, ?) "
+                    "ON CONFLICT(day) DO UPDATE SET calls = calls + 1, "
+                    "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
+                    "completion_tokens = completion_tokens "
+                    "+ excluded.completion_tokens, updated_at = excluded.updated_at",
+                    (day, pt, ct, now))
+                db.execute(
+                    "INSERT INTO llm_usage_by_provider (day, provider, calls, "
+                    "prompt_tokens, completion_tokens, updated_at) "
+                    "VALUES (?, ?, 1, ?, ?, ?) "
+                    "ON CONFLICT(day, provider) DO UPDATE SET calls = calls + 1, "
+                    "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
+                    "completion_tokens = completion_tokens "
+                    "+ excluded.completion_tokens, updated_at = excluded.updated_at",
+                    (day, provider, pt, ct, now))
             # 只保留最近 30 天（ISO key 的字典序 = 时间序）
             cutoff = _iso_day(rules.beijing_now() - timedelta(days=_USAGE_KEEP_DAYS))
             db.execute("DELETE FROM llm_usage_daily WHERE day < %s", (cutoff,))
+            db.execute("DELETE FROM llm_usage_by_provider WHERE day < %s", (cutoff,))
             return
         except Exception as e:
             print(f"[llm] 用量写库失败，退回文件: {e}")
@@ -245,6 +301,11 @@ def get_llm_usage() -> dict:
             "blocked_reason": llm_blocked_reason(),
             "model": LLM_MODEL,
             "fallback_model": LLM_FALLBACK_MODEL or None,
+            # ★ 2026-09-13：provider 链状态（排障/对账可见性）
+            "provider_chain": [f"{p['name']}:{p['models'][0]}" for p in _providers()],
+            "free_model": LLM_FREE_MODEL or None,
+            "circuit_open": any(st["fails"] >= 2 and time.time() < st["until"]
+                                for st in _provider_circuit.values()),
             "max_tokens": LLM_MAX_TOKENS,
             # ★ 最近一次失败原因（含空响应时的 finish_reason / 思考字数），排障用
             "last_error": last_llm_error() or None,
@@ -257,36 +318,91 @@ def get_llm_usage() -> dict:
 #  一、LLM 调用封装
 # ================================================================
 
-def call_llm(system: str, user: str, temperature: float = 0.3,
-             json_mode: bool = False, retries: int = 3) -> str:
-    """
-    OpenAI 兼容 chat/completions 调用，带重试（3s/6s 退避）。
-    返回文本内容；全部失败返回空字符串（调用方降级）。
+def _providers() -> list:
+    """按优先级返回 provider 列表：① 免费站（LLM_FREE_*）→ ② 主力站（LLM_BASE_URL）。"""
+    ps = []
+    if LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL:
+        ps.append({"name": "free", "base_url": LLM_FREE_BASE_URL.rstrip("/"),
+                   "key": LLM_FREE_API_KEY,
+                   "models": [m for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK) if m],
+                   "reasoning": True})
+    if LLM_API_KEY and LLM_MODEL:
+        ps.append({"name": "main", "base_url": LLM_BASE_URL.rstrip("/"),
+                   "key": LLM_API_KEY,
+                   "models": [m for m in (LLM_MODEL, LLM_FALLBACK_MODEL) if m],
+                   "reasoning": False})
+    return ps
 
-    ★ 2026-09-11 空响应修复：原先「HTTP 200 但 content 为空」被当作成功直接
-      return ""（注释写的"走重试"根本没实现）→ 调用方只看到「LLM 调用失败（空响应）」，
-      一次都不重试。推理模型下这是常态故障：思考过程（reasoning_content）与答案
-      共用 max_tokens，思考一啰嗦就把额度吃光。
-      现在：空响应纳入重试；第 2 次起可切 LLM_MODEL_FALLBACK；若 finish_reason=length
-      （被截断）则把 max_tokens 翻倍（上限 LLM_MAX_TOKENS_CAP）再试。
+
+_provider_circuit = {}   # {pkey: {"fails": int, "until": float}}（按 provider 分槽）
+
+
+def _provider_circuit_open(key: str) -> bool:
+    st = _provider_circuit.get(key)
+    if not st:
+        return False
+    if st["fails"] >= 2:
+        if time.time() < st["until"]:
+            return True
+        _provider_circuit.pop(key, None)   # 冷却结束，恢复尝试
+    return False
+
+
+def _provider_mark(key: str, ok: bool, why: str = "") -> None:
+    if ok:
+        _provider_circuit.pop(key, None)
+        return
+    st = _provider_circuit.setdefault(key, {"fails": 0, "until": 0.0})
+    st["fails"] += 1
+    if st["fails"] >= 2:
+        st["until"] = time.time() + 1800
+        print(f"[llm] provider {key} 连续失败 {st['fails']} 次（{why}）→ 熔断 30min")
+
+
+def call_llm(system: str, user: str, temperature: float = 0.3,
+             json_mode: bool = False, retries: int = 3, tier: str = "slow") -> str:
+    """
+    Provider 链版 OpenAI 兼容调用：免费站 → 主力站，返回文本内容（全失败空串）。
+
+    ★ 单站内部（_call_provider）：重试 3s/6s 退避、第 2 次起切站内兜底模型、
+      空响应纳入重试、finish_reason=length 时 max_tokens 翻倍（上限 CAP）——
+      均为 2026-09-11 空响应修复的原有语义。
+    ★ 站点级故障（401/403/429/5xx）不重试直接降级下一站；每站连续失败 2 次
+      熔断 30min。tier="fast" 用 LLM_TIMEOUT_FAST（时间敏感任务）。
     """
     global _last_error
-    if not llm_configured():
-        _last_error = "未配置 LLM_API_KEY / LLM_MODEL"
+    providers = _providers()
+    if not providers:
+        _last_error = "未配置任何 LLM provider（LLM_API_KEY/LLM_MODEL 或 LLM_FREE_*）"
         return ""
     blocked = llm_blocked_reason()
     if blocked:
         print(f"[llm] 熔断: {blocked}")
         _last_error = blocked
         return ""
+    timeout = LLM_TIMEOUT_FAST if tier == "fast" else LLM_TIMEOUT_SLOW
+    for p in providers:
+        pkey = f"{p['name']}:{p['models'][0]}"
+        if _provider_circuit_open(pkey):
+            print(f"[llm] provider {pkey} 熔断中，跳过")
+            continue
+        ok, result = _call_provider(p, pkey, system, user, temperature,
+                                    json_mode, retries, timeout, tier)
+        if ok:
+            _last_error = ""
+            return result
+        _last_error = result
+    print(f"[llm] 所有 provider 均失败（最后: {_last_error}）")
+    return ""
 
-    models = [LLM_MODEL]
-    if LLM_FALLBACK_MODEL and LLM_FALLBACK_MODEL != LLM_MODEL:
-        models.append(LLM_FALLBACK_MODEL)
 
+def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: float,
+                   json_mode: bool, retries: int, timeout: int, tier: str) -> tuple:
+    """单 provider 内部重试。返回 (ok, content | 最后错误)。"""
+    global _last_error
     max_tokens = LLM_MAX_TOKENS
     for attempt in range(1, retries + 1):
-        model = models[min(attempt - 1, len(models) - 1)]   # 第 2 次起切兜底模型
+        model = p["models"][min(attempt - 1, len(p["models"]) - 1)]  # 第 2 次起切兜底模型
         body = {
             "model": model,
             "messages": [{"role": "system", "content": system},
@@ -296,22 +412,34 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        if p.get("reasoning"):
+            # 思考开关仅注入支持 reasoning_effort 的站（deepseek-v4-flash 默认
+            # medium 思考；渲染任务 fast 档关思考、slow 档轻思考）
+            body["reasoning_effort"] = LLM_FREE_REASONING or ("none" if tier == "fast" else "low")
         try:
-            # 推理模型较慢（长 prompt 可能思考数分钟），超时给足（原 JS 项目 1200s）
-            r = _session.post(f"{LLM_BASE_URL}/chat/completions", json=body, timeout=600)
+            r = _session.post(f"{p['base_url']}/chat/completions", json=body,
+                              headers={"Authorization": f"Bearer {p['key']}"},
+                              timeout=timeout)
+            if r.status_code in (401, 403, 429, 500, 502, 503, 504):
+                # 站点级故障 → 站内重试无意义，直接降级下一 provider。
+                # ★ 计入熔断（401/429 这类不会自愈的故障正是熔断的目标场景）
+                _last_error = f"{pkey} HTTP {r.status_code}"
+                _provider_mark(pkey, False, _last_error)
+                print(f"[llm] [{pkey}] {_last_error} → 降级下一 provider")
+                return False, _last_error
             r.raise_for_status()
             data = r.json()
             usage = data.get("usage") or {}
-            _record_usage(usage)                         # 记录 token 用量
+            _record_usage(usage, provider=p["name"])      # 记录 token 用量（分站）
             choice = (data.get("choices") or [{}])[0]
             content = ((choice.get("message") or {}).get("content") or "").strip()
             if content:
-                _last_error = ""
-                return content
+                _provider_mark(pkey, True)
+                return True, content
             # ── 空响应：记录可定位的诊断信息，并按情况升级参数后重试 ──
             finish = choice.get("finish_reason")
             reasoning = ((choice.get("message") or {}).get("reasoning_content") or "")
-            _last_error = (f"空响应(model={model} finish_reason={finish} "
+            _last_error = (f"空响应({pkey}/{model} finish_reason={finish} "
                            f"思考{len(reasoning)}字 completion_tokens="
                            f"{usage.get('completion_tokens')} max_tokens={max_tokens})")
             print(f"[llm] 第{attempt}次{_last_error}")
@@ -319,12 +447,12 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
                 max_tokens = min(max_tokens * 2, LLM_MAX_TOKENS_CAP)
                 print(f"[llm] 输出被截断，max_tokens 提升至 {max_tokens} 重试")
         except Exception as e:
-            _last_error = f"{type(e).__name__}: {str(e)[:180]}"
+            _last_error = f"{pkey} {type(e).__name__}: {str(e)[:160]}"
             print(f"[llm] 第{attempt}次调用失败: {_last_error}")
         if attempt < retries:
             time.sleep(attempt * 3)
-    print(f"[llm] {retries} 次尝试均未取到内容（最后一次: {_last_error}）")
-    return ""
+    _provider_mark(pkey, False, _last_error)
+    return False, _last_error
 
 
 def _call_json(system: str, user: str, temperature: float = 0.1) -> dict:
