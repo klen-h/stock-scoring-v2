@@ -110,7 +110,7 @@ def _build_pool() -> List[dict]:
     return valid
 
 
-def compute_full_ranking(limit: int = 300, pool_cap: Optional[int] = None) -> tuple:
+def compute_full_ranking(limit: int = 1000, pool_cap: Optional[int] = None) -> tuple:
     """全量精算榜单。返回 (rank_date, rows, pool_total)。
 
     rows 元素 = _precise_score_sync 的 dict（code/name/total_score/signal/
@@ -175,8 +175,13 @@ def compute_full_ranking(limit: int = 300, pool_cap: Optional[int] = None) -> tu
     return _today_bj(), rows[:limit], len(valid)
 
 
-def compute_and_store(limit: int = 300) -> str:
-    """日批任务入口：算全量榜单 → 落库。返回摘要字符串。"""
+def compute_and_store(limit: int = 1000) -> str:
+    """日批任务入口：算全量榜单 → 落库。返回摘要字符串。
+
+    ★ 2026-09-15：limit 300 → 1000。nb 市组合分排序（routers/scoring._sort_by_composite）
+      需要在「基本面强但 total_score 中游」的票里重排，300 行池子太小会把它们挡在
+      榜外；1000 行覆盖了全市场评分池（~1550 只）的大半，精算成本不变（本就全量算）。
+    """
     init_table()
     rank_date, rows, pool_total = compute_full_ranking(limit=limit)
     if not rows:

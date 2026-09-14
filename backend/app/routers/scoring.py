@@ -17,6 +17,7 @@
 from fastapi import APIRouter, Query, BackgroundTasks, Body
 import asyncio
 import math
+import os
 import time
 from types import SimpleNamespace
 from typing import Optional
@@ -31,6 +32,65 @@ engine = ScoreEngine()
 # 调度器每日盘后计算市场状态并缓存（app.backtest.market_regime），评分入口在此
 # 按缓存切换引擎权重。权重在盘后锁定当日状态、盘中不变，与「宏观方向分每日锁定」理念一致。
 _engine_weights_applied = {"date": None, "state": None}
+
+# ── nb 市组合分排序（2026-09-15）──
+# 回测背书（scripts/rate_hike_weight_backtest.py，252 条 nb 快照/持有5日）：
+#   现行 nb 权重总分 IC +0.020，top30% 收益 -1.02% 反而 < bottom30% +0.63%
+#   （分离 -1.65 → 高分票补跌，排行榜前列在跌的根因）；
+#   组合分 rank(基本面)+rank(资金面)-rank(技术面) IC +0.259、分离 +4.32。
+# 仅在 neutral_bearish 市况生效（其它市况组合分未验证，保持总分排序）。
+# 设 NB_COMPOSITE_RANK=off 回滚为纯总分排序。
+NB_COMPOSITE_RANK_ENABLED = os.environ.get("NB_COMPOSITE_RANK", "on").strip() != "off"
+
+_COMPOSITE_DIM_KEYS = ("基本面", "资金面", "技术面")
+
+
+def _use_composite_rank() -> bool:
+    """nb 市 + 开关开启 → 排行榜用组合分排序（否则总分）。"""
+    if not NB_COMPOSITE_RANK_ENABLED:
+        return False
+    try:
+        from app.backtest.market_regime import get_regime_cache
+        return (get_regime_cache() or {}).get("state") == "neutral_bearish"
+    except Exception:
+        return False
+
+
+def _sort_by_composite(final: list) -> list:
+    """候选池内组合分排序：三因子秩归一化后 (基本面+资金面-技术面) 降序。
+
+    缺任一维度的股票排到末尾（用 -1.0 兜底），不参与头部竞争。
+    """
+    n = len(final)
+    if n < 2:
+        return final
+    ranks = {}
+    for k in _COMPOSITE_DIM_KEYS:
+        idx_vals = [(i, (final[i].dimensions or {}).get(k)) for i in range(n)
+                    if isinstance((final[i].dimensions or {}).get(k), (int, float))]
+        order = sorted(idx_vals, key=lambda x: x[1])
+        m = len(order)
+        r = {}
+        for pos, (i, _v) in enumerate(order):
+            r[i] = pos / (m - 1) if m > 1 else 0.5
+        ranks[k] = r
+    scored = []
+    for i in range(n):
+        f, c, t = ranks["基本面"].get(i), ranks["资金面"].get(i), ranks["技术面"].get(i)
+        comp = (f + c - t) / 3.0 if (f is not None and c is not None and t is not None) else -1.0
+        scored.append((comp, final[i]))
+    scored.sort(key=lambda x: -x[0])
+    return [x[1] for x in scored]
+
+
+def _composite_raw(dims: dict):
+    """原始组合分（基本面+资金面-技术面），缺任一维度返回 None（供前端展示）。"""
+    try:
+        if all(isinstance(dims.get(k), (int, float)) for k in _COMPOSITE_DIM_KEYS):
+            return round(dims["基本面"] + dims["资金面"] - dims["技术面"], 2)
+    except Exception:
+        pass
+    return None
 
 
 def _sync_regime_weights() -> None:
@@ -356,7 +416,13 @@ async def _batch_with_precise_top(
         )
         for r in results if r
     ]
-    final.sort(key=lambda r: r.total_score, reverse=True)
+    # ★ nb 市组合分排序（2026-09-15）：neutral_bearish 下总分排序失效（IC≈0、
+    #   高分票补跌），改用组合分 rank(基本面)+rank(资金面)-rank(技术面)。
+    #   其它市况保持总分排序。开关 NB_COMPOSITE_RANK=off 可回滚。
+    if _use_composite_rank():
+        final = _sort_by_composite(final)
+    else:
+        final.sort(key=lambda r: r.total_score, reverse=True)
 
     # ── Top 5 单独计算买入时机 + 趋势健康度 ──
     # 批量精算时跳过了这两项（避免100只并发拉K线触发WAF）
@@ -1066,6 +1132,7 @@ async def score_top(
             "cache_status": "ready",
             "cached": True,
             "cache_age_seconds": int(_time.time() - entry["ts"]),
+            "rank_mode": entry.get("rank_mode", "total_score"),
         }
     
     # 防并发重复计算：若已在计算中，直接返回旧缓存（即使过期）
@@ -1079,6 +1146,7 @@ async def score_top(
     
     try:
         stock_list = list(stocks.values())
+        _sync_regime_weights()  # ★ 组合分排序依赖 regime；路径1（命中精算榜）不走 _batch_with_precise_top，须在此恢复
         # 过滤掉停牌/异常（price<=0 或 change_pct 为 None）
         valid = [s for s in stock_list if s.get("price", 0) > 0 and s.get("change_pct") is not None]
         # 过滤亏损股（PE ≤ 0）：买入推荐榜不应包含无盈利能力的公司
@@ -1107,9 +1175,13 @@ async def score_top(
         _stored = {"date": None, "data": []}
         try:
             from app.scoring.live_ranking import _today_bj, load as _load_live_ranking
-            _stored = _load_live_ranking(limit=500)   # 500 行够当候选池来源
+            _stored = _load_live_ranking(limit=1000)  # 组合分排序需更大池（覆盖基本面强但总分中游的票）
             if (_stored.get("data") or []) and _stored.get("date") == _today_bj():
-                top = [SimpleNamespace(**r) for r in _stored["data"]][:limit]
+                _cand = [SimpleNamespace(**r) for r in _stored["data"]]
+                # ★ nb 市组合分重排（2026-09-15）：同 _batch_with_precise_top 口径
+                if _use_composite_rank():
+                    _cand = _sort_by_composite(_cand)
+                top = _cand[:limit]
                 _total = _stored.get("pool_total") or len(valid)
                 print(f"[rank] 命中全量精算榜 {_stored['date']}"
                       f"（{len(_stored['data'])} 行，池 {_total}）")
@@ -1137,6 +1209,8 @@ async def score_top(
             "buy_point": getattr(r, 'buy_point', {}) or {},
             # 各维度得分（用于权重优化分析）
             "dimensions": getattr(r, 'dimensions', {}) or {},
+            # nb 市组合分（基本面+资金面-技术面），排序键；非 nb 市为 None
+            "composite_score": _composite_raw(getattr(r, 'dimensions', {}) or {}),
         } for r in top]
 
         # ★ 排行榜标注：批量算消息面情绪分（快讯源 1 次请求），不参与综合分，仅作参考
@@ -1187,6 +1261,7 @@ async def score_top(
             "data": result_data,
             "ts": _time.time(),
             "total": _total,
+            "rank_mode": "composite" if _use_composite_rank() else "total_score",
         }
 
         # 后台记录当日排行（用于计算连续上榜天数）
@@ -1197,6 +1272,7 @@ async def score_top(
             "data": result_data,
             "total": _total,
             "cache_status": "ready",
+            "rank_mode": "composite" if _use_composite_rank() else "total_score",
         }
     finally:
         _rank_result_cache["computing"] = False

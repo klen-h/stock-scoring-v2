@@ -235,7 +235,8 @@ def task_rank_live():
     故排在 mainforce_state 之后。
     """
     from app.scoring.live_ranking import compute_and_store
-    return compute_and_store(limit=300)
+    # ★ 2026-09-15：300 → 1000。nb 市组合分排序需要更大池（覆盖基本面强但总分中游的票）
+    return compute_and_store(limit=1000)
 
 
 def task_mainline():
