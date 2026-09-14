@@ -29,8 +29,12 @@ REPORT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "backtest_repor
 #  markdown 渲染工具
 # ──────────────────────────────────────────────────────────────
 
-def _metrics_table(m: dict) -> str:
-    """绩效指标 → markdown 表格（两列：指标 | 值）。"""
+def _metrics_table(m: dict, wechat: bool = False) -> str:
+    """绩效指标 → markdown 表格（两列：指标 | 值）。
+
+    ★ 2026-09-15：wechat=True 时输出**企微友好列表**（企微不支持表格渲染），
+      供 `generate_summary`（企微周报）用；默认 False 保持前端报告表格不变。
+    """
     if not m:
         return "（无成交，无绩效指标）\n"
     def _fmt(v, suffix=""):
@@ -52,6 +56,9 @@ def _metrics_table(m: dict) -> str:
     reasons = m.get("exit_reasons") or {}
     if reasons:
         rows.append(("退出原因", " / ".join(f"{k}:{v}" for k, v in reasons.items())))
+    if wechat:
+        from app.wechat_fmt import table_to_lines
+        return "\n".join(table_to_lines(["指标", "数值"], rows)) + "\n"
     lines = ["| 指标 | 数值 |", "|---|---|"]
     for k, v in rows:
         lines.append(f"| {k} | {v} |")
@@ -313,11 +320,14 @@ def generate_summary() -> str:
     # LLM 信号追踪
     try:
         r = strategies.backtest_llm_signals()
-        lines += ["### 📡 LLM 信号追踪", f"> ⚠️ {r['sample_note']}", "",
-                  "| 来源 | 平仓 | 胜率% | 平均单笔% | 盈亏比 |", "|---|---|---|---|---|"]
-        for key, g in r["by_source"].items():
-            lines.append(f"| {g['name']} | {g['closed']} | {g['win_rate']} | "
-                         f"{g['avg_profit_pct']} | {g['profit_factor']} |")
+        from app.wechat_fmt import table_to_lines
+        # ★ 企微不支持表格 → 转列表（本函数专供企微周报摘要）
+        src_rows = [[g["name"], g["closed"], g["win_rate"],
+                     g["avg_profit_pct"], g["profit_factor"]]
+                    for g in r["by_source"].values()]
+        lines += ["### 📡 LLM 信号追踪", f"> ⚠️ {r['sample_note']}", ""]
+        lines += table_to_lines(["来源", "平仓", "胜率%", "平均单笔%", "盈亏比"],
+                                src_rows, bold_first=True, kv=True)
     except Exception as e:
         lines.append(f"> LLM 信号回测异常：{e}")
 
@@ -325,7 +335,7 @@ def generate_summary() -> str:
     try:
         r = strategies.backtest_warfare()
         lines += ["", "### ⚔️ 战法选股回测", f"> 样本期：{r['sample_note']}", ""]
-        lines.append(_metrics_table(r.get("metrics") or {}))
+        lines.append(_metrics_table(r.get("metrics") or {}, wechat=True))
         oos = r.get("out_sample") or {}
         om = oos.get("metrics") or {}
         if om:
@@ -338,16 +348,18 @@ def generate_summary() -> str:
     try:
         r = strategies.backtest_warfare_by_regime()
         if r.get("status") == "ok":
+            from app.wechat_fmt import table_to_lines
             lines += ["", "### ⚔️ 战法 × 市场状态（强制切片）",
                       f"> 信号期：{r['window'][0]} ~ {r['window'][1]} | 总样本 {r['total']['n']} | "
-                      f"胜率 {r['total']['win_rate']}% | 盈亏比 {r['total']['profit_factor']}", "",
-                      "| 状态 | 样本 | 胜率% | 平均单笔% | 盈亏比 |",
-                      "|---|---|---|---|---|"]
-            for st, label in r["state_labels"].items():
-                stat = r["state_summary"].get(st) or {}
-                lines.append(
-                    f"| {label} | {stat.get('n', 0)} | {_pct(stat.get('win_rate'))} | "
-                    f"{_num(stat.get('avg_pnl_pct'))} | {_num(stat.get('profit_factor'))} |")
+                      f"胜率 {r['total']['win_rate']}% | 盈亏比 {r['total']['profit_factor']}", ""]
+            # ★ 企微不支持表格 → 转列表
+            st_rows = [[label, (r["state_summary"].get(st) or {}).get("n", 0),
+                        _pct((r["state_summary"].get(st) or {}).get("win_rate")),
+                        _num((r["state_summary"].get(st) or {}).get("avg_pnl_pct")),
+                        _num((r["state_summary"].get(st) or {}).get("profit_factor"))]
+                       for st, label in r["state_labels"].items()]
+            lines += table_to_lines(["状态", "样本", "胜率%", "平均单笔%", "盈亏比"],
+                                    st_rows, bold_first=True, kv=True)
             lines.append("")
             # 高波动 vs 正常波动
             high = r["vol_summary"].get("high") or {}
@@ -363,7 +375,7 @@ def generate_summary() -> str:
     try:
         r = strategies.backtest_macro()
         lines += ["", "### 🌐 宏观方向分回测", f"> ⚠️ {r['sample_note']}", ""]
-        lines.append(_metrics_table(r.get("metrics") or {}))
+        lines.append(_metrics_table(r.get("metrics") or {}, wechat=True))
     except Exception as e:
         lines.append(f"> 宏观回测异常：{e}")
 

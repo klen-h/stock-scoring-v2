@@ -964,7 +964,12 @@ def run_daily_report(push: bool = False) -> dict:
     if push or os.environ.get("DAILY_REPORT_PUSH") == "1":
         try:
             from app.flash import wechat
-            wechat.push_markdown_batched(f"📋 A股日报 {date}", md, category="brief")
+            from app.wechat_fmt import markdown_tables_to_lists
+            # ★ 2026-09-15：落库/前端保留表格；**推送前**把表格转成企微友好列表
+            #   （企微不支持表格渲染，`| a | b |` 会竖线错位）。
+            wechat.push_markdown_batched(f"📋 A股日报 {date}",
+                                         markdown_tables_to_lists(md),
+                                         category="brief")
             pushed = True
         except Exception as e:
             print(f"[daily_report] 推送失败: {e}")

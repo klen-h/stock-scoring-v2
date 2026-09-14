@@ -436,11 +436,18 @@ def _run_midday_scan() -> dict:
         scanner.set_realtime_mode(False)
     alerts = [x for x in items if x.get("severity") in ("severe", "obvious")]
     if alerts:
+        from app.contradictions.labels import fmt_metric_value, metric_cn
         lines = []
         for x in alerts:
             sev = "🔴" if x["severity"] == "severe" else "🟡"
             body = (f"{sev} **{x['title']}**（{x['severity']}）" + chr(10)
                     + x['summary'] + chr(10) + "> " + x.get('signal', ''))
+            # ★ 2026-09-15：附上样本名单（板块/个股）——原实现只推 title+summary，
+            #   evidence.metrics.*_samples 从未展示，用户看不到「具体是哪些板块」。
+            metrics = ((x.get("evidence") or {}).get("metrics") or {})
+            for k, v in metrics.items():
+                if isinstance(k, str) and k.endswith("_samples") and v:
+                    body += chr(10) + f"  - {metric_cn(k)}：" + fmt_metric_value(v, key=k)
             lines.append(body)
         try:
             from app.flash.wechat import push_markdown_batched

@@ -248,11 +248,15 @@ def _alert_once_per_day(key: str) -> bool:
 
 
 def _notify(items: list) -> None:
+    from app.wechat_fmt import table_to_lines
     lines = [f"> **实例：** {os.environ.get('RENDER_INSTANCE_ID', 'local')}",
-             f"> **时间：** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-             "", "| 数据 | 现状 | 影响 |", "|---|---|---|"]
-    for it in items:
-        lines.append(f"| {it['label']} | {it.get('detail') or '异常'} | {it.get('why') or '—'} |")
+             f"> **时间：** {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]
+    # ★ 2026-09-15：企微不支持 Markdown 表格（竖线错位）→ 转「每行一条」列表
+    lines += table_to_lines(
+        ["数据", "现状", "影响"],
+        [[it["label"], it.get("detail") or "异常", it.get("why") or "—"]
+         for it in items],
+        bold_first=True, kv=True)
     lines.append("")
     lines.append("> 数据源：`/api/system/runtime-files`（启动检查 + 每 6 小时）")
     body = "\n".join(lines)

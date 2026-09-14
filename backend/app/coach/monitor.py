@@ -92,17 +92,28 @@ def health_card() -> str:
     for a in advices:
         if a.code:
             hit_by_code.setdefault(a.code, []).append(a.label)
-    lines = [f"**持仓 {len(poss)} 只 ｜ regime="
-             f"{(ctx.get('regime') or {}).get('state') or '未知'}**", "",
-             "| 标的 | 成本 | 现价 | 盈亏 | 距止损 | 持有 | 规则 |",
-             "|---|---|---|---|---|---|---|"]
-    for p in poss:
+    # ★ 2026-09-15：企微不支持 Markdown 表格（竖线错位、表头与内容不对齐）→
+    #   改「每票一行」列表式：字段用全角空格分隔；盈亏与规则警报用 <font color>
+    #   着色（企微支持 info=绿 / warning=橙 / comment=灰），3 秒可扫完。
+    # ★ 2026-09-15：regime 中文化（此前直接显示 neutral_bearish 英文，
+    #   用户看不懂）——复用战法准入的同一份 REGIME_LABELS，口径一致。
+    from app.strategies.market_regime import REGIME_LABELS
+    _st = (ctx.get("regime") or {}).get("state")
+    lines = [f"**📋 持仓 {len(poss)} 只 ｜ {REGIME_LABELS.get(_st, _st or '未知')}**", ""]
+    for i, p in enumerate(poss, 1):
         tag = "[真]" if p.get("source") == "real" else "[模]"
         d = p.get("dist_stop_pct")
+        pnl = p["pnl_pct"] or 0
+        color = "info" if pnl > 0 else "warning" if pnl < 0 else "comment"
+        hits = hit_by_code.get(p["code"]) or []
+        hit_txt = (f"　<font color=\"warning\">⚠️ {'、'.join(hits)}</font>"
+                   if hits else "")
         lines.append(
-            f"| {tag}{p['name']} | {p['fill_price']:.2f} | {p['price']:.2f} | "
-            f"{p['pnl_pct']:+.1f}% | {('—' if d is None else f'{d:+.1f}%')} | "
-            f"{p['hold_days']}d | {'、'.join(hit_by_code.get(p['code']) or ['—'])} |")
+            f"**{i}. {tag} {p['name']}** {p['code']}"
+            f"　{p['fill_price']:.2f}→{p['price']:.2f}"
+            f"　<font color=\"{color}\">{pnl:+.1f}%</font>"
+            f"　距止损 {('—' if d is None else f'{d:+.1f}%')}"
+            f"　持有 {p['hold_days']}d{hit_txt}")
     # 市场级规则（闸门）单列
     market = [a for a in advices if not a.code]
     if market:

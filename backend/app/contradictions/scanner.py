@@ -363,17 +363,19 @@ def scan_sector_narrative_vs_flow(date: Optional[str] = None) -> Optional[Dict]:
             "metrics": {
                 "up_but_outflow_count": n_up,
                 "up_but_outflow_total": round(total_out, 2),
+                # ★ 2026-09-15：全量列出（原 [:5] 截断）——午间/盘后预警需看到
+                #   完整板块名单（统计池本就是涨/跌幅前 20，最多 20 项，消息可控）。
                 "up_but_outflow_samples": [
                     {"name": x["name"], "change_pct": x["change_pct"],
                      "net_outflow": round(x["net_inflow"], 2)}
-                    for x in up_but_outflow[:5]
+                    for x in up_but_outflow
                 ],
                 "down_but_inflow_count": n_down,
                 "down_but_inflow_total": round(total_in, 2),
                 "down_but_inflow_samples": [
                     {"name": x["name"], "change_pct": x["change_pct"],
                      "net_inflow": round(x["net_inflow"], 2)}
-                    for x in down_but_inflow[:5]
+                    for x in down_but_inflow
                 ],
             },
         },

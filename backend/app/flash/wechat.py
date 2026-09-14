@@ -130,6 +130,16 @@ def notify(category: str, title: str, content: str, force: bool = False,
     if not force and not BUSINESS_ALERTS_ENABLED:
         return False   # 与 push_markdown_batched 的业务开关语义一致
 
+    # ★ 2026-09-15：全局兜底——企微自定义机器人 markdown **不支持表格渲染**
+    #   （`| a | b |` 会按纯文本渲染、竖线错位）。推送前统一把表格块转成
+    #   「每行一条」列表（幂等：无表格时原文不变）。这样任何调用方（含 LLM
+    #   生成的简报/复盘 Markdown）都无需各自处理。
+    try:
+        from app.wechat_fmt import markdown_tables_to_lists
+        content = markdown_tables_to_lists(content)
+    except Exception:
+        pass
+
     # ① 分类群机器人：无 IP 限制，失败回落主群 webhook
     hook = _hook_for(category)
     if hook and _send_batched(hook, title, content):
@@ -224,6 +234,12 @@ def push_markdown_batched(title: str, content: str, force: bool = False,
     """按段落边界分批推送长 Markdown 到主群 webhook（每批 ≤4KB，标题带序号）。
     force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。
     category 传入时改走 notify()（分类群 → 应用 → 主群 解析链）。"""
+    # ★ 2026-09-15：全局兜底——表格转列表（见 notify 内注释；幂等）
+    try:
+        from app.wechat_fmt import markdown_tables_to_lists
+        content = markdown_tables_to_lists(content)
+    except Exception:
+        pass
     if category:
         notify(category, title, content, force=force)
         return

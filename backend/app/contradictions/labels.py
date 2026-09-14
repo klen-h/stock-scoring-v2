@@ -122,8 +122,11 @@ def fmt_metric_value(v, key: str = None) -> str:
     if isinstance(v, str):
         return v
     if isinstance(v, list):
+        # ★ 2026-09-15：样本类指标（*_samples）全量列出（用户要求看到完整名单，
+        #   如「下跌但净流入板块」）；其它列表仍截 6 项防消息过长。
+        _lim = len(v) if (key or "").endswith("_samples") else 6
         parts = []
-        for it in v[:6]:
+        for it in v[:_lim]:
             if isinstance(it, dict):
                 name = it.get("name") or it.get("title") or ""
                 pct = it.get("change_pct")
@@ -136,7 +139,7 @@ def fmt_metric_value(v, key: str = None) -> str:
                 parts.append(seg)
             else:
                 parts.append(str(it))
-        more = f" 等{len(v)}项" if len(v) > 6 else ""
+        more = f" 等{len(v)}项" if len(v) > _lim else ""
         return "、".join(parts) + more
     if isinstance(v, dict):
         return "、".join(f"{k}:{fmt_metric_value(x)}" for k, x in list(v.items())[:6])
