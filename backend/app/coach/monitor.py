@@ -40,6 +40,11 @@ CARD_WINDOW_MIN = 5                    # 窗口宽度（错过则不补，避免
 TRAIL_TRIGGER_PCT = 15.0               # 浮盈移动止损缺省值（实际读 rules.yaml plan.trail_trigger_pct）
 MAX_HOLD_REVIEW_DAYS = 3               # 强制评估日数缺省值（实际读 rules.yaml hold_3d_review.hold_days）
 
+# ★ 2026-09-15：警报定位说明。首跑 `scripts/coach_rule_health.py` 发现执行率 0%、
+#   放弃理由 100% 集中于「模拟盘自动任务，暂不操作」——用户把教练警报误当
+#   自动交易指令而全部放弃。先修认知（文案）再谈调参：W3 的执行率数据不能被污染。
+POSITION_NOTE = "〔这是教练对你持仓的纪律提醒，需人工确认执行——不是自动交易指令〕"
+
 
 def _push(title: str, body: str) -> None:
     if not body.strip():
@@ -85,7 +90,7 @@ def coach_tick() -> dict:
                 body = body + "\n\n" + note
         except Exception as e:
             print(f"[coach] explainer 挂载失败（用规则原文）: {e}")
-        _push("🎓 教练警报", body)
+        _push("🎓 教练警报", POSITION_NOTE + "\n" + body)
     return {"total": len(advices), "pushed": len(fresh), "silent": len(silent)}
 
 
