@@ -8,10 +8,16 @@ URL 前缀 /api/coach（JWT 保护，按用户登录态）：
   POST /api/coach/alerts/{id}/execute       → 执行回写（yes/no + 放弃理由）
   GET  /api/coach/consistency               → 执行一致性度量（教练 KPI）
   GET  /api/coach/abandon-reasons           → 放弃理由清单（周报复盘用）
+  GET  /api/coach/plans/execution-rate      → 预承诺执行率（模拟盘剧本闭环 KPI）
+  GET  /api/coach/plans                     → 批量查询剧本（A 前端持仓展示）
+  POST /api/coach/plans/{id}/abandon        → 主动放弃剧本（A 执行回写）
 
 ★ 背景：W1 的企微警报文案是「确认 / 放弃（放弃须填理由）」，但此前没有任何
   回写入口 → `audit.write_back_execution` 成死代码、执行一致性永远为 0。
   本路由补上闭环；前端教练 Tab（W2）以此为数据源。
+★ W2 模拟盘完整接入：B-3 新增 `/plans/execution-rate`，度量"开仓写死的退出
+  剧本有多少被实际执行"；A-4 新增 `/plans` + `/plans/{id}/abandon`，在模拟盘
+  持仓行展示剧本并支持主动放弃回写。
 ================================================================================
 """
 
@@ -54,6 +60,31 @@ def execute_alert(alert_id: int, payload: dict = Body(...),
 def get_consistency(days: int = 30, user: dict = Depends(get_current_user)):
     """执行一致性度量（第一版口径：执行率分母=已决策，未响应单列不进分母）。"""
     return audit.execution_consistency(days=min(max(days, 1), 365))
+
+
+@router.get("/plans/execution-rate")
+def get_plan_execution_rate(days: int = 30, user: dict = Depends(get_current_user)):
+    """预承诺执行率（W2 模拟盘闭环）：按剧本离场的平仓数 / 已平仓剧本数。"""
+    return audit.plan_execution_rate(days=min(max(days, 1), 365))
+
+
+@router.get("/plans")
+def get_plans(position_ids: str = "", user: dict = Depends(get_current_user)):
+    """批量查询 coach_plans（A 前端持仓展示）：position_ids 逗号分隔。"""
+    ids = [int(x) for x in position_ids.split(",") if x.strip().isdigit()]
+    return {"data": audit.get_plans(position_ids=ids)}
+
+
+@router.post("/plans/{plan_id}/abandon")
+def abandon_plan(plan_id: int, payload: dict = Body(...),
+                 user: dict = Depends(get_current_user)):
+    """主动放弃剧本（A 执行回写）：{reason: '...'}，理由必填。"""
+    reason = str(payload.get("reason") or "").strip()
+    if not reason:
+        raise HTTPException(400, "放弃剧本必须填写理由")
+    if not audit.abandon_plan(plan_id, reason):
+        raise HTTPException(500, "放弃失败（剧本不存在或已关闭）")
+    return {"success": True, "plan_id": plan_id}
 
 
 @router.get("/abandon-reasons")

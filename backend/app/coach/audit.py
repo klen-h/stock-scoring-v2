@@ -34,77 +34,223 @@ def _today() -> str:
 
 
 _table_ready = False
+_columns_ready = False
 
 
 def ensure_tables() -> None:
     """幂等建表（新部署走 schema.sql，老库自动补）。"""
-    global _table_ready
-    if _table_ready:
+    global _table_ready, _columns_ready
+    if _table_ready and _columns_ready:
         return
-    # ★ 2026-09-15：先探三对象是否已存在（廉价 catalog 查询，**零 DDL**）——全存在
-    #   即直接返回。为什么必须这么做：`CREATE TABLE IF NOT EXISTS` 即使表已存在，
-    #   也会触发 Supabase PostgREST **schema cache 全量重载**（见 `database.py:137`
-    #   注释：每次 ~1s、重拉全部 43 个关系，是 egress 元凶）——本地实测 coach
-    #   三连 DDL 冷启 3.5s，`GET /api/coach/alerts` 首请求因此超时；且 DDL 取表锁，
-    #   遇并发写可能长时间等待。表/索引都在时，走探测分支即免掉全部 DDL。
-    try:
-        row = db.fetch_one(
-            "SELECT to_regclass('public.coach_alerts') AS a, "
-            "to_regclass('public.coach_plans') AS p, "
-            "to_regclass('public.ux_coach_alerts_dedupe') AS i")
-        if row and row.get("a") and row.get("p") and row.get("i"):
-            _table_ready = True
-            return
-    except Exception as e:
-        print(f"[coach] 表存在性探测失败（回落 DDL 确认）: {e}")
-    _ok = True
-    for sql in (
-        """CREATE TABLE IF NOT EXISTS coach_plans (
-            id SERIAL PRIMARY KEY,
-            code TEXT NOT NULL,
-            name TEXT,
-            position_id INTEGER,
-            plan_date TEXT NOT NULL,
-            entry_price REAL,
-            stop_loss REAL,
-            review_date TEXT,
-            trail_trigger_pct REAL,
-            exit_conditions TEXT,
-            created_at TEXT,
-            UNIQUE(code, plan_date)
-        )""",
-        """CREATE TABLE IF NOT EXISTS coach_alerts (
-            id SERIAL PRIMARY KEY,
-            dedupe_key TEXT,
-            alert_date TEXT NOT NULL,
-            alert_time TEXT NOT NULL,
-            rule_id TEXT NOT NULL,
-            label TEXT,
-            severity TEXT,
-            code TEXT,
-            name TEXT,
-            message TEXT,
-            numbers_json TEXT,
-            pushed INTEGER DEFAULT 0,
-            executed TEXT,
-            abandon_reason TEXT,
-            outcome_pct REAL,
-            outcome_date TEXT,
-            created_at TEXT
-        )""",
-        # ★ 审查 P2-⑩：dedupe_key 加唯一索引——此前「先 SELECT 后 INSERT」非原子，
-        #   Render 部署重叠期两进程可同时 miss → 同警报双行、企微双推。
-        #   历史重复行会让索引创建失败（非致命，打印后下轮重试）。
-        "CREATE UNIQUE INDEX IF NOT EXISTS ux_coach_alerts_dedupe "
-        "ON coach_alerts (dedupe_key)",
-    ):
+    if not _table_ready:
+        # ★ 2026-09-15：先探三对象是否已存在（廉价 catalog 查询，**零 DDL**）——全存在
+        #   即直接返回。为什么必须这么做：`CREATE TABLE IF NOT EXISTS` 即使表已存在，
+        #   也会触发 Supabase PostgREST **schema cache 全量重载**（见 `database.py:137`
+        #   注释：每次 ~1s、重拉全部 43 个关系，是 egress 元凶）——本地实测 coach
+        #   三连 DDL 冷启 3.5s，`GET /api/coach/alerts` 首请求因此超时；且 DDL 取表锁，
+        #   遇并发写可能长时间等待。表/索引都在时，走探测分支即免掉全部 DDL。
         try:
-            db.execute(sql)
+            row = db.fetch_one(
+                "SELECT to_regclass('public.coach_alerts') AS a, "
+                "to_regclass('public.coach_plans') AS p, "
+                "to_regclass('public.ux_coach_alerts_dedupe') AS i")
+            if row and row.get("a") and row.get("p") and row.get("i"):
+                _table_ready = True
         except Exception as e:
-            print(f"[coach] 建表: {e}")
-            _ok = False
-    if _ok:
-        _table_ready = True   # ★ 审查 P2-⑨：仅全部成功才置位，失败下轮重试
+            print(f"[coach] 表存在性探测失败（回落 DDL 确认）: {e}")
+        if not _table_ready:
+            _ok = True
+            for sql in (
+                """CREATE TABLE IF NOT EXISTS coach_plans (
+                    id SERIAL PRIMARY KEY,
+                    code TEXT NOT NULL,
+                    name TEXT,
+                    position_id INTEGER,
+                    plan_date TEXT NOT NULL,
+                    entry_price REAL,
+                    stop_loss REAL,
+                    review_date TEXT,
+                    trail_trigger_pct REAL,
+                    exit_conditions TEXT,
+                    status TEXT DEFAULT 'open',
+                    actual_exit_date TEXT,
+                    actual_exit_reason TEXT,
+                    abandon_reason TEXT,
+                    followed INTEGER,
+                    closed_at TEXT,
+                    created_at TEXT,
+                    UNIQUE(code, plan_date)
+                )""",
+                """CREATE TABLE IF NOT EXISTS coach_alerts (
+                    id SERIAL PRIMARY KEY,
+                    dedupe_key TEXT,
+                    alert_date TEXT NOT NULL,
+                    alert_time TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    label TEXT,
+                    severity TEXT,
+                    code TEXT,
+                    name TEXT,
+                    message TEXT,
+                    numbers_json TEXT,
+                    pushed INTEGER DEFAULT 0,
+                    executed TEXT,
+                    abandon_reason TEXT,
+                    outcome_pct REAL,
+                    outcome_date TEXT,
+                    created_at TEXT
+                )""",
+                # ★ 审查 P2-⑩：dedupe_key 加唯一索引——此前「先 SELECT 后 INSERT」非原子，
+                #   Render 部署重叠期两进程可同时 miss → 同警报双行、企微双推。
+                #   历史重复行会让索引创建失败（非致命，打印后下轮重试）。
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_coach_alerts_dedupe "
+                "ON coach_alerts (dedupe_key)",
+            ):
+                try:
+                    db.execute(sql)
+                except Exception as e:
+                    print(f"[coach] 建表: {e}")
+                    _ok = False
+            if _ok:
+                _table_ready = True   # ★ 审查 P2-⑨：仅全部成功才置位，失败下轮重试
+    if _table_ready and not _columns_ready:
+        _ensure_columns()
+        _columns_ready = True
+
+
+def _ensure_columns() -> None:
+    """老库自动补列（幂等）：模拟盘完整接入 B-1 新增字段。"""
+    needed = {
+        "status": "TEXT DEFAULT 'open'",
+        "actual_exit_date": "TEXT",
+        "actual_exit_reason": "TEXT",
+        "abandon_reason": "TEXT",
+        "followed": "INTEGER",
+        "closed_at": "TEXT",
+    }
+    try:
+        existing = {r["column_name"] for r in db.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='coach_plans'")}
+    except Exception as e:
+        print(f"[coach] 列存在性探测失败: {e}")
+        return
+    for col, typ in needed.items():
+        if col not in existing:
+            try:
+                db.execute(f"ALTER TABLE coach_plans ADD COLUMN {col} {typ}")
+                print(f"[coach] 已补列 coach_plans.{col}")
+            except Exception as e:
+                print(f"[coach] 补列 coach_plans.{col} 失败: {e}")
+
+
+def close_plan(position_id: int, code: str, fill_date: str,
+               actual_exit_date: str, actual_exit_reason: str) -> bool:
+    """平仓时关闭对应 coach_plans 剧本，并判定是否按预承诺离场。
+
+    按剧本离场的口径（与 write_plan 的 exit_conditions 对齐）：
+      - stop_loss  → 命中"止损"条件
+      - expire     → 命中"强制评估"条件
+      其余（manual / take_profit 等）视为未严格按剧本，followed=0。
+    """
+    ensure_tables()
+    try:
+        plan = db.fetch_one(
+            "SELECT id FROM coach_plans WHERE position_id=%s AND status='open' "
+            "ORDER BY id DESC LIMIT 1", (position_id,))
+        if not plan and code and fill_date:
+            plan = db.fetch_one(
+                "SELECT id FROM coach_plans WHERE code=%s AND plan_date=%s AND status='open' "
+                "ORDER BY id DESC LIMIT 1", (code, fill_date))
+        if not plan:
+            return False
+        followed = 1 if actual_exit_reason in ("stop_loss", "expire") else 0
+        db.execute(
+            "UPDATE coach_plans SET status='closed', actual_exit_date=%s, "
+            "actual_exit_reason=%s, followed=%s, closed_at=%s WHERE id=%s",
+            (actual_exit_date, actual_exit_reason, followed, _now(), plan["id"]))
+        return True
+    except Exception as e:
+        print(f"[coach] 关闭剧本失败: {e}")
+        return False
+
+
+def plan_execution_rate(days: int = 30) -> dict:
+    """预承诺执行率（模拟盘闭环核心 KPI）：按剧本离场的平仓数 / 已平仓剧本数。"""
+    ensure_tables()
+    try:
+        rows = db.fetch(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed, "
+            "SUM(CASE WHEN status='abandoned' THEN 1 ELSE 0 END) AS abandoned, "
+            "SUM(CASE WHEN followed=1 THEN 1 ELSE 0 END) AS followed "
+            "FROM coach_plans WHERE plan_date >= %s",
+            (_days_ago(days),))
+    except Exception as e:
+        print(f"[coach] 预承诺执行率查询失败: {e}")
+        return {"window_days": days, "error": str(e)}
+    r = rows[0] if rows else {}
+    total = int(r.get("total") or 0)
+    closed = int(r.get("closed") or 0)
+    abandoned = int(r.get("abandoned") or 0)
+    settled = closed + abandoned
+    followed = int(r.get("followed") or 0)
+    return {
+        "window_days": days,
+        "plans_total": total,
+        "plans_closed": closed,
+        "plans_abandoned": abandoned,
+        "plans_settled": settled,
+        "plans_open": total - settled,
+        "followed_count": followed,
+        "follow_rate_pct": round(followed / settled * 100, 1) if settled else None,
+        "note": "预承诺执行率 = 按剧本离场的平仓数 / 已结算剧本数（含已平仓与主动放弃）",
+    }
+
+
+def get_plans(position_ids: list = None, code: str = None,
+              plan_date: str = None, status: str = None) -> list:
+    """按 position_id 列表 / code / plan_date / status 查询剧本（A 前端展示用）。"""
+    ensure_tables()
+    where, params = [], []
+    if position_ids:
+        ph = ",".join(["%s"] * len(position_ids))
+        where.append(f"position_id IN ({ph})")
+        params.extend(position_ids)
+    if code:
+        where.append("code=%s")
+        params.append(code)
+    if plan_date:
+        where.append("plan_date=%s")
+        params.append(plan_date)
+    if status:
+        where.append("status=%s")
+        params.append(status)
+    if not where:
+        return []
+    sql = "SELECT * FROM coach_plans WHERE " + " AND ".join(where) + " ORDER BY id DESC"
+    try:
+        return db.fetch(sql, tuple(params)) or []
+    except Exception as e:
+        print(f"[coach] 查询剧本失败: {e}")
+        return []
+
+
+def abandon_plan(plan_id: int, reason: str) -> bool:
+    """持仓中主动放弃剧本（A 执行回写）：reason 必填，写 abandon_reason。"""
+    ensure_tables()
+    reason = (reason or "").strip()
+    if not reason:
+        return False
+    try:
+        db.execute(
+            "UPDATE coach_plans SET status='abandoned', actual_exit_reason='abandon', "
+            "abandon_reason=%s, followed=0, closed_at=%s WHERE id=%s AND status='open'",
+            (reason, _now(), plan_id))
+        return True
+    except Exception as e:
+        print(f"[coach] 放弃剧本失败: {e}")
+        return False
 
 
 # ==============================================================================

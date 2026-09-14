@@ -685,6 +685,12 @@ def _close_position(pos: dict, exit_price: float, reason: str) -> None:
         db.execute(
             "UPDATE paper_positions SET status='closed', exit_reason=%s, exit_date=%s, closed_at=%s "
             "WHERE id=%s", (reason, _bj_date(), _now_iso(), pos["id"]))
+        # ★ Coach 平仓闭环（W2 模拟盘完整接入 B-2）：关闭预承诺剧本
+        try:
+            from app.coach.audit import close_plan
+            close_plan(pos["id"], pos["code"], pos.get("fill_date"), _bj_date(), reason)
+        except Exception as e:
+            print(f"[paper] Coach 剧本关闭失败（不影响平仓）: {e}")
         return
     c = _costs()
     buy_cost = c["commission"] + c["slippage"]
@@ -698,6 +704,12 @@ def _close_position(pos: dict, exit_price: float, reason: str) -> None:
         "pnl_pct=%s, pnl_amount=%s, is_win=%s, closed_at=%s WHERE id=%s",
         (exit_price, _bj_date(), reason, round(pnl_pct, 2), round(pnl_amount, 2),
          1 if pnl_pct > 0 else 0, _now_iso(), pos["id"]))
+    # ★ Coach 平仓闭环（W2 模拟盘完整接入 B-2）：关闭预承诺剧本并记录是否按剧本离场
+    try:
+        from app.coach.audit import close_plan
+        close_plan(pos["id"], pos["code"], pos.get("fill_date"), _bj_date(), reason)
+    except Exception as e:
+        print(f"[paper] Coach 剧本关闭失败（不影响平仓）: {e}")
     db.execute("UPDATE paper_account SET realized_pnl = realized_pnl + %s, updated_at=%s WHERE id=%s",
                (round(pnl_amount, 2), _now_iso(), ACCOUNT_ID))
     # ★ 组合风控挂钩：G3 连亏冷却检测（只统计止损，manual/expire/timeout_no_trigger 不算）+ 净值峰值维护
@@ -826,6 +838,87 @@ def paper_stats() -> dict:
         } for t in items]
         out[name] = _strategy_stat(trades)
     return out
+
+
+_EXIT_REASON_ZH = {
+    "stop_loss": "止损", "take_profit": "止盈", "expire": "超期",
+    "manual": "手动平仓", "timeout_no_trigger": "超时未触发",
+    "manual_cancel": "取消", "fill_rejected": "未成交",
+}
+
+
+def paper_attribution() -> dict:
+    """模拟盘绩效归因（C）：多维切片已平仓统计，回答"钱从哪来/亏在哪"。
+    维度：战法 / 退出原因 / 持有天数分桶 / 置信度 / 教练剧本执行一致性。
+    每组复用 `_strategy_stat` 口径（胜率/均盈亏/盈亏比/累计/均持仓）。"""
+    from app.backtest.strategies import _strategy_stat
+    from app.strategies.recommendation import STRATEGY_ZH
+    rows = db.fetch(
+        "SELECT * FROM paper_positions WHERE status='closed' ORDER BY closed_at ASC") or []
+    if not rows:
+        return {"closed_total": 0, "by_strategy": {}, "by_exit_reason": {},
+                "by_hold_bucket": {}, "by_confidence": {}, "by_plan_followed": {}}
+
+    # 教练剧本执行一致性：position_id → followed（1 按剧本 / 0 未按剧本 / 缺 无剧本）
+    followed_map = {}
+    try:
+        pr = db.fetch(
+            "SELECT position_id, followed FROM coach_plans WHERE position_id IS NOT NULL") or []
+        for p in pr:
+            followed_map[p["position_id"]] = p["followed"]
+    except Exception as e:
+        print(f"[paper] 归因读取 coach_plans 失败: {e}")
+
+    def _trades(items):
+        return [{
+            "pnl_pct": float(t["pnl_pct"] or 0),
+            "hold_days": _hold_days(t.get("fill_date") or "", t.get("exit_date") or ""),
+        } for t in items]
+
+    def _group(rows_, keyfn):
+        groups = {}
+        for r in rows_:
+            groups.setdefault(keyfn(r), []).append(r)
+        # 按成交数降序，便于前端直读
+        return {k: _strategy_stat(_trades(v))
+                for k, v in sorted(groups.items(), key=lambda kv: -len(kv[1]))}
+
+    def _confidence(r):
+        try:
+            cj = json.loads(r.get("confirmation_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            cj = {}
+        lvl = (cj.get("confidence_level") or "").lower()
+        return {"high": "高置信", "medium": "中置信"}.get(lvl) or "低/未标注"
+
+    def _bucket(r):
+        d = _hold_days(r.get("fill_date") or "", r.get("exit_date") or "")
+        if d <= 2:
+            return "≤2天"
+        if d <= 5:
+            return "3-5天"
+        if d <= 10:
+            return "6-10天"
+        if d <= 20:
+            return "11-20天"
+        return ">20天"
+
+    def _plan_key(r):
+        v = followed_map.get(r["id"])
+        if v == 1:
+            return "按剧本离场"
+        if v == 0:
+            return "未按剧本/放弃"
+        return "无剧本"
+
+    return {
+        "closed_total": len(rows),
+        "by_strategy": _group(rows, lambda r: STRATEGY_ZH.get(r["strategy_name"], r["strategy_name"])),
+        "by_exit_reason": _group(rows, lambda r: _EXIT_REASON_ZH.get(r.get("exit_reason"), r.get("exit_reason") or "未知")),
+        "by_hold_bucket": _group(rows, _bucket),
+        "by_confidence": _group(rows, _confidence),
+        "by_plan_followed": _group(rows, _plan_key),
+    }
 
 
 def auto_refresh_whitelist(min_trades: int = 30, win_threshold: float = 55.0) -> dict:

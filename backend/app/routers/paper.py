@@ -109,6 +109,12 @@ def stats():
     return {STRATEGY_ZH.get(k, k): v for k, v in raw.items()}
 
 
+@router.get("/attribution")
+def attribution():
+    """模拟盘绩效归因（C）：战法 / 退出原因 / 持有天数 / 置信度 / 剧本执行一致性。"""
+    return paper_trading.paper_attribution()
+
+
 @router.get("/account")
 def account():
     return paper_trading.get_account()
