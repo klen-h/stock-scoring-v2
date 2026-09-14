@@ -63,6 +63,14 @@ async def lifespan(app: FastAPI):
     # 初始化数据库表结构
     from app.database import db
     db.init_tables()
+    # ★ 2026-09-14：关键开关生效值自检（审查文档 §5.5）——把「代码默认值兜底 ≠
+    #   部署意图」的静默漂移暴露出来（实测 Actions 漏配 WHITELIST_CRITERION
+    #   → 日批白名单判据错 → 推送静默，两端行为分叉且无可见性）。
+    try:
+        from app.env_check import log_switch_report
+        log_switch_report()
+    except Exception as e:
+        print(f"[main] 开关自检失败（不影响启动）: {e}")
     # 执行数据迁移（如果 JSON 文件有未迁移的数据）
     try:
         from migrate import auto_migrate_if_needed
@@ -207,8 +215,19 @@ app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触
 # 类比 Express：app.get('/api/health', (req, res) => res.json({...}))
 @app.get("/api/health")
 def health():
-    """健康检查接口：前端/运维用它判断后端是否存活"""
-    return {"status": "ok", "service": "stock-scoring-backend"}
+    """健康检查接口：前端/运维用它判断后端是否存活。
+
+    ★ 2026-09-14：附加关键开关生效值与部署意图的一致性（switches_ok /
+    switches_mismatch）——漂移可见（审查文档 §5.5）。
+    """
+    try:
+        from app.env_check import switch_report
+        sw = switch_report()
+        sw_ok, sw_bad = sw["ok"], sw["mismatches"]
+    except Exception:
+        sw_ok, sw_bad = None, []
+    return {"status": "ok", "service": "stock-scoring-backend",
+            "switches_ok": sw_ok, "switches_mismatch": sw_bad}
 
 
 # ──────────────────────────────────────────────────────────────

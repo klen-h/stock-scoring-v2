@@ -538,6 +538,15 @@ def main():
     # ★ 关键：所有数据读取走数据包，杜绝回源拉 K 线（WAF 根治）
     os.environ["DATA_SOURCE"] = "pack"
 
+    # ★ 2026-09-14：关键开关生效值自检（审查文档 §5.5）——Actions 的
+    #   daily-batch.yml 此前漏配业务开关（用代码默认值）就是漂移发生地，
+    #   这里把生效值打进日批日志，与期望不符立即可见。
+    try:
+        from app.env_check import log_switch_report
+        log_switch_report()
+    except Exception as e:
+        print(f"  [env_check] 自检失败（不影响日批）: {e}")
+
     names = DEFAULT_ORDER if args.tasks.strip() == "all" \
         else [t.strip() for t in args.tasks.split(",") if t.strip()]
     unknown = [n for n in names if n not in TASKS]

@@ -85,6 +85,20 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          # ★ 2026-09-14：对齐业务开关（此前 Actions 未配 → 全用代码默认值，
+          #   与 Render 跑出不同结果，即审查文档 §4 的「部署漂移」）。日批是
+          #   唯一写库计算入口，白名单判据必须以 expectancy 为准：
+          #   win_rate 判据要求胜率≥55%，而该体系胜率天花板≈50% → 白名单恒空
+          #   → 战法推送静默（见 recommendation.py:41-47 的复核说明）。
+          WHITELIST_CRITERION: expectancy
+          # 宽度崩塌风控钩子：severe 次日新仓风险额减半 + 趋势类战法暂停推送/入池
+          # （risk_hook._hook_enabled 判 == "1"，故必须传字符串 '1'）。
+          CONTRADICTION_RISK_HOOK: '1'
+          # 主力出货乘数闸门：本地 .env 已用 auto、.env.example 亦建议 auto，
+          # 此前 Actions/Render 均未配（=off）→ 与本地意图不符。P1-12 方案A 后
+          # 该值仅影响 mainforce 标签（mult/active），不再影响排序/分数。
+          # ⚠️ Render 控制台需同步配 MAINFORCE_MODE=auto（代码侧无法代改）。
+          MAINFORCE_MODE: auto
         run: |
           python scripts/daily_batch.py \
             --tasks ${{ github.event.inputs.tasks || 'all' }} \

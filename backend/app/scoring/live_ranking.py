@@ -66,9 +66,18 @@ def init_table() -> None:
                 UNIQUE(rank_date, code)
             )
         """)
+        # ★ 2026-09-14 修复：旧表缺 UNIQUE(rank_date, code)（CREATE TABLE IF NOT
+        #   EXISTS 不会改已存在的表，而旧表 09-11 首建时无此约束）→ save 的
+        #   ON CONFLICT 报 "no unique or exclusion constraint matching ..."，
+        #   全量精算榜 0 行落库。用唯一索引幂等补齐（PG 支持 IF NOT EXISTS，
+        #   唯一索引可作为 ON CONFLICT 仲裁目标）。
+        db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ranking_live_date_code
+            ON ranking_live(rank_date, code)
+        """)
         _TABLE_READY = True
     except Exception as e:
-        print(f"[live_ranking] 建表失败: {e}")
+        print(f"[live_ranking] 建表/补索引失败: {e}")
 
 
 # ────────────────────────── 写入（日批调用） ──────────────────────────
@@ -173,6 +182,14 @@ def compute_and_store(limit: int = 300) -> str:
     if not rows:
         raise RuntimeError("全量精算榜为空（指标预载可能全失败）")
     saved = save(rank_date, rows, pool_total)
+    # ★ 2026-09-14：落库 0 行必须让任务失败——save() 内部 try/except 吞掉 upsert
+    #   异常并返回 0，此前 compute_and_store 不检查 → 日批把「算出但一行没写进库」
+    #   当成功（09-14 实测：ranking_live 表缺 UNIQUE 约束 → 0 行落库，任务却
+    #   显示 ✅）。现在 0 行即 raise → 进 fail_list + 企微告警，漂移可见。
+    if saved <= 0:
+        raise RuntimeError(
+            f"全量精算榜落库 0 行（算出 {len(rows)} 只但 upsert 全部失败）——"
+            f"检查 ranking_live 表的 UNIQUE(rank_date, code) 约束/唯一索引")
     top1 = rows[0]
     return (f"全量精算榜: {saved} 行落库（date={rank_date}, 池={pool_total}, "
             f"榜首 {top1['code']} {top1['name']} {top1['total_score']}）")
