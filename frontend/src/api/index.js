@@ -249,6 +249,7 @@ export const manualIngestPaper = (body) => http.post('/paper/positions/manual', 
 export const closePaperPosition = (id) => http.post(`/paper/positions/${id}/close`)
 export const cancelPaperPosition = (id) => http.delete(`/paper/positions/${id}`)
 export const getPaperStats = () => http.get('/paper/stats')
+export const getPaperAttribution = () => http.get('/paper/attribution')
 export const getPaperAccount = () => http.get('/paper/account')
 export const refreshPaperWhitelist = () => http.post('/paper/whitelist/refresh')
 export const getPaperRisk = () => http.get('/paper/risk')
@@ -260,4 +261,7 @@ export const getCoachAlerts = (limit = 50) => http.get('/coach/alerts', { params
 export const executeCoachAlert = (id, executed, reason = '') =>
   http.post(`/coach/alerts/${id}/execute`, { executed, reason })
 export const getCoachConsistency = (days = 30) => http.get('/coach/consistency', { params: { days } })
+export const getCoachPlanExecutionRate = (days = 30) => http.get('/coach/plans/execution-rate', { params: { days } })
+export const getCoachPlans = (positionIds) => http.get('/coach/plans', { params: { position_ids: (positionIds || []).join(',') } })
+export const abandonCoachPlan = (id, reason) => http.post(`/coach/plans/${id}/abandon`, { reason })
 export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-reasons', { params: { limit } })

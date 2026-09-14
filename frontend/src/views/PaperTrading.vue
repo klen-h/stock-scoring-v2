@@ -101,6 +101,58 @@
       </div>
     </div>
 
+    <!-- 归因 -->
+    <div v-else-if="tab === 'attribution'" class="space-y-4">
+      <div v-if="!attribution || !attribution.closed_total"
+        class="bg-card border border-border rounded p-8 text-center text-muted text-xs">
+        暂无已平仓数据，积累样本后自动生成多维归因
+      </div>
+      <template v-else>
+        <div class="text-xs text-muted bg-card border border-border rounded px-3 py-2">
+          已平仓共 {{ attribution.closed_total }} 笔，按 5 个维度切分，定位收益来源与纪律失效点
+        </div>
+        <div v-for="d in attributionDims" :key="d.key"
+          class="bg-card border border-border rounded overflow-hidden"
+          :class="d.key === 'by_plan_followed' ? 'ring-1 ring-accent/30' : ''">
+          <div class="flex items-baseline gap-2 px-3 py-2 bg-white/[0.02] border-b border-border">
+            <span class="text-xs font-bold text-gray-200">{{ d.title }}</span>
+            <span class="text-[10px] text-muted">{{ d.note }}</span>
+          </div>
+          <table class="w-full text-xs">
+            <thead class="text-muted bg-white/[0.02]">
+              <tr>
+                <th class="px-3 py-2 text-left">分组</th>
+                <th class="px-3 py-2 text-right">成交</th>
+                <th class="px-3 py-2 text-right">胜率</th>
+                <th class="px-3 py-2 text-right">平均盈亏</th>
+                <th class="px-3 py-2 text-right">盈亏比</th>
+                <th class="px-3 py-2 text-right">累计</th>
+                <th class="px-3 py-2 text-right">平均持仓</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(v, name) in (attribution[d.key] || {})" :key="name"
+                class="border-t border-border hover:bg-white/[0.02]">
+                <td class="px-3 py-2">{{ name }}</td>
+                <td class="px-3 py-2 text-right font-mono">{{ v.trades }}</td>
+                <td class="px-3 py-2 text-right font-mono" :class="winRateText(v.win_rate)">
+                  {{ v.win_rate == null ? '-' : v.win_rate + '%' }}
+                </td>
+                <td class="px-3 py-2 text-right font-mono" :class="pnlText(v.avg_pnl_pct)">
+                  {{ v.avg_pnl_pct == null ? '-' : v.avg_pnl_pct + '%' }}
+                </td>
+                <td class="px-3 py-2 text-right font-mono">{{ v.profit_factor }}</td>
+                <td class="px-3 py-2 text-right font-mono" :class="pnlText(v.total_pnl_pct)">
+                  {{ v.total_pnl_pct }}%
+                </td>
+                <td class="px-3 py-2 text-right font-mono">{{ v.avg_hold_days ?? '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+    </div>
+
     <!-- 持仓列表 -->
     <div v-else class="bg-card border border-border rounded overflow-hidden">
       <!-- 待确认 -->
@@ -113,26 +165,41 @@
             <th class="px-3 py-2 text-right">参考介入</th>
             <th class="px-3 py-2 text-right">止损</th>
             <th class="px-3 py-2 text-right">目标</th>
+            <th class="px-3 py-2 text-center">教练</th>
             <th class="px-3 py-2 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
-            <td class="px-3 py-2 font-mono">
-              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
-                class="text-accent hover:underline">{{ r.code }}</a>
-            </td>
-            <td class="px-3 py-2">
-              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
-            </td>
-            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ r.entry_price }}</td>
-            <td class="px-3 py-2 text-right font-mono text-rise">{{ r.stop_loss }}</td>
-            <td class="px-3 py-2 text-right font-mono text-fall">{{ r.target_price }}</td>
-            <td class="px-3 py-2 text-center">
-              <button @click="doCancel(r)" class="text-xs text-red-400 hover:text-red-300">取消</button>
-            </td>
-          </tr>
+          <template v-for="r in list" :key="r.id">
+            <tr class="border-t border-border hover:bg-white/[0.02]">
+              <td class="px-3 py-2 font-mono">
+                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                  class="text-accent hover:underline">{{ r.code }}</a>
+              </td>
+              <td class="px-3 py-2">
+                <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+              </td>
+              <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ r.entry_price }}</td>
+              <td class="px-3 py-2 text-right font-mono text-rise">{{ r.stop_loss }}</td>
+              <td class="px-3 py-2 text-right font-mono text-fall">{{ r.target_price }}</td>
+              <td class="px-3 py-2 text-center">
+                <button v-if="planOf(r.id)" @click="togglePlan(r.id)"
+                  class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/10">
+                  剧本
+                </button>
+                <span v-else class="text-[10px] text-muted">—</span>
+              </td>
+              <td class="px-3 py-2 text-center">
+                <button @click="doCancel(r)" class="text-xs text-red-400 hover:text-red-300">取消</button>
+              </td>
+            </tr>
+            <tr v-if="expandedPlanId === r.id && planOf(r.id)" class="bg-white/[0.01] border-t border-border">
+              <td :colspan="8" class="px-3 py-3">
+                <CoachPlanDetail :plan="planOf(r.id)" @updated="loadPlans" />
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
 
@@ -150,32 +217,47 @@
             <th class="px-3 py-2 text-right">止损</th>
             <th class="px-3 py-2 text-right">目标</th>
             <th class="px-3 py-2 text-right">股数</th>
+            <th class="px-3 py-2 text-center">教练</th>
             <th class="px-3 py-2 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
-            <td class="px-3 py-2 font-mono">
-              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
-                class="text-accent hover:underline">{{ r.code }}</a>
-            </td>
-            <td class="px-3 py-2">
-              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
-            </td>
-            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
-            <td class="px-3 py-2 text-right font-mono text-muted">{{ r.fill_date || '-' }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ priceOf(r.code) ?? '-' }}</td>
-            <td class="px-3 py-2 text-right font-mono" :class="pnlText(floatPnl(r))">
-              {{ floatPnl(r) == null ? '-' : floatPnl(r).toFixed(2) + '%' }}
-            </td>
-            <td class="px-3 py-2 text-right font-mono text-rise">{{ r.stop_loss }}</td>
-            <td class="px-3 py-2 text-right font-mono text-fall">{{ r.target_price }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ r.shares }}</td>
-            <td class="px-3 py-2 text-center">
-              <button @click="doClose(r)" class="text-xs text-amber-400 hover:text-amber-300">平仓</button>
-            </td>
-          </tr>
+          <template v-for="r in list" :key="r.id">
+            <tr class="border-t border-border hover:bg-white/[0.02]">
+              <td class="px-3 py-2 font-mono">
+                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                  class="text-accent hover:underline">{{ r.code }}</a>
+              </td>
+              <td class="px-3 py-2">
+                <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+              </td>
+              <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
+              <td class="px-3 py-2 text-right font-mono text-muted">{{ r.fill_date || '-' }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ priceOf(r.code) ?? '-' }}</td>
+              <td class="px-3 py-2 text-right font-mono" :class="pnlText(floatPnl(r))">
+                {{ floatPnl(r) == null ? '-' : floatPnl(r).toFixed(2) + '%' }}
+              </td>
+              <td class="px-3 py-2 text-right font-mono text-rise">{{ r.stop_loss }}</td>
+              <td class="px-3 py-2 text-right font-mono text-fall">{{ r.target_price }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ r.shares }}</td>
+              <td class="px-3 py-2 text-center">
+                <button v-if="planOf(r.id)" @click="togglePlan(r.id)"
+                  class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/10">
+                  剧本
+                </button>
+                <span v-else class="text-[10px] text-muted">—</span>
+              </td>
+              <td class="px-3 py-2 text-center">
+                <button @click="doClose(r)" class="text-xs text-amber-400 hover:text-amber-300">平仓</button>
+              </td>
+            </tr>
+            <tr v-if="expandedPlanId === r.id && planOf(r.id)" class="bg-white/[0.01] border-t border-border">
+              <td :colspan="12" class="px-3 py-3">
+                <CoachPlanDetail :plan="planOf(r.id)" @updated="loadPlans" />
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
 
@@ -191,26 +273,41 @@
             <th class="px-3 py-2 text-center">原因</th>
             <th class="px-3 py-2 text-right">盈亏</th>
             <th class="px-3 py-2 text-center">平仓日</th>
+            <th class="px-3 py-2 text-center">教练</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in list" :key="r.id" class="border-t border-border hover:bg-white/[0.02]">
-            <td class="px-3 py-2 font-mono">
-              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
-                class="text-accent hover:underline">{{ r.code }}</a>
-            </td>
-            <td class="px-3 py-2">
-              <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
-            </td>
-            <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
-            <td class="px-3 py-2 text-right font-mono">{{ r.exit_price }}</td>
-            <td class="px-3 py-2 text-center">{{ reasonText(r.exit_reason) }}</td>
-            <td class="px-3 py-2 text-right font-mono" :class="pnlText(r.pnl_pct)">
-              {{ r.pnl_pct == null ? '-' : r.pnl_pct + '%' }}
-            </td>
-            <td class="px-3 py-2 text-center text-muted">{{ r.exit_date }}</td>
-          </tr>
+          <template v-for="r in list" :key="r.id">
+            <tr class="border-t border-border hover:bg-white/[0.02]">
+              <td class="px-3 py-2 font-mono">
+                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                  class="text-accent hover:underline">{{ r.code }}</a>
+              </td>
+              <td class="px-3 py-2">
+                <span @click="goDetail(r.code)" class="cursor-pointer hover:text-accent">{{ r.name }}</span>
+              </td>
+              <td class="px-3 py-2 text-muted">{{ r.strategy_name_zh || r.strategy_name }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ r.fill_price }}</td>
+              <td class="px-3 py-2 text-right font-mono">{{ r.exit_price }}</td>
+              <td class="px-3 py-2 text-center">{{ reasonText(r.exit_reason) }}</td>
+              <td class="px-3 py-2 text-right font-mono" :class="pnlText(r.pnl_pct)">
+                {{ r.pnl_pct == null ? '-' : r.pnl_pct + '%' }}
+              </td>
+              <td class="px-3 py-2 text-center text-muted">{{ r.exit_date }}</td>
+              <td class="px-3 py-2 text-center">
+                <button v-if="planOf(r.id)" @click="togglePlan(r.id)"
+                  class="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/10">
+                  剧本
+                </button>
+                <span v-else class="text-[10px] text-muted">—</span>
+              </td>
+            </tr>
+            <tr v-if="expandedPlanId === r.id && planOf(r.id)" class="bg-white/[0.01] border-t border-border">
+              <td :colspan="9" class="px-3 py-3">
+                <CoachPlanDetail :plan="planOf(r.id)" @updated="loadPlans" />
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
 
@@ -226,10 +323,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   getPaperPositions, getPaperAccount, getPaperStats,
+  getPaperAttribution,
   cancelPaperPosition, closePaperPosition, getBatchPrices,
   getPaperRisk, unfreezePaperRisk,
+  getCoachPlans,
 } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
+import CoachPlanDetail from '../components/CoachPlanDetail.vue'
 
 const router = useRouter()
 
@@ -244,12 +344,23 @@ const tabs = [
   { key: 'holding', label: '持仓中' },
   { key: 'closed', label: '已平仓' },
   { key: 'stats', label: '战法统计' },
+  { key: 'attribution', label: '归因' },
 ]
 const account = ref({})
 const stats = ref({})
+const attribution = ref(null)
+const attributionDims = [
+  { key: 'by_strategy', title: '按战法', note: '哪类信号最赚钱' },
+  { key: 'by_exit_reason', title: '按退出原因', note: '利润来自止盈还是被止损拖累' },
+  { key: 'by_hold_bucket', title: '按持有天数', note: '拿多久最优' },
+  { key: 'by_confidence', title: '按置信度', note: '高置信信号是否真的更赚' },
+  { key: 'by_plan_followed', title: '按剧本执行', note: '守纪律 vs 不守纪律（教练闭环核心）' },
+]
 const rows = ref([])
 const prices = ref({})
 const risk = ref(null)
+const plans = ref({})                // position_id → coach_plan
+const expandedPlanId = ref(null)     // 展开剧本详情的 position id
 
 const list = computed(() => rows.value.filter(r => r.status === tab.value))
 const statRows = computed(() =>
@@ -262,6 +373,7 @@ const emptyText = computed(() => ({
 }[tab.value] || ''))
 
 function countOf(k) {
+  if (k === 'attribution') return attribution.value?.closed_total ?? 0
   return rows.value.filter(r => r.status === k).length
 }
 
@@ -269,15 +381,18 @@ onMounted(() => { load(); loadRisk() })
 
 async function load() {
   try {
-    const [acc, st, pos] = await Promise.all([
+    const [acc, st, pos, attr] = await Promise.all([
       getPaperAccount().then(r => r.data).catch(() => ({})),
       getPaperStats().then(r => r.data).catch(() => ({})),
       getPaperPositions().then(r => r.data?.data || []).catch(() => []),
+      getPaperAttribution().then(r => r.data).catch(() => null),
     ])
     account.value = acc || {}
     stats.value = st || {}
     rows.value = pos || []
+    attribution.value = attr || null
     await loadPrices(rows.value)
+    await loadPlans()
   } catch (e) {
     console.error('[paper] 加载失败', e)
   }
@@ -300,6 +415,29 @@ async function doUnfreeze() {
   } catch (e) {
     alert(e?.response?.data?.detail || '操作失败')
   }
+}
+
+async function loadPlans() {
+  const ids = (rows.value || []).map(r => r.id).filter(Boolean)
+  if (!ids.length) { plans.value = {}; return }
+  try {
+    const { data } = await getCoachPlans(ids)
+    const map = {}
+    ;(data?.data || []).forEach(p => {
+      if (p.position_id != null) map[p.position_id] = p
+    })
+    plans.value = map
+  } catch (e) {
+    console.error('[paper] 加载教练剧本失败', e)
+  }
+}
+
+function planOf(positionId) {
+  return plans.value?.[positionId]
+}
+
+function togglePlan(id) {
+  expandedPlanId.value = expandedPlanId.value === id ? null : id
 }
 
 async function loadPrices(all) {

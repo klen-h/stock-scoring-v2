@@ -11,7 +11,7 @@
           </p>
         </div>
         <div class="flex gap-2">
-          <select v-model.number="days" @change="loadConsistency"
+          <select v-model.number="days" @change="Promise.all([loadConsistency(), loadPlanRate()])"
             class="bg-bg border border-border rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-accent/50">
             <option :value="7">近 7 天</option>
             <option :value="30">近 30 天</option>
@@ -61,6 +61,39 @@
     <div class="text-[11px] text-muted bg-card border border-border rounded-lg px-3 py-2 mb-4 leading-relaxed">
       KPI 口径：{{ consistency?.note || '执行率分母 = 已决策（不含未响应）' }}
       <span class="text-muted/70">·「没看见」与「看见了但放弃」是两回事，混算会虚高执行率。</span>
+    </div>
+
+    <!-- 预承诺执行率 KPI（模拟盘完整接入 B-4：开仓写的退出剧本有多少被实际执行） -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-2">
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="text-xs text-muted">预承诺执行率</div>
+        <div class="text-xl font-bold mt-1"
+          :class="planRate?.follow_rate_pct == null ? 'text-muted' :
+                  planRate.follow_rate_pct >= 80 ? 'text-rise' :
+                  planRate.follow_rate_pct >= 50 ? 'text-amber-400' : 'text-fall'">
+          {{ planRate?.follow_rate_pct == null ? '—' : planRate.follow_rate_pct + '%' }}
+        </div>
+        <div class="text-[10px] text-muted mt-0.5">按剧本离场 ÷ 已平仓</div>
+      </div>
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="text-xs text-muted">已结算剧本</div>
+        <div class="text-xl font-bold text-gray-100 mt-1">{{ planRate?.plans_settled ?? 0 }}</div>
+        <div class="text-[10px] text-muted mt-0.5">已平仓 {{ planRate?.plans_closed ?? 0 }} / 放弃 {{ planRate?.plans_abandoned ?? 0 }}</div>
+      </div>
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="text-xs text-muted">持仓中剧本</div>
+        <div class="text-xl font-bold text-accent mt-1">{{ planRate?.plans_open ?? 0 }}</div>
+        <div class="text-[10px] text-muted mt-0.5">未到期</div>
+      </div>
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="text-xs text-muted">按剧本离场</div>
+        <div class="text-xl font-bold text-rise mt-1">{{ planRate?.followed_count ?? 0 }}</div>
+        <div class="text-[10px] text-muted mt-0.5">stop_loss / expire</div>
+      </div>
+    </div>
+    <div class="text-[11px] text-muted bg-card border border-border rounded-lg px-3 py-2 mb-4 leading-relaxed">
+      模拟盘闭环口径：{{ planRate?.note || '按剧本离场 = 止损触发 或 持有到期（强制评估）' }}
+      <span class="text-muted/70">· manual / take_profit / 主动放弃 视为未严格按剧本（followed=0）。</span>
     </div>
 
     <div class="flex gap-4 items-start">
@@ -194,6 +227,7 @@ import {
   getCoachAlerts,
   executeCoachAlert,
   getCoachConsistency,
+  getCoachPlanExecutionRate,
   getCoachAbandonReasons,
 } from '../api'
 
@@ -201,6 +235,7 @@ const loading = ref(false)
 const error = ref('')
 const alerts = ref([])
 const consistency = ref(null)
+const planRate = ref(null)
 const reasons = ref([])
 const days = ref(30)
 const writing = ref(null)          // 正在回写的 alert id
@@ -252,6 +287,15 @@ async function loadConsistency() {
   }
 }
 
+async function loadPlanRate() {
+  try {
+    const { data } = await getCoachPlanExecutionRate(days.value)
+    planRate.value = data
+  } catch (e) {
+    console.error('loadPlanRate error', e)
+  }
+}
+
 async function loadReasons() {
   try {
     const { data } = await getCoachAbandonReasons(20)
@@ -267,7 +311,7 @@ async function load() {
   try {
     const { data } = await getCoachAlerts(50)
     alerts.value = data?.data || []
-    await Promise.all([loadConsistency(), loadReasons()])
+    await Promise.all([loadConsistency(), loadPlanRate(), loadReasons()])
   } catch (e) {
     error.value = '加载失败：' + (e.response?.data?.detail || e.message)
   } finally {
