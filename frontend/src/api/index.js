@@ -253,3 +253,11 @@ export const getPaperAccount = () => http.get('/paper/account')
 export const refreshPaperWhitelist = () => http.post('/paper/whitelist/refresh')
 export const getPaperRisk = () => http.get('/paper/risk')
 export const unfreezePaperRisk = () => http.post('/paper/risk/unfreeze')
+
+// 交易教练（Coach W1：规则引擎硬警报 + 执行回写 + 执行一致性 KPI）
+// 教练只输出「规则结果」，数字由代码注入（LLM 不参与决策，见 PLAN §2.4 评审①）
+export const getCoachAlerts = (limit = 50) => http.get('/coach/alerts', { params: { limit } })
+export const executeCoachAlert = (id, executed, reason = '') =>
+  http.post(`/coach/alerts/${id}/execute`, { executed, reason })
+export const getCoachConsistency = (days = 30) => http.get('/coach/consistency', { params: { days } })
+export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-reasons', { params: { limit } })

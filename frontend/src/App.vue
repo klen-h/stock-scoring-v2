@@ -139,6 +139,7 @@ const navGroups = [
     { path: '/trade-plans', label: '交易计划' },
     { path: '/portfolio', label: '我的持仓' },
     { path: '/paper', label: '模拟盘' },
+    { path: '/coach', label: '交易教练' },
   ]},
   { label: '复盘', items: [
     { path: '/report', label: '每日日报' },

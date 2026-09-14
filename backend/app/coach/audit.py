@@ -41,6 +41,22 @@ def ensure_tables() -> None:
     global _table_ready
     if _table_ready:
         return
+    # ★ 2026-09-15：先探三对象是否已存在（廉价 catalog 查询，**零 DDL**）——全存在
+    #   即直接返回。为什么必须这么做：`CREATE TABLE IF NOT EXISTS` 即使表已存在，
+    #   也会触发 Supabase PostgREST **schema cache 全量重载**（见 `database.py:137`
+    #   注释：每次 ~1s、重拉全部 43 个关系，是 egress 元凶）——本地实测 coach
+    #   三连 DDL 冷启 3.5s，`GET /api/coach/alerts` 首请求因此超时；且 DDL 取表锁，
+    #   遇并发写可能长时间等待。表/索引都在时，走探测分支即免掉全部 DDL。
+    try:
+        row = db.fetch_one(
+            "SELECT to_regclass('public.coach_alerts') AS a, "
+            "to_regclass('public.coach_plans') AS p, "
+            "to_regclass('public.ux_coach_alerts_dedupe') AS i")
+        if row and row.get("a") and row.get("p") and row.get("i"):
+            _table_ready = True
+            return
+    except Exception as e:
+        print(f"[coach] 表存在性探测失败（回落 DDL 确认）: {e}")
     _ok = True
     for sql in (
         """CREATE TABLE IF NOT EXISTS coach_plans (

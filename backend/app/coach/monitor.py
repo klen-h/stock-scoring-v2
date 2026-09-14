@@ -18,7 +18,8 @@
   生产只读模式下恰恰最需要它。日批只挂"收盘回写 + 结果回填"两处。
 
 ★ 评审 ①（事前无权）：本模块推送的每条文案的数字都由 `rules.py` 注入，
-  W2 的 LLM 层只能"渲染"，不能"决定"。
+  W2 的 LLM 层（`explainer.py`）只能"渲染"，不能"决定"——其输出**禁止出现任何数字**，
+  结构上不可能篡改事实；翻译层故障一律 fail-open 回退规则原文。
 ================================================================================
 """
 
@@ -73,7 +74,18 @@ def coach_tick() -> dict:
     if silent:
         audit.record_advices(silent, push=False)     # 只落库攒样本（第一周不推）
     if fresh:
-        _push("🎓 教练警报", coach_rules.format_batch(fresh))
+        body = coach_rules.format_batch(fresh)
+        # ★ W2 LLM 翻译层（评审①「事前无权」）：只补一段"人话解说"，数字全部由
+        #   规则原文（代码生成）承载；翻译层任何故障（开关关/情绪熔断/LLM 不可用/
+        #   输出含数字）都 fail-open 回退规则原文——绝不挡住纪律提醒。
+        try:
+            from app.coach import explainer
+            note = explainer.explain_batch(fresh)
+            if note:
+                body = body + "\n\n" + note
+        except Exception as e:
+            print(f"[coach] explainer 挂载失败（用规则原文）: {e}")
+        _push("🎓 教练警报", body)
     return {"total": len(advices), "pushed": len(fresh), "silent": len(silent)}
 
 

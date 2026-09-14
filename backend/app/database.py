@@ -140,7 +140,8 @@ class Database:
         #   ~1s、重新拉取全部 43 个关系）→ 这是 Supabase 日流量数百 MB 的元凶。
         #   建表语句均为 IF NOT EXISTS 幂等，进程内执行一次就够，重复调用直接跳过。
         _s = (sql or "").lstrip().upper()
-        if _s.startswith(("CREATE TABLE", "CREATE INDEX", "ALTER TABLE")):
+        _is_ddl = _s.startswith(("CREATE TABLE", "CREATE INDEX", "ALTER TABLE"))
+        if _is_ddl:
             _key = " ".join((sql or "").split())
             if _key in _DDL_DONE:
                 return 0
@@ -155,6 +156,17 @@ class Database:
                 with self._get_conn() as conn:
                     if self._use_postgres:
                         with conn.cursor() as cur:
+                            if _is_ddl:
+                                # ★ 2026-09-15：DDL 加**锁超时**——`SET LOCAL` 只作用于
+                                #   本事务，兼容 Supabase Supavisor 事务池（连接级
+                                #   `options` 会被池忽略：实测 lock_timeout 仍为 0）。
+                                #   防启动期大量 DDL（`db.init_tables()` + 各模块
+                                #   ensure_table）与 Render 生产写入争表锁时**无限
+                                #   hang**：实测本地后端卡在一条到 Supabase 的连接
+                                #   5.5 分钟无响应（进程 8 分钟仅耗 0.98s CPU）→
+                                #   lifespan 永不完成 → 所有请求超时（连 /api/health
+                                #   都挂）。等锁超 15s 即报错 → execute 自带重试一次。
+                                cur.execute("SET LOCAL lock_timeout = '15s'")
                             cur.execute(sql, params or ())
                             return cur.rowcount
                     else:
