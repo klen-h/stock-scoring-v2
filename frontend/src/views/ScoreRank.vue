@@ -192,6 +192,13 @@
       </div>
     </div>
 
+    <!-- 组合分排序口径提示（nb 阴跌市，后端切换排序键） -->
+    <div v-if="rankMode === 'composite' && activeTab === 'top'"
+      class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-400 mb-3">
+      ⚠️ 当前为阴跌防御市（neutral_bearish），榜单按「组合分 = 基本面 + 资金面 − 技术面」排序（非总分）。
+      回测背书：总分在该市况排序失效（高分票补跌），组合分 IC +0.259 vs 总分 +0.020。总分仅作参考。
+    </div>
+
     <!-- 数据表格 -->
     <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
@@ -232,6 +239,9 @@
               <span class="font-bold" :class="item.total_score >= 65 ? 'text-emerald-400' : item.total_score >= 45 ? 'text-amber-400' : 'text-red-400'">
                 {{ item.total_score }}
               </span>
+              <div v-if="rankMode === 'composite' && item.composite_score != null" class="text-[10px] text-muted mt-0.5">
+                组合分 {{ item.composite_score }}
+              </div>
             </td>
             <td class="py-2 px-3 text-center">
               <span class="px-2 py-0.5 rounded-full text-xs"
@@ -716,6 +726,7 @@ const activeTab = ref('top')
 const signalType = ref('买入')
 const tableData = ref([])
 const cacheStatus = ref('loading')
+const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
 const temp = ref({})   // 市场环境温度（独立信号）
 
@@ -1269,6 +1280,7 @@ async function loadData() {
     const d = res.data
     tableData.value = d.data || []
     cacheStatus.value = d.cache_status || 'unknown'
+    rankMode.value = d.rank_mode || 'total_score'
     stats.total = d.total || 0
     // 简单统计
     stats.buyCount = tableData.value.filter(i => i.signal.includes('买入')).length
@@ -1295,6 +1307,7 @@ async function loadData() {
 // 前端计算排行榜
 async function loadFrontendRanking() {
   cacheStatus.value = 'computing'
+  rankMode.value = 'total_score'   // 本地计算无组合分排序口径
   
   const mode = activeTab.value === 'top' ? 'top' : 
                activeTab.value === 'bottom' ? 'bottom' : 'signal'
