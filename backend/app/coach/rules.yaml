@@ -97,6 +97,36 @@ rules:
     params:
       day_loss_pct: 2.0        # 简报 §3.4
 
+  # ── D. 市场微观结构纪律（Phase 0 画像三条净产出，2026-09-16）─────────────────
+  # 依据：scripts/rhythm_profile.py n=127（Gate 判定书 §6）：
+  #   ① 确认流入=短期顶部选择器（流入确认日后 20 日 -2.2%，差 -236bp）
+  #   ② 短期反转 R_{t-1}=-0.169（t=-2.33） ③ 涨日=主力轧差净卖日（+1%→-27亿）
+  # 阈值 big_move_pct=1.5：画像为连续效应、无单点阈值来源，取「中等强度波动日」
+  #   作启发式起点，Phase 0 宽度序列扩样后校准（参数表校准来源不空原则）。
+  - id: no_chase_rally
+    label: 大涨日不追
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      big_move_pct: 1.5
+
+  - id: reversal_no_add
+    label: 昨日大涨今日不加仓
+    enabled: true
+    push: false
+    severity: info
+    params:
+      big_move_pct: 1.5
+
+  - id: reversal_no_panic
+    label: 昨日大跌不恐慌割肉
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      big_move_pct: 1.5
+
 # ── 剧本（coach_plans）阈值（monitor.write_plan 消费）────────────────────────
 # ★ 审查 P2-12：此前剧本三处与规则/执行打架（评估日数写死 3、price_pos 文本
 #   写死 0.80、移动止损无人执行）。现阈值集中此处：

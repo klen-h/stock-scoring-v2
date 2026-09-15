@@ -298,7 +298,9 @@ _day_realized_cache = {"key": None, "val": None}
 
 def build_context(tier: str = "light") -> dict:
     ctx = {"regime": _regime(), "breadth": _breadth(), "macro": _macro(),
-           "margin": _margin(), "positions": _holdings(heavy=(tier == "all"))}
+           "margin": _margin(), "positions": _holdings(heavy=(tier == "all")),
+           "idx_prev_move": _idx_last_move(),
+           "market_avg_change_pct": _market_avg_change_pct()}
     ctx["day_pnl_pct"] = None
     try:
         from app.strategies.paper_trading import INITIAL_CAPITAL, _bj_date
@@ -437,6 +439,41 @@ def _ev_gate_reduce(pos, params, ctx):
     }
 
 
+_idx_move_cache = {"key": None, "val": None}
+
+
+def _idx_last_move() -> Optional[dict]:
+    """沪深300 最近一个交易日涨跌幅（backtest_prices 最新两根收盘）。
+
+    ★ Phase 0 画像净产出（2026-09-16，scripts/rhythm_profile.py，n=127）：
+      本市场短期反转 R_{t-1}=-0.169（t=-2.33）→ 昨日大涨/大跌对今日有反向含义。
+    盘中最新一根=昨日（当日 15:40 才回填）；按日期缓存，30s 轮询零重复查询。
+    """
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT date, close FROM backtest_prices WHERE code='sh000300' "
+                        "ORDER BY date DESC LIMIT 2")
+        if not rows or len(rows) < 2:
+            return None
+        d = str(rows[0]["date"])
+        if _idx_move_cache["key"] != d:
+            c0, c1 = float(rows[0]["close"] or 0), float(rows[1]["close"] or 0)
+            _idx_move_cache.update(key=d, val=(
+                {"date": d, "pct": round((c0 / c1 - 1) * 100, 2)} if c1 > 0 else None))
+        return _idx_move_cache["val"]
+    except Exception:
+        return None
+
+
+def _market_avg_change_pct() -> Optional[float]:
+    """全市场等权平均涨幅 %（内存缓存推导，零网络；缓存未就绪返回 None）。"""
+    stocks = _market_cache()
+    if not stocks:
+        return None
+    vals = [s.get("change_pct") for s in stocks.values() if s.get("change_pct") is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
+
+
 def _today_str() -> str:
     try:
         from app.flash import rules as flash_rules
@@ -520,6 +557,54 @@ def _ev_emotion_fuse(pos, params, ctx):
     }
 
 
+# ── D. 市场微观结构纪律（Phase 0 画像三条净产出，2026-09-16 落库，第一周不推）────
+# 依据：scripts/rhythm_profile.py（n=127 交易日，详见 Gate 判定书 2026-09-16 §6）。
+#  ① 确认流入 = 短期顶部选择器（流入确认日后 20 日 -2.2%，差 -236bp）
+#  ② 市场短期反转 R_{t-1}=-0.169（t=-2.33）
+#  ③ 涨日即轧差口径「主力」净卖日（指数+1% → 次日超额流 -27 亿）
+
+def _ev_no_chase_rally(pos, params, ctx):
+    thr = float(params.get("big_move_pct") or 1.5)
+    m = ctx.get("market_avg_change_pct")
+    if m is None or m < thr:
+        return None
+    return {
+        "message": (f"【涨了别追】今日全市场等权涨幅 {m:+.2f}%（≥{thr:g}%）。\n"
+                    f"127 日画像：市场级流入确认日后 20 日平均 -2.2%（差 -236bp）——"
+                    f"「确认流入」是短期顶部选择器；且指数每 +1% 当日主力轧差口径净卖 27 亿。"
+                    f"大涨日不追加，已有仓位按剧本持有。"),
+        "numbers": {"market_avg_pct": m, "threshold": thr},
+    }
+
+
+def _ev_reversal_no_add(pos, params, ctx):
+    thr = float(params.get("big_move_pct") or 1.5)
+    m = ctx.get("idx_prev_move")
+    if not m or m.get("pct") is None or m["pct"] < thr:
+        return None
+    return {
+        "message": (f"【昨日大涨，今日不加仓】沪深300 {m['date']} 收 {m['pct']:+.2f}%"
+                    f"（≥{thr:g}%）。\n"
+                    f"127 日画像：本市场短期反转（R_(t-1) 系数 -0.169，t=-2.33），"
+                    f"大涨后一日平均偏弱。纪律：不追昨日涨幅。"),
+        "numbers": {"idx_pct": m["pct"], "date": m["date"], "threshold": thr},
+    }
+
+
+def _ev_reversal_no_panic(pos, params, ctx):
+    thr = float(params.get("big_move_pct") or 1.5)
+    m = ctx.get("idx_prev_move")
+    if not m or m.get("pct") is None or m["pct"] > -thr:
+        return None
+    return {
+        "message": (f"【昨日大跌，不恐慌割肉】沪深300 {m['date']} 收 {m['pct']:+.2f}%"
+                    f"（≤{-thr:g}%）。\n"
+                    f"127 日画像：短期反转（R_(t-1)=-0.169），大跌后一日有反弹倾向；"
+                    f"离场按剧本（止损/到期）执行，不情绪化追卖。"),
+        "numbers": {"idx_pct": m["pct"], "date": m["date"], "threshold": -thr},
+    }
+
+
 EVALUATORS = {
     "stop_loss_hit": _ev_stop_loss_hit,
     "hold_3d_review": _ev_hold_3d_review,
@@ -530,6 +615,9 @@ EVALUATORS = {
     "gate_reduce": _ev_gate_reduce,
     "gate_add": _ev_gate_add,
     "emotion_fuse": _ev_emotion_fuse,
+    "no_chase_rally": _ev_no_chase_rally,
+    "reversal_no_add": _ev_reversal_no_add,
+    "reversal_no_panic": _ev_reversal_no_panic,
 }
 
 

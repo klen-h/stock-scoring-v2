@@ -44,10 +44,13 @@ def _pos(**kw) -> dict:
 
 
 def _ctx(positions=None, regime=None, breadth=None, macro=None,
-         margin=None, day_pnl=None) -> dict:
+         margin=None, day_pnl=None, idx_prev_move=None,
+         market_avg_change_pct=None) -> dict:
     return {"positions": positions or [], "regime": regime or {},
             "breadth": breadth or {}, "macro": macro or {},
-            "margin": margin or {}, "day_pnl_pct": day_pnl}
+            "margin": margin or {}, "day_pnl_pct": day_pnl,
+            "idx_prev_move": idx_prev_move,
+            "market_avg_change_pct": market_avg_change_pct}
 
 
 def _run(rule_id: str, ctx: dict, params=None):
@@ -159,6 +162,28 @@ def main():
         assert "真实持仓" not in a[0].message, "模拟盘文案不应带「真实持仓」"
         print("      模拟盘文案无前缀 ✓")
         _passed += 1
+
+    print("\n=== 五、市场微观结构纪律（D 段，Phase 0 画像净产出）===")
+    a = _run("no_chase_rally", _ctx(market_avg_change_pct=2.0))
+    check("[25] 全市场等权+2% → 大涨日不追", bool(a), True, a)
+    a = _run("no_chase_rally", _ctx(market_avg_change_pct=0.5))
+    check("[26] +0.5% → 不触发", bool(a), False)
+    a = _run("no_chase_rally", _ctx())                      # 缓存未就绪 → None
+    check("[27] 市场宽度缺失 → 不误报", bool(a), False)
+
+    a = _run("reversal_no_add", _ctx(idx_prev_move={"date": "2026-09-15", "pct": 2.0}))
+    check("[28] 昨日+2% → 今日不加仓", bool(a), True, a)
+    a = _run("reversal_no_add", _ctx(idx_prev_move={"date": "2026-09-15", "pct": 0.5}))
+    check("[29] 昨日+0.5% → 不触发", bool(a), False)
+    a = _run("reversal_no_add", _ctx())                      # 无指数数据
+    check("[30] 指数数据缺失 → 不误报", bool(a), False)
+
+    a = _run("reversal_no_panic", _ctx(idx_prev_move={"date": "2026-09-15", "pct": -2.0}))
+    check("[31] 昨日-2% → 不恐慌割肉", bool(a), True, a)
+    a = _run("reversal_no_panic", _ctx(idx_prev_move={"date": "2026-09-15", "pct": -0.5}))
+    check("[32] 昨日-0.5% → 不触发", bool(a), False)
+    a = _run("reversal_no_panic", _ctx(idx_prev_move={"date": "2026-09-15", "pct": 2.0}))
+    check("[33] 昨日+2% → 不触发（方向相反）", bool(a), False)
 
     cr._distribution = orig_dist
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")
