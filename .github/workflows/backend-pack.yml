@@ -76,6 +76,11 @@ jobs:
           PACK_KLINE_RETRIES: '2'
           PACK_RETRY_BACKOFF: '1,2'
           PACK_CONSECUTIVE_COOLDOWN: '15'
+          # ★ 2026-09-15：WAF 全局冷却 120 → 45s。此前**漏配**、用脚本默认 120s，
+          #   而其他参数都已收紧（BACKOFF 1,2 / CONSECUTIVE 15）→ 每次 501 触发
+          #   「全局所有线程睡满 120s」，实测日志 40+ 次 [WAF] 拦截、900~1000 只
+          #   密集段反复重置冷却，是后端包耗时（~103min）主因。可随时改回 120 回滚。
+          PACK_WAF_COOLDOWN: '45'
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
         run: |
