@@ -18,6 +18,10 @@ on:
         description: '跳过主力行为计算(true/false)'
         required: false
         default: 'false'
+      waf_cooldown:
+        description: 'WAF 全局冷却秒数（默认 45；被拦严重可调 60~90）'
+        required: false
+        default: '45'
 
 concurrency:
   group: backend-pack
@@ -80,7 +84,8 @@ jobs:
           #   而其他参数都已收紧（BACKOFF 1,2 / CONSECUTIVE 15）→ 每次 501 触发
           #   「全局所有线程睡满 120s」，实测日志 40+ 次 [WAF] 拦截、900~1000 只
           #   密集段反复重置冷却，是后端包耗时（~103min）主因。可随时改回 120 回滚。
-          PACK_WAF_COOLDOWN: '45'
+          #   手动 dispatch 可用 waf_cooldown 输入覆盖（自动触发走默认 45）。
+          PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '45' }}
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
         run: |
