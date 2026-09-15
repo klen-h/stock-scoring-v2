@@ -588,6 +588,181 @@ def print_lag(out):
 
 
 # ================================================================
+#  P0.B2 裁决实验一：Gate A 白噪声 null 模拟（bootstrap）
+#  ★ 预注册判据（2026-09-16 评审定）：白噪声累计出随机游走，zigzag 切随机
+#    游走，"流入 n≥5 且中位长度≥3 且 θ 敏感性平滑"是 null 的预言而非结构
+#    证据。裁决：重采样 E（保边际分布、摧毁时序结构）×1000 → 同参数 zigzag
+#    → 流入 episode 中位长度分布 → 实际值落 95% 带内 = NO-GO（与随机切割
+#    不可区分）；p<0.025 显著偏长 = 维持 HOLD（偏离方向本身是信息：真惯性）。
+# ================================================================
+
+def module_noise_null(dates, F, R, theta_scale=1.0, n_sim=1000, seed=42):
+    E, _, _ = excess_flow(F, R, robust=True)
+    n = len(E)
+    if n <= BURN_DAYS + 10:
+        return {"module": "P0.B2 Gate A null 模拟", "error": f"样本不足（{n} 日）"}
+    sigma_E = float(np.std(E[BURN_DAYS:], ddof=1))
+    theta = theta_scale * sigma_E
+
+    eps_real, _ = run_zigzag(E, theta)
+    real_in = [e for e in eps_real if e["dir"] == +1 and not e["ongoing"]]
+    real_out = [e for e in eps_real if e["dir"] == -1 and not e["ongoing"]]
+
+    def med_len(eps):
+        xs = sorted(e["end"] - e["start"] for e in eps)
+        return xs[len(xs) // 2] if xs else 0
+
+    real_in_med, real_out_med = med_len(real_in), med_len(real_out)
+    real_n = len(real_in)
+
+    rng = np.random.default_rng(seed)
+    E_burn = E[BURN_DAYS:]
+    sim_in_med, sim_out_med, sim_n = [], [], []
+    for _ in range(n_sim):
+        E_sim = rng.choice(E_burn, size=len(E_burn), replace=True)
+        eps_sim = zigzag(np.cumsum(E_sim).tolist(), theta)
+        s_in = [e for e in eps_sim if e["dir"] == +1 and not e["ongoing"]]
+        s_out = [e for e in eps_sim if e["dir"] == -1 and not e["ongoing"]]
+        sim_in_med.append(med_len(s_in))
+        sim_out_med.append(med_len(s_out))
+        sim_n.append(len(s_in))
+
+    def p_ge(sim, real):
+        return float(np.mean(np.array(sim) >= real))
+
+    def band(sim):
+        return (float(np.quantile(sim, 0.025)), float(np.quantile(sim, 0.975)))
+
+    p_in = p_ge(sim_in_med, real_in_med)
+    lo_in, hi_in = band(sim_in_med)
+    if p_in < 0.025:
+        verdict = (f"NO-GO 排除：实际流入中位长度 {real_in_med} 日 显著长于白噪声模拟"
+                   f"（p={p_in:.3f}，带 [{lo_in},{hi_in}]）→ 存在真惯性，维持 HOLD")
+    elif p_in > 0.975:
+        verdict = (f"反常：实际显著短于模拟（p={p_in:.3f}）→ 流入 episode 比随机更碎，"
+                   "结构存疑，NO-GO 倾向")
+    else:
+        verdict = (f"NO-GO：实际流入中位长度 {real_in_med} 日落白噪声 95% 带内"
+                   f"（[{lo_in},{hi_in}]，p={p_in:.3f}）→ episode 与随机切割不可区分")
+    return {
+        "module": "P0.B2 Gate A null 模拟",
+        "theta_yi": round(theta, 1), "n_sim": n_sim, "seed": seed,
+        "real": {"inflow_n": real_n, "inflow_med_days": real_in_med,
+                 "outflow_med_days": real_out_med},
+        "sim": {"inflow_med_band95": [lo_in, hi_in],
+                "inflow_med_mean": round(float(np.mean(sim_in_med)), 1),
+                "inflow_n_mean": round(float(np.mean(sim_n)), 1)},
+        "p_inflow_med_ge": round(p_in, 3),
+        "p_outflow_med_ge": round(p_ge(sim_out_med, real_out_med), 3),
+        "verdict": verdict,
+    }
+
+
+def print_noise_null(out):
+    print("=" * 72)
+    print("【Gate A 白噪声 null 模拟】（bootstrap ×%d，seed=%d，θ=%s亿）"
+          % (out.get("n_sim", 0), out.get("seed", 0), out.get("theta_yi")))
+    print("=" * 72)
+    if "error" in out:
+        print(f"  {out['error']}")
+        return
+    r, s = out["real"], out["sim"]
+    print(f"  实际：流入 {r['inflow_n']} 个，中位长度 {r['inflow_med_days']} 日"
+          f"（流出中位 {r['outflow_med_days']} 日）")
+    print(f"  白噪声模拟：流入中位长度 95% 带 {s['inflow_med_band95']}"
+          f"（均值 {s['inflow_med_mean']}），流入数均值 {s['inflow_n_mean']}")
+    print(f"  P(模拟中位 ≥ 实际) = {out['p_inflow_med_ge']}"
+          f"（流出侧参考 p={out['p_outflow_med_ge']}）")
+    print(f"\n  → {out['verdict']}")
+    print()
+
+
+# ================================================================
+#  P0.B3 裁决实验二：防守侧状态匹配回归
+#  ★ 预注册判据（2026-09-16 评审定）：反转效应（R_{t-1}=-0.169）预测跌后
+#    反弹，流出确认发生在下跌之后 → 纯反转解释下确认日后应为正，实际
+#    -1.94% → 流出侧负收益不能全由反转解释。裁决回归：
+#    fwd20_t ~ 流出确认哑变量 + 近20日指数收益 + 20日波动 + 20日新低哑变量
+#    （Newey-West）。哑变量显著为负 → 防守层是【信息】；不显著 → 防守层是
+#    【价格状态的别名】→ 系统直接用价格规则，资金流时间序列用途归零
+#    （横截面用途 IC/标签不受影响）。
+# ================================================================
+
+def module_defense(dates, F, R, E, theta_scale=1.0):
+    n = len(R)
+    sigma_E = float(np.std(E[BURN_DAYS:], ddof=1))
+    theta = theta_scale * sigma_E
+    episodes, _ = run_zigzag(E, theta)
+    out_days = {ep["d1_enter"] for ep in episodes
+                if ep["dir"] == -1 and ep["d1_enter"] is not None}
+    in_days = {ep["d1_enter"] for ep in episodes
+               if ep["dir"] == +1 and ep["d1_enter"] is not None}
+
+    # close 重建（R 归一累计）
+    close = np.cumprod(1.0 + R)
+    W20 = 20
+    rows_t, ys, d_out, d_in, ret20s, vol20s, low20s = [], [], [], [], [], [], []
+    for t in range(W20 - 1, n - 21):
+        y = fwd_return(R, t, W20)
+        if y is None:
+            continue
+        win = slice(t - W20 + 1, t + 1)
+        ret20 = float(R[win].sum())
+        vol20 = float(R[win].std(ddof=1))
+        low20 = 1.0 if close[t] <= close[win].min() + 1e-12 else 0.0
+        rows_t.append(t)
+        ys.append(y)
+        d_out.append(1.0 if t in out_days else 0.0)
+        d_in.append(1.0 if t in in_days else 0.0)
+        ret20s.append(ret20)
+        vol20s.append(vol20)
+        low20s.append(low20)
+    ys = np.array(ys)
+    d_out = np.array(d_out)
+    d_in = np.array(d_in)
+    N = len(ys)
+
+    def _fit(dv, label):
+        X = np.column_stack([np.ones(N), dv, ret20s, vol20s, low20s])
+        beta, _, t, r2 = ols_nw(ys, X)
+        return {"label": label, "n": int(dv.sum()),
+                "coef_pct": round(float(beta[1]) * 100, 2),
+                "t": round(float(t[1]), 2), "r2": round(r2, 4)}
+
+    main_fit = _fit(d_out, "流出确认哑变量")
+    ref_fit = _fit(d_in, "流入确认哑变量（参考，不进判定）")
+    if main_fit["t"] <= -2 and main_fit["coef_pct"] < 0:
+        verdict = (f"防守层是【信息】：控制价格状态后流出确认仍 {main_fit['coef_pct']}%"
+                   f"（t={main_fit['t']}）→ 节奏层以防守形态成立")
+    elif main_fit["coef_pct"] < 0 and main_fit["t"] <= -1:
+        verdict = (f"弱证据偏信息：{main_fit['coef_pct']}%（t={main_fit['t']}）——"
+                   "n 小功效低，宽度序列扩样后重估")
+    else:
+        verdict = (f"防守层是【价格状态的别名】：控制后不显著（{main_fit['coef_pct']}%，"
+                   f"t={main_fit['t']}）→ 系统直接用价格规则（新低/波动/近20日跌幅），"
+                   "资金流时间序列用途归零；横截面用途（IC/标签）不受影响")
+    return {"module": "P0.B3 防守侧状态匹配回归", "n_sample": N,
+            "out_confirm_days": len(out_days), "in_confirm_days": len(in_days),
+            "main": main_fit, "ref": ref_fit,
+            "ctrl_sign": {"ret20": "近20日指数收益", "vol20": "20日波动",
+                          "low20": "20日新低哑变量"},
+            "verdict": verdict}
+
+
+def print_defense(out):
+    print("=" * 72)
+    print(f"【防守侧状态匹配回归】（n={out['n_sample']}，"
+          f"流出确认 {out['out_confirm_days']} 日 / 流入确认 {out['in_confirm_days']} 日）")
+    print("=" * 72)
+    m, r = out["main"], out["ref"]
+    print(f"  y = fwd20 ~ 哑变量 + 近20日收益 + 20日波动 + 20日新低（Newey-West）")
+    print(f"  流出确认: {m['coef_pct']}%（t={m['t']}，n={m['n']}，R²={m['r2']}）")
+    print(f"  流入确认(参考): {r['coef_pct']}%（t={r['t']}，n={r['n']}）")
+    print(f"\n  → {out['verdict']}")
+    print()
+
+
+# ================================================================
 #  汇总
 # ================================================================
 
@@ -610,7 +785,8 @@ def print_gate_summary(results):
 
 def main():
     ap = argparse.ArgumentParser(description="Phase 0 节奏画像（开发计划 v1.0 §4）")
-    ap.add_argument("--module", choices=["data-check", "episode", "causality", "lag", "all"],
+    ap.add_argument("--module", choices=["data-check", "episode", "causality", "lag",
+                                          "noise-null", "defense", "all"],
                     default="all")
     ap.add_argument("--theta-scale", type=float, default=1.0)
     ap.add_argument("--json", action="store_true")
@@ -619,7 +795,7 @@ def main():
     results = []
     if args.module in ("data-check", "all"):
         results.append(module_data_check())
-    if args.module in ("episode", "causality", "lag", "all"):
+    if args.module != "data-check":
         dates, F, R = load_aligned()
         E, _, _ = excess_flow(F, R, robust=True)
         if args.module in ("episode", "all"):
@@ -628,13 +804,18 @@ def main():
             results.append(module_causality(F, R, E))
         if args.module in ("lag", "all"):
             results.append(module_lag(dates, F, R, E, args.theta_scale))
+        if args.module in ("noise-null", "all"):
+            results.append(module_noise_null(dates, F, R, args.theta_scale))
+        if args.module in ("defense", "all"):
+            results.append(module_defense(dates, F, R, E, args.theta_scale))
 
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2, default=str))
         return
 
     printers = {"P0.D": print_data_check, "P0.A": print_episode,
-                "P0.B": print_causality, "P0.C": print_lag}
+                "P0.B 内生性": print_causality, "P0.C": print_lag,
+                "P0.B2": print_noise_null, "P0.B3": print_defense}
     for r in results:
         for prefix, fn in printers.items():
             if r.get("module", "").startswith(prefix):
