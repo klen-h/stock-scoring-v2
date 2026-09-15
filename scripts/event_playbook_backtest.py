@@ -7,21 +7,26 @@
 
 背景（2026-09-15，用户需求）：市场处于加息前夕、阴跌观望期，需要"总结过去
   类似情景 → 支撑当下备案"，落地时不慌乱、不迷茫、能识别并跟随主力建仓信号。
-  本脚本做「地基」：把历史上类似事件前后的**真实走势**摊开，让备案有数据背书。
 
-方法：用 backtest_prices 的沪深300 日线，回溯 2023-08 以来历次 FOMC 决议
-  （北京时间决议日，美联储官网核实 = 美东决议日 +1 天）前后的指数走势，
-  按「决议前市场状态（regime）」分组统计。
+★ 日期口径（关键，务必先读；2026-09-15 修正过一次标签偏移）：
+  美东周三 14:00 公布决议 → 北京周四凌晨 02:00 → A股周四开盘反应。
+  本脚本以 **A股反应日 = D0**（北京决议日当天或之后第一个交易日）为锚：
+    D-1 = D0 前一个交易日（**决议前最后交易日**，A股收盘时决议尚未公布）
+    D0  = 决议后第一个交易日（A股对决议的反应日）
+    D+h = 反应日后 h 个交易日
+  收益基准 = **D-1 收盘**；D0 收益即"决议反应日当天涨跌幅"。
+
+方法：用 backtest_prices 沪深300 日线，回溯 2023-08 以来 24 次 FOMC
+  （北京时间决议日，美联储官网核实 = 美东决议日+1）前后走势，
+  按「决议前（D-1）市场状态 regime」分组统计。
 
 ★ 为什么按 regime 分组、不按"加息/降息"分组：
   ① regime 完全由指数计算，不依赖外部数据（本项目无历史美债序列）；
-  ② 用户真正关心的是"当前处境（阴跌观望）下，历史类似事件怎么走"——
-     regime 匹配比"决议方向"更贴合；且当前 neutral_bearish 归属 neutral 档
-     （权重与 neutral 相同，见 market_regime）。
+  ② 用户真正关心的是"当前处境（阴跌观望）下历史怎么走"，regime 更贴合。
 
 ★ 样本诚实说明：
   · 指数 3 年（2023-08-23~今）覆盖 **24 次** FOMC → 分组统计可靠；
-  · 主力资金流 mainflow_history 仅半年（2026-03~今）只能覆盖 **4 次** →
+  · 主力资金流 mainflow_history 仅半年（2026-03~今）只覆盖 **4 次** →
      单独列出、明确标注样本少，仅作方向性参考。
 
 用法：
@@ -49,8 +54,8 @@ if os.path.exists(_env):
 from app.database import db                                    # noqa: E402
 from app.backtest.market_regime import detect_market_regime    # noqa: E402
 
-# ── FOMC 决议日（北京时间 = 美东决议日 +1，美联储官网核实）──
-# 仅纳入 ≥2023-08-23（沪深300 数据起点）；2026-09-17 为本次（未来，不纳入统计）
+# ── FOMC 决议公布日（北京时间 = 美东决议日 +1，美联储官网核实）──
+# 仅纳入 ≥2023-08-23（沪深300 数据起点）；2026-09-17 为本次（未来，不纳入）
 FOMC_BJ = [
     "2023-09-21", "2023-11-02", "2023-12-14",
     "2024-02-01", "2024-03-21", "2024-05-02", "2024-06-13", "2024-08-01",
@@ -59,7 +64,7 @@ FOMC_BJ = [
     "2025-09-18", "2025-10-30", "2025-12-11",
     "2026-01-29", "2026-03-19", "2026-04-30", "2026-06-18", "2026-07-30",
 ]
-HORIZONS = [1, 3, 5, 10, 20]
+HORIZONS = [0, 1, 3, 5, 10, 20]      # D0, D+1, ...
 REGIME_ZH = {"offensive": "进攻", "neutral": "震荡", "defensive": "防御",
              "neutral_bearish": "震荡偏空"}
 
@@ -78,7 +83,7 @@ def _flow_by_date() -> dict:
         rows = db.fetch(
             "SELECT date, SUM(main_net) AS net, COUNT(*) AS n FROM mainflow_history "
             "GROUP BY date ORDER BY date ASC") or []
-        return {str(r["date"]): (float(r["net"] or 0) / 1e8, int(r["n"] or 0)) for r in rows}
+        return {str(r["date"]): float(r["net"] or 0) / 1e8 for r in rows}
     except Exception as e:
         print(f"[警告] mainflow_history 读取失败: {e}")
         return {}
@@ -99,54 +104,52 @@ def main() -> int:
     if len(bars) < 100:
         print("沪深300 数据不足（<100 根），无法复盘")
         return 1
-    dates = [b["date"] for b in bars]
-    close = {b["date"]: float(b["close"]) for b in bars}
+    dates = [str(b["date"]) for b in bars]
+    close = {str(b["date"]): float(b["close"]) for b in bars}
     idx_of = {d: i for i, d in enumerate(dates)}
-    state_map = {s.date: s.state for s in detect_market_regime(bars)}
+    state_map = {str(s.date): s.state for s in detect_market_regime(bars)}
     flow = _flow_by_date()
 
-    print("=" * 74)
+    print("=" * 76)
     print(f"FOMC 决议落地前后 A 股走势复盘（沪深300，{dates[0]} ~ {dates[-1]}）")
-    print("=" * 74)
+    print("口径：D0 = 决议后 A 股第一个交易日（反应日）；收益基准 = D-1 收盘")
+    print("=" * 76)
 
-    # ── 逐个事件：对齐交易日、算各期收益 ──
     events = []
     for ed in FOMC_BJ:
         if ed < dates[0]:
             continue
-        # T0 = 决议后第一个交易日（A股对决议的反应日）
-        t0 = next((d for d in dates if d >= ed), None)
-        if not t0 or idx_of[t0] < 1:
+        d0 = next((d for d in dates if d >= ed), None)   # D0 = 反应日
+        if not d0 or idx_of[d0] < 20:
             continue
-        i_prev = idx_of[t0] - 1          # T-1：决议前最后交易日
-        prev_date = dates[i_prev]
-        base = close[prev_date]
-        rec = {"event": ed, "prev": prev_date,
-               "regime": state_map.get(prev_date, "?"),
-               "pre20": round((base / close[dates[i_prev - 19]] - 1) * 100, 2)
-                        if i_prev >= 19 else None}
+        i0 = idx_of[d0]
+        i_prev = i0 - 1                                   # D-1 = 决议前最后交易日
+        base = close[dates[i_prev]]
+        rec = {"event": ed, "d0": d0, "prev": dates[i_prev],
+               "regime": state_map.get(dates[i_prev], "?"),
+               "pre20": round((base / close[dates[i_prev - 19]] - 1) * 100, 2)}
         for h in HORIZONS:
-            j = i_prev + h
-            rec[f"t{h}"] = (round((close[dates[j]] / base - 1) * 100, 2)
-                            if j < len(dates) else None)
+            j = i0 + h
+            rec["ret%d" % h] = (round((close[dates[j]] / base - 1) * 100, 2)
+                                if j < len(dates) else None)
         events.append(rec)
-    print(f"\n有效事件 {len(events)} 次（决议前最后交易日 T-1 为基准）")
+    print(f"\n有效事件 {len(events)} 次（基准 = D-1 收盘 {events[0]['prev']} 起）")
 
     # ── 明细 ──
-    print(f"\n{'决议日(京)':<12}{'T-1':<12}{'前20日':>8}{'状态':>6}"
-          f"{'T+1':>8}{'T+3':>8}{'T+5':>8}{'T+10':>8}{'T+20':>8}")
-    print("-" * 74)
+    print(f"\n{'决议公布(京)':<13}{'D0(反应日)':<13}{'D-1状态':>8}{'前20日':>8}"
+          f"{'D0':>8}{'D+1':>8}{'D+3':>8}{'D+5':>8}{'D+10':>8}{'D+20':>8}")
+    print("-" * 90)
     for r in events:
-        pre = "—" if r["pre20"] is None else "%+.2f" % r["pre20"]
         cells = ""
         for h in HORIZONS:
-            v = r["t%d" % h]
+            v = r["ret%d" % h]
             cells += ("       —" if v is None else "%+8.2f" % v)
-        print(f"{r['event']:<12}{r['prev']:<12}{pre:>8}"
-              f"{REGIME_ZH.get(r['regime'], r['regime']):>6}{cells}")
+        print(f"{r['event']:<13}{r['d0']:<13}"
+              f"{REGIME_ZH.get(r['regime'], r['regime']):>8}"
+              f"{r['pre20']:>+8.2f}{cells}")
 
-    # ── 按决议前市场状态分组统计 ──
-    print("\n【按「决议前市场状态」分组统计】")
+    # ── 按决议前市场状态分组 ──
+    print("\n【按「决议前(D-1)市场状态」分组统计】")
     for state in ("neutral", "offensive", "defensive"):
         grp = [r for r in events if r["regime"] == state]
         if not grp:
@@ -154,53 +157,54 @@ def main() -> int:
         print(f"\n  [{REGIME_ZH.get(state, state)}] n={len(grp)}"
               f"{'  ← 当前处境（neutral_bearish 归属此档）' if state == 'neutral' else ''}")
         for h in HORIZONS:
-            st = _stats([r[f"t{h}"] for r in grp])
+            st = _stats([r["ret%d" % h] for r in grp])
             if st["n"]:
-                print(f"    T+{h:<2} 均值 {st['avg']:+.2f}%  "
-                      f"上涨 {st['win_rate']:.0f}%  "
-                      f"最好 {st['best']:+.2f}%  最差 {st['worst']:+.2f}%")
-
-    # ── 最像"现在"的子集：震荡 + 决议前 20 日下跌 ──
-    print("\n【最像当前处境：决议前=震荡 且 前20日累积下跌（阴跌观望）】")
-    like_now = [r for r in events
-                if r["regime"] == "neutral" and (r["pre20"] or 0) < 0]
-    if not like_now:
-        print("  无匹配样本")
-    else:
-        print(f"  n={len(like_now)}："
-              + "、".join(r["event"] for r in like_now))
-        for h in HORIZONS:
-            st = _stats([r[f"t{h}"] for r in like_now])
-            if st["n"]:
-                print(f"    T+{h:<2} 均值 {st['avg']:+.2f}%  上涨 {st['win_rate']:.0f}%  "
+                tag = "D0 " if h == 0 else "D+%-2d" % h
+                print(f"    {tag} 均值 {st['avg']:+.2f}%  上涨 {st['win_rate']:.0f}%  "
                       f"[{st['worst']:+.2f}% ~ {st['best']:+.2f}%]")
 
-    # ── 主力资金流（样本少，单列）──
-    print("\n【主力资金流：决议前后变化】（mainflow_history 仅半年，样本极少）")
-    covered = [r for r in events if r["event"] in flow or r["prev"] in flow]
-    if not covered:
-        print("  区间内无资金流覆盖的事件（mainflow_history 起始 2026-03）")
+    # ── 最像"现在"的子集 ──
+    print("\n【最像当前处境：D-1=震荡 且 前20日累积下跌（阴跌观望）】")
+    like_now = [r for r in events
+                if r["regime"] == "neutral" and (r["pre20"] or 0) < 0]
+    if like_now:
+        print("  n=%d：%s" % (len(like_now), "、".join(r["event"] for r in like_now)))
+        for h in HORIZONS:
+            st = _stats([r["ret%d" % h] for r in like_now])
+            if st["n"]:
+                tag = "D0 " if h == 0 else "D+%-2d" % h
+                print(f"    {tag} 均值 {st['avg']:+.2f}%  上涨 {st['win_rate']:.0f}%  "
+                      f"[{st['worst']:+.2f}% ~ {st['best']:+.2f}%]")
     else:
+        print("  无匹配样本")
+
+    # ── 主力资金流（以 D0 为锚！样本少，单列）──
+    print("\n【主力资金流：以 D0（反应日）为锚的逐日净流入】")
+    print("  （mainflow_history 仅半年 → 只覆盖近 4 次；D0=决议后第一个交易日）")
+    covered = [r for r in events if r["d0"] in flow or r["prev"] in flow]
+    if not covered:
+        print("  区间内无资金流覆盖的事件")
+    else:
+        print(f"  {'决议公布日':<13}{'D-1':>10}{'D0':>10}{'D+1':>10}{'D+2':>10}{'D+3':>10}")
         for r in covered:
-            i_prev = idx_of[r["prev"]]
-            vals = []
-            for k in range(-3, 4):
-                j = i_prev + k
-                if 0 <= j < len(dates):
-                    v = flow.get(dates[j])
-                    vals.append(f"T{k:+d}={v[0]:+.0f}亿" if v else f"T{k:+d}=—")
-            print(f"  {r['event']}（{r['regime']}）: " + "  ".join(vals))
-        print("  ★ 净流入为「评分池内合计」，非全市场；样本 4 次，仅作方向参考")
+            i0 = idx_of[r["d0"]]
+            cells = ""
+            for k in (-1, 0, 1, 2, 3):
+                j = i0 + k
+                v = flow.get(dates[j]) if 0 <= j < len(dates) else None
+                cells += ("%10s" % ("—" if v is None else "%+.0f亿" % v))
+            print(f"  {r['event']:<13}{cells}")
+        print("  ★ 净流入 = 评分池内合计（非全市场）；样本 4 次，仅作方向参考")
 
     print("\n【结论判读】")
     neu = [r for r in events if r["regime"] == "neutral"]
     if neu:
-        t1 = _stats([r["t1"] for r in neu])
-        t5 = _stats([r["t5"] for r in neu])
-        print(f"  震荡市（≈当前）{len(neu)} 次 FOMC：落地当日(T+1) 均值 {t1['avg']:+.2f}%、"
-              f"上涨 {t1['win_rate']:.0f}%；T+5 均值 {t5['avg']:+.2f}%、上涨 {t5['win_rate']:.0f}%")
-    print("  注：样本有限、且含加息/降息/按兵不动混合情景，结论用于「心里有数」，")
-    print("      不构成方向预测；备案脚本再结合当前宏观实值细化。")
+        st0 = _stats([r["ret0"] for r in neu])
+        st5 = _stats([r["ret5"] for r in neu])
+        print(f"  震荡市（≈当前）{len(neu)} 次：反应日 D0 均值 {st0['avg']:+.2f}%、"
+              f"上涨 {st0['win_rate']:.0f}%；D+5 均值 {st5['avg']:+.2f}%、上涨 {st5['win_rate']:.0f}%")
+    print("  注：样本有限、且含加息/降息/按兵不动混合情景；用于「心里有数」，")
+    print("      不构成方向预测。备案脚本再结合当前宏观实值细化。")
     return 0
 
 
