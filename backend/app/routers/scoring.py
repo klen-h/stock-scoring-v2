@@ -1117,7 +1117,8 @@ async def score_top(
         if background_tasks:
             from app.tencent import refresh_all_stocks
             background_tasks.add_task(refresh_all_stocks)
-        return {"data": [], "total": 0, "cache_status": "loading"}
+        return {"data": [], "total": 0, "cache_status": "loading",
+                "rank_mode": "composite" if _use_composite_rank() else "total_score"}
     
     # ★★★ 结果短期缓存：3 分钟内直接返回，避免重复精算
     import time as _time
@@ -1139,9 +1140,13 @@ async def score_top(
     async with _rank_cache_lock:
         if _rank_result_cache["computing"]:
             if entry["data"]:
+                # ★ 2026-09-16：补 rank_mode——此前该分支漏返回，前端回落 total_score，
+                #   nb 市并发计算期间组合分整列消失（数据实际已按组合分排序，口径自相矛盾）。
                 return {"data": entry["data"][:limit], "total": entry.get("total", 0),
-                        "cache_status": "ready", "cached": True, "stale": True}
-            return {"data": [], "total": 0, "cache_status": "computing"}
+                        "cache_status": "ready", "cached": True, "stale": True,
+                        "rank_mode": entry.get("rank_mode", "total_score")}
+            return {"data": [], "total": 0, "cache_status": "computing",
+                    "rank_mode": "composite" if _use_composite_rank() else "total_score"}
         _rank_result_cache["computing"] = True
     
     try:
