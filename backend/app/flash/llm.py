@@ -63,8 +63,19 @@ LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").stri
 # 免费站思考模式（deepseek-v4-flash 默认 medium 思考，渲染任务需显式压低）：
 # 空 = 按 tier 自动（fast→none / slow→low）；显式设置则恒用该值（none/low/medium/high）。
 LLM_FREE_REASONING = (os.environ.get("LLM_FREE_REASONING_EFFORT") or "").strip().lower()
-LLM_TIMEOUT_FAST = int(os.environ.get("LLM_TIMEOUT_FAST", "90") or 90)
+# ★ 2026-09-17（DeepSeek-R1「LLM 一直失败」事故）：
+#   改前这里是硬编码 `timeout=600`，所有调用一律 600s。9-14 Provider 链把它拆成
+#   fast/slow 两档，fast=90s —— 而 fast 档的唯一使用者是盘前简报，其前提是
+#   「跑免费站快模型、主力站只兜底」。**主力站=推理模型（deepseek-ai/DeepSeek-R1）
+#   时这个前提不成立**：R1 思考常需分钟级，90s 必然 ReadTimeout → 站内 3 次重试
+#   全超时 → 主力站连续失败 2 次 → 熔断 30min → 连 600s 的盘后日报/周报都被
+#   跳过 = 用户看到的「一直失败」。
+#   修复见 call_llm 的链首判定；此处默认从 90 放宽到 300 兜底。
+#   **显式设置本 env 会强制生效**（覆盖链首判定，想要"短超时宁可失败"就设它）。
+LLM_TIMEOUT_FAST = int(os.environ.get("LLM_TIMEOUT_FAST", "300") or 300)
 LLM_TIMEOUT_SLOW = int(os.environ.get("LLM_TIMEOUT_SLOW", "600") or 600)
+# 是否被显式配置（render.yaml / .env / Actions）→ 显式即尊重，不做链首降级
+LLM_TIMEOUT_FAST_EXPLICIT = bool((os.environ.get("LLM_TIMEOUT_FAST") or "").strip())
 # ★ 影子模式（2026-09-13）：LLM_FREE_SHADOW=1 时，正式推送仍 100% 走主力站（旧推送
 #   不变），免费站用同一 prompt 在后台线程跑一遍只记录不投喂——新旧模型质量/延迟/
 #   稳定性对比期用。对比满意后设 0（或删掉），免费站自动升为链首。
@@ -508,7 +519,19 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
         print(f"[llm] 熔断: {blocked}")
         _last_error = blocked
         return ""
-    timeout = LLM_TIMEOUT_FAST if tier == "fast" else LLM_TIMEOUT_SLOW
+    # ★ 2026-09-17 修复（DeepSeek-R1「一直失败」根因）：
+    #   fast 档的短超时是**为免费站**（可关思考的快模型，见 _call_provider 的
+    #   reasoning_effort fast→none）设计的，前提是"主力站只做兜底"。未配
+    #   LLM_FREE_*（或 LLM_FREE_SHADOW=1）时链首就是主力站 —— 若它是推理模型
+    #   （DeepSeek-R1 思考常需分钟级），短超时必然 ReadTimeout → 重试全超时 →
+    #   连续失败 2 次 → 主力站熔断 30min → 连 600s 的盘后日报/周报都被跳过。
+    #   → fast 短超时仅在「链首是免费站」或「显式配置了 LLM_TIMEOUT_FAST」时生效，
+    #     否则退回 slow 超时（等价于 9-14 之前的 600s 行为）。
+    _fast_ok = providers[0]["name"] == "free" or LLM_TIMEOUT_FAST_EXPLICIT
+    if tier == "fast" and not _fast_ok:
+        print(f"[llm] fast 档链首为 {providers[0]['name']}（非免费站，多为推理模型）"
+              f"→ 超时按 slow {LLM_TIMEOUT_SLOW}s（避免必然超时+熔断）")
+    timeout = LLM_TIMEOUT_FAST if (tier == "fast" and _fast_ok) else LLM_TIMEOUT_SLOW
     task_key = hashlib.md5((system + user).encode("utf-8")).hexdigest()[:12]
     t0 = time.time()
     for p in providers:

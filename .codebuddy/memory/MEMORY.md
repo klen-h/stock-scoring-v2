@@ -30,6 +30,13 @@
 - 四层合成：`app/mainforce/confluence.py` = 宏观 ±2 + regime ±2/±1 + 板块 ±1（拥挤主线只减不加）+ 个股 mainforce_state ±2，sum(-7~+7)。
 - 2026-09-13 修复：补 `db_fetch`、行业名归一化；修复后板块层从长期 0 恢复真实值，会改变判级。
 
+## LLM 接入（Provider 链，2026-09-17 事故后固化）
+- 主力站：`LLM_BASE_URL=https://api.siliconflow.cn/v1` + `LLM_MODEL=deepseek-ai/DeepSeek-R1`（**推理模型**，思考常需分钟级）。
+- 免费站 `LLM_FREE_*`（本机配 `deepseek-v4-flash`）+ `LLM_FREE_SHADOW=1` → **影子模式，免费站不进正式链** ⇒ 实际链 = `main:DeepSeek-R1` 单站。
+- 超时：`LLM_TIMEOUT_FAST`（默认 300）/ `LLM_TIMEOUT_SLOW`（600）。**fast 短超时只对「链首是免费站」有意义**；链首是推理模型时 `call_llm` 自动退回 slow（显式设置 `LLM_TIMEOUT_FAST` 则强制生效）。唯一用 fast 档的是 `trader_brief.py` 盘前简报。
+- **熔断是"一直失败"的来源**：单站连续失败 2 次 → 熔断 30min，期间**所有** LLM 调用（含 600s 档日报/周报）直接跳过。排障看 `/api/system/llm-usage` 的 `last_error` / `provider_chain` / `circuit_open`。
+- 陷阱：`_providers()` 里 main 的 `"reasoning": False` 语义是「不注入 `reasoning_effort`」，**不是**「非推理模型」——不可拿它判断模型类型。
+
 ## 交易员教练 Coach
 - 模块：`rules.yaml` · `rules.py` · `audit.py` · `monitor.py`。
 - 红线：数字代码注入；30s 轮询只读 market 缓存；`coach_loop` 挂 `asyncio.create_task`；执行一致性分母=已决策。
