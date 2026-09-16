@@ -102,7 +102,13 @@ def chip_series(bars: list, float_shares: float = None,
     for i in range(len(dates)):
         vol = vols[i]
         if float_shares and float_shares > 0:
-            tr = vol / float_shares
+            # ★ 2026-09-16 修复换手率单位：volume 单位=「手」（100 股），
+            #   float_shares=「股」——直接相除会把换手率低估 100 倍，
+            #   导致 chips 每天只衰减 ~0.05%（真实 ~3.8%）→ 老筹码几乎不换手、
+            #   P5 被拖低、获利盘/集中度/price_pos 系统性虚高。
+            #   实测（002452，260 根）：82.0%/25.4%/84.8% → 修正后 65.3%/10.4%/55.5%
+            #   （同花顺参考 67.8%/10.09%）。
+            tr = vol * 100.0 / float_shares
         else:
             base = ma_vol[i] if (ma_vol is not None and ma_vol[i] > 0) else vols[:i + 1].mean()
             tr = (vol / base * BASE_TURNOVER) if base > 0 else 0.0
