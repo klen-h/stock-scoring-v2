@@ -80,11 +80,19 @@ jobs:
           PACK_KLINE_RETRIES: '2'
           PACK_RETRY_BACKOFF: '1,2'
           PACK_CONSECUTIVE_COOLDOWN: '15'
-          # ★ 2026-09-15：WAF 全局冷却 120 → 45s。此前**漏配**、用脚本默认 120s，
-          #   而其他参数都已收紧（BACKOFF 1,2 / CONSECUTIVE 15）→ 每次 501 触发
-          #   「全局所有线程睡满 120s」，实测日志 40+ 次 [WAF] 拦截、900~1000 只
-          #   密集段反复重置冷却，是后端包耗时（~103min）主因。可随时改回 120 回滚。
-          #   手动 dispatch 可用 waf_cooldown 输入覆盖（自动触发走默认 45）。
+          # ★ 2026-09-17 复盘（重要，别再单纯改这个数字）：
+          #   9-15 把冷却 120 → 45s 的依据是「120s 太长、罚站是耗时主因」。9-17 实测
+          #   否证了这个推断：当天日志 [WAF] 拦截 **~117 次**（改前注释记载 40+ 次），
+          #   且进度多次整段停滞（506/2057 连续 3 个 50 只窗口、967/2057 连续 150 只
+          #   零成功）→ 45s 不但没更省时间，反而把封禁拉成了连续惩罚。
+          #   机制：腾讯按「滑动窗口速率」判定，45s 的静默排不空窗口 → 冷却结束立刻
+          #   又被拦 → 再冷却；同时冷却中「睡一轮就放弃」把股票误记为失败 → 重试轮
+          #   再打一遍请求 → 正反馈。
+          #   → 已在 generate-kline-pack.py 修：① 冷却期内再 501 就自适应 ×2 加码
+          #     （45→90→180，PACK_WAF_MAX_COOLDOWN 封顶 300），任一成功即回落基准；
+          #     ② 冷却改为「循环睡到解除」，不再批量误记失败；③ 跑完打印 WAF 汇总
+          #     （拦截次数/累计等待/末次退避），下次 A/B 有硬数据。
+          #   本值现为**基准**，会自适应上调；要立刻回到已验证的 120，dispatch 填 120。
           PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '45' }}
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'

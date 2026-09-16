@@ -62,7 +62,13 @@ def _env_int(name, default):
         return default
 
 REQUEST_TIMEOUT = _env_int("PACK_REQUEST_TIMEOUT", 10)   # 请求超时（秒）
-WAF_COOLDOWN = _env_int("PACK_WAF_COOLDOWN", 120)        # WAF 触发后全局冷却（秒）
+WAF_COOLDOWN = _env_int("PACK_WAF_COOLDOWN", 120)        # WAF 触发后全局冷却基准（秒）
+# ★ 2026-09-17：自适应退避上限 —— 冷却期内再次 501 就 ×2 加码，最多到此值。
+#   实测教训：固定 45s 时当天 [WAF] 拦截从注释记载的「40+ 次」升到 ~117 次、耗时
+#   反而更长 —— 腾讯按「滑动窗口速率」判定，45s 的静默排不空窗口，IP 一直停在
+#   惩罚区（冷却结束→立刻又被拦→再冷却，连续惩罚）。结论：「冷却该多长」应由
+#   WAF 自己回答，不再人工猜固定值。见 _waf_record_501 / _waf_wait_until_clear。
+WAF_MAX_COOLDOWN = _env_int("PACK_WAF_MAX_COOLDOWN", 300)
 KLINE_RETRIES = _env_int("PACK_KLINE_RETRIES", 3)        # 单只股票重试次数（含首次）
 RETRY_BACKOFF = [int(x) for x in
                  (os.environ.get("PACK_RETRY_BACKOFF") or "1,3,6").split(",") if x]
@@ -94,6 +100,60 @@ _session.headers.update({
 _waf_blocked_until = 0.0
 _consecutive_failures = 0
 _waf_lock = threading.Lock()
+
+# ★ 2026-09-17：退避自适应 + 观测指标（不再人工猜冷却时长，见 WAF_MAX_COOLDOWN 注释）
+_waf_backoff = 1.0          # 当前退避倍数（× WAF_COOLDOWN）
+_waf_events = 0             # 501 触发次数（进程内累计；仅"非冷却期"首次开窗才 +1）
+_waf_wait_total = 0.0       # 累计在冷却上等待的秒数（观测用）
+
+
+def _waf_wait_until_clear() -> None:
+    """冷却期内循环等待到真正解除 —— 不再「睡一轮就放弃」。
+
+    ★ 2026-09-17 修正（关键）：原实现在 fetch_kline 开头睡一轮（≤冷却+5s），醒来若
+      发现窗口被其它线程续期，就在重试循环开头 `return None`。长封禁期里这退化成
+      「每股白睡一整个冷却周期 + 该股被误记为失败」的空转 —— 今天日志 967/2057 处
+      连续 150 只零成功正是这么来的；这些「假失败」再进下一轮重试，又把请求打到
+      正烫的 IP 上，正反馈放大封禁。
+      改为睡到解除（期间不发请求 —— 这正是让 WAF 滑动窗口排空所需要的）。
+    """
+    global _waf_wait_total
+    while True:
+        with _waf_lock:
+            remain = _waf_blocked_until - time.time()
+            cur = WAF_COOLDOWN * _waf_backoff
+        if remain <= 0:
+            return
+        # 抖动随冷却缩放：固定 25s 在 45s 冷却下几乎不构成错峰（5 线程被拦时刻差 <1s）
+        jitter = random.random() * max(8.0, min(30.0, cur * 0.4))
+        nap = min(remain + 1.0, cur + 5) + jitter
+        with _waf_lock:
+            _waf_wait_total += nap
+        time.sleep(nap)
+
+
+def _waf_record_501(symbol: str) -> None:
+    """记录一次 501：非冷却期触发 → 开新窗口；冷却期内仍被拦 → 退避 ×2 加码。"""
+    global _waf_blocked_until, _consecutive_failures, _waf_backoff, _waf_events
+    with _waf_lock:
+        now = time.time()
+        if now >= _waf_blocked_until:
+            _waf_events += 1
+        else:
+            _waf_backoff = min(WAF_MAX_COOLDOWN / WAF_COOLDOWN, _waf_backoff * 2)
+        _waf_blocked_until = now + WAF_COOLDOWN * _waf_backoff
+        _consecutive_failures = 0
+        n, mult, waited = _waf_events, _waf_backoff, _waf_wait_total
+    print(f"\n  [WAF] 第 {n} 次拦截 {symbol} → 本次冷却 {WAF_COOLDOWN * mult:.0f}s"
+          f"（累计已等待 {waited:.0f}s）")
+
+
+def _waf_report() -> str:
+    """WAF 观测汇总：跑完打印，便于 45s vs 120s 等参数做硬对比（而非靠感觉）。"""
+    with _waf_lock:
+        n, mult, waited = _waf_events, _waf_backoff, _waf_wait_total
+    return (f"WAF 汇总: 拦截 {n} 次 / 累计冷却等待 {waited:.0f}s"
+            f" / 末次退避 ×{mult:.0f}（冷却 {WAF_COOLDOWN * mult:.0f}s）")
 
 
 def _is_valid_stock(name: str, pe: float = 0) -> bool:
@@ -222,17 +282,13 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     """
     global _waf_blocked_until, _consecutive_failures
 
-    # WAF 冷却中：睡满冷却再继续请求，而不是跳过。
-    # ★ 2026-09-07 实测教训：并发拉 1442 只时腾讯在 ~889 只处触发 501 → 全局冷却
-    #   120s。若这里直接 return None，冷却期间的股票全被计失败（553 只×两轮全丢，
-    #   889/1442=61.7% 触发 80% 护栏中止）。改为「睡满再拉」：只有触发 501 的那
-    #   一只损失，其余自动续上（代价是多等一个冷却周期，远端不损失股票）。
-    with _waf_lock:
-        remain = _waf_blocked_until - time.time()
-    if remain > 0:
-        # ★ +随机抖动：5 个线程若同刻睡满同刻醒来，会同步齐发又触发一轮 501
-        #   （2026-09-07 两轮 WAF 风暴呈周期性）。错峰醒来打破同步化。
-        time.sleep(min(remain + 1.0, WAF_COOLDOWN + 5) + random.random() * 25)
+    # WAF 冷却中：睡到真正解除再继续请求，而不是跳过。
+    # ★ 2026-09-07 实测教训：并发拉 1442 只时腾讯在 ~889 只处触发 501 → 全局冷却。
+    #   若直接 return None，冷却期间的股票全被计失败（553 只×两轮全丢，
+    #   889/1442=61.7% 触发 80% 护栏中止）。
+    # ★ 2026-09-17：改为「循环睡到解除」（见 _waf_wait_until_clear）——原「睡一轮
+    #   就放弃」在长封禁期会把股票批量误记为失败，反噬成更多请求、放大封禁。
+    _waf_wait_until_clear()
 
     # 指数/ETF 代码自带前缀（sh000300 / sz159915 / sh510300）→ 不能再拼一次
     # ★ 2026-09-07 实测 bug：原代码无条件拼前缀，把 sh000300 变成 szsh000300 →
@@ -260,19 +316,14 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
 
     last_err = None
     for attempt in range(KLINE_RETRIES):
-        # 冷却中则中止本轮重试
-        with _waf_lock:
-            if time.time() < _waf_blocked_until:
-                return None
+        # 冷却中则等解除，不放弃该股（否则「假失败」会灌满重试轮）
+        _waf_wait_until_clear()
         try:
             resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
             # WAF 检测：腾讯返回 501 表示被防火墙拦截 → 全局冷却
             if resp.status_code == 501:
-                with _waf_lock:
-                    _waf_blocked_until = time.time() + WAF_COOLDOWN
-                    _consecutive_failures = 0
-                print(f"\n  [WAF] K线请求被拦截 {symbol}，全局冷却 {WAF_COOLDOWN}s")
+                _waf_record_501(symbol)
                 return None
 
             resp.raise_for_status()
@@ -301,6 +352,7 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
             if len(result) >= 30:
                 with _waf_lock:
                     _consecutive_failures = 0
+                    _waf_backoff = 1.0        # 通了 → 退避回落到基准
                 return result
             last_err = f"K线不足({len(result)}根)"
             time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
@@ -457,13 +509,18 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
         print(f"\n  第{round_no + 1}轮完成: {len(result)}/{total} 成功，"
               f"{len(failed)} 只待重试")
         if round_no == 0 and failed:
-            # 重试前停顿，让限流窗口恢复（并发模式下给足冷却时间）
-            wait_s = 15 if workers > 1 else 8
+            # 重试前停顿，让限流窗口恢复。★ 2026-09-17：本轮撞过 WAF 就按当前退避
+            # 倍数给足 —— 否则 15s 的停顿在真封禁下等于没停，重试又立刻撞墙。
+            with _waf_lock:
+                mult, hit = _waf_backoff, _waf_events > 0
+            wait_s = min(180, int(WAF_COOLDOWN * mult)) if hit \
+                else (15 if workers > 1 else 8)
             print(f"  等待 {wait_s}s 后重试失败股票...")
             time.sleep(wait_s)
         pending = failed
 
     print(f"  K线完成: {len(result)}/{total} 成功")
+    print(f"  {_waf_report()}")
     return result
 
 
