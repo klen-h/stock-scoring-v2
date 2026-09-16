@@ -104,9 +104,51 @@ def _evaluate(name, factor, rets):
             "lo_wr": lo_wr, "hi_wr": hi_wr}
 
 
+def _fmt(v, p=3):
+    return f"{v:+.{p}f}" if isinstance(v, (int, float)) else "n/a"
+
+
+def _report_by_regime(recs, rets):
+    """按快照日的市场状态分组，组内对照「组合分 vs 总分」。
+
+    ★ 2026-09-16（动机）：组合分当前只在 neutral_bearish 白名单内生效，而
+      「只在 nb 有效」这一前提从未被**分市况**验证过——总样本里其实混着
+      neutral/nb（09-04、09-08 是 neutral）。本分组先回答 nb vs neutral；
+      defensive 组当前必然为 0（快照 ≥2 天 + 有 T+5 收盘价才进样本）。
+    """
+    reg = {r["date"]: r["state"] for r in db.fetch(
+        "SELECT date, state FROM market_regime_history")}
+    groups = {}
+    for r in recs:
+        groups.setdefault(reg.get(r["date"], "unknown"), []).append(r)
+    print("\n【按市况分组 · 组合分 vs 总分】")
+    print(f"  {'市况':<16s}{'样本':>5s}  {'总分IC':>8s}{'总分分离':>10s}"
+          f"   {'组合IC':>8s}{'组合分离':>10s}")
+    print("  " + "-" * 62)
+    for st, g in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        k = len(g)
+        if k < 10:
+            print(f"  {st:<16s}{k:>5d}  （样本不足 10，跳过）")
+            continue
+        g_rets = [float(x["returnPct"]) for x in g]
+        g_total = [float(x["score"]) for x in g]
+        rf = _rank_norm([float(x["dimensions"]["基本面"]) for x in g])
+        rc = _rank_norm([float(x["dimensions"]["资金面"]) for x in g])
+        rt = _rank_norm([float(x["dimensions"]["技术面"]) for x in g])
+        comp = [(rf[i] + rc[i] - rt[i]) / 3.0 for i in range(k)]
+        e_t = _evaluate("总分", g_total, g_rets)
+        e_c = _evaluate("组合分", comp, g_rets)
+        print(f"  {st:<16s}{k:>5d}  {_fmt(e_t['ic']):>8s}{_fmt(e_t['spread'], 2):>10s}"
+              f"   {_fmt(e_c['ic']):>8s}{_fmt(e_c['spread'], 2):>10s}")
+    print("\n  注：分组后单组样本更小，IC 抽样误差大；unknown = 该快照日")
+    print("      在 market_regime_history 无记录（日批 regime 任务未覆盖该日）。")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--horizon", type=int, default=5)
+    ap.add_argument("--by-regime", action="store_true",
+                    help="按 market_regime_history 分市况分组，对比组合分 vs 总分")
     args = ap.parse_args()
     H = args.horizon
 
@@ -127,6 +169,10 @@ def main():
     print(f"日期范围 {dates[0]} ~ {dates[-1]}（{len(dates)} 个快照日）")
 
     rets = [float(r["returnPct"]) for r in recs]
+
+    if args.by_regime:
+        _report_by_regime(recs, rets)
+        return 0
 
     # 单因子 IC（对照）
     print("\n【单因子 IC 对照】")

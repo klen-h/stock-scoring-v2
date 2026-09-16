@@ -71,9 +71,19 @@ def _notify(text: str):
 # ── 任务实现 ────────────────────────────────────────────────────────────────
 
 def task_backfill():
-    """回测价格库增量回填（战法回测的数据底座）。"""
-    from backfill_history import backfill_daily
-    return f"回填完成: {backfill_daily()}"
+    """回测价格库增量回填（战法回测 / 快照 T+N 收益 / 模拟盘结算的数据底座）。
+
+    ★ 2026-09-16：quota 150 → 不限量（backfill_lagging）。
+      根因：回填的 Render 常驻循环被 RENDER_READ_ONLY=1 关闭（scheduler._heavy），
+      只剩本日批一天一次供给；而 `_collect_rank_codes(7)` 近 7 天上榜股去重
+      ≈157 只 > 配额 150 → 插队机制占满配额仍不够，普通股几乎补不到。
+      实测代价：09-09 快照的 T+5（目标日 09-16）覆盖仅 25/50。
+      `backfill_daily(quota=None)` 会**跳过已同步到基准的股票** → 无积压时零开销，
+      仅积压时一次性追平（全池 ~700 只 ≈ 12 分钟；日批 74→86min，远低于 Actions
+      180min 上限）。幂等，可重复跑。
+    """
+    from backfill_history import backfill_lagging
+    return f"回填完成: {backfill_lagging()}"
 
 
 def task_mainflow():

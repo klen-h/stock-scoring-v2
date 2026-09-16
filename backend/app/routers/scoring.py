@@ -56,6 +56,16 @@ def _use_composite_rank() -> bool:
         return False
 
 
+def _rank_mode() -> str:
+    """排行榜口径标签（与排序键同源，供前端决定是否渲染组合分列/banner）。
+
+    ★ 2026-09-16：所有返回路径统一走这里。此前并发防重分支漏返回该字段，
+      前端 `d.rank_mode` 取到 undefined → 回落 'total_score' → nb 市下
+      「组合分」列会在并发/自动刷新窗口内「时有时无」（市况仍是 nb 也不显示）。
+    """
+    return "composite" if _use_composite_rank() else "total_score"
+
+
 def _sort_by_composite(final: list) -> list:
     """候选池内组合分排序：三因子秩归一化后 (基本面+资金面-技术面) 降序。
 
@@ -1132,16 +1142,21 @@ async def score_top(
             "cache_status": "ready",
             "cached": True,
             "cache_age_seconds": int(_time.time() - entry["ts"]),
-            "rank_mode": entry.get("rank_mode", "total_score"),
+            "rank_mode": entry.get("rank_mode") or _rank_mode(),
         }
     
     # 防并发重复计算：若已在计算中，直接返回旧缓存（即使过期）
     async with _rank_cache_lock:
         if _rank_result_cache["computing"]:
+            # ★ 2026-09-16：此前该分支两个 return 均漏 rank_mode → 前端回落
+            #   total_score，nb 市下组合分列在此窗口「闪一下就没了」。
+            _rm = entry.get("rank_mode") or _rank_mode()
             if entry["data"]:
                 return {"data": entry["data"][:limit], "total": entry.get("total", 0),
-                        "cache_status": "ready", "cached": True, "stale": True}
-            return {"data": [], "total": 0, "cache_status": "computing"}
+                        "cache_status": "ready", "cached": True, "stale": True,
+                        "rank_mode": _rm}
+            return {"data": [], "total": 0, "cache_status": "computing",
+                    "rank_mode": _rm}
         _rank_result_cache["computing"] = True
     
     try:
@@ -1261,7 +1276,7 @@ async def score_top(
             "data": result_data,
             "ts": _time.time(),
             "total": _total,
-            "rank_mode": "composite" if _use_composite_rank() else "total_score",
+            "rank_mode": _rank_mode(),
         }
 
         # 后台记录当日排行（用于计算连续上榜天数）
@@ -1272,7 +1287,7 @@ async def score_top(
             "data": result_data,
             "total": _total,
             "cache_status": "ready",
-            "rank_mode": "composite" if _use_composite_rank() else "total_score",
+            "rank_mode": _rank_mode(),
         }
     finally:
         _rank_result_cache["computing"] = False

@@ -1124,13 +1124,22 @@ async def regime_cache_loop():
                 and not store.is_schedule_done("regime_cache")):
             try:
                 cache = await asyncio.to_thread(refresh_regime_cache)
-                if cache and cache.get("state"):
+                # ★ 2026-09-16 修复：必须「判定日期 == 今天」才 mark_done。
+                #   窗口起点 15:40 早于 backtest_prices 当日回填（16:10+），此时
+                #   refresh_regime_cache 会命中「同日幂等跳过」并返回**昨日的 state**
+                #   （非空！）→ 原 `cache.get("state")` 判断误以为数据就绪 → mark_done
+                #   → 当天 loop 再不重试、当日行只能靠日批 task_market_regime 兜底
+                #   （09-11 前日批无此任务 → market_regime_history 大面积缺日）。
+                _today = now.strftime("%Y-%m-%d")
+                if cache and cache.get("state") and cache.get("date") == _today:
                     store.mark_schedule_done("regime_cache")
                     status["last_regime"] = f"{cache['date']} {cache['state']}"
                     print(f"[scheduler] 市场状态缓存完成: {cache['date']} {cache['state']} "
                           f"权重={cache['weights']}")
                 else:
-                    print("[scheduler] 沪深300当日数据未就绪，等待回填后重试")
+                    print(f"[scheduler] 市场状态未推进到当日"
+                          f"（最新 {cache.get('date') if cache else '无'}，今日 {_today}），"
+                          f"等 backtest_prices 回填后重试")
             except Exception as e:
                 print(f"[scheduler] 市场状态缓存失败: {e}")
                 _notify_failure("市场状态缓存", str(e))
