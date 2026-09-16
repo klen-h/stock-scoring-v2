@@ -1294,37 +1294,102 @@ async def score_top(
         _rank_result_cache["computing"] = False
 
 
-@router.get("/batch/shadow-rank")
-async def shadow_rank(limit: int = Query(default=30, ge=10, le=50)):
-    """旁路衰减灰度对比：返回 shadow_rank_daily 最新快照的 base/decay 两套 top N。
+_DIM_TO_KEY = {"技术面": "technical", "资金面": "capital", "基本面": "fundamental",
+               "成长": "growth", "质量": "quality"}
 
-    ★ 2026-09-17：验证「财报公告后 20-30 天成长/质量因子反向 → 该衰减」的灰度
-      功能。数据由日批 task_shadow_rank 落库（base=生产口径、decay=公告后 ≤25 天
-      成长/质量分 ×0 重加权排序）。前端「衰减对比」tab 读这里，并列展示两套排名。
-      数据为日批盘后快照（非实时），页面需标注快照日期。
+
+def _decay_total(dims, weights, age, days=25, alpha=0.0):
+    """衰减版总分：复刻 engine._combine 加权，但公告后 ≤days 天成长/质量分 ×alpha。
+
+    与 scripts/shadow_decay_ranking.py 同口径（盘中实时版）。返回总分或 None。
     """
-    from app.database import db
-    row = db.fetch_one("SELECT MAX(rank_date) AS d FROM shadow_rank_daily")
-    latest = (row or {}).get("d")
-    if not latest:
+    d = dict(dims or {})
+    if age is not None and age <= days:
+        for k in ("成长", "质量"):
+            if k in d and d[k] is not None:
+                d[k] = d[k] * alpha
+    valid = []
+    for name, score in d.items():
+        if score is None:
+            continue
+        w = (weights or {}).get(_DIM_TO_KEY.get(name, ""))
+        if w is None or w <= 0:
+            continue
+        valid.append((score, w))
+    if not valid:
+        return None
+    w_sum = sum(w for _, w in valid)
+    return round(sum(s * w / w_sum for s, w in valid), 1)
+
+
+@router.get("/batch/shadow-rank")
+async def shadow_rank(limit: int = Query(default=50, ge=10, le=100)):
+    """盘中两份榜之「衰减榜」：实时读 ranking_live 最新精算结果，按公告后衰减重加权排序。
+
+    ★ 2026-09-17：从「读盘后快照 shadow_rank_daily」改为「实时计算」——用户要盘中
+      也能看两份榜。衰减对象（成长/质量）是季频数据、公告龄按自然日算，盘中不随时间
+      变化；用 ranking_live 最新（可能为昨日盘后）算衰减，衰减本身不过时，与技术/资金/
+      基本面（两套榜共通、日间波动）无关，故「准实时」足够，无需盘中重跑全量精算。
+    返回 {date, base, decay, overlap}：base=生产总分排序、decay=衰减总分排序。
+    """
+    from datetime import date, datetime, timedelta, timezone
+    from app.finance import get_finance_batch
+    from app.backtest.market_regime import get_regime_cache, get_regime_weights
+    from app.scoring.live_ranking import load as _load_live
+
+    st = _load_live(limit=1000, use_cache=False)
+    data = st.get("data") or []
+    if not data:
         return {"date": None, "base": [], "decay": [], "overlap": 0,
-                "note": "暂无旁路衰减数据（等日批 shadow_rank 任务先落库）"}
-    rows = db.fetch(
-        "SELECT variant, code, name, rank_pos, total_score, decay_age, snapshot_price "
-        "FROM shadow_rank_daily WHERE rank_date = %s ORDER BY variant, rank_pos ASC",
-        (latest,)) or []
-    base, decay = [], []
-    for r in rows:
-        item = {"code": r["code"], "name": r.get("name") or "",
-                "rank_pos": r["rank_pos"], "total_score": r["total_score"],
-                "decay_age": r["decay_age"], "snapshot_price": r["snapshot_price"]}
-        if r["variant"] == "base":
-            base.append(item)
-        else:
-            decay.append(item)
-    base, decay = base[:limit], decay[:limit]
+                "note": "ranking_live 为空（等日批先产出全量精算榜）"}
+    codes = [r["code"] for r in data]
+    fin = get_finance_batch(codes) or {}
+    try:
+        state = (get_regime_cache() or {}).get("state") or ""
+        weights = get_regime_weights(state) if state else None
+    except Exception:
+        weights = None
+    if not weights:
+        weights = dict(ScoreEngine.DEFAULT_WEIGHTS)
+
+    _bj = timezone(timedelta(hours=8))
+    today = datetime.now(_bj).strftime("%Y-%m-%d")
+    rows = []
+    for r in data:
+        nd = (fin.get(r["code"]) or {}).get("notice_date")
+        age = None
+        if nd:
+            try:
+                age = (date.fromisoformat(today) - date.fromisoformat(str(nd)[:10])).days
+            except ValueError:
+                age = None
+        base_total = r.get("total_score") or 0
+        decay_total = _decay_total(r.get("dimensions") or {}, weights, age)
+        rows.append({"code": r["code"], "name": r.get("name") or "",
+                     "base": base_total, "decay": decay_total, "age": age})
+
+    # 主力行为标签（日频，mainforce_state 表）—— 与 score_top / 主榜同源
+    try:
+        from app.mainforce.state import load_latest as _mf_load
+        _mf = _mf_load([x["code"] for x in rows]) or {}
+    except Exception:
+        _mf = {}
+
+    def _mf_tag(code):
+        m = _mf.get(code) or {}
+        return {"mainforce_signal": m.get("signal"), "mainforce_phase": m.get("phase")}
+
+    base_rank = sorted(rows, key=lambda x: x["base"], reverse=True)[:limit]
+    decay_rank = sorted(rows, key=lambda x: (x["decay"] is not None, x["decay"] or 0),
+                        reverse=True)[:limit]
+    base = [{"code": x["code"], "name": x["name"], "rank_pos": i + 1,
+             "total_score": x["base"], "decay_age": x["age"], **_mf_tag(x["code"])}
+            for i, x in enumerate(base_rank)]
+    decay = [{"code": x["code"], "name": x["name"], "rank_pos": i + 1,
+              "total_score": x["decay"], "decay_age": x["age"], **_mf_tag(x["code"])}
+             for i, x in enumerate(decay_rank)]
     overlap = len({x["code"] for x in base} & {x["code"] for x in decay})
-    return {"date": latest, "base": base, "decay": decay, "overlap": overlap}
+    return {"date": st.get("date"), "base": base, "decay": decay, "overlap": overlap}
 
 
 @router.get("/batch/bottom")

@@ -195,8 +195,8 @@
     <!-- 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top30） -->
     <div v-if="activeTab === 'shadow'" class="bg-card border border-border rounded-lg overflow-hidden">
       <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between">
-        <span>旁路衰减灰度 · 生产 top30 vs 衰减 top30</span>
-        <span v-if="shadowData.date" class="font-mono">快照 {{ shadowData.date }}</span>
+        <span>旁路衰减灰度 · 生产 top50 vs 衰减 top50</span>
+        <span v-if="shadowData.date" class="font-mono">数据日 {{ shadowData.date }}</span>
       </div>
       <div v-if="shadowLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
       <div v-else-if="shadowError" class="p-6 text-center text-xs text-amber-400">{{ shadowError }}</div>
@@ -210,15 +210,26 @@
                 <th class="py-2 px-3 text-left">代码</th>
                 <th class="py-2 px-3 text-left">名称</th>
                 <th class="py-2 px-3 text-right">总分</th>
+                <th class="py-2 px-3 text-center">主力</th>
                 <th class="py-2 px-3 text-right">公告龄</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in shadowData.base" :key="'b'+r.code" class="border-b border-border/50 hover:bg-white/3 cursor-pointer" @click="goDetail(r.code)">
                 <td class="py-1.5 px-3 text-muted font-mono text-xs">{{ r.rank_pos }}</td>
-                <td class="py-1.5 px-3 font-mono text-xs text-accent">{{ r.code }}</td>
+                <td class="py-1.5 px-3 font-mono text-xs text-accent">
+                  <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" @click.stop
+                    class="hover:underline" title="在雪球查看">{{ r.code }}</a>
+                </td>
                 <td class="py-1.5 px-3 text-xs truncate max-w-[90px]">{{ r.name }}</td>
                 <td class="py-1.5 px-3 text-right font-mono text-xs">{{ r.total_score }}</td>
+                <td class="py-1.5 px-3 text-center">
+                  <span v-if="r.mainforce_signal" class="px-1.5 py-0.5 rounded text-[11px] font-bold"
+                    :class="r.mainforce_signal === 'distribution' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'">
+                    {{ r.mainforce_signal === 'distribution' ? '出货' : '吸筹' }}
+                  </span>
+                  <span v-else class="text-[11px] text-muted">-</span>
+                </td>
                 <td class="py-1.5 px-3 text-right text-muted text-xs">{{ r.decay_age != null ? r.decay_age + '天' : '-' }}</td>
               </tr>
             </tbody>
@@ -233,6 +244,7 @@
                 <th class="py-2 px-3 text-left">代码</th>
                 <th class="py-2 px-3 text-left">名称</th>
                 <th class="py-2 px-3 text-right">总分</th>
+                <th class="py-2 px-3 text-center">主力</th>
                 <th class="py-2 px-3 text-right">公告龄</th>
               </tr>
             </thead>
@@ -240,9 +252,19 @@
               <tr v-for="r in shadowData.decay" :key="'d'+r.code" class="border-b border-border/50 hover:bg-white/3 cursor-pointer"
                 :class="!shadowData.base.some(b => b.code === r.code) ? 'bg-emerald-500/5' : ''" @click="goDetail(r.code)">
                 <td class="py-1.5 px-3 text-muted font-mono text-xs">{{ r.rank_pos }}</td>
-                <td class="py-1.5 px-3 font-mono text-xs text-accent">{{ r.code }}</td>
+                <td class="py-1.5 px-3 font-mono text-xs text-accent">
+                  <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" @click.stop
+                    class="hover:underline" title="在雪球查看">{{ r.code }}</a>
+                </td>
                 <td class="py-1.5 px-3 text-xs truncate max-w-[90px]">{{ r.name }}</td>
                 <td class="py-1.5 px-3 text-right font-mono text-xs">{{ r.total_score }}</td>
+                <td class="py-1.5 px-3 text-center">
+                  <span v-if="r.mainforce_signal" class="px-1.5 py-0.5 rounded text-[11px] font-bold"
+                    :class="r.mainforce_signal === 'distribution' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'">
+                    {{ r.mainforce_signal === 'distribution' ? '出货' : '吸筹' }}
+                  </span>
+                  <span v-else class="text-[11px] text-muted">-</span>
+                </td>
                 <td class="py-1.5 px-3 text-right text-muted text-xs">{{ r.decay_age != null ? r.decay_age + '天' : '-' }}</td>
               </tr>
             </tbody>
@@ -250,7 +272,7 @@
         </div>
       </div>
       <div class="px-3 py-2 text-xs text-muted border-t border-border">
-        重叠 {{ shadowData.overlap }}/30 只（绿色行=衰减后新进榜）。衰减版仅旁路展示、不参与实际评分；数据为盘后快照，灰度两周后跑 compare_shadow_rank.py 看两套收益。
+        重叠 {{ shadowData.overlap }}/50 只（绿色行=衰减后新进榜）。衰减版仅旁路展示、不参与实际评分；灰度两周后跑 compare_shadow_rank.py 看两套收益。
       </div>
     </div>
 
@@ -1409,7 +1431,7 @@ async function loadShadowRank() {
   shadowLoading.value = true
   shadowError.value = ''
   try {
-    const { data } = await getShadowRank(30)
+    const { data } = await getShadowRank(50)
     shadowData.value = data
     if (!data.date) shadowError.value = data.note || '暂无旁路数据'
   } catch (e) {
@@ -1504,7 +1526,9 @@ function startAutoRefresh() {
     }
     autoCountdown.value--
     if (autoCountdown.value <= 0) {
-      loadData()
+      // 衰减对比 tab 也盘中刷新（其数据来自后端实时接口 /score/batch/shadow-rank）
+      if (activeTab.value === 'shadow') loadShadowRank()
+      else loadData()
       checkPriceAlerts()
       autoCountdown.value = 60
     }
