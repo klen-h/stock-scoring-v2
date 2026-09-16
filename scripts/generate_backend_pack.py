@@ -201,6 +201,11 @@ def compute_mainforce_batch(klines_raw: dict, quotes: dict) -> dict:
                 "signal_cn": ov.get("signal_cn"),
                 "reason": ov.get("reason"),
                 "flow5_amt": ov.get("flow5_amt"),
+                # ★ 2026-09-17：补打包金额口径。此前 mainforce_overlay 已算
+                #   flow5_amt_yuan（近5日主力净流入金额，元），但打包时漏了该字段
+                #   → 前端本地详情页「5日主力净流入」读 mainforce.flow5_amt_yuan
+                #   恒为 null、显示 '-'，而数据库 mainforce_state 里其实有值。
+                "flow5_amt_yuan": ov.get("flow5_amt_yuan"),
                 "mult": ov.get("mult") or 1.0,
                 "active": bool(ov.get("active")),
                 "chip": chip,

@@ -44,6 +44,7 @@ def ensure_table() -> None:
                 mult DOUBLE PRECISION DEFAULT 1.0,
                 chip_json JSONB,
                 flow5_amt DOUBLE PRECISION,
+                flow5_amt_yuan DOUBLE PRECISION,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 CONSTRAINT uq_mainforce_state UNIQUE (code, date)
             )
@@ -53,10 +54,21 @@ def ensure_table() -> None:
             CREATE TABLE IF NOT EXISTS mainforce_state (
                 code TEXT NOT NULL, name TEXT, date TEXT NOT NULL,
                 phase TEXT, signal TEXT, mult REAL DEFAULT 1.0,
-                chip_json TEXT, flow5_amt REAL,
+                chip_json TEXT, flow5_amt REAL, flow5_amt_yuan REAL,
                 UNIQUE (code, date)
             )
         """)
+    # ★ 2026-09-17：已有表增列 flow5_amt_yuan（5 日主力净流入金额，元）。
+    #   幂等 ALTER：PG 支持 IF NOT EXISTS；SQLite 退回普通 ADD COLUMN + 异常兜底
+    #   （列已存在时报错即忽略）。
+    try:
+        db.execute("ALTER TABLE mainforce_state ADD COLUMN IF NOT EXISTS "
+                   "flow5_amt_yuan DOUBLE PRECISION")
+    except Exception:
+        try:
+            db.execute("ALTER TABLE mainforce_state ADD COLUMN flow5_amt_yuan REAL")
+        except Exception:
+            pass
 
 
 def _load_bars_all() -> dict:
@@ -189,21 +201,25 @@ def _save(code: str, name: str, date: str, ov: dict) -> None:
     if db._use_postgres:
         db.execute("""
             INSERT INTO mainforce_state (code, name, date, phase, signal, mult,
-                                         chip_json, flow5_amt)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                         chip_json, flow5_amt, flow5_amt_yuan)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (code, date) DO UPDATE SET
                 name=EXCLUDED.name, phase=EXCLUDED.phase, signal=EXCLUDED.signal,
                 mult=EXCLUDED.mult, chip_json=EXCLUDED.chip_json,
-                flow5_amt=EXCLUDED.flow5_amt
+                flow5_amt=EXCLUDED.flow5_amt,
+                flow5_amt_yuan=EXCLUDED.flow5_amt_yuan
         """, (code, name, date, ov.get("phase"), ov.get("signal"),
-              ov.get("mult", 1.0), chip_json, ov.get("flow5_amt")))
+              ov.get("mult", 1.0), chip_json, ov.get("flow5_amt"),
+              ov.get("flow5_amt_yuan")))
     else:
         db.execute("""
             INSERT OR REPLACE INTO mainforce_state (code, name, date, phase, signal,
-                                                    mult, chip_json, flow5_amt)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                                    mult, chip_json, flow5_amt,
+                                                    flow5_amt_yuan)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (code, name, date, ov.get("phase"), ov.get("signal"),
-              ov.get("mult", 1.0), chip_json, ov.get("flow5_amt")))
+              ov.get("mult", 1.0), chip_json, ov.get("flow5_amt"),
+              ov.get("flow5_amt_yuan")))
     _latest_cache["data"].pop(code, None)   # 写入即失效（读缓存）
 
 
@@ -219,7 +235,7 @@ def load_latest(codes: list) -> dict:
     if missing:
         rows = db.fetch("""
             SELECT DISTINCT ON (code) code, name, date, phase, signal, mult,
-                   chip_json, flow5_amt
+                   chip_json, flow5_amt, flow5_amt_yuan
             FROM mainforce_state WHERE code = ANY(%s)
             ORDER BY code, date DESC
         """, (missing,))
@@ -232,6 +248,7 @@ def load_latest(codes: list) -> dict:
             cached[r["code"]] = {
                 "date": str(r["date"]), "phase": r["phase"], "signal": r["signal"],
                 "mult": r["mult"] or 1.0, "chip": chip, "flow5_amt": r["flow5_amt"],
+                "flow5_amt_yuan": r.get("flow5_amt_yuan"),
             }
         _latest_cache["ts"] = now
     return {c: cached[c] for c in codes if c in cached}

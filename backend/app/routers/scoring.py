@@ -1259,6 +1259,7 @@ async def score_top(
                         "mult": DISTRIBUTION_MULT
                         if (_mf_eff and m["signal"] == "distribution") else 1.0,
                         "flow5_amt": m["flow5_amt"],
+                        "flow5_amt_yuan": m.get("flow5_amt_yuan"),
                         "price_pos": (m.get("chip") or {}).get("price_pos"),
                         "winner_ratio": (m.get("chip") or {}).get("winner_ratio"),
                     }
@@ -1291,6 +1292,39 @@ async def score_top(
         }
     finally:
         _rank_result_cache["computing"] = False
+
+
+@router.get("/batch/shadow-rank")
+async def shadow_rank(limit: int = Query(default=30, ge=10, le=50)):
+    """旁路衰减灰度对比：返回 shadow_rank_daily 最新快照的 base/decay 两套 top N。
+
+    ★ 2026-09-17：验证「财报公告后 20-30 天成长/质量因子反向 → 该衰减」的灰度
+      功能。数据由日批 task_shadow_rank 落库（base=生产口径、decay=公告后 ≤25 天
+      成长/质量分 ×0 重加权排序）。前端「衰减对比」tab 读这里，并列展示两套排名。
+      数据为日批盘后快照（非实时），页面需标注快照日期。
+    """
+    from app.database import db
+    row = db.fetch_one("SELECT MAX(rank_date) AS d FROM shadow_rank_daily")
+    latest = (row or {}).get("d")
+    if not latest:
+        return {"date": None, "base": [], "decay": [], "overlap": 0,
+                "note": "暂无旁路衰减数据（等日批 shadow_rank 任务先落库）"}
+    rows = db.fetch(
+        "SELECT variant, code, name, rank_pos, total_score, decay_age, snapshot_price "
+        "FROM shadow_rank_daily WHERE rank_date = %s ORDER BY variant, rank_pos ASC",
+        (latest,)) or []
+    base, decay = [], []
+    for r in rows:
+        item = {"code": r["code"], "name": r.get("name") or "",
+                "rank_pos": r["rank_pos"], "total_score": r["total_score"],
+                "decay_age": r["decay_age"], "snapshot_price": r["snapshot_price"]}
+        if r["variant"] == "base":
+            base.append(item)
+        else:
+            decay.append(item)
+    base, decay = base[:limit], decay[:limit]
+    overlap = len({x["code"] for x in base} & {x["code"] for x in decay})
+    return {"date": latest, "base": base, "decay": decay, "overlap": overlap}
 
 
 @router.get("/batch/bottom")

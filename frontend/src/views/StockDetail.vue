@@ -229,8 +229,11 @@
           <div class="px-3 py-2 rounded-lg bg-white/5">
             <div class="text-muted mb-1">5日主力净流入</div>
             <div class="font-mono font-bold"
-              :class="(scoreData.mainforce.flow5_amt ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
-              {{ scoreData.mainforce.flow5_amt != null ? (scoreData.mainforce.flow5_amt > 0 ? '+' : '') + scoreData.mainforce.flow5_amt + '%' : '-' }}
+              :class="(scoreData.mainforce.flow5_amt_yuan ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+              {{ scoreData.mainforce.flow5_amt_yuan != null ? formatSignedAmt(scoreData.mainforce.flow5_amt_yuan) : '-' }}
+            </div>
+            <div class="text-[10px] text-muted mt-0.5">
+              占额累计 {{ scoreData.mainforce.flow5_amt != null ? (scoreData.mainforce.flow5_amt > 0 ? '+' : '') + scoreData.mainforce.flow5_amt : '-' }}
             </div>
           </div>
         </div>
@@ -238,7 +241,7 @@
           {{ scoreData.mainforce.reason }}
         </p>
         <div class="mt-2 text-[11px] text-muted">
-          高位高获利+主力流出 = 出货嫌疑（回测 10 日 -7.5pt）；低位筹码密集+主力净流入 = 吸筹区（10 日 +1.1pt）。均值成本 {{ scoreData.mainforce.chip?.avg_cost ?? '-' }}
+          高位高获利+主力流出 = 出货嫌疑（回测 10 日 -3.8pt）；低位筹码密集+主力净流入 = 吸筹区（10 日 +0.7pt）。均值成本 {{ scoreData.mainforce.chip?.avg_cost ?? '-' }}
         </div>
       </div>
       </div>
@@ -646,6 +649,16 @@ function formatAmt(v) {
   if (n >= 1e12) return (n / 1e12).toFixed(2) + '万亿'
   if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿'
   return (n / 1e4).toFixed(1) + '万'
+}
+// 带符号金额（主力净流入可为负；formatAmt 只处理正数）
+function formatSignedAmt(v) {
+  const n = parseFloat(v)
+  if (!n) return '0'
+  const abs = Math.abs(n)
+  const s = n > 0 ? '+' : '-'
+  if (abs >= 1e12) return s + (abs / 1e12).toFixed(2) + '万亿'
+  if (abs >= 1e8) return s + (abs / 1e8).toFixed(2) + '亿'
+  return s + (abs / 1e4).toFixed(0) + '万'
 }
 
 function toggleIndicator(key) {

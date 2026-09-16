@@ -87,11 +87,19 @@ def mainforce_overlay(bars: list, flow_rows: list = None,
     phase = detect_phase(bars)
 
     # 近 5 日主力净流入占额%（新浪口径 main_pct 已是占成交额百分比）
+    # ★ 2026-09-17：同时给出「金额」（元）——两者口径不同、不可互换：
+    #   flow5_amt      = Σ(每日 净流入 ÷ 当日成交额 × 100)，是"占额比例的 5 日累加"
+    #                    （分母不同不能直接相加，但保留"持续性"信息；是评分因子
+    #                     scoreFlow5 倒U锚点的输入 —— 改动必须同步重标定锚点）；
+    #   flow5_amt_yuan = Σ(每日 main_net)，即 5 日主力净流入金额（元），
+    #                    供前端直观展示，可与行情软件的"净流入金额"对照。
     flow5_amt = None
+    flow5_amt_yuan = None
     consec = 0
     if flow_rows:
         recent = flow_rows[-5:]
         flow5_amt = round(sum(float(r.get("main_pct") or 0) for r in recent), 2)
+        flow5_amt_yuan = round(sum(float(r.get("main_net") or 0) for r in recent), 2)
         for r in reversed(flow_rows):
             if (r.get("main_net") or 0) > 0:
                 consec += 1
@@ -135,6 +143,7 @@ def mainforce_overlay(bars: list, flow_rows: list = None,
         "phase_cn": (phase or {}).get("phase_cn"),
         "chip": chip,
         "flow5_amt": flow5_amt,
+        "flow5_amt_yuan": flow5_amt_yuan,
         "flow_consec": consec,
         "signal": signal,
         "signal_cn": signal_cn,

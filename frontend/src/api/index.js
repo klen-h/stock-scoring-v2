@@ -150,6 +150,8 @@ export const searchStock = (keyword) => http.get('/stock/search', { params: { ke
 // 评分引擎
 export const getStockScore = (symbol) => http.get(`/score/${symbol}`)
 export const getScoreTop = (params) => http.get('/score/batch/top', { params, timeout: 90000 })
+// 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top N，日批快照，非实时）
+export const getShadowRank = (limit = 30) => http.get('/score/batch/shadow-rank', { params: { limit }, timeout: 15000 })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })

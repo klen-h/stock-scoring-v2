@@ -165,7 +165,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -192,6 +192,68 @@
       </div>
     </div>
 
+    <!-- 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top30） -->
+    <div v-if="activeTab === 'shadow'" class="bg-card border border-border rounded-lg overflow-hidden">
+      <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between">
+        <span>旁路衰减灰度 · 生产 top30 vs 衰减 top30</span>
+        <span v-if="shadowData.date" class="font-mono">快照 {{ shadowData.date }}</span>
+      </div>
+      <div v-if="shadowLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
+      <div v-else-if="shadowError" class="p-6 text-center text-xs text-amber-400">{{ shadowError }}</div>
+      <div v-else class="grid grid-cols-2">
+        <div>
+          <div class="px-3 py-2 text-xs font-semibold border-b border-border">生产榜（当前评分）</div>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border text-muted text-xs">
+                <th class="py-2 px-3 text-left">#</th>
+                <th class="py-2 px-3 text-left">代码</th>
+                <th class="py-2 px-3 text-left">名称</th>
+                <th class="py-2 px-3 text-right">总分</th>
+                <th class="py-2 px-3 text-right">公告龄</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in shadowData.base" :key="'b'+r.code" class="border-b border-border/50 hover:bg-white/3 cursor-pointer" @click="goDetail(r.code)">
+                <td class="py-1.5 px-3 text-muted font-mono text-xs">{{ r.rank_pos }}</td>
+                <td class="py-1.5 px-3 font-mono text-xs text-accent">{{ r.code }}</td>
+                <td class="py-1.5 px-3 text-xs truncate max-w-[90px]">{{ r.name }}</td>
+                <td class="py-1.5 px-3 text-right font-mono text-xs">{{ r.total_score }}</td>
+                <td class="py-1.5 px-3 text-right text-muted text-xs">{{ r.decay_age != null ? r.decay_age + '天' : '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="border-l border-border">
+          <div class="px-3 py-2 text-xs font-semibold border-b border-border">衰减榜（公告后≤25天 成长/质量×0）</div>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border text-muted text-xs">
+                <th class="py-2 px-3 text-left">#</th>
+                <th class="py-2 px-3 text-left">代码</th>
+                <th class="py-2 px-3 text-left">名称</th>
+                <th class="py-2 px-3 text-right">总分</th>
+                <th class="py-2 px-3 text-right">公告龄</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in shadowData.decay" :key="'d'+r.code" class="border-b border-border/50 hover:bg-white/3 cursor-pointer"
+                :class="!shadowData.base.some(b => b.code === r.code) ? 'bg-emerald-500/5' : ''" @click="goDetail(r.code)">
+                <td class="py-1.5 px-3 text-muted font-mono text-xs">{{ r.rank_pos }}</td>
+                <td class="py-1.5 px-3 font-mono text-xs text-accent">{{ r.code }}</td>
+                <td class="py-1.5 px-3 text-xs truncate max-w-[90px]">{{ r.name }}</td>
+                <td class="py-1.5 px-3 text-right font-mono text-xs">{{ r.total_score }}</td>
+                <td class="py-1.5 px-3 text-right text-muted text-xs">{{ r.decay_age != null ? r.decay_age + '天' : '-' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="px-3 py-2 text-xs text-muted border-t border-border">
+        重叠 {{ shadowData.overlap }}/30 只（绿色行=衰减后新进榜）。衰减版仅旁路展示、不参与实际评分；数据为盘后快照，灰度两周后跑 compare_shadow_rank.py 看两套收益。
+      </div>
+    </div>
+
     <!-- 组合分排序口径提示（nb 阴跌市，后端切换排序键） -->
     <div v-if="rankMode === 'composite' && activeTab === 'top'"
       class="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs text-amber-400 mb-3">
@@ -200,7 +262,7 @@
     </div>
 
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
@@ -294,7 +356,7 @@
                 class="px-1.5 py-0.5 rounded text-xs font-bold cursor-help"
                 :class="item.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' :
                        'bg-emerald-500/20 text-emerald-400'"
-                :title="`${item.mainforce.phase === 'distribution' ? '出货' : item.mainforce.phase === 'accumulation' ? '吸筹' : item.mainforce.phase === 'markup' ? '拉升' : item.mainforce.phase === 'shakeout' ? '洗盘' : item.mainforce.phase === 'decline' ? '下跌' : '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力净流入 ${item.mainforce.flow5_amt ?? '-'}%`">
+                :title="`${item.mainforce.phase === 'distribution' ? '出货' : item.mainforce.phase === 'accumulation' ? '吸筹' : item.mainforce.phase === 'markup' ? '拉升' : item.mainforce.phase === 'shakeout' ? '洗盘' : item.mainforce.phase === 'decline' ? '下跌' : '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力占额累计 ${item.mainforce.flow5_amt ?? '-'}`">
                 {{ item.mainforce.signal === 'distribution' ? '出货' : '吸筹' }}
               </span>
               <span v-else class="text-xs text-muted">-</span>
@@ -704,7 +766,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -714,6 +776,7 @@ const router = useRouter()
 // bottom / signal 入口暂隐藏（后续优化完再开放）
 const tabs = [
   { key: 'top', label: '评分 Top 50' },
+  { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
   { key: 'verify', label: '胜率回查' },
   { key: 'backtest', label: '历史回测' },
@@ -729,6 +792,10 @@ const cacheStatus = ref('loading')
 const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
 const temp = ref({})   // 市场环境温度（独立信号）
+// ── 旁路衰减对比 ──
+const shadowData = ref({ date: null, base: [], decay: [], overlap: 0, note: '' })
+const shadowLoading = ref(false)
+const shadowError = ref('')
 
 // ── 自动刷新（盘中每60秒，非交易时段不自动刷新）──
 const autoCountdown = ref(60)
@@ -1338,9 +1405,24 @@ async function loadFrontendRanking() {
   }
 }
 
+async function loadShadowRank() {
+  shadowLoading.value = true
+  shadowError.value = ''
+  try {
+    const { data } = await getShadowRank(30)
+    shadowData.value = data
+    if (!data.date) shadowError.value = data.note || '暂无旁路数据'
+  } catch (e) {
+    shadowError.value = '加载失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    shadowLoading.value = false
+  }
+}
+
 function switchTab(tab) {
   activeTab.value = tab
   if (tab === 'sector') loadSectorData()
+  else if (tab === 'shadow') loadShadowRank()
   else if (tab === 'optimize') runWeightAnalysis()
   else if (tab === 'anomaly') loadAnomalies()
   else if (tab !== 'verify' && tab !== 'backtest') loadData()

@@ -249,6 +249,20 @@ def task_rank_live():
     return compute_and_store(limit=1000)
 
 
+def task_shadow_rank():
+    """旁路衰减榜（shadow_rank_daily）：生产 top30 vs 公告后衰减 top30 两套落库。
+
+    ★ 2026-09-17 新增：灰度验证「财报公告后 20-30 天成长/质量因子反向 → 该衰减」。
+      事件研究 + 衰减寻优（quality_defense_backtest.py --event/--decay）证明 neutral
+      下公告后 25 天内剔除成长（α=0）能把 IC 从负转正，但 defensive 样本不足未验证。
+      本任务**不改生产主排序**，只旁路落库两套 top30，两周后用
+      compare_shadow_rank.py 对比收益。依赖 rank_live 先落库（读 ranking_live 的
+      精算五维分），故排在其后。
+    """
+    from shadow_decay_ranking import run
+    return run(days=25, alpha=0.0, top=30, apply=True)
+
+
 def task_mainline():
     """行业主线/共振分析（industry_mainline，原 Render 16:05 循环）。
 
@@ -452,6 +466,8 @@ TASKS = {
     # ★ 2026-09-11 新增：全量精算榜（ranking_live）——后端 /batch/top 直接读。
     #   依赖 mainforce_state（资金面第 5 因子 flow5）与全市场行情缓存。
     "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
+    # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
+    "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
     "lhb": (task_lhb, "龙虎榜同步"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
@@ -468,7 +484,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
                  "calendar", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
-                 "news_snapshot", "rank_live",
+                 "news_snapshot", "rank_live", "shadow_rank",
                  "lhb", "zz_finance", "weekly_report", "daily_report",
                  "trader_brief"]
 
