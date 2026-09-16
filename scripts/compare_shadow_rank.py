@@ -97,11 +97,12 @@ def main():
         print("shadow_rank_daily 为空 —— 先跑 shadow_decay_ranking.py --apply 若干天")
         return 1
 
-    groups = defaultdict(lambda: {"base": [], "decay": []})
+    groups = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        if r["variant"] in groups[r["rank_date"]]:
-            groups[r["rank_date"]][r["variant"]].append(r)
+        groups[r["rank_date"]][r["variant"]].append(r)
     dates = sorted(groups.keys())
+    all_v = sorted({r["variant"] for r in rows},
+                   key=lambda v: (v != "base", v))      # base 优先展示
 
     td = trading_days()
     codes = sorted({r["code"] for r in rows})
@@ -115,45 +116,43 @@ def main():
     prices = load_prices(codes, sorted(needed))
 
     print("=" * 78)
-    print(f"旁路衰减灰度对比  shadow 榜覆盖 {len(dates)} 个快照日："
+    print(f"影子榜灰度对比  shadow 榜覆盖 {len(dates)} 个快照日："
           f"{dates[0]} ~ {dates[-1]}")
-    print(f"样本池 {len(codes)} 只股票；口径 = 快照价买入 → T+N 交易日收盘价卖出")
+    print(f"variant = {all_v}（base 生产 | zero 公告后×0 对照 | grad 梯度 主）")
+    print(f"样本池 {len(codes)} 只；口径 = 快照价买入 → T+N 交易日收盘价卖出")
     print("=" * 78)
 
-    # 汇总（跨快照日平均）
     for h in args.horizon:
-        b_all, d_all = [], []
-        print(f"\n=== 持有 {h} 个交易日 ===")
-        print(f"{'快照日':<12}{'base收益%':>10}{'base胜率%':>10}"
-              f"{'decay收益%':>12}{'decay胜率%':>12}{'decay-base':>12}")
-        print("-" * 68)
+        width = 12 + 12 * len(all_v)
+        print(f"\n=== 持有 {h} 个交易日（平均收益%）===")
+        print(f"{'快照日':<12}" + "".join(f"{v:>12}" for v in all_v))
+        print("-" * width)
+        sums = {v: [] for v in all_v}
         for d in dates:
-            b_avg, b_wr, b_n = avg_ret(groups[d]["base"], td, h, prices)
-            d_avg, d_wr, d_n = avg_ret(groups[d]["decay"], td, h, prices)
-            if b_avg is None and d_avg is None:
-                print(f"{d:<12}{'未到期':>10}{'-':>10}{'未到期':>12}{'-':>12}")
-                continue
-            diff = (d_avg - b_avg) if (b_avg is not None and d_avg is not None) else None
-            b_s = f"{b_avg:+.2f}" if b_avg is not None else "-"
-            d_s = f"{d_avg:+.2f}" if d_avg is not None else "-"
-            b_w = f"{b_wr:.0f}" if b_wr is not None else "-"
-            d_w = f"{d_wr:.0f}" if d_wr is not None else "-"
-            df_s = f"{diff:+.2f}" if diff is not None else "-"
-            print(f"{d:<12}{b_s:>10}{b_w:>10}{d_s:>12}{d_w:>12}{df_s:>12}")
-            if b_avg is not None:
-                b_all.append(b_avg)
-            if d_avg is not None:
-                d_all.append(d_avg)
+            cells = []
+            for v in all_v:
+                av, _wr, _n = avg_ret(groups[d].get(v, []), td, h, prices)
+                if av is None:
+                    cells.append("未到期")
+                else:
+                    cells.append(f"{av:+.2f}")
+                    sums[v].append(av)
+            print(f"{d:<12}" + "".join(f"{c:>12}" for c in cells))
+        print("-" * width)
+        avg_cells = [f"{sum(sums[v]) / len(sums[v]):+.2f}" if sums[v] else "-"
+                     for v in all_v]
+        print(f"{'平均':<12}" + "".join(f"{c:>12}" for c in avg_cells))
 
-        if b_all and d_all:
-            mb, md = sum(b_all) / len(b_all), sum(d_all) / len(d_all)
-            print("-" * 68)
-            print(f"{'平均':<12}{mb:>+10.2f}{'':>10}{md:>+12.2f}{'':>12}"
-                  f"{md - mb:>+12.2f}")
-            verdict = ("decay 更优" if md > mb else
-                       "base 更优" if md < mb else "两者相当")
-            print(f"\n  → 持有 {h} 日：decay − base = {md - mb:+.2f}pt"
-                  f"（{'✓' if md > mb else '✗'} {verdict}）")
+        # 结论：各 variant 相对 base 的差
+        if sums.get("base"):
+            mb = sum(sums["base"]) / len(sums["base"])
+            print(f"\n  → 持有 {h} 日（base {mb:+.2f}%）：")
+            for v in all_v:
+                if v == "base" or not sums.get(v):
+                    continue
+                mv = sum(sums[v]) / len(sums[v])
+                tag = "✓ 更优" if mv > mb else ("✗ 更差" if mv < mb else "= 相当")
+                print(f"      {v:<4} {mv:+.2f}%  Δ {mv - mb:+.2f}pt  {tag}")
 
     print("\n注：需 ≥10 个快照日（约两周）结论才可信；快照日太少时仅作参考。")
     return 0

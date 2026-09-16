@@ -250,17 +250,15 @@ def task_rank_live():
 
 
 def task_shadow_rank():
-    """旁路衰减榜（shadow_rank_daily）：生产 top30 vs 公告后衰减 top30 两套落库。
+    """影子榜（shadow_rank_daily）：生产 / 公告后衰减 两套 top50 落库（3 variant）。
 
-    ★ 2026-09-17 新增：灰度验证「财报公告后 20-30 天成长/质量因子反向 → 该衰减」。
-      事件研究 + 衰减寻优（quality_defense_backtest.py --event/--decay）证明 neutral
-      下公告后 25 天内剔除成长（α=0）能把 IC 从负转正，但 defensive 样本不足未验证。
-      本任务**不改生产主排序**，只旁路落库两套 top30，两周后用
-      compare_shadow_rank.py 对比收益。依赖 rank_live 先落库（读 ranking_live 的
-      精算五维分），故排在其后。
+    ★ 2026-09-17 新增并二版：灰度验证「财报公告后短窗口成长/质量因子反向 → 该衰减」。
+      落 base（生产）、zero（公告后≤25天成长/质量×0，初版对照）、grad（梯度：0-5天
+      剔除、6-20天权重×0.5，主版本）三套，两周后用 compare_shadow_rank.py 对比收益。
+      本任务**不改生产主排序**。依赖 rank_live 先落库（读其精算五维分），故排在其后。
     """
     from shadow_decay_ranking import run
-    return run(days=25, alpha=0.0, top=30, apply=True)
+    return run(top=50, apply=True)
 
 
 def task_mainline():

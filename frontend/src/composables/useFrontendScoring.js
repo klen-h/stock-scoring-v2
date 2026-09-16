@@ -20,7 +20,7 @@ import {
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
 import { getFinanceBatch, getScoreWeights } from '../api'
-import { scoreStock, roughScore, setRegimeState } from '../utils/scoringEngine'
+import { scoreStock, roughScore, setRegimeState, decayTotal } from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
 /**
@@ -67,6 +67,8 @@ const isUpdating = ref(false)
 const updateProgress = ref({ stage: '', message: '', loaded: 0, total: 0 })
 const isComputing = ref(false)
 const scoringResult = ref([])
+// 影子榜（生产 / 梯度衰减 / ×0 对照）——与主榜同一次精算结果同源，本地算、零额外成本
+const shadowBoards = ref({ date: null, base: [], zero: [], grad: [], overlap: {} })
 // 本轮实际参与评分的股票池数量（过滤后全量，非返回列表长度）
 const poolCount = ref(0)
 const lastScoreTime = ref(null)
@@ -267,6 +269,68 @@ async function decompressGzipText(blob) {
  * @param {number} options.limit - 返回数量
  * @param {string} options.signal - 信号类型（mode='signal' 时使用）
  */
+/**
+ * 影子榜三套排名（生产 / 梯度衰减 / ×0 对照）——本地算。
+ *
+ * ★ 复用主榜「同一次精算结果」+ 已批量拉到的财报（含 notice_date），因此
+ *   零额外网络/Supabase 成本，且与主榜同源（同一批 dims）、盘中实时。
+ *   衰减逻辑与后端 backend/app/scoring/decay.py 同口径。
+ * @param results preciseScoreBatch 结果（含 dimensions 五维 + mainforce）
+ * @param finMap {code: 财报行}（含 notice_date）
+ * @param weights 当前生效权重
+ * @param top 每榜取前 N
+ */
+function buildShadowBoards(results, finMap, weights, top = 50) {
+  const pad = n => String(n).padStart(2, '0')
+  const now = new Date()
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const rows = (results || []).map(r => {
+    const fin = (finMap || {})[r.code] || {}
+    const nd = fin.notice_date ? String(fin.notice_date).slice(0, 10) : null
+    let age = null
+    if (nd) {
+      const d0 = Date.parse(`${nd}T00:00:00`)
+      const d1 = Date.parse(`${today}T00:00:00`)
+      if (!Number.isNaN(d0) && !Number.isNaN(d1)) {
+        age = Math.round((d1 - d0) / 86400000)
+      }
+    }
+    const dims = r.dimensions || {}
+    return {
+      code: r.code,
+      name: r.name,
+      base: r.total_score,
+      grad: decayTotal(dims, weights, age, 'grad'),
+      zero: decayTotal(dims, weights, age, 'zero'),
+      age,
+      change_pct: r.change_pct,          // 盘中实时涨跌幅（来自实时行情）
+      mf_signal: (r.mainforce && r.mainforce.signal) || null,
+      mf_phase: (r.mainforce && r.mainforce.phase) || null,
+    }
+  })
+  const pick = key => [...rows]
+    .sort((a, b) => (b[key] == null ? -1 : b[key]) - (a[key] == null ? -1 : a[key]))
+    .slice(0, top)
+    .map((x, i) => ({
+      code: x.code, name: x.name || '', rank_pos: i + 1,
+      total_score: x[key], decay_age: x.age,
+      change_pct: x.change_pct,
+      mainforce_signal: x.mf_signal, mainforce_phase: x.mf_phase,
+    }))
+  const base = pick('base')
+  const zero = pick('zero')
+  const grad = pick('grad')
+  const bset = new Set(base.map(x => x.code))
+  return {
+    date: today,
+    base, zero, grad,
+    overlap: {
+      zero: zero.filter(x => bset.has(x.code)).length,
+      grad: grad.filter(x => bset.has(x.code)).length,
+    },
+  }
+}
+
 export async function computeRanking(options = {}) {
   const { mode = 'top', limit = 50, signal = '买入' } = options
 
@@ -365,6 +429,14 @@ export async function computeRanking(options = {}) {
       finalResults = preciseResults.filter(r => r.signal === signal).slice(0, limit)
     } else {
       finalResults = preciseResults.slice(0, limit)
+    }
+
+    // 7.5 影子榜（本地）：复用本次精算结果，零额外成本、与主榜同源、盘中实时
+    try {
+      shadowBoards.value = buildShadowBoards(
+        preciseResults, finMap, currentWeights, Math.max(limit, 50))
+    } catch (e) {
+      console.warn('[前端评分] 影子榜计算失败（不影响主榜）:', e)
     }
 
     scoringResult.value = finalResults
@@ -1146,6 +1218,7 @@ export function useFrontendScoring() {
     updateProgress,
     isComputing,
     scoringResult,
+    shadowBoards,
     poolCount,
     lastScoreTime,
     error,

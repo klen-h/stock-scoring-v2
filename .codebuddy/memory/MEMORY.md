@@ -65,3 +65,12 @@
 ## 本机环境 / 用户偏好
 - Windows 本机 Python DNS 对跨国域名间歇故障（路由器 DNS 抖动），重试即可；生产无影响。
 - 日报不推企微，只在前端 `/report` 查看。
+
+## ★ 当前进行中（2026-09-17 进入数据积累期）
+- **状态**：评分有效性专项整治一轮完成并已部署（前端 Pages + Render，2026-09-17 用户亲手提交部署）。**冻结一切权重/衰减的生产改动**，等两组数据攒够。
+- **衰减口径（二版，2026-09-17 定稿）**：`backend/app/scoring/decay.py` 为单一事实源。主版本 **grad = 梯度降权**（成长/质量**权重乘数**：公告后 0-5 天 → 0 剔除、6-20 天 → 0.5、>20 天 → 1.0）——语义中性、尺度连续；保留 **zero（×0 归零）作对照**。初版 ×0 实测过激（000612 age19：73.7→33.4，掉榜且把刚公告股全压到 30-40 分档）。
+- **在等什么**：① `shadow_rank_daily` 影子榜 **≥10 个快照日**（日批 task_shadow_rank 每晚 ~21:57 落库 **base/zero/grad 三套** top50）；② `market_regime_history` 的 **defensive 截面日积累**（scheduler mark_done 已修，每天正常落库）。
+- **触发条件与到期动作**（快照日 ≥10，约 2026-10-08 前后）：跑 `scripts/compare_shadow_rank.py`（base/zero/grad 三套 T+5/T+10 收益对比）+ 重跑 `scripts/quality_defense_backtest.py --optimize --decay`（补 defensive 缺口）→ 综合决策：选哪套衰减（grad/zero/不衰减）进生产 + defensive 权重是否调整（候选 growth 0.30/quality 0.18）。
+- **已部署改动**（详见 2026-09-16/17 daily）：`scoring.py`（并发漏 rank_mode 修复 + `/score/batch/shadow-rank` 实时衰减接口 + `_decay_total` helper）；`scheduler.py`（regime mark_done 日期推进修复）；前端「衰减对比」tab（实时两份 top50 + 主力标签 + 60s 刷新）；`generate_backend_pack.py` 补 `flow5_amt_yuan`；`daily_batch.py` + task_shadow_rank。**指标包侧的修正（chips 换手率 + flow5_amt_yuan）需 backend-pack 重跑后生效**（自动：周一~五北京 19:00）。
+- **2026-09-18 验证清单**：① `market_regime_history` 有 9/17 行（scheduler 修复生效）；② `shadow_rank_daily` 有 9/17 base+decay（灰度首日）；③ `backtest_prices` 9/17 覆盖 ≥600 只（不限量回填生效）；④ 002452 详情页 chip ≈ 65%/55%/10% 且 5日净流入有值（指标包修正生效）。
+- **可选并行（不依赖等待）**：宽度重算器（节奏框架 Phase 0 终判，三年价量代理）；B 类因子（质押比例/经营现金流，需新数据源）。

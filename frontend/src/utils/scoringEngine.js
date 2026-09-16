@@ -42,6 +42,56 @@ export const DEFAULT_WEIGHTS = {
   quality: W_QUALITY,
 }
 
+// ── 财报公告后衰减重加权（与后端 backend/app/scoring/decay.py 同口径）──
+// ★ 2026-09-17：影子榜（生产 / 梯度衰减 / ×0 对照）在前端本地算 —— 与主榜
+//   同一次精算结果同源（盘中实时、零后端与 Supabase 成本）。三口径：
+//     base 不衰减 | grad 梯度（0-5天权重×0、6-20天×0.5）| zero 公告后≤25天分×0（对照）
+export const DIM_KEYS = ['technical', 'capital', 'fundamental', 'growth', 'quality']
+const DECAY_KEYS = ['growth', 'quality']
+
+/** 公告龄 → 成长/质量维度权重乘数（grad 口径） */
+export function decayWeightMult(key, age) {
+  if (!DECAY_KEYS.includes(key) || age == null) return 1
+  if (age <= 5) return 0
+  if (age <= 20) return 0.5
+  return 1
+}
+
+/**
+ * 衰减版总分：复刻后端 decay.decay_total（加权求和、缺失维度按比例分摊权重）。
+ * @param dims scoreStock 的 dimensions（{technical:{score}, ...}）
+ * @param weights 当前生效权重（英文键）
+ * @param age 财报公告后天数（null=无财报 → 不衰减）
+ * @param mode 'grad'（默认）| 'zero' | 'base'
+ * @returns 总分（0-100）；无有效维度返回 null
+ */
+export function decayTotal(dims, weights, age, mode = 'grad') {
+  const w = { ...DEFAULT_WEIGHTS, ...(weights || {}) }
+  const s = {}
+  for (const k of DIM_KEYS) {
+    const v = dims ? dims[k] : null
+    s[k] = (v == null) ? null
+      : (typeof v === 'number' ? v : (v.score != null ? v.score : null))
+  }
+  if (mode === 'zero' && age != null && age <= 25) {
+    for (const k of DECAY_KEYS) if (s[k] != null) s[k] = 0
+  }
+  let num = 0
+  let den = 0
+  for (const k of DIM_KEYS) {
+    if (s[k] == null) continue
+    let wk = w[k]
+    if (!wk || wk <= 0) continue
+    if (mode === 'grad') {
+      wk *= decayWeightMult(k, age)
+      if (wk <= 0) continue
+    }
+    num += s[k] * wk
+    den += wk
+  }
+  return den > 0 ? Math.round(num / den * 10) / 10 : null
+}
+
 // ── 市场状态注入（2026-09-13 审查 P1-13）──
 // neutral_bearish 高换手钳制需要知道当前 regime。useFrontendScoring 在拉取
 // /api/score/weights（权重与 regime_state 同源）时调用 setRegimeState 注入；
