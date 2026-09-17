@@ -15,6 +15,22 @@
 - 两条链路并存：后端读 DB 包；前端本地评分读 GitHub Pages 的 `kline-pack` + `indicators-pack`。**`backend-pack.db.gz` 只给 Python，浏览器不读**。
 - 已知待修：盘中技术面是昨收；`score_single` 实时算与 `batch/top` 缓存算盘中不同分；`incremental_update` 是死代码；`score_snapshot_loop` 15:15 早于数据刷新。
 
+## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
+- **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
+- **头号放大器 =「进程内缓存 × 低频数据」**：本地 `run.py --reload`（改代码即重启）+ 各种脚本
+  ⇒ 每重启一次就整份重读。已治理 4 处 —— `mainflow_history` 整表读 8.7MB/次、
+  `market_snapshot` 整行 336KB/次（两处读取点）、`stock_industry JOIN stock_finance` 1.68 万行/次、
+  研究脚本 `backtest_prices` 22.7 万行/次（无 `start` 读全历史）。常态 ~140MB/天 → 预期 ~20MB/天。
+- **跨进程版本门控四手段**：① `sync_meta` 版本号（写入方能配合）② 数据自身 `saved_at`
+  （写入方在别的机器、无法要求其配合）③ `pg_stat_user_tables` 写入计数指纹（无时间戳列可用）
+  ④ 兜底 TTL。**探测只取版本列**（单行几十字节），别整行读。
+- **排障标准动作**：`pg_stat_statements` 按 `rows` 排序 + **必查 `stats_reset`**（否则 N 天当一天）；
+  取**完整** SQL（`LEFT(query,N)` 会误判批大小）；表级 `seq_tup_read` ≠ egress（**只看 `rows`**）。
+- **已知噪声**：`pg_timezone_names` / `pg_stat_*` 是 Supabase 平台语句（`egress_probe.py` 的 `_NOISE`），
+  不是本项目；`pgbouncer.get_auth` 返回 1 行 1 列可忽略。项目自带 `scripts/egress_probe.py` 做字节级对账。
+- **短 TTL 陷阱**：日频数据配 5min 进程内 TTL → 常驻进程最坏 ≈288 次/天（`market_snapshot` 曾 97MB/天）。
+  **TTL 长短必须匹配数据更新频率。**
+
 ## 部署与资源
 - 后端常驻 ≈100 MB；云上最低 2核2G（需 swap），**建议 2核4G**。
 - 生产 Python 3.9；禁用 PEP 604（`str | None`），用 `Optional` 或 `from __future__ import annotations`。
