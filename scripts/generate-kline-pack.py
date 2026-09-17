@@ -69,6 +69,9 @@ WAF_COOLDOWN = _env_int("PACK_WAF_COOLDOWN", 120)        # WAF 触发后全局�
 #   惩罚区（冷却结束→立刻又被拦→再冷却，连续惩罚）。结论：「冷却该多长」应由
 #   WAF 自己回答，不再人工猜固定值。见 _waf_record_501 / _waf_wait_until_clear。
 WAF_MAX_COOLDOWN = _env_int("PACK_WAF_MAX_COOLDOWN", 300)
+# ★ 单只股票在冷却上的最长累计等待（秒）。超限就放行该股（记为失败、交下一轮），
+#   避免一个线程被一支股票无限占住 —— 见 _waf_wait_until_clear 的返回语义。
+WAF_WAIT_MAX = _env_int("PACK_WAF_WAIT_MAX", 900)
 KLINE_RETRIES = _env_int("PACK_KLINE_RETRIES", 3)        # 单只股票重试次数（含首次）
 RETRY_BACKOFF = [int(x) for x in
                  (os.environ.get("PACK_RETRY_BACKOFF") or "1,3,6").split(",") if x]
@@ -93,6 +96,40 @@ _session.headers.update({
     "Referer": "https://gu.qq.com/",
 })
 
+# ── ★ 2026-09-17 主动限速（根治方向）──
+# 被动罚站（撞 501 才冷却）只是事后止血：只要**发出的请求速率**高于腾讯阈值，就必然
+# 反复撞墙；而 WAF 按滑动窗口判定，撞得越勤窗口越排不空 → 自锁。
+#   实测佐证：8-17 那次 5 线程 × 每线程 0.5~0.9s sleep ≈ 峰值 7 req/s，且 5 个请求
+#   可同时飞出，日志 [WAF] 拦截 ~117 次。
+#   ★ 另一条必须纠正的读数：当天「累计冷却等待 29572s」是**跨线程累加**（5 个线程各
+#   等各算），不是墙钟 —— 折算墙钟约 1/5。把它当墙钟会得出「8.2 小时全在冷却」的
+#   错误结论（指标已修，见 _waf_report）。
+# 这里加**全局令牌桶**：不管开几个线程，全进程的请求**发出速率**硬压到 PACK_QPS 内。
+# 这是与「并发数」解耦的正确旋钮 —— 并发只决定在途请求的重叠度，不决定速率。
+PACK_QPS = float(os.environ.get("PACK_QPS", "2") or 2)
+_qps_lock = threading.Lock()
+_qps_next = 0.0            # 下一个允许发出请求的时刻（无突发的匀速限流）
+
+
+def _rate_limit() -> None:
+    """全局令牌桶：保证任意两次请求的发出间隔 ≥ 1/PACK_QPS 秒。
+
+    PACK_QPS<=0 表示关闭（回退到旧的「每线程自己 sleep」行为）。
+    线程在这里排队，而不是各自 sleep —— 所以「并发 5」仍然有效（5 个在途请求重叠
+    等待响应），但发出速率恒定。这正是打不破 WAF 阈值的关键。
+    """
+    global _qps_next
+    if PACK_QPS <= 0:
+        return
+    interval = 1.0 / PACK_QPS
+    with _qps_lock:
+        now = time.time()
+        start = _qps_next if _qps_next > now else now
+        _qps_next = start + interval
+        wait = start - now
+    if wait > 0:
+        time.sleep(wait)
+
 # ── WAF 全局限流状态（与后端 tencent.py 同策略）──
 # 腾讯 WAF 触发后（HTTP 501）需要暂停所有 K 线请求，避免被持续封禁。
 # ★ 并发拉取（后端包 workers>1）下这两个全局量必须加锁，否则多线程会
@@ -104,31 +141,45 @@ _waf_lock = threading.Lock()
 # ★ 2026-09-17：退避自适应 + 观测指标（不再人工猜冷却时长，见 WAF_MAX_COOLDOWN 注释）
 _waf_backoff = 1.0          # 当前退避倍数（× WAF_COOLDOWN）
 _waf_events = 0             # 501 触发次数（进程内累计；仅"非冷却期"首次开窗才 +1）
-_waf_wait_total = 0.0       # 累计在冷却上等待的秒数（观测用）
+_waf_wait_total = 0.0       # 累计冷却等待（★ 线程·秒，跨线程累加，不是墙钟）
+_proc_t0 = 0.0              # 进程内首次 K 线请求时刻（墙钟口径的观测定点）
 
 
-def _waf_wait_until_clear() -> None:
-    """冷却期内循环等待到真正解除 —— 不再「睡一轮就放弃」。
+def _waf_wait_until_clear() -> bool:
+    """冷却期内循环等待到真正解除。True=已解除、可发请求；False=等待超上限。
 
     ★ 2026-09-17 修正（关键）：原实现在 fetch_kline 开头睡一轮（≤冷却+5s），醒来若
       发现窗口被其它线程续期，就在重试循环开头 `return None`。长封禁期里这退化成
-      「每股白睡一整个冷却周期 + 该股被误记为失败」的空转 —— 今天日志 967/2057 处
+      「每股白睡一整个冷却周期 + 该股被误记为失败」的空转 —— 8-17 日志 967/2057 处
       连续 150 只零成功正是这么来的；这些「假失败」再进下一轮重试，又把请求打到
-      正烫的 IP 上，正反馈放大封禁。
-      改为睡到解除（期间不发请求 —— 这正是让 WAF 滑动窗口排空所需要的）。
+      正烫的 IP 上，正反馈放大封禁。故改为睡到解除（期间不发请求 —— 这正是让 WAF
+      滑动窗口排空所需要的）。
+    ★ 但「死等」也有反效果：窗口若被反复续期，线程会被一支股票无限占住（退避升到
+      300s 时，吞吐可跌到 5 只/300s）。故加累计上限 WAF_WAIT_MAX，超限返回 False，
+      由调用方记为失败交给下一轮 —— 既不无限空转，也不制造大批假失败。
     """
     global _waf_wait_total
+    spent = 0.0
     while True:
         with _waf_lock:
             remain = _waf_blocked_until - time.time()
             cur = WAF_COOLDOWN * _waf_backoff
         if remain <= 0:
-            return
-        # 抖动随冷却缩放：固定 25s 在 45s 冷却下几乎不构成错峰（5 线程被拦时刻差 <1s）
-        jitter = random.random() * max(8.0, min(30.0, cur * 0.4))
-        nap = min(remain + 1.0, cur + 5) + jitter
+            return True
+        if spent >= WAF_WAIT_MAX:
+            print(f"\n  [WAF] 单只累计等待达上限 {WAF_WAIT_MAX}s → 放行该股，交下一轮重试")
+            return False
+        # 抖动：★ 2026-09-17 收紧 —— 「5 线程同刻醒来齐发」这个当初要抖动的理由，
+        #   现在已由**全局令牌桶**接管（放行间隔恒为 1/PACK_QPS），长抖动纯属白等：
+        #   实测一次 3s 的阻塞被原抖动（最多 30s）拖到 19.5s。故降到 1~5s 仅作微错峰。
+        # ★ 抖动必须**夹在预算内**：否则会把 WAF_WAIT_MAX 上限冲掉（实测 cap=2s 却等 8.5s）
+        budget = max(1.0, WAF_WAIT_MAX - spent)
+        base = min(remain + 1.0, cur + 5, budget)
+        jitter = random.random() * max(1.0, min(5.0, cur * 0.1))
+        nap = min(base + jitter, budget)
         with _waf_lock:
             _waf_wait_total += nap
+        spent += nap
         time.sleep(nap)
 
 
@@ -145,15 +196,27 @@ def _waf_record_501(symbol: str) -> None:
         _consecutive_failures = 0
         n, mult, waited = _waf_events, _waf_backoff, _waf_wait_total
     print(f"\n  [WAF] 第 {n} 次拦截 {symbol} → 本次冷却 {WAF_COOLDOWN * mult:.0f}s"
-          f"（累计已等待 {waited:.0f}s）")
+          f"（累计线程等待 {waited:.0f}s，非墙钟）")
 
 
 def _waf_report() -> str:
-    """WAF 观测汇总：跑完打印，便于 45s vs 120s 等参数做硬对比（而非靠感觉）。"""
+    """WAF 观测汇总：跑完打印，便于不同参数做硬对比（而非靠感觉）。
+
+    ★ 口径（2026-09-17 修正，重要）：`_waf_wait_total` 是**跨线程累加**
+      （每个线程各等各算）→ 它**不是墙钟**；5 线程并行冷却时约等于墙钟的 5 倍。
+      这个坑真的踩了：复盘时把 29572 线程·秒读成「8.2 小时全在冷却」，据此得出
+      「97% 时间在冷却」的错误结论（按墙钟折算只有约 1/5）。
+      这里同时给出墙钟与「平均并行等待线程数」，杜绝再次误读。
+    """
     with _waf_lock:
         n, mult, waited = _waf_events, _waf_backoff, _waf_wait_total
-    return (f"WAF 汇总: 拦截 {n} 次 / 累计冷却等待 {waited:.0f}s"
-            f" / 末次退避 ×{mult:.0f}（冷却 {WAF_COOLDOWN * mult:.0f}s）")
+    wall = (time.time() - _proc_t0) if _proc_t0 else 0.0
+    para = (waited / wall) if wall > 0 else 0.0
+    return (f"WAF 汇总: 拦截 {n} 次 / 累计线程等待 {waited:.0f} 线程·秒（非墙钟）"
+            f" / 进程运行 {wall:.0f}s → 平均 {para:.1f} 个线程在冷却"
+            f"（占并发 {100 * para / max(1, 5):.0f}%）"
+            f" / 末次退避 ×{mult:.0f}（冷却 {WAF_COOLDOWN * mult:.0f}s）"
+            f" / 限速 {PACK_QPS:g} QPS")
 
 
 def _is_valid_stock(name: str, pe: float = 0) -> bool:
@@ -280,7 +343,9 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     获取单只股票 K 线数据（带重试 + WAF 检测 + 全局熔断）
     返回: [[date, open, high, low, close, volume], ...] 或 None
     """
-    global _waf_blocked_until, _consecutive_failures
+    global _waf_blocked_until, _consecutive_failures, _proc_t0
+    if not _proc_t0:
+        _proc_t0 = time.time()      # 进程内首次 K 线请求时刻（墙钟口径观测点）
 
     # WAF 冷却中：睡到真正解除再继续请求，而不是跳过。
     # ★ 2026-09-07 实测教训：并发拉 1442 只时腾讯在 ~889 只处触发 501 → 全局冷却。
@@ -288,7 +353,9 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     #   889/1442=61.7% 触发 80% 护栏中止）。
     # ★ 2026-09-17：改为「循环睡到解除」（见 _waf_wait_until_clear）——原「睡一轮
     #   就放弃」在长封禁期会把股票批量误记为失败，反噬成更多请求、放大封禁。
-    _waf_wait_until_clear()
+    #   该函数有累计上限：真封死时返回 False，放行该股交下一轮，不无限占住线程。
+    if not _waf_wait_until_clear():
+        return None
 
     # 指数/ETF 代码自带前缀（sh000300 / sz159915 / sh510300）→ 不能再拼一次
     # ★ 2026-09-07 实测 bug：原代码无条件拼前缀，把 sh000300 变成 szsh000300 →
@@ -316,8 +383,12 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
 
     last_err = None
     for attempt in range(KLINE_RETRIES):
-        # 冷却中则等解除，不放弃该股（否则「假失败」会灌满重试轮）
-        _waf_wait_until_clear()
+        # 冷却中则等解除（有上限），不放弃该股（否则「假失败」会灌满重试轮）
+        if not _waf_wait_until_clear():
+            return None
+        # ★ 主动限速：全进程的请求**发出速率**硬压到 PACK_QPS 以内。
+        #   这才是"打不破阈值"的关键 —— 被动冷却只能事后止血（见 _rate_limit 注释）。
+        _rate_limit()
         try:
             resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
@@ -390,12 +461,17 @@ def _throttle(index: int) -> None:
 
 
 def _throttle_concurrent(index: int) -> None:
-    """并发模式下的节流：每线程约 2~3 req/s（×5 线程 ≈ 10-15 req/s）。
+    """并发模式下的节流。
 
     ★ 2026-09-07 实测教训：0~0.15s 轻节流（≈50 req/s）在 ~889 只处触发腾讯 501；
       前端包串行 ≈1.6 req/s 从不触发。并发必须配节流——否则只是把超时换成封禁。
-      若仍偶发 501，fetch_kline 开头的冷却等待会兜底续拉，不会整批丢失。
+    ★ 2026-09-17：限速已由**全局令牌桶** `_rate_limit`（PACK_QPS）统一负责 —— 这里
+      不再 sleep，否则与令牌桶叠加成"双重节流"，会让 PACK_QPS 这个旋钮失去意义
+      （设 PACK_QPS=5 也上不去）。只留极小抖动打散请求指纹；PACK_QPS<=0 才回退旧行为。
     """
+    if PACK_QPS > 0:
+        time.sleep(random.random() * 0.05)
+        return
     time.sleep(0.5 + random.random() * 0.4)
 
 

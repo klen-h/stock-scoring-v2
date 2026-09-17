@@ -19,9 +19,13 @@ on:
         required: false
         default: 'false'
       waf_cooldown:
-        description: 'WAF 全局冷却秒数（默认 45；被拦严重可调 60~90）'
+        description: 'WAF 全局冷却基准秒数（默认 45，会自适应 ×2 加码到 300）'
         required: false
         default: '45'
+      qps:
+        description: '★ 全进程请求速率上限（默认 2；这是控 WAF 的主旋钮）'
+        required: false
+        default: '2'
 
 concurrency:
   group: backend-pack
@@ -94,6 +98,13 @@ jobs:
           #     （拦截次数/累计等待/末次退避），下次 A/B 有硬数据。
           #   本值现为**基准**，会自适应上调；要立刻回到已验证的 120，dispatch 填 120。
           PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '45' }}
+          # ★★ 2026-09-17 主旋钮：全进程请求速率上限（令牌桶，无突发）。
+          #   被动冷却只能事后止血 —— 只要"发出的请求速率"高于腾讯阈值就必然反复撞墙，
+          #   而 WAF 按滑动窗口判定，撞得越勤窗口越排不空 → 自锁（这正是耗时失控的机制）。
+          #   实测：原「5 线程 × 每线程 0.5~0.9s sleep」≈ 峰值 7 req/s、5 个请求可同时飞出。
+          #   2 QPS = 120 请求/分钟；2057 只理论下限 ≈ 17 分钟（远低于现状）。
+          #   若仍有拦截 → 降到 1；若全程零拦截且嫌慢 → 可试 3~4（先看日志 WAF 汇总）。
+          PACK_QPS: ${{ github.event.inputs.qps || '2' }}
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
         run: |
