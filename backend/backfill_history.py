@@ -64,9 +64,16 @@ def _basis_changed(code: str, start: str, rows: list) -> bool:
         old, new = float(cur["close"]), float(same.get("close") or 0)
         if new <= 0:
             return False
-        if abs(old - new) / old > 1e-6:
-            print(f"  [复权] {code} 重叠日 {start} 收盘 {old} → {new}"
-                  f"（{new / old - 1:+.2%}）⇒ 基准已变，改全量重建")
+        # ★ 阈值 0.2%（不是 1e-6）：实测库与源之间存在 **0.01%~0.09% 的系统性精度差**
+        #   （几乎每个交易日都有，例 603508 @2023-09-19 库 10.981 vs 拉取 10.98）——
+        #   `1e-6` 会把这种精度差误判成"复权基准已变"，导致**每次回填都全量重拉**。
+        #   而真正的基准变更（分红/送股）幅度是股息率量级（≥0.5%，实测 603036 为
+        #   0.51%）⇒ 取 0.2% 作分界：真的变会触发，精度噪声不会。
+        if abs(old - new) / old > 0.002:
+            # ★ 只用 GBK 可编码的字符：本项目控制台是 GBK，`→`/`⇒` 会
+            #   UnicodeEncodeError 把日常回填打崩（2026-09-18 实测踩到）
+            print(f"  [复权] {code} 重叠日 {start} 收盘 {old} -> {new}"
+                  f"（{new / old - 1:+.2%}）基准已变，改全量重建")
             return True
     except Exception as e:
         print(f"  [复权] {code} 基准检测异常（按未变处理）: {e}")
@@ -400,7 +407,7 @@ def main():
     parser.add_argument("--lagging", action="store_true",
                         help="一次性补齐全部滞后个股（不限配额，换库/迁移后用）")
     parser.add_argument("--rebuild", action="store_true",
-                        help="一次性全量重建：对已入库每只全量重拉覆盖，修复前复权接缝")
+                        help="一次性全量重建：对已入库每只全量重拉并覆盖（修库与源不一致）")
     args = parser.parse_args()
 
     if args.rebuild:
