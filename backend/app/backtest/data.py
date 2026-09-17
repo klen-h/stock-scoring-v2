@@ -260,6 +260,46 @@ def load_prices(code: str, start: str = None, end: str = None) -> list:
     return bars
 
 
+# ── ★ 2026-09-18：「源数据异常日」读侧接口 ──────────────────────────────────
+# 背景（体检发现）：120 只（16.3%）存在**制度上不可能**的单日涨跌 —— |chg| 超过该品种
+#   涨跌停上限，共 334 处 / 0.062% 的 bar（2024 年占 75%）。已确认**在源里就存在**
+#   （直接抓腾讯原始 `qfq` 序列同样是 −12.18% / +16.00%，同期别的股票正常），
+#   与拼接/解析/复权计算无关 ⇒ 属**不可修复的源问题**。
+# 处置（最保守）：**标记而非改数据**。清单由
+#   `python scripts/audit_backtest_data.py --write-anomalies` 落库到 `price_anomalies`；
+#   回测可**自愿**调用下面的函数，识别「持仓窗口跨越异常日」的样本并剔除/告警。
+#   **不调用则行为与从前完全一致** —— 本项目不擅自改变既有回测结论的口径。
+def anomalies_in(code: str = None, start: str = None, end: str = None) -> list:
+    """查询「源数据异常日」（code=None 表示全市场）。
+
+    返回 [{code, date, chg, limit_pct}, ...]（升序）。
+    **fail-open**：表不存在 / 查询异常一律返回 []，绝不因它中断回测。
+    """
+    try:
+        sql = "SELECT code, date, chg, limit_pct FROM price_anomalies WHERE 1=1"
+        params = []
+        if code:
+            sql += " AND code = %s"
+            params.append(code)
+        if start:
+            sql += " AND date >= %s"
+            params.append(start)
+        if end:
+            sql += " AND date <= %s"
+            params.append(end)
+        sql += " ORDER BY code, date"
+        rows = db.fetch(sql, tuple(params)) if params else db.fetch(sql)
+        return [{"code": r["code"], "date": str(r["date"]),
+                 "chg": r["chg"], "limit_pct": r["limit_pct"]} for r in (rows or [])]
+    except Exception:
+        return []
+
+
+def has_anomaly(code: str, start: str, end: str) -> bool:
+    """`code` 在 [start, end] 内是否有源数据异常日（供回测剔除跨窗口样本用）。"""
+    return bool(anomalies_in(code, start, end))
+
+
 def get_all_codes() -> list:
     """已回填的代码列表（含名称）。"""
     # ★ DATA_SOURCE=pack/local：数据包的代码清单；空则回退 DB（同 load_prices）
