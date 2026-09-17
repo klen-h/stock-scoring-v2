@@ -29,6 +29,50 @@ DAILY_STOCK_QUOTA = 150  # 每晚个股回填上限：数据源限流下长任�
 _EM_FAIL_STREAK = 0   # 东财连续失败计数，>=3 后全局切换腾讯源（东财可能被临时封 IP）
 
 
+def _basis_changed(code: str, start: str, rows: list) -> bool:
+    """增量数据与库中「重叠日」的收盘价是否不一致（= 库里的旧数据与当前源对不上）。
+
+    ★ 2026-09-18（回测数据体检发现）：**库与源确实会不一致** —— 实测 `603036` 在
+      2026-08-21 库中收盘 15.79、源上 15.71（差 −0.51%）。成因是 `qfq` 以"取数时刻的
+      最新价"为基准，而 `data.fetch_history(start=...)` 只取该日之后 ⇒ 旧入库数据可能
+      是用**当时的旧基准**复权的。跨越这类日期的收益率会偏。
+
+    判据：增量返回里含 `start` 那天（重叠日）时比对其收盘价 —— 不一致即需**全量重拉覆盖**
+    （`save_prices` 是 ON CONFLICT 幂等写，全量重拉天然就是覆盖）。重叠日取不到
+    （如停牌）时返回 False，避免退化成每天全量。
+    ——
+    ⚠️ **更正（同日实测否证了一个更激进的归因）**：曾把「|单日涨跌| > 11% 的纯跳变」
+      （`603508` 单只 14 处、主板出现 +16.0%/−12.2%）也归因于此，**这是错的**。
+      证据：① 对 10 只做全量重拉（单请求、单一基准）后跳变数 **48 → 48 完全未变**；
+      ② 直接抓腾讯原始 `qfq` 序列（不经本项目任何代码），`603508` 那几天本身就是
+      −12.18% / +16.00%，而同期 `000062` 完全正常（−7.44%）。
+      ⇒ **那些跳变在源里就存在，是单只、局部的源数据问题**，与拼接/解析无关；
+      既有的 `scripts/audit_backtest_data.py` 第 ⑤ 项可用于持续监测。
+      本函数修的只是「库与源不一致」这一件（较小但真实）的事。
+    """
+    if not start or not rows:
+        return False
+    try:
+        same = next((r for r in rows if str(r.get("date")) == str(start)), None)
+        if same is None:
+            return False                      # 源上该日无数据 → 无从判断
+        cur = db.fetch_one(
+            "SELECT close FROM backtest_prices WHERE code = %s AND date = %s",
+            (code, start))
+        if not cur or cur.get("close") in (None, 0):
+            return False
+        old, new = float(cur["close"]), float(same.get("close") or 0)
+        if new <= 0:
+            return False
+        if abs(old - new) / old > 1e-6:
+            print(f"  [复权] {code} 重叠日 {start} 收盘 {old} → {new}"
+                  f"（{new / old - 1:+.2%}）⇒ 基准已变，改全量重建")
+            return True
+    except Exception as e:
+        print(f"  [复权] {code} 基准检测异常（按未变处理）: {e}")
+    return False
+
+
 def backfill(code: str, name: str) -> int:
     """增量回填单只：已有数据只补最新日期之后，无数据全量。返回写入行数。"""
     global _EM_FAIL_STREAK
@@ -51,6 +95,16 @@ def backfill(code: str, name: str) -> int:
         print(f"  [FAIL] {code} {name} 无数据")
         return 0
     _EM_FAIL_STREAK = 0
+    # ★ 2026-09-18：复权基准变了 → 全量重拉覆盖（否则本次追加会留下接缝，
+    #   见 _basis_changed 的完整说明）。`save_prices` 是 ON CONFLICT 幂等写入，
+    #   所以「全量重拉」天然就是「覆盖」，无需先删旧行。
+    if _basis_changed(code, start, rows):
+        full = data.fetch_history(code, start=None)
+        if full and len(full) > len(rows):
+            rows = full
+            print(f"  [复权] {code} 已全量重拉 {len(rows)} 条（重叠部分覆盖写入）")
+        else:
+            print(f"  [复权] {code} 全量重拉未取到更长序列，保留增量结果")
     n = data.save_prices(code, name, rows)
     print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
     time.sleep(RATE_LIMIT)
@@ -200,6 +254,19 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
                 stats["etf_missing"].append(f"{name}({code})停于{latest or '无数据'}")
 
     stock_items = _collect_strategy_codes()
+    # ★ 2026-09-18（回测数据体检发现）：**并入「已入库的全部代码」**。
+    #   `_collect_strategy_codes` 只取「战法信号 + 近 30 天上榜股」，于是**股票一旦
+    #   掉出榜单就永久停更**：实测 73 只漏回填中 **70 只不在池里**（601012 停 08-21、
+    #   000027 停 09-11 …）。它们不是停牌（源上明明有数据），而是再也没被轮到 ——
+    #   而历史断档会**静默污染回测/撮合**。
+    #   已入库的代码必须继续维护（成本只在"确实落后"时才产生，稳态下几乎为零）。
+    _known = {r["code"]: (r["name"] or "") for r in db.fetch(
+        "SELECT code, MAX(name) AS name FROM backtest_prices GROUP BY code") or []}
+    _have = {c for c, _ in stock_items}
+    _added = sorted(set(_known) - _have)
+    for _c in _added:
+        stock_items.append((_c, _known[_c]))
+    stats["known_added"] = len(_added)
     stats["stock_pool"] = len(stock_items)
     codes = [c for c, _ in stock_items]
     name_of = dict(stock_items)
@@ -284,6 +351,40 @@ def check_signal_coverage(days: int = 3) -> dict:
     return {"total": len(seen), "missing": missing, "stale": stale}
 
 
+def rebuild_all_full() -> dict:
+    """一次性全量重建：对**已入库的每只**全量重拉并覆盖。
+
+    ★ 用途（2026-09-18）：清除历史遗留的「前复权接缝」（见 `_basis_changed`）。
+      只重建**已入库**的代码（未入库的不影响现有回测结果）。
+      `save_prices` 是 ON CONFLICT 幂等写入 ⇒ 全量重拉即覆盖，无需先删旧行。
+      749 只 × 1s 限速 ≈ 13 分钟；幂等，可重复跑。
+      跑完请再执行 `python scripts/audit_backtest_data.py` 复检「纯跳变」应为 0。
+    """
+    global _EM_FAIL_STREAK
+    print("── 全量重建（修复前复权接缝）──")
+    rows = db.fetch("SELECT code, MAX(name) AS name FROM backtest_prices "
+                    "GROUP BY code ORDER BY code") or []
+    total, ok, fail = 0, 0, 0
+    for i, r in enumerate(rows, 1):
+        code, name = r["code"], (r["name"] or "")
+        try:
+            full = data.fetch_history(code, start=None)
+        except Exception as e:
+            full = None
+            print(f"  [FAIL] {code} {name} 全量拉取异常: {str(e)[:60]}")
+        if not full:
+            fail += 1
+            print(f"  [FAIL] {code} {name} 全量拉取为空")
+        else:
+            total += data.save_prices(code, name, full)
+            ok += 1
+        if i % 50 == 0:
+            print(f"  ... {i}/{len(rows)}（成功 {ok} / 失败 {fail} / 累计 {total} 行）")
+        time.sleep(RATE_LIMIT)
+    print(f"重建完成：{ok}/{len(rows)} 只，共写入 {total} 行（失败 {fail}）")
+    return {"codes": len(rows), "ok": ok, "fail": fail, "rows": total}
+
+
 def main():
     parser = argparse.ArgumentParser(description="回测历史数据回填")
     parser.add_argument("--all", action="store_true", help="全部回填")
@@ -292,8 +393,13 @@ def main():
     parser.add_argument("--stocks", action="store_true", help="仅战法个股")
     parser.add_argument("--lagging", action="store_true",
                         help="一次性补齐全部滞后个股（不限配额，换库/迁移后用）")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="一次性全量重建：对已入库每只全量重拉覆盖，修复前复权接缝")
     args = parser.parse_args()
 
+    if args.rebuild:
+        rebuild_all_full()
+        return
     if args.lagging:
         backfill_lagging()
         return
