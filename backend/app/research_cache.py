@@ -159,6 +159,76 @@ def ohlc_all(max_age_h: float = DEFAULT_MAX_AGE_H, force: bool = False,
     return by_code
 
 
+def ohlc_for(codes, max_age_h: float = DEFAULT_MAX_AGE_H) -> dict:
+    """{code: bars} —— **只取指定代码**的日线（升序），本机优先、零回源为常态。
+
+    ★ 2026-09-18（审查 P2-㉔，egress）：研究脚本原先走
+      `backtest.strategies._load_prices_map(codes)` —— 它在 pack 未命中后是**一条不分块的
+      `code IN (...)` 直连回源**，而脚本**未传 `start`** ⇒ 读**全历史**
+      （pg_stat_statements：12 次 / 22.7 万行每次，即每条约 300 只 × 750 根 ≈ 8MB/次）。
+      改走本函数：先读本机 `ohlc` 表（**零 egress**）；只有本机确实没有的代码才
+      「数据包 → 回源库」，并**回填本机**（下次即命中）。
+      相比 `ohlc_all()`：按需读、不进全量内存（全量 ≈ 154 万行），语义等价。
+    """
+    want = sorted({str(c) for c in codes if c})
+    if not want:
+        return {}
+    out = {}
+    conn = _conn()
+    try:
+        CH = 300
+        for i in range(0, len(want), CH):
+            chunk = want[i:i + CH]
+            marks = ",".join("?" * len(chunk))
+            for c, d, o, h, l, cl, v in conn.execute(
+                    f"SELECT code, date, open, high, low, close, volume FROM ohlc "
+                    f"WHERE code IN ({marks}) ORDER BY code, date", chunk):
+                out.setdefault(c, []).append({"date": d, "open": o, "high": h,
+                                              "low": l, "close": cl, "volume": v})
+        missing = [c for c in want if c not in out]
+        if not missing:
+            _log(f"ohlc_for 命中本机缓存 {len(out)} 只（零 egress）")
+            return out
+        _log(f"ohlc_for 本机缺 {len(missing)}/{len(want)} 只 → 数据包优先，其次回源")
+        new_rows, still = [], []
+        for c in missing:                       # ① 数据包（零 egress）
+            bars = _pack_bars(c)
+            if bars:
+                out[c] = bars
+                new_rows += [(c, b.get("date"), b.get("open"), b.get("high"),
+                              b.get("low"), b.get("close"), b.get("volume"))
+                             for b in bars]
+            else:
+                still.append(c)
+        if still:                               # ② 仍未覆盖 → 回源（分块，防超参数上限）
+            for i in range(0, len(still), CH):
+                chunk = still[i:i + CH]
+                for r in db.fetch(
+                        "SELECT code, date, open, high, low, close, volume "
+                        "FROM backtest_prices WHERE code = ANY(%s) "
+                        "ORDER BY code, date ASC", (chunk,)) or []:
+                    out.setdefault(r["code"], []).append({
+                        "date": r["date"], "open": r["open"], "high": r["high"],
+                        "low": r["low"], "close": r["close"], "volume": r["volume"]})
+                _log(f"  库补齐 {min(i + CH, len(still))}/{len(still)}")
+            for c in still:
+                new_rows += [(c, b.get("date"), b.get("open"), b.get("high"),
+                              b.get("low"), b.get("close"), b.get("volume"))
+                             for b in (out.get(c) or [])]
+        if new_rows:                            # 回填本机 → 下次直接命中
+            try:
+                with conn:                      # 事务：失败不影响本次返回
+                    conn.executemany("INSERT OR REPLACE INTO ohlc VALUES (?,?,?,?,?,?,?)",
+                                     new_rows)
+                # ★ 刻意**不改** `ohlc_updated_at`：回填只是"补几行"，不该让
+                #   `ohlc_all()` 的全量缓存被判为"刚更新"而延后重建。
+            except Exception as e:
+                _log(f"回填本机缓存失败（不影响本次结果）: {e}")
+        return out
+    finally:
+        conn.close()
+
+
 # ── 资金流 ──────────────────────────────────────────────────────────────────
 def flow_map(max_age_h: float = DEFAULT_MAX_AGE_H, force: bool = False) -> dict:
     """{code: [{date, main_net, super_net, big_net, main_pct, super_pct, close, pct_chg}]}。"""

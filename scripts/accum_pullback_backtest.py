@@ -39,9 +39,9 @@ with open(os.path.join(BACKEND_DIR, ".env"), encoding="utf-8") as f:
             k, v = line.split("=", 1)
             os.environ.setdefault(k, v.strip())
 
+from app import research_cache                                     # noqa: E402
 from app.backtest import engine                                    # noqa: E402
-from app.backtest.strategies import (_load_prices_map, exit_policy,  # noqa: E402
-                                     apply_exit_policy)
+from app.backtest.strategies import exit_policy, apply_exit_policy  # noqa: E402
 import strategy_mainforce_filter_test as mft                       # noqa: E402
 
 LOW_SUCK = {"ma_pullback", "single_yang_unbroken"}
@@ -106,7 +106,8 @@ def main():
     covered = sum(1 for s in low if (s["code"], s["date"]) in states)
     print(f"[states] 低吸信号主力状态覆盖 {covered}/{len(low)}")
 
-    prices_map = _load_prices_map({s["code"] for s in low})
+    # ★ 2026-09-18（审查 P2-㉔）：改走 research_cache.ohlc_for（本机优先、零回源）
+    prices_map = research_cache.ohlc_for(s["code"] for s in low)
     print(f"[prices] 价格覆盖 {len(prices_map)} 只")
 
     # 分组

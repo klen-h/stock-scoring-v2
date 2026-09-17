@@ -25,6 +25,7 @@ with open(os.path.join(BACKEND_DIR, ".env"), encoding="utf-8") as f:
             k, v = line.split("=", 1)
             os.environ.setdefault(k, v.strip())
 
+from app import research_cache                  # noqa: E402
 from app.backtest import engine, strategies     # noqa: E402
 from app.database import db                     # noqa: E402
 import time                                     # noqa: E402
@@ -54,7 +55,8 @@ db.fetch = _retry_fetch
 def run():
     signals = strategies._warfare_signal_stream()
     print(f"signals: {len(signals)}")
-    prices_map = strategies._load_prices_map({s["code"] for s in signals})
+    # ★ 2026-09-18（审查 P2-㉔）：改走 research_cache.ohlc_for（本机优先、零回源）
+    prices_map = research_cache.ohlc_for(s["code"] for s in signals)
 
     # 旧口径：把涨跌停幅度整体关掉（_limit_pct→0 时买入过滤与跌停顺延都不生效）
     orig = engine._limit_pct

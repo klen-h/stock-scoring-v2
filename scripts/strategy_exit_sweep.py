@@ -36,8 +36,9 @@ with open(os.path.join(BACKEND_DIR, ".env"), encoding="utf-8") as f:
             os.environ.setdefault(k, v.strip())
 
 from app.database import db                                    # noqa: E402
+from app import research_cache                                 # noqa: E402
 from app.backtest import engine                                # noqa: E402
-from app.backtest.strategies import WARFARE_HOLD_DAYS, _load_prices_map  # noqa: E402
+from app.backtest.strategies import WARFARE_HOLD_DAYS          # noqa: E402
 
 _orig = db.fetch
 
@@ -130,7 +131,10 @@ def run_variant(signals, prices_map, hold, stop_pct, tp_mode):
 def main():
     signals = load_signals()
     print(f"signals: {len(signals)}")
-    prices_map = _load_prices_map({s["code"] for s in signals})
+    # ★ 2026-09-18（审查 P2-㉔）：改走 research_cache.ohlc_for —— 本机优先、零回源。
+    #   原来 `_load_prices_map(codes)` 未传 start，pack 未命中时是**一条直连回源查询且读全历史**
+    #   （pg_stat_statements：12 次 × 22.7 万行 ≈ 8MB/次）。
+    prices_map = research_cache.ohlc_for(s["code"] for s in signals)
     signal_day_close(signals, prices_map)
     have_base = sum(1 for s in signals if s.get("base_close"))
     print(f"base_close 可用 {have_base}/{len(signals)}")

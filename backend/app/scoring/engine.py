@@ -41,8 +41,10 @@
 # from __future__ annotations：让类型注解可以"前向引用"，并且允许写 list|None 这种新语法
 # 类比 TS：没有这个的话，旧版 Python 不能写 `def f(x: list | None)`
 from __future__ import annotations
+import json
 import math
 import os
+import time
 # dataclass：Python 的数据类装饰器。类比 TS 的 interface + 构造函数
 # 用 @dataclass 可以少写很多样板代码（自动生成 __init__ 等）
 from dataclasses import dataclass, field
@@ -57,6 +59,62 @@ from typing import Optional
 IND_DIST_TTL = 86400
 IND_METRICS = ("pe", "pb", "debt_ratio", "gross_margin")
 _IND_DIST = {"ts": 0.0, "dist": {}, "code_ind": {}, "code_sub": {}}
+
+# ── ★ 2026-09-18：`_industry_dist()` 的跨进程持久缓存（egress 治理，实测驱动）──
+# 病根：`_industry_dist()` 读的是 `stock_industry JOIN stock_finance` 的**全量批量**
+#   （pg_stat_statements 实测 **49 次 / 823,690 行 / 6 天**）。49 次 ≈ 49 个进程 ——
+#   因为 `_IND_DIST` 是**进程内** 24h 缓存 ⇒ **每重启一个新进程就重读一次 1.68 万行**。
+#   （本地 `run.py --reload` 改代码即重启 ⇒ 单日可跑几十次。）
+# ★ 关键正确性约束（所以**不能**整体长缓存）：`dist` 里的 `pe`/`pb` 两个分布来自
+#   **腾讯实时行情缓存**（每天变），只有 `debt_ratio`/`gross_margin`/行业映射来自低频
+#   DB 数据。本改动**只把 DB 源行落本机**，重建时从本机读、再照旧叠加实时 PE/PB
+#   ⇒ **省 egress，但结果口径完全不变**（每个新进程仍会拿到最新 PE/PB）。
+# 版本门控：两张源表的写入计数（`pg_stat_user_tables` 系统视图，零成本）没变就用本机；
+#   变了、探测失败或超兜底 TTL 才重读 DB。
+_IND_DIST_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "..", "data", "industry_dist_src.json")
+_IND_DIST_SRC_TTL = 7 * 86400
+
+
+def _ind_dist_fingerprint():
+    """源表写入计数指纹（系统视图，零大流量）。失败返回 None（调用方走回源）。"""
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT relname, n_tup_ins + n_tup_upd + n_tup_del AS churn "
+                        "FROM pg_stat_user_tables WHERE relname IN (%s, %s)",
+                        ("stock_industry", "stock_finance"))
+        return "|".join(sorted(f"{r['relname']}:{r['churn']}" for r in (rows or []))) or None
+    except Exception:
+        return None
+
+
+def _ind_dist_src_load(ver):
+    """本机缓存的 DB 源行（零大流量）。版本不符 / 过期 / 异常 → None（调用方回源）。"""
+    try:
+        if not os.path.exists(_IND_DIST_SRC):
+            return None
+        with open(_IND_DIST_SRC, encoding="utf-8") as f:
+            obj = json.load(f)
+        if ver is not None and obj.get("ver") != ver:
+            return None
+        if time.time() - float(obj.get("ts") or 0) > _IND_DIST_SRC_TTL:
+            return None
+        return obj.get("rows") or None
+    except Exception:
+        return None
+
+
+def _ind_dist_src_save(ver, rows) -> None:
+    """写本机缓存（原子替换）。失败静默，不影响主流程。"""
+    try:
+        os.makedirs(os.path.dirname(_IND_DIST_SRC), exist_ok=True)
+        tmp = _IND_DIST_SRC + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"ver": ver, "ts": time.time(), "rows": rows},
+                      f, ensure_ascii=False)
+        os.replace(tmp, _IND_DIST_SRC)
+    except Exception:
+        pass
 
 
 def _fin_sub_industry(name: str) -> str:
@@ -1181,12 +1239,26 @@ class ScoreEngine:
             return _IND_DIST
         try:
             from app.database import db
-            rows = db.fetch("""
-                SELECT si.code, si.main_industry AS ind, si.name AS sname,
-                       sf.debt_ratio, sf.gross_margin
-                FROM stock_industry si
-                JOIN stock_finance sf ON sf.code = si.code
-            """)
+            # ★ 2026-09-18 egress：DB 源行改走本机缓存（见上方 `_IND_DIST_SRC` 注释）。
+            #   只缓存 DB 那 1.68 万行；下面的实时 PE/PB 叠加**照旧**执行 ⇒ 口径不变。
+            _ver = _ind_dist_fingerprint()
+            _rows = _ind_dist_src_load(_ver) if _ver is not None else None
+            if _rows is not None:
+                rows = [{"code": r[0], "ind": r[1], "sname": r[2],
+                         "debt_ratio": r[3], "gross_margin": r[4]} for r in _rows]
+                print(f"[engine] 行业指标源命中本机缓存（{len(rows)} 行）"
+                      f"→ 零 Supabase 流量")
+            else:
+                rows = db.fetch("""
+                    SELECT si.code, si.main_industry AS ind, si.name AS sname,
+                           sf.debt_ratio, sf.gross_margin
+                    FROM stock_industry si
+                    JOIN stock_finance sf ON sf.code = si.code
+                """)
+                _ind_dist_src_save(_ver, [[r.get("code"), r.get("ind"),
+                                           r.get("sname"), r.get("debt_ratio"),
+                                           r.get("gross_margin")]
+                                          for r in (rows or [])])
             dist = {m: {} for m in IND_METRICS}
             code_ind, code_sub = {}, {}
             for r in rows or []:
