@@ -30,6 +30,21 @@ services:
         sync: false
       - key: LLM_BASE_URL
         sync: false
+      # ★ 2026-09-17：主力站（SiliconFlow / DeepSeek-R1）余额耗尽 → 正式链切到
+      #   SenseNova 日日新（deepseek-v4-flash）。上面 LLM_* 三行**保留作链尾兜底**
+      #   （首站成功即返回，平时不会打到 R1；彻底下线就把 LLM_MODEL 值清掉）。
+      #   ⚠️ 不要把 SenseNova 填进上面的 LLM_BASE_URL/LLM_MODEL —— 那是主力站槽位，
+      #      在 app/flash/llm.py::_providers() 里标 "reasoning": False，
+      #      会丢掉 reasoning_effort 注入（渲染任务需压低思考，见该文件注释）。
+      - key: LLM_FREE_BASE_URL
+        value: https://token.sensenova.cn/v1
+      - key: LLM_FREE_MODEL
+        value: deepseek-v4-flash
+      - key: LLM_FREE_API_KEY
+        sync: false
+      # 0 = 免费站进正式链首（1 = 影子模式，只记录不投喂）
+      - key: LLM_FREE_SHADOW
+        value: '0'
       - key: FLASH_COOKIE
         sync: false
       - key: WECHAT_WEBHOOK

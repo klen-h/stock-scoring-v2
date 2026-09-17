@@ -14,6 +14,15 @@
 
 环境变量：LLM_API_KEY / LLM_BASE_URL(默认 SiliconFlow) / LLM_MODEL
 无 API_KEY 时：所有函数返回"未配置"占位结果，模块整体降级，不崩。
+
+★ 2026-09-17 起正式链路 = **SenseNova 日日新（deepseek-v4-flash）**：
+  主力站 SiliconFlow / DeepSeek-R1 余额耗尽 → 配 `LLM_FREE_SHADOW=0` 让免费站
+  （槽位名保留 "free"，实际是链首）进正式链，主力站三变量留作链尾兜底。
+  ⚠️ 两个槽位的 semantics 不同（见 _providers）：
+     free 槽 → "reasoning": True  → 注入 reasoning_effort（按 tier fast→none/slow→low）
+     main 槽 → "reasoning": False → **不注入**
+  所以**推理模型必须放 free 槽**；塞进 main 槽会丢掉思考控制（走模型默认 medium，
+  更慢更费 token）。这是"换 LLM"时最容易踩的一点。
 ================================================================================
 """
 
@@ -585,9 +594,23 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
             r = _session.post(f"{p['base_url']}/chat/completions", json=body,
                               headers={"Authorization": f"Bearer {p['key']}"},
                               timeout=timeout)
-            if r.status_code in (401, 403, 429, 500, 502, 503, 504):
+            if r.status_code == 429:
+                # ★ 2026-09-17（切 SenseNova 后实测）：429 = **速率/配额限流**，
+                #   原文 {"message":"inference exceeds tpm/rpm limit",
+                #         "type":"rate_limit_error","code":"429003"}。
+                #   它是**瞬时**的 → 应该退避重试，不能像 401/403 那样直接降级：
+                #   否则一次限流就整单失败，还会去试链尾那个欠费站，把真实错误
+                #   掩盖成 402（本次排障就被误导过一次）。
+                ra = (r.headers.get("Retry-After") or "").strip()
+                wait = float(ra) if ra.replace(".", "", 1).isdigit() else 4.0 * attempt
+                _last_error = f"{pkey} HTTP 429（限流 tpm/rpm）"
+                print(f"[llm] [{pkey}] 429 限流 → 退避 {wait:.0f}s 后重试"
+                      f"（第 {attempt}/{retries} 次）")
+                time.sleep(min(wait, 30.0))
+                continue
+            if r.status_code in (401, 403, 500, 502, 503, 504):
                 # 站点级故障 → 站内重试无意义，直接降级下一 provider。
-                # ★ 计入熔断（401/429 这类不会自愈的故障正是熔断的目标场景）
+                # ★ 计入熔断（401 这类不会自愈的故障正是熔断的目标场景）
                 _last_error = f"{pkey} HTTP {r.status_code}"
                 if mark:
                     _provider_mark(pkey, False, _last_error)
@@ -1369,9 +1392,13 @@ def format_user_holdings() -> str:
     行情一次批量请求（腾讯单请求上限内）；失败降级为无行情的基础格式。
     """
     try:
+        # ★ 2026-09-17：多用户表 —— 此前全表读会让 LLM 点评串入**别的账号**
+        #   的持仓（甚至把别人的成本价当成本部署用户的）。
+        from app.portfolio_scope import portfolio_where as _pf_where
+        _w, _p = _pf_where()
         rows = db.fetch(
-            "SELECT code, name, MIN(cost) AS cost FROM user_portfolio "
-            "GROUP BY code, name ORDER BY name")
+            f"SELECT code, name, MIN(cost) AS cost FROM user_portfolio {_w} "
+            f"GROUP BY code, name ORDER BY name", _p)
     except Exception as e:
         print(f"[llm] 读取用户持仓失败: {e}")
         return ""

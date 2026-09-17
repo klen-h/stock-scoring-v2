@@ -143,7 +143,11 @@ def position_sizing_for_portfolio() -> dict:
     codes = []
     try:
         from app.database import db
-        rows = db.fetch("SELECT code FROM user_portfolio ORDER BY created_at ASC")
+        # ★ 2026-09-17：多用户表，按主用户过滤（见 app/portfolio_scope.py）
+        from app.portfolio_scope import portfolio_where
+        _w, _p = portfolio_where()
+        rows = db.fetch(
+            f"SELECT code FROM user_portfolio {_w} ORDER BY created_at ASC", _p)
         seen = set()
         for r in rows or []:
             c = str(r.get("code") or "").strip()

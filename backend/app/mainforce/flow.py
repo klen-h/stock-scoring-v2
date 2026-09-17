@@ -28,6 +28,8 @@
 """
 
 import json
+import os
+import sqlite3
 import time
 
 import requests
@@ -290,16 +292,29 @@ def get_float_shares_from_snapshot() -> dict:
     """{code: 流通股本}，来源 market_snapshot 最新一份。"""
     if _FS_CACHE["data"] and time.time() - _FS_CACHE["ts"] <= _FS_TTL:
         return _FS_CACHE["data"]
-    row = db.fetch_one("SELECT stocks_json, saved_at FROM market_snapshot "
-                       "ORDER BY saved_at DESC LIMIT 1")
-    if not row:
+    # ★ 2026-09-18 egress 治理：**不再自己回源**。原来那句
+    #   `SELECT stocks_json FROM market_snapshot ORDER BY saved_at DESC LIMIT 1`
+    #   是一条**整行读**（≈336KB 过网，实测 70 次/6 天），而 `store.load_market_snapshot`
+    #   读的是**同一行**（85 次/6 天）—— 同一份数据、两套进程内缓存，双双按
+    #   "每进程一次 + 常驻进程每 300 秒重读"的频率白烧流量。
+    #   统一走 store：它带**跨进程**本机缓存，`saved_at` 没变就零大流量。
+    try:
+        from app.flash import store as _store
+        snap = _store.load_market_snapshot() or {}
+        raw = snap.get("stocks")
+    except Exception as e:
+        print(f"[mainforce] 行情快照读取异常，浮筹按空处理: {e}")
         return {}
-    raw = row["stocks_json"]
-    stocks = json.loads(raw) if isinstance(raw, str) else raw
-    if isinstance(stocks, dict):
-        stocks = list(stocks.values())
+    if raw is None:
+        return {}
+    if isinstance(raw, list):
+        stocks = raw
+    elif isinstance(raw, dict):
+        stocks = list(raw.values())
+    else:
+        stocks = []
     out = {}
-    for s in stocks or []:
+    for s in stocks:
         try:
             cap = float(s.get("float_cap") or 0)   # 万元
             price = float(s.get("price") or 0)
@@ -309,7 +324,7 @@ def get_float_shares_from_snapshot() -> dict:
                     out[s["code"]] = shares
         except (TypeError, ValueError):
             continue
-    print(f"[float_shares] market_snapshot {row['saved_at']} → {len(out)} 只")
+    print(f"[float_shares] market_snapshot {snap.get('saved_at')} → {len(out)} 只")
     if out:                              # 空结果不缓存（快照未就绪时下次重试）
         _FS_CACHE["ts"] = time.time()
         _FS_CACHE["data"] = out
@@ -388,13 +403,110 @@ def _cache_fresh(hit: dict) -> bool:
     return False
 
 
+# ── ★ 2026-09-17：整表读的「跨进程」持久缓存（egress 治理，实测驱动）──────────
+# 问题（pg_stat_statements 实测）：`load_flow_map()` 是一条**整表读**
+#   SELECT ... FROM mainflow_history ORDER BY code, date  → 8.8 万行 ≈ **8.7MB/次**
+#   （calls 68 / 6 天，行数 598 万）。而原 `_FLOW_MAP_CACHE` 是**进程内**的
+#   ⇒ **每重启一个新进程就再整表拉一次**。
+#   实测放大：本机 `run.py --reload`（改一次代码即重启）+ 各式脚本 → 单日可冲到
+#   68 次 ≈ **592MB**（免费档只有 167MB/天）—— 这就是"流量又在偷跑"的机制。
+# 做法：落本机 SQLite，key 用 `sync_meta.version("mainflow")`（版本没变 = 数据没变
+#   → 直接复用，**零 egress**）；版本变了或超兜底 TTL 才重新整表读一次。
+# 正确性：与 `_cache_fresh` **同一套版本门控**，不会拿到陈旧数据；任何异常 fail-open 回源。
+# ★ 路径对齐 `research_cache`（约定落在 `backend/data/`）：本文件位于 `app/mainforce/`
+#   下，需上溯 **3 层**（mainforce → app → backend）才是 backend。
+#   ⚠️ 2026-09-18 修正：初版漏算一层，落到了 `backend/app/data/`（不在约定数据目录）。
+_FLOW_DISK_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "flow-map.db")
+_FLOW_DISK_TTL = 12 * 3600
+_FLOW_DISK_COLS = ("date", "main_net", "super_net", "big_net",
+                   "main_pct", "super_pct", "close", "pct_chg")
+
+
+def _ver_now():
+    try:
+        from app import sync_meta
+        return sync_meta.version("mainflow")
+    except Exception:
+        return None
+
+
+def _disk_load(ver):
+    """读本机整表缓存（零 egress）。版本不符 / 过期 / 异常 → None（调用方回源）。"""
+    try:
+        if not os.path.exists(_FLOW_DISK_PATH):
+            return None
+        conn = sqlite3.connect(_FLOW_DISK_PATH)
+        try:
+            k = dict(conn.execute("SELECT k, v FROM meta").fetchall())
+            if not k.get("ts") or (ver is not None and k.get("ver") != str(ver)):
+                return None
+            if time.time() - float(k["ts"]) > _FLOW_DISK_TTL:
+                return None
+            by_code = {}
+            for r in conn.execute("SELECT code, date, main_net, super_net, big_net, "
+                                  "main_pct, super_pct, close, pct_chg FROM flow "
+                                  "ORDER BY code, date"):
+                by_code.setdefault(r[0], []).append(dict(zip(_FLOW_DISK_COLS, r[1:])))
+            return by_code or None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _disk_save(ver, by_code):
+    """写本机整表缓存（原子替换）。失败静默，不影响主流程。"""
+    try:
+        os.makedirs(os.path.dirname(_FLOW_DISK_PATH), exist_ok=True)
+        tmp = _FLOW_DISK_PATH + ".tmp"
+        conn = sqlite3.connect(tmp)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS flow(code TEXT, date TEXT, "
+                         "main_net REAL, super_net REAL, big_net REAL, main_pct REAL, "
+                         "super_pct REAL, close REAL, pct_chg REAL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT)")
+            conn.execute("DELETE FROM flow")
+            conn.executemany(
+                "INSERT INTO flow VALUES (?,?,?,?,?,?,?,?,?)",
+                [(c, str(x.get("date")), x.get("main_net"), x.get("super_net"),
+                  x.get("big_net"), x.get("main_pct"), x.get("super_pct"),
+                  x.get("close"), x.get("pct_chg"))
+                 for c, items in by_code.items() for x in items])
+            conn.execute("INSERT OR REPLACE INTO meta VALUES ('ver', ?)",
+                         ("" if ver is None else str(ver),))
+            conn.execute("INSERT OR REPLACE INTO meta VALUES ('ts', ?)",
+                         (str(time.time()),))
+            conn.commit()
+        finally:
+            conn.close()
+        os.replace(tmp, _FLOW_DISK_PATH)
+    except Exception:
+        pass
+
+
 def load_flow_map(codes: list = None) -> dict:
-    """读全表 {code: [{date, main_net, ...}]}（升序），供回测脚本用。"""
+    """读全表 {code: [{date, main_net, ...}]}（升序），供回测脚本用。
+
+    ★ 2026-09-17：整表读（8.7MB/次）走三层缓存 —— 进程内存 → **本机 SQLite（跨进程）**
+      → 才回源。见上方 `_FLOW_DISK_*` 注释（这是"流量偷跑"的根治点）。
+    """
     ensure_table()
     cache_key = "all" if not codes else ",".join(sorted(str(c) for c in codes))
     hit = _FLOW_MAP_CACHE.get(cache_key)
     if hit and _cache_fresh(hit):
         return hit["rows"]
+    ver = _ver_now()
+    # ★ 跨进程持久缓存：只在「全表读」时启用（带 codes 的查询行数少、组合无穷）
+    if not codes:
+        disk = _disk_load(ver)
+        if disk is not None:
+            if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
+                _FLOW_MAP_CACHE.clear()
+            _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": disk}
+            print(f"[mainflow] 整表读命中本机缓存（{len(disk)} 只）→ 零 Supabase 流量")
+            return disk
     sql = ("SELECT code, date, main_net, super_net, big_net, main_pct, super_pct, "
            "close, pct_chg FROM mainflow_history")
     params = None
@@ -412,12 +524,9 @@ def load_flow_map(codes: list = None) -> dict:
         })
     if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
         _FLOW_MAP_CACHE.clear()          # 简易淘汰：整表缓存体积大，满了就清
-    try:
-        from app import sync_meta
-        ver = sync_meta.version("mainflow")
-    except Exception:
-        ver = None
     _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": by_code}
+    if not codes:
+        _disk_save(ver, by_code)         # 落盘 → 下一个新进程零 egress
     return by_code
 
 

@@ -80,11 +80,27 @@ jobs:
           WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
           # ★ 数据源走数据包：K线/指标/主力行为全部读 pack，零回源 → 无 WAF 风险
           DATA_SOURCE: pack
-          # ★ LLM 解读（2026-09-09 补上：secrets 已在仓库配置，但此步骤之前
-          #   未引用 → 日报/矛盾报告的 AI 解读一直显示"未配置"）
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ secrets.LLM_MODEL }}
-          LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          # ★ LLM 解读（2026-09-09 补上：此前未引用 → AI 解读一直显示"未配置"）
+          # ★★ 2026-09-17：主力站（SiliconFlow / DeepSeek-R1）**余额耗尽（实测 402）**
+          #   → 这三行**主动不再引用**，让主力站彻底下线。理由不只是"欠费"：
+          #   留着它当兜底会把免费站的**真实错误掩盖**成 402（本次排障就被误导过，
+          #   真因是 SenseNova 的 429 tpm/rpm 限流）。要恢复 R1 就把下面三行改回
+          #   `${{ secrets.LLM_API_KEY }}` 等形式。
+          # LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          # LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          # LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+          # ★ 正式链路 = SenseNova 日日新（免费站槽位，支持 reasoning_effort 注入）
+          # ★★ 2026-09-17：主力站（SiliconFlow / DeepSeek-R1）余额耗尽 → 切 SenseNova。
+          #   此前本步骤**只引用主力站三个变量、完全没有 LLM_FREE_*** → 免费站只在
+          #   本地生效，日批一直用欠费的 R1（日报/矛盾报告 AI 解读静默全失败）。
+          #   LLM_FREE_SHADOW=0 → 免费站进正式链首；上面三行保留作链尾兜底
+          #   （首站成功即返回，平时不会打到 R1；彻底下线就把 LLM_MODEL secret 清空）。
+          #   ⚠️ 需要在仓库 Secrets 里新增 LLM_FREE_API_KEY（= SenseNova 的 key，
+          #      与 LLM_API_KEY 不是同一个）。
+          LLM_FREE_BASE_URL: https://token.sensenova.cn/v1
+          LLM_FREE_MODEL: deepseek-v4-flash
+          LLM_FREE_API_KEY: ${{ secrets.LLM_FREE_API_KEY }}
+          LLM_FREE_SHADOW: '0'
           # ★ 2026-09-14：对齐业务开关（此前 Actions 未配 → 全用代码默认值，
           #   与 Render 跑出不同结果，即审查文档 §4 的「部署漂移」）。日批是
           #   唯一写库计算入口，白名单判据必须以 expectancy 为准：

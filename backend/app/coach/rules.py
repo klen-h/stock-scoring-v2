@@ -233,7 +233,13 @@ def _real_holdings() -> List[dict]:
     """
     try:
         from app.database import db
-        rows = db.fetch("SELECT * FROM user_portfolio ORDER BY created_at ASC")
+        # ★ 2026-09-17：user_portfolio 是**多用户表**，此前这里全表读 → 教练会盯
+        #   **所有账号**的持仓（实测：admin 的教练一直提示 sky 的海德股份 000567，
+        #   而 admin 界面上根本看不到这条 → 现象即"持仓删了，教练还提示"）。
+        from app.portfolio_scope import portfolio_where
+        _w, _p = portfolio_where()
+        rows = db.fetch(
+            f"SELECT * FROM user_portfolio {_w} ORDER BY created_at ASC", _p)
     except Exception:
         return []
     # 按 code 去重：后端 upsert 设计是「一码一条」，但历史数据里有同 code 重复

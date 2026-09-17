@@ -1412,7 +1412,10 @@ def take_news_snapshot_once() -> int:
     # 股票池：持仓股 + 当日评分 Top50（直接读 ranking_history，避免重算评分）
     today = rules.beijing_now().strftime("%Y-%m-%d")
     pool = {}
-    for r in db.fetch("SELECT DISTINCT code, name FROM user_portfolio") or []:
+    # ★ 2026-09-17：同舆情告警 —— 快照池此前含所有账号的持仓
+    from app.portfolio_scope import portfolio_where as _pf_where2
+    _w2, _p2 = _pf_where2()
+    for r in db.fetch(f"SELECT DISTINCT code, name FROM user_portfolio {_w2}", _p2) or []:
         pool[r["code"]] = r.get("name") or ""
     for r in db.fetch("""SELECT code, name FROM ranking_history
                          WHERE rank_date = %s ORDER BY rank_pos LIMIT 50""", (today,)) or []:

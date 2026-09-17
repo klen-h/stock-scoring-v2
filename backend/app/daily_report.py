@@ -311,7 +311,12 @@ def _paper_summary() -> dict:
 # ──────────────────────────────────────────────────────────────
 def _portfolio() -> list:
     try:
-        rows = db.fetch("SELECT * FROM user_portfolio ORDER BY created_at DESC")
+        # ★ 2026-09-17：user_portfolio 多用户表 —— 此前全表读会让日报混入
+        #   **别的账号**的持仓。统一走 portfolio_scope 的主用户口径。
+        from app.portfolio_scope import portfolio_where
+        _w, _p = portfolio_where()
+        rows = db.fetch(
+            f"SELECT * FROM user_portfolio {_w} ORDER BY created_at DESC", _p)
         if not rows:
             return []
         codes = [str(r["code"]) for r in rows]

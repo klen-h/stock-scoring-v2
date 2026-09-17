@@ -15,6 +15,7 @@
 import copy
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timedelta
 from app.database import db
@@ -580,11 +581,95 @@ def save_market_snapshot(stocks: dict, valid_codes: list) -> bool:
 _SNAP_CACHE = {"ts": 0.0, "data": {}}
 _SNAP_TTL = 300
 
+# ── ★ 2026-09-18：**跨进程**持久缓存（egress 治理，pg_stat_statements 实测驱动）──
+# 为什么上面那个 300 秒进程内缓存不够：
+#   · `load_market_snapshot()` 的 `WHERE key='latest'`        → 85 次 / 6 天
+#   · `flow.get_float_shares_from_snapshot()` 的 `ORDER BY saved_at DESC LIMIT 1` → 70 次
+#   两者读的是**同一行**（≈1.1MB 文本 / 约 336KB 过网），却**各有一套进程内缓存** ⇒
+#     ① **每重启一个新进程必整份读一次**（本地 `run.py --reload` 改代码就重启 → 一天几十次）；
+#     ② 常驻进程里 300 秒 TTL 会**反复重读**（最坏 ≈288 次/天 ≈ **97MB/天**）。
+#   而这份快照**每天只在 15:10 落库一次** ⇒ 短 TTL 纯属浪费，纯粹白烧。
+# 做法：落本机 SQLite，用 **`saved_at` 当版本号**（写入方本来就会更新它）。读之前先做一次
+#   **只取该列**的极轻探测（单行单列 ≈ 几十字节，不是 336KB）—— 版本没变就直接用本机缓存，
+#   **零大流量**。之所以用 `saved_at` 而不是让写入方打 `sync_meta` 版本号：写入方可能在
+#   **别的机器**（Actions / 自建服务器），靠数据自身的 `saved_at` 对比**无需写入方配合**
+#   即可跨进程失效。
+_SNAP_DISK_PATH = os.path.join(DATA_DIR, "market-snapshot-cache.db")
+_SNAP_DISK_TTL = 12 * 3600
+
+
+def _snap_disk_load(saved_at):
+    """按 saved_at 命中本机缓存（零大流量）。不符 / 过期 / 异常 → None（调用方回源）。"""
+    try:
+        if not os.path.exists(_SNAP_DISK_PATH) or saved_at is None:
+            return None
+        conn = sqlite3.connect(_SNAP_DISK_PATH)
+        try:
+            r = conn.execute("SELECT saved_at, stocks_json, valid_codes_json, ts "
+                             "FROM snap LIMIT 1").fetchone()
+            if not r:
+                return None
+            cur_saved, sj, vj, ts = r
+            # 两边都转 str 比较：PG 可能回 datetime，SQLite 存的是 ISO 字符串
+            if str(cur_saved) != str(saved_at):
+                return None
+            if time.time() - float(ts) > _SNAP_DISK_TTL:
+                return None
+            return {"stocks": json.loads(sj), "valid_codes": json.loads(vj),
+                    "saved_at": cur_saved}
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _snap_disk_save(out: dict) -> None:
+    """写本机缓存（原子替换）。失败静默，不影响主流程。"""
+    try:
+        os.makedirs(os.path.dirname(_SNAP_DISK_PATH), exist_ok=True)
+        tmp = _SNAP_DISK_PATH + ".tmp"
+        conn = sqlite3.connect(tmp)
+        try:
+            conn.execute("CREATE TABLE IF NOT EXISTS snap("
+                         "saved_at TEXT, stocks_json TEXT, valid_codes_json TEXT, ts REAL)")
+            conn.execute("DELETE FROM snap")
+            conn.execute("INSERT INTO snap VALUES (?,?,?,?)",
+                         (str(out.get("saved_at") or ""),
+                          json.dumps(out.get("stocks"), ensure_ascii=False),
+                          json.dumps(out.get("valid_codes"), ensure_ascii=False),
+                          time.time()))
+            conn.commit()
+        finally:
+            conn.close()
+        os.replace(tmp, _SNAP_DISK_PATH)
+    except Exception:
+        pass
+
 
 def load_market_snapshot() -> dict:
-    """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at}；无则空 dict。"""
+    """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at}；无则空 dict。
+
+    ★ 2026-09-18：三层 —— 进程内存（300s）→ **本机 SQLite（跨进程，saved_at 版本门控）**
+      → 才回源。见上方 `_SNAP_DISK_*` 注释（这是「每重启一次就偷 336KB」的根治点）。
+    """
     if _SNAP_CACHE["data"] and time.time() - _SNAP_CACHE["ts"] <= _SNAP_TTL:
         return copy.deepcopy(_SNAP_CACHE["data"])
+    # ① 版本探测：**只取 saved_at 一列**（单行几十字节），不做整行读
+    saved_at = None
+    try:
+        row = db.fetch_one("SELECT saved_at FROM market_snapshot WHERE key = %s",
+                           ("latest",))
+        saved_at = (row or {}).get("saved_at")
+    except Exception as e:
+        print(f"[store] 行情快照版本探测失败，退回整行读: {e}")
+    # ② 本机持久缓存命中 → 零大流量
+    if saved_at is not None:
+        disk = _snap_disk_load(saved_at)
+        if disk is not None:
+            _SNAP_CACHE["ts"] = time.time()
+            _SNAP_CACHE["data"] = disk
+            return copy.deepcopy(disk)
+    # ③ 回源（本轮唯一一次整行读）
     row = db.fetch_one("SELECT stocks_json, valid_codes_json, saved_at "
                        "FROM market_snapshot WHERE key = %s", ("latest",))
     if not row:
@@ -600,4 +685,5 @@ def load_market_snapshot() -> dict:
         return {}
     _SNAP_CACHE["ts"] = time.time()
     _SNAP_CACHE["data"] = out
+    _snap_disk_save(out)          # 落盘 → 下一个新进程零大流量
     return copy.deepcopy(out)
