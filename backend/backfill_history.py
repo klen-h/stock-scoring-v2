@@ -95,16 +95,21 @@ def backfill(code: str, name: str) -> int:
         print(f"  [FAIL] {code} {name} 无数据")
         return 0
     _EM_FAIL_STREAK = 0
-    # ★ 2026-09-18：复权基准变了 → 全量重拉覆盖（否则本次追加会留下接缝，
-    #   见 _basis_changed 的完整说明）。`save_prices` 是 ON CONFLICT 幂等写入，
-    #   所以「全量重拉」天然就是「覆盖」，无需先删旧行。
+    # ★ 2026-09-18：复权基准变了 → 全量重拉**覆盖**（否则本次追加会留下接缝，
+    #   见 _basis_changed 的完整说明）。
+    #   ⚠️ 必须传 `replace=True`：`save_prices` 默认是 `ON CONFLICT DO NOTHING`，
+    #      **不会更新已存在的行** —— 只传全量数据而不加 replace 的话，旧价永远改不掉
+    #      （这正是方案 C 初版的 bug，2026-09-18 同日发现并修正）。
     if _basis_changed(code, start, rows):
         full = data.fetch_history(code, start=None)
-        if full and len(full) > len(rows):
+        if full and len(full) >= len(rows):
             rows = full
-            print(f"  [复权] {code} 已全量重拉 {len(rows)} 条（重叠部分覆盖写入）")
-        else:
-            print(f"  [复权] {code} 全量重拉未取到更长序列，保留增量结果")
+            n = data.save_prices(code, name, rows, replace=True)
+            print(f"  [复权] {code} 已全量重拉并**覆盖** {n} 条")
+            print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
+            time.sleep(RATE_LIMIT)
+            return n
+        print(f"  [复权] {code} 全量重拉未取到更长序列，保留增量结果")
     n = data.save_prices(code, name, rows)
     print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
     time.sleep(RATE_LIMIT)
@@ -354,11 +359,12 @@ def check_signal_coverage(days: int = 3) -> dict:
 def rebuild_all_full() -> dict:
     """一次性全量重建：对**已入库的每只**全量重拉并覆盖。
 
-    ★ 用途（2026-09-18）：清除历史遗留的「前复权接缝」（见 `_basis_changed`）。
+    ★ 用途（2026-09-18）：清除历史遗留的「库与源不一致」（见 `_basis_changed`）。
       只重建**已入库**的代码（未入库的不影响现有回测结果）。
-      `save_prices` 是 ON CONFLICT 幂等写入 ⇒ 全量重拉即覆盖，无需先删旧行。
+      ⚠️ 必须 `replace=True` —— `save_prices` 默认 `ON CONFLICT DO NOTHING`
+      **不会更新已有行**，不传 replace 就等于什么都没做。
       749 只 × 1s 限速 ≈ 13 分钟；幂等，可重复跑。
-      跑完请再执行 `python scripts/audit_backtest_data.py` 复检「纯跳变」应为 0。
+      跑完请再执行 `python scripts/audit_backtest_data.py` 复检。
     """
     global _EM_FAIL_STREAK
     print("── 全量重建（修复前复权接缝）──")
@@ -376,7 +382,7 @@ def rebuild_all_full() -> dict:
             fail += 1
             print(f"  [FAIL] {code} {name} 全量拉取为空")
         else:
-            total += data.save_prices(code, name, full)
+            total += data.save_prices(code, name, full, replace=True)
             ok += 1
         if i % 50 == 0:
             print(f"  ... {i}/{len(rows)}（成功 {ok} / 失败 {fail} / 累计 {total} 行）")

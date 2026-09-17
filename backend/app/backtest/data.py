@@ -151,8 +151,20 @@ def fetch_history(code: str, years: int = 3, start: str = None) -> list:
     return fetch_history_tencent(code, years, start)
 
 
-def save_prices(code: str, name: str, rows: list) -> int:
-    """批量幂等写入（code+date 冲突跳过），返回写入行数。"""
+def save_prices(code: str, name: str, rows: list, replace: bool = False) -> int:
+    """批量写入，返回**提交的行数**（不区分插入/更新/跳过；`DO NOTHING` 下跳过的不计入实际变更）。
+
+    replace=False（默认，**增量回填语义**）：`(code, date)` 冲突**跳过** —— 只补新日期，
+      不触碰已有行。快，且不会因源抖动误改历史。
+    replace=True（**修复语义**）：冲突则**覆盖**（`DO UPDATE SET ...` / `INSERT OR REPLACE`）。
+
+    ★ 2026-09-18（重要更正）：本函数原先只支持 `DO NOTHING`，而**方案 C / `--rebuild`
+      都依赖"全量重拉即覆盖"** —— 那是错的：已存在的行永远不会被更新，旧价改不掉。
+      故新增 `replace` 参数。需要覆盖的仅有两条路径：
+        · `backfill_history.rebuild_all_full()`（一次性重建）
+        · `backfill_history.backfill()` 里 `_basis_changed()` 命中的分支
+      正常增量回填仍用默认 False。
+    """
     if not rows:
         return 0
     n = 0
@@ -164,12 +176,19 @@ def save_prices(code: str, name: str, rows: list) -> int:
         for r in batch:
             params += [code, name, r["date"], r["open"], r["high"], r["low"],
                        r["close"], r["volume"]]
+        cols = ("(code, name, date, open, high, low, close, volume)")
         if db._use_postgres:
-            sql = (f"INSERT INTO backtest_prices (code, name, date, open, high, low, close, volume) "
-                   f"VALUES {values_sql} ON CONFLICT (code, date) DO NOTHING")
+            if replace:
+                sql = (f"INSERT INTO backtest_prices {cols} VALUES {values_sql} "
+                       f"ON CONFLICT (code, date) DO UPDATE SET "
+                       f"name=EXCLUDED.name, open=EXCLUDED.open, high=EXCLUDED.high, "
+                       f"low=EXCLUDED.low, close=EXCLUDED.close, volume=EXCLUDED.volume")
+            else:
+                sql = (f"INSERT INTO backtest_prices {cols} VALUES {values_sql} "
+                       f"ON CONFLICT (code, date) DO NOTHING")
         else:
-            sql = (f"INSERT OR IGNORE INTO backtest_prices (code, name, date, open, high, low, close, volume) "
-                   f"VALUES {values_sql}")
+            verb = "INSERT OR REPLACE INTO" if replace else "INSERT OR IGNORE INTO"
+            sql = f"{verb} backtest_prices {cols} VALUES {values_sql}"
         db.execute(sql, tuple(params))
         n += len(batch)
     if n:
