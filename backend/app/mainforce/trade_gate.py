@@ -38,6 +38,9 @@ REGIME_POSITION = {
     "neutral_bearish": 20,
     "defensive": 0,
 }
+# 允许出手的市场状态（defensive 禁买）。★ 2026-09-18 提成常量：原先硬编码在
+#   evaluate 的 cond_c 里；现在 rules() 要把它下发给前端镜像，避免两处各写一份。
+REGIME_ALLOWED = ("offensive", "neutral", "neutral_bearish")
 
 
 def _mode_on() -> bool:
@@ -147,7 +150,7 @@ def evaluate(code: str, mf: Dict = None) -> Dict:
                        + (f"位置 {pos:.0%}/获利盘 {winner:.0%}" if pos is not None else "数据缺") + "）")
 
     # 条件C：状态允许
-    cond_c = regime in ("offensive", "neutral", "neutral_bearish")
+    cond_c = regime in REGIME_ALLOWED
     reasons.append(f"C{'✓' if cond_c else '✗'} 状态 {regime or '未知'}"
                    + ("（防御档禁买）" if regime == "defensive" else ""))
 
@@ -229,3 +232,29 @@ def summarize(result: Dict) -> Dict:
             "position_label": result.get("position_label") or "",
             "regime": regime,
             "active": bool(result.get("active"))}
+
+
+def rules() -> Dict:
+    """**判据参数**（供前端本地计算模式镜像 `summarize` 用）。
+
+    ★ 为什么是"下发参数"而不是让前端写死阈值（2026-09-18）：
+      前端本地计算模式（`useFrontendScoring` → `scoreStock`）也要在评分榜展示
+      「买入条件就绪 X/3」（`ScoreRank.vue` 的 `item.gate`）。但上面的定位声明要求
+      **口径唯一事实源**——若前端自己硬编码 0.75 / 0.7 / 档位表，方向就和
+      「前端写死权重导致分数漂移」一模一样。
+      ⇒ 阈值、允许状态、仓位档位、条件条目名**全部由后端下发**（挂在
+        `GET /api/score/weights` 的 `gate` 字段，与 weights/regime_state 同一套
+        同步机制）；前端只做"3 个布尔 + 文案"的组合，**无自由裁量**。
+      改这里的任何常量，前端下次拉 weights 即自动跟随，不会漂。
+    """
+    from app.mainforce.gate import HIGH_POS_THRESHOLD
+    return {
+        "enabled": _mode_on(),
+        "high_pos_threshold": HIGH_POS_THRESHOLD,
+        "winner_ratio_crowded": WINNER_RATIO_CROWDED,
+        "regime_allowed": list(REGIME_ALLOWED),
+        "regime_position": dict(REGIME_POSITION),
+        "position_default": 30,          # regime 未知时的基准（见 evaluate）
+        "position_steps": list(POSITION_STEPS),
+        "ready_items": [list(x) for x in _READY_ITEMS],
+    }

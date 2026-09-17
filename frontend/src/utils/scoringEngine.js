@@ -102,6 +102,90 @@ export function setRegimeState(state) {
   _regimeState = state || null
 }
 
+// ── ★ 2026-09-18：买入条件就绪（gate）的**本地镜像** ────────────────────────
+// 背景：就绪度的口径唯一事实源是后端 `app/mainforce/trade_gate.py` 的 `summarize()`
+//   （该模块注释写明"前端不得自行推导"）。但本地计算模式（useFrontendScoring →
+//   scoreStock）也要在评分榜展示这一列（ScoreRank.vue 的 item.gate），否则本地模式
+//   永久缺一块、与"本地≈线上"的目标矛盾。
+// 消除漂移的机制：**所有判据参数由后端下发** —— `GET /api/score/weights` 的 `gate`
+//   字段（与 weights / regime_state 同一套同步机制，接口前端本来就在调）。阈值、
+//   允许状态、仓位档位、条件条目名全部照用后端值；本函数只做「3 个布尔 + 文案」
+//   的组合，**没有自由裁量**。后端改常量 → 前端下次拉 weights 自动跟随。
+// 定位不变：这是**状态展示**，不是买入信号 —— 不参与排序、不改总分。
+let _gateRules = null
+
+export function setGateRules(r) {
+  _gateRules = (r && r.high_pos_threshold != null) ? r : null
+}
+
+/**
+ * 就绪摘要（镜像 trade_gate.summarize + evaluate 的仓位档位）。
+ * 参数未下发（后端接口失败）时返回 null → 模板 v-if 自动隐藏该列。
+ */
+export function buildGate(result) {
+  if (!_gateRules || !result) return null
+  const T = _gateRules
+  const mf = result.mainforce || {}
+  const chip = mf.chip || {}
+  // 与后端同口径：优先 chip 内字段，回退扁平字段（applyOverextensionGate 亦如此）
+  const pos = chip.price_pos != null ? chip.price_pos : (mf.price_pos != null ? mf.price_pos : null)
+  const winner = chip.winner_ratio != null ? chip.winner_ratio : (mf.winner_ratio != null ? mf.winner_ratio : null)
+  const regime = _regimeState || ''
+
+  const accum = mf.signal === 'accum'                       // 条件A
+  const crowded = (pos != null && pos > T.high_pos_threshold) ||
+                  (winner != null && winner > T.winner_ratio_crowded)
+  const condA = accum
+  const condB = !crowded                                   // 条件B
+  const condC = (T.regime_allowed || []).indexOf(regime) >= 0   // 条件C
+
+  const condMap = { A_mainforce: condA, B_not_crowded: condB, C_regime_ok: condC }
+  const items = (T.ready_items || []).map(([key, ck, label]) => ({
+    key, ok: !!condMap[ck], label,
+  }))
+  const ready = items.filter(x => x.ok).length
+
+  let label, hint
+  if (condA && condB && condC) {
+    label = '三条件就绪'
+    hint = '主力有根据、不追高、市况允许'
+  } else if (condA && condB) {
+    label = '等状态'
+    hint = `主力有根据、不追高，但市况 ${regime || '未知'} 不允许`
+  } else if (!condA) {
+    label = '缺主力根据'
+    hint = '未识别吸筹区（低位筹码密集 × 主力净流入）'
+  } else if (!condB) {
+    label = '追高'
+    // 阈值取自后端下发值（后端文案里的 75%/70% 是硬编码，这里用参数渲染，同值）
+    hint = `筹码拥挤（位置 >${Math.round(T.high_pos_threshold * 100)}% 或 获利盘 >${Math.round(T.winner_ratio_crowded * 100)}%）`
+  } else {
+    label = '不满足'
+    hint = ''
+  }
+
+  // 建议仓位（镜像 evaluate 的档位规则；参数同样来自后端）
+  const RP = T.regime_position || {}
+  const steps = T.position_steps || [0, 5, 10, 20, 50, 80]
+  let pct = RP[regime] != null ? RP[regime]
+    : (T.position_default != null ? T.position_default : 30)
+  if (crowded) pct = Math.trunc(pct * 0.5)
+  if (!condA) pct = Math.trunc(pct * 0.5)
+  if (accum && condB && condC) pct = Math.min(80, Math.max(pct, 50))
+  let snapped = 0
+  for (const v of steps) { if (pct >= v) snapped = v }
+  const positionLabel = snapped === 0 ? '禁止'
+    : snapped <= 10 ? '轻仓试探'
+      : snapped <= 20 ? '四分之一仓'
+        : snapped <= 50 ? '半仓' : '积极'
+
+  return {
+    ready, total: items.length, items, label, hint,
+    position_pct: snapped, position_label: positionLabel,
+    regime,
+  }
+}
+
 // ── 工具函数 ──
 
 function clamp(v, lo = 0, hi = 100) {

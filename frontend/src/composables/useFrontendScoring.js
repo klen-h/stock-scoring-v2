@@ -20,7 +20,7 @@ import {
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
 import { getFinanceBatch, getScoreWeights } from '../api'
-import { scoreStock, roughScore, setRegimeState, decayTotal } from '../utils/scoringEngine'
+import { scoreStock, roughScore, setRegimeState, setGateRules, buildGate, decayTotal } from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
 /**
@@ -352,9 +352,13 @@ export async function computeRanking(options = {}) {
       currentWeights = wdata.weights || null
       // ★ 审查 P1-13：同步 regime 给 nb 高换手钳制（scoringEngine 模块内状态）
       setRegimeState(wdata.regime_state)
+      // ★ 2026-09-18：同步「买入条件就绪」的判据参数（阈值/档位/条目名由后端下发，
+      //   前端只做布尔组合 → 口径不漂；取不到则本地隐藏该列，见 scoringEngine.buildGate）
+      setGateRules(wdata.gate)
     } catch {
       currentWeights = null
       setRegimeState(null)
+      setGateRules(null)
     }
 
     // 1. 获取所有股票列表
@@ -654,12 +658,18 @@ async function preciseScoreBatchMainThread(stocks, weights) {
  * 与后端默认 off 的行为保持一致。
  */
 function attachMainforce(results, mfMap) {
-  if (!mfMap || !Object.keys(mfMap).length) return
+  const hasMf = !!(mfMap && Object.keys(mfMap).length)
   for (const r of results) {
-    if (r && mfMap[r.code]) {
+    if (!r) continue
+    if (hasMf && mfMap[r.code]) {
       r.mainforce = mfMap[r.code]
       applyOverextensionGate(r)
     }
+    // ★ 2026-09-18：买入条件就绪（gate）—— 本地镜像 trade_gate.summarize，
+    //   判据参数由后端 /api/score/weights 的 gate 字段下发（见 scoringEngine.buildGate）。
+    //   ★ 与主力标签**无关**：后端 summarize 在该股无 mainforce 时同样产出（mf={}），
+    //     所以这里也不能因为 mfMap 为空就跳过，否则本地与线上又不一致。
+    r.gate = buildGate(r)
   }
 }
 

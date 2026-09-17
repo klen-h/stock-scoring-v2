@@ -756,12 +756,23 @@ def score_weights():
     from app.backtest.market_regime import get_regime_cache, get_regime_description
     cache = get_regime_cache()
     state = cache.get("state")
+    # ★ 2026-09-18：带上「买入条件就绪」的判据参数 —— 前端本地计算模式要镜像
+    #   trade_gate.summarize（评分榜 item.gate），阈值/档位由后端唯一提供，
+    #   避免前端硬编码导致口径漂移（同 weights/regime_state 的既有理由）。
+    #   取不到时给 None，前端自动隐藏该列（fail-safe，不影响评分）。
+    try:
+        from app.mainforce.trade_gate import rules as _gate_rules
+        gate = _gate_rules()
+    except Exception as e:
+        print(f"[scoring] gate 判据参数下发失败（前端本地模式将隐藏该列）: {e}")
+        gate = None
     return {
         "weights": dict(engine.weights),
         "regime_state": state,
         "regime_date": cache.get("date"),
         "description": (get_regime_description(state) if state
                         else "市场状态未判定（引擎用默认静态权重）"),
+        "gate": gate,
     }
 
 
