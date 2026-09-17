@@ -73,13 +73,25 @@ def _snap(pct: int) -> int:
     return out
 
 
+# 当日矛盾条数进程内缓存（30s）：榜单要一次给 50 只调 evaluate，
+# 不缓存就是 100 次 DB 查询（原实现每次都读 L1+L2 两遍）。
+_contra_cache = {"ts": 0.0, "n": 0}
+_CONTRA_TTL = 30.0
+
+
 def _today_contradictions() -> int:
-    """当日 L1/L2 矛盾条数（指数级"有根据"的宏观背书）。"""
+    """当日 L1/L2 矛盾条数（指数级"有根据"的宏观背书）。30s 进程缓存。"""
+    import time as _t
+    now = _t.time()
+    if _contra_cache["ts"] and now - _contra_cache["ts"] < _CONTRA_TTL:
+        return _contra_cache["n"]
     try:
         from app.contradictions.store import load_contradictions
-        return len(load_contradictions(level="L1")) + len(load_contradictions(level="L2"))
+        n = len(load_contradictions(level="L1")) + len(load_contradictions(level="L2"))
     except Exception:
-        return 0
+        n = 0
+    _contra_cache.update({"ts": now, "n": n})
+    return n
 
 
 def evaluate(code: str, mf: Dict = None) -> Dict:
@@ -171,3 +183,49 @@ def render_advice(result: Dict) -> str:
         return ""
     return (f"建议仓位 {result['position_pct']}%（{result['position_label']}）"
             f"｜状态 {result.get('regime') or '未知'}")
+
+
+# ── 条件就绪摘要（★ 2026-09-17 新增）──────────────────────────────────────
+# 用途：把 evaluate 的三条件压成「一行可展示」的结构，供评分榜/详情页复用。
+#
+# ★ 定位声明（重要，避免误用）：
+#   这是**状态展示**，不是买入信号 —— 不参与排序、不改总分、不新增信号、不新增网络。
+#   语义 = "准备好了吗 / 还没到出手时候"，与北极星「识别状态、顺应方向、不猜时点」
+#   和红线「不抢跑未发生的节奏」一致（原本想做的"吸筹埋伏"正踩在那条线上）。
+# ★ 口径唯一事实源：就绪度只由本函数产出，前端不得自行推导（项目已有"前后端两套
+#   评分实现导致口径漂移"的前车之鉴，本地 68.8 / 后端 72.6）。
+_READY_ITEMS = (("A", "A_mainforce", "主力根据"),
+                ("B", "B_not_crowded", "不追高"),
+                ("C", "C_regime_ok", "状态允许"))
+
+
+def summarize(result: Dict) -> Dict:
+    """evaluate 结果 → 条件就绪摘要。
+
+    返回 {ready(0~3), total, items:[{key,ok,label}], label, hint,
+          position_pct, position_label, regime, active}
+    label ∈ 三条件就绪 / 等状态 / 缺主力根据 / 追高 / 不满足
+    """
+    cond = result.get("conditions") or {}
+    items = [{"key": k, "ok": bool(cond.get(ck)), "label": lb}
+             for k, ck, lb in _READY_ITEMS]
+    ready = sum(1 for x in items if x["ok"])
+    a, b, c = (x["ok"] for x in items)
+    regime = result.get("regime") or ""
+    if a and b and c:
+        label, hint = "三条件就绪", "主力有根据、不追高、市况允许"
+    elif a and b:
+        label = "等状态"
+        hint = f"主力有根据、不追高，但市况 {regime or '未知'} 不允许"
+    elif not a:
+        label, hint = "缺主力根据", "未识别吸筹区（低位筹码密集 × 主力净流入）"
+    elif not b:
+        label, hint = "追高", "筹码拥挤（位置 >75% 或 获利盘 >70%）"
+    else:
+        label, hint = "不满足", ""
+    return {"ready": ready, "total": len(items), "items": items,
+            "label": label, "hint": hint,
+            "position_pct": result.get("position_pct", 0),
+            "position_label": result.get("position_label") or "",
+            "regime": regime,
+            "active": bool(result.get("active"))}

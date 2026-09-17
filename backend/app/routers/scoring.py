@@ -1034,6 +1034,18 @@ def score_single(symbol: str):
         except Exception as e:
             print(f"[mainforce] 详情页叠加失败 {symbol}: {e}")
 
+    # 6. ★ 2026-09-17：买入条件就绪摘要（**状态展示**，非买入信号：不改总分、
+    #    不参与排序、不新增网络请求）。语义 = "准备好了吗 / 还没到出手时候"，
+    #    对应北极星「不猜时点、不抢跑未发生的节奏」。口径见 trade_gate.summarize。
+    gate = None
+    if mainforce:
+        try:
+            from app.mainforce.trade_gate import evaluate as _tg_eval
+            from app.mainforce.trade_gate import summarize as _tg_sum
+            gate = _tg_sum(_tg_eval(symbol, mf=mainforce))
+        except Exception as e:
+            print(f"[trade_gate] 详情页就绪摘要失败 {symbol}: {e}")
+
     return {
         "code": result.code,
         "name": result.name,
@@ -1047,6 +1059,7 @@ def score_single(symbol: str):
         "buy_point": result.buy_point,
         "trend_health": result.trend_health,
         "mainforce": mainforce,
+        "gate": gate,
     }
 
 
@@ -1250,6 +1263,15 @@ async def score_top(
                 pass
             _mf_eff = (_mf_mode() == "auto" and _regime in GATE_REGIMES)
             _mf = _mf_load([r.code for r in top])
+            # ★ 2026-09-17：买入条件就绪摘要（**状态展示**：不参与排序、不改总分、
+            #   不产生买入信号）。复用上面已批量加载的 _mf → 零额外 DB 查询
+            #   （evaluate 内部的"当日矛盾"计数已加 30s 进程缓存）。口径见
+            #   trade_gate.summarize（唯一事实源，前端不得自行推导）。
+            try:
+                from app.mainforce.trade_gate import evaluate as _tg_eval
+                from app.mainforce.trade_gate import summarize as _tg_sum
+            except Exception:
+                _tg_eval = _tg_sum = None
             for item in result_data:
                 m = _mf.get(item["code"])
                 if m:
@@ -1263,6 +1285,11 @@ async def score_top(
                         "price_pos": (m.get("chip") or {}).get("price_pos"),
                         "winner_ratio": (m.get("chip") or {}).get("winner_ratio"),
                     }
+                    if _tg_sum:
+                        try:
+                            item["gate"] = _tg_sum(_tg_eval(item["code"], mf=m))
+                        except Exception:
+                            pass
             # ★ 2026-09-13 审查 P1-12（×0.85 语义裁决 = 方案A「只挂标签不动分」）：
             #   移除排序乘法。此前仅此处（score_top 排序）乘 mult，详情页/live_ranking/
             #   前端本地计算均 raw total → 四个面三个口径互相矛盾。现统一为：

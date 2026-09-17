@@ -243,6 +243,33 @@
         <div class="mt-2 text-[11px] text-muted">
           高位高获利+主力流出 = 出货嫌疑（回测 10 日 -3.8pt）；低位筹码密集+主力净流入 = 吸筹区（10 日 +0.7pt）。均值成本 {{ scoreData.mainforce.chip?.avg_cost ?? '-' }}
         </div>
+
+        <!-- ★ 2026-09-17 买入条件就绪（**状态展示，非买入信号**：不参与排序、不改总分）
+             语义 = 「准备好了吗 / 还没到出手时候」—— 对应北极星「识别状态、不猜时点、
+             不抢跑未发生的节奏」。就绪度口径由后端 trade_gate.summarize 唯一负责，此处只渲染。 -->
+        <div v-if="scoreData.gate" class="mt-3 pt-3 border-t border-border/60">
+          <div class="flex items-center justify-between mb-2">
+            <span class="text-[11px] text-muted">买入条件就绪 · 状态展示（非买入信号）</span>
+            <span class="px-2 py-0.5 rounded text-xs font-bold"
+              :class="scoreData.gate.ready === 3 ? 'bg-emerald-500/20 text-emerald-400' :
+                     scoreData.gate.ready === 2 ? 'bg-amber-500/20 text-amber-400' : 'bg-white/5 text-muted'">
+              {{ scoreData.gate.ready }}/{{ scoreData.gate.total }} · {{ scoreData.gate.label }}
+            </span>
+          </div>
+          <div class="flex flex-wrap gap-1.5">
+            <span v-for="it in scoreData.gate.items" :key="it.key"
+              class="px-2 py-1 rounded text-[11px]"
+              :class="it.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-muted'">
+              {{ it.ok ? '✓' : '✗' }} {{ it.key }}·{{ it.label }}
+            </span>
+          </div>
+          <div class="mt-2 text-[11px] text-muted leading-relaxed">
+            {{ scoreData.gate.hint }}
+            <span v-if="scoreData.gate.position_label" class="ml-1 px-1.5 py-0.5 rounded bg-white/5">
+              建议仓位口径 {{ scoreData.gate.position_pct }}%（{{ scoreData.gate.position_label }}）
+            </span>
+          </div>
+        </div>
       </div>
       </div>
 

@@ -358,6 +358,15 @@
                 :title="`${item.mainforce.phase === 'distribution' ? '出货' : item.mainforce.phase === 'accumulation' ? '吸筹' : item.mainforce.phase === 'markup' ? '拉升' : item.mainforce.phase === 'shakeout' ? '洗盘' : item.mainforce.phase === 'decline' ? '下跌' : '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力占额累计 ${item.mainforce.flow5_amt ?? '-'}`">
                 {{ item.mainforce.signal === 'distribution' ? '出货' : '吸筹' }}
               </span>
+              <!-- ★ 2026-09-17 买入条件就绪（**状态展示，非买入信号**：不参与排序、不改总分）
+                   就绪度由后端 trade_gate.summarize 唯一产出，前端只渲染 -->
+              <span v-if="item.gate"
+                class="ml-1 px-1 py-0.5 rounded text-[10px] font-mono cursor-help"
+                :class="item.gate.ready === 3 ? 'bg-emerald-500/20 text-emerald-400' :
+                       item.gate.ready === 2 ? 'bg-amber-500/20 text-amber-400' : 'bg-white/5 text-muted'"
+                :title="`买入条件就绪 ${item.gate.ready}/3 · ${item.gate.label} ｜ ${item.gate.items.map(i => (i.ok ? '✓' : '✗') + i.label).join(' / ')} ｜ ${item.gate.hint}（建议仓位口径 ${item.gate.position_pct}%）`">
+                {{ item.gate.ready }}/3
+              </span>
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
