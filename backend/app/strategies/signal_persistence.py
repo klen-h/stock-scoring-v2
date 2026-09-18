@@ -33,6 +33,11 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 
 from app.database import db
+# ★ 2026-09-19：原用 datetime.now()（服务器本地时间）→ 与项目「全链路北京时间」
+#   规范不符。Actions 是 UTC：北京 21:xx 跑时两者同一天（碰巧不出错），
+#   但**北京 0:00-08:00 窗口跑**时 UTC 还是前一天 ⇒ 日期差一天。
+#   统一改用 beijing_now()（与 flash/rules 同源）。
+from app.flash.rules import beijing_now
 
 
 # ── 数据库表初始化 ──
@@ -80,7 +85,7 @@ def update_persistence(strategy_name: str, signals: List[Dict]) -> List[Dict]:
     返回：
         添加了持久度信息的信号列表
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = beijing_now().strftime("%Y-%m-%d")
     
     # 存入今日信号
     for signal in signals:
@@ -119,7 +124,7 @@ def enrich_with_persistence(strategy_name: str, signals: List[Dict]) -> List[Dic
     """
     为信号添加连续上榜天数和可信度评级。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = beijing_now().strftime("%Y-%m-%d")
     
     for signal in signals:
         code = signal.get("code")
@@ -219,7 +224,7 @@ def get_persistence_summary(strategy_name: str) -> Dict:
         GROUP BY code
     """, (strategy_name,))
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = beijing_now().strftime("%Y-%m-%d")
     stats = {"1天": 0, "2天": 0, "3天+": 0, "5天+": 0}
     
     for row in rows:
@@ -248,7 +253,7 @@ def get_top_persistent_signals(strategy_name: str, min_days: int = 3) -> List[Di
     
     这些是"强者恒强"的股票。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = beijing_now().strftime("%Y-%m-%d")
     
     # 获取最近有信号的所有股票
     rows = db.fetch("""

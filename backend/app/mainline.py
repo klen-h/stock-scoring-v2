@@ -142,7 +142,20 @@ def compute_mainline(date: str = None) -> dict:
     """
     t0 = time.time()
     if date is None:
-        date = beijing_now().strftime("%Y-%m-%d")
+        # ★ 2026-09-19：默认取「ranking_history 里**最新的一天**」，而不是北京自然日。
+        #   原因：`score_snapshot` 落库用的是**交易日**（如 9-18），而本函数原来取
+        #   `beijing_now()`（自然日）⇒ 日批**跨日之后**跑（凌晨补跑）时 date=9-19
+        #   而表里只有 9-18 ⇒ 报 `2026-09-19 无 Top50 数据（先跑评分快照）`，
+        #   明明评分快照已经跑过了 —— 纯粹是**日期口径不一致**。
+        #   与同文件 `_latest_unknown()` 的做法对齐（它一直用
+        #   `WHERE date <= today ORDER BY date DESC LIMIT 1`）。
+        row = db.fetch_one(
+            "SELECT rank_date FROM ranking_history WHERE rank_date <= %s "
+            "ORDER BY rank_date DESC LIMIT 1",
+            (beijing_now().strftime("%Y-%m-%d"),))
+        if not row:
+            return {"ok": False, "error": "ranking_history 无任何 Top50 数据（先跑评分快照）"}
+        date = str(row["rank_date"])
     rows = db.fetch(
         "SELECT code, name, rank_pos FROM ranking_history "
         "WHERE rank_date = %s AND rank_pos <= 50 ORDER BY rank_pos", (date,))

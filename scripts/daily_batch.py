@@ -35,6 +35,18 @@ import time
 import traceback
 from datetime import datetime
 
+# ★ 2026-09-19：Windows 控制台默认 **GBK**，而本脚本的汇总行用了 ✅/❌ 等非 GBK 字符
+#   ⇒ print 时抛 UnicodeEncodeError；更糟的是 **except 分支里的 ❌ 也会抛**，
+#   导致「连失败明细都打不出来，整个进程直接退出」（2026-09-19 本地实测踩到）。
+#   这里把 stdout/stderr 的解码错误策略改成 replace —— 保留 GBK 编码（中文照常），
+#   仅把该编码不支持的字符退化成 `?`，**进程绝不会因编码崩**。
+#   Actions / Linux（UTF-8）下 reconfigure 不改变任何行为 ⇒ 线上日志不受影响。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 sys.path.insert(0, BACKEND)
