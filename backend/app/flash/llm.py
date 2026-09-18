@@ -549,7 +549,26 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
     global _last_error
     providers = _providers()
     if not providers:
-        _last_error = "未配置任何 LLM provider（LLM_API_KEY/LLM_MODEL 或 LLM_FREE_*）"
+        # ★ 2026-09-19：**点名缺哪个变量**，不再只给一句笼统的"未配置任何 provider"。
+        #   实战踩坑：Render 上 `LLM_FREE_API_KEY` 为空（它是 render.yaml 里唯一
+        #   sync:false 的 free 变量，base_url/model 都是硬编码 value）⇒ free 槽
+        #   从未进链 ⇒ 一直悄悄用着**已欠费的主力站** ⇒ 前端只看到误导性的 402；
+        #   等把主力站清掉后，错误才变成"未配置任何 provider"，但**仍要靠猜**。
+        #   这里把两个槽各自缺的变量名列出来，配置问题一眼可定位。
+        _miss = []
+        _free_lack = [n for n, v in (("LLM_FREE_BASE_URL", LLM_FREE_BASE_URL),
+                                     ("LLM_FREE_API_KEY", LLM_FREE_API_KEY),
+                                     ("LLM_FREE_MODEL", LLM_FREE_MODEL)) if not v]
+        if _free_lack:
+            _miss.append("free 槽缺 " + "/".join(_free_lack))
+        elif LLM_FREE_SHADOW:
+            _miss.append("LLM_FREE_SHADOW=1（免费站被排除在正式链外，正式链路应设 0）")
+        _main_lack = [n for n, v in (("LLM_API_KEY", LLM_API_KEY),
+                                     ("LLM_MODEL", LLM_MODEL)) if not v]
+        if _main_lack:
+            _miss.append("main 槽缺 " + "/".join(_main_lack))
+        _last_error = ("未配置任何 LLM provider（" + "；".join(_miss) + "）"
+                       if _miss else "未配置任何 LLM provider")
         return ""
     blocked = llm_blocked_reason()
     if blocked:
