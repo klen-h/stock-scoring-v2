@@ -19,13 +19,25 @@ on:
         required: false
         default: 'false'
       waf_cooldown:
-        description: 'WAF 全局冷却基准秒数（默认 45，会自适应 ×2 加码到 300）'
+        # ★ 2026-09-18 实测回归：45 → 120。
+        #   9-18 那次（45/2/5）在 Actions 上跑到 **180 分钟被 timeout 砍掉**，
+        #   只完成第 1 轮 1200/2081、[WAF] 拦截 23 次，冷却是全局的 ⇒ 名义
+        #   23×300s ≈ 1.9h 全在静默 —— 冷却吞掉了大部分墙钟。
+        #   45 是 9-17 引入的「配合限速」激进值，代码注释本就记载「固定 45s 时拦截
+        #   从 40+ 升到 ~117 次、耗时反而更长」。回 120（= 脚本 generate-kline-pack.py
+        #   的默认值，两处终于一致），自适应 ×2 只需 3 步就到 300 上限，比 45 更早
+        #   进入长静默、更少无谓重试。
+        description: 'WAF 全局冷却基准秒数（默认 120，会自适应 ×2 加码到 300）'
         required: false
-        default: '45'
+        default: '120'
       qps:
-        description: '★ 全进程请求速率上限（默认 2；这是控 WAF 的主旋钮）'
+        # ★ 2026-09-18：2 → 1。代码注释给的处置阶梯是「若仍有拦截 → 降到 1」，
+        #   而 9-18 那次正是「仍有拦截」（23 次）⇒ 按阶梯降档。
+        #   注意这是**反直觉**的：降速后单只耗时变长，但撞墙次数和全局冷却大幅减少，
+        #   总墙钟通常反而更短（9-18 那 1.9h 的静默就是撞出来的）。
+        description: '★ 全进程请求速率上限（默认 1；这是控 WAF 的主旋钮，仍有拦截就再降）'
         required: false
-        default: '2'
+        default: '1'
 
 concurrency:
   group: backend-pack
@@ -96,15 +108,18 @@ jobs:
           #     （45→90→180，PACK_WAF_MAX_COOLDOWN 封顶 300），任一成功即回落基准；
           #     ② 冷却改为「循环睡到解除」，不再批量误记失败；③ 跑完打印 WAF 汇总
           #     （拦截次数/累计等待/末次退避），下次 A/B 有硬数据。
-          #   本值现为**基准**，会自适应上调；要立刻回到已验证的 120，dispatch 填 120。
-          PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '45' }}
+          #   ★ 2026-09-18：基准 45 → 120（与脚本 generate-kline-pack.py 的默认值对齐，
+          #     那两处长期不一致，见 inputs 处的回归说明）。
+          PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '120' }}
           # ★★ 2026-09-17 主旋钮：全进程请求速率上限（令牌桶，无突发）。
           #   被动冷却只能事后止血 —— 只要"发出的请求速率"高于腾讯阈值就必然反复撞墙，
           #   而 WAF 按滑动窗口判定，撞得越勤窗口越排不空 → 自锁（这正是耗时失控的机制）。
           #   实测：原「5 线程 × 每线程 0.5~0.9s sleep」≈ 峰值 7 req/s、5 个请求可同时飞出。
-          #   2 QPS = 120 请求/分钟；2057 只理论下限 ≈ 17 分钟（远低于现状）。
-          #   若仍有拦截 → 降到 1；若全程零拦截且嫌慢 → 可试 3~4（先看日志 WAF 汇总）。
-          PACK_QPS: ${{ github.event.inputs.qps || '2' }}
+          #   2 QPS = 120 请求/分钟；2057 只理论下限 ≈ 17 分钟。
+          #   ★ 2026-09-18：2 QPS 实测**仍然撞**（Actions 上 23 次拦截、180 分钟被 timeout 砍），
+          #     按本注释的处置阶梯降到 1。1 QPS ⇒ 2057 只下限 ≈ 35 分钟，仍在 timeout 内。
+          #     若显示零拦截且嫌慢 → 再试 2~3（先看日志末尾那行 WAF 汇总）。
+          PACK_QPS: ${{ github.event.inputs.qps || '1' }}
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
         run: |

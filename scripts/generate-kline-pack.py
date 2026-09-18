@@ -529,6 +529,15 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
     pending = list(codes)
     workers = max(1, int(workers or 1))
 
+    # ★ 2026-09-18：**启动时**打印生效配置（此前只有跑完时 _waf_report() 才打印）。
+    #   踩过的坑：9-18 那次 Actions 跑到 180 分钟被 timeout 砍掉，日志里只有
+    #   45/90/180/300 这些**冷却**值，反推不出 `PACK_QPS` 到底生效成多少 ⇒ 排障
+    #   只能靠猜。参数一旦在开头打出来，"用的哪套配置"就不再需要推断。
+    print(f"  [配置] {total} 只 / 并发 {workers} / 限速 {PACK_QPS:g} QPS（0=关闭）"
+          f" / 冷却基准 {WAF_COOLDOWN}s（自适应上限 {WAF_MAX_COOLDOWN}s）"
+          f" / 单只等待上限 {WAF_WAIT_MAX}s / 超时 {REQUEST_TIMEOUT}s"
+          f" / 重试 {KLINE_RETRIES}")
+
     for round_no in range(3):
         if not pending:
             break
