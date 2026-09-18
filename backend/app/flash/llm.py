@@ -507,6 +507,34 @@ def _shadow_stats_24h():
         return {"enabled": True, "stats_24h": {}}
 
 
+# ── ★ 2026-09-19 全局调用间隔（免费站 RPM 限流防护）──────────────────────────
+# 为什么需要：正式链首 = **SenseNova 日日新免费站**，它对 **RPM 极敏感**。日批里
+#   「矛盾报告 → 每日日报 → 交易员简报」几乎背靠背调用，间隔过短即 429；而 429 被
+#   归类为**站点级故障** ⇒ `_call_provider` **不重试、直接降级下一站** ⇒ 链尾
+#   （主力站）也已欠费 ⇒ **整条链失败** —— 这就是"某些时段 LLM 全不可用"的形态。
+#   反证：能成功的都是**间隔较大**的调用时点。所以「两次调用之间隔一下」正是对症旋钮。
+# 做法：任意两次**请求发出**之间至少间隔 `LLM_MIN_INTERVAL` 秒。全进程共享（含影子
+#   线程），故加锁。设 0 关闭（回退旧行为）。
+LLM_MIN_INTERVAL = float(os.environ.get("LLM_MIN_INTERVAL", "6") or 0)
+_last_call_ts = 0.0
+_call_gap_lock = threading.Lock()
+
+
+def _respect_call_interval() -> None:
+    """全局节流：保证两次 LLM 请求的**发出间隔** ≥ LLM_MIN_INTERVAL 秒。"""
+    global _last_call_ts
+    if LLM_MIN_INTERVAL <= 0:
+        return
+    with _call_gap_lock:
+        now = time.time()
+        wait = _last_call_ts + LLM_MIN_INTERVAL - now
+        if wait > 0:
+            print(f"[llm] 调用间隔节流：等待 {wait:.1f}s"
+                  f"（下限 {LLM_MIN_INTERVAL:.0f}s，防 429 限流）")
+            time.sleep(wait)
+        _last_call_ts = time.time()
+
+
 def call_llm(system: str, user: str, temperature: float = 0.3,
              json_mode: bool = False, retries: int = 3, tier: str = "slow") -> str:
     """
@@ -541,6 +569,9 @@ def call_llm(system: str, user: str, temperature: float = 0.3,
         print(f"[llm] fast 档链首为 {providers[0]['name']}（非免费站，多为推理模型）"
               f"→ 超时按 slow {LLM_TIMEOUT_SLOW}s（避免必然超时+熔断）")
     timeout = LLM_TIMEOUT_FAST if (tier == "fast" and _fast_ok) else LLM_TIMEOUT_SLOW
+    # ★ 2026-09-19：发出前先过全局间隔闸（放在熔断/配置检查**之后** —— 那些情况
+    #   根本不会发请求，没必要白等）。见 _respect_call_interval 的说明。
+    _respect_call_interval()
     task_key = hashlib.md5((system + user).encode("utf-8")).hexdigest()[:12]
     t0 = time.time()
     for p in providers:

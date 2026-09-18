@@ -532,6 +532,18 @@ def is_strategy_admitted(strategy_name: str, regime: str = None,
             "neutral_bearish": "oscillating",   # nb 权重/准入同震荡（审查 P1-4 配套）
             "defensive": None}.get(regime)
     if base is None:
+        # ★ 2026-09-19：**防御市也走扫描层豁免**。
+        #   原先 `defensive` 的 base=None 在这里直接 return，而 `for_scan` 的豁免在
+        #   **下面**（见「扫描层到此为止」）⇒ 豁免**永远到不了**防御市 ⇒
+        #   防御市期间扫描层完全不扫描 ⇒ `strategy_results` **永久断档**
+        #   （实测：2026-09-15 起转防御 ⇒ 表里最新只到 2026-09-14）。
+        #   这与同文件 B 方案（2026-09-13）的意图相悖 —— 它要解决的正是「断档」，
+        #   只是当时只覆盖了「阴跌闸门 + 高波白名单」，漏了 `base is None` 这条更早的出口。
+        #   语义边界不变：**只豁免扫描层**（照常扫描、样本照常落库），
+        #   推送由 `get_push_whitelist` 独立把关、入池由 `paper_trading` 走完整判定
+        #   ⇒ 防御市**依然不会推送、不会入模拟盘**。入场/推送层（for_scan=False）行为完全不变。
+        if for_scan and STRATEGY_WIDE_SCAN:
+            return True, "准入（扫描层·防御市攒样本）", regime, volatility
         return False, f"当前为{REGIME_LABELS.get(regime, regime)}市，禁止战法入场", regime, volatility
     if strategy_type != base:
         return False, (f"当前为{REGIME_LABELS.get(regime, regime)}市，"

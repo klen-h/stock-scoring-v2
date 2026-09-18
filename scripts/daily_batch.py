@@ -502,32 +502,47 @@ def ensure_quotes():
 def ensure_pack_fresh(max_wait_min: float):
     """★ 校验数据包日期，避免日批跑在昨天的包上。
 
-    daily-batch 排在 backend-pack 之后 30 分钟，但后端包要拉 1442 只×749 根
-    （约 10~30 分钟）+ 算指标 + 发布 Pages。若它延迟，日批就会拿着昨天的包
-    跑战法扫描 → 信号日期错位（且静默，不易发现）。这里等包更新到今天为止。
+    daily-batch 排在 backend-pack 之后 30 分钟，但后端包要拉 2081 只×749 根
+    + 算指标 + 发布 Pages。若它延迟，日批就会拿着昨天的包跑战法扫描 →
+    信号日期错位（且静默，不易发现）。这里等包更新到「**此刻本应可用**」为止。
+
+    ★ 2026-09-19 改造：判据从「北京**自然日**」换成
+      `pack_source._latest_available_pack_day()`（**交易日历感知 + 22:00 时间分界**）。
+
+      原实现 `want = 北京今天的 YYYYMMDD` 只在「当天 19:00 包发布之后」成立：
+      **0:00~19:00 之间跑（凌晨补跑 / 白天补跑）永远 `want=今天` vs `包=昨天`**
+      ⇒ 白等 `--max-wait`（默认 30 分钟）、每 3 分钟 `redownload()` 重下一次 127MB 包，
+        最后打 `::error::` 却**因返回值未被调用方使用而继续跑**（2026-09-19 凌晨实测踩到）。
+      更糟的是它按**自然日**算：遇到**周末/长假**（中秋 9-25~9-27、国庆 10-01~10-07）
+      同样永远等不到——**休市日根本不会生成新包**。
+
+      新判据与读侧 `pack_source._is_stale()` / `_pack_outdated()` **完全同源**，
+      三处判定终于一致：
+        · 交易日 22:00 之后 → 当天（包已发布）
+        · 其余情况        → 上一个交易日（跳过周末 + `rules.HOLIDAYS`，带自然日兜底）
+      ★ 显式传北京时区：`_latest_available_pack_day()` 默认用 `datetime.now()`，
+        在 UTC 环境（Actions / Render）会整体差一天。
+      ★ 用 `got >= want` 而非 `==`：包比预期更新时也算通过（原 `==` 会误杀）。
     """
     import app.pack_source as ps
+    from app.flash.rules import beijing_now
 
-    # ★ 审查 P2-3：包日期由 cron-job.org 北京 19:00 的 backend-pack 生成（北京日期），
-    #   Actions 本地时钟是 UTC——北京 00:00-08:00 窗口触发时 UTC 日期比北京小一天，
-    #   会误判包过期空转 30 分钟。统一用北京时间比对（同 _bj_now 风格）。
-    import datetime as _dt
-    want = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).strftime("%Y%m%d")
+    want = ps._latest_available_pack_day(beijing_now())
     deadline = time.time() + max(0, max_wait_min) * 60
     while True:
         try:
-            got = ps._pack_date()
+            got = ps._parse_pack_date(ps._pack_date())
         except Exception as e:
             print(f"  读取数据包日期失败: {e}")
             got = None
-        if got == want:
-            print(f"  数据包日期校验通过: {got}")
+        if got is not None and got >= want:
+            print(f"  数据包日期校验通过: {got}（此刻应可用 {want}）")
             return True
         if time.time() >= deadline:
-            print(f"::error::数据包仍为 {got}（期望 {want}）——后端包可能失败或延迟，"
+            print(f"::error::数据包仍为 {got}（应可用 {want}）——后端包可能失败或延迟，"
                   f"日批将基于旧数据运行，请检查 backend-pack workflow")
             return False
-        print(f"  数据包日期 {got} != {want}，3 分钟后强制重下重试"
+        print(f"  数据包日期 {got} < 应可用 {want}，3 分钟后强制重下重试"
               f"（Pages 站点部署/CDN 有 1~2 分钟空窗，本地包 mtime 新鲜但内容是旧的）…")
         time.sleep(180)
         # ★ 必须强制重下（2026-09-10 事故）：只置 _ready_checked 不够——_ensure_ready
