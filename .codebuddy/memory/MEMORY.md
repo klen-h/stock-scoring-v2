@@ -73,6 +73,26 @@
   ⇒ RPM/TPM 被三家瓜分 ⇒ 撞车即 **429**。主解是 `LLM_MIN_INTERVAL`（跨进程不协调），
   多 key 分环境是辅助。
 
+## 因子体检周期化（2026-09-20 起）
+- **`scripts/subfactor_ic_backtest.py` 每月首个交易日随日批自动跑**
+  （任务名 `subfactor_ic`，`DEFAULT_ORDER` 第 18 位；`--tasks subfactor_ic` 可强制）。
+- **幂等判据必须读库**（`report_store` 中 tag=`subfactor_ic` 最新报告是否属于本轮交易日的月份）——
+  **不可用文件判据**：日批跑在 GitHub Actions，工作区每次 checkout 全新 ⇒ 文件级判据恒为
+  "没有报告" ⇒ 会天天跑。与 `task_weekly_report` 的 `_weekly_due()` 同一原因、同一做法。
+- 每轮与上轮基线（库中 `subfactor_ic_latest.json`）对比，输出「IC 变化表 + 负 IC 复现度」；
+  三条告警判据**写死在 `_review()`**：负 IC 复现度下降 / |上轮 IC|≥0.04 符号翻转 /
+  **倒U两个子项（主力净流入、主力极端流入）IC 转负 = 倒U背书失效**。
+- 报告**落库**（tag=`subfactor_ic`，前端「回测中心」可见）+ 落盘 `backend/backtest_reports/`。
+- **企微推送分级**（`daily_batch._push_ic_summary`）：**有告警 ⇒ `force=True`**（关键通知，
+  穿透业务开关）；**无告警 ⇒ 普通推送**，尊重 `WECHAT_BUSINESS_ALERTS`（**默认 '0' = 关闭**，
+  即默认不发月报）。⚠️ **`push_markdown_batched` 返回 None ⇒ 无法判断是否真发出** ⇒
+  必须由调用方显式检查 `WECHAT_WEBHOOK` / `BUSINESS_ALERTS_ENABLED` 并把状态写进返回值，
+  否则会出现「以为挂了推送、其实静默没发」。
+- ⚠️ **企微不支持 markdown 表格**：`push_markdown_batched` 会经
+  `wechat_fmt.markdown_tables_to_lists` 把表格转成列表（幂等）⇒ 推送内容直接写成行内拼接更可控。
+- 设计动机：2026-09-20 首次体检发现**技术面 8/8 子项 5-10 日负 IC**（A 股短窗截面反转），
+  并解释「周报买入信号 5 日胜率 41.5%」——结论会随样本期漂移，必须周期化复核。
+
 ## 日期口径（全项目规范 —— 2026-09-19 第 3 次踩坑后固化）
 - **凡「数据所属日期」一律用「最近的已完成交易日」，绝不用北京自然日。**
   自然日只在日批正常时点（20:43 盘后）碰巧等于交易日；**凌晨 / 周末 / 节假日 / 盘前**
