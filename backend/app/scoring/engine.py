@@ -777,8 +777,13 @@ class ScoreEngine:
         flow5 = stock_info.get("flow5_amt")
         if flow5 is not None:
             try:
-                mf_score = _score_flow5(float(flow5))
-                details["主力净流入"] = {"分值": mf_score, "满分": 20}
+                f5 = float(flow5)
+                mf_score = _score_flow5(f5)
+                # ★ 2026-09-20（001368 个案，评分倒U改进 P1）：极端流入被倒U刻意
+                #   降分（散户陷阱），与"主力流出"语义完全不同——标签区分，避免
+                #   "强势股 + 主力红标"被误读为搞反了。>5 的中性区间不受影响。
+                key = "主力极端流入(散户陷阱降分)" if f5 > 5 else "主力净流入"
+                details[key] = {"分值": mf_score, "满分": 20}
                 sub_scores.append((mf_score, 20))
             except (TypeError, ValueError):
                 pass

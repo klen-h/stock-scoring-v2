@@ -546,9 +546,13 @@ function scoreCapital(techData, stockInfo) {
   // 5. 主力5日净流入（20 分，2026-09-09 新增，海德股份教训：量价因子对
   //    主力持续流出不敏感）。数据：stockInfo.flow5_amt（pack mainforce），
   //    缺失时退回原 4 因子。有第 5 因子时总权重 120，需归一化。
+  //    ★ 2026-09-20（001368 个案，P1）：极端流入被倒U刻意降分，与"主力流出"
+  //    语义不同——details key 区分，extractFactors 未知 key 回退为 key 名。
   if (stockInfo && stockInfo.flow5_amt != null) {
-    const mfScore = scoreFlow5(Number(stockInfo.flow5_amt))
-    details['主力净流入'] = { 分值: mfScore, 满分: 20 }
+    const f5 = Number(stockInfo.flow5_amt)
+    const mfScore = scoreFlow5(f5)
+    const mfKey = f5 > 5 ? '主力极端流入(散户陷阱降分)' : '主力净流入'
+    details[mfKey] = { 分值: mfScore, 满分: 20 }
     subScores.push([mfScore, 20])
   }
 
