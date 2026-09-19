@@ -468,8 +468,19 @@ def _trading_session_now() -> bool:
 
 
 async def intraday_alert_loop():
-    """盘中风险警示：交易时段每 30 分钟检查一次（北向流出/涨跌比/跌停家数），
-    触发极端阈值才推企微（每类每日一次 + 全局 30 分钟最小间隔防骚扰）。"""
+    """盘中风险警示：交易时段每 **3 分钟**检查一次（上证急跌/涨跌比/跌停家数），
+    触发极端阈值才推企微（每类每档每日一次 + 全局最小间隔防骚扰）。
+
+    ★ 2026-09-19：检查间隔 30 → 10 → **3 分钟**。原 30 分钟比"持仓负面消息（盘中每
+      10 分钟）"还慢，而它盯的恰恰是**最该抢时间**的东西（大盘急跌 / 跌停潮）。
+      代价实测可忽略：每轮发 **3 个腾讯指数请求**（上证/创业板指/科创50；涨跌比/跌停家数
+      全读内存行情快照，零请求）⇒ 3 分钟 ≈ **230 个请求/交易日**，相对 `refresh_all_stocks`
+      （每 5 分钟刷 ~4000 只）仍 **<1%**，且**零 Supabase egress**。
+      **推送量不受检查频率影响** —— 上限由"每类每档每日一次"决定（6 条 × 2 档 ≤ 12 条/天，
+      且只有真崩的日子才会全触发）；全局防骚扰门限 **5 分钟**。
+      ⚠️ 前提：`get_index()` **没有缓存层**（每次都是真实 HTTP 请求）⇒ 间隔就是真实请求
+      频率；量级虽可忽略，但若哪天真撞腾讯限流，把它调回 5~10 分钟即可。
+    """
     while True:
         if _trading_session_now():
             try:
@@ -478,7 +489,7 @@ async def intraday_alert_loop():
                     status["last_intraday_alert"] = rules.beijing_now().isoformat()
             except Exception as e:
                 print(f"[scheduler] 盘中风险警示失败: {e}")
-        await asyncio.sleep(1800)
+        await asyncio.sleep(180)
 
 
 async def midday_radar_loop():
@@ -1692,7 +1703,13 @@ async def start():
              # ★ 2026-09-12：盘前决策简报（9:10-11:30）——同为 LLM 叙事类
              asyncio.create_task(trader_brief_premarket_loop()),
              # ── 以下均为重/耗时任务：只读模式（RENDER_READ_ONLY=1）下全部关闭 ──
-             *_heavy(macro_daily_loop),
+             # ★ 2026-09-19：**macro_daily 是只读模式下的唯一例外**（覆盖上一行的说明）——
+             #   它是「工作日 08:55-13:00 **早盘前**锁定当日宏观方向分」的快照，而日批的
+             #   20 个任务里**没有对应任务** ⇒ 只读模式一开它就会**静默断档**。
+             #   （也不该塞进日批：日批 19:00 跑 =「盘后锁定」，时点语义就变了。）
+             #   与 Coach 同款处理：**不受 READ_ONLY 约束**。它每交易日只跑一次、写一行、
+             #   只调一次东财（外部源，不占 Supabase）⇒ 留在 API 进程里代价可忽略。
+             asyncio.create_task(macro_daily_loop()),
              *_heavy(kline_cache_refresh_loop),
              # 指标刷新已外迁 GitHub Actions；ENABLE_HEAVY_JOBS=0 时本进程不再自己算
              *([] if (READ_ONLY or not ENABLE_HEAVY_JOBS)
@@ -1711,7 +1728,12 @@ async def start():
              *_heavy(backtest_report_loop),
              *_heavy(score_snapshot_loop),
              *_heavy(market_snapshot_loop),
-             *_heavy(intraday_alert_loop),
+             # ★ 例外（不受 READ_ONLY 约束，与 macro_daily 同类）：盘中风险警示是
+            #   **实时**功能，Actions 无法替代 —— 关掉就等于"没有盘中止损提醒"。
+            #   代价极低：只在交易时段每 30 分钟发**一次腾讯指数请求**（其余判定全读
+            #   `tencent._cache` 内存行情，**零 Supabase 流量**），触发极端阈值才推企微
+            #   （每类每日一次）⇒ 一个交易日约 8 个请求。
+            asyncio.create_task(intraday_alert_loop()),
              *_heavy(contradiction_scan_loop),
              *_heavy(contradiction_report_loop),
              *_heavy(news_history_loop),
@@ -1721,9 +1743,11 @@ async def start():
              *_heavy(sector_snapshot_loop),
              *_heavy(finance_loop)]
     if READ_ONLY:
-        print("[scheduler] ★ 只读模式（RENDER_READ_ONLY=1）：已关闭全部重任务"
+        print("[scheduler] ★ 只读模式（RENDER_READ_ONLY / DEPLOY_READ_ONLY 任一=1）："
+              "已关闭全部重任务"
               "（战法扫描/回测回填/资金流/主力行为/龙虎榜/快照/日报/矛盾扫描…），"
-              "仅保留 快讯/跟踪/健康检查/持仓消息/评分权重/行情缓存/模拟盘")
+              "仅保留 快讯/跟踪/健康检查/持仓消息/评分权重/行情缓存/模拟盘/**宏观快照**"
+              "（macro_daily 是刻意留的例外 —— 日批无对应任务，见 start() 内注释）")
     print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / "
           f"指标缓存{'每日16:40 由 GitHub Actions 跑（本进程已关闭）' if not ENABLE_HEAVY_JOBS else '每日16:00（本进程）'} / "

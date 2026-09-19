@@ -341,9 +341,18 @@ class BaseStrategy(ABC):
 # ================================================================
 
 def save_scan_result(strategy_name: str, results: List[Dict]):
-    """保存扫描结果到数据库"""
-    # ★ 北京日期：与 auto_ingest_signals 的查询口径必须一致（否则模拟盘 0 入池）
-    today = _bj_today()
+    """保存扫描结果到数据库（`scan_date` = **扫描所属交易日**）"""
+    # ★ 2026-09-19：口径从「北京自然日」升级为「**最近的已完成交易日**」
+    #   （`rules.latest_completed_trading_day()`：15:00 分界 + 跳过周末/节假日）。
+    #   自然日只在日批正常时点（20:43 盘后）碰巧等于交易日；**凌晨 / 周末 / 盘前**
+    #   补跑时会写出一条"周六"的假日期 ⇒ ① 同一批信号被记成两天（污染白名单
+    #   重放统计）；② 模拟盘生成 signal_date=周六 的持仓；③ 按信号日撮合查不到价格。
+    #   ⇒ 改成交易日后同一批信号会 **upsert 到同一行**，天然幂等。
+    # ★ 必须与 `paper_trading.auto_ingest_signals` 的查询口径**完全同源**
+    #   （2026-09-08 事故：两侧差一天 ⇒ 扫描结果查不到 ⇒ 模拟盘 0 入池，
+    #    而企微推送走内存数据照常推送 ⇒ 表现为"推送了但模拟盘没买"）。
+    from app.flash.rules import latest_completed_trading_day
+    today = latest_completed_trading_day()
     try:
         db.upsert("strategy_results", {
             "strategy_name": strategy_name,

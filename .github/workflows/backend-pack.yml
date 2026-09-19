@@ -83,6 +83,16 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATA_SOURCE: pack
+          # ★ 2026-09-19：本步骤只回填资金流、**完全不碰 LLM** ⇒ 环境里本就没有
+          #   LLM 变量，启动自检必然打出「空链」告警（本步骤也没配那三个业务开关，
+          #   同样告警）。显式抑制 ⇒ **避免告警脱敏**（天天刷误报，真出问题反而没人看）。
+          ENV_CHECK_SKIP_LLM: '1'
+          # ★ 同上：本步骤只跑 mainflow，不碰策略链路，那三个开关的值**只被自检读取**
+          #   ⇒ 不配就会每天刷三条"不符"告警。这里补上与**部署意图一致的值**
+          #   （非密钥，可直接写死），让日志干净 ⇒ 真出现不符时才有信号价值。
+          WHITELIST_CRITERION: expectancy
+          CONTRADICTION_RISK_HOOK: '1'
+          MAINFORCE_MODE: auto
         run: python scripts/daily_batch.py --tasks mainflow --no-pack-check --no-quotes
 
       - name: Generate backend data pack (klines + indicators + mainforce)

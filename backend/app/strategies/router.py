@@ -101,8 +101,12 @@ async def scan_strategy(
 
     # 检查是否已有今日结果
     if not force:
+        from app.flash.rules import latest_completed_trading_day
         cached = get_scan_result(strategy_name)
-        if cached.get("date") == datetime.now().strftime("%Y-%m-%d"):
+        # ★ 2026-09-19：与 `base.save_scan_result` 的写入口径同源。原先用
+        #   `datetime.now()`（服务器本地时间，Actions/Render 上是 **UTC**）
+        #   ⇒ 北京 0:00-08:00 窗口会把昨天的缓存当成"今天已扫过"直接返回。
+        if cached.get("date") == latest_completed_trading_day():
             return {
                 "data": cached["results"],
                 "total": cached["count"],

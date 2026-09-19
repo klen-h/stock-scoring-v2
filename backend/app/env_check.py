@@ -92,8 +92,71 @@ def switch_report() -> Dict:
     return {"ok": not mismatches, "items": items, "mismatches": mismatches}
 
 
+# ── ★ 2026-09-19：「LLM provider 链」自检 ────────────────────────────────────
+# 为什么单列一项：本类问题**全部是静默的** —— `_providers()` 少一个槽不会报错，
+# 链路悄悄退化成"只剩 main"甚至"空链"，直到某处调用失败才暴露；而且错误信息
+# 还会把方向带偏（链尾欠费的 SiliconFlow 报 402，**掩盖**链首 free 的真实原因 429）。
+# 2026-09-19 一天内踩了四种，**没有一种是代码报错报出来的**：
+#   ① 控制台 `LLM_FREE_SHADOW=1`（名字像"启用免费站"，实际是**把它排除出正式链**）
+#   ② 服务是控制台手工建的 ⇒ **不应用 render.yaml 的 value** ⇒ 缺
+#      `LLM_FREE_BASE_URL` / `LLM_FREE_MODEL`
+#   ③ 清空 `LLM_MODEL` 后 main 槽消失
+#   ④ 链尾挂着已欠费的 SiliconFlow
+# ⇒ 把链打在**启动第一屏**，"用的哪套配置"就不再需要靠反推猜。
+# 例外：只回填资金流、根本不碰 LLM 的任务（如 `backend-pack.yml` 的 mainflow
+#   步骤）环境里本就没有 LLM 变量 ⇒ 用 `ENV_CHECK_SKIP_LLM=1` 抑制，
+#   **避免告警脱敏**（天天刷误报，真出问题时反而没人看）。
+def llm_chain_report() -> Dict:
+    """LLM provider 链自检。返回 {chain, ok, warn, skipped}。"""
+    if (os.environ.get("ENV_CHECK_SKIP_LLM") or "").strip() == "1":
+        return {"chain": [], "ok": True, "warn": [], "skipped": True}
+    try:
+        from app.flash import llm as L          # 延迟 import（同 _actual 风格）
+        provs = L._providers() or []
+    except Exception as e:      # 读失败不阻断（自检自身故障绝不能影响服务启动）
+        return {"chain": [], "ok": False,
+                "warn": [f"provider 链读取失败：{type(e).__name__}: {e}"],
+                "skipped": False}
+
+    chain = [f"{p['name']}:{p['models'][0]}" for p in provs if p.get("models")]
+    names = [p["name"] for p in provs]
+    warn: List[str] = []
+    if "free" not in names:
+        if bool(getattr(L, "LLM_FREE_SHADOW", False)):
+            warn.append("免费站未进链：LLM_FREE_SHADOW=1（**影子模式 = 排除出正式链**，"
+                        "名字像'启用'极易设错 ⇒ 要它进链请设 0）")
+        missing = [n for n in ("LLM_FREE_BASE_URL", "LLM_FREE_API_KEY", "LLM_FREE_MODEL")
+                   if not getattr(L, n, "")]
+        if missing:
+            warn.append("免费站未进链：缺 " + " / ".join(missing)
+                        + "（注意：**手工建的服务不会应用 render.yaml 里的 value**，"
+                          "必须去 Render 控制台补）")
+    # ★ 主力站缺配**不单独告警**：本地 `.env` 就是故意只留免费站（"本地全用日日新"），
+    #   单独告警会变成**每次运行的永久误报** ⇒ 告警脱敏，真出问题时反而没人看。
+    #   它只在「空链」里作为归因细节出现（链本身也已在下面那行打印可见）。
+    if not chain:
+        detail = []
+        if "free" not in names:
+            miss = [n for n in ("LLM_FREE_BASE_URL", "LLM_FREE_API_KEY", "LLM_FREE_MODEL")
+                    if not getattr(L, n, "")]
+            detail.append("free 槽缺 " + (" / ".join(miss) if miss
+                                          else "（已配齐但被 SHADOW 排除）"))
+        if "main" not in names:
+            miss = [n for n in ("LLM_API_KEY", "LLM_MODEL") if not getattr(L, n, "")]
+            detail.append("main 槽缺 " + " / ".join(miss))
+        warn.append("★ 空链：所有 LLM 功能都会降级（前端显示「未配置任何 LLM provider」）"
+                    + ("；" + "；".join(detail) if detail else ""))
+    elif names[0] != "free":
+        warn.append("链首不是免费站 —— 若本意是「免费站优先、主力站兜底」，"
+                    "请核对 LLM_FREE_* 三件套与 LLM_FREE_SHADOW")
+    return {"chain": chain, "ok": not warn, "warn": warn, "skipped": False}
+
+
 def log_switch_report() -> Dict:
-    """启动期调用：打印生效值表，不符即显著告警。返回 switch_report()。"""
+    """启动期调用：打印生效值表 + LLM provider 链；不符/退化即显著告警。
+
+    返回 switch_report()（额外带 `llm_chain`）。
+    """
     r = switch_report()
     print("[env_check] 关键开关生效值自检：")
     for i in r["items"]:
@@ -104,4 +167,14 @@ def log_switch_report() -> Dict:
               f"检查部署环境变量（Render 控制台 / GitHub Actions workflow env）")
     else:
         print("[env_check] 全部一致 ✓")
+
+    # ★ 与上面性质不同：上面是「期望值 vs 生效值」，这条是「**事实**」——
+    #   链退化了没有，代码本身不会报错，不主动打就永远看不见。
+    c = llm_chain_report()
+    print(f"[env_check] LLM provider 链 = "
+          f"{' → '.join(c['chain']) if c['chain'] else '（空）'}"
+          f"{'（已跳过自检 ENV_CHECK_SKIP_LLM=1）' if c.get('skipped') else ''}")
+    for w in c["warn"]:
+        print(f"[env_check] ⚠️ {w}")
+    r["llm_chain"] = c
     return r

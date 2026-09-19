@@ -57,6 +57,45 @@
   ⇒ **两脚本的既有结论均不受污染**（qd 剔除后结论一字未变）。过滤已接：
   `data.anomaly_index()` / `window_has_anomaly()`（一次查库 + 内存 bisect），
   默认**只统计不剔除**，`--drop-anomaly` 才剔除 ⇒ 将来新增异常日（2026 年）会自动被兜住。
+
+## LLM 配置（2026-09-19 起有启动自检）
+- **`env_check.log_switch_report()` 现在同时打印 LLM provider 链**（覆盖 `app/main.py` 启动 +
+  `scripts/daily_batch.py` 两个入口）⇒ 空链 / 链首非 free / `SHADOW=1` / 缺哪个变量，
+  **启动第一屏就能看到**，不必再靠反推猜。
+- 只回填资金流、**不碰 LLM** 的步骤用 **`ENV_CHECK_SKIP_LLM=1`** 抑制
+  （`backend-pack.yml` 的 mainflow 步骤已设），避免误报导致**告警脱敏**。
+- **`LLM_FREE_SHADOW` 语义反直觉**：`1` = 影子模式 = **把免费站排除出正式链**；
+  `0` = 免费站进链首。名字像"启用"，极易设错（2026-09-19 用户线上就是这么中招的）。
+- **`render.yaml` 在本项目里只是「环境变量清单文档」，不是事实来源** ——
+  Render 服务是**控制台手工建**的，文件里的 `value:` / `sync: false` 都不生效；
+  只把它当"控制台该配什么"的 checklist 用。任何变量都可能漏配，且**静默**。
+- **`LLM_FREE_API_KEY` 是多环境共用的**（Render 常驻 + Actions 日批 + 本地脚本）
+  ⇒ RPM/TPM 被三家瓜分 ⇒ 撞车即 **429**。主解是 `LLM_MIN_INTERVAL`（跨进程不协调），
+  多 key 分环境是辅助。
+
+## 日期口径（全项目规范 —— 2026-09-19 第 3 次踩坑后固化）
+- **凡「数据所属日期」一律用「最近的已完成交易日」，绝不用北京自然日。**
+  自然日只在日批正常时点（20:43 盘后）碰巧等于交易日；**凌晨 / 周末 / 节假日 / 盘前**
+  都会错位（表现为"信号日期是周六""连续上榜跨周末清零""包日期永远对不上"）。
+- **可复用实现**（都跳过周末 + `flash/rules.HOLIDAYS`，节假日表含 2026 全年）：
+  · `pack_source._latest_available_pack_day()` —— 包日期，**22:00** 分界
+  · `scheduler._latest_trading_day()` —— **15:00** 分界
+  · `signal_persistence._scan_day()` —— **15:00** 分界（2026-09-19 新增）
+  **15:00 分界是必须的**：盘前/盘中跑到时当日 K 线还不存在，用"今天"会让日期与价格脱钩。
+- **已修**：`scripts/daily_batch.py::ensure_pack_fresh` 的 `want`、
+  `app/mainline.py::compute_mainline` 的 `date`、`signal_persistence` 的 4 处。
+- **✅ 已修（2026-09-19，成对改完）**：口径统一到 **`rules.latest_completed_trading_day()`**
+  （纯函数、唯一真源），四处委托：`base.save_scan_result`（写 `strategy_results.scan_date`）、
+  `paper_trading.auto_ingest_signals`（按它查出结果入池）、`router` 的缓存命中判定、
+  `signal_persistence._scan_day()`。
+  · **未动**：`paper_trading._bj_date()` / `base._bj_today()` —— 另作持仓/结算的**北京日期**用，
+    语义不同（09-08 事故后刻意保留的那层）。
+  · **附带收益（幂等）**：改成交易日后同一批信号 upsert 到同一行 ⇒ 凌晨补跑不再产出
+    "周六"的重复行，白名单重放不再把同一批信号算两次。
+  · 仍按 **`scan_date >= since` 区间查询**的读者（`backfill_history` / `trader_brief`）天然免疫。
+- **同类第二条**：任何"连续 N 天"统计必须按**交易日**步进 ——
+  `signal_persistence._calc_consecutive_days` 原本按自然日（跨周末必断链，报 1 而非 2），
+  2026-09-19 已修并回归验证。
 - **`--rebuild`**：`python backfill_history.py --rebuild` —— 对已入库每只全量重拉并**覆盖**
   （749 只 ≈ 25 分钟，幂等）。2026-09-18 已跑完：**749/749 成功、零失败**。
 - **已知未定论**：库与源之间有 **0.01%~0.09% 的系统性精度差**（几乎每个交易日都有）——

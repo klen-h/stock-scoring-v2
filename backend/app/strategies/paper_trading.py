@@ -240,7 +240,13 @@ def auto_ingest_signals() -> dict:
         hook_active = breadth_collapse_active().get("active", False)
     except Exception:
         hook_active = False
-    today = _bj_date()
+    # ★ 2026-09-19：本函数的 `today` 语义是**信号所属交易日**（下面三处都用它：
+    #   查 strategy_results 的 scan_date、查重 paper_positions、写入 signal_date）
+    #   ⇒ 必须与写入侧 `base.save_scan_result` **同源**，否则重演 09-08
+    #   「推送了但模拟盘没买」（那次是 UTC/北京差一天，这次是自然日/交易日差一天）。
+    #   注意 `_bj_date()` 本身**不动** —— 它另作持仓/结算的北京日期用，语义不同。
+    from app.flash.rules import latest_completed_trading_day
+    today = latest_completed_trading_day()
     whitelist = set(get_push_whitelist())
     stats = {"ingested": 0, "skipped_exist": 0, "skipped_low_conf": 0,
              "skipped_bad_stop": 0, "skipped_mainforce_gate": 0,

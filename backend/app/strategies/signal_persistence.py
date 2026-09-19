@@ -36,8 +36,12 @@ from app.database import db
 # ★ 2026-09-19：原用 datetime.now()（服务器本地时间）→ 与项目「全链路北京时间」
 #   规范不符。Actions 是 UTC：北京 21:xx 跑时两者同一天（碰巧不出错），
 #   但**北京 0:00-08:00 窗口跑**时 UTC 还是前一天 ⇒ 日期差一天。
-#   统一改用 beijing_now()（与 flash/rules 同源）。
-from app.flash.rules import beijing_now
+#   ⇒ 先改 beijing_now()，同日再**收敛到全项目唯一口径**
+#     `rules.latest_completed_trading_day()`（见 `_scan_day`）——
+#     那一步把"北京自然日"进一步修正为"**最近的已完成交易日**"
+#     （自然日只在盘后碰巧等于交易日，凌晨/周末/节假日都会错位）。
+#   `beijing_now` 现在只在 `rules` 内部用，本模块不再直接需要。
+from app.flash.rules import is_trading_day
 
 
 # ── 数据库表初始化 ──
@@ -72,6 +76,30 @@ def init_signal_history_table():
 init_signal_history_table()
 
 
+# ── ★ 2026-09-19：信号日期口径 =「**最近的交易日**」，不是北京自然日 ──────────────
+# 为什么：日批正常在 20:43 跑（自然日 == 交易日，两者无差别），但**凌晨/周末/节假日
+#   补跑**时自然日会落在**非交易日**（如 9-19 周六）⇒ 信号被打上"9-19"这种标签：
+#   · 连续上榜统计（按日回溯）错位 —— 刚写入的信号自己反而数不到；
+#   · 任何按交易日做的分析都对不上日期。
+# 交易日历与 `pack_source._latest_available_pack_day()` / `scheduler._latest_trading_day()`
+#   **同源**（`rules.is_trading_day`：跳过周末 + `rules.HOLIDAYS`，含 2026 全年）。
+# 与调度器下发的扫描日一致：调度器用 `_latest_trading_day()` 校验 K 线就绪，
+#   而在日批/补跑时点下二者结果相同（盘后 → 当天；凌晨/周末 → 上一交易日）。
+# ⇒ 本模块 4 个取"今天"的地方**全部改用它**，口径只有一处定义。
+def _scan_day() -> str:
+    """信号日期口径 =「最近的**已完成**交易日」。
+
+    ★ 2026-09-19：本模块原先自己实现了一遍，现已**收敛到全项目唯一口径**
+      `app/flash/rules.py::latest_completed_trading_day()`（15:00 分界 +
+      跳过周末/`HOLIDAYS`）。同源的还有：
+        · `base.save_scan_result`   —— 写 `strategy_results.scan_date`
+        · `paper_trading.auto_ingest_signals` —— 按它查出结果入池
+      三者**必须一致**（不同源正是 2026-09-08「推送了但模拟盘没买」的成因）。
+    """
+    from app.flash.rules import latest_completed_trading_day
+    return latest_completed_trading_day()
+
+
 def update_persistence(strategy_name: str, signals: List[Dict]) -> List[Dict]:
     """
     更新信号持久度。
@@ -85,7 +113,7 @@ def update_persistence(strategy_name: str, signals: List[Dict]) -> List[Dict]:
     返回：
         添加了持久度信息的信号列表
     """
-    today = beijing_now().strftime("%Y-%m-%d")
+    today = _scan_day()
     
     # 存入今日信号
     for signal in signals:
@@ -124,7 +152,7 @@ def enrich_with_persistence(strategy_name: str, signals: List[Dict]) -> List[Dic
     """
     为信号添加连续上榜天数和可信度评级。
     """
-    today = beijing_now().strftime("%Y-%m-%d")
+    today = _scan_day()
     
     for signal in signals:
         code = signal.get("code")
@@ -149,11 +177,26 @@ def enrich_with_persistence(strategy_name: str, signals: List[Dict]) -> List[Dic
 
 
 def _calc_consecutive_days(strategy_name: str, code: str, end_date: str) -> int:
-    """
-    计算从 end_date 往前连续上榜的天数。
+    """计算从 end_date 起**往前连续上榜的交易日数**。
+
+    ★ 2026-09-19 修正（真 bug）：原实现按**自然日**逐日回溯（`current -= 1 天`），
+      而信号只在**交易日**写入 ⇒ 一旦跨周末/节假日就必然断链。
+      例：9-11(五)、9-14(一) 都有信号，从 9-14 回溯到 9-13(日) 无记录 ⇒ 立刻 break
+      ⇒ 报"连续 1 天"，**实际应为 2**。
+      后果：本模块的评级轴（`_calc_trust_score` 的持久度项）、
+      `get_top_persistent_signals(min_days=3)`、摘要统计**全部系统性少报**；
+      每逢长假（中秋 9-25~9-27、国庆 10-01~10-07）连续记录一律清零。
+      修正为**按交易日历回溯**（`is_trading_day`），起点也取「≤ end_date 的最近交易日」。
     """
     consecutive = 0
     current = datetime.strptime(end_date, "%Y-%m-%d")
+    # ★ 起点对齐到「≤ end_date 的最近交易日」（凌晨/周末补跑时 end_date 可能非交易日）
+    for _ in range(15):
+        if is_trading_day(current):
+            break
+        current -= timedelta(days=1)
+    else:
+        return 0
     
     # 最多回溯 30 天
     for _ in range(30):
@@ -167,7 +210,14 @@ def _calc_consecutive_days(strategy_name: str, code: str, end_date: str) -> int:
         
         if row:
             consecutive += 1
+            # ★ 退到**上一个交易日**（原实现只减 1 自然日 ⇒ 跨周末/节假日必断链）
             current -= timedelta(days=1)
+            for _ in range(15):
+                if is_trading_day(current):
+                    break
+                current -= timedelta(days=1)
+            else:
+                break
         else:
             break
     
@@ -224,7 +274,7 @@ def get_persistence_summary(strategy_name: str) -> Dict:
         GROUP BY code
     """, (strategy_name,))
     
-    today = beijing_now().strftime("%Y-%m-%d")
+    today = _scan_day()
     stats = {"1天": 0, "2天": 0, "3天+": 0, "5天+": 0}
     
     for row in rows:
@@ -253,7 +303,7 @@ def get_top_persistent_signals(strategy_name: str, min_days: int = 3) -> List[Di
     
     这些是"强者恒强"的股票。
     """
-    today = beijing_now().strftime("%Y-%m-%d")
+    today = _scan_day()
     
     # 获取最近有信号的所有股票
     rows = db.fetch("""
