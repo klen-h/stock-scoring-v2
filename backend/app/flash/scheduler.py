@@ -1101,13 +1101,26 @@ async def strategy_scan_loop():
                 if stats.get("not_ready"):
                     print(f"[scheduler] 当日K线未就绪（{stats.get('data_date')} < "
                           f"{stats.get('expect_date')}），5 分钟后重试")
-                elif stats["scanned"] > 0 or stats["failed"] == 0:
+                elif stats["scanned"] > 0:
                     store.mark_schedule_done(task_key)
                     status["last_strategy_scan"] = rules.beijing_now().isoformat()
                     print(f"[scheduler] 战法扫描完成: {stats}")
                     if stats["failed"]:
                         _notify_failure("战法扫描",
                                         f"{stats['failed']} 个战法扫描失败（成功 {stats['scanned']} 个）")
+                elif stats["failed"] == 0:
+                    # ★ 2026-09-19：**「零落库（全被跳过）」≠ 成功**。
+                    #   原判据 `scanned > 0 or failed == 0` 把它判为成功并 mark_done
+                    #   ⇒ 表一行未写、无告警、无推送（2026-09-15~09-18 静默断档 4 天）。
+                    #   当天市况不会变 ⇒ **不重试**（避免 5 分钟刷屏），但必须
+                    #   mark_done + 显式告警。
+                    store.mark_schedule_done(task_key)
+                    status["last_strategy_scan"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] ⚠️ 战法扫描零落库（全部被跳过）: {stats}")
+                    _notify_failure(
+                        "战法扫描",
+                        f"全部 {stats.get('skipped', 0)} 个战法被准入跳过、零落库，"
+                        f"strategy_results 未更新")
                 else:
                     print(f"[scheduler] 战法扫描全部失败: {stats}，稍后重试")
                     _notify_failure("战法扫描", f"全部 {stats['failed']} 个战法扫描失败")

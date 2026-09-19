@@ -170,16 +170,32 @@ def task_mainforce_state():
     return f"主力行为状态: {refresh_all(None, regime)}"
 
 
+def _batch_trading_day():
+    """本轮日批**所属交易日**（date）—— 星期判定/交易日判定都必须以它为准。
+
+    ★ 2026-09-19：跨午夜补跑的坑。日批语义是"处理**最近一个已完成交易日**"，但它可能
+      因延迟（pack 卡住被 timeout 砍后重跑、人工补跑）**跨过午夜**才跑到后面的任务
+      ⇒ 那时 `datetime.now().weekday()` 已变成次日：
+        · `task_zz_finance`（周一任务）若在**周二 00:30** 跑到 ⇒ `weekday()!=0` ⇒ 跳过，
+          而它**没有自愈机制**（对比 `task_weekly_report` 有 `_weekly_due()`）
+          ⇒ **本周财报扩展彻底不跑**（L3 财报断层扫描的数据底座失联）。
+      口径与 `rules.latest_completed_trading_day()` 同源（15:00 分界 + 跳周末/节假日）。
+    """
+    import app.flash.rules as _rules
+    return datetime.strptime(_rules.latest_completed_trading_day(), "%Y-%m-%d").date()
+
+
 def task_zz_finance():
     """zzshare 财报扩展周同步（原 Render 周一 04:30 循环，只读模式已停摆）。
 
     仅周一执行（其余交易日直接跳过，返回即不计失败）——季度数据周更保活，
     是 L3 财报断层扫描（contradictions/l3_scanner）的数据底座。
     """
-    import datetime as _dt
-    bj = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
-    if bj.weekday() != 0:
-        return f"财报扩展: 周任务，今为周{bj.weekday() + 1} 跳过"
+    # ★ 2026-09-19：判「**本轮交易日**」的星期，不用 `now()` —— 跨午夜补跑时
+    #   `now().weekday()` 已是次日 ⇒ 周任务被永久跳过且无自愈（详见 `_batch_trading_day()`）。
+    d = _batch_trading_day()
+    if d.weekday() != 0:
+        return f"财报扩展: 周任务，本轮交易日 {d:%Y-%m-%d} 为周{d.weekday() + 1} 跳过"
     from app.zzshare_finance import sync_latest_finance
     from app.database import db
     rows = db.fetch(
@@ -208,6 +224,28 @@ def task_strategy_scan():
     stats = scan_all_strategies()
     if stats.get("not_ready"):
         raise RuntimeError(f"当日K线未就绪: {stats.get('data_date')} < {stats.get('expect_date')}")
+    # ★ 2026-09-19：**「零落库」不再算成功**。
+    #   事故：2026-09-15~09-18 连续 **4 个交易日**，10 个战法全部被准入拦下
+    #   （防御市，根因见 272ed31 的 scan 层豁免）⇒ `scanned=0 / failed=0` ⇒
+    #   这里照样返回成功、`strategy_results` **一行未写**，而 `/strategies` 页
+    #   一直显示 9-14 的旧快照（用户肉眼发现的，不是告警发现的）。
+    #   ⇒ 只要**零落库**就显式失败（日批汇总 → 企微告警），把静默断档变成可见故障。
+    if stats.get("scanned", 0) == 0:
+        if stats.get("failed", 0) == 0:
+            raise RuntimeError(
+                f"战法扫描零落库（全部被准入跳过？）: {stats} —— "
+                f"strategy_results 未更新，战法页会停留在旧快照")
+        raise RuntimeError(f"战法扫描全部失败: {stats}")
+    # ★ 即时对账（原实现只看返回值、不看库）：确认**当日结果真的写进去了**
+    import app.flash.rules as _rules
+    from app.database import db
+    row = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
+    latest = (row or {}).get("d")
+    want = _rules.latest_completed_trading_day()
+    if str(latest) != str(want):
+        raise RuntimeError(
+            f"战法扫描落库核对失败：strategy_results 最新 scan_date={latest}，"
+            f"应为 {want} —— 扫描结果没有写进库")
     return f"战法扫描: {stats}"
 
 
@@ -347,8 +385,34 @@ def _explicitly_requested(task: str) -> bool:
     return False
 
 
+def _week_last_trading_day(any_day):
+    """`any_day` 所在 ISO 周的**最后一个交易日**（通常是周五；节前周可能是周四等）。
+
+    ★ 2026-09-19：不再用 `weekday() == 4` 判"周五" —— 长假前最后一个交易日往往不是
+      周五（如 2026 国庆前是 9-30 周三 / 中秋周是 9-24 周四），只看周五会漏掉那一周。
+    """
+    from datetime import timedelta
+    import app.flash.rules as _rules
+    d = any_day + timedelta(days=6 - any_day.weekday())     # 该周周日
+    for _ in range(7):
+        if _rules.is_trading_day(datetime(d.year, d.month, d.day)):
+            return d
+        d -= timedelta(days=1)
+    return None                                             # 整周无交易日（长假）
+
+
 def _weekly_due() -> bool:
-    """本周（ISO 周）还没有周报 → 需要生成（漏跑的周六/下一工作日自动补上）。"""
+    """**上一个已结束的周**缺少「覆盖到其最后交易日」的报告 → 需要补（漏跑自愈）。
+
+    ★ 2026-09-19 修正（原实现有两处语义错位）：
+      原判据 =「最近周报**生成日**所在的 ISO 周 != **本周**」，但：
+        ① **生成日 ≠ 覆盖的数据周** —— 9-14(周一) 生成的那份覆盖的是**上一周**
+           （数据截至 9-11），它是"第 37 周的周报、生成在第 38 周" ⇒ 旧判据把它当成
+           "本周已有" ⇒ **第 38 周（9-15~9-18）永久缺报**（9-19 才发现）；
+        ② 拿**本周**比 ⇒ 周中恒为"本周还没生成" ⇒ 让**周一生成**成为常态 ⇒ 又回到 ①。
+      新判据：看**上一个完整周** —— 最近周报的日期是否 ≥ 该周的最后交易日。
+      （既补得上"周五漏跑、下一工作日补"，也不会让周中误生成。）
+    """
     try:
         from app.backtest import report_store
         rows = report_store.list_reports(limit=1)
@@ -360,7 +424,11 @@ def _weekly_due() -> bool:
         last = datetime.strptime((rows[0].get("mtime") or "")[:10], "%Y-%m-%d").date()
     except ValueError:
         return True
-    return last.isocalendar()[:2] != datetime.now().isocalendar()[:2]
+    from datetime import timedelta
+    prev_last = _week_last_trading_day(_batch_trading_day() - timedelta(days=7))
+    if prev_last is None:
+        return False
+    return last < prev_last
 
 
 def task_weekly_report():
@@ -379,10 +447,16 @@ def task_weekly_report():
     """
     import datetime as _dt
     bj = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))
-    if (bj.weekday() != 4 and not _weekly_due()
+    # ★ 2026-09-19：常规窗口从「今天是周五」改为「**本轮交易日是本周期最后一个交易日**」：
+    #   · 修跨午夜补跑：9-18(周五) 23:18 启动的日批跑到这里已跨到 9-19(周六) ⇒
+    #     旧判据 `weekday() != 4` 成立，叠加 `_weekly_due()` 的语义错位 ⇒ **整周漏报**
+    #     （实测第 38 周缺失）。改用「本轮交易日」后，跨午夜时它仍是 9-18 ⇒ 正常生成。
+    #   · 兼容节前：长假前最后一个交易日往往不是周五（中秋周 9-24 周四、国庆前 9-30 周三）。
+    d = _batch_trading_day()
+    if (d != _week_last_trading_day(d) and not _weekly_due()
             and not _explicitly_requested("weekly_report")):
-        return (f"周度回测报告: 本周已生成，今为周{bj.weekday() + 1} 跳过"
-                f"（周五例行 / 本周缺报自愈 / --tasks weekly_report 可强制）")
+        return (f"周度回测报告: 本周已生成，本轮交易日 {d:%Y-%m-%d} 为周{d.weekday() + 1} 跳过"
+                f"（本周期最后交易日例行 / 上周缺报自愈 / --tasks weekly_report 可强制）")
     from app.backtest.run import generate_report, save_report, generate_summary
     content = generate_report("all")
     path = save_report(content, tag="weekly")
