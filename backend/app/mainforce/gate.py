@@ -110,6 +110,36 @@ def strategy_gate(code: str, name: str = "") -> dict:
     }
 
 
+def _retry_read(fn, what: str, tries: int = 4):
+    """读库重试（Supabase pooler 空闲断连 SSL，重试即恢复）。
+
+    ★ 2026-09-20：`gate_states_for_signals` 原先**没有任何重试** ⇒ 首次读
+      `mainflow_history`（8.7MB 整表、每进程一次）撞上 pooler 断连时，异常直接冒到
+      调用方（`recommendation._recompute_whitelist` 捕到后打印「门控状态读取失败
+      （降级放行）」）⇒ **整轮白名单重算在"无主力闸门"口径下完成**（实测连续两次复现）。
+      而主力闸门是当前唯一被验证有效的提纯手段（胜率 48.1→50.3%、均收益 +0.07→+0.44%、
+      盈亏比 1.05→1.36）⇒ 它静默失效 = **绩效口径整体失真**，且失真方向偏悲观。
+      与 `scripts/*.py` 里的 `q()` 同款：重试 + `_reset_pg_conn()` + 递增退避。
+      （已确认 `load_flow_map` 失败**不会**缓存空值 —— 缓存只在自己成功之后写 ⇒ 重试有效。）
+    """
+    import time
+    last = None
+    for i in range(max(1, tries)):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            print(f"[mainforce.gate] {what} 读取失败（第 {i + 1}/{tries} 次）: {e}")
+            try:
+                from app.database import db
+                db._reset_pg_conn()
+            except Exception:
+                pass
+            if i < tries - 1:
+                time.sleep(1.5 * (i + 1))
+    raise last
+
+
 def gate_states_for_signals(signals: list) -> dict:
     """
     批量还原信号日当日的主力过滤状态（无前视，供白名单重算/回测复用）。
@@ -119,8 +149,8 @@ def gate_states_for_signals(signals: list) -> dict:
     for s in signals:
         by_code.setdefault(s["code"], []).append(s["date"])
     from app.mainforce.flow import load_flow_map
-    flow_map = load_flow_map()
-    fs_map = _float_map()
+    flow_map = _retry_read(load_flow_map, "mainflow_history（整表 8.7MB）")
+    fs_map = _retry_read(_float_map, "流通股本 map")
     out = {}
     # ★ 批量加载（单 IN 查询 + 6h 进程缓存，与战法回放路径共享）——
     #   逐股 load_prices 是 253 次独立查询，曾把绩效接口拖到 30s 超时
@@ -129,7 +159,7 @@ def gate_states_for_signals(signals: list) -> dict:
     #   price_pos 跨过 0.75 阈值 → 闸门判断漂移（实测 n 136→149）。要省这部分
     #   egress 请走 `DATA_SOURCE=pack`（pack_source 命中则走本地 sqlite，零 egress）。
     from app.backtest.strategies import _load_prices_map
-    bars_map = _load_prices_map(set(by_code))
+    bars_map = _retry_read(lambda: _load_prices_map(set(by_code)), "回测价格批量")
     for code, dates in by_code.items():
         bars = bars_map.get(code)
         if not bars or len(bars) < 130:
