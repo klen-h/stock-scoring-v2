@@ -121,8 +121,16 @@ def main():
         print("    无告警")
 
     if not out.get("list"):
-        print("  [警告] 当前白名单为空 → **战法信号不会推送企微**（功能静默）；"
-              "要恢复推送可设 WHITELIST_CRITERION=expectancy")
+        # ★ 2026-09-20 修正：原提示「要恢复推送可设 WHITELIST_CRITERION=expectancy」
+        #   **已过时且方向误导** —— 当前判据**就是** expectancy 且白名单仍为空，
+        #   即「不是配置问题，是真的没有达标战法」；此时**调判据等于把不合格信号
+        #   推出去**（win_rate 判据天花板 50% 的问题 09-14 已诊断并切换过）。
+        print("  [警告] 当前白名单为空 → **战法信号不会推送企微**（功能静默）")
+        print(f"    · 判据 = {rec.WHITELIST_CRITERION}（**这就是当前生效值**，不是配置漂移）")
+        print("    · ⇒ **调判据不能恢复推送**。真因见 `strategy_decay_diagnosis.py`："
+              "震荡类拐点 09-07/08、两战法独立一致 ⇒ 市场环境变了，不是战法参数问题")
+        print("    · 处置选项：接受静默 / 改战法曲线 / 加码 dragon_turnaround"
+              "（唯一接近达标者）")
     print(f"  静态兜底名单 = {rec.PUSH_STRATEGY_WHITELIST}"
           f"（仅动态计算异常时使用）")
     print(f"  静态背书 STRATEGY_STATS = {rec.STRATEGY_STATS}")

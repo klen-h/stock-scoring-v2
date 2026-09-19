@@ -44,6 +44,34 @@ def _today_bj() -> str:
     return datetime.now(_BJ).strftime("%Y-%m-%d")
 
 
+def _rank_day() -> str:
+    """榜单日期 =「最近的**已完成**交易日」（YYYY-MM-DD）——★ 2026-09-20 修正。
+
+    原实现用**北京自然日**（`_today_bj()`）：日批正常在盘后 20:43 跑，自然日恰好
+    等于交易日，看不出差别；但**跨午夜/凌晨补跑**会错位 ——
+    实测 2026-09-18 深夜启动的日批跑到本任务时已跨到 **9-19（周六）** ⇒
+    `ranking_live.rank_date = 9-19`；而读它 `MAX(rank_date)` 的
+    `scripts/shadow_decay_ranking.py` 把这个日期**照搬**进 `shadow_rank_daily`
+    ⇒ 后果：**9-18 的对照榜整日缺失**、多出一条周六记录、
+    两周后 `compare_shadow_rank.py` **按交易日对齐时必然错位**。
+    （对照：`ranking_history` 因有 `_is_trading_date()` 守卫，落的是 9-18 —— 是对的。）
+
+    口径与全项目唯一来源 `rules.latest_completed_trading_day()` 同源
+    （15:00 分界 + 跳周末/`HOLIDAYS`）；同源者还有 `signal_persistence._scan_day()`、
+    `base.save_scan_result`（写 `strategy_results.scan_date`）、
+    `paper_trading.auto_ingest_signals`。
+
+    ⚠️ **语义（显式记录，避免静默改变）**：本函数返回「**数据所属交易日**」——
+      盘后 = 当天；跨午夜 / 周末 / 节假日 = 上一交易日；**盘中（15:00 前）= 上一交易日**
+      （本任务读的是数据包预计算指标 + `tencent._cache` 收盘行情，
+       盘中本就不存在"今日已完成"的数据）。
+      若将来要做「**盘中实时榜并标当日**」，应另加开关显式切换，
+      **不要**把这里改回自然日（那正是本次要修的 bug）。
+    """
+    from app.flash.rules import latest_completed_trading_day
+    return latest_completed_trading_day()
+
+
 def init_table() -> None:
     """建表（幂等；database.execute 内建 DDL 去重，不会刷 schema cache）。"""
     global _TABLE_READY
@@ -172,7 +200,7 @@ def compute_full_ranking(limit: int = 1000, pool_cap: Optional[int] = None) -> t
     rows.sort(key=lambda r: r["total_score"], reverse=True)
     print(f"[live_ranking] 精算完成: {len(rows)} 只（跳过无指标 {skipped} 只），"
           f"耗时 {time.time() - t0:.1f}s")
-    return _today_bj(), rows[:limit], len(valid)
+    return _rank_day(), rows[:limit], len(valid)
 
 
 def compute_and_store(limit: int = 1000) -> str:
