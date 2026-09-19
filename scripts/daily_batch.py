@@ -474,6 +474,91 @@ def task_weekly_report():
     return f"周度回测报告: {os.path.basename(path)}（{len(content)} 字，已落库+推送）"
 
 
+def _monthly_due(tag: str, batch_day) -> bool:
+    """**本轮交易日所在月份**尚无该 `tag` 的报告 → 需要跑（漏跑自愈）。
+
+    ★ 2026-09-20：与 `_weekly_due()` 同思路，但**必须读库** —— 日批跑在 Actions，
+      工作区每次全新（checkout），文件级判据恒为"没有报告" ⇒ 会天天跑。
+      `report_store.list_reports` 返回库中报告（含 created_at），前端「回测中心」同源。
+    """
+    try:
+        from app.backtest import report_store
+        rows = report_store.list_reports(limit=120)
+    except Exception as e:
+        print(f"  [月度判据] 报告清单读取失败（保守按『需要跑』处理）: {e}")
+        return True
+    mine = [r for r in (rows or []) if (r.get("tag") or "") == tag]
+    if not mine:
+        return True
+    try:
+        last = datetime.strptime((mine[0].get("mtime") or "")[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return True
+    return (last.year, last.month) != (batch_day.year, batch_day.month)
+
+
+def _push_ic_summary(res) -> str:
+    """把体检摘要推企微，返回**状态文案**（开关关掉/推送失败都如实写出，不静默）。
+
+    ★ 分级（2026-09-20）：**有告警 ⇒ `force=True`** —— 倒U背书失效、因子方向翻转
+      属**关键通知**（`push_markdown_batched` 的 force 语义即"不受业务推送开关限制"），
+      必须送达；**无告警 ⇒ 普通推送**，尊重 `WECHAT_BUSINESS_ALERTS`（默认关，
+      否则月报会打扰）。且普通推送被开关拦掉时返回值**明确写出原因** ——
+      不能出现"以为挂了推送、其实静默没发"（今天 env_check 的同类教训）。
+    """
+    from subfactor_ic_backtest import summary_markdown
+    alerts = res.get("alerts") or []
+    try:
+        from app.flash import wechat
+        if not wechat.WECHAT_WEBHOOK:
+            return "未推送（未配置 WECHAT_WEBHOOK）"
+        title = "⚠️ 因子体检告警" if alerts else "📊 因子体检（月度）"
+        if alerts:
+            wechat.push_markdown_batched(title, summary_markdown(res), force=True)
+            return "已推送企微（force：关键告警）"
+        if not wechat.BUSINESS_ALERTS_ENABLED:
+            return "未推送（业务推送开关已关 WECHAT_BUSINESS_ALERTS≠1）"
+        wechat.push_markdown_batched(title, summary_markdown(res))
+        return "已推送企微"
+    except Exception as e:
+        print(f"  [警告] 因子体检企微推送失败: {e}")
+        return f"推送失败（不影响体检）: {str(e)[:80]}"
+
+
+def task_subfactor_ic():
+    """子指标因子体检（**每月一次**）：逐子项 IC + 滚动复核上轮结论 + 落库。
+
+    ★ 2026-09-20 落地（见 `评分系统体检_子指标IC与优化建议_20260920.md` §建议5）：
+      09-20 首次体检发现「技术面 8/8 子项 5-10 日负 IC」（A 股短窗截面反转），
+      并把「周报买入信号 5 日胜率 41.5%」的长期困惑**定位到子项级** ⇒
+      结论必须**周期化复核**，否则会随样本期漂移而无人察觉（这正是白名单
+      `_half_life_alert` 当初要解决的问题：全历史 replay 被旧战绩撑住）。
+      机制与半衰期告警同构：定期算 + 结构化告警 + 落库留痕。
+
+    触发条件（任一成立，否则跳过）：
+      1) 本轮交易日所属**月份**尚无体检报告（常规窗口 = 每月首个交易日）
+      2) `--tasks subfactor_ic` 明确点名（人工补跑 / 强制）
+    数据：全程本地或数据包（`research_cache` + pack，零 Supabase 回源），约 3 分钟。
+    """
+    d = _batch_trading_day()
+    if not _monthly_due("subfactor_ic", d) and not _explicitly_requested("subfactor_ic"):
+        return (f"因子体检: 本轮交易日 {d:%Y-%m-%d} 所在月份已体检，跳过"
+                f"（每月例行 / --tasks subfactor_ic 可强制）")
+    from subfactor_ic_backtest import run as run_ic
+    res = run_ic()
+    if res.get("skipped"):
+        return f"因子体检: 跳过（{res.get('reason')}）"
+    alerts = res.get("alerts") or []
+    for a in alerts:
+        print(f"  [警告] 因子体检 {a}")
+    push_note = _push_ic_summary(res)
+    rev = res.get("review") or {}
+    return (f"因子体检: {res['sections']} 截面 {res.get('section_first')}~"
+            f"{res.get('section_last')}｜{len(res.get('verdicts') or {})} 子项"
+            f"（负 IC {rev.get('neg')} 项/{rev.get('verdict')}；"
+            f"告警 {len(alerts)} 条；{res.get('report_name')}；{push_note}）")
+
+
 def _force_requested() -> bool:
     """命令行是否带 --force（语义=忽略"当日已完成"标记、强制重跑）。"""
     return "--force" in sys.argv[1:]
@@ -559,6 +644,9 @@ TASKS = {
     # ★ 2026-09-11 迁入：原 Render 周五循环被只读模式关闭 → 回测中心停在 09-05。
     #   任务内部判定仅周五执行，其余交易日秒过。
     "weekly_report": (task_weekly_report, "周度回测报告（仅周五，落库+推送）"),
+    # ★ 2026-09-20 新增：子指标因子体检周期化（体检报告 §建议5）。
+    #   任务内部判定「本月是否已体检」，其余交易日秒过；排在周期报告之后。
+    "subfactor_ic": (task_subfactor_ic, "子指标因子体检（仅每月首个交易日）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
@@ -569,7 +657,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
-                 "lhb", "zz_finance", "weekly_report", "daily_report",
+                 "lhb", "zz_finance", "weekly_report", "subfactor_ic", "daily_report",
                  "trader_brief"]
 
 

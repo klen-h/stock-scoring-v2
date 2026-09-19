@@ -21,10 +21,21 @@
   - 换手率：volume(手) × 1e4 / 流通股本（与腾讯口径一致）
   - 局限：基本面/成长/质量子项依赖财报与估值快照，历史截面不可离线重建 → 不在本
     次体检范围（后续可在 ranking_history 快照积累后做）。
-用法：python scripts/subfactor_ic_backtest.py [--hold 5 10] [--step 5]
+用法：python scripts/subfactor_ic_backtest.py [--hold 5 10] [--step 5] [--quiet]
+      （日批每月例行：scripts/daily_batch.py --tasks subfactor_ic）
+
+周期化（2026-09-20 落地，见体检报告 §建议5）：
+  - 结果**落库** `backtest_reports`（tag=subfactor_ic）—— 日批跑在 GitHub Actions，
+    工作区每次全新（文件必丢）⇒ 库才是权威，且前端「回测中心」可见；
+  - 每轮与**上一轮**（`subfactor_ic_latest.json`）对比，滚动复核「技术面负 IC」
+    是否复现 —— 这是本机制存在的意义（因子半衰期告警，与白名单 `_half_life_alert`
+    同构：定期算 + 结构化告警 + 留痕）；
+  - 告警判据**预先写死**在 `_review()`（防止事后挑格子）：负 IC 复现度下降 /
+    显著子项符号翻转 / 倒U基础（主力净流入·极端流入）转负。
 """
 
 import argparse
+import json
 import datetime as dt
 import os
 import sys
@@ -71,24 +82,92 @@ def quintile_table(rows):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--hold", type=int, nargs="+", default=[5, 10])
-    ap.add_argument("--step", type=int, default=5)
-    ap.add_argument("--refresh", action="store_true")
-    args = ap.parse_args()
-    holds = args.hold
+_META_NAME = "subfactor_ic_latest.json"   # 机器可读基线（落库、覆盖式）—— 供下轮对比
+_TAG = "subfactor_ic"                     # 落库 tag（日批的「月度幂等」判据也用它）
+
+
+def _load_prev() -> dict:
+    """上一轮的机器可读摘要（`subfactor_ic_latest.json`）。无基线/不可用返回 {}。
+
+    ★ 为什么不读文件：日批跑在 Actions，工作区每次全新 ⇒ 文件级基线恒为空，
+      「本轮 vs 上轮」永远退化成首轮。库是唯一跨运行持久的载体。
+    """
+    try:
+        from app.backtest import report_store
+        raw = report_store.get_report(_META_NAME)
+        return json.loads(raw) if raw else {}
+    except Exception as e:
+        print(f"[review] 上轮基线读取失败（按首轮处理）: {e}")
+        return {}
+
+
+def _review(verdicts, prev) -> tuple:
+    """滚动复核：本轮 vs 上轮 → (review, alerts)。
+
+    判据**预先写死**（与体检报告 §建议5 一致，避免事后挑格子）：
+      ① 上轮为负 IC 的子项本轮**转正** → 「负 IC 复现度下降」（反转效应可能减弱）；
+      ② 上轮 |IC|≥0.04 的子项**符号翻转** → 「预测力方向翻转」；
+      ③ 倒U的两个子项本轮 IC **转负** → 「倒U基础动摇」
+         （09-13 倒U改造以 +0.004 / +0.093 为背书，转负即背书失效，需复检曲线）。
+    """
+    cur = {s: r for s, r, _ in verdicts}
+    if not prev:
+        return ({"neg": sum(1 for v in cur.values() if v < 0), "prev_neg": None,
+                 "neg_repro": None, "verdict": "首轮无基线"}, [])
+    pv = prev.get("verdicts") or {}
+    common = [s for s in cur if s in pv]
+    neg_prev = [s for s in common if pv[s] < 0]
+    neg_now = [s for s in neg_prev if cur[s] < 0]
+    alerts = []
+    faded = [s for s in neg_prev if cur[s] >= 0]
+    if faded:
+        alerts.append(f"负 IC 复现度下降：{'、'.join(faded)} 由负转正"
+                      f"（{len(neg_now)}/{len(neg_prev)} 项复现）"
+                      "—— 反转效应可能减弱，复核体检报告 §建议1 的技术面降权结论")
+    for s in common:
+        if abs(pv[s]) >= 0.04 and pv[s] * cur[s] < 0 and s not in faded:
+            alerts.append(f"预测力方向翻转：{s} 上轮 {pv[s]:+.3f} → 本轮 {cur[s]:+.3f}")
+    for s in ("主力净流入", "主力极端流入(散户陷阱降分)"):
+        if s in pv and cur.get(s, 0) < 0:
+            alerts.append(f"倒U基础动摇：{s} IC 转负（{cur[s]:+.3f}）"
+                          "—— 09-13 倒U改造的背书失效，需复检曲线")
+    repro = round(len(neg_now) / len(neg_prev) * 100) if neg_prev else None
+    if not neg_prev:
+        verdict = "上轮无负 IC 基线"
+    elif len(neg_now) == len(neg_prev):
+        verdict = "全部复现"
+    else:
+        verdict = f"{len(neg_now)}/{len(neg_prev)} 复现"
+    return ({"neg": len(neg_now), "prev_neg": len(neg_prev),
+             "neg_repro": repro, "verdict": verdict}, alerts)
+
+
+def run(holds=None, step=5, refresh=False, quiet=False, out_dir=None):
+    """执行一次体检：算 IC → 滚动复核 → 写 md + 落库 → 返回 summary。
+
+    返回 dict（供 `scripts/daily_batch.py` 的 `task_subfactor_ic` 月度例行调用）：
+      {skipped, sections, verdicts, alerts, review, report_path, db_saved}
+    数据不足时返回 `{skipped: True, reason}` 且**不写库** —— 避免污染
+    「本月已体检」判据（数据不全的报告比没有报告更糟）。
+    """
+    holds = list(holds or [5, 10])
+    step = int(step or 5)
     max_hold = max(holds)
 
-    prices = research_cache.ohlc_all(force=args.refresh)
+    prices = research_cache.ohlc_all(force=refresh)
     print(f"[data] 日线覆盖 {len(prices)} 只")
     flow_map = research_cache.flow_map(force=False)
     fs_map = load_float_shares()
     print(f"[data] 资金流覆盖 {len(flow_map)} 只 / 流通股本 {len(fs_map)} 只")
+    if len(prices) < 100 or len(flow_map) < 100:
+        return {"skipped": True, "reason": f"数据覆盖不足（日线 {len(prices)} 只 / "
+                                           f"资金流 {len(flow_map)} 只）"}
 
     common_dates = sorted({str(r["date"]) for rows in flow_map.values() for r in rows})
     sec_dates = common_dates[70:-max_hold] if len(common_dates) > 70 + max_hold else []
-    sec_dates = sec_dates[::args.step]
+    sec_dates = sec_dates[::step]
+    if len(sec_dates) < 3:
+        return {"skipped": True, "reason": f"截面日不足（{len(sec_dates)} 个，需 ≥3）"}
     sec_set = set(sec_dates)
     print(f"[sections] 截面日 {len(sec_dates)} 个：{sec_dates[0]} ~ {sec_dates[-1]}")
 
@@ -177,7 +256,7 @@ def main():
     add = lines.append
     add("# 评分系统子指标因子体检（技术面/资金面逐子项 IC 与分位检验）\n")
     add(f"> 运行：subfactor_ic_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}"
-        f" ｜ 截面 {len(sec_dates)} 个（{sec_dates[0]} ~ {sec_dates[-1]}，step={args.step}）\n")
+        f" ｜ 截面 {len(sec_dates)} 个（{sec_dates[0]} ~ {sec_dates[-1]}，step={step}）\n")
     add("> 口径：生产 ScoreEngine 同源锚点（零偏差）；去超额=截面全池均值；"
         "分位=按子项分值 5 等分。基本面/成长/质量依赖财报截面，不在本次范围。\n")
 
@@ -236,14 +315,115 @@ def main():
         add(f"| {sub} | {ic_up['rho'] if ic_up else '-'}（n={ic_up['n'] if ic_up else 0}） "
             f"| {ic_dn['rho'] if ic_dn else '-'}（n={ic_dn['n'] if ic_dn else 0}） |")
 
-    out_dir = os.path.join(BACKEND_DIR, "backtest_reports")
+    # ── ★ 滚动复核（2026-09-20）：与上一轮对比 —— 本机制存在的意义 ──
+    prev = _load_prev()
+    review, alerts = _review(verdicts, prev)
+    add("\n\n## 滚动复核（与上一轮对比）\n")
+    if not prev:
+        add("> 首轮运行，无上一轮基线（下一轮起输出「IC 变化 / 复现判定」）。")
+    else:
+        add(f"> 上一轮：{prev.get('date', '?')}"
+            f"（截面 {prev.get('sections', '?')} 个，"
+            f"{prev.get('section_first', '?')} ~ {prev.get('section_last', '?')}）"
+            f"｜ 本轮截面 {len(sec_dates)} 个，{sec_dates[0]} ~ {sec_dates[-1]}\n")
+        add("| 子项 | 上轮 IC(5日) | 本轮 IC(5日) | 变化 | 判定 |")
+        add("|---|---|---|---|---|")
+        for sub, rho, _n in sorted(verdicts, key=lambda x: -abs(x[1])):
+            p = (prev.get("verdicts") or {}).get(sub)
+            if p is None:
+                add(f"| {sub} | - | {rho:+.3f} | 新增（无基线） | - |")
+                continue
+            d = rho - p
+            if abs(p) >= 0.04 and p * rho < 0:
+                tag = "**符号翻转**"
+            elif p * rho > 0 and abs(d) < 0.05:
+                tag = "复现"
+            else:
+                tag = "变化偏大"
+            add(f"| {sub} | {p:+.3f} | {rho:+.3f} | {d:+.3f} | {tag} |")
+        add(f"\n**负 IC 复现度**：上轮 {review['prev_neg']} 项 → 本轮 {review['neg']} 项"
+            f" —— {review['verdict']}")
+    add("\n**⚠️ 告警**：" + ("\n" + "\n".join(f"- {a}" for a in alerts) if alerts else "（无）"))
+
+    out_dir = out_dir or os.path.join(BACKEND_DIR, "backtest_reports")
     os.makedirs(out_dir, exist_ok=True)
-    out = os.path.join(out_dir, f"subfactor_ic_{dt.datetime.now():%Y%m%d_%H%M}.md")
+    stamp = dt.datetime.now()
+    out = os.path.join(out_dir, f"subfactor_ic_{stamp:%Y%m%d_%H%M}.md")
+    content = "\n".join(lines)
     with open(out, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        f.write(content)
     print(f"[report] {out}")
-    for sub, rho, n in sorted(verdicts, key=lambda x: -abs(x[1])):
-        print(f"  {sub:<14s} IC={rho:+.3f} (n={n})")
+
+    # ── 落库（Actions 工作区是临时的 ⇒ 库才是权威；前端「回测中心」也读库）──
+    meta = {"date": stamp.strftime("%Y-%m-%d %H:%M"),
+            "sections": len(sec_dates),
+            "section_first": sec_dates[0] if sec_dates else None,
+            "section_last": sec_dates[-1] if sec_dates else None,
+            "section_step": step, "holds": holds,
+            "verdicts": {s: round(r, 4) for s, r, _ in verdicts},
+            "alerts": alerts, "review": review}
+    db_saved = False
+    try:
+        from app.backtest import report_store
+        ok_md = report_store.save_report(os.path.basename(out), content, tag=_TAG)
+        ok_meta = report_store.save_report(
+            _META_NAME, json.dumps(meta, ensure_ascii=False), tag=_TAG + "_meta")
+        db_saved = bool(ok_md)
+        print(f"[db] 落库 {'OK' if ok_md else '失败'}"
+              f"（{os.path.basename(out)} / {_META_NAME} meta={ok_meta}）")
+    except Exception as e:
+        print(f"[db] 落库失败（文件已写，不影响结论）: {e}")
+
+    if not quiet:
+        for sub, rho, n in sorted(verdicts, key=lambda x: -abs(x[1])):
+            print(f"  {sub:<14s} IC={rho:+.3f} (n={n})")
+        for a in alerts:
+            print(f"  [警告] {a}")
+
+    return {"skipped": False, "sections": len(sec_dates),
+            "section_first": sec_dates[0] if sec_dates else None,
+            "section_last": sec_dates[-1] if sec_dates else None,
+            "verdicts": {s: r for s, r, _ in verdicts},
+            "alerts": alerts, "review": review,
+            "report_path": out, "report_name": os.path.basename(out),
+            "db_saved": db_saved}
+
+
+def summary_markdown(res) -> str:
+    """体检结果的企微推送摘要（月报）。
+
+    格式注意：**不用 markdown 表格** —— 企微不支持表格，`push_markdown_batched`
+    会把表格转成列表（`wechat_fmt.markdown_tables_to_lists`，幂等），不如直接写成
+    行内拼接，渲染结果可控。
+    内容顺序按「推送的价值」排：**告警置顶** → 复现度（本机制的核心指标）→ IC 明细。
+    """
+    rev = res.get("review") or {}
+    alerts = res.get("alerts") or []
+    lines = [f"**截面** {res.get('sections')} 个"
+             f"（{res.get('section_first')} ~ {res.get('section_last')}）"
+             f"｜**子项** {len(res.get('verdicts') or {})} 个"]
+    if alerts:
+        lines += ["", f"⚠️ **告警 {len(alerts)} 条**"] + [f"- {a}" for a in alerts]
+    if rev.get("prev_neg") is not None:
+        lines += ["", f"**负 IC 复现度**：上轮 {rev['prev_neg']} 项 → 本轮 {rev['neg']} 项"
+                      f"（{rev.get('neg_repro')}%，{rev.get('verdict')}）"]
+    v = res.get("verdicts") or {}
+    if v:
+        items = [f"{s} {r:+.3f}" for s, r in sorted(v.items(), key=lambda x: -abs(x[1]))]
+        lines += ["", "**5 日去超额 IC（按 |IC| 降序）**：" + " ｜ ".join(items)]
+    if res.get("report_name"):
+        lines += ["", f"报告：`{res['report_name']}`（前端「回测中心」可读全文）"]
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--hold", type=int, nargs="+", default=[5, 10])
+    ap.add_argument("--step", type=int, default=5)
+    ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    args = ap.parse_args()
+    run(holds=args.hold, step=args.step, refresh=args.refresh, quiet=args.quiet)
 
 
 if __name__ == "__main__":
