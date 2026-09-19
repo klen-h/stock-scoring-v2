@@ -14,6 +14,7 @@ UNIQUE(code, date)，幂等写入。回测统一从这里读数据（不依赖�
 ================================================================================
 """
 
+import bisect
 import time
 from datetime import datetime, timedelta
 
@@ -315,8 +316,48 @@ def anomalies_in(code: str = None, start: str = None, end: str = None) -> list:
 
 
 def has_anomaly(code: str, start: str, end: str) -> bool:
-    """`code` 在 [start, end] 内是否有源数据异常日（供回测剔除跨窗口样本用）。"""
+    """`code` 在 [start, end] 内是否有源数据异常日（供回测剔除跨窗口样本用）。
+
+    ⚠️ **逐样本调用会被 N 倍放大**（每次都发一条 SQL）。回测样本动辄数万条
+    ⇒ 请改用在 `anomaly_index()` 上一次取回、内存判定的 `window_has_anomaly()`。
+    """
     return bool(anomalies_in(code, start, end))
+
+
+_ANOMALY_INDEX = None
+
+
+def anomaly_index() -> dict:
+    """{code: [date, ...]（升序）} —— 全市场异常日索引（进程内缓存，只查一次库）。
+
+    异常日全表只有数百行（2026-09-18 体检：120 只 / 334 处）⇒ 一次取回、
+    内存二分判定，才是回测侧的正确用法（对比：逐样本 `has_anomaly()` = N 条 SQL）。
+
+    **fail-open**：表不存在 / 查询失败返回 {} ⇒ 语义等同"无异常日"，
+    回测行为与接入前**完全一致**（既不中断、也不改变既有结论口径）。
+    """
+    global _ANOMALY_INDEX
+    if _ANOMALY_INDEX is None:
+        idx = {}
+        for a in anomalies_in():
+            idx.setdefault(a["code"], []).append(a["date"])
+        for v in idx.values():
+            v.sort()
+        _ANOMALY_INDEX = idx
+    return _ANOMALY_INDEX
+
+
+def window_has_anomaly(idx: dict, code: str, start: str, end: str) -> bool:
+    """`code` 在 [start, end]（含端点）内是否有源异常日。
+
+    与 `has_anomaly()` 同语义但**不查库**（`idx` 由 `anomaly_index()` 一次构建）。
+    日期是 `YYYY-MM-DD` 定长字符串 ⇒ 字典序即时间序，可用 bisect。
+    """
+    days = idx.get(code)
+    if not days:
+        return False
+    i = bisect.bisect_left(days, start)
+    return i < len(days) and days[i] <= end
 
 
 def get_all_codes() -> list:

@@ -412,6 +412,9 @@ def main():
                     help="财报公告事件研究：按距公告日天数分桶看成长/质量 IC")
     ap.add_argument("--decay", action="store_true",
                     help="衰减寻优：扫描公告后阈值×衰减系数，对比不衰减基线")
+    ap.add_argument("--drop-anomaly", action="store_true",
+                    help="剔除「持仓窗口跨越源数据异常日」的样本"
+                         "（默认只统计不剔除，不擅自改变既有结论口径）")
     args = ap.parse_args()
 
     idx = load_index_bars()
@@ -449,6 +452,20 @@ def main():
         return 1
     print(f"[sections] {len(sec_dates)} 个截面日：{sec_dates[0]} ~ {sec_dates[-1]}")
 
+    # ★ 2026-09-19：源数据异常日（`price_anomalies`）—— 持仓窗口
+    #   [截面日, 截面日+max_hold] 跨越异常日时，未来收益被**源数据错误**污染
+    #   （|chg| 超过该品种涨跌停上限；2024 年占 75%，本脚本 3 年窗口会命中）。
+    #   口径纪律：**默认只统计、不剔除** —— 既有结论按原口径发布过，不擅自改；
+    #   加 `--drop-anomaly` 才真正剔除，两套口径可直接对比。
+    #   索引一次取回、内存 bisect 判定（逐样本查库会产生数万条 SQL）。
+    from app.backtest.data import anomaly_index, window_has_anomaly
+    anom_idx = anomaly_index()
+    anom_hits = 0
+    if anom_idx:
+        print(f"[anomaly] 源异常日索引 {len(anom_idx)} 只 / "
+              f"{sum(len(v) for v in anom_idx.values())} 处"
+              f"（{'--drop-anomaly：将剔除跨异常窗口样本' if args.drop_anomaly else '仅统计，未剔除'}）")
+
     samples = []
     for ci, (code, bars) in enumerate(sorted(prices.items()), 1):
         if code == "sh000300":
@@ -475,6 +492,13 @@ def main():
             g = dg.score if (dg is not None and dg.score is not None) else None
             if q is None and g is None:
                 continue
+            # ★ 异常判定必须放在「确认为样本之后」：早判会把**本就因缺财报/缺评分
+            #   而跳过的日期槽**也计入（实测早判报 512 条，其中真正是样本的只有 2 条）。
+            if anom_idx and window_has_anomaly(
+                    anom_idx, code, d, bars[i + max_hold]["date"]):
+                anom_hits += 1
+                if args.drop_anomaly:
+                    continue
             s = {"code": code, "date": d, "state": state_by_date.get(d, "?"),
                  "q": q, "g": g, "age": age}
             for h in args.hold:
@@ -482,6 +506,9 @@ def main():
             samples.append(s)
         if ci % 200 == 0:
             print(f"[calc] {ci}/{len(prices)} 样本 {len(samples)}")
+    if anom_idx:
+        print(f"[anomaly] 样本窗口跨越异常日：{anom_hits} 条"
+              f"（{'已剔除' if args.drop_anomaly else '未剔除，加 --drop-anomaly 可剔除'}）")
     print(f"[samples] 共 {len(samples)} 条")
 
     by_state = defaultdict(list)

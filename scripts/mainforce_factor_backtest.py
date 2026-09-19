@@ -210,7 +210,7 @@ def fmt_bucket(rows):
 # ──────────────────────────────────────────────────────────────
 #  主流程
 # ──────────────────────────────────────────────────────────────
-def build_samples(holds, step, refresh=False):
+def build_samples(holds, step, refresh=False, drop_anomaly=False):
     prices = load_ohlc_all(force=refresh)
     print(f"[data] 日线覆盖 {len(prices)} 只（本地缓存/数据包优先）")
     flow_map = research_cache.flow_map(force=refresh)
@@ -226,6 +226,14 @@ def build_samples(holds, step, refresh=False):
     sec_dates = sec_dates[::step]
     print(f"[sections] 截面日 {len(sec_dates)} 个：{sec_dates[0]} ~ {sec_dates[-1]}")
     sec_set = set(sec_dates)
+
+    # ★ 2026-09-19：源数据异常日（`price_anomalies`）—— 持仓窗口
+    #   [截面日, 截面日+max_hold] 跨越异常日时，前瞻收益被**源数据错误**污染。
+    #   口径纪律：**默认只统计、不剔除**（既有结论按原口径发布过）；`--drop-anomaly` 才剔除。
+    #   索引一次取回、内存 bisect 判定（逐样本查库会产生数万条 SQL）。
+    from app.backtest.data import anomaly_index, window_has_anomaly
+    anom_idx = anomaly_index()
+    anom_hits = 0
 
     samples = []
     for ci, (code, bars) in enumerate(sorted(prices.items()), 1):
@@ -275,6 +283,13 @@ def build_samples(holds, step, refresh=False):
                 if mkt > 0:
                     flow5_mkt = sum(x["main_net"] or 0 for x in w) / mkt * 100
 
+            # ★ 异常判定必须放在「确认为样本之后」：早判会把**本就因数据不足
+            #   而跳过的日期槽**也计入，导致报出的条数远大于真实样本数。
+            if anom_idx and window_has_anomaly(
+                    anom_idx, code, d, bars[i + max_hold]["date"]):
+                anom_hits += 1
+                if drop_anomaly:
+                    continue
             cm, pm = chip[d], phase[d]
             s = {
                 "code": code, "date": d,
@@ -309,8 +324,15 @@ def build_samples(holds, step, refresh=False):
             mkt = sum(g[f"fwd{h}"] for g in grp) / len(grp)
             for g in grp:
                 g[f"x_fwd{h}"] = g[f"fwd{h}"] - mkt
+    anom_stat = None
+    if anom_idx:
+        anom_stat = {"codes": len(anom_idx),
+                     "days": sum(len(v) for v in anom_idx.values()),
+                     "hit": anom_hits, "dropped": bool(drop_anomaly)}
+        print(f"[anomaly] 样本窗口跨越异常日：{anom_hits} 条"
+              f"（{'已剔除' if drop_anomaly else '未剔除，加 --drop-anomaly 可剔除'}）")
     print(f"[samples] 截面样本 {len(samples)} 条（{len(by_date)} 日）")
-    return samples, sec_dates
+    return samples, sec_dates, anom_stat
 
 
 FACTORS = [
@@ -325,13 +347,17 @@ FACTORS = [
 ]
 
 
-def analyze(samples, holds):
+def analyze(samples, holds, anom_stat=None):
     lines = []
     add = lines.append
 
     add("# 主力思维因子全池截面回测（PLAN_MAINFORCE 阶段 1）\n")
     add(f"> 运行：mainforce_factor_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}\n")
     add(f"> 截面样本 {len(samples)} 条（全池，非 Top50 高分池）\n")
+    if anom_stat:          # ★ 口径留痕：异常日剔除与否写进报告头，避免结论无法追溯
+        add(f"> 源数据异常日 {anom_stat['codes']} 只 / {anom_stat['days']} 处；"
+            f"持仓窗口跨越 {anom_stat['hit']} 条样本"
+            f"（{'已剔除' if anom_stat['dropped'] else '**未剔除**（加 --drop-anomaly 可剔除）'}）\n")
 
     # 1. IC
     add("\n## 1. 因子 IC（Spearman，原始 / 去市场超额）\n")
@@ -425,10 +451,15 @@ def main():
     ap.add_argument("--step", type=int, default=5)
     ap.add_argument("--refresh", action="store_true",
                     help="强制重建本地数据缓存（backend/data/research-cache.db）")
+    ap.add_argument("--drop-anomaly", action="store_true",
+                    help="剔除「持仓窗口跨越源数据异常日」的样本"
+                         "（默认只统计不剔除，不擅自改变既有结论口径）")
     args = ap.parse_args()
 
-    samples, sec_dates = build_samples(args.hold, args.step, refresh=args.refresh)
-    report = analyze(samples, args.hold)
+    samples, sec_dates, anom_stat = build_samples(
+        args.hold, args.step, refresh=args.refresh,
+        drop_anomaly=args.drop_anomaly)
+    report = analyze(samples, args.hold, anom_stat)
     out_dir = os.path.join(BACKEND_DIR, "backtest_reports")
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir,

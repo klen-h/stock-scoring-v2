@@ -49,7 +49,14 @@
   读侧 `data.anomalies_in()` / `data.has_anomaly()`（**fail-open，不调用则行为与从前完全一致**）。
   **★ 与当前战法回测零重叠**（异常日全在 2025-10 之前，战法信号数据只有 2026-08 之后）
   ⇒ 现有结论不受影响；**但** `quality_defense_backtest` / `mainforce_factor_backtest` 用 3 年数据，
-  **会命中** ⇒ 需接 `has_anomaly()`（**待办**）。
+  **曾以为会命中** ⇒ **2026-09-19 已接入并实测证伪**：真正的约束是**数据可得性**，不是 `years=3` ——
+  · `stock_finance.notice_date` 仅覆盖 **2025-07-07 起** ⇒ `quality_defense_backtest` 的截面样本
+    全落在 2025-07 之后，命中 **2 条 / 36128**；
+  · `mainflow_history` 仅覆盖 **2026-03-16 起** ⇒ `mainforce_factor_backtest` 的截面样本
+    与最晚异常日（2025-10-29）**无交集**，命中 **0 条**。
+  ⇒ **两脚本的既有结论均不受污染**（qd 剔除后结论一字未变）。过滤已接：
+  `data.anomaly_index()` / `window_has_anomaly()`（一次查库 + 内存 bisect），
+  默认**只统计不剔除**，`--drop-anomaly` 才剔除 ⇒ 将来新增异常日（2026 年）会自动被兜住。
 - **`--rebuild`**：`python backfill_history.py --rebuild` —— 对已入库每只全量重拉并**覆盖**
   （749 只 ≈ 25 分钟，幂等）。2026-09-18 已跑完：**749/749 成功、零失败**。
 - **已知未定论**：库与源之间有 **0.01%~0.09% 的系统性精度差**（几乎每个交易日都有）——
