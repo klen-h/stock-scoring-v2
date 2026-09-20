@@ -90,6 +90,21 @@
   否则会出现「以为挂了推送、其实静默没发」。
 - ⚠️ **企微不支持 markdown 表格**：`push_markdown_batched` 会经
   `wechat_fmt.markdown_tables_to_lists` 把表格转成列表（幂等）⇒ 推送内容直接写成行内拼接更可控。
+
+## 日期口径（2026-09-20 扩展；**易错点，改前必读**）
+- **"数据所属日"的全项目唯一口径 = `rules.latest_completed_trading_day()`**
+  （15:00 分界 + 跳周末 / `HOLIDAYS`）。已收敛的写者：
+  `ranking_live.rank_date`（`live_ranking._rank_day()`）、`signal_persistence`（`_scan_day()`）、
+  `strategy_results.scan_date`（`base.save_scan_result`）、`paper_trading.auto_ingest_signals`。
+- ⚠️⚠️ **`routers/scoring.py` 里"库里的榜是否今天的"判据必须继续用 `_today_bj()`（自然日），
+  不要换成 `_rank_day()`**：那是**新鲜度**判据 —— 盘中必须与库里的上一交易日榜**不匹配**，
+  才会退化走在线两阶段拿实时行情；换成交易日口径会让**盘中误用昨日静态榜**。
+  ⇒ **同一模块里两个日期函数并存是有意的**（`_today_bj` = 今天这一"生成日"，
+  `_rank_day` = 数据所属交易日），改任何一个之前先想清"调用方要的是哪个语义"。
+- `shadow_rank_daily.rank_date` **不是自己算的** —— 照搬 `ranking_live` 的 `MAX(rank_date)`；
+  所以 `ranking_live` 的日期口径错会**连带**污染它（2026-09-20 修的就是这条链）。
+- **日批跨午夜**是这类 bug 的共同触发场景（9-18 深夜的批 → 9-19 凌晨落库）；凡"盘后写快照"
+  的任务都应使用 `latest_completed_trading_day()` 而非自然日。
 - 设计动机：2026-09-20 首次体检发现**技术面 8/8 子项 5-10 日负 IC**（A 股短窗截面反转），
   并解释「周报买入信号 5 日胜率 41.5%」——结论会随样本期漂移，必须周期化复核。
 
