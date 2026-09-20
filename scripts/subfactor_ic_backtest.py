@@ -65,16 +65,23 @@ from app.scoring.engine import ScoreEngine  # noqa: E402
 from app.routers.scoring import _calc_technical_fast  # noqa: E402
 
 
-def quintile_table(rows):
-    """按子项分值分 5 档 → 每档 n / x_fwd 均值 / 去超额胜率。"""
+def quintile_table(rows, h: int):
+    """按子项分值分 5 档 → 每档 n / 去超额均值 / 胜率。
+
+    ★ 2026-09-20 修复：原先取固定键 `x_fwd`，而数据的键是 `x_fwd{h}`（x_fwd5/x_fwd10）
+      ⇒ `r.get("x_fwd")` 恒 None ⇒ 五分位**从未输出过**（0103/0148/0149 三份报告均无）
+      —— "负 IC 是整条曲线还是尾部驱动"因此悬空（该问题直接决定体检报告建议 1
+      选「降权」还是「尾部过滤」）。修复：按持有期取键。
+    """
     if len(rows) < 100:
         return []
+    key = f"x_fwd{h}"
     srt = sorted(rows, key=lambda r: r["score"])
     q = max(1, len(srt) // 5)
     out = []
     for i in range(5):
         chunk = srt[i * q: (i + 1) * q] if i < 4 else srt[4 * q:]
-        x = [r["x_fwd"] for r in chunk if r.get("x_fwd") is not None]
+        x = [r[key] for r in chunk if r.get(key) is not None]
         if not x:
             continue
         out.append({"q": i + 1, "n": len(chunk), "x": sum(x) / len(x),
@@ -272,7 +279,7 @@ def run(holds=None, step=5, refresh=False, quiet=False, out_dir=None):
             ic = spearman([r["score"] for r in valid], [r[f"x_fwd{h}"] for r in valid])
             add(f"| {h}日 | {ic['rho'] if ic else '-'} | {ic['n'] if ic else 0} |")
         for h in holds:
-            qt = quintile_table([r for r in rows if r.get(f"x_fwd{h}") is not None])
+            qt = quintile_table(rows, h)
             if qt:
                 cells = [f"Q{b['q']}: n={b['n']} {b['x']:+.2f}%/{b['win']:.0f}%" for b in qt]
                 mono = ("单调↑" if all(qt[i]["x"] <= qt[i + 1]["x"] + 0.15
