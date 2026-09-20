@@ -15,13 +15,19 @@
 
 口径：
   - 数据：research_cache 本地 OHLC（包优先，零 Supabase）+ float_shares.json 文件缓存
-  - 截面：资金流覆盖窗，前推 warmup 70 根，尾部留 max_hold，step=5（与 flow5 回测同源）
+  - 截面：资金流覆盖窗，前推 warmup 70 根，尾部留 max_hold，step=1
+    （★ 2026-09-21 默认改 5→1：重审的密度敏感性检验证明 step=5 的 10 个截面
+    不足以支撑因子结论 —— 同窗 step 5→1，技术面负 IC 直接砍半
+    （RSI -0.218→-0.093、KDJ 转正），详见体检报告 §6.2。
+    ⚠️ 与 flow5 回测（step=5）不再同源，但结论稳健性优先；
+    ⚠️ 首轮 step=1 与旧基线（step=5）滚动复核会出现"变化偏大"标记，属预期，
+    需人工确认一次（体检报告 §6.5）。）
   - 样本：每股每截面喂引擎的指标数组（_calc_technical_fast 全量算一次、按日期切片）
   - 前瞻：fwd5/fwd10 + 截面全池均值去超额（x_fwd）
   - 换手率：volume(手) × 1e4 / 流通股本（与腾讯口径一致）
   - 局限：基本面/成长/质量子项依赖财报与估值快照，历史截面不可离线重建 → 不在本
     次体检范围（后续可在 ranking_history 快照积累后做）。
-用法：python scripts/subfactor_ic_backtest.py [--hold 5 10] [--step 5] [--quiet]
+用法：python scripts/subfactor_ic_backtest.py [--hold 5 10] [--step 1] [--quiet]
       （日批每月例行：scripts/daily_batch.py --tasks subfactor_ic）
 
 周期化（2026-09-20 落地，见体检报告 §建议5）：
@@ -149,7 +155,7 @@ def _review(verdicts, prev) -> tuple:
              "neg_repro": repro, "verdict": verdict}, alerts)
 
 
-def run(holds=None, step=5, refresh=False, quiet=False, out_dir=None):
+def run(holds=None, step=1, refresh=False, quiet=False, out_dir=None):
     """执行一次体检：算 IC → 滚动复核 → 写 md + 落库 → 返回 summary。
 
     返回 dict（供 `scripts/daily_batch.py` 的 `task_subfactor_ic` 月度例行调用）：
@@ -426,7 +432,7 @@ def summary_markdown(res) -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--hold", type=int, nargs="+", default=[5, 10])
-    ap.add_argument("--step", type=int, default=5)
+    ap.add_argument("--step", type=int, default=1)
     ap.add_argument("--refresh", action="store_true")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()

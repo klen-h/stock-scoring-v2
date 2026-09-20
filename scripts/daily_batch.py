@@ -538,7 +538,9 @@ def task_subfactor_ic():
     触发条件（任一成立，否则跳过）：
       1) 本轮交易日所属**月份**尚无体检报告（常规窗口 = 每月首个交易日）
       2) `--tasks subfactor_ic` 明确点名（人工补跑 / 强制）
-    数据：全程本地或数据包（`research_cache` + pack，零 Supabase 回源），约 3 分钟。
+    数据：全程本地或数据包（`research_cache` + pack，零 Supabase 回源）。
+    ★ 2026-09-21 默认 step 5→1（截面 10→~50 个，密度敏感性检验结论，见体检报告
+      §6.2）⇒ 耗时约 10~15 分钟（原 3 分钟）—— 月度任务，可接受。
     """
     d = _batch_trading_day()
     if not _monthly_due("subfactor_ic", d) and not _explicitly_requested("subfactor_ic"):
