@@ -31,6 +31,7 @@
 ================================================================================
 """
 
+import json
 import os
 import time as _time
 from dataclasses import asdict, dataclass
@@ -154,8 +155,12 @@ def _macro() -> dict:
     try:
         from app.macro import get_macro_panel
         p = get_macro_panel() or {}
+        nq = p.get("nasdaq") or {}
         val = {"us10y": (p.get("us10y") or {}).get("price"),
-               "dxy": (p.get("dxy") or {}).get("price")}
+               "dxy": (p.get("dxy") or {}).get("price"),
+               # ★ 2026-09-20：纳指隔夜（外部领先因子，见 `_ev_external_lead`）
+               "nasdaq": nq.get("price"),
+               "nasdaq_pct": nq.get("change_pct")}
     except Exception:
         return _macro_cache["val"]   # 重建失败沿用旧值（fail-open）
     _macro_cache.update(ts=now, val=val)
@@ -611,7 +616,140 @@ def _ev_reversal_no_panic(pos, params, ctx):
     }
 
 
+# ── E. 外部领先（Phase 3，2026-09-20 落地）────────────────────────────────────
+# 与 D 组同源（都是"短期反转/不追涨"的纪律），但**数据源在外部**：
+#   依据 `scripts/regime_external_lead_test.py`（regime 历史重放 687 天）——
+#   外部领先因子（纳指隔夜 + 美元 5 日）**只在 defensive 市有增量价值**：
+#     防御市未预警日：未来 5/10 日 +1.22% / +2.50%（超跌反弹）
+#     防御市预警日　：未来 5/10 日 -0.22% / -0.33%
+#     （差 1.44 / 2.83pt；滞后 1 日可交易口径 10 日差 2.53pt）
+#   offensive/neutral 无增量（差 ≤0.3pt）⇒ 本评估器**硬性限定 defensive**。
+#   单变量领先性：纳指 1 日窗 IC +0.1609 ｜ 美元（UDI）5 日窗 IC -0.1005；
+#   美债 10Y/30Y 仅 ~0.066（同步而非领先）⇒ 不采用。
+
+_USD5_CACHE = {"ts": 0.0, "val": None}
+
+
+def _parse_macro_date(s):
+    """`macro_daily.date` → date 对象。兼容 `2026/9/7` 与 `2026-09-07` 两种写法。
+
+    ⚠️ 该表历史格式是**斜杠且不补零**，**不能靠 SQL 字符串排序**
+      （`'2026/9/10' < '2026/9/7'` 会错序）⇒ 必须取回后按日期对象排序。
+    """
+    from datetime import datetime as _dt
+    parts = str(s or "").strip().replace("/", "-").split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        return _dt(int(parts[0]), int(parts[1]), int(parts[2])).date()
+    except (ValueError, TypeError):
+        return None
+
+
+def _usd_5d_change(days: int = 5):
+    """美元指数近 N 日**累计**变化（%）—— 数据源 `macro_daily` 日度快照。
+
+    取不到（快照攒得不够 / 面板缺 dxy）返回 None ⇒ 调用方只用纳指一侧，**不误报**。
+    快照结构与 `get_macro_snapshot()` 同构：`{"panel": {"dxy": {"price": ...}}}`。
+    1 小时进程缓存（日度数据，不必频繁读库）。
+    """
+    now = _time.time()
+    if _USD5_CACHE["val"] is not None and now - _USD5_CACHE["ts"] < 3600:
+        return _USD5_CACHE["val"]
+    try:
+        from app.database import db
+        rows = db.fetch("SELECT date, data_json FROM macro_daily "
+                        "ORDER BY date DESC LIMIT %s", (int(days) + 4,)) or []
+        pts = []
+        for r in rows:
+            d = _parse_macro_date(r.get("date"))
+            if not d:
+                continue
+            try:
+                price = (json.loads(r.get("data_json") or "{}")
+                         .get("panel", {}).get("dxy", {}).get("price"))
+            except (ValueError, TypeError, AttributeError):
+                price = None
+            if price:
+                pts.append((d, float(price)))
+        if len(pts) < int(days) + 1:
+            return None
+        pts.sort(key=lambda x: x[0])
+        # ★★ 新鲜度校验（2026-09-20）：最后一点必须接近「最近已完成交易日」，
+        #   否则 `macro_daily` 停更时会拿**过期数据**算出"近 N 日变化"⇒ 误报。
+        #   实测就是这种情况：9-19 之前该表断更，最新只是 8-31~9-07 那批残留。
+        #   用全项目唯一口径 `latest_completed_trading_day()`，容忍 5 个自然日。
+        try:
+            from app.flash.rules import latest_completed_trading_day
+            expect = _parse_macro_date(latest_completed_trading_day())
+        except Exception:
+            expect = None
+        if expect and (expect - pts[-1][0]).days > 5:
+            print(f"[coach] 美元序列过期（最新 {pts[-1][0]}，应至 {expect}）"
+                  f"⇒ 本次只用纳指一侧")
+            return None
+        base = pts[-(int(days) + 1)][1]
+        if not base:
+            return None
+        val = (pts[-1][1] / base - 1) * 100
+        _USD5_CACHE.update(ts=now, val=val)
+        return val
+    except Exception as e:
+        print(f"[coach] 美元 N 日变化读取失败（降级为只用纳指）: {e}")
+        return None
+
+
+def _external_lead(ctx: dict, params: dict) -> dict:
+    """外部领先预警合成：纳指隔夜跌 **或** 美元 N 日走强（任一命中即预警）。"""
+    macro = ctx.get("macro") or {}
+    nq = macro.get("nasdaq_pct")
+    usd5 = _usd_5d_change(int(params.get("usd5_days") or 5))
+    thr_nq = float(params.get("nq_pct") or -0.76)
+    thr_usd = float(params.get("usd5_pct") or 0.66)
+    hits, missing = [], []
+    if nq is None:
+        missing.append("纳指隔夜")
+    elif nq < thr_nq:
+        hits.append(f"纳指隔夜 {nq:+.2f}%（<{thr_nq:g}%）")
+    if usd5 is None:
+        missing.append(f"美元{int(params.get('usd5_days') or 5)}日")
+    elif usd5 > thr_usd:
+        hits.append(f"美元{int(params.get('usd5_days') or 5)}日累计 {usd5:+.2f}%（>{thr_usd:g}%）")
+    return {"warn": bool(hits), "hits": hits, "missing": missing,
+            "nasdaq_pct": nq, "usd_pct": usd5}
+
+
+def _ev_external_lead(pos, params, ctx):
+    """【防御市 + 外部预警】不要期待超跌反弹。**只在 defensive 触发**。
+
+    与同组的 `reversal_no_panic`（昨日大跌不恐慌割肉）**不矛盾**，是互补：
+      那条说"别恐慌割肉"，这条说"但也别指望反弹"——**不恐慌 ≠ 期待反弹**。
+    """
+    regime = (ctx.get("regime") or {}).get("state")
+    if regime != "defensive":
+        return None
+    lead = _external_lead(ctx, params)
+    if not lead["warn"]:
+        return None
+    note = (f"（{'、'.join(lead['missing'])} 数据缺，本次未纳入判定）"
+            if lead["missing"] else "")
+    return {
+        "message": (
+            f"【防御市 + 外部预警】{'；'.join(lead['hits'])}。\n"
+            "回测（regime 重放 687 天）：防御市里**未预警**日未来 5/10 日 "
+            "+1.22%/+2.50%（超跌反弹），而**外部预警**日退到 -0.22%/-0.33% "
+            "⇒ 本次『跌多了会弹』的预期**不成立**。\n"
+            "纪律：① 不抢反弹、不因跌幅大而抄底；② 已持仓仍按剧本离场"
+            "（止损/到期），**不要**因此恐慌提前割 —— 与「昨日大跌不恐慌割肉」"
+            "不矛盾：不恐慌 ≠ 期待反弹。" + note),
+        "numbers": {"regime": regime, "nasdaq_pct": lead["nasdaq_pct"],
+                    "usd_pct": lead["usd_pct"], "hits": lead["hits"],
+                    "missing": lead["missing"]},
+    }
+
+
 EVALUATORS = {
+    "external_lead_no_rebound": _ev_external_lead,
     "stop_loss_hit": _ev_stop_loss_hit,
     "hold_3d_review": _ev_hold_3d_review,
     "loss_over_7pct": _ev_loss_over_7pct,

@@ -127,6 +127,27 @@ rules:
     params:
       big_move_pct: 1.5
 
+  # ── E. 外部领先（Phase 3，2026-09-20）─────────────────────────────────────
+  # 依据：scripts/regime_external_lead_test.py（regime 历史重放 687 天）
+  #   **只在 defensive 有增量价值**：防御市未预警日未来 5/10 日 +1.22%/+2.50%
+  #   （超跌反弹），预警日退到 -0.22%/-0.33%（差 1.44/2.83pt；滞后 1 日可交易
+  #   口径 10 日差 2.53pt）。offensive/neutral 无增量（≤0.3pt）
+  #   ⇒ 评估器内**硬性限定 defensive**，不污染其他档。
+  #   单变量领先性：纳指 1 日窗 IC +0.1609 ｜ 美元 5 日窗 IC -0.1005
+  #   （美债 10Y/30Y 仅 0.066，是同步不是领先 ⇒ 不用）。
+  # 阈值 = 回测样本的 20/80 分位（纳指隔夜涨幅 / 美元 5 日累计），可调；
+  #   usd5 数据不足（macro_daily 未攒够）时自动只用纳指一侧，不误报。
+  # push=false：按上线纪律先只落库攒样本（逐周放开）。
+  - id: external_lead_no_rebound
+    label: 防御市外部预警（不期待反弹）
+    enabled: true
+    push: false
+    severity: warn
+    params:
+      nq_pct: -0.76
+      usd5_pct: 0.66
+      usd5_days: 5
+
 # ── 剧本（coach_plans）阈值（monitor.write_plan 消费）────────────────────────
 # ★ 审查 P2-12：此前剧本三处与规则/执行打架（评估日数写死 3、price_pos 文本
 #   写死 0.80、移动止损无人执行）。现阈值集中此处：
