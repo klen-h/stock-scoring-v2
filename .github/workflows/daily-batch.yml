@@ -78,6 +78,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
+          # ★ 2026-09-21：zzshare 每日数据积累（zz_daily 任务）需要 token —— 匿名会 0 行/慢。
+          #   需在仓库 Secrets 新增 ZZSHARE_TOKEN（值同 Render 的环境变量；官网免费领取）。
+          ZZSHARE_TOKEN: ${{ secrets.ZZSHARE_TOKEN }}
           # ★ 数据源走数据包：K线/指标/主力行为全部读 pack，零回源 → 无 WAF 风险
           DATA_SOURCE: pack
           # ★ LLM 解读（2026-09-09 补上：此前未引用 → AI 解读一直显示"未配置"）

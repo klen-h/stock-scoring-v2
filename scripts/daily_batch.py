@@ -185,6 +185,23 @@ def _batch_trading_day():
     return datetime.strptime(_rules.latest_completed_trading_day(), "%Y-%m-%d").date()
 
 
+def task_zz_daily():
+    """zzshare 每日数据积累（涨停生态/情绪快照，2026-09-21 新增）。
+
+    ★ 定位：**数据积累型**任务 —— 情绪趋势/连板分布/涨停题材归因这类数据
+      「晚一天接入就永远少一天历史」，且每日落库本身就是 zzshare 选型原则
+      要求的「30 天影子验证」载体。分析开发（情绪×战法交互回测 / 基本面
+      PIT 体检）等 10 月体检收口后再排（见 zzshare 功能盘点 §7 路线图）。
+    幂等：`zz_daily_snapshots` 表 date 主键，补跑安全；
+    fail-open：单接口失败只记 `_error`，不阻断日批。
+    ⚠️ 依赖 Actions secrets 配置 ZZSHARE_TOKEN（Render 已配；缺 token 会匿名
+       调用 → 0 行/慢，快照里 `_error` 或空数据即此因）。
+    """
+    d = _batch_trading_day()
+    from app.zzshare_daily import run_daily
+    return run_daily(d.isoformat())
+
+
 def task_zz_finance():
     """zzshare 财报扩展周同步（原 Render 周一 04:30 循环，只读模式已停摆）。
 
@@ -643,6 +660,9 @@ TASKS = {
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
+    # ★ 2026-09-21 新增：数据积累型（时钟属性——晚一天少一天历史）+ zzshare 影子验证载体。
+    #   幂等靠 zz_daily_snapshots.date 主键；分析开发等 10 月体检收口（盘点文档 §7）。
+    "zz_daily": (task_zz_daily, "zzshare 每日数据积累（情绪/连板/涨停归因快照）"),
     # ★ 2026-09-11 迁入：原 Render 周五循环被只读模式关闭 → 回测中心停在 09-05。
     #   任务内部判定仅周五执行，其余交易日秒过。
     "weekly_report": (task_weekly_report, "周度回测报告（仅周五，落库+推送）"),
@@ -659,7 +679,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
-                 "lhb", "zz_finance", "weekly_report", "subfactor_ic", "daily_report",
+                 "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic", "daily_report",
                  "trader_brief"]
 
 
