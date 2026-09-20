@@ -26,6 +26,21 @@
   |IC| ≥ 0.05 且 n ≥ 100 ⇒ 弱领先（仅可作参考）
   否则 ⇒ 无领先性（系统只能"同时反应"，不能前瞻）
 
+⚠️⚠️ **重大修正（2026-09-20 晚，`fake_lead_diagnosis.py` 实测）**：
+  上面的判定是在 **same 口径**（宏观 t 日变化 vs A 股 t→t+N）下做的，而该口径有
+  **系统性的时区前视偏差**，故**结论须降级**：
+    `same` 用 A 股**当日**日期去索引宏观序列，而这些序列的『当日』波动大部分发生在
+    A 股当日**收盘之后**（美股夜盘）⇒ 等于用『次日才可知的信息』预测未来 = 前视。
+  改按 `lag1`（推到上一 A 股交易日 = A 股开盘前已知的可交易档）重算，实测：
+    · NQ +0.1609 → **+0.0115**（塌陷 93%）
+    · VX -0.1124 → **-0.0052**（塌陷 95%）
+    · UDI -0.0972 → **-0.0230**（塌陷 76%）
+  ⇒ **外部因子对 A 股次日并无线性可交易预测力**；本脚本的高 IC 是前视的产物。
+  ⇒ 它们的**真实价值是条件性的**（只在 defensive 脆弱 regime 下有效，须用分组检验，
+    见 `regime_external_lead_test.py` 的 regime × 预警 分组，lag1 口径差 1.44/2.83pt）。
+  ⇒ 本脚本结论**只能用于同口径横向比较**（变量间谁更"同步"），
+    **不可用于「系统能前瞻外部冲击」的论证**。
+
 用法：
   python scripts/macro_lead_backtest.py
   python scripts/macro_lead_backtest.py --event 2026-09-16 --window 5
@@ -116,14 +131,17 @@ def lead_ic(chg: dict, bars: list, hold: int) -> dict:
 
 
 def verdict(rho):
+    """⚠️ 本判定基于 **same（同日）口径** —— 含时区前视、**不可交易**（见模块 docstring
+    的「重大修正」）。措辞已相应改为"同口径强度"，避免被读成"可前瞻"。
+    真实可交易性见 `scripts/fake_lead_diagnosis.py`（lag1：三者 |IC| 均 ≤0.04）。"""
     if rho is None:
         return "样本不足"
     a = abs(rho)
     if a >= _STRONG:
-        return "**有效领先**（可前瞻）"
+        return "同口径强（⚠️含前视，不可交易）"
     if a >= _WEAK:
-        return "弱领先（仅参考）"
-    return "无领先性（只能同时反应）"
+        return "同口径中等（⚠️同上）"
+    return "同口径亦弱"
 
 
 def event_window(series: dict, bars: list, event: str, k: int):
@@ -191,6 +209,9 @@ def main():
     print("=" * 92)
     print("\n【领先性 IC】Spearman corr( 宏观变量当日变化 , A股未来 N 日收益 )"
           "  —— 负值 = 该变量上行预示 A 股下跌")
+    print("⚠️ 本表为 **same（同日）口径**，含时区前视（美股夜盘在 A 股收盘之后）"
+          "⇒ 数值**不可交易**；")
+    print("   可交易口径见 `scripts/fake_lead_diagnosis.py`（lag1），实测三者 |IC| 均 ≤0.04。")
     summary = {}
     for sid, v in series.items():
         rows = v.get("rows") or []
@@ -220,8 +241,8 @@ def main():
     if summary:
         for sid, (h, a) in sorted(summary.items(), key=lambda x: -x[1][1]):
             print(f"  {sid:<12}最优 {h}日 |IC|={a:.4f} → "
-                  + ("**可前瞻**" if a >= _STRONG else
-                     "弱参考" if a >= _WEAK else "无前瞻性"))
+                  + ("同口径强（⚠️含前视不可交易）" if a >= _STRONG else
+                     "同口径中等" if a >= _WEAK else "同口径亦弱"))
     else:
         print("  （无足够样本）")
 
