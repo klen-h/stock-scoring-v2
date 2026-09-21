@@ -1889,6 +1889,28 @@ def gate_watch(limit: int = 80):
         codes = [r["code"] for r in (rows or [])]
         names = {r["code"]: r.get("name") for r in (rows or [])}
         mf = load_latest(codes) or {}
+        # ★ 双信号交叉（2026-09-22，用户决策「接受静默 + 用双信号交叉」）：
+        #   战法信号不推送（白名单空——实测单阳不破等负期望），但与闸门 ready 交叉
+        #   的票是**两个独立体系同时看中**（闸门看主力/筹码/市况，战法看图形）
+        #   ⇒ 在观察池里标注 + 支持「只看双信号」筛选。
+        sig_map, sig_date = {}, None
+        try:
+            latest = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
+            sig_date = (latest or {}).get("d")
+            if sig_date:
+                srows = db.fetch(
+                    "SELECT strategy_name, results_json FROM strategy_results "
+                    "WHERE scan_date = %s AND count > 0", (sig_date,))
+                for sr in srows or []:
+                    for it in _json.loads(sr.get("results_json") or "[]"):
+                        c2 = it.get("code")
+                        if c2:
+                            sig_map.setdefault(c2, []).append(
+                                {"name": sr["strategy_name"],
+                                 "conf": it.get("confidence")})
+        except Exception as e:
+            print(f"[gate-watch] 战法信号读取失败（不影响闸门数据）: {e}")
+
         items, n3, regime = [], 0, ""
         for c in codes:
             m = mf.get(c)
@@ -1928,10 +1950,14 @@ def gate_watch(limit: int = 80):
                                 else "over" if m["flow5_amt"] > 5 else ""),
                 "price_pos": chip.get("price_pos"),
                 "winner_ratio": chip.get("winner_ratio"),
+                "strategies": sig_map.get(c) or [],     # 双信号交叉（战法命中）
             })
         # 排序：就绪度优先，其次 5 日主力占额（资金强度）
         items.sort(key=lambda x: (-x["ready"],
                                   -(x["flow5_amt"] if x["flow5_amt"] is not None else -999)))
-        data = {"regime": regime, "total": len(items), "ready3": n3, "items": items}
+        data = {"regime": regime, "total": len(items), "ready3": n3,
+                "strategy_date": str(sig_date)[:10] if sig_date else None,
+                "strategy_hits": sum(1 for x in items if x["strategies"]),
+                "items": items}
         _GATE_WATCH.update(ts=now, val=data)
     return {**data, "items": data["items"][:limit]}

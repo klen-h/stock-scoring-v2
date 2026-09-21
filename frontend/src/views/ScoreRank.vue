@@ -267,7 +267,16 @@
     <div v-if="activeTab === 'watch'" class="bg-card border border-border rounded-lg overflow-hidden">
       <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
         <span>买入闸门观察池 · 就绪度 ≥2（主力有根据 + 不追高，等市况/时机）</span>
-        <span class="font-mono">市况 {{ gateWatch.regime || '-' }} ｜ 候选 {{ gateWatch.total }} 只 ｜ 三绿 {{ gateWatch.ready3 }} 只</span>
+        <span class="font-mono">市况 {{ gateWatch.regime || '-' }} ｜ 候选 {{ gateWatch.total }} 只 ｜ 三绿 {{ gateWatch.ready3 }} 只 ｜ 战法命中 {{ gateWatch.strategy_hits || 0 }} 只</span>
+      </div>
+      <!-- ★ 双信号交叉（2026-09-22）：战法信号（图形）∩ 闸门 ready（主力/筹码/市况）
+           —— 两个独立体系同时看中，比单信号更值得看。战法本身不推送（白名单空）。 -->
+      <div v-if="!gateWatchLoading" class="px-3 py-1.5 border-b border-border bg-white/[0.01] flex items-center gap-3 text-xs">
+        <label class="flex items-center gap-1 cursor-pointer text-muted hover:text-gray-200">
+          <input type="checkbox" v-model="watchOnlyStrategy" class="accent-blue-500">
+          只看双信号（战法命中 {{ watchStrategyCount }} 只）
+        </label>
+        <span class="text-muted">战法数据日 {{ gateWatch.strategy_date || '-' }}</span>
       </div>
       <div v-if="gateWatchLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
       <div v-else-if="!gateWatch.items.length" class="p-6 text-center text-xs text-muted">当前无 ready≥2 的候选（或 mainforce_state 无数据）</div>
@@ -278,6 +287,7 @@
             <th class="text-left py-2.5 px-3">名称</th>
             <th class="text-center py-2.5 px-3">就绪</th>
             <th class="text-left py-2.5 px-3">还差什么</th>
+            <th class="text-left py-2.5 px-3">战法</th>
             <th class="text-left py-2.5 px-3">主力阶段</th>
             <th class="text-right py-2.5 px-3">5日主力占额</th>
             <th class="text-right py-2.5 px-3">筹码位置</th>
@@ -286,7 +296,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="g in gateWatch.items" :key="g.code"
+          <tr v-for="g in watchItems" :key="g.code"
             class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
             @click="goDetail(g.code)">
             <td class="py-2 px-3 font-mono text-xs text-accent">{{ g.code }}</td>
@@ -298,6 +308,13 @@
               </span>
             </td>
             <td class="py-2 px-3 text-xs text-amber-400">{{ g.missing && g.missing.length ? g.missing.join('、') : '—' }}</td>
+            <td class="py-2 px-3 text-xs">
+              <span v-if="g.strategies && g.strategies.length"
+                class="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 font-mono text-[11px]">
+                {{ g.strategies.map(s => strategyShort(s.name) + (s.conf ? '(' + s.conf + ')' : '')).join(' / ') }}
+              </span>
+              <span v-else class="text-muted">-</span>
+            </td>
             <td class="py-2 px-3 text-xs text-muted">{{ g.phase || '-' }}</td>
             <td class="py-2 px-3 text-right font-mono text-xs">
               <span :class="g.flow5_level === 'extreme' ? 'text-red-400 font-bold'
@@ -319,6 +336,7 @@
       <div class="px-3 py-2 text-[11px] text-muted border-t border-border">
         「还差什么」= 未满足的买入条件（「状态允许」需 regime 转出 defensive）。就绪度由后端 trade_gate.summarize 唯一产出，不参与排序、不改总分。
         「5日主力占额」>5% 标「过峰值区」、>20% 标「极端流入·陷阱区」（倒U曲线打 0 分区间，散户陷阱假设）—— 与闸门 A 条件（吸筹区）是两个口径，强度过高不代表更好。
+        「战法」列 = **双信号交叉**（闸门 ready ∩ 最新战法扫描命中，两个独立体系同时看中）；战法信号本身不推送（白名单为空：实测负期望）。
       </div>
     </div>
 
@@ -862,6 +880,19 @@ const tableData = ref([])
 // ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
 const gateWatch = ref({ regime: '', total: 0, ready3: 0, items: [] })
 const gateWatchLoading = ref(false)
+// 双信号交叉筛选（战法命中 = 闸门 ready ∩ 战法信号，两个独立体系）
+const watchOnlyStrategy = ref(false)
+const STRATEGY_SHORT = {
+  ma_convergence_breakout: '收敛突破', single_yang_unbroken: '单阳不破',
+  dragon_turnaround: '龙回头', ma_pullback: '回踩',
+  limit_up_boomerang: '涨停回马枪', wizard_pointer: '神奇指针', old_duck_head: '老鸭头',
+}
+function strategyShort(n) { return STRATEGY_SHORT[n] || n }
+const watchStrategyCount = computed(() =>
+  (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length).length)
+const watchItems = computed(() => watchOnlyStrategy.value
+  ? (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length)
+  : (gateWatch.value.items || []))
 const cacheStatus = ref('loading')
 const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
