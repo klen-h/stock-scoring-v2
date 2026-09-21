@@ -32,16 +32,25 @@ SOURCE_NAMES = {
     "sina_macro": "宏观面板",
     "tencent_etf": "ETF行情",
     "eastmoney": "东财板块",
-    "eastmoney_main": "东财主站",   # 单独监控：封 IP 时 delay 端点仍能出数据，
-                                     # 但"主站被风控"必须告警（企微提醒），不能混在东财板块里
+    "eastmoney_main": "东财主站",   # 单独监控（故障域不同）：主站被封时 delay 端点仍能出数据，
+                                     # 而板块接口一挂基本等于整站风控 ⇒ 分开才看得出是
+                                     # "仅主站"还是"整站"。⚠️ 两者都**不推企微**（见下）。
 }
 
 _FAIL_THRESHOLD = 3          # 连续失败 N 次告警
 
-# 只进页面通知、不推企微的数据源：
-#   东财主站封 IP 是常态（高频触发风控，通常 24~48h 自愈），且板块数据有
-#   delay 端点/新浪兜底不影响业务，"失败 + 已恢复"每次都推企微纯属噪音。
-_NO_WECHAT_SOURCES = {"eastmoney_main"}
+# 只进页面通知、不推企微的数据源（东财两个 key 都在内）：
+#   理由：东财封 IP 是**常态**（高频触发风控，通常 24~48h 自愈），且两侧都有兜底
+#   —— 主站有 delay 端点，板块有 delay 端点 + 新浪降级源（`eastmoney._sina_sector_*`），
+#   不影响业务；"失败 + 已恢复"每次都推企微纯属噪音（风控期一天可反复触发多次）。
+#   ★ 2026-09-22 修正：原先只豁免 `eastmoney_main`、却**推** `eastmoney`（东财板块）
+#     —— 但两者是**同一个故障源**（东财整站风控：线上实测同时 3 连败，错误都是
+#     `Expecting value: line 1 column 1`，即返回非 JSON 的风控页），且上面的豁免
+#     理由对板块**同样成立** ⇒ 用户收到"东财板块连续 3 次失败"后询问来源，据此统一豁免。
+#     ⚠️ 同时修掉一处**注释与实现矛盾**：本处原以 `eastmoney_main` 的"必须告警
+#     （企微提醒）"为由把它排除，而其实它一直就在豁免名单里（历史演进未同步注释）。
+#   注意：`_alerts`（页面通知铃铛 + 前端状态条）**不受影响**，照样可见。
+_NO_WECHAT_SOURCES = {"eastmoney", "eastmoney_main"}
 _ALERTS_PATH = store.PATHS.get("health") or store.DATA_DIR + "/source_health.json"
 
 _lock = threading.Lock()
