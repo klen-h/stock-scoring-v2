@@ -1912,6 +1912,7 @@ def gate_watch(limit: int = 80):
             print(f"[gate-watch] 战法信号读取失败（不影响闸门数据）: {e}")
 
         items, n3, regime = [], 0, ""
+        counts = {0: 0, 1: 0, 2: 0, 3: 0}      # ★ 全市场 ready 分布（gate 落库用）
         for c in codes:
             m = mf.get(c)
             if not m:
@@ -1920,6 +1921,8 @@ def gate_watch(limit: int = 80):
                 s = trade_gate.summarize(trade_gate.evaluate(c, mf=m))
             except Exception:
                 continue
+            # ★ 分布统计必须在 `continue` **之前**（否则只统计到候选，全市场口径失真）
+            counts[int(s.get("ready") or 0)] = counts.get(int(s.get("ready") or 0), 0) + 1
             if s.get("ready", 0) < 2:
                 continue
             regime = s.get("regime") or regime
@@ -1956,6 +1959,7 @@ def gate_watch(limit: int = 80):
         items.sort(key=lambda x: (-x["ready"],
                                   -(x["flow5_amt"] if x["flow5_amt"] is not None else -999)))
         data = {"regime": regime, "total": len(items), "ready3": n3,
+                "counts": counts, "evaluated": sum(counts.values()),
                 "strategy_date": str(sig_date)[:10] if sig_date else None,
                 "strategy_hits": sum(1 for x in items if x["strategies"]),
                 "items": items}

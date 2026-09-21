@@ -186,6 +186,22 @@ def task_mainforce_state():
     return f"主力行为状态: {refresh_all(None, regime)}"
 
 
+def task_gate_snapshot():
+    """买入闸门就绪度落库（2026-09-22 新增）—— 攒样本以验证 gate 的预测力。
+
+    ★ 缺口：`trade_gate`（9-17 上线）**只有实时视图、无历史** ⇒ 无法回答
+      「ready 3/3 vs 2/3 vs 1/3 的后续收益是否真有差别」。它已承担决策重量
+      （观察池/用户动线）⇒ 必须攒样本验证；且 3/3 在防御市常为 0 ⇒ 样本天然慢，
+      有**时钟属性**（晚一天少一天），故早启动。
+    ★ 时序：**必须在 `task_mainforce_state` 之后**（gate 依赖其 chip/flow5 快照）。
+    幂等：`gate_snapshot_history.date` 主键；force 可覆盖重跑。
+    口径：复用 `app.routers.scoring.gate_watch`（唯一事实源，防口径漂移）。
+    """
+    d = _batch_trading_day()
+    from app.mainforce.gate_history import snapshot
+    return snapshot(d.isoformat(), overwrite=_force_requested())
+
+
 def _batch_trading_day():
     """本轮日批**所属交易日**（date）—— 星期判定/交易日判定都必须以它为准。
 
@@ -662,6 +678,9 @@ TASKS = {
     # ★ 2026-09-09 迁入：Render 只读模式停掉了原 17:30 循环 → 表停在 09-04。
     #   依赖 mainflow（资金流）与 market_snapshot（流通股本快照），故置其后。
     "mainforce_state": (task_mainforce_state, "主力行为状态（排行榜标签/日报依赖）"),
+    # ★ 2026-09-22 新增：闸门就绪度落库（**必须在 mainforce_state 之后**——
+    #   gate 的 A/B 条件读它的 chip/flow5 快照）。时钟属性：晚一天少一天样本。
+    "gate_snapshot": (task_gate_snapshot, "买入闸门就绪度落库（攒样本验证预测力）"),
     "sector_snapshot": (task_sector_snapshot, "板块快照"),
     "strategy_scan": (task_strategy_scan, "战法全量扫描"),
     "contradiction_scan": (task_contradiction_scan, "矛盾扫描"),
@@ -696,7 +715,7 @@ TASKS = {
     "trader_brief": (task_trader_brief, "交易员决策简报（盘后，幂等+企微推送）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
-                 "calendar", "mainforce_state",
+                 "calendar", "mainforce_state", "gate_snapshot",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
