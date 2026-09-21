@@ -20,11 +20,22 @@ _client = None
 
 
 def get_api():
-    """懒加载 DataApi 单例（token 缺省匿名）。"""
+    """懒加载 DataApi 单例（token 缺省匿名）。
+
+    ★ 2026-09-21（401 事故）：**宽容清洗常见误配置** —— 在 Render / GitHub Secrets
+      的 Key-Value 界面里把「ZZSHARE_TOKEN=xxx」整串填进 Value（.env 整行粘贴的
+      习惯）⇒ 环境变量值变成 `ZZSHARE_TOKEN=xxx` ⇒ SDK 原样当 token 发出 ⇒ 401。
+      这里剥掉 `ZZSHARE_TOKEN=` 前缀与引号/空白；正确配置（纯 64 位 hex）不受影响。
+    """
     global _client
     if _client is None:
         from zzshare.client import DataApi
-        token = os.environ.get("ZZSHARE_TOKEN") or None
+        token = (os.environ.get("ZZSHARE_TOKEN") or "").strip()
+        if token.upper().startswith("ZZSHARE_TOKEN="):
+            token = token.split("=", 1)[1].strip()
+            print("[zzshare] ⚠️ 检测到 token 值带 'ZZSHARE_TOKEN=' 前缀（Render/Secrets "
+                  "应只填 64 位值）—— 已自动剥除；建议修正配置")
+        token = token.strip('"').strip("'").strip() or None
         _client = DataApi(token=token)
     return _client
 

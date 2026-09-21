@@ -136,6 +136,14 @@ def run_daily(date_str: str) -> str:
     data = collect_daily(date_str)
     ok_n = sum(1 for v in data.values()
                if not (isinstance(v, dict) and "_error" in v))
+    # ★ 2026-09-21（401 事故加固）：**全失败不写库** —— 否则一行全 `_error` 的垃圾
+    #   数据会占住 date 主键 ⇒ 补跑被"已存在"跳过 ⇒ 该交易日**永久缺失**。
+    #   （同体检报告 "数据不全比没有更糟" 的判据设计；部分失败仍写，保留可用数据。）
+    if ok_n == 0:
+        errs = [str(v.get("_error"))[:60] for v in data.values()
+                if isinstance(v, dict) and "_error" in v]
+        return (f"zz每日快照: {date_str} 全部 {len(data)} 个接口失败，**不写库**"
+                f"（可补跑）｜首个错误：{errs[0] if errs else '未知'}")
     try:
         payload = json.dumps(data, ensure_ascii=False, default=str)
     except (TypeError, ValueError) as e:
