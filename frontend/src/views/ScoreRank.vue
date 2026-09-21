@@ -315,7 +315,10 @@
               </span>
               <span v-else class="text-muted">-</span>
             </td>
-            <td class="py-2 px-3 text-xs text-muted">{{ g.phase || '-' }}</td>
+            <!-- ★ 2026-09-22：优先中文名 `phase_cn`（后端 state.load_latest 用
+                 phases.PHASE_CN 统一补齐）—— 原先直渲染英文枚举 `phase`
+                 （sideways/accumulation…），用户看到的是英文。 -->
+            <td class="py-2 px-3 text-xs text-muted">{{ g.phase_cn || g.phase || '-' }}</td>
             <td class="py-2 px-3 text-right font-mono text-xs">
               <span :class="g.flow5_level === 'extreme' ? 'text-red-400 font-bold'
                             : g.flow5_level === 'over' ? 'text-amber-400'
@@ -435,7 +438,7 @@
                 class="px-1.5 py-0.5 rounded text-xs font-bold cursor-help"
                 :class="item.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' :
                        'bg-emerald-500/20 text-emerald-400'"
-                :title="`${item.mainforce.phase === 'distribution' ? '出货' : item.mainforce.phase === 'accumulation' ? '吸筹' : item.mainforce.phase === 'markup' ? '拉升' : item.mainforce.phase === 'shakeout' ? '洗盘' : item.mainforce.phase === 'decline' ? '下跌' : '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力占额累计 ${item.mainforce.flow5_amt ?? '-'}`">
+                :title="`${item.mainforce.phase_cn || '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力占额累计 ${item.mainforce.flow5_amt ?? '-'}`">
                 {{ item.mainforce.signal === 'distribution' ? '出货' : '吸筹' }}
               </span>
               <!-- ★ 2026-09-17 买入条件就绪（**状态展示，非买入信号**：不参与排序、不改总分）

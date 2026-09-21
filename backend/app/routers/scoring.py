@@ -1958,6 +1958,9 @@ def gate_watch(limit: int = 80):
                 "position_pct": s.get("position_pct"),
                 "position_label": s.get("position_label") or "",
                 "phase": m.get("phase"),
+                # 阶段中文名 —— 直接取 `load_latest` 的输出（它内部用唯一映射源
+                # `phases.PHASE_CN` 补好；2026-09-22 修「显示英文 sideways」时统一到那一层）
+                "phase_cn": m.get("phase_cn") or "",
                 "flow5_amt": m.get("flow5_amt"),
                 # ★ 极端流入警示（2026-09-22）：阈值取自倒U曲线（`engine._score_flow5`）——
                 #   >5 过峰值开始降分、>20 进打 0 分区（"散户陷阱"假设）。

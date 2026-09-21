@@ -25,6 +25,8 @@ from app.database import db
 from app.mainforce.flow import (get_float_shares_from_snapshot,
                                 load_flow_map)
 from app.mainforce.overlay import mainforce_overlay
+# ★ 2026-09-22：阶段中文名的唯一事实源（详情页/榜单/观察池共用）。
+from app.mainforce.phases import PHASE_CN
 
 # 日线回看窗口（交易日数）。主力状态计算需求：chip warmup 60 / MA120 量代理 /
 # ret60 / phase ≥70 —— 260 根留足余量；再深对结果无增益，纯烧 Supabase egress。
@@ -247,6 +249,12 @@ def load_latest(codes: list) -> dict:
                 chip = {}
             cached[r["code"]] = {
                 "date": str(r["date"]), "phase": r["phase"], "signal": r["signal"],
+                # ★ 2026-09-22：补 `phase_cn` —— 表里只存英文枚举（`phase`），而
+                #   详情页/榜单/观察池都要中文名；原先只有 overlay 路径带 `phase_cn`
+                #   ⇒ 走"表命中"路径的消费方拿不到（观察池直接渲染英文 `sideways`）。
+                #   在**唯一数据入口**统一补齐（`PHASE_CN` 是唯一映射源）。
+                #   `phase` 英文保留：程序判定/回测按枚举比较（如 gate 判 markup）。
+                "phase_cn": PHASE_CN.get(r["phase"] or "", ""),
                 "mult": r["mult"] or 1.0, "chip": chip, "flow5_amt": r["flow5_amt"],
                 "flow5_amt_yuan": r.get("flow5_amt_yuan"),
             }
