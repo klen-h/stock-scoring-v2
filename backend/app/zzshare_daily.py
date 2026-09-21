@@ -117,11 +117,14 @@ def collect_daily(date_str: str) -> dict:
     return out
 
 
-def run_daily(date_str: str) -> str:
+def run_daily(date_str: str, overwrite: bool = False) -> str:
     """每日快照入口（供 `scripts/daily_batch.py` 的 `task_zz_daily`）。
 
-    幂等：该日期已有行则跳过（补跑安全）。返回状态文案（含接口成功数与
-    payload 体积 —— 后者用于观察 review_uplimit_reason 是否膨胀）。
+    幂等：该日期已有行则跳过（补跑安全）。
+    ★ 2026-09-21：`overwrite=True`（日批 `force` 开关传入）**覆盖重写** ——
+      应对"部分接口失败后写入的不完整行"（实测 401 事故：3/5 成功写入 ⇒
+      后续被幂等挡住 ⇒ 该日**永久不完整**）。force 是唯一纠正通道。
+    返回状态文案（含接口成功数与 payload 体积）。
     """
     from app.database import db
     ensure_table()
@@ -130,8 +133,8 @@ def run_daily(date_str: str) -> str:
             "SELECT date FROM zz_daily_snapshots WHERE date = %s", (date_str,))
     except Exception as e:
         return f"zz每日快照: 查询失败跳过（{str(e)[:80]}）—— 不写半截数据"
-    if row:
-        return f"zz每日快照: {date_str} 已存在，跳过"
+    if row and not overwrite:
+        return f"zz每日快照: {date_str} 已存在，跳过（force=true 可覆盖重跑）"
 
     data = collect_daily(date_str)
     ok_n = sum(1 for v in data.values()
@@ -149,6 +152,11 @@ def run_daily(date_str: str) -> str:
     except (TypeError, ValueError) as e:
         return f"zz每日快照: {date_str} 序列化失败（{str(e)[:80]}）—— 不写库"
     try:
+        if overwrite and row:
+            # ★ 2026-09-21：覆盖重写必须**先删后插** —— 直接 INSERT 会撞主键
+            #   （实测 duplicate key）。DELETE+INSERT 双库（PG/SQLite）通用；
+            #   非事务窗口极小，且失败时该日本就不完整，可再补跑。
+            db.execute("DELETE FROM zz_daily_snapshots WHERE date = %s", (date_str,))
         db.execute(
             "INSERT INTO zz_daily_snapshots (date, payload, created_at) "
             "VALUES (%s, %s, %s)",

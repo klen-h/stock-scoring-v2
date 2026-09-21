@@ -199,7 +199,9 @@ def task_zz_daily():
     """
     d = _batch_trading_day()
     from app.zzshare_daily import run_daily
-    return run_daily(d.isoformat())
+    # force（日批 --force / Actions 的 force input）⇒ 覆盖重跑：
+    #   唯一能纠正"部分接口失败时写入的不完整行"的通道（幂等默认会跳过）。
+    return run_daily(d.isoformat(), overwrite=_force_requested())
 
 
 def task_zz_finance():
