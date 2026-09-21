@@ -1545,8 +1545,13 @@ async function loadShadowRank() {
 async function loadGateWatch() {
   gateWatchLoading.value = true
   try {
-    const d = await getGateWatch(80)
-    gateWatch.value = (d && d.items) ? d : { regime: '', total: 0, ready3: 0, items: [] }
+    // ⚠️ 2026-09-22 修复：拦截器是 `response => response`（返回**完整 axios response**），
+    //   此处原先写 `const d = await getGateWatch(80)` 后取 `d.items` ⇒ 恒 undefined
+    //   （真实数据在 `d.data.items`）⇒ 静默走空分支 ⇒ **观察池永远显示"无候选"**。
+    //   教训：`pnpm build` 通过 ≠ 功能可用（build 不查运行时契约），必须真跑页面验收。
+    //   全项目约定：`const { data } = await api.xxx()` —— 本处已对齐。
+    const { data } = await getGateWatch(80)
+    gateWatch.value = (data && data.items) ? data : { regime: '', total: 0, ready3: 0, items: [] }
   } catch (e) {
     gateWatch.value = { regime: '', total: 0, ready3: 0, items: [] }
   } finally {

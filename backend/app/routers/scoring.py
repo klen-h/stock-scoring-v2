@@ -14,7 +14,7 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query, BackgroundTasks, Body
+from fastapi import APIRouter, Query, BackgroundTasks, Body, HTTPException
 import asyncio
 import math
 import os
@@ -930,7 +930,15 @@ def score_single(symbol: str):
     ★ 2026-09-06：函数体无任何 await 却声明 async，会在事件循环上直接执行
       同步的腾讯拉取/DB 查询/numpy 重算，把整个进程卡死（详情页并发请求
       全部 502 → 前端误报 CORS）。改为普通 def，FastAPI 自动放线程池。
+
+    ⚠️ 本函数是**单段通配路由**（`/{symbol}`）——未注册的单段静态路径会落到这里
+      （2026-09-22：观察池 `/score/gate-watch` 就是这么被吞掉的，返回 200+error
+      ⇒ 前端不抛错 ⇒ **静默空列表**）。股票代码不含 `-`/`_` ⇒ 命中即说明是
+      "端点不存在"，明确 404 让错误尽早暴露，而不是伪装成"股票找不到"。
     """
+    if "-" in symbol or "_" in symbol:
+        raise HTTPException(status_code=404,
+                            detail=f"未知的评分端点: {symbol}（也未注册为股票代码）")
     _sync_regime_weights()  # 盘后按当日市场状态切换引擎权重（幂等）
     # 1. 实时行情
     stock_info = get_stock(symbol)
@@ -1868,7 +1876,15 @@ def indicator_incremental_update(data: dict = Body(...)):
 _GATE_WATCH = {"ts": 0.0, "val": None}
 
 
-@router.get("/gate-watch")
+# ⚠️⚠️ 路径必须是**两段**（`/batch/gate-watch`）—— 2026-09-22 踩坑实锤：
+#   本端点原先注册为单段 `/gate-watch`，但 FastAPI/Starlette **按注册顺序**匹配，
+#   而 `@router.get("/{symbol}")` 在本文件 L918（远早于本处）⇒ `/score/gate-watch`
+#   会先命中通配路由、被当成股票代码 ⇒ 返回 `200 {"error":"未找到股票 gate-watch"}`
+#   ⇒ 前端 axios 不报错 ⇒ **观察池永远显示空**（查了三层才定位：前端契约 / 后端未部署 /
+#     路由顺序）。本文件其它单段静态路由（`/weights`、`/snapshots`、`/backtest` 等）
+#   都注册在 L918 **之前**才幸免；`/batch/*` 系列是两段路径、不与单段通配冲突。
+#   ★ 纪律：新增**单段**静态路由必须注册在 `/{symbol}` 之前，或直接用多段路径。
+@router.get("/batch/gate-watch")
 def gate_watch(limit: int = 80):
     """买入闸门观察池：ready≥2（主力有根据 + 不追高，等市况/时机）的票 + 当前市况。
 

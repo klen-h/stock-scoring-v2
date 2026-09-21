@@ -153,7 +153,10 @@ export const getScoreTop = (params) => http.get('/score/batch/top', { params, ti
 // 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top N，日批快照，非实时）
 export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank', { params: { limit }, timeout: 15000 })
 // ★ 买入闸门观察池（ready≥2 的「等状态」候选 + 还差什么条件）—— 2026-09-22
-export const getGateWatch = (limit = 80) => http.get('/score/gate-watch', { params: { limit }, timeout: 20000 })
+//   ⚠️ 路径是 `/score/batch/gate-watch`（**两段**）：后端 `/{symbol}` 单段通配路由
+//   注册在前、会吞掉单段静态路径 ⇒ 原先 `/score/gate-watch` 恒返回
+//   `{"error":"未找到股票 gate-watch"}`（200、不抛错）⇒ 页面静默空列表。
+export const getGateWatch = (limit = 80) => http.get('/score/batch/gate-watch', { params: { limit }, timeout: 20000 })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
