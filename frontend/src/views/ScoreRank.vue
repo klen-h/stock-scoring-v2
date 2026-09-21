@@ -299,9 +299,14 @@
             </td>
             <td class="py-2 px-3 text-xs text-amber-400">{{ g.missing && g.missing.length ? g.missing.join('、') : '—' }}</td>
             <td class="py-2 px-3 text-xs text-muted">{{ g.phase || '-' }}</td>
-            <td class="py-2 px-3 text-right font-mono text-xs"
-              :class="(g.flow5_amt ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
-              {{ g.flow5_amt != null ? (g.flow5_amt > 0 ? '+' : '') + g.flow5_amt + '%' : '-' }}
+            <td class="py-2 px-3 text-right font-mono text-xs">
+              <span :class="g.flow5_level === 'extreme' ? 'text-red-400 font-bold'
+                            : g.flow5_level === 'over' ? 'text-amber-400'
+                            : (g.flow5_amt ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+                {{ g.flow5_amt != null ? (g.flow5_amt > 0 ? '+' : '') + g.flow5_amt + '%' : '-' }}
+              </span>
+              <div v-if="g.flow5_level === 'extreme'" class="text-[10px] text-red-400 leading-tight">极端流入·陷阱区</div>
+              <div v-else-if="g.flow5_level === 'over'" class="text-[10px] text-amber-400 leading-tight">过峰值区</div>
             </td>
             <td class="py-2 px-3 text-right font-mono text-xs">{{ g.price_pos != null ? (g.price_pos * 100).toFixed(0) + '%' : '-' }}</td>
             <td class="py-2 px-3 text-right font-mono text-xs">{{ g.winner_ratio != null ? (g.winner_ratio * 100).toFixed(0) + '%' : '-' }}</td>
@@ -313,6 +318,7 @@
       </table>
       <div class="px-3 py-2 text-[11px] text-muted border-t border-border">
         「还差什么」= 未满足的买入条件（「状态允许」需 regime 转出 defensive）。就绪度由后端 trade_gate.summarize 唯一产出，不参与排序、不改总分。
+        「5日主力占额」>5% 标「过峰值区」、>20% 标「极端流入·陷阱区」（倒U曲线打 0 分区间，散户陷阱假设）—— 与闸门 A 条件（吸筹区）是两个口径，强度过高不代表更好。
       </div>
     </div>
 

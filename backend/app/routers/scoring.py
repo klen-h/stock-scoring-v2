@@ -1918,6 +1918,14 @@ def gate_watch(limit: int = 80):
                 "position_label": s.get("position_label") or "",
                 "phase": m.get("phase"),
                 "flow5_amt": m.get("flow5_amt"),
+                # ★ 极端流入警示（2026-09-22）：阈值取自倒U曲线（`engine._score_flow5`）——
+                #   >5 过峰值开始降分、>20 进打 0 分区（"散户陷阱"假设）。
+                #   动机：闸门 A 条件（吸筹区）看"筹码结构 × 流入方向"，与倒U看"流入强度"
+                #   是两个口径 ⇒ 强度 >20% 的票在观察池被列为"有根据"、在榜单却被降分，
+                #   用户看到 +74% 容易误当利好 ⇒ 显式标注，避免误读。
+                "flow5_level": ("" if m.get("flow5_amt") is None
+                                else "extreme" if m["flow5_amt"] > 20
+                                else "over" if m["flow5_amt"] > 5 else ""),
                 "price_pos": chip.get("price_pos"),
                 "winner_ratio": chip.get("winner_ratio"),
             })
