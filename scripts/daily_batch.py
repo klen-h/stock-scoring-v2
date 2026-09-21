@@ -144,6 +144,22 @@ def task_market_regime():
             f"权重={cache.get('weights')}")
 
 
+def task_regime_alert():
+    """市况转档提醒（2026-09-22 新增）——状态切换时推企微，把"等待"自动化。
+
+    ★ 用户痛点：买入闸门的 C 条件就是"市况允许"（defensive 禁买），此前
+      `market_regime_history` 只落库、无任何推送 ⇒ 用户只能每天自己盯指数。
+    设计见 `app/coach/regime_alert.py` 模块头：
+      · 紧排 `task_market_regime` 之后（当日判定已落库才比对）
+      · 同日去重（`regime_alert_log.date` 主键）⇒ 补跑安全
+      · 转档 force 推送（穿透 WECHAT_BUSINESS_ALERTS，属关键通知）
+      · 文案联动观察池（ready≥2 / 三绿计数）
+    无切换时秒过（返回"无切换"，不计失败）。
+    """
+    from app.coach.regime_alert import run_alert
+    return run_alert()
+
+
 def task_mainforce_state():
     """主力行为状态日批（mainforce_state 表，原 Render 17:30 循环）。
 
@@ -635,6 +651,9 @@ TASKS = {
     # ★ 2026-09-11 迁入：原 Render 15:40 循环被只读模式关闭且日批漏配 → regime 停在 09-08。
     #   依赖 backfill 的沪深300当日数据，且被 strategy_scan/score_snapshot 消费 → 紧排其后。
     "market_regime": (task_market_regime, "市场状态判定（评分权重/准入/闸门来源）"),
+    # ★ 2026-09-22 新增：市况转档提醒（把"等待"自动化）——紧排 regime 判定之后，
+    #   保证当日状态已落库再比对；同日去重（regime_alert_log），切换日 force 推企微。
+    "regime_alert": (task_regime_alert, "市况转档提醒（切换日推企微）"),
     "mainflow": (task_mainflow, "主力资金流回填"),
     "market_snapshot": (task_market_snapshot, "全市场行情快照"),
     # ★ 2026-09-12 迁入：原 Render 每日 07:00 循环被只读模式关闭 → 日历停在 09-04。
@@ -676,7 +695,7 @@ TASKS = {
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
     "trader_brief": (task_trader_brief, "交易员决策简报（盘后，幂等+企微推送）"),
 }
-DEFAULT_ORDER = ["backfill", "market_regime", "mainflow", "market_snapshot",
+DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
                  "calendar", "mainforce_state",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
