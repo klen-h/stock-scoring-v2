@@ -15,6 +15,21 @@
 - 两条链路并存：后端读 DB 包；前端本地评分读 GitHub Pages 的 `kline-pack` + `indicators-pack`。**`backend-pack.db.gz` 只给 Python，浏览器不读**。
 - 已知待修：盘中技术面是昨收；`score_single` 实时算与 `batch/top` 缓存算盘中不同分；`incremental_update` 是死代码；`score_snapshot_loop` 15:15 早于数据刷新。
 
+## ⚠️ 路由顺序与「真跑验证」纪律（2026-09-22 观察池空的教训）
+- **FastAPI/Starlette 按注册顺序匹配**：`routers/scoring.py` 的 `@router.get("/{symbol}")`
+  （**单段通配**）在 L918 ⇒ **新增单段静态路由必须注册在它之前**，否则请求被吞掉、
+  当成股票代码 ⇒ 返回 **`200 {"error":"未找到股票 xxx"}`**（不是 404）⇒ 前端 `catch`
+  抓不到 ⇒ **静默空**。（`/batch/*` 等两段路径不受影响；`/gate-watch` 已改
+  `/batch/gate-watch`。已加固：`/{symbol}` 对含 `-`/`_` 的 symbol 返 404。）
+- **验证纪律（三条，都是验证方式本身的坑）**：
+  1. **只 `import` 函数直接调用 ≠ 验证 HTTP 路由** —— 观察池本地"实测 156 只"走的是
+     函数调用，HTTP 层早已被通配吞掉；凡前后端配合的功能，验收必须走**真实入口**
+     （起后端 + HTTP / 浏览器）。
+  2. **`pnpm build` 通过 ≠ 功能可用** —— build 不查运行时契约（如 axios 拦截器返回的是
+     `response` 还是 `response.data`）；前端改动要真跑页面。
+  3. **前端「本地优先」路径要单独验** —— 详情页 `tryLoadLocalAll` 成功就不调后端，
+     只测后端 API 会漏掉本地分支（P1 标签丢失即此类）。
+
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
 - **头号放大器 =「进程内缓存 × 低频数据」**：本地 `run.py --reload`（改代码即重启）+ 各种脚本
