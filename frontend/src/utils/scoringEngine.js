@@ -1044,8 +1044,15 @@ function extractFactors(dims) {
     for (const [name, detail] of Object.entries(dim.details)) {
       if (name === '说明') continue
       const pct = (detail.分值 ?? 50) / 100   // 得分率：子项分统一 0~100 尺度（与后端一致）
-      if (pct >= 0.75 && labelMap[name]) ups.push(labelMap[name])
-      else if (pct <= 0.35 && downMap[name]) downs.push(downMap[name])
+      // ★ 2026-09-22 修复：**回退显示原 key 名**（`|| name`）—— 与后端
+      //   `down_map.get(factor_name, factor_name)` 同口径。
+      //   此前要求映射表必须存在该 key，否则**静默丢弃** ⇒ P1 新增的
+      //   「主力极端流入(散户陷阱降分)」不在两张表里 ⇒ 本地评分路径（详情页
+      //   **本地优先**）永远看不到该标签（后端 API 因有回退而正常）—— 实测 605058。
+      //   ⚠️ 故意**不给主力 key 加映射**：进 downs 可能是"净流出"也可能是"极端流入被
+      //   倒U降分"，统一映射成"主力流出"会误标方向 —— 回退成原 key 才能区分语义。
+      if (pct >= 0.75) ups.push(labelMap[name] || name)
+      else if (pct <= 0.35) downs.push(downMap[name] || name)
     }
   }
 
