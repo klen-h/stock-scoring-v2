@@ -152,6 +152,8 @@ export const getStockScore = (symbol) => http.get(`/score/${symbol}`)
 export const getScoreTop = (params) => http.get('/score/batch/top', { params, timeout: 90000 })
 // 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top N，日批快照，非实时）
 export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank', { params: { limit }, timeout: 15000 })
+// ★ 买入闸门观察池（ready≥2 的「等状态」候选 + 还差什么条件）—— 2026-09-22
+export const getGateWatch = (limit = 80) => http.get('/score/gate-watch', { params: { limit }, timeout: 20000 })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })

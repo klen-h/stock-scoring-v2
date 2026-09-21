@@ -165,7 +165,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -260,8 +260,64 @@
       回测背书：总分在该市况排序失效（高分票补跌），组合分 IC +0.259 vs 总分 +0.020。总分仅作参考。
     </div>
 
+    <!-- ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
+         设计：低频事件（三绿）的可视化做「候池」而非「出票」—— 多数交易日三绿为 0
+         （市况不容许），日常价值在"还差一步"的池子（主力有根据+不追高，等市况/时机）。
+         数据：trade_gate.summarize 唯一产出，不参与排序、不改总分。 -->
+    <div v-if="activeTab === 'watch'" class="bg-card border border-border rounded-lg overflow-hidden">
+      <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+        <span>买入闸门观察池 · 就绪度 ≥2（主力有根据 + 不追高，等市况/时机）</span>
+        <span class="font-mono">市况 {{ gateWatch.regime || '-' }} ｜ 候选 {{ gateWatch.total }} 只 ｜ 三绿 {{ gateWatch.ready3 }} 只</span>
+      </div>
+      <div v-if="gateWatchLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
+      <div v-else-if="!gateWatch.items.length" class="p-6 text-center text-xs text-muted">当前无 ready≥2 的候选（或 mainforce_state 无数据）</div>
+      <table v-else class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-border text-muted text-xs">
+            <th class="text-left py-2.5 px-3">代码</th>
+            <th class="text-left py-2.5 px-3">名称</th>
+            <th class="text-center py-2.5 px-3">就绪</th>
+            <th class="text-left py-2.5 px-3">还差什么</th>
+            <th class="text-left py-2.5 px-3">主力阶段</th>
+            <th class="text-right py-2.5 px-3">5日主力占额</th>
+            <th class="text-right py-2.5 px-3">筹码位置</th>
+            <th class="text-right py-2.5 px-3">获利盘</th>
+            <th class="text-center py-2.5 px-3">建议仓位</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="g in gateWatch.items" :key="g.code"
+            class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
+            @click="goDetail(g.code)">
+            <td class="py-2 px-3 font-mono text-xs text-accent">{{ g.code }}</td>
+            <td class="py-2 px-3 text-xs">{{ g.name }}</td>
+            <td class="py-2 px-3 text-center">
+              <span class="px-1.5 py-0.5 rounded text-xs font-bold"
+                :class="g.ready === 3 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'">
+                {{ g.ready }}/3
+              </span>
+            </td>
+            <td class="py-2 px-3 text-xs text-amber-400">{{ g.missing && g.missing.length ? g.missing.join('、') : '—' }}</td>
+            <td class="py-2 px-3 text-xs text-muted">{{ g.phase || '-' }}</td>
+            <td class="py-2 px-3 text-right font-mono text-xs"
+              :class="(g.flow5_amt ?? 0) > 0 ? 'text-red-400' : 'text-emerald-400'">
+              {{ g.flow5_amt != null ? (g.flow5_amt > 0 ? '+' : '') + g.flow5_amt + '%' : '-' }}
+            </td>
+            <td class="py-2 px-3 text-right font-mono text-xs">{{ g.price_pos != null ? (g.price_pos * 100).toFixed(0) + '%' : '-' }}</td>
+            <td class="py-2 px-3 text-right font-mono text-xs">{{ g.winner_ratio != null ? (g.winner_ratio * 100).toFixed(0) + '%' : '-' }}</td>
+            <td class="py-2 px-3 text-center text-xs">
+              {{ g.position_label || '-' }}<span v-if="g.position_pct != null" class="text-muted ml-1">({{ g.position_pct }}%)</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="px-3 py-2 text-[11px] text-muted border-t border-border">
+        「还差什么」= 未满足的买入条件（「状态允许」需 regime 转出 defensive）。就绪度由后端 trade_gate.summarize 唯一产出，不参与排序、不改总分。
+      </div>
+    </div>
+
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
@@ -774,7 +830,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -784,6 +840,7 @@ const router = useRouter()
 // bottom / signal 入口暂隐藏（后续优化完再开放）
 const tabs = [
   { key: 'top', label: '评分 Top 50' },
+  { key: 'watch', label: '观察池' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
   { key: 'verify', label: '胜率回查' },
@@ -796,6 +853,9 @@ const signalOptions = ['强烈买入', '买入', '观望', '卖出', '强烈卖�
 const activeTab = ref('top')
 const signalType = ref('买入')
 const tableData = ref([])
+// ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
+const gateWatch = ref({ regime: '', total: 0, ready3: 0, items: [] })
+const gateWatchLoading = ref(false)
 const cacheStatus = ref('loading')
 const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
@@ -1443,9 +1503,24 @@ async function loadShadowRank() {
   }
 }
 
+// ★ 观察池加载（2026-09-22）：低频事件做「候池」——多数交易日三绿为 0，
+//   日常价值在"还差一步"的池子；数据由后端 trade_gate.summarize 唯一产出。
+async function loadGateWatch() {
+  gateWatchLoading.value = true
+  try {
+    const d = await getGateWatch(80)
+    gateWatch.value = (d && d.items) ? d : { regime: '', total: 0, ready3: 0, items: [] }
+  } catch (e) {
+    gateWatch.value = { regime: '', total: 0, ready3: 0, items: [] }
+  } finally {
+    gateWatchLoading.value = false
+  }
+}
+
 function switchTab(tab) {
   activeTab.value = tab
-  if (tab === 'sector') loadSectorData()
+  if (tab === 'watch') loadGateWatch()
+  else if (tab === 'sector') loadSectorData()
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口
     if (shadowLocal()) loadData()

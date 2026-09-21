@@ -1850,7 +1850,80 @@ def indicator_incremental_update(data: dict = Body(...)):
     
     # 保存到数据库
     save_incremental_update(code, indicators)
-    
+
     # 返回指标值（去掉内部状态）
     result = {k: v for k, v in indicators.items() if k != "_state"}
     return {"data": result}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  买入闸门「观察池」（2026-09-22）
+# ══════════════════════════════════════════════════════════════════════════════
+# 定位（用户痛点直接驱动）：三绿（gate 3/3）是**低频出手条件** —— 实测 2196 只
+#   在防御市为 0 只、市况允许时也仅约 2~6%。「每天盯榜单却不知买哪个」的根源是
+#   把低频条件当日常产出 ⇒ 低频事件的可视化应做**候池**（"还差一步"的池子，
+#   让注意力提前埋伏），而不是天天期待出票。
+# 口径：就绪度只由 `trade_gate.summarize` 产出（唯一事实源，前端不自行推导）；
+#   零新增网络（读 mainforce_state 落库快照）；5 分钟进程缓存（2196 只纯计算）。
+_GATE_WATCH = {"ts": 0.0, "val": None}
+
+
+@router.get("/gate-watch")
+def gate_watch(limit: int = 80):
+    """买入闸门观察池：ready≥2（主力有根据 + 不追高，等市况/时机）的票 + 当前市况。
+
+    返回 {regime, total, ready3, items:[{code,name,ready,label,hint,missing,
+          position_pct,position_label,phase,flow5_amt,price_pos,winner_ratio}]}
+    """
+    now = time.time()
+    if _GATE_WATCH["val"] and now - _GATE_WATCH["ts"] < 300:
+        data = _GATE_WATCH["val"]
+    else:
+        import json as _json
+        from app.database import db
+        from app.mainforce.state import load_latest
+        from app.mainforce import trade_gate
+        # ⚠️ `load_latest` 返回的键是 `chip`（已解析 dict）且**不含 name**
+        #   ⇒ 名字单独取一次（code→name 映射，MAX 兼容 PG/SQLite）。
+        rows = db.fetch("SELECT code, MAX(name) AS name FROM mainforce_state GROUP BY code")
+        codes = [r["code"] for r in (rows or [])]
+        names = {r["code"]: r.get("name") for r in (rows or [])}
+        mf = load_latest(codes) or {}
+        items, n3, regime = [], 0, ""
+        for c in codes:
+            m = mf.get(c)
+            if not m:
+                continue
+            try:
+                s = trade_gate.summarize(trade_gate.evaluate(c, mf=m))
+            except Exception:
+                continue
+            if s.get("ready", 0) < 2:
+                continue
+            regime = s.get("regime") or regime
+            if s["ready"] == 3:
+                n3 += 1
+            chip = m.get("chip") or {}
+            if isinstance(chip, str):
+                try:
+                    chip = _json.loads(chip)
+                except (ValueError, TypeError):
+                    chip = {}
+            items.append({
+                "code": c, "name": names.get(c) or c,
+                "ready": s["ready"], "label": s.get("label") or "",
+                "hint": s.get("hint") or "",
+                "missing": [i["label"] for i in s.get("items") or [] if not i["ok"]],
+                "position_pct": s.get("position_pct"),
+                "position_label": s.get("position_label") or "",
+                "phase": m.get("phase"),
+                "flow5_amt": m.get("flow5_amt"),
+                "price_pos": chip.get("price_pos"),
+                "winner_ratio": chip.get("winner_ratio"),
+            })
+        # 排序：就绪度优先，其次 5 日主力占额（资金强度）
+        items.sort(key=lambda x: (-x["ready"],
+                                  -(x["flow5_amt"] if x["flow5_amt"] is not None else -999)))
+        data = {"regime": regime, "total": len(items), "ready3": n3, "items": items}
+        _GATE_WATCH.update(ts=now, val=data)
+    return {**data, "items": data["items"][:limit]}
