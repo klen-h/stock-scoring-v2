@@ -10,6 +10,23 @@
       <span class="text-xs text-muted">建议买入线 <span class="text-accent font-bold">{{ temp.buy_threshold }}</span></span>
     </div>
 
+    <!-- ★ 2026-09-23：以下「运维 / 计算状态」**默认折叠** —— 原先它占满第一屏
+         （K线缓存 / 本地计算切换 / 下载进度），把"这个榜怎么用"挤得没有位置。
+         摘要行常显关键状态（K线数 / 计算模式），需要时点开。 -->
+    <div class="bg-card border border-border rounded-lg">
+      <button @click="showOps = !showOps"
+        class="w-full px-3 py-2 flex items-center justify-between flex-wrap gap-2 text-xs text-muted hover:text-gray-200 transition-colors">
+        <span>⚙ 数据与计算状态</span>
+        <span class="flex items-center gap-3">
+          <span v-if="klineCacheStatus && klineCacheStatus.total_cached > 0">K线 {{ klineCacheStatus.total_cached }} 只</span>
+          <span v-else class="text-amber-400">K线未缓存</span>
+          <span>{{ useFrontendMode ? '本地计算' : '后端计算' }}</span>
+          <span v-if="frontendComputing" class="text-blue-400">计算中…</span>
+          <span>{{ showOps ? '▲ 收起' : '▼ 展开' }}</span>
+        </span>
+      </button>
+      <div v-if="showOps" class="border-t border-border p-2 space-y-2">
+
     <!-- K线数据库缓存状态 -->
     <div v-if="klineCacheStatus" class="bg-card border border-border rounded-lg p-2 px-3 flex items-center justify-between flex-wrap gap-2 text-xs">
       <div class="flex items-center gap-3">
@@ -73,6 +90,8 @@
         <span v-if="frontendProgress.total > 0" class="text-muted">{{ frontendProgress.loaded }}/{{ frontendProgress.total }}</span>
       </div>
     </div>
+      </div>
+    </div>
 
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between flex-wrap gap-3">
@@ -96,6 +115,44 @@
             <option v-for="s in signalOptions" :key="s" :value="s">{{ s }}</option>
           </select>
         </div>
+      </div>
+    </div>
+
+    <!-- ★ 看榜的正确姿势（2026-09-23 A+B）：**定位说明 + 候选→可行动 漏斗**。
+         动机：用户两次追问「这个 Top50 榜的意义」，根因是页面上**从未写过它是什么**，
+         而第一屏全是运维信息。这里用一个卡片把定位与漏斗讲清：
+           · 本榜 = 按"质地"排序的**候选池**（不是买点清单）
+           · 实测边界：短窗（1 日）有反转效应、阴跌市总分排序失效（自动切组合分）
+           · 真实出手点是**低频三绿**（防御市常为 0，属正常）⇒ 下一步看观察池 / 我的持仓
+         数据：全市场(评分统计) → 候选(当前榜条数) → 观察池/三绿(gate-watch 快照) —— 均为既有口径。 -->
+    <div v-if="activeTab === 'top'" class="bg-card border border-border rounded-lg p-3">
+      <div class="flex items-center gap-x-3 gap-y-2 flex-wrap text-xs">
+        <span class="text-muted flex-shrink-0">看榜的正确姿势</span>
+        <div class="flex items-center gap-1.5 font-mono">
+          <span class="px-1.5 py-0.5 rounded bg-white/5 text-gray-300">全市场 {{ stats.total || '—' }}</span>
+          <span class="text-muted">→</span>
+          <span class="px-1.5 py-0.5 rounded bg-white/5 text-gray-300">候选 {{ tableData.length || '—' }}</span>
+          <span class="text-muted">→</span>
+          <span class="px-1.5 py-0.5 rounded"
+            :class="gateWatch.total ? 'bg-amber-500/15 text-amber-400' : 'bg-white/5 text-muted'">
+            观察池 {{ gateWatch.total ?? '—' }}
+          </span>
+          <span class="text-muted">→</span>
+          <span class="px-1.5 py-0.5 rounded font-bold"
+            :class="gateWatch.ready3 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/5 text-muted'">
+            三绿 {{ gateWatch.ready3 ?? '—' }}
+          </span>
+        </div>
+        <span class="text-muted flex-1 min-w-[160px] text-[11px]">
+          候选是按「质地」排序的**候选池**，不是买点；真实出手点是末端的**低频三绿**（防御市常为 0，属正常）。
+        </span>
+        <button @click="switchTab('positions')" class="px-2 py-0.5 rounded text-[11px] bg-accent/10 text-accent hover:bg-accent/20">我的持仓 →</button>
+      </div>
+      <div class="mt-2 text-[11px] text-muted leading-relaxed">
+        ★ 实测边界（都在本页其它 tab 有据可查）：<span class="text-gray-300">短期反转</span>——快照时点技术形态最强 = 已涨过一段，1 日胜率 39.7% → 5 日 53.6%（见「权重优化」）；
+        <span class="text-gray-300">阴跌市总分排序失效</span>，后端自动改按组合分排序（总分 IC +0.020 vs 组合分 +0.259）；
+        <span class="text-gray-300">高分档尤其需过滤</span>——技术面 5-10 日负 IC 属「尾部驱动」（最高分位/超买档贡献绝大部分，中段无害）。
+        ⇒ 所以榜单的正确用法是：<span class="text-gray-300">当候选池 + 看变化</span>（升级/降级、连续上榜），再交给观察池等状态。
       </div>
     </div>
 
@@ -1145,6 +1202,10 @@ const watchItems = computed(() => watchOnlyStrategy.value
   ? (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length)
   : (gateWatch.value.items || []))
 const cacheStatus = ref('loading')
+// ★ 2026-09-23：运维/计算状态默认**折叠** —— 原先「K线缓存 + 本地计算切换 + 进度条」
+//   占满第一屏，而"这个榜怎么用"完全没位置（用户两次追问榜单的意义）。折叠后第一屏
+//   回归「定位说明 + 候选漏斗」。
+const showOps = ref(false)
 const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
 const temp = ref({})   // 市场环境温度（独立信号）
@@ -1907,6 +1968,10 @@ function switchTab(tab) {
   else if (tab === 'optimize') runWeightAnalysis()
   else if (tab === 'anomaly') loadAnomalies()
   else if (tab !== 'verify' && tab !== 'backtest') loadData()
+  // ★ 2026-09-23：top 榜的「候选 → 可行动」漏斗需要观察池数字（ready≥2 / 三绿）⇒
+  //   顺带取一次（后端读日批快照 + 5 分钟缓存）。fire-and-forget：不阻塞榜单渲染，
+  //   失败也不影响（漏斗那一格显示「—」）。
+  if (tab === 'top') loadGateWatch()
 }
 
 // ── 板块归属（2026-09-23，用户要求：三 tab 都显示，**细分 + 悬停给归属链**）──────
