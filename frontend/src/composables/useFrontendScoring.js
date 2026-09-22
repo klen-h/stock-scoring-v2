@@ -1161,6 +1161,19 @@ export async function loadLocalKline(code, stockInfo = {}, bars = 150) {
  * @returns {Promise<Object|null>} scoreStock 结果（dimensions 已适配详情页数组模板）；null = 本地不可用
  */
 export async function computeLocalScore(code, stockInfo = {}, finance = null, weights = null) {
+  // ★★ 2026-09-23：补上与 `loadLocalKline` **同款**的「包新鲜度门」。
+  //   此前这道门**只加了 K 线路径、漏了评分路径** ⇒ 本地包落后一个交易日时会出现
+  //   「K 线回退后端（新口径）+ 评分仍用本地（旧口径）」的**同页不一致** —— 正是
+  //   2026-09-11 那条注释警告的 68.8 vs 72.6 类型问题（那次只修了 K 线那一半）。
+  //   ⚠️ 为什么 `seriesIsFresh` 挡不住：它判的是「**盘中是否含今日实时 bar**」
+  //   （非交易日/9:25 前视为新鲜、9:25 后要求末根==今天），与「包是否落后一个交易日」
+  //   是两个维度 ⇒ 今天（9-23）本地包停在 9-21 时，凌晨它放行、白天也只是回退到
+  //   「本地 klines 现算」（`getKlines` 仍读 9-21 的包）⇒ **两种时段都是旧口径**。
+  //   加门后：包落后 ⇒ 返回 null ⇒ 详情页调用方回退后端精算（与 K 线路径行为一致）。
+  try {
+    const packDate = await getLastUpdateDate()
+    if (packDate && packDate < expectedPackDate()) return null
+  } catch (e) { /* 日期读不到就按原有逻辑走（本地可用优先） */ }
   let technical = null
   let mainforce = null
   let trendHealth = null
