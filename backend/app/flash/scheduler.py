@@ -1743,9 +1743,11 @@ async def start():
              *_heavy(market_snapshot_loop),
              # ★ 例外（不受 READ_ONLY 约束，与 macro_daily 同类）：盘中风险警示是
             #   **实时**功能，Actions 无法替代 —— 关掉就等于"没有盘中止损提醒"。
-            #   代价极低：只在交易时段每 30 分钟发**一次腾讯指数请求**（其余判定全读
-            #   `tencent._cache` 内存行情，**零 Supabase 流量**），触发极端阈值才推企微
-            #   （每类每日一次）⇒ 一个交易日约 8 个请求。
+            #   代价极低：交易时段每 **3 分钟**一轮、每轮 **3 个**腾讯指数请求
+            #   （9-19 由「30 分钟 / 1 个」提速；2026-09-23 新增的冲高回落规则
+            #   **复用同一批行情**，故请求量不变），其余判定全读 `tencent._cache`
+            #   内存行情，**零 Supabase 流量**；触发阈值才推企微（每类每档每日一次）
+            #   ⇒ ≈230 指数请求/交易日（相对每 5 分钟刷 ~4000 只仍 <1%）。
             asyncio.create_task(intraday_alert_loop()),
              *_heavy(contradiction_scan_loop),
              *_heavy(contradiction_report_loop),
