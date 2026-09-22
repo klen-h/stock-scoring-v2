@@ -1441,7 +1441,10 @@ async function handleDownloadKlineData() {
       await loadData()
     }
   } else {
-    console.warn('数据下载失败:', result.message)
+    // ★ 2026-09-23：原先这里写 `data 下载失败:`，但 `updated: false` 包含**正常情况**
+    //   （如"线上包与本地同日期 ⇒ 无新数据"，那是刻意的防重复导入），一律叫"失败"会让人
+    //   以为出错了（用户就是被这句误导来问的）。改为中性措辞。
+    console.warn('数据未更新:', result.message)
   }
 }
 
