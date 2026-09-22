@@ -264,6 +264,96 @@
       回测背书：总分在该市况排序失效（高分票补跌），组合分 IC +0.259 vs 总分 +0.020。总分仅作参考。
     </div>
 
+    <!-- ★ 我的持仓（2026-09-23）：以**持仓为主轴**的状态聚合 —— 回答「我手里那几只怎么样」，
+         而不是全市场候选。数据 /score/batch/portfolio-radar（评分/主力阶段/闸门就绪/
+         战法/观察池/矛盾 六合一）。定位：状态展示与提示聚合，**不是买卖信号**（同观察池纪律）。 -->
+    <div v-if="activeTab === 'positions'" class="space-y-3">
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+          <span>我的持仓 · 状态聚合（评分 / 主力阶段 / 闸门就绪 / 战法 / 观察池 / 板块风险）</span>
+          <span class="font-mono">
+            市况 {{ portfolioRadar.regime || '-' }}
+            ｜ 持仓 {{ portfolioRadar.summary?.n ?? 0 }}
+            ｜ 风险 {{ portfolioRadar.summary?.risk ?? 0 }}
+            ｜ 机会 {{ portfolioRadar.summary?.opportunity ?? 0 }}
+            ｜ 在观察池 {{ portfolioRadar.summary?.in_watch ?? 0 }}
+          </span>
+        </div>
+
+        <div v-if="portfolioRadarLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
+        <div v-else-if="portfolioRadarWarming" class="p-6 text-center text-xs text-amber-400">{{ portfolioRadarError }}</div>
+        <div v-else-if="portfolioRadarError" class="p-6 text-center text-xs text-amber-400">{{ portfolioRadarError }}</div>
+        <div v-else-if="!portfolioRadar.items?.length" class="p-6 text-center text-xs text-muted">
+          还没有持仓记录 —— 在个股详情页「加入持仓」后，这里会显示每只的状态与风险提示。
+        </div>
+        <div v-else class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead class="text-muted bg-white/[0.02]">
+              <tr>
+                <th class="py-2 px-3 text-left font-normal">代码 / 名称</th>
+                <th class="py-2 px-3 text-right font-normal">现价</th>
+                <th class="py-2 px-3 text-right font-normal">涨跌</th>
+                <th class="py-2 px-3 text-right font-normal">盈亏</th>
+                <th class="py-2 px-3 text-left font-normal">主力阶段</th>
+                <th class="py-2 px-3 text-left font-normal">闸门就绪</th>
+                <th class="py-2 px-3 text-right font-normal">评分 / 排名</th>
+                <th class="py-2 px-3 text-left font-normal">板块</th>
+                <th class="py-2 px-3 text-left font-normal">提示</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in portfolioRadar.items" :key="p.code"
+                class="border-t border-border hover:bg-white/[0.02]">
+                <td class="py-2 px-3">
+                  <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
+                    class="text-accent hover:underline font-mono">{{ p.code }}</a>
+                  <div class="text-muted">{{ p.name }}</div>
+                </td>
+                <td class="py-2 px-3 text-right font-mono">{{ p.price ?? '—' }}</td>
+                <td class="py-2 px-3 text-right font-mono" :class="pnlCls(p.day_pct)">{{ pnlText(p.day_pct) }}</td>
+                <td class="py-2 px-3 text-right font-mono" :class="pnlCls(p.pnl_pct)">{{ pnlText(p.pnl_pct) }}</td>
+                <td class="py-2 px-3">
+                  <!-- 主力阶段：复用全站 PHASE_STYLE（绿=机会 / 红=风险），显示后端 phase_cn -->
+                  <span v-if="p.phase" class="px-1.5 py-0.5 rounded font-bold cursor-help"
+                    :class="(PHASE_STYLE[p.phase] || {}).cls || 'bg-white/5 text-muted'"
+                    :title="(PHASE_STYLE[p.phase] || {}).tip || ''">{{ p.phase_cn || p.phase }}</span>
+                  <span v-else class="text-muted">—</span>
+                </td>
+                <td class="py-2 px-3 cursor-help" :class="readyCls(p.ready)" :title="p.ready_hint || ''">
+                  {{ p.ready ?? '—' }}/3 {{ p.ready_label || '' }}
+                </td>
+                <td class="py-2 px-3 text-right font-mono">
+                  {{ p.score ?? '—' }}<span v-if="p.rank_pos" class="text-muted"> #{{ p.rank_pos }}</span>
+                </td>
+                <td class="py-2 px-3 text-muted">{{ p.industry || '—' }}</td>
+                <td class="py-2 px-3">
+                  <div v-if="p.alerts?.length" class="space-y-0.5">
+                    <div v-for="(a, i) in p.alerts" :key="i" :class="alertCls(a.level)">• {{ a.text }}</div>
+                  </div>
+                  <span v-else class="text-muted">—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="px-3 py-2 text-[11px] text-muted border-t border-border leading-relaxed">
+          口径：评分/排名取**日批榜单**（不实时精算）；闸门就绪由后端 <span class="font-mono">trade_gate.summarize</span> 唯一产出；
+          「提示」只聚合既有模块结论（主力阶段 / 闸门 / 战法 / 观察池 / 矛盾 / 涨跌），**不构成买卖建议**。
+        </div>
+      </div>
+
+      <!-- 今日未兑现疑虑（市场级）—— 持仓所属板块被点名时，上方「提示」列会标红 -->
+      <div v-if="portfolioRadar.market?.contradictions?.length"
+        class="bg-card border border-border rounded-lg p-3 space-y-1.5">
+        <div class="text-xs font-semibold text-muted">今日未兑现疑虑（市场级）</div>
+        <div v-for="(c, i) in portfolioRadar.market.contradictions" :key="i" class="text-xs">
+          <span :class="c.severity === 'severe' ? 'text-red-400' : c.severity === 'obvious' ? 'text-amber-400' : 'text-muted'">[{{ c.severity }}]</span>
+          <span class="font-semibold text-gray-300"> {{ c.title }}</span>
+          <div class="text-muted leading-relaxed">{{ c.summary }}</div>
+        </div>
+      </div>
+    </div>
+
     <!-- ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
          设计：低频事件（三绿）的可视化做「候池」而非「出票」—— 多数交易日三绿为 0
          （市况不容许），日常价值在"还差一步"的池子（主力有根据+不追高，等市况/时机）。
@@ -891,7 +981,7 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -901,6 +991,7 @@ const router = useRouter()
 // bottom / signal 入口暂隐藏（后续优化完再开放）
 const tabs = [
   { key: 'top', label: '评分 Top 50' },
+  { key: 'positions', label: '我的持仓' },
   { key: 'watch', label: '观察池' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
@@ -917,6 +1008,12 @@ const tableData = ref([])
 // ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
 const gateWatch = ref({ regime: '', total: 0, ready3: 0, items: [] })
 const gateWatchLoading = ref(false)
+// ★ 持仓雷达（2026-09-23）：以**用户持仓**为主轴的状态聚合
+//   （评分 / 主力阶段 / 闸门就绪 / 战法命中 / 是否在观察池 / 所属板块被矛盾点名）
+const portfolioRadar = ref({ items: [], summary: {}, market: {}, regime: '' })
+const portfolioRadarLoading = ref(false)
+const portfolioRadarError = ref('')
+const portfolioRadarWarming = ref(false)
 // 双信号交叉筛选（战法命中 = 闸门 ready ∩ 战法信号，两个独立体系）
 const watchOnlyStrategy = ref(false)
 const STRATEGY_SHORT = {
@@ -958,6 +1055,33 @@ const PHASE_STYLE = {
     cls: 'bg-white/5 text-muted',
     tip: '盘整段：无明显方向',
   },
+}
+// ── 持仓雷达的局部格式化（2026-09-23）────────────────────────────────────────
+// ★ 复用语义，不新建第二套：
+//   · 主力阶段 → 全站 `PHASE_STYLE`（绿=机会 / 红=风险）
+//   · 涨跌与盈亏 → **A 股习惯红涨绿跌**（与观察池 `wpColor`、榜单 Top50 同口径）
+function pnlText(v) {
+  if (v == null) return '—'
+  const n = Number(v)
+  return Number.isFinite(n) ? (n > 0 ? '+' : '') + n.toFixed(2) + '%' : '—'
+}
+function pnlCls(v) {
+  if (v == null) return 'text-muted'
+  const n = Number(v)
+  if (!Number.isFinite(n) || n === 0) return 'text-muted'
+  return n > 0 ? 'text-red-400' : 'text-emerald-400'
+}
+/** 闸门就绪配色：3/3 绿（三条件齐）｜2/3 琥珀（等状态）｜≤1 灰（还差条件）—— 与观察池列同语义 */
+function readyCls(ready) {
+  if (ready == null) return 'text-muted'
+  if (ready >= 3) return 'text-emerald-400 font-bold'
+  if (ready === 2) return 'text-amber-400'
+  return 'text-muted'
+}
+/** 持仓提示级别配色：risk 红 / opportunity 绿 / info 灰 */
+function alertCls(level) {
+  return level === 'risk' ? 'text-red-400'
+    : level === 'opportunity' ? 'text-emerald-400' : 'text-muted'
 }
 const watchStrategyCount = computed(() =>
   (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length).length)
@@ -1630,6 +1754,29 @@ async function loadGateWatch() {
   }
 }
 
+// ★ 持仓雷达加载（2026-09-23）—— 以**持仓**为主轴，回答「我手里那几只怎么样」。
+//   ⚠️ 与观察池同款约定：拦截器返回**完整 axios response** ⇒ 必须 `const { data } = await`。
+//   ⚠️ 后端冷启动首次约半分钟 ⇒ 可能返回 `warming: true` 占位（服务端有预热 loop，
+//      正常秒开）；此处显示「正在准备」，**不要当成错误**。
+async function loadPortfolioRadar() {
+  portfolioRadarLoading.value = true
+  portfolioRadarError.value = ''
+  try {
+    const { data } = await getPortfolioRadar()
+    if (data && data.warming) {
+      portfolioRadarWarming.value = true
+      portfolioRadarError.value = data.note || '正在准备持仓数据…'
+    } else {
+      portfolioRadarWarming.value = false
+      portfolioRadar.value = data || { items: [], summary: {} }
+    }
+  } catch (e) {
+    portfolioRadarError.value = '加载失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    portfolioRadarLoading.value = false
+  }
+}
+
 // ── 观察池：实时涨跌幅（2026-09-22 用户需求）────────────────────────────────
 // ★ 为什么单独拉价、不让 gate-watch 顺带返回：
 //   ① 闸门就绪度 / 主力阶段是**日频**数据（mainforce_state 日更）⇒ 盘中重算没有意义；
@@ -1672,8 +1819,10 @@ async function loadWatchPrices() {
 
 function switchTab(tab) {
   activeTab.value = tab
+  // ★ 持仓雷达（2026-09-23）：每次切进来都重拉（后端有缓存 + 预热 ⇒ 秒开）
+  if (tab === 'positions') loadPortfolioRadar()
   // 观察池：先取闸门清单（拿到 code 列表）→ 再拉一次实时涨跌幅
-  if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
+  else if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口

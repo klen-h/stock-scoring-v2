@@ -157,6 +157,12 @@ export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank'
 //   注册在前、会吞掉单段静态路径 ⇒ 原先 `/score/gate-watch` 恒返回
 //   `{"error":"未找到股票 gate-watch"}`（200、不抛错）⇒ 页面静默空列表。
 export const getGateWatch = (limit = 80) => http.get('/score/batch/gate-watch', { params: { limit }, timeout: 60000 })
+// ★ 持仓雷达（2026-09-23）：以**用户持仓为主轴**的状态聚合 —— 评分/主力阶段/闸门就绪/
+//   战法命中/是否在观察池/所属板块被矛盾点名，一次回答「我手里那几只怎么样」。
+//   ⚠️ 路径两段 `/score/batch/*`：后端 `/{symbol}` 单段通配路由会吞掉单段静态路径（9-22 实锤）。
+//   ⚠️ 后端冷启动首次约半分钟 ⇒ 可能先返回 `warming: true` 占位（服务端有后台预热 loop，
+//      正常秒开）；前端据此显示「正在准备」，**不要当成错误**。
+export const getPortfolioRadar = () => http.get('/score/batch/portfolio-radar', { timeout: 45000 })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })

@@ -492,6 +492,27 @@ async def intraday_alert_loop():
         await asyncio.sleep(180)
 
 
+async def portfolio_radar_warm_loop():
+    """持仓雷达缓存预热（2026-09-23）。
+
+    ★ 为什么需要：`portfolio_radar.build()` 冷缓存本地实测 **~36s**（`_load_signal_map`
+      14~20s + `load_contradictions` 6s + `evaluate` 首只 8s + 各处 DB 往返），
+      热缓存 **1.28s** ⇒ 用户请求若撞上冷启动必超前端 20s 超时（**与观察池 9-22 的坑
+      同款**）。这里在后台把缓存热上，用户请求永远命中热缓存。
+    ★ 为什么不受 READ_ONLY 限制：纯只读（无写库、零外部请求、LLM 无关），
+      且它是**用户交互路径**的依赖 ⇒ 只读模式下更该保留（与 `regime_cache_loop` 同类）。
+    ★ 频率：20 分钟一轮（内部 TTL 最长 30 分钟 ⇒ 总有缓存生效）；首次迭代**立即执行**
+      ⇒ 覆盖"服务启动即预热"的诉求。
+    """
+    while True:
+        try:
+            from app import portfolio_radar
+            await asyncio.to_thread(portfolio_radar.build)
+        except Exception as e:
+            print(f"[scheduler] 持仓雷达预热失败: {e}")
+        await asyncio.sleep(1200)
+
+
 async def midday_radar_loop():
     """工作日午休触发一次午间雷达（盘中时效：下午开盘前给出预警）。"""
     while True:
@@ -1699,6 +1720,8 @@ async def start():
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),
+             # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）
+             asyncio.create_task(portfolio_radar_warm_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
              asyncio.create_task(open_confirmation_loop()),
              asyncio.create_task(paper_fill_loop()),

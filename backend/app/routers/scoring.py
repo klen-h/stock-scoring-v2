@@ -1920,15 +1920,36 @@ def _industry_map(codes) -> dict:
     return {c: m.get(c) for c in (codes or [])}
 
 
+# ★ 2026-09-23：战法信号映射的**进程内缓存**（10 分钟）。
+#   本函数是实测最慢的一处（单次 16.9~20.7s：`strategy_results` 大 JSON + 无可用索引），
+#   而战法是**日频**数据 ⇒ 缓存安全、收益极大（观察池 live 与持仓雷达共用）。
+_SIG_MAP_CACHE = {"ts": 0.0, "val": ({}, None)}
+_SIG_MAP_TTL = 600.0
+
+
 def _load_signal_map():
     """最新战法扫描 → ({code: [{name, conf}]}, scan_date)。失败返回 ({}, None)。
 
     ★ 抽成公共函数（2026-09-22）：实时路径与"读快照"路径都要做**双信号交叉**，
       两处各写一份必然漂移（今日已踩过同类坑）。战法数据**不进快照** —— 它的扫描日
       可能比闸门快照更新，实时 join 才不错位。
+
+    ★★ 2026-09-23 **加进程内缓存（10 分钟）** —— 本函数是实测最慢的一处：
+      本地实测**单次 16.9~20.7s**（`strategy_results` 每个战法一行、`results_json`
+      是当天全部信号的**大 JSON**，且查询无可用索引）⇒ 观测池 live 路径与持仓雷达
+      都被它拖垮（用户 9-23 报「持仓雷达 40s」就是它 + 矛盾表读取）。
+      为什么缓存**安全**：战法是**日频**数据（每交易日扫描一次，写在固定时点），
+      10 分钟 TTL 远小于数据更新周期 ⇒ 不会读到过期结果；而它被"每请求都要 join"
+      的路径反复调用 ⇒ 缓存收益极大。
+      ⚠️ 只在**成功**（拿到 scan_date）时写缓存 —— 失败不缓存，避免一次抖动把
+      "无战法信号"钉住 10 分钟。
     """
     import json as _json
     from app.database import db
+    now = time.time()
+    ts, cached = _SIG_MAP_CACHE["ts"], _SIG_MAP_CACHE["val"]
+    if ts and now - ts < _SIG_MAP_TTL:
+        return cached
     sig_map, sig_date = {}, None
     try:
         latest = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
@@ -1946,6 +1967,8 @@ def _load_signal_map():
                              "conf": it.get("confidence")})
     except Exception as e:
         print(f"[gate-watch] 战法信号读取失败（不影响闸门数据）: {e}")
+    if sig_date:
+        _SIG_MAP_CACHE.update({"ts": now, "val": (sig_map, sig_date)})
     return sig_map, sig_date
 
 
@@ -2178,6 +2201,26 @@ def gate_watch(limit: int = 80, live: bool = False):
             data["data_date"] = None
             _GATE_WATCH.update(ts=now, val=data)
     return {**data, "items": (data.get("items") or [])[:limit]}
+
+
+@router.get("/batch/portfolio-radar")
+def portfolio_radar_api():
+    """持仓雷达：把散落各处的状态**按用户持仓聚合**（2026-09-23 用户提出）。
+
+    动机：系统此前所有看板以**全市场**为主语（榜单/观察池/矛盾/盘中警示），持仓只在
+    LLM prompt 与教练止损里出现 ⇒ 能答「156 只候选」，答不出「我手里那几只怎么样」。
+
+    返回 {as_of, regime, strategy_date, watch_date, summary, market, items:[...]}
+    `items[].alerts` 是核心：**每条都指向某个既有模块的既有结论**（闸门就绪 / 主力阶段 /
+    战法命中 / 观察池 / 矛盾点名板块 / 涨跌），不引入新判据（防"第五套口径"）。
+
+    ★ 定位：**状态展示与提示聚合**，不是买卖信号（同 `trade_gate.summarize` 的纪律）。
+    ★ 路径两段（`/batch/*`）：避开本文件早先注册的 `/{symbol}` 单段通配（9-22 踩坑）。
+    ★ 性能：全部读既有落库数据，不重算全市场；进程内缓存 + 后台预热
+      （`flash.scheduler.portfolio_radar_warm_loop`）⇒ 热缓存实测 **1.3s**。
+    """
+    from app import portfolio_radar
+    return portfolio_radar.build()
 
 
 @router.get("/batch/industry-map")
