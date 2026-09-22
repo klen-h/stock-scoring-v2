@@ -1884,12 +1884,45 @@ _GATE_WATCH = {"ts": 0.0, "val": None}
 #     路由顺序）。本文件其它单段静态路由（`/weights`、`/snapshots`、`/backtest` 等）
 #   都注册在 L918 **之前**才幸免；`/batch/*` 系列是两段路径、不与单段通配冲突。
 #   ★ 纪律：新增**单段**静态路由必须注册在 `/{symbol}` 之前，或直接用多段路径。
-@router.get("/batch/gate-watch")
-def gate_watch(limit: int = 80):
-    """买入闸门观察池：ready≥2（主力有根据 + 不追高，等市况/时机）的票 + 当前市况。
+def _load_signal_map():
+    """最新战法扫描 → ({code: [{name, conf}]}, scan_date)。失败返回 ({}, None)。
 
-    返回 {regime, total, ready3, items:[{code,name,ready,label,hint,missing,
-          position_pct,position_label,phase,flow5_amt,price_pos,winner_ratio}]}
+    ★ 抽成公共函数（2026-09-22）：实时路径与"读快照"路径都要做**双信号交叉**，
+      两处各写一份必然漂移（今日已踩过同类坑）。战法数据**不进快照** —— 它的扫描日
+      可能比闸门快照更新，实时 join 才不错位。
+    """
+    import json as _json
+    from app.database import db
+    sig_map, sig_date = {}, None
+    try:
+        latest = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
+        sig_date = (latest or {}).get("d")
+        if sig_date:
+            srows = db.fetch(
+                "SELECT strategy_name, results_json FROM strategy_results "
+                "WHERE scan_date = %s AND count > 0", (sig_date,))
+            for sr in srows or []:
+                for it in _json.loads(sr.get("results_json") or "[]"):
+                    c2 = it.get("code")
+                    if c2:
+                        sig_map.setdefault(c2, []).append(
+                            {"name": sr["strategy_name"],
+                             "conf": it.get("confidence")})
+    except Exception as e:
+        print(f"[gate-watch] 战法信号读取失败（不影响闸门数据）: {e}")
+    return sig_map, sig_date
+
+
+def _gate_watch_live(limit: int = 500):
+    """【实时全池重算】观察池数据的唯一口径源（日批落库与端点兜底都用它）。
+
+    ⚠️ **慢**：遍历全市场 ~2200 只、每只跑 `trade_gate.evaluate` ⇒ 本地实测 **39.8s**、
+      线上 Render（0.1 CPU）分钟级 ⇒ **不能挂在 HTTP 请求主路径上**（2026-09-22 用户报
+      "本地接不通"＝ 前端 20s 超时，实测其实要 39.8s 才出）。主路径见
+      `_gate_watch_from_snapshot()`，本函数只在「快照缺失/过期」或显式 `live=true` 时兜底。
+
+    ⚠️ 日批写快照（`gate_history.snapshot`）**必须**调本函数、而不是调端点 —— 端点的
+      主路径是"读快照"，否则会把读到的旧快照原样写进当天，快照永久停在旧数据。
     """
     now = time.time()
     if _GATE_WATCH["val"] and now - _GATE_WATCH["ts"] < 300:
@@ -1909,23 +1942,8 @@ def gate_watch(limit: int = 80):
         #   战法信号不推送（白名单空——实测单阳不破等负期望），但与闸门 ready 交叉
         #   的票是**两个独立体系同时看中**（闸门看主力/筹码/市况，战法看图形）
         #   ⇒ 在观察池里标注 + 支持「只看双信号」筛选。
-        sig_map, sig_date = {}, None
-        try:
-            latest = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
-            sig_date = (latest or {}).get("d")
-            if sig_date:
-                srows = db.fetch(
-                    "SELECT strategy_name, results_json FROM strategy_results "
-                    "WHERE scan_date = %s AND count > 0", (sig_date,))
-                for sr in srows or []:
-                    for it in _json.loads(sr.get("results_json") or "[]"):
-                        c2 = it.get("code")
-                        if c2:
-                            sig_map.setdefault(c2, []).append(
-                                {"name": sr["strategy_name"],
-                                 "conf": it.get("confidence")})
-        except Exception as e:
-            print(f"[gate-watch] 战法信号读取失败（不影响闸门数据）: {e}")
+        #   ⚠️ 走公共 `_load_signal_map()`（"读快照"路径也用它 ⇒ 避免两份实现漂移）
+        sig_map, sig_date = _load_signal_map()
 
         items, n3, regime = [], 0, ""
         counts = {0: 0, 1: 0, 2: 0, 3: 0}      # ★ 全市场 ready 分布（gate 落库用）
@@ -1983,4 +2001,144 @@ def gate_watch(limit: int = 80):
                 "strategy_hits": sum(1 for x in items if x["strategies"]),
                 "items": items}
         _GATE_WATCH.update(ts=now, val=data)
-    return {**data, "items": data["items"][:limit]}
+    return data
+
+
+def _snapshot_max_age_days() -> int:
+    """快照可接受的最大陈旧度（自然日）—— 超过则回退实时重算。"""
+    try:
+        return max(1, int(os.environ.get("GATE_SNAPSHOT_MAX_AGE_DAYS", "5") or 5))
+    except (TypeError, ValueError):
+        return 5
+
+
+# 读快照路径的进程内缓存（60s）—— 快照是**日频**数据，60s 内复用完全安全；
+# 日批写库时会主动失效（`gate_history.snapshot` 末尾清本缓存）。
+_SNAP_CACHE = {"ts": 0.0, "val": None}
+
+
+def _gate_watch_from_snapshot():
+    """【主路径】读 `gate_snapshot_history` 最新快照 ⇒ 毫秒级返回（2026-09-22）。
+
+    为什么成立：就绪度与主力阶段都是**日频**数据（`mainforce_state` 日更）⇒ 盘中读
+    「最近已完成交易日」的快照语义完全够；而实时重算要 ~40s（线上 Render 分钟级）。
+    ★ 兼容：旧结构快照缺 `name/label/hint/missing/仓位` 时逐项降级（不报错）；
+      `flow5_level` / `phase_cn` 由快照里的 `flow5_amt` / `phase` 现算（纯函数）；
+      `strategies`（双信号）**实时 join** —— 战法扫描日可能比闸门快照更新。
+    返回 None = 不可用（无快照 / 过期 / 异常）⇒ 调用方回退 `_gate_watch_live()`。
+    """
+    now = time.time()
+    if _SNAP_CACHE["val"] and now - _SNAP_CACHE["ts"] < 60:
+        return _SNAP_CACHE["val"]
+    try:
+        import json as _json
+        from datetime import datetime as _dt
+
+        import app.flash.rules as _rules
+        from app.database import db
+        from app.mainforce.phases import PHASE_CN as _PHASE_CN
+
+        row = db.fetch_one("SELECT date, payload FROM gate_snapshot_history "
+                           "ORDER BY date DESC LIMIT 1")
+        if not row:
+            return None
+        snap_date = str(row.get("date"))[:10]
+        # 新鲜度校验（口径与日批写入同源：最近已完成交易日）
+        try:
+            expect = str(_rules.latest_completed_trading_day())[:10]
+            lag = (_dt.strptime(expect, "%Y-%m-%d").date()
+                   - _dt.strptime(snap_date, "%Y-%m-%d").date()).days
+            if lag > _snapshot_max_age_days():
+                print(f"[gate-watch] 快照过期（{snap_date}，应至 {expect}）⇒ 回退实时重算")
+                return None
+        except (ValueError, TypeError):
+            pass                       # 日期解析异常不阻断（按"可用"处理）
+        pay = _json.loads(row.get("payload") or "{}")
+        # 战法（双信号）：**优先用快照自带**（2026-09-22 起随快照写入）⇒ 零额外查询；
+        #   仅旧结构快照（无 strategies 字段）才回退实时 join —— 实测那次查询要 **15.7s**
+        #   （6 行大 JSON、无索引），是"读快照仍要 25s"的真凶 ⚠️
+        cands = pay.get("candidates") or []
+        if cands and any("strategies" in (x or {}) for x in cands[:3]):
+            sig_map, sig_date = {}, pay.get("strategy_date")
+        else:
+            sig_map, sig_date = _load_signal_map()
+        items = []
+        for x in pay.get("candidates") or []:
+            code = x.get("code")
+            if not code:
+                continue
+            flow5 = x.get("flow5_amt")
+            phase = x.get("phase")
+            items.append({
+                "code": code,
+                "name": x.get("name") or code,          # 旧结构无 name ⇒ 降级为代码
+                "ready": x.get("ready"),
+                "label": x.get("label") or "",
+                "hint": x.get("hint") or "",
+                "missing": x.get("missing") or [],
+                "position_pct": x.get("position_pct"),
+                "position_label": x.get("position_label") or "",
+                "phase": phase,
+                "phase_cn": x.get("phase_cn") or _PHASE_CN.get(phase or "", ""),
+                "flow5_amt": flow5,
+                "flow5_level": ("" if flow5 is None
+                                else "extreme" if flow5 > 20
+                                else "over" if flow5 > 5 else ""),
+                "price_pos": x.get("price_pos"),
+                "winner_ratio": x.get("winner_ratio"),
+                # 快照自带优先；旧结构缺该字段时回退实时 join 的结果
+                "strategies": (x.get("strategies")
+                               if isinstance(x.get("strategies"), list)
+                               else (sig_map.get(code) or [])),
+            })
+        items.sort(key=lambda z: (-(z.get("ready") or 0),
+                                  -(z.get("flow5_amt")
+                                    if z.get("flow5_amt") is not None else -999)))
+        counts = {int(k): v for k, v in (pay.get("counts") or {}).items()
+                  if str(k).isdigit()}
+        result = {
+            "regime": pay.get("regime") or "",
+            "total": len(items),
+            "ready3": sum(1 for z in items if z.get("ready") == 3),
+            "counts": counts or {0: 0, 1: 0, 2: 0, 3: 0},
+            "evaluated": pay.get("evaluated"),
+            "strategy_date": str(sig_date)[:10] if sig_date else None,
+            "strategy_hits": sum(1 for z in items if z["strategies"]),
+            "source": "snapshot",
+            "data_date": snap_date,
+            "items": items,
+        }
+        _SNAP_CACHE.update(ts=now, val=result)
+        return result
+    except Exception as e:
+        print(f"[gate-watch] 读快照失败，回退实时重算: {e}")
+        return None
+
+
+@router.get("/batch/gate-watch")
+def gate_watch(limit: int = 80, live: bool = False):
+    """买入闸门观察池：ready≥2（主力有根据 + 不追高，等市况/时机）的票 + 当前市况。
+
+    返回 {regime,total,ready3,counts,evaluated,strategy_date,strategy_hits,
+          source:'snapshot'|'live', data_date, items:[{code,name,ready,label,hint,
+          missing,position_pct,position_label,phase,phase_cn,flow5_amt,flow5_level,
+          price_pos,winner_ratio,strategies}]}
+
+    ★ 2026-09-22 性能改造：主路径**读日批快照**（毫秒）；快照缺失/过期、或显式
+      `live=true` 时才实时重算（~40s）。此前每个请求都全池重算 ⇒ 前端 20s 超时 ⇒
+      用户看到"接口接不通 / 观察池空"（实测要 39.8s 才出）。
+    ⚠️ 路径必须是**两段**（`/batch/gate-watch`）—— 单段会被本文件早先注册的
+      `/{symbol}` 通配路由吞掉（返回 `200 {"error":"未找到股票 gate-watch"}`），
+      详见 `_gate_watch_live` 上方的前身注释。
+    """
+    data = _gate_watch_from_snapshot() if not live else None
+    if data is None:
+        now = time.time()
+        if _GATE_WATCH["val"] and now - _GATE_WATCH["ts"] < 300:
+            data = _GATE_WATCH["val"]
+        else:
+            data = _gate_watch_live()
+            data["source"] = "live"
+            data["data_date"] = None
+            _GATE_WATCH.update(ts=now, val=data)
+    return {**data, "items": (data.get("items") or [])[:limit]}

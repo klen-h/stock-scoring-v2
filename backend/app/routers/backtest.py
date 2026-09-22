@@ -123,6 +123,8 @@ def _build_response(name: str, result: dict) -> dict:
         return resp
     resp["metrics"] = result.get("metrics")
     if name == "warfare":
+        # ★ 2026-09-22：剔除信号汇总（口径透明）—— 说明样本期为何停在几天前
+        resp["skipped"] = result.get("skipped")
         resp["by_strategy"] = result.get("by_strategy") or {}
         resp["top_trades"] = [_trade_light(t) for t in
                               sorted(result.get("trades") or [],

@@ -267,7 +267,7 @@
     <div v-if="activeTab === 'watch'" class="bg-card border border-border rounded-lg overflow-hidden">
       <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
         <span>买入闸门观察池 · 就绪度 ≥2（主力有根据 + 不追高，等市况/时机）</span>
-        <span class="font-mono">市况 {{ gateWatch.regime || '-' }} ｜ 候选 {{ gateWatch.total }} 只 ｜ 三绿 {{ gateWatch.ready3 }} 只 ｜ 战法命中 {{ gateWatch.strategy_hits || 0 }} 只</span>
+        <span class="font-mono">市况 {{ gateWatch.regime || '-' }} ｜ 候选 {{ gateWatch.total }} 只 ｜ 三绿 {{ gateWatch.ready3 }} 只 ｜ 战法命中 {{ gateWatch.strategy_hits || 0 }} 只 ｜ 数据日 {{ gateWatch.data_date || (gateWatch.source === 'live' ? '实时' : '-') }}</span>
       </div>
       <!-- ★ 双信号交叉（2026-09-22）：战法信号（图形）∩ 闸门 ready（主力/筹码/市况）
            —— 两个独立体系同时看中，比单信号更值得看。战法本身不推送（白名单空）。 -->
@@ -285,6 +285,8 @@
           <tr class="border-b border-border text-muted text-xs">
             <th class="text-left py-2.5 px-3">代码</th>
             <th class="text-left py-2.5 px-3">名称</th>
+            <!-- ★ 2026-09-22：实时涨跌幅（60s 随全局刷新；A 股习惯红涨绿跌） -->
+            <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-center py-2.5 px-3">就绪</th>
             <th class="text-left py-2.5 px-3">还差什么</th>
             <th class="text-left py-2.5 px-3">战法</th>
@@ -307,6 +309,10 @@
                 class="hover:underline" title="在雪球查看（新标签）">{{ g.code }}</a>
             </td>
             <td class="py-2 px-3 text-xs">{{ g.name }}</td>
+            <!-- 实时涨跌幅（数据来自 /score/batch-prices，与榜单同口径：红涨绿跌） -->
+            <td class="py-2 px-3 text-right font-mono text-xs" :class="wpColor(g.code)">
+              {{ wpText(g.code) }}
+            </td>
             <td class="py-2 px-3 text-center">
               <span class="px-1.5 py-0.5 rounded text-xs font-bold"
                 :class="g.ready === 3 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'">
@@ -1611,9 +1617,50 @@ async function loadGateWatch() {
   }
 }
 
+// ── 观察池：实时涨跌幅（2026-09-22 用户需求）────────────────────────────────
+// ★ 为什么单独拉价、不让 gate-watch 顺带返回：
+//   ① 闸门就绪度 / 主力阶段是**日频**数据（mainforce_state 日更）⇒ 盘中重算没有意义；
+//   ② gate-watch 是**全池重算**（2196 只、>30s，易撞前端超时）⇒ 绝不能拿它做 60s 轮询；
+//   ③ batch-prices 一次轻请求就够（复用项目既有接口，返回 {code,name,price,change_pct}）。
+//   ⇒ 60s 自动刷新时观察池**只刷价格**（见 startAutoRefresh），闸门数据不重算。
+const watchPriceMap = ref({})
+
+/** 观察池涨跌幅文案（无数据/未拉到时给「—」；数值缺失**不崩** —— 行情偶发返回 null）。 */
+function wpText(code) {
+  const p = watchPriceMap.value[code]
+  if (!p || p.change_pct == null) return '—'
+  const v = Number(p.change_pct)
+  return (Number.isFinite(v) ? (v > 0 ? '+' : '') + v.toFixed(2) : '—') + '%'
+}
+
+/** 观察池涨跌幅配色：A 股习惯红涨绿跌（与榜单 Top50 同口径）。 */
+function wpColor(code) {
+  const p = watchPriceMap.value[code]
+  const v = p && p.change_pct != null ? Number(p.change_pct) : null
+  if (v == null || !Number.isFinite(v) || v === 0) return 'text-muted'
+  return v > 0 ? 'text-red-400' : 'text-emerald-400'
+}
+
+async function loadWatchPrices() {
+  const codes = (gateWatch.value.items || []).map(g => g.code).filter(Boolean)
+  if (!codes.length) return
+  try {
+    const { data } = await getBatchPrices(codes)
+    const m = {}
+    for (const s of data || []) {
+      if (s && s.code) m[s.code] = { price: s.price, change_pct: s.change_pct }
+    }
+    if (Object.keys(m).length) watchPriceMap.value = m
+  } catch (e) {
+    // 拉价失败：保留上一次的值（不清空 ⇒ 页面不闪 '-'）；交易时段外多为休市/网络抖动
+    console.warn('[watch] 实时价刷新失败', e?.message || e)
+  }
+}
+
 function switchTab(tab) {
   activeTab.value = tab
-  if (tab === 'watch') loadGateWatch()
+  // 观察池：先取闸门清单（拿到 code 列表）→ 再拉一次实时涨跌幅
+  if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口
@@ -1701,8 +1748,12 @@ function startAutoRefresh() {
     }
     autoCountdown.value--
     if (autoCountdown.value <= 0) {
+      // ★ 观察池（2026-09-22）：只刷**实时涨跌幅** —— 闸门/主力阶段是日频，
+      //   且 gate-watch 全池重算太慢（>30s）不能做轮询 ⇒ 只发一次轻量的 batch-prices。
+      //   （修正：此前观察池落到下面的 `else loadData()`，刷的是 Top50 榜单，观察池纹丝不动。）
+      if (activeTab.value === 'watch') loadWatchPrices()
       // 影子榜 tab 也盘中刷新：本地模式走 loadData（同源），否则走后端接口
-      if (activeTab.value === 'shadow' && !shadowLocal()) loadShadowRank()
+      else if (activeTab.value === 'shadow' && !shadowLocal()) loadShadowRank()
       else loadData()
       checkPriceAlerts()
       autoCountdown.value = 60

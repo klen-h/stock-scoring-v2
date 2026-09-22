@@ -237,6 +237,26 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
             m[c] = bars
     return m
 
+def _skip_summary(skipped: list, signals: list) -> dict:
+    """被剔除信号的汇总 —— 口径透明（2026-09-22）。
+
+    动机：`sample_note` 原先只写区间（如 `2026-08-21 ~ 2026-09-17`），用户看到
+    "最新数据只到 17 日"以为数据没更新；实际是**最近的信号全部因走不完持有期被
+    剔除**（v2：T+1 入场 + 持满 3 个交易日 ⇒ 最新信号至少要 4 个交易日后才计入）。
+    这类**机制性滞后**必须写清楚，否则每次都要人工排查一遍。
+    """
+    from collections import Counter
+    by_reason = Counter(x["reason"] for x in (skipped or []))
+    return {
+        "total": len(skipped or []),
+        "by_reason": dict(by_reason.most_common()),
+        "signal_total": len(signals or []),
+        "latest_signal_date": (max((x.get("date") for x in signals), default=None)
+                               if signals else None),
+        "sample": (skipped or [])[:10],       # 前 10 条明细（排查用）
+    }
+
+
 def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
     """撮合一组战法信号 → 结果 dict。prices_map 可复用（避免重复查库）。"""
     if prices_map is None:
@@ -256,17 +276,28 @@ def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
                     break
             applied.append(apply_exit_policy(s, base_close=base))
         signals = applied
-    trades = engine.match_signals(signals, prices_map)
+    # ★ 2026-09-22：收集被剔除的信号（此前静默丢弃 ⇒ 用户误以为"数据没更新"）
+    skipped = []
+    trades = engine.match_signals(signals, prices_map, skipped_out=skipped)
+    sk = _skip_summary(skipped, signals)
     if not trades:
         return {"type": "warfare", "label": label, "trades": [], "metrics": None,
-                "sample_note": "无成交"}
+                "sample_note": "无成交", "skipped": sk}
     curve = engine.build_equity_curve(trades)
     start_d, end_d = curve[0]["date"], curve[-1]["date"]
     bench = _benchmark_ret(start_d, end_d, prices_map)
     metrics = engine.compute_metrics(trades, curve, bench)
+    # ★ 文案透明化：说明"为什么样本期停在几天前"（机制性滞后）
+    hold = WARFARE_HOLD_DAYS_V2 if exit_policy() == "v2" else WARFARE_HOLD_DAYS
+    note = f"{start_d} ~ {end_d}（已平仓区间）"
+    if sk["total"]:
+        reasons = "；".join(f"{k} {v} 个" for k, v in sk["by_reason"].items())
+        note += (f"。⚠️ 另有 {sk['total']} 个信号未计入（{reasons}）"
+                 f"—— 最近信号日 {sk['latest_signal_date']}，需 T+1 入场后持满 "
+                 f"{hold} 个交易日走完才会计入（属**机制性滞后**，不是数据缺失）")
     return {"type": "warfare", "label": label, "trades": trades,
             "metrics": metrics, "curve": curve,
-            "sample_note": f"{start_d} ~ {end_d}"}
+            "sample_note": note, "skipped": sk}
 
 
 def _strategy_stat(trades: list) -> dict:

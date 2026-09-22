@@ -74,20 +74,25 @@ def snapshot(date_str: str = None, overwrite: bool = False) -> str:
         return f"闸门快照: {date_str} 已存在，跳过（force=true 可覆盖重跑）"
 
     try:
-        from app.routers.scoring import gate_watch
-        gw = gate_watch(limit=500)          # 复用唯一口径源（候选通常 <200，500 足够）
+        # ★ 必须调 **_live**（2026-09-22）：端点主路径改成"读快照"后，若这里调端点，
+        #   就会把**读到的旧快照**原样写进当天 ⇒ 快照永久停在旧数据、观察池永不更新。
+        from app.routers.scoring import _gate_watch_live
+        gw = _gate_watch_live()
     except Exception as e:
         return f"闸门快照: {date_str} 计算失败（{str(e)[:80]}）—— 不写库"
 
-    cands = [{
-        "code": x.get("code"), "ready": x.get("ready"),
-        "flow5_amt": x.get("flow5_amt"), "price_pos": x.get("price_pos"),
-        "winner_ratio": x.get("winner_ratio"), "phase": x.get("phase"),
-    } for x in (gw.get("items") or [])]
+    # ★ 存**完整 item**（2026-09-22 配套改造）：端点改读快照后，快照必须自带展示所需
+    #   字段（name/label/hint/missing/仓位/phase_cn/flow5_level）**以及 strategies
+    #   （双信号命中）** —— 实测读快照时若再查 `strategy_results`（6 行大 JSON、无索引）
+    #   要 **15.7s**，占满整个响应时间 ⚠️ ⇒ 随快照一起存，读取端零额外查询。
+    #   战法扫描日随 payload 一起记（`strategy_date`），避免"闸门快照日 ≠ 战法日"错位。
+    cands = list(gw.get("items") or [])
     payload = json.dumps({
         "regime": gw.get("regime"),
         "counts": gw.get("counts") or {},
         "evaluated": gw.get("evaluated"),
+        # ★ 战法扫描日（随快照记）—— 读取端据此展示"战法数据日"，无需再查 strategy_results
+        "strategy_date": gw.get("strategy_date"),
         "candidates": cands,
     }, ensure_ascii=False, default=str)
     try:
@@ -99,6 +104,13 @@ def snapshot(date_str: str = None, overwrite: bool = False) -> str:
             (date_str, payload, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     except Exception as e:
         return f"闸门快照: {date_str} 落库失败（{str(e)[:80]}）"
+    # ★ 写库即失效读取端缓存（跨模块清 `scoring._SNAP_CACHE`）—— 否则日批刚写完，
+    #   页面还在用手里的旧快照（最长 60s），与"写入即失效"的既有惯例一致。
+    try:
+        from app.routers import scoring as _sc
+        _sc._SNAP_CACHE.update(ts=0.0, val=None)
+    except Exception:
+        pass
     c = gw.get("counts") or {}
     return (f"闸门快照: {date_str} 落库 regime={gw.get('regime')} "
             f"ready 分布 {c.get(0)}/{c.get(1)}/{c.get(2)}/{c.get(3)}（0~3）"

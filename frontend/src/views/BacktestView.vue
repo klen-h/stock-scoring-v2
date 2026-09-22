@@ -37,6 +37,17 @@
         <div v-else-if="backtestError" class="py-4 text-center text-sm text-fall">{{ backtestError }}</div>
         <template v-else-if="backtest.metrics || backtest.total">
           <div v-if="backtest.sample_note" class="mt-2 text-xs text-amber-400">⚠️ {{ backtest.sample_note }}</div>
+          <!-- ★ 2026-09-22：未计入信号明细（口径透明）—— 用户看到样本期停在
+               「几天前」时的下一步：到底哪些信号没进回测、为什么。
+               sample_note 已解释机制（T+1 入场 + 持满 N 日），这里只列分布便于扫读。 -->
+          <div v-if="backtest.skipped && backtest.skipped.total"
+            class="mt-1 text-xs text-muted">
+            未计入信号 <span class="font-mono text-amber-400">{{ backtest.skipped.total }}</span>
+            / {{ backtest.skipped.signal_total }} 个：
+            <span v-for="(n, why) in backtest.skipped.by_reason" :key="why" class="mr-3">
+              {{ why }} <span class="font-mono">{{ n }}</span>
+            </span>
+          </div>
           <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
             <StatBox label="总收益率" :value="pct(backtest.metrics?.total_return)" :color="pnlColor(backtest.metrics?.total_return)" />
             <StatBox label="年化收益" :value="pct(backtest.metrics?.annual_return)" :color="pnlColor(backtest.metrics?.annual_return)" />

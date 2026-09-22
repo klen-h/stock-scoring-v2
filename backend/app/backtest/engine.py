@@ -57,22 +57,46 @@ def match_signals(signals: list, prices_map: dict,
     逐信号撮合。signals: [{date, code, direction, stop_loss?, take_profit?,
                            hold_days?, position_ratio?, is_etf?}]
     prices_map: {code: [{date, open, high, low, close}]}（升序）
-    skipped_out: 传入列表时收集被剔除的信号（涨停一字买不进等），不改变返回结构。
+    skipped_out: 传入列表时收集**所有**被剔除的信号（无行情 / T+1 未到 / 入场价异常 /
+                 涨停一字买不进 / 数据未走完），不改变返回结构 —— 供上层做口径透明化
+                 （2026-09-22：此前只有涨停一处登记，其余静默丢弃，导致"样本期看起来
+                 停在几天前"却无人知晓原因）。
     返回 trades（含每日收益路径 daily）。
     """
     costs = costs or DEFAULT_COSTS
+
+    def _skip(sig: dict, why: str, entry_date=None) -> None:
+        """登记被剔除的信号（`skipped_out is None` 时不记录）。
+
+        ★ 2026-09-22（用户反馈驱动）：此前只有『涨停一字买不进』一处登记，其余
+          `continue` **全部静默丢弃** ⇒ 用户看到回测样本期停在 2026-09-17，以为
+          "数据没更新"，实际是**最近 200+ 个信号因 T+1 未到 / 持有期未走完被悄悄跳过**。
+          回测里的"剔除"必须可见（口径透明是本项目的底线）。
+        """
+        if skipped_out is None:
+            return
+        skipped_out.append({
+            "code": sig.get("code"), "name": sig.get("name") or sig.get("code"),
+            "strategy": sig.get("strategy") or "",
+            "signal_date": sig.get("date"), "entry_date": entry_date,
+            "reason": why,
+        })
+
     trades = []
     for s in signals:
         code = s.get("code")
         bars = prices_map.get(code)
         if not bars:
+            _skip(s, "无行情数据")
             continue
         # 信号日之后的第一个交易日（T+1 开盘成交）
         entry_i = next((i for i, b in enumerate(bars) if b["date"] > s["date"]), None)
         if entry_i is None:
+            _skip(s, "T+1 行情未到（信号日之后无 K 线）")
             continue
         entry_price = bars[entry_i]["open"]
         if entry_price <= 0:
+            _skip(s, "入场价异常", bars[entry_i]["date"])
             continue
 
         # ★ 涨停一字买不进（2026-09-05 现实化）：
@@ -84,13 +108,7 @@ def match_signals(signals: list, prices_map: dict,
             limit_up = _round_tick(prev_close * (1 + limit_pct))
             eb = bars[entry_i]
             if limit_up > 0 and eb["open"] >= limit_up and eb["low"] >= limit_up - 0.001:
-                if skipped_out is not None:
-                    skipped_out.append({
-                        "code": code, "name": s.get("name") or code,
-                        "strategy": s.get("strategy") or "",
-                        "signal_date": s.get("date"),
-                        "entry_date": eb["date"], "reason": "涨停一字买不进",
-                    })
+                _skip(s, "涨停一字买不进", eb["date"])
                 continue
 
         direction = 1 if s.get("direction", "long") == "long" else -1
@@ -110,7 +128,11 @@ def match_signals(signals: list, prices_map: dict,
         last_i = min(entry_i + hold - 1, len(bars) - 1)
         sellable_i = entry_i + 1
         if last_i < sellable_i:
-            # 无可卖出交易日（持有期仅1天，或数据只到入场日）→ 无法模拟持仓，跳过
+            # 无可卖出交易日（持有期仅1天，或数据只到入场日）→ 无法模拟持仓，跳过。
+            # ★ 典型场景（本例）：v2 口径持有 3 个交易日，信号当日收盘后**次日才入场**，
+            #   若最新数据只到入场日 ⇒ 一笔都没法模拟 ⇒ 样本期"看起来停在几天前"。
+            _skip(s, f"数据未走完（T+1 入场后无可卖日，需持满 {hold} 个交易日）",
+                  bars[entry_i]["date"])
             continue
 
         def _sellable(j: int) -> bool:
