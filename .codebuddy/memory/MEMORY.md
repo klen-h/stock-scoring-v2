@@ -54,6 +54,13 @@
   `format_a_share_context()`（regime 序列 + 沪深300 含距高 + 宽度）、`_internal_context()`（温度/宏观/行业资金）
 - 推送 `app/flash/wechat.push_markdown_batched()`｜数据源健康 `app/health.py`（`_NO_WECHAT_SOURCES`
   里的源只进页面通知）
+- **全部推送的唯一单点入口 = `flash.wechat.push_markdown_batched`**：要「捕获/汇总/改推送行为」
+  改这里，**不要**逐个改 ~10 个调用方（`flash/signal_bus.py` 已在此埋记录器 ⇒ 前端「今日雷达」时间线）。
+- 持仓类告警**已有两处**（新增前必看，否则重复告警）：`coach/monitor.py`（30s 轮询 light 规则
+  ⇒ `notify("coach", force=True)`，`dedupe_key`=日|规则|标的 一天一次，10:30/14:45 体检卡）+
+  `strategies/exit_alert.py`（止损缓冲 0.5% / 破支撑 1% / RSI 高位回落 10 点 / 放量下跌 2 倍量）。
+- 持仓聚合视图 = `backend/app/portfolio_radar.py` + `GET /api/score/batch/portfolio-radar`
+  （前端「我的持仓」tab）：**全复用既有事实源**，配 single-flight + 进程缓存 + `scheduler` 预热。
 
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
