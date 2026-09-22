@@ -1052,6 +1052,84 @@ def _internal_context() -> str:
     return "## 内部市场状态（量化系统提供，原项目没有的增量信息）\n" + "\n".join(sections) + "\n"
 
 
+def format_a_share_context(days: int = 5) -> str:
+    """A 股大盘近期状态（2026-09-23 新增）—— 补「LLM 只看得到 A 股当日」的缺口。
+
+    ★ 为什么需要（用户 2026-09-23 两次质疑触发）：
+      prompt 原先对**海外**资产很慷慨（宏观 5 日趋势 + 日内振幅 + 上次叙事），
+      而对 A 股只有「regime 最新**一条** + 当日涨跌比 + 持仓现价」⇒ LLM：
+        · 分不清「A 股连跌后的第一根反抽」与「涨势中的回踩」——看不到状态序列；
+        · 看不到**日内冲高回落**——沪深300 连当日都没喂，更没有高低点。
+    ★ 内容：① regime 近 N 日**序列**（含"末尾连续 N 日"一眼信息）
+      ② 沪深300 近 N 日：收盘 / 涨跌 / **日内高 + 收盘距当日最高**（负值即尾盘回落）
+      ③ 最新交易日宽度（涨跌家数 + 涨跌比 + 市场温度）
+    数据源：`market_regime_history` + `backtest_prices`(sh000300，日线含 high/low)
+      + `routers.market.market_temperature`。任一段失败跳过（与 `_internal_context` 同策略）。
+    """
+    from app.database import db
+    lines = []
+
+    # ① 市场状态序列（看「连续 N 天 defensive / 昨天刚转档」）
+    try:
+        rows = db.fetch("SELECT date, state FROM market_regime_history "
+                        "ORDER BY date DESC LIMIT %s", (int(days),))
+        seq = list(reversed(rows or []))
+        if seq:
+            txt = " → ".join(f"{str(r['date'])[5:10]} {r['state']}" for r in seq)
+            last = seq[-1]["state"]
+            run = 0
+            for r in reversed(seq):
+                if r["state"] == last:
+                    run += 1
+                else:
+                    break
+            lines.append(f"- 市场状态序列（近{len(seq)}日）: {txt}"
+                         f"（末尾已连续 {run} 日 {last}）")
+    except Exception as e:
+        print(f"[llm] A股状态序列获取失败（跳过）: {e}")
+
+    # ② 沪深300 近 N 日（含日内高低 ⇒ 能看出「冲高回落」）
+    try:
+        rows = db.fetch("SELECT date, high, close FROM backtest_prices "
+                        "WHERE code = %s ORDER BY date DESC LIMIT %s",
+                        ("sh000300", int(days) + 1))
+        bars = list(reversed(rows or []))
+        if len(bars) >= 2:
+            seg = []
+            for prev, cur in zip(bars, bars[1:]):
+                c0 = float(prev.get("close") or 0)
+                c1 = float(cur.get("close") or 0)
+                if not c0:
+                    continue
+                hi = float(cur.get("high") or 0)
+                chg = (c1 / c0 - 1) * 100
+                off_hi = (c1 / hi - 1) * 100 if hi else 0.0
+                seg.append(f"{str(cur['date'])[5:10]} 收{c1:.0f}（{chg:+.2f}%，"
+                           f"高{hi:.0f} 距高{off_hi:+.2f}%）")
+            if seg:
+                lines.append(f"- 沪深300 近{len(seg)}日: " + "；".join(seg))
+    except Exception as e:
+        print(f"[llm] 沪深300 近期数据获取失败（跳过）: {e}")
+
+    # ③ 最新宽度（涨跌家数 / 温度）
+    try:
+        from app.routers.market import market_temperature
+        t = market_temperature() or {}
+        b = t.get("breadth") or {}
+        if b:
+            lines.append(f"- 最新涨跌家数: {b.get('up')}涨 / {b.get('down')}跌"
+                         f"（涨跌比 {b.get('ratio')}）｜市场温度 "
+                         f"{t.get('temperature')}（{t.get('level')}）")
+    except Exception as e:
+        print(f"[llm] 涨跌家数获取失败（跳过）: {e}")
+
+    if not lines:
+        return ""
+    return ("## A股大盘近期状态（量化系统提供）\n"
+            "（读数提示：状态是否**刚转档**；指数「距高」为负 = 尾盘走弱/冲高回落）\n"
+            + "\n".join(lines) + "\n")
+
+
 def _calendar_context(days: int = 3) -> str:
     """
     【财经日历】未来 days 天内的重要宏观事件（★>=4）。
@@ -1471,6 +1549,16 @@ def format_user_holdings() -> str:
         if q and q.get("price"):
             sign = "+" if q["change_pct"] >= 0 else ""
             s += f" | 现价 {q['price']} 涨跌 {sign}{q['change_pct']}%"
+            # ★ 2026-09-23：补「昨收 + 日内高/低 + 现价距日内高」——此前只有"现价+涨跌幅"，
+            #   LLM 无法区分"平走"与"冲高回落"（用户已套的体感正来自后者）。
+            hi, lo, prev = q.get("high"), q.get("low"), q.get("prev_close")
+            if hi and lo:
+                try:
+                    off = (float(q["price"]) / float(hi) - 1) * 100
+                    s += (f" | 昨收 {prev} | 日内 高{hi} 低{lo}"
+                          f"（现价距日内高 {off:+.2f}%）")
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
         lines.append(s)
     return "## 用户持仓\n" + "\n".join(lines) + "\n"
 
@@ -1518,6 +1606,12 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
     output_style = ("请用简练的Markdown输出，包含 emoji 增强可读性。" if phase != "postmarket"
                     else "请用简练的Markdown输出，必须体现复盘性质（逐条比对、验证逻辑），而非泛泛总结。")
     user_holdings = format_user_holdings()
+    # ★ 2026-09-23：A 股大盘近期状态（状态序列 + 沪深300 近5日含高低 + 宽度）
+    try:
+        a_share_context = format_a_share_context()
+    except Exception as _e:
+        print(f"[llm] A股大盘段构造失败（跳过）: {_e}")
+        a_share_context = ""
     holdings_note = ""
     if user_holdings:
         holdings_note = ("\n【持仓影响点评要求】若事件链或宏观信息与持仓个股所属行业/题材明确相关，"
@@ -1541,7 +1635,7 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
 {etf_hist}
 {etf_list}
 
-{perf_section}{_internal_context()}
+{perf_section}{_internal_context()}{a_share_context}
 {_calendar_context(3)}{user_holdings}{holdings_note}
 {get_core_skill()}
 

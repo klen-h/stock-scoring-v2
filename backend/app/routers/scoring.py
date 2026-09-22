@@ -1884,6 +1884,42 @@ _GATE_WATCH = {"ts": 0.0, "val": None}
 #     路由顺序）。本文件其它单段静态路由（`/weights`、`/snapshots`、`/backtest` 等）
 #   都注册在 L918 **之前**才幸免；`/batch/*` 系列是两段路径、不与单段通配冲突。
 #   ★ 纪律：新增**单段**静态路由必须注册在 `/{symbol}` 之前，或直接用多段路径。
+_INDUSTRY_CACHE = {"ts": 0.0, "map": {}}
+
+
+def _industry_map(codes) -> dict:
+    """{code: {"industry": 细分主行业, "chain": [层级链]}}（批量 + 10 分钟进程缓存）。
+
+    ★ 2026-09-23（用户要求榜单三 tab 显示板块）：数据源 `stock_industry`
+      （code → 东财**细分**主行业 + 层级链，实测 5932 行）；行业是**慢变数据**
+      ⇒ 缓存安全；只查缺失的 code ⇒ 延迟/额度可忽略。
+    """
+    import json as _json
+    now = time.time()
+    if now - _INDUSTRY_CACHE["ts"] > 600:
+        _INDUSTRY_CACHE.update(ts=now, map={})
+    m = _INDUSTRY_CACHE["map"]
+    want = [c for c in dict.fromkeys(codes or []) if c and c not in m]
+    if want:
+        try:
+            from app.database import db
+            ph = ",".join(["%s"] * len(want))
+            rows = db.fetch("SELECT code, main_industry, industry_chain "
+                            f"FROM stock_industry WHERE code IN ({ph})", tuple(want))
+            for r in rows or []:
+                chain = r.get("industry_chain")
+                if isinstance(chain, str):
+                    try:
+                        chain = _json.loads(chain)
+                    except (ValueError, TypeError):
+                        chain = [chain] if chain else []
+                m[r["code"]] = {"industry": r.get("main_industry") or "",
+                                "chain": chain or []}
+        except Exception as e:
+            print(f"[industry] 批量查行业失败（降级为无板块）: {e}")
+    return {c: m.get(c) for c in (codes or [])}
+
+
 def _load_signal_map():
     """最新战法扫描 → ({code: [{name, conf}]}, scan_date)。失败返回 ({}, None)。
 
@@ -2142,3 +2178,21 @@ def gate_watch(limit: int = 80, live: bool = False):
             data["data_date"] = None
             _GATE_WATCH.update(ts=now, val=data)
     return {**data, "items": (data.get("items") or [])[:limit]}
+
+
+@router.get("/batch/industry-map")
+def batch_industry_map(codes: str = Query(..., description="逗号分隔的股票代码")):
+    """批量查所属行业（细分主行业 + 层级链）—— 2026-09-23 榜单三 tab 展示「板块」用。
+
+    ★ 为什么单独开一个端点，而不塞进 batch/top、gate-watch、shadow-rank 的返回：
+      三处返回结构各异（且 gate-watch 主路径读的是**日批快照**）⇒ 散点插入既要改
+      快照结构、又会引入回归风险。行业是**慢变数据**（东财映射，随日批更新），
+      前端页面级缓存一份即可 ⇒ 用一次轻请求（50~200 只 ≈ 1KB）换零改动风险。
+    ★ 路径必须是**两段**（`/batch/industry-map`）：单段会被本文件早先注册的
+      `/{symbol}` 通配路由吞掉（2026-09-22 踩坑实锤，见 `_gate_watch_live` 上方注释）。
+    返回 {code: {industry: 主行业, chain: [层级链]}}
+    """
+    code_list = [c.strip() for c in (codes or "").split(",") if c.strip()]
+    if not code_list:
+        return {}
+    return {c: v for c, v in _industry_map(code_list[:400]).items() if v}

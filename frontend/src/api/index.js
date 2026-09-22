@@ -160,6 +160,8 @@ export const getGateWatch = (limit = 80) => http.get('/score/batch/gate-watch', 
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
+// ★ 板块归属（细分主行业 + 层级链）—— 榜单三 tab 共用一份，前端页面级缓存，按需拉取
+export const getBatchIndustry = (codes) => http.get('/score/batch/industry-map', { params: { codes: codes.join(',') }, timeout: 15000 })
 export const getBacktest = (params) => http.get('/score/backtest', { params, timeout: 120000 })
 // 单股历史评分 vs 价格（评分有效性个股级验证，详情页折线图）
 export const getRankHistory = (code, days = 30) => http.get(`/score/rank-history/${code}`, { params: { days } })

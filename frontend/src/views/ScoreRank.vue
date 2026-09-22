@@ -212,6 +212,7 @@
                 <th class="py-2 px-2 text-left">#</th>
                 <th class="py-2 px-2 text-left">代码</th>
                 <th class="py-2 px-2 text-left">名称</th>
+                <th class="py-2 px-2 text-left">板块</th>
                 <th class="py-2 px-2 text-right">涨跌</th>
                 <th class="py-2 px-2 text-right">分</th>
                 <th class="py-2 px-2 text-center">主力</th>
@@ -229,6 +230,9 @@
                     class="hover:underline" :title="r.name">{{ r.code }}</a>
                 </td>
                 <td class="py-1.5 px-2 text-xs truncate max-w-[80px]">{{ r.name }}</td>
+                <td class="py-1.5 px-2 text-xs truncate max-w-[72px]">
+                  <span :title="chainTip(r)" class="text-muted">{{ industryOf(r) }}</span>
+                </td>
                 <td class="py-1.5 px-2 text-right font-mono text-xs"
                   :class="(r.change_pct || 0) > 0 ? 'text-red-400' : (r.change_pct || 0) < 0 ? 'text-emerald-400' : 'text-muted'">
                   {{ (r.change_pct || 0) > 0 ? '+' : '' }}{{ (r.change_pct || 0).toFixed(2) }}%
@@ -285,6 +289,7 @@
           <tr class="border-b border-border text-muted text-xs">
             <th class="text-left py-2.5 px-3">代码</th>
             <th class="text-left py-2.5 px-3">名称</th>
+            <th class="text-left py-2.5 px-3">板块</th>
             <!-- ★ 2026-09-22：实时涨跌幅（60s 随全局刷新；A 股习惯红涨绿跌） -->
             <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-center py-2.5 px-3">就绪</th>
@@ -309,6 +314,10 @@
                 class="hover:underline" title="在雪球查看（新标签）">{{ g.code }}</a>
             </td>
             <td class="py-2 px-3 text-xs">{{ g.name }}</td>
+            <!-- 板块：细分主行业 + 悬停给归属链（数据 /score/batch/industry-map） -->
+            <td class="py-2 px-3 text-xs truncate max-w-[90px]">
+              <span :title="chainTip(g)" class="text-muted">{{ industryOf(g) }}</span>
+            </td>
             <!-- 实时涨跌幅（数据来自 /score/batch-prices，与榜单同口径：红涨绿跌） -->
             <td class="py-2 px-3 text-right font-mono text-xs" :class="wpColor(g.code)">
               {{ wpText(g.code) }}
@@ -372,6 +381,7 @@
             <th class="text-left py-2.5 px-3">排名</th>
             <th class="text-left py-2.5 px-3">代码</th>
             <th class="text-left py-2.5 px-3">名称</th>
+            <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">板块</th>
             <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-right py-2.5 px-3">综合评分</th>
             <th class="text-center py-2.5 px-3">信号</th>
@@ -396,6 +406,9 @@
                  title="在雪球查看">{{ item.code }}</a>
             </td>
             <td class="py-2 px-3">{{ item.name }}</td>
+            <td v-if="activeTab === 'top'" class="py-2 px-3 text-xs truncate max-w-[90px]">
+              <span :title="chainTip(item)" class="text-muted">{{ industryOf(item) }}</span>
+            </td>
             <td class="py-2 px-3 text-right font-mono text-xs"
               :class="(item.change_pct || 0) > 0 ? 'text-red-400' : (item.change_pct || 0) < 0 ? 'text-emerald-400' : 'text-muted'">
               {{ (item.change_pct || 0) > 0 ? '+' : '' }}{{ (item.change_pct || 0).toFixed(2) }}%
@@ -522,7 +535,7 @@
             </td>
           </tr>
           <tr v-if="!tableData.length">
-            <td :colspan="activeTab === 'top' ? 12 : 5" class="py-12 text-center text-muted">
+            <td :colspan="activeTab === 'top' ? 13 : 5" class="py-12 text-center text-muted">
               {{ cacheStatus === 'loading' ? '行情数据加载中，请稍后...' : '暂无数据' }}
             </td>
           </tr>
@@ -875,10 +888,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -1671,6 +1684,62 @@ function switchTab(tab) {
   else if (tab === 'anomaly') loadAnomalies()
   else if (tab !== 'verify' && tab !== 'backtest') loadData()
 }
+
+// ── 板块归属（2026-09-23，用户要求：三 tab 都显示，**细分 + 悬停给归属链**）──────
+// ★ 数据源：后端 `/score/batch/industry-map`（`stock_industry`：东财**细分**主行业 +
+//   层级链）。为什么按需拉、而不塞进三个榜单接口的返回：
+//     · 三处返回结构各异，且观察池主路径读的是**日批快照** ⇒ 散点插入要改快照结构；
+//     · 行业是**慢变数据** ⇒ 前端页面级缓存一份即可，缺哪个补哪个（一次 ≈1KB）。
+//   ⇒ 三 tab 共用同一映射；**本地评分模式**（pack 里无行业字段）同样能被补齐。
+const industryMap = ref({})
+
+function _codesMissingIndustry() {
+  const need = new Set()
+  const scan = (arr) => {
+    for (const x of arr || []) {
+      if (x && x.code && !x.industry && !industryMap.value[x.code]) need.add(x.code)
+    }
+  }
+  scan(tableData.value)
+  scan(gateWatch.value.items)
+  scan(shadowData.value.base)
+  scan(shadowData.value.zero)
+  scan(shadowData.value.grad)
+  return [...need]
+}
+
+async function ensureIndustry() {
+  const codes = _codesMissingIndustry()
+  if (!codes.length) return
+  try {
+    const { data } = await getBatchIndustry(codes)
+    if (data && typeof data === 'object') {
+      industryMap.value = { ...industryMap.value, ...data }
+    }
+  } catch (e) {
+    // 板块是非关键信息：失败静默（该列显示 —），不影响排序/评分/闸门
+    console.warn('[industry] 板块信息拉取失败', e?.message || e)
+  }
+}
+
+/** 展示用：优先条目自带字段，其次映射缓存（都没有 ⇒ —）。 */
+function industryOf(o) {
+  if (!o) return '—'
+  return o.industry || (industryMap.value[o.code] || {}).industry || '—'
+}
+
+/** 悬停提示：归属层级链（细分 ⊂ 上级 ⊂ …）。无链时回退行业名。 */
+function chainTip(o) {
+  if (!o) return ''
+  const raw = o.industry_chain || (industryMap.value[o.code] || {}).chain || []
+  const arr = (Array.isArray(raw) ? raw : [raw]).filter(Boolean)
+  if (arr.length) return `板块归属：${arr.join(' ⊂ ')}`
+  const name = industryOf(o)
+  return name === '—' ? '' : `板块：${name}`
+}
+
+// 三 tab 数据一变化就补齐（切 tab / 刷新 / 本地评分完成都会触发）；缺失才请求 ⇒ 幂等
+watch([tableData, () => gateWatch.value.items, shadowData], () => { ensureIndustry() })
 
 function goDetail(code) {
   const { href } = router.resolve(`/stock/${code}`)
