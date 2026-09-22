@@ -2110,6 +2110,13 @@ function startAutoRefresh() {
       //   且 gate-watch 全池重算太慢（>30s）不能做轮询 ⇒ 只发一次轻量的 batch-prices。
       //   （修正：此前观察池落到下面的 `else loadData()`，刷的是 Top50 榜单，观察池纹丝不动。）
       if (activeTab.value === 'watch') loadWatchPrices()
+      // ★ 2026-09-23：我的持仓 tab —— **同一个坑的复发**（我加 tab 时漏了这里，
+      //   结果它落到最下面的 `else loadData()`，盘中刷的是 Top50 榜单，持仓表纹丝不动）。
+      //   现价/涨跌/盈亏/距高会随内存行情刷新而变化（后端读 `tencent._cache`，行情本身
+      //   每 2-3 分钟刷新 ⇒ 持仓价最坏滞后约 2-3 分钟）；主力阶段/闸门/评分是**日频**，不变。
+      else if (activeTab.value === 'positions') loadPortfolioRadar()
+      // 今日雷达 tab：推送记录是追加式的，盘中重拉一次即可看到新推的提示（很轻）
+      else if (activeTab.value === 'radar') loadPushLog()
       // 影子榜 tab 也盘中刷新：本地模式走 loadData（同源），否则走后端接口
       else if (activeTab.value === 'shadow' && !shadowLocal()) loadShadowRank()
       else loadData()
