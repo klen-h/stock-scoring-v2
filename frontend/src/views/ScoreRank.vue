@@ -299,7 +299,13 @@
           <tr v-for="g in watchItems" :key="g.code"
             class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
             @click="goDetail(g.code)">
-            <td class="py-2 px-3 font-mono text-xs text-accent">{{ g.code }}</td>
+            <!-- ★ 2026-09-22：点代码去雪球（与榜单 Top50 同款；`@click.stop` 阻止
+                 冒泡，否则会同时触发行的 goDetail）—— 整行点击 = 本页详情，
+                 点代码 = 雪球新标签，两个入口并存。 -->
+            <td class="py-2 px-3 font-mono text-xs text-accent">
+              <a :href="getXueqiuUrl(g.code)" target="_blank" rel="noopener" @click.stop
+                class="hover:underline" title="在雪球查看（新标签）">{{ g.code }}</a>
+            </td>
             <td class="py-2 px-3 text-xs">{{ g.name }}</td>
             <td class="py-2 px-3 text-center">
               <span class="px-1.5 py-0.5 rounded text-xs font-bold"
@@ -315,10 +321,19 @@
               </span>
               <span v-else class="text-muted">-</span>
             </td>
-            <!-- ★ 2026-09-22：优先中文名 `phase_cn`（后端 state.load_latest 用
-                 phases.PHASE_CN 统一补齐）—— 原先直渲染英文枚举 `phase`
-                 （sideways/accumulation…），用户看到的是英文。 -->
-            <td class="py-2 px-3 text-xs text-muted">{{ g.phase_cn || g.phase || '-' }}</td>
+            <!-- ★ 2026-09-22：阶段配色标签 —— 显示用后端 `phase_cn`（唯一映射源
+                 `phases.PHASE_CN`），配色键用英文枚举 `phase`；悬停有含义说明。
+                 语义与全站主力标签一致（绿=机会 / 红=风险，非 A 股红涨绿跌）：
+                 吸筹=机会、出货=风险、**拉升=追高警惕**（trade_gate 的拦截条件）、
+                 洗盘=中性持有、下跌=回避、盘整=无方向。 -->
+            <td class="py-2 px-3 text-xs">
+              <span v-if="g.phase" class="px-1.5 py-0.5 rounded font-bold cursor-help"
+                :class="(PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
+                :title="(PHASE_STYLE[g.phase] || {}).tip || ''">
+                {{ g.phase_cn || g.phase }}
+              </span>
+              <span v-else class="text-muted">-</span>
+            </td>
             <td class="py-2 px-3 text-right font-mono text-xs">
               <span :class="g.flow5_level === 'extreme' ? 'text-red-400 font-bold'
                             : g.flow5_level === 'over' ? 'text-amber-400'
@@ -891,6 +906,40 @@ const STRATEGY_SHORT = {
   limit_up_boomerang: '涨停回马枪', wizard_pointer: '神奇指针', old_duck_head: '老鸭头',
 }
 function strategyShort(n) { return STRATEGY_SHORT[n] || n }
+
+// ★ 主力阶段配色（2026-09-22，用户要求"不同状态用不同颜色标签"）
+//   键用**英文枚举**（后端 `phase` 即此，稳定）；显示用后端 `phase_cn`
+//   （唯一映射源 `mainforce/phases.PHASE_CN`，前端不再自建中文映射）。
+//   语义与全站主力标签一致（**绿=机会 / 红=风险**，非 A 股红涨绿跌）：
+//     吸筹=机会｜出货=风险｜**拉升=追高警惕**（trade_gate/战法过滤的拦截条件，
+//     故用琥珀而非红）｜洗盘=中性持有｜下跌=回避｜盘整=无方向。
+//   ⚠️ 类名必须是**静态字面量**（Tailwind 只在源码里扫字符串，拼接会漏扫）。
+const PHASE_STYLE = {
+  accumulation: {
+    cls: 'bg-emerald-500/20 text-emerald-400',
+    tip: '吸筹段：主力低位建仓、时间换空间（闸门 A「主力有根据」的来源）',
+  },
+  shakeout: {
+    cls: 'bg-cyan-500/20 text-cyan-300',
+    tip: '洗盘段：缩量回调不破位＝主力没走，持有/观察',
+  },
+  markup: {
+    cls: 'bg-amber-500/20 text-amber-400',
+    tip: '拉升段：放量上攻，**追高风险**（闸门与战法过滤都会拦 markup）',
+  },
+  distribution: {
+    cls: 'bg-red-500/20 text-red-400',
+    tip: '出货段：高位放量滞涨，筹码换手给散户（回测 10 日 -7.5pt）',
+  },
+  decline: {
+    cls: 'bg-zinc-500/20 text-zinc-400',
+    tip: '下跌段：无主力接管，回避',
+  },
+  sideways: {
+    cls: 'bg-white/5 text-muted',
+    tip: '盘整段：无明显方向',
+  },
+}
 const watchStrategyCount = computed(() =>
   (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length).length)
 const watchItems = computed(() => watchOnlyStrategy.value

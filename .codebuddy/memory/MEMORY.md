@@ -13,7 +13,7 @@
 - 缓存命中决定评分吞吐：命中时并发 10 无 sleep，否则并发 3 + `sleep(0.3)` 防 WAF。
 - 版本门控 `app/sync_meta.py` 管理日更远端数据；研究脚本走 `app/research_cache.py` 并优先读本地包。
 - 两条链路并存：后端读 DB 包；前端本地评分读 GitHub Pages 的 `kline-pack` + `indicators-pack`。**`backend-pack.db.gz` 只给 Python，浏览器不读**。
-- 已知待修：盘中技术面是昨收；`score_single` 实时算与 `batch/top` 缓存算盘中不同分；`incremental_update` 是死代码；`score_snapshot_loop` 15:15 早于数据刷新。
+- 已知待修：盘中技术面是昨收；`score_single` 实时算与 `batch/top` 缓存算盘中不同分；`incremental_update` 是死代码；`score_snapshot_loop` 15:15 早于数据刷新；**`gate-watch` 首次全池计算（2196 只）> 前端 20s 超时 ⇒ 建议改读 `gate_snapshot_history` 日批快照（2026-09-22 发现，线上 Render 更慢必超时）**。
 
 ## ⚠️ 路由顺序与「真跑验证」纪律（2026-09-22 观察池空的教训）
 - **FastAPI/Starlette 按注册顺序匹配**：`routers/scoring.py` 的 `@router.get("/{symbol}")`
