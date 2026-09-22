@@ -354,6 +354,42 @@
       </div>
     </div>
 
+    <!-- ★ 今日雷达（2026-09-23）：系统提示的**统一时间线** —— 回答「系统今天说了什么」。
+         记录点在后端 `flash.wechat.push_markdown_batched`（全部业务推送的单点入口）⇒
+         覆盖盘中警示/矛盾扫描/午间雷达/日报周报/模拟盘/教练/数据源健康等全部来源，
+         零侵入（不必改 10 个调用方）。语义：记录「系统判断要说这件事」，不代表企微已送达。 -->
+    <div v-if="activeTab === 'radar'" class="space-y-3">
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+          <span>今日雷达 · 系统提示时间线（全部推送入口汇总）</span>
+          <span class="font-mono">
+            {{ pushLog.stats?.date || '-' }} ｜ 共 {{ pushLog.stats?.total ?? 0 }} 条 ｜ {{ pushLogCatSummary }}
+          </span>
+        </div>
+
+        <div v-if="pushLogLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
+        <div v-else-if="pushLogError" class="p-6 text-center text-xs text-amber-400">{{ pushLogError }}</div>
+        <div v-else-if="!pushLog.items?.length" class="p-6 text-center text-xs text-muted leading-relaxed">
+          今天还没有系统提示。<br>
+          <span class="text-[11px]">（来源：盘中风险警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练纪律 / 数据源健康 …）</span>
+        </div>
+        <div v-else class="divide-y divide-border">
+          <div v-for="(x, i) in pushLog.items" :key="i" class="px-3 py-2.5">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-mono text-muted text-[11px]">{{ (x.ts || '').slice(11) }}</span>
+              <span v-if="x.category" class="px-1.5 py-0.5 rounded text-[10px]" :class="catCls(x.category)">{{ catLabel(x.category) }}</span>
+              <span class="text-xs font-semibold text-gray-200">{{ x.title }}</span>
+            </div>
+            <div class="text-xs text-muted mt-1 whitespace-pre-wrap leading-relaxed">{{ (x.content || '').slice(0, 400) }}</div>
+          </div>
+        </div>
+        <div class="px-3 py-2 text-[11px] text-muted border-t border-border leading-relaxed">
+          说明：记录的是「**系统判断要说这件事**」（进入推送函数即记），不代表企微一定送达 ——
+          业务开关关闭 / 未配 webhook 时仍会记录，故此处能看到系统今天判断过的全部内容。
+        </div>
+      </div>
+    </div>
+
     <!-- ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
          设计：低频事件（三绿）的可视化做「候池」而非「出票」—— 多数交易日三绿为 0
          （市况不容许），日常价值在"还差一步"的池子（主力有根据+不追高，等市况/时机）。
@@ -981,7 +1017,7 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -992,6 +1028,7 @@ const router = useRouter()
 const tabs = [
   { key: 'top', label: '评分 Top 50' },
   { key: 'positions', label: '我的持仓' },
+  { key: 'radar', label: '今日雷达' },
   { key: 'watch', label: '观察池' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
@@ -1014,6 +1051,10 @@ const portfolioRadar = ref({ items: [], summary: {}, market: {}, regime: '' })
 const portfolioRadarLoading = ref(false)
 const portfolioRadarError = ref('')
 const portfolioRadarWarming = ref(false)
+// ★ 今日雷达（2026-09-23）：系统提示时间线（信号总线 —— 覆盖全部推送入口而无需逐个翻）
+const pushLog = ref({ stats: {}, items: [], dates: [] })
+const pushLogLoading = ref(false)
+const pushLogError = ref('')
 // 双信号交叉筛选（战法命中 = 闸门 ready ∩ 战法信号，两个独立体系）
 const watchOnlyStrategy = ref(false)
 const STRATEGY_SHORT = {
@@ -1083,6 +1124,21 @@ function alertCls(level) {
   return level === 'risk' ? 'text-red-400'
     : level === 'opportunity' ? 'text-emerald-400' : 'text-muted'
 }
+
+// ── 今日雷达：推送分类标签（键与后端 `category` 语义一致）────────────────────
+const CAT_LABEL = { risk: '风险', coach: '教练', brief: '简报', alert: '提醒' }
+function catLabel(c) { return CAT_LABEL[c] || c || '其他' }
+function catCls(c) {
+  return c === 'risk' ? 'bg-red-500/20 text-red-400'
+    : c === 'coach' ? 'bg-amber-500/20 text-amber-400'
+      : 'bg-white/10 text-muted'
+}
+/** 顶部概览：按分类计数（后端 stats.by_category） */
+const pushLogCatSummary = computed(() => {
+  const m = pushLog.value.stats?.by_category || {}
+  const parts = Object.entries(m).map(([k, v]) => catLabel(k) + ' ' + v)
+  return parts.length ? parts.join(' ｜ ') : '—'
+})
 const watchStrategyCount = computed(() =>
   (gateWatch.value.items || []).filter(g => g.strategies && g.strategies.length).length)
 const watchItems = computed(() => watchOnlyStrategy.value
@@ -1777,6 +1833,23 @@ async function loadPortfolioRadar() {
   }
 }
 
+// ★ 今日雷达加载（2026-09-23）—— 回答「系统今天说了什么」。
+//   记录点在后端 `flash.wechat.push_markdown_batched`（**全部业务推送的单点入口**）⇒
+//   这里能看到**所有来源**的提示（盘中警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 /
+//   教练 / 数据源健康 …），不必逐个模块去翻，也不会漏（原痛点是只能翻企微聊天记录）。
+async function loadPushLog(date = null) {
+  pushLogLoading.value = true
+  pushLogError.value = ''
+  try {
+    const { data } = await getPushLog(date, 80)
+    pushLog.value = data || { stats: {}, items: [], dates: [] }
+  } catch (e) {
+    pushLogError.value = '加载失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    pushLogLoading.value = false
+  }
+}
+
 // ── 观察池：实时涨跌幅（2026-09-22 用户需求）────────────────────────────────
 // ★ 为什么单独拉价、不让 gate-watch 顺带返回：
 //   ① 闸门就绪度 / 主力阶段是**日频**数据（mainforce_state 日更）⇒ 盘中重算没有意义；
@@ -1821,6 +1894,8 @@ function switchTab(tab) {
   activeTab.value = tab
   // ★ 持仓雷达（2026-09-23）：每次切进来都重拉（后端有缓存 + 预热 ⇒ 秒开）
   if (tab === 'positions') loadPortfolioRadar()
+  // ★ 今日雷达（2026-09-23）：系统提示时间线（切进来即拉当天）
+  else if (tab === 'radar') loadPushLog()
   // 观察池：先取闸门清单（拿到 code 列表）→ 再拉一次实时涨跌幅
   else if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()

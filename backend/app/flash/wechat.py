@@ -233,7 +233,18 @@ def push_markdown_batched(title: str, content: str, force: bool = False,
                           category: str = None) -> None:
     """按段落边界分批推送长 Markdown 到主群 webhook（每批 ≤4KB，标题带序号）。
     force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。
-    category 传入时改走 notify()（分类群 → 应用 → 主群 解析链）。"""
+    category 传入时改走 notify()（分类群 → 应用 → 主群 解析链）。
+
+    ★ 2026-09-23：本函数是**全部业务推送的单点入口** ⇒ 在此处埋「信号总线」记录器
+      （`flash/signal_bus.py`），即可覆盖 ~10 个各自独立的推送入口而**不必改调用方**。
+      记录语义 = 「系统判断要说这件事」（进入即记，不保证企微真送达）；去重逻辑
+      （notify 回落会二次进入）在 signal_bus 内。记录失败绝不影响推送本身。
+    """
+    try:
+        from app.flash import signal_bus
+        signal_bus.record(title, content, category=category, force=force)
+    except Exception:
+        pass
     # ★ 2026-09-15：全局兜底——表格转列表（见 notify 内注释；幂等）
     try:
         from app.wechat_fmt import markdown_tables_to_lists

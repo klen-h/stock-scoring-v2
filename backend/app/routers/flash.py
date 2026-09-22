@@ -137,6 +137,25 @@ def flash_signals():
     }
 
 
+@router.get("/push-log")
+def flash_push_log(date: str = None, limit: int = 80):
+    """系统提示时间线（信号总线，2026-09-23 新增）。
+
+    动机：系统有 ~10 个各自独立的推送入口（数据源告警 / 盘中警示 / 午间雷达 / 日报 /
+    周报 / 模拟盘 / 教练纪律与转档 / 主线…），此前**没有汇总视图** ⇒ 只能靠翻企微聊天
+    记录回答「系统今天说了什么、有没有漏」。本端点给出**统一时间线**（分类统计 + 逐条）。
+
+    实现：记录器埋在 `flash.wechat.push_markdown_batched`（**全部业务推送的单点入口**）
+    ⇒ 零侵入覆盖所有来源（不必改 10 个调用方），详见 `flash/signal_bus.py`。
+    ⚠️ 语义：记录的是「**系统判断要说这件事**」，不代表企微一定送达 —— 业务开关关闭 /
+       未配 webhook 时也会记录；页面据此仍能看到"系统今天判断过什么"。
+    """
+    from app.flash import signal_bus
+    return {"stats": signal_bus.stats(date),
+            "items": signal_bus.by_date(date, limit),
+            "dates": signal_bus.recent_dates(7)}
+
+
 @router.get("/audit")
 def flash_audit():
     """
