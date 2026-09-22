@@ -30,6 +30,25 @@
   3. **前端「本地优先」路径要单独验** —— 详情页 `tryLoadLocalAll` 成功就不调后端，
      只测后端 API 会漏掉本地分支（P1 标签丢失即此类）。
 
+## 告警规则口径：「绝对量」vs「日内路径」（2026-09-23 冲高回落的教训）
+- **同一现象要问两遍口径**：『跌了多少』（现价 vs 昨收 = 绝对涨跌幅）与『从日内高点回撤
+  多少』（路径）是**两条不同规则**，只做前者会漏掉典型形态。实例：`intraday_alerts` 原只看
+  绝对涨跌幅（上证 -1.5%）⇒「早盘冲高 +1.2%、午后回落到 -0.5%」**永不报警**（用户报的场景）
+  ⇒ 已加 `_index_reversal_alert`（`peak ≥ 门槛` **且** `距日高 ≤ -门槛`）。
+- 同类新规则：**双条件缺一不可**（否则把低位窄幅震荡误报成回落）；高波动标的门槛按倍数加严。
+- **别为一条新规则多拉一次外部请求**：`_index_watch_quotes()` 一次拉取喂多条规则
+  （`get_index()` 无缓存层，各拉一遍即翻倍）。
+
+## 项目已有能力清单（**提需求前先查这里 —— 多数需求已有零件**）
+- 盘中警示：`app/flash/intraday_alerts.py`（3 分钟一轮、READ_ONLY 例外必跑；绝对涨跌幅 /
+  冲高回落 / 涨跌比 / 跌停 / 黑天鹅 ⇒ 企微，每类每档每日一次）
+- 矛盾扫描：`app/contradictions/`（`scanner.py` 多维度；`store.load_contradictions(resolved=0)`
+  读未兑现；`scheduler._run_midday_scan` 午间实时扫描并推企微）
+- LLM 提示词素材（`app/flash/llm.py`）：`format_user_holdings()`（持仓 + 实时价 + 日内高低/距高）、
+  `format_a_share_context()`（regime 序列 + 沪深300 含距高 + 宽度）、`_internal_context()`（温度/宏观/行业资金）
+- 推送 `app/flash/wechat.push_markdown_batched()`｜数据源健康 `app/health.py`（`_NO_WECHAT_SOURCES`
+  里的源只进页面通知）
+
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
 - **头号放大器 =「进程内缓存 × 低频数据」**：本地 `run.py --reload`（改代码即重启）+ 各种脚本
