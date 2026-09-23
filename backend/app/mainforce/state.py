@@ -173,7 +173,21 @@ _latest_cache = {"ts": 0.0, "data": {}}   # {code: state_dict}
 
 
 def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100) -> dict:
-    """全池计算当日主力行为状态（幂等覆盖当日）。"""
+    """全池计算当日主力行为状态（幂等覆盖当日）。
+
+    ★★ 2026-09-23：加**断点续传 + 逐只容错**。起因：线上连续两天企微报
+      「主力行为状态计算失败 —— SSL connection has been closed unexpectedly」
+      （Supabase 断开长过程中的连接），而本函数要**逐只写 ~2098 次**（历史耗时 ≈20 分钟）
+      ⇒ 20 分钟里断一次就整体失败；scheduler 每 10 分钟重试一轮、**且每轮都从零开始**
+      ⇒ 永远跑不完（`schedule_state` 里因此**始终没有 `mainforce_state` 这一行** ——
+      该标记只在成功后才写）。两层防护：
+        ① **断点续传**：`_save` 逐条自动提交 ⇒ 已写入的行不会丢。开跑前先查出
+           「今日已写入的 code」并跳过 ⇒ 第 N 次重试只补未写的，**累计必然收敛**
+           （首轮 20 分钟 → 后续轮次几十秒）。
+        ② **逐只容错**：单只解析/写入异常只跳过该只并计数，不再让 2000 只白算
+           （「跳过单只」≠「用错数据」，与项目既有取舍一致）。但**失败率 >20% 仍抛错**
+           —— 那是连接/数据源级故障，不能"大面积缺失却标记成功"。
+    """
     ensure_table()
     _latest_cache.update({"ts": 0.0, "data": {}})   # 写入即失效
     bars_map = _load_bars_all()
@@ -181,21 +195,56 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
         bars_map = {c: bars_map[c] for c in codes if c in bars_map}
     fs_map = get_float_shares_from_snapshot()
     flow_map = load_flow_map()
+
+    # ── 断点续传：先确定本轮交易日（各只取自己末根），再查已写入的 code ──
+    no_today = None
+    for _c, (_b, _n) in bars_map.items():
+        if _b:
+            no_today = _b[-1]["date"]
+            break
+    done = set()
+    if no_today:
+        try:
+            rows = db.fetch("SELECT code FROM mainforce_state WHERE date = %s", (no_today,))
+            done = {r["code"] for r in (rows or [])}
+            if done:
+                print(f"[mainforce_state] 断点续传：{no_today} 已写入 {len(done)} 只，本轮跳过")
+        except Exception as e:
+            print(f"[mainforce_state] 已写入 code 读取失败（本轮按全量重算）: {e}")
+
     today = None
-    n = 0
+    n = skipped = failed = 0
     t0 = time.time()
     for i, (code, (bars, name)) in enumerate(sorted(bars_map.items()), 1):
-        today = today or bars[-1]["date"]
-        ov = mainforce_overlay(bars, flow_rows=flow_map.get(code),
-                               float_shares=fs_map.get(code), regime=regime)
-        if not ov:
+        if not bars:
             continue
-        _save(code, name, today, ov)
-        n += 1
+        today = bars[-1]["date"]
+        if code in done:
+            skipped += 1
+        else:
+            try:
+                ov = mainforce_overlay(bars, flow_rows=flow_map.get(code),
+                                       float_shares=fs_map.get(code), regime=regime)
+                if ov:
+                    _save(code, name, today, ov)
+                    n += 1
+            except Exception as e:
+                failed += 1
+                if failed <= 5:      # 只打前 5 条，避免刷屏；数量看汇总
+                    print(f"[mainforce_state] {code} 计算/写入失败（跳过该只）: "
+                          f"{type(e).__name__}: {e}")
         if i % verbose_every == 0:
-            print(f"[mainforce_state] {i}/{len(bars_map)} n={n} ({time.time() - t0:.0f}s)")
-    return {"codes": len(bars_map), "saved": n, "date": today,
-            "seconds": round(time.time() - t0, 1)}
+            print(f"[mainforce_state] {i}/{len(bars_map)} n={n} skip={skipped} "
+                  f"fail={failed} ({time.time() - t0:.0f}s)")
+
+    total = len(bars_map)
+    if total and failed > total * 0.2:
+        # 大面积失败 ⇒ 连接/数据源级问题：**不标记完成**，让下一轮断点续传接着补
+        raise RuntimeError(
+            f"主力行为状态计算失败率过高：{failed}/{total}（已写入 {n}、跳过已存在 "
+            f"{skipped}）—— 疑似连接/数据源异常，本轮不标记完成，下轮续传")
+    return {"codes": total, "saved": n, "skipped": skipped, "failed": failed,
+            "date": today, "seconds": round(time.time() - t0, 1)}
 
 
 def _save(code: str, name: str, date: str, ov: dict) -> None:

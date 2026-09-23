@@ -194,8 +194,15 @@ def _send(content: str, label: str, hook: str = None) -> bool:
     except Exception as e:
         print(f"[wechat] {label} 推送失败: {e}")
         return False
-    # print 放 try 外，避免控制台编码问题（如 Windows GBK 下的 emoji）影响发送结果
-    print(f"[wechat] [{'OK' if ok else 'FAIL'}] {label}" + ("（分类群）" if hook else ""))
+    # ★ 2026-09-23：print 必须**包 try** —— 标题常含 emoji（📊/⚠️/🎯…），而中文 Windows
+    #   控制台是 **GBK** ⇒ `print` 抛 UnicodeEncodeError 会**向上冒泡**，让调用方以为
+    #   推送失败（实际已成功发出）⇒ 可能触发重试/重复推送。原注释「print 放 try 外，
+    #   避免控制台编码问题影响发送结果」只防住了"发送本身"，没防住"异常冒泡"。
+    #   纪律：**日志永远不该改变业务结果**。
+    try:
+        print(f"[wechat] [{'OK' if ok else 'FAIL'}] {label}" + ("（分类群）" if hook else ""))
+    except Exception:
+        pass
     return ok
 
 
