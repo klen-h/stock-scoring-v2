@@ -764,6 +764,25 @@ def ensure_pack_fresh(max_wait_min: float):
     from app.flash.rules import beijing_now
 
     want = ps._latest_available_pack_day(beijing_now())
+    # ★★ 2026-09-23 新增第二判据：除「此刻本应可用的**下限**」(want) 外，还必须对照
+    #   「**本轮应处理的交易日**」(need) —— need 与 `_batch_trading_day()` 同源
+    #   （`rules.latest_completed_trading_day()`，15:00 分界）。
+    #
+    #   为什么两个都要：两者在 **15:00~22:00** 窗口会**分开** ——
+    #     · want = 上一交易日（保守下限：包 19:00 才开始构建、~20:43 才发布；判早了会让
+    #       读侧 `_is_stale()` 判陈旧 ⇒ 所有 K 线/指标读取**回退查 Supabase**，
+    #       实测单日近 600MB egress ⇒ 宁可多半天用旧包）
+    #     · need = 当天（15:00 后当天已收盘，数据侧**就应该**处理它）
+    #   ⇒ 若此刻包尚未发布，则 got = 上一交易日：旧判据 `got >= want` **放行** ⇒ 日批
+    #     用**昨天的 K 线**算「今天」的信号（`scan_date` 记为 need=今天）⇒ **日期与数据
+    #     脱钩且静默**（`task_strategy_scan` 的即时对账也查不出 —— 它比的是 scan_date vs
+    #     期望，而写进去的确实是 need）。
+    #   ★ 实例（2026-09-23 用户 20:01 手动跑实测撞到）：日志
+    #     「校验通过: 2026-09-22（此刻应可用 2026-09-22）」两值相等、**看起来正常**，
+    #     实则比正常时点（20:43 启动、那时 got=9-23）早跑了 42 分钟 ⇒ 会用旧包。
+    #   恒有 need >= want（22:00 后两者相等；15:00~22:00 need 更晚；15:00 前与休市日
+    #   两者相等）⇒ 直接用更严格的 `got >= need` 作唯一放行条件。
+    need = _batch_trading_day()
     deadline = time.time() + max(0, max_wait_min) * 60
     while True:
         try:
@@ -771,14 +790,19 @@ def ensure_pack_fresh(max_wait_min: float):
         except Exception as e:
             print(f"  读取数据包日期失败: {e}")
             got = None
-        if got is not None and got >= want:
-            print(f"  数据包日期校验通过: {got}（此刻应可用 {want}）")
+        if got is not None and got >= need:
+            print(f"  数据包日期校验通过: {got}（此刻应可用 {want}；本轮应处理交易日 {need}）")
             return True
+        if got is not None and got >= want and got < need:
+            print(f"  ⚠️ 数据包 {got} 落后于本轮应处理交易日 {need}（下限 {want} 已满足）"
+                  f"——后端包 19:00 开始构建、约 20:43 才发布，此刻应仍在构建/未发布")
         if time.time() >= deadline:
-            print(f"::error::数据包仍为 {got}（应可用 {want}）——后端包可能失败或延迟，"
-                  f"日批将基于旧数据运行，请检查 backend-pack workflow")
+            print(f"::error::数据包仍为 {got}（本轮应处理交易日 {need}）——后端包可能失败或延迟。"
+                  f"**中止日批**：继续跑会用 {got} 的 K 线算出 scan_date={need} 的信号，"
+                  f"日期与数据脱钩且静默。请检查 backend-pack workflow，就绪后重跑"
+                  f"（确需强行继续：--no-pack-check）")
             return False
-        print(f"  数据包日期 {got} < 应可用 {want}，3 分钟后强制重下重试"
+        print(f"  数据包日期 {got} < 应处理交易日 {need}，3 分钟后强制重下重试"
               f"（Pages 站点部署/CDN 有 1~2 分钟空窗，本地包 mtime 新鲜但内容是旧的）…")
         time.sleep(180)
         # ★ 必须强制重下（2026-09-10 事故）：只置 _ready_checked 不够——_ensure_ready
@@ -836,7 +860,13 @@ def main():
 
     if not args.no_pack_check:
         print("\n[0] 校验数据包新鲜度...")
-        ensure_pack_fresh(args.max_wait)
+        # ★ 2026-09-23：**接住返回值并中止**。原实现丢弃返回值 ⇒ 校验失败也只是打个
+        #   `::error::` 就继续跑（注释里 2026-09-19 已记这个"待修"，一直没修）——
+        #   而"继续跑"意味着用旧包算出新日期的信号（脱钩且静默），比失败更糟。
+        if not ensure_pack_fresh(args.max_wait):
+            print("::error::数据包未就绪 ⇒ 中止日批（避免日期错位数据落库）。"
+                  "等 backend-pack 完成后重跑，或确认无碍后加 --no-pack-check。")
+            return 3
 
     try:
         if not args.no_quotes:
