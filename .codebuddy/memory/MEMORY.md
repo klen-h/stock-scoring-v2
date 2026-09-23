@@ -69,11 +69,15 @@
   `strategies/exit_alert.py`（止损缓冲 0.5% / 破支撑 1% / RSI 高位回落 10 点 / 放量下跌 2 倍量）。
 - 持仓聚合视图 = `backend/app/portfolio_radar.py` + `GET /api/score/batch/portfolio-radar`
   （前端「我的持仓」tab）：**全复用既有事实源**，配 single-flight + 进程缓存 + `scheduler` 预热。
-- **运维出口三件套**：① 数据新鲜度 `GET /api/system/status`（首页卡片，断链一眼可见）
+- **运维出口四件套**：① 数据新鲜度 `GET /api/system/status`（首页卡片，断链一眼可见）
   ② 文件型数据 `GET /api/system/runtime-files`（`app/data_files.py`：启动 + **每 6h 核对 +
   每项每日一次企微告警** —— 要加"定期体检"类检查可照它的模式）③ **进程内存
   `GET /api/system/memory`**（`routers/system.py`：RSS/峰值/线程 + **52 项模块级缓存探针** +
-  GC 对象类型分布 + **两次调用 diff**；首页自动调用且 `types=0` ⇒ 快照自动累积成时间序列）。
+  GC 对象类型分布 + diff；首页自动调用且 `types=0`）④ **内存看护 `app/memory_watch.py`**
+  （2026-09-23）：采样落库 `memory_probe` ⇒ **跨 OOM 重启仍有趋势**（③ 的 diff 基准在进程内，
+  重启即清零，而那正是最需要对比的时刻）；每 30 分钟一条 + 5 分钟去抖；RSS ≥**80%** 上限推
+  企微且**每自然日一次**（复用 `store.is_schedule_done` 北京日期比对）；保留 14 天。
+  ★ ③ 与 ④ 的采集**共用** `collect_memory_snapshot()`/`diff_caches()`（单一实现，防口径漂移）。
 
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
@@ -316,6 +320,12 @@
 - **工程失败 ≠ 科学证伪**：仪器坏了（一致率不过）命题只是"暂不可检验"（可重开），只有仪器有效下主检验失败才是真 KILL。三终局必须分开写。
 - **未控制的归因数字不可进结论**：对照组 -236bp 未控制 → 控制后 -1.08% 不显著。归因型结论必须过同款控制回归。
 - **失败条款先于结果落盘 + 角色定义「不是翻案」**：预注册写死 GO/DOWNGRADE/KILL 与失败条款，防看完结果改规则（forking paths）。
+- **关键路径的 `print` 别带 emoji（2026-09-23 实测）**：中文 Windows 控制台是 **GBK** ⇒
+  `print("⚠️ …")` 抛 `UnicodeEncodeError`。危害不在 Windows 本身，而在**它把流程做了一半**：
+  内存告警里"今日已告警"标记**先占**、随后 print 崩 ⇒ 异常中断 ⇒ **当天不再重试 = 静默丢告警**。
+  三条规矩：① 日志用 ASCII 标记（`[WARN]`/`[OK]`；推送**内容**里的 emoji 无妨 —— 那是 HTTP UTF-8）；
+  ② **告警/推送分支整体 `try` 包住**（哨兵模块绝不允许反噬主流程）；
+  ③ **时间戳当主键时用微秒**（秒级下同秒多次写会互相覆盖，实测 5 次只剩 4 条）。
 - **观测/诊断工具自身的三个坑（2026-09-23 内存诊断实测，写这类工具前必看）**：
   ① 探针**只读 `sys.modules`、不主动 import** —— 零副作用，且未加载的模块本来就不占内存；
   ② 深估算必须**采样**（`sys.getsizeof` 只算容器壳）且用 **`islice` 取样本、绝不 `list()` 复制**
