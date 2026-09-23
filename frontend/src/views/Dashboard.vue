@@ -139,6 +139,10 @@
           <template v-else-if="memGrow.length">较 {{ mem.diff.elapsed_min }} 分钟前增长：<template v-for="(g, i) in memGrow" :key="g.key"><span class="text-gray-300">{{ shortKey(g.key) }}</span> {{ g.delta_mb > 0 ? '+' : '' }}{{ g.delta_mb }}MB<template v-if="g.items_delta">/{{ g.items_delta > 0 ? '+' : '' }}{{ g.items_delta }}条</template><span v-if="i < memGrow.length - 1">、</span></template></template>
           <template v-else>较 {{ mem.diff.elapsed_min }} 分钟前无明细增长<template v-if="mem.unaccounted_mb != null"> · 未归类 {{ mem.unaccounted_mb }}MB</template></template>
         </div>
+        <div v-if="memTrend.length > 1" class="text-[11px] text-muted">
+          采样趋势（{{ (mem.history || []).length }} 次，跨重启）：<span class="font-mono text-gray-300">{{ memTrend.join(' → ') }}%</span>
+          <span v-if="memTrend[memTrend.length - 1] >= 70" class="text-amber-400"> ← 偏高，超 80% 会企微告警</span>
+        </div>
       </div>
     </div>
   </div>
@@ -156,6 +160,13 @@ const sysStaleCount = ref(0)
 const mem = ref(null)
 const memTop = computed(() => (mem.value?.caches || []).filter(c => (c.mb || 0) >= 0.5).slice(0, 4))
 const memGrow = computed(() => (mem.value?.diff?.growth || []).slice(0, 3))
+// 采样趋势（取最多 8 个等距点）—— 来自库里 memory_probe 表 ⇒ **跨 OOM 重启仍连续**
+const memTrend = computed(() => {
+  const h = mem.value?.history || []
+  if (h.length < 2) return []
+  const step = Math.max(1, Math.floor(h.length / 8))
+  return h.filter((_, i) => i % step === 0).slice(-8).map(x => x.used_pct)
+})
 const temp = ref({})
 const macro = ref({})
 const flashDiag = ref(null)
@@ -206,10 +217,11 @@ async function loadSystemStatus() {
   } catch (e) { console.warn('数据新鲜度加载失败', e) }
 }
 
-// 进程内存诊断：types=0 跳过最重的「GC 对象遍历」（首页会被频繁刷新，别给它加压）
+// 进程内存诊断：types=0 跳过最重的「GC 对象遍历」（首页会被频繁刷新，别给它加压）；
+// history=24 ⇒ 跨重启的采样趋势（库里 memory_probe 表：定时 30 分钟 + 本页访问触发）
 async function loadMemory() {
   try {
-    const { data } = await getSystemMemory({ types: 0, top: 6 })
+    const { data } = await getSystemMemory({ types: 0, top: 6, history: 24 })
     mem.value = data
   } catch (e) { console.warn('内存诊断加载失败', e) }
 }

@@ -140,6 +140,16 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(data_files.periodic_loop())
     except Exception as e:
         print(f"[main] 文件数据完整性检查启动失败（不影响服务）: {e}")
+
+    # ★ 进程内存看护（2026-09-23）：Render 500MB 反复 OOM（内存锯齿状爬升→骤降=被杀重启）。
+    #   采样落库（`memory_probe`）⇒ **跨 OOM 重启仍有趋势**（端点的 diff 基准在进程内，
+    #   一重启就清零，而那正是最需要对比的时刻）；每 30 分钟一条；RSS ≥80% 上限 ⇒ 推企微
+    #   （每自然日一次）。与 data_files 同为运维哨兵、互不依赖。
+    try:
+        from app import memory_watch
+        asyncio.create_task(memory_watch.periodic_loop())
+    except Exception as e:
+        print(f"[main] 内存看护启动失败（不影响服务）: {e}")
     yield
     scheduler.stop(_scheduler_tasks)
     # 关闭时取消未完成的快照引导任务（如有）

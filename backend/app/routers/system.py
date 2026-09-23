@@ -396,14 +396,79 @@ def _gc_type_top(limit: int = 12) -> list:
     return [{"type": k, "count": v} for k, v in c.most_common(limit)]
 
 
+def collect_memory_snapshot(with_types: bool = False) -> Dict:
+    """采集一份进程内存快照（RSS / 峰值 / 全部缓存探针 / 可选类型分布）。
+
+    ★ 抽出来供两处**共用同一实现**（防两套口径漂移）：
+      · `GET /api/system/memory` 端点 —— diff 基准用**进程内**上次调用（`_MEM_SNAPSHOT`）
+      · `app/memory_watch.py` 定时看护 —— diff 基准用**库里**上一条（⇒ 跨 OOM 重启连续）
+    不含 diff、不含摘要（两者的基准与文案诉求不同，见各自的调用点）。
+    """
+    rss = _read_rss_mb()
+    peak = _peak_rss_mb()
+    caches = _cache_sizes()
+    total = round(sum(c["mb"] or 0 for c in caches), 2)
+    used_pct = (round(rss / _MEM_LIMIT_MB * 100, 1)
+                if (rss and _MEM_LIMIT_MB) else None)
+
+    # 类型分布（最重的一步）：只在被要求时做；RSS >85% 时**自动跳过**（别把被观测的
+    # 进程压垮 —— 观测工具杀死被观测对象是最蠢的失败模式）。
+    types_out, types_skipped = [], None
+    if not with_types:
+        types_skipped = "未请求类型分布（types=0）"
+    elif used_pct is not None and used_pct > 85:
+        types_skipped = f"RSS 已 {used_pct}%（>85%），跳过以免加重内存压力"
+    else:
+        types_out = _gc_type_top()
+
+    return {
+        "rss_mb": rss, "peak_mb": peak, "used_pct": used_pct,
+        "caches": caches, "caches_total_mb": total,
+        "unaccounted_mb": (round(rss - total, 1) if rss is not None else None),
+        "types": types_out, "types_skipped": types_skipped,
+        "threads": threading.active_count(),
+    }
+
+
+def caches_to_map(caches: list) -> Dict:
+    """缓存清单 → `{key: {mb, items}}`（快照/存库的统一形态）。"""
+    return {c["key"]: {"mb": c["mb"], "items": c["items"]} for c in caches}
+
+
+def diff_caches(caches: list, prev_map: Optional[Dict], top: int = 15) -> list:
+    """当前缓存清单 vs 上一次的 `{key: {mb, items}}` → 增长清单（按幅度降序）。
+
+    ★ 双维度阈值：MB 是**采样估算**（有 ±），条目数是**精确计数** ⇒ 任一明显变化都上报。
+      实测两类都要抓：『单个条目变大』（K 线缓存塞进大票）与『条目数暴涨』。
+    ★ 同一实现服务两个基准：端点的进程内快照、看护模块的库里上一条。
+    """
+    growth = []
+    for c in caches:
+        old = (prev_map or {}).get(c["key"])
+        if not isinstance(old, dict) or c["mb"] is None:
+            continue
+        d = round(c["mb"] - (old.get("mb") or 0), 2)
+        di = (c["items"] - old["items"]) if (c["items"] is not None
+                                            and old.get("items") is not None) else None
+        if abs(d) < 0.5 and not (di is not None and abs(di) >= 20):
+            continue                               # 低于噪声阈值
+        growth.append({"key": c["key"], "note": c["note"], "mb": c["mb"],
+                       "was_mb": old.get("mb"), "delta_mb": d,
+                       "items": c["items"], "items_delta": di})
+    growth.sort(key=lambda x: (-abs(x["delta_mb"]),
+                               -abs(x.get("items_delta") or 0)))
+    return growth[:top]
+
+
 @router.get("/memory")
-def memory_diag(types: int = 1, top: int = 15,
+def memory_diag(types: int = 1, top: int = 15, history: int = 0,
                 user: dict = Depends(get_current_user)) -> Dict:
     """进程内存诊断：RSS / 已知缓存占用 / 对象类型分布 / 与上次调用对比。
 
     参数：
-      types=0  跳过「GC 对象类型分布」（最重的一步；RSS 紧张时自动跳过）
-      top=N    缓存与增长清单各返回前 N 项
+      types=0    跳过「GC 对象类型分布」（最重的一步；RSS 紧张时自动跳过）
+      top=N      缓存与增长清单各返回前 N 项
+      history=N  附上最近 N 条**跨重启**采样（来自 `memory_probe` 表，时间正序画趋势用）
 
     返回要点：
       process.used_pct      当前占上限百分比（>80 需警惕，>90 随时 OOM）
@@ -413,6 +478,8 @@ def memory_diag(types: int = 1, top: int = 15,
       unaccounted_mb        RSS − 已知缓存 ⇒ 大头是否在别处（框架/请求对象/高水位）
       diff.growth           与上次调用的增量（**核心用法：看谁在涨**）
       diff.reset            true = 进程重启过（上次快照丢失 = 又 OOM 了一次）
+      history               跨重启采样（`app/memory_watch.py`：定时 30 分钟 + 本端点触发，
+                            带 5 分钟去抖；RSS ≥80% 上限时**企微告警**且每自然日一次）
     """
     import gc
     import time as _time
@@ -420,59 +487,46 @@ def memory_diag(types: int = 1, top: int = 15,
     _tz = beijing_now().tzinfo            # 时间戳一律按北京时间展示（与项目惯例一致）
     _fmt_ts = lambda ts: datetime.fromtimestamp(ts, _tz).isoformat(timespec="seconds")
 
-    rss = _read_rss_mb()
-    peak = _peak_rss_mb()
-    used_pct = (round(rss / _MEM_LIMIT_MB * 100, 1)
-                if (rss and _MEM_LIMIT_MB) else None)
+    snap = collect_memory_snapshot(with_types=bool(types))
+    rss, peak, used_pct = snap["rss_mb"], snap["peak_mb"], snap["used_pct"]
+    caches, caches_total = snap["caches"], snap["caches_total_mb"]
+    types_out, types_skipped = snap["types"], snap["types_skipped"]
 
-    caches = _cache_sizes()
-    caches_total = round(sum(c["mb"] or 0 for c in caches), 2)
-
-    # 与上次调用对比（进程内）—— 这是定位「谁在涨」的关键
+    # 与上次调用对比（**进程内**基准）—— 这是定位「谁在涨」的关键
     now = _time.time()
     prev = _MEM_SNAPSHOT
     diff = None
     if prev.get("ts"):
-        growth = []
-        for c in caches:
-            old = (prev.get("caches") or {}).get(c["key"])
-            if not isinstance(old, dict) or c["mb"] is None:
-                continue
-            d = round(c["mb"] - old.get("mb", 0), 2)
-            # ★ 条目数是**精确**计数（MB 是采样估算，有 ±）⇒ 两者任一明显增长都上报。
-            #   实测过两类都要抓：『单个条目变大』（K线缓存塞大票）与『条目数暴涨』。
-            di = (c["items"] - old["items"]) if (c["items"] is not None
-                                                and old.get("items") is not None) else None
-            if abs(d) < 0.5 and not (di is not None and abs(di) >= 20):
-                continue                               # 低于噪声阈值
-            growth.append({"key": c["key"], "note": c["note"], "mb": c["mb"],
-                           "was_mb": old.get("mb"), "delta_mb": d,
-                           "items": c["items"], "items_delta": di})
-        growth.sort(key=lambda x: (-abs(x["delta_mb"]),
-                                   -abs(x.get("items_delta") or 0)))
         rss_delta = (round(rss - prev["rss_mb"], 1)
                      if (rss is not None and prev.get("rss_mb") is not None) else None)
         diff = {
             "prev_ts": _fmt_ts(prev["ts"]),
             "elapsed_min": round((now - prev["ts"]) / 60, 1),
             "rss_delta_mb": rss_delta,
-            "growth": growth[:top],
+            "growth": diff_caches(caches, prev.get("caches"), top),
             "reset": False,
         }
 
     # 更新快照（供下次对比）
-    _MEM_SNAPSHOT.update({"ts": now, "rss_mb": rss,
-                          "caches": {c["key"]: {"mb": c["mb"], "items": c["items"]}
-                                     for c in caches}})
+    _MEM_SNAPSHOT.update({"ts": now, "rss_mb": rss, "caches": caches_to_map(caches)})
 
-    # 类型分布（最重的一步）：显式关闭 or RSS 已 >85% 时跳过（自我保护，别把进程压垮）
-    types_out, types_skipped = [], None
-    if not types:
-        types_skipped = "参数 types=0"
-    elif used_pct is not None and used_pct > 85:
-        types_skipped = f"RSS 已 {used_pct}%（>85%），跳过以免加重内存压力"
-    else:
-        types_out = _gc_type_top()
+    # ★ 顺带落一条采样到库（**跨重启**保留趋势）+ 必要时告警；去抖在 record_sample 内部。
+    #   传 snap 避免重复采集（一次请求只采一遍）。失败绝不影响端点输出。
+    probe = None
+    try:
+        from app import memory_watch
+        probe = memory_watch.record_sample(snap=snap, source="api")
+    except Exception as e:
+        print(f"[system] 内存采样落库失败（不影响诊断输出）: {e}")
+
+    # 跨重启的采样历史（供前端画趋势）—— 只有显式要求时才读，避免给首页加压
+    hist = []
+    if history:
+        try:
+            from app import memory_watch as _mw
+            hist = _mw.history(max(1, min(500, history)))
+        except Exception as e:
+            print(f"[system] 内存历史读取失败: {e}")
 
     try:
         gc_tracked = len(gc.get_objects()) if types_out else None
@@ -530,6 +584,11 @@ def memory_diag(types: int = 1, top: int = 15,
         "caches_total_mb": caches_total,
         "unaccounted_mb": (round(rss - caches_total, 1) if rss is not None else None),
         "diff": diff or {"reset": True, "note": "首次调用（本次为基线，再调一次即可看增长）"},
+        # ★ 跨重启的采样历史（`app/memory_watch.py` 落库）—— 只有传 history=N 才读
+        "history": hist,
+        # 本次调用顺带落的采样（被去抖则 None；去抖窗口 RECORD_DEBOUNCE_SEC）
+        "probe": ({k: probe.get(k) for k in ("ts", "note", "source")} if probe else None),
         "note": ("diff.growth = 与上次调用的增量（看谁在涨）；unaccounted_mb 大 ⇒ 大头不在"
-                 "已知模块级缓存内。进程重启后 diff 会显示 reset（= 又 OOM 过一次）。"),
+                 "已知模块级缓存内。进程重启后 diff 会显示 reset（= 又 OOM 过一次）；"
+                 "跨重启的趋势看 history（或库里 memory_probe 表）。"),
     }
