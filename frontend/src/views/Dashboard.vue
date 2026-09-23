@@ -213,7 +213,9 @@ async function loadMemory() {
     mem.value = data
   } catch (e) { console.warn('内存诊断加载失败', e) }
 }
-function shortKey(k) { return (k || '').split('.').pop() }
+// 保留最后**两**段（模块.属性）—— 只取最后一段会让 `tencent._cache` 与 `macro._cache`
+// 显示成同一个「_cache」，无法判读（2026-09-23 首次线上数据即撞上：都显示 3 条）
+function shortKey(k) { return (k || '').split('.').slice(-2).join('.') }
 function memColor(pct) {
   if (pct == null) return 'text-muted'
   return pct >= 85 ? 'text-red-400' : pct >= 70 ? 'text-amber-400' : 'text-emerald-400'
