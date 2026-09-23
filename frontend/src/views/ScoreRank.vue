@@ -163,6 +163,14 @@
         :class="a.sev === '🔴' ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-amber-500/10 border-amber-500/30 text-amber-400'">
         {{ a.text }}
       </div>
+      <!-- ★ 2026-09-23：警示条与「今日雷达」时间线讲的是**同一件事**（系统今天/当下说了什么），
+           此前互不引用（一个走 /market/overview、一个走 /flash/push-log）⇒ 给一条通路。 -->
+      <div class="text-[11px]">
+        <span class="text-muted">以上仅为**实时市场级**警示（秒级）。</span>
+        <a class="text-accent hover:underline cursor-pointer" @click="switchTab('radar')">
+          查看今天全部系统提示的时间线 →
+        </a>
+      </div>
     </div>
 
     <!-- 评分变动提醒（与上次快照对比） -->
@@ -378,6 +386,11 @@
                 </td>
                 <td class="py-2 px-3 cursor-help" :class="readyCls(p.ready)" :title="p.ready_hint || ''">
                   {{ p.ready ?? '—' }}/3 {{ p.ready_label || '' }}
+                  <!-- ★ 2026-09-23：观察池状态从「提示文本」提升为**列内标签**（信息一直都在
+                       `p.in_watch`，只是埋在 alerts 里 ⇒ 不能一眼扫、也不能排序）。 -->
+                  <span v-if="p.in_watch"
+                    class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
+                    :title="`在观察池（ready ${p.in_watch_ready}/3）`">池</span>
                 </td>
                 <td class="py-2 px-3 text-right font-mono">
                   {{ p.score ?? '—' }}<span v-if="p.rank_pos" class="text-muted"> #{{ p.rank_pos }}</span>
@@ -466,7 +479,9 @@
               <span class="text-[10px] text-muted shrink-0 pt-0.5">{{ pushItemExpanded(i) ? '收起 ▲' : `展开 ▼ ${(x.content || '').length}字` }}</span>
             </div>
             <div v-if="pushItemExpanded(i)" class="px-3 pb-3 pl-9">
-              <div class="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed border-l-2 border-accent/30 pl-3">{{ x.content || '（无正文）' }}</div>
+              <!-- ★ 2026-09-23：正文里的股票做成可点（「名称(代码)」→ 该项目详情页）。此前时间线
+                   里的股票是**死文本**，看提示时无法一键跳到该股 ⇒ 提示与个股断开。 -->
+              <div class="text-xs text-gray-300 leading-relaxed border-l-2 border-accent/30 pl-3 whitespace-pre-wrap"><template v-for="(seg, si) in contentSegs(x.content)" :key="si"><a v-if="seg.code" class="text-accent hover:underline cursor-pointer" :title="`查看 ${seg.code} 详情`" @click.stop="goDetail(seg.code)">{{ seg.v }}</a><template v-else>{{ seg.v }}</template></template><span v-if="!x.content">（无正文）</span></div>
             </div>
             <div v-else class="px-3 pb-2 pl-9">
               <div class="text-[11px] text-muted/70 truncate">{{ previewOf(x.content) }}</div>
@@ -700,6 +715,11 @@
                 :title="`买入条件就绪 ${item.gate.ready}/3 · ${item.gate.label} ｜ ${item.gate.items.map(i => (i.ok ? '✓' : '✗') + i.label).join(' / ')} ｜ ${item.gate.hint}（建议仓位口径 ${item.gate.position_pct}%）`">
                 {{ item.gate.ready }}/3
               </span>
+              <!-- ★ 2026-09-23：逐行「是否已在观察池」。此前观察池只以漏斗卡里的**全局数字**出现，
+                   榜内看不出"这只已经在池里了"（观察池口径 = 日批 gate_snapshot 候选，即 ready≥2）。 -->
+              <span v-if="item.gate && item.gate.ready >= 2"
+                class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
+                title="已在「买入闸门观察池」（ready≥2 的候选）—— 切到观察池 tab 看它还差什么">池</span>
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
@@ -1964,6 +1984,29 @@ function previewOf(c) {
   const s = String(c || '').replace(/\s+/g, ' ').trim()
   if (!s) return '（无正文）'
   return s.length > 140 ? s.slice(0, 140) + '…' : s
+}
+
+// ★ 2026-09-23：把提示正文里的股票代码（「（600961）」/「(002709)」）切成可点片段。
+//   动机（用户提的整合点）：时间线文本里明明有股票，却是死的 ⇒ 看提示时无法一键跳到该股。
+//   保守匹配：**只认「括号 + 恰好 6 位数字」**（半角 `()` 与**全角 `（）`都要认** —— 实测
+//   复盘正文用的就是全角「株冶集团（600961）」，只写半角会直接失效）；不含日期/金额/
+//   百分比（如「（+0.79%）」「2026-09-23」都不匹配）。链接文字只取括号段，命名不会被
+//   前面的修饰词（"今日/该股"）吞进去。`goDetail` 打开项目详情页（比雪球多出评分/主力/闸门）。
+const STOCK_REF_RE = /[（(](\d{6})[）)]/g
+function contentSegs(c) {
+  const s = String(c || '')
+  if (!s) return []
+  const out = []
+  let last = 0
+  STOCK_REF_RE.lastIndex = 0
+  let m
+  while ((m = STOCK_REF_RE.exec(s)) !== null) {
+    if (m.index > last) out.push({ v: s.slice(last, m.index), code: '' })
+    out.push({ v: m[0], code: m[1] })
+    last = m.index + m[0].length
+  }
+  if (last < s.length) out.push({ v: s.slice(last), code: '' })
+  return out
 }
 function dotCls(c) {
   return c === 'risk' ? 'bg-red-400'
