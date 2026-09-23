@@ -118,18 +118,44 @@
           </div>
         </div>
       </div>
+
+      <!-- ★ 进程内存（2026-09-23）：Render 500MB 实例反复 OOM 的运维出口。
+           内存在涨时这里显示「较 N 分钟前增长：谁 +XMB」——增长项就是排查方向。 -->
+      <div v-if="mem" class="mt-3 pt-3 border-t border-border text-xs space-y-1">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-muted">进程内存</span>
+          <span class="font-mono font-semibold" :class="memColor(mem.process.used_pct)">
+            {{ mem.process.rss_mb ?? '—' }}MB / {{ mem.process.limit_mb }}MB<template v-if="mem.process.used_pct != null">（{{ mem.process.used_pct }}%）</template>
+          </span>
+          <span v-if="mem.process.peak_rss_mb" class="text-muted">峰值 {{ mem.process.peak_rss_mb }}MB</span>
+          <span class="text-muted">线程 {{ mem.process.threads }}</span>
+          <span class="text-muted">已知缓存 {{ mem.caches_total_mb }}MB</span>
+        </div>
+        <div v-if="memTop.length" class="text-[11px] text-muted">
+          占用最多：<template v-for="(c, i) in memTop" :key="c.key"><span class="text-gray-300">{{ shortKey(c.key) }}</span> {{ c.mb }}MB<template v-if="c.items">（{{ c.items }}条）</template><span v-if="i < memTop.length - 1">、</span></template>
+        </div>
+        <div class="text-[11px]" :class="memGrow.length ? 'text-amber-400' : 'text-muted'">
+          <template v-if="mem.diff?.reset">首次记录基线<template v-if="mem.unaccounted_mb != null"> · 未归类 {{ mem.unaccounted_mb }}MB</template></template>
+          <template v-else-if="memGrow.length">较 {{ mem.diff.elapsed_min }} 分钟前增长：<template v-for="(g, i) in memGrow" :key="g.key"><span class="text-gray-300">{{ shortKey(g.key) }}</span> {{ g.delta_mb > 0 ? '+' : '' }}{{ g.delta_mb }}MB<template v-if="g.items_delta">/{{ g.items_delta > 0 ? '+' : '' }}{{ g.items_delta }}条</template><span v-if="i < memGrow.length - 1">、</span></template></template>
+          <template v-else>较 {{ mem.diff.elapsed_min }} 分钟前无明细增长<template v-if="mem.unaccounted_mb != null"> · 未归类 {{ mem.unaccounted_mb }}MB</template></template>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis, getSystemStatus } from '../api'
+import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis, getSystemStatus, getSystemMemory } from '../api'
 
 const overview = ref({ indices: [], stats: {} })
 const sysStatus = ref(null)
 const sysStaleCount = ref(0)
+// ★ 2026-09-23：进程内存（Render 500MB 反复 OOM ⇒ 一眼看到"内存在涨、谁在涨"）
+const mem = ref(null)
+const memTop = computed(() => (mem.value?.caches || []).filter(c => (c.mb || 0) >= 0.5).slice(0, 4))
+const memGrow = computed(() => (mem.value?.diff?.growth || []).slice(0, 3))
 const temp = ref({})
 const macro = ref({})
 const flashDiag = ref(null)
@@ -180,8 +206,22 @@ async function loadSystemStatus() {
   } catch (e) { console.warn('数据新鲜度加载失败', e) }
 }
 
+// 进程内存诊断：types=0 跳过最重的「GC 对象遍历」（首页会被频繁刷新，别给它加压）
+async function loadMemory() {
+  try {
+    const { data } = await getSystemMemory({ types: 0, top: 6 })
+    mem.value = data
+  } catch (e) { console.warn('内存诊断加载失败', e) }
+}
+function shortKey(k) { return (k || '').split('.').pop() }
+function memColor(pct) {
+  if (pct == null) return 'text-muted'
+  return pct >= 85 ? 'text-red-400' : pct >= 70 ? 'text-amber-400' : 'text-emerald-400'
+}
+
 onMounted(async () => {
   loadSystemStatus()
+  loadMemory()
   try {
     const { data } = await getMarketOverview()
     overview.value = data

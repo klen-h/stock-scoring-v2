@@ -247,6 +247,9 @@ export const getExitSummary = (positions) => http.post('/strategies/exit-summary
 
 // 用户数据（自选股/交易计划/持仓 → 数据库同步）
 export const getSystemStatus = () => http.get('/system/status')
+// ★ 2026-09-23：进程内存诊断（Render 500MB 反复 OOM 的运维出口；首页自动调用 ⇒
+//   每次加载都推进一次后端快照，diff 自然累积成"谁在涨"的时间序列）
+export const getSystemMemory = (params) => http.get('/system/memory', { params })
 export const getSystemPerformance = () => http.get('/system/performance', { timeout: 120000 })  // 首访冷路径 ~60s
 export const getUserWatchlist = () => http.get('/user/watchlist')
 export const upsertUserWatch = (item) => http.post('/user/watchlist', item)

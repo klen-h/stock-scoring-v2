@@ -479,9 +479,37 @@ def memory_diag(types: int = 1, top: int = 15,
     except Exception:
         gc_tracked = None
 
+    # ── 人类可读摘要（markdown 一段）—— curl / 前端 / 告警推送复用同一段文本 ──
+    _rss_s = f"{rss}MB" if rss is not None else "未知（非 Linux 无 /proc）"
+    _pct_s = f"{used_pct}%" if used_pct is not None else "—"
+    _sum = [f"**进程内存 {_rss_s} / {_MEM_LIMIT_MB}MB（{_pct_s}）**"
+            + (f"，峰值 {peak}MB" if peak is not None else "")
+            + f"，线程 {threading.active_count()}"]
+    top_c = [c for c in caches if (c["mb"] or 0) >= 0.5][:5]
+    if top_c:
+        _sum.append("占用最多：" + "、".join(
+            f"{c['key'].split('.')[-1]} {c['mb']}MB({c['items']}条)" for c in top_c))
+    _sum.append(f"已知缓存合计 {caches_total}MB"
+                + (f"，未归类 {round(rss - caches_total, 1)}MB（大头在框架/请求对象或 RSS 高水位）"
+                   if rss is not None else ""))
+    if diff is None:
+        _sum.append("首次调用 ⇒ 本次是基线，隔一段时间再调一次即可看增长")
+    elif diff.get("reset"):
+        _sum.append("⚠️ 上次快照已丢失 ⇒ **进程重启过**（很可能就是又 OOM 了一次）")
+    elif diff.get("growth"):
+        _sum.append(f"较上次（{diff['elapsed_min']}分钟前）增长：" + "、".join(
+            f"{g['key'].split('.')[-1]} {g['delta_mb']:+.1f}MB"
+            + (f"/{g['items_delta']:+d}条" if g.get("items_delta") else "")
+            for g in diff["growth"][:3]))
+    else:
+        _sum.append(f"较上次（{diff['elapsed_min']}分钟前）无明细增长"
+                    + (f"（总 RSS {diff['rss_delta_mb']:+.1f}MB）"
+                       if diff.get("rss_delta_mb") is not None else ""))
+
     return {
         "ok": True,
         "generated_at": beijing_now().isoformat(timespec="seconds"),
+        "summary": "\n".join(_sum),
         "process": {
             "rss_mb": rss,
             "peak_rss_mb": peak,
