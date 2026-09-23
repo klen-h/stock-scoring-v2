@@ -284,6 +284,16 @@
 - API：`/api/coach/alerts|consistency|abandon-reasons|plans/execution-rate|plans|plans/{id}/abandon`。
 
 ## 项目约定
+- **改动推送纪律（2026-09-23 立）**：① **批量改动攒一次推** —— 每次 main 推送都会触发
+  `deploy-preview`（前端构建 + gh-pages 发布），而发布要抢 `gh-pages-publish` **全局锁**
+  （与 kline-data / backend-pack 的**数据包发布**串行）⇒ 频繁小提交会无谓把数据包发布往后排
+  （daily-batch 由 backend-pack 完成后接棒 ⇒ 连带推迟整条盘后链）。
+  ⇒ 已给 `deploy-preview.yml` 加 `paths: ['frontend/**', …]`，纯后端/文档/记忆提交不再触发。
+  ② **gh-pages 有三个写入者**（`deploy-preview` 前端 / `kline-data.deploy-pages` /
+  `backend-pack.deploy-pages` 数据包），**必须保持**：同一 `concurrency.group: gh-pages-publish`
+  + `cancel-in-progress: false` + 各自 `keep_files: true`（数据包另用 `destination_dir: data`）。
+  这三条是 2026-09-08 两次覆盖事故后的加固 —— peaceiris 是「clone 分支→改文件→push」，
+  并发布时**后 push 的会基于旧树把先 push 的文件覆盖回去**。改这三处配置前先读这段。
 - 根目录只保留 `PLAN_<日期>.md`（现行）与 `PLAN_ARCHIVE_<日期>.md`；旧专题 plan 已归档。
 - 改动后"先验证再提交"；未明确要求不自动 git commit。
 - **新增看板/tab 必须自带一行定位**（是什么 / **不是什么** / 下一步去哪）—— 2026-09-23 用户

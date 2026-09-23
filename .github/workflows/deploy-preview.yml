@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+    # ★ 2026-09-23：加**路径过滤** —— 此前任何 main 推送（含后端 / 文档 / 记忆提交）都会
+    #   触发一次前端构建 + gh-pages 发布；而每次发布都要抢 `gh-pages-publish` 全局锁
+    #   （与 kline-data / backend-pack 的**数据包发布**串行，见下方 concurrency 注释）
+    #   ⇒ 无谓占用会把数据包发布往后排（而 daily-batch 由 backend-pack 完成后接棒
+    #   ⇒ 连带推迟整条盘后链）。前端产物只取决于 frontend/ ⇒ 只在这两处变化时部署。
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-preview.yml'
   workflow_dispatch:
 
 jobs:
