@@ -149,24 +149,33 @@ def _watch_map() -> Dict[str, Dict]:
     return out
 
 
-def _rank_map_all() -> Dict[str, Dict]:
-    """最新 `rank_date` 的**全量**榜单 → {code: {...}}（10 分钟缓存）。
+def _latest_rank(codes: List[str]) -> Dict[str, Dict]:
+    """持仓在最新榜单里的分数/排名（**不实时精算**）。
 
-    ★ 为什么查全量而不按 codes 过滤：榜单一天一行一票、总量小（百来行），查全量一次
-      即可服务任意持仓组合；按 codes 过滤则每次请求都要重查（实测 1.2~2.1s/次）。
-      榜单是**日批**数据 ⇒ 10 分钟 TTL 安全。
+    ★ 为什么不实时算分：持仓十几只走精算路径要几十秒且盘中口径不稳；榜单是日批产出、
+      口径与前端榜单一致 ⇒ 只在**持仓曾上榜**时给分，未上榜就不显示（诚实降级）。
+    ★ 2026-09-23：**改回按 codes 过滤**（此前为省一次查询改成"读全量再过滤"）。
+      原因：线上 Render 是 free 计划（512MB）⇒ **内存优先于查询次数**，持仓通常只有
+      个位数，`IN (...)` 的内存占用远小于把当天全量榜单读进内存。
     """
+    if not codes:
+        return {}
     now = time.time()
-    if _rank_cache["ts"] and now - _rank_cache["ts"] < _RANK_TTL:
-        return _rank_cache["val"]
+    key = ",".join(sorted(codes))
+    cache = _rank_cache.get("by_codes") or {}
+    hit = cache.get(key)
+    if hit and now - hit["ts"] < _RANK_TTL:
+        return hit["val"]
     out: Dict[str, Dict] = {}
     try:
         from app.database import db
         row = db.fetch_one("SELECT MAX(rank_date) AS d FROM ranking_live")
         d = (row or {}).get("d")
         if d:
-            rows = db.fetch("SELECT code, total_score, signal, signal_level, rank_pos "
-                            "FROM ranking_live WHERE rank_date = %s", (str(d)[:10],))
+            marks = ",".join(["%s"] * len(codes))
+            rows = db.fetch(
+                f"SELECT code, total_score, signal, signal_level, rank_pos FROM ranking_live "
+                f"WHERE rank_date = %s AND code IN ({marks})", (str(d)[:10], *codes))
             for r in rows or []:
                 out[str(r["code"])] = {"total_score": r.get("total_score"),
                                        "signal": r.get("signal"),
@@ -175,20 +184,12 @@ def _rank_map_all() -> Dict[str, Dict]:
                                        "rank_date": str(d)[:10]}
     except Exception as e:
         print(f"[portfolio_radar] 榜单读取失败（跳过该列）: {e}")
-    _rank_cache.update({"ts": now, "val": out})
+    cache[key] = {"ts": now, "val": out}
+    if len(cache) > 8:      # 防无限增长（持仓组合数有限）
+        for k in list(cache)[:-8]:
+            cache.pop(k, None)
+    _rank_cache["by_codes"] = cache
     return out
-
-
-def _latest_rank(codes: List[str]) -> Dict[str, Dict]:
-    """持仓在最新榜单里的分数/排名（**不实时精算**）。
-
-    ★ 为什么不实时算分：持仓十几只走精算路径要几十秒且盘中口径不稳；榜单是日批产出、
-      口径与前端榜单一致 ⇒ 只在**持仓曾上榜**时给分，未上榜就不显示（诚实降级）。
-    """
-    if not codes:
-        return {}
-    allmap = _rank_map_all()
-    return {c: allmap[c] for c in codes if c in allmap}
 
 
 def _contradiction_context() -> Dict:

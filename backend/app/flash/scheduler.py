@@ -501,16 +501,22 @@ async def portfolio_radar_warm_loop():
       同款**）。这里在后台把缓存热上，用户请求永远命中热缓存。
     ★ 为什么不受 READ_ONLY 限制：纯只读（无写库、零外部请求、LLM 无关），
       且它是**用户交互路径**的依赖 ⇒ 只读模式下更该保留（与 `regime_cache_loop` 同类）。
-    ★ 频率：20 分钟一轮（内部 TTL 最长 30 分钟 ⇒ 总有缓存生效）；首次迭代**立即执行**
-      ⇒ 覆盖"服务启动即预热"的诉求。
+    ★ 频率：**仅交易时段、每 60 分钟一轮**（2026-09-23 修正，原为无条件 20 分钟）。
+      ⚠️ 为什么收紧：线上 Render 是 **free 计划（512MB）**，而预热会让持仓雷达的
+      `_load_signal_map`（解析 strategy_results 大 JSON）+ `_holdings/_watch/_rank`
+      等缓存**长期常驻**，并把峰值从"按需一次"变成"定时反复" ⇒ 在 512MB 下是净负担
+      （用户 2026-09-23 收到 Render OOM 告警邮件；虽然未必是本 loop 单独造成，但
+      它是我们**能控制**的那部分常驻压力）。**内存比首次请求的几十秒更贵。**
+      仅交易时段：非交易时段没有"用户盯着看"的诉求，首次请求慢一点无妨。
     """
     while True:
         try:
-            from app import portfolio_radar
-            await asyncio.to_thread(portfolio_radar.build)
+            if _trading_session_now():
+                from app import portfolio_radar
+                await asyncio.to_thread(portfolio_radar.build)
         except Exception as e:
             print(f"[scheduler] 持仓雷达预热失败: {e}")
-        await asyncio.sleep(1200)
+        await asyncio.sleep(3600)
 
 
 async def midday_radar_loop():
