@@ -424,6 +424,29 @@
           </span>
         </div>
 
+        <!-- ★ 系统自洽性审查（LLM，2026-09-23）—— 回答「这么多提示彼此矛盾吗、该信哪一条」。
+             与 `contradictions`（扫**市场数据**矛盾）分工不同：这里扫的是**系统自身**的多条判断。 -->
+        <div class="px-3 py-2 border-b border-border bg-white/[0.02]">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <span class="text-xs font-semibold text-gray-200">系统自洽性审查（LLM）</span>
+            <div class="flex items-center gap-2">
+              <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">（今日已分析 · 读缓存）</span>
+              <button class="px-2 py-0.5 rounded text-[11px] border border-border hover:border-accent/50"
+                      :class="radarAnalysis.loading ? 'text-muted' : 'text-accent'"
+                      :disabled="radarAnalysis.loading"
+                      @click="loadRadarAnalysis(true)">
+                {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
+              </button>
+            </div>
+          </div>
+          <div v-if="radarAnalysis.markdown" class="mt-2 text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">{{ radarAnalysis.markdown }}</div>
+          <div v-else-if="radarAnalysis.error" class="mt-2 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
+          <div v-else-if="!radarAnalysis.loading" class="mt-1 text-[11px] text-muted leading-relaxed">
+            检查系统今天的多条提示是否互相打架（如「盘中警示说回避」vs「午间雷达说机会」、早盘判断被午后自己推翻）。
+            <span class="text-muted/70">同日只算一次（缓存复用），首次分析约需十几秒。</span>
+          </div>
+        </div>
+
         <div v-if="pushLogLoading" class="p-6 text-center text-xs text-muted">加载中…</div>
         <div v-else-if="pushLogError" class="p-6 text-center text-xs text-amber-400">{{ pushLogError }}</div>
         <div v-else-if="!pushLog.items?.length" class="p-6 text-center text-xs text-muted leading-relaxed">
@@ -431,13 +454,23 @@
           <span class="text-[11px]">（来源：盘中风险警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练纪律 / 数据源健康 …）</span>
         </div>
         <div v-else class="divide-y divide-border">
-          <div v-for="(x, i) in pushLog.items" :key="i" class="px-3 py-2.5">
-            <div class="flex items-center gap-2 flex-wrap">
-              <span class="font-mono text-muted text-[11px]">{{ (x.ts || '').slice(11) }}</span>
-              <span v-if="x.category" class="px-1.5 py-0.5 rounded text-[10px]" :class="catCls(x.category)">{{ catLabel(x.category) }}</span>
-              <span class="text-xs font-semibold text-gray-200">{{ x.title }}</span>
+          <div v-for="(x, i) in pushLog.items" :key="i">
+            <!-- ★ 2026-09-23 改手风琴：此前 `v-for` 全铺开 + `.slice(0,400)` 双重损失
+                 （屏1 被长文淹没、屏2 内容看不全）。现在标题行常显、正文点击才展开且**不再截断**。 -->
+            <div class="px-3 py-2.5 cursor-pointer hover:bg-white/[0.03] flex items-start gap-2"
+                 @click="togglePushItem(i)">
+              <span class="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0" :class="dotCls(x.category)"></span>
+              <span class="font-mono text-muted text-[11px] shrink-0 pt-0.5">{{ (x.ts || '').slice(11, 16) }}</span>
+              <span v-if="x.category" class="px-1.5 py-0.5 rounded text-[10px] shrink-0" :class="catCls(x.category)">{{ catLabel(x.category) }}</span>
+              <span class="text-xs font-semibold text-gray-200 flex-1">{{ x.title }}</span>
+              <span class="text-[10px] text-muted shrink-0 pt-0.5">{{ pushItemExpanded(i) ? '收起 ▲' : `展开 ▼ ${(x.content || '').length}字` }}</span>
             </div>
-            <div class="text-xs text-muted mt-1 whitespace-pre-wrap leading-relaxed">{{ (x.content || '').slice(0, 400) }}</div>
+            <div v-if="pushItemExpanded(i)" class="px-3 pb-3 pl-9">
+              <div class="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed border-l-2 border-accent/30 pl-3">{{ x.content || '（无正文）' }}</div>
+            </div>
+            <div v-else class="px-3 pb-2 pl-9">
+              <div class="text-[11px] text-muted/70 truncate">{{ previewOf(x.content) }}</div>
+            </div>
           </div>
         </div>
         <div class="px-3 py-2 text-[11px] text-muted border-t border-border leading-relaxed">
@@ -1074,7 +1107,7 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
@@ -1907,10 +1940,52 @@ async function loadPushLog(date = null) {
   try {
     const { data } = await getPushLog(date, 80)
     pushLog.value = data || { stats: {}, items: [], dates: [] }
+    loadRadarAnalysis(false)     // 读缓存优先（无缓存才会真调 LLM，一天至多一次）
   } catch (e) {
     pushLogError.value = '加载失败：' + (e?.response?.data?.detail || e?.message || e)
   } finally {
     pushLogLoading.value = false
+  }
+}
+
+// ── 今日雷达：手风琴展开 + 系统自洽性审查（2026-09-23，用户反馈）──────────────
+// ① 原来 `v-for` 全铺开 + 前端 `.slice(0,400)` 硬截断 ⇒ 用户报「全部铺开 + 文字内容不全」
+//    ⇒ 改：标题行常显、正文点击才展开、**展开时展示完整正文**（后端落库截断同步 2000→8000）。
+// ② 新增 LLM「自洽性审查」：系统今天的多条提示是否互相矛盾/前后反复。
+const pushExpanded = ref(new Set())
+function pushItemExpanded(i) { return pushExpanded.value.has(i) }
+function togglePushItem(i) {
+  const s = new Set(pushExpanded.value)
+  if (s.has(i)) s.delete(i)
+  else s.add(i)
+  pushExpanded.value = s        // 替换新 Set ⇒ 触发响应式
+}
+function previewOf(c) {
+  const s = String(c || '').replace(/\s+/g, ' ').trim()
+  if (!s) return '（无正文）'
+  return s.length > 140 ? s.slice(0, 140) + '…' : s
+}
+function dotCls(c) {
+  return c === 'risk' ? 'bg-red-400'
+    : (c === 'alert' || c === 'coach') ? 'bg-amber-400'
+      : c === 'brief' ? 'bg-sky-400' : 'bg-gray-500'
+}
+
+const radarAnalysis = ref({ loading: false, markdown: '', error: '', cached: false, items_used: 0 })
+async function loadRadarAnalysis(refresh = false) {
+  if (radarAnalysis.value.loading) return
+  radarAnalysis.value = { ...radarAnalysis.value, loading: true, error: '' }
+  try {
+    const { data } = await getRadarAnalysis(null, refresh)
+    radarAnalysis.value = {
+      loading: false, markdown: data?.markdown || '', error: data?.error || '',
+      cached: !!data?.cached, items_used: data?.items_used || 0,
+    }
+  } catch (e) {
+    radarAnalysis.value = {
+      loading: false, markdown: '', cached: false, items_used: 0,
+      error: '分析失败：' + (e?.response?.data?.detail || e?.message || e),
+    }
   }
 }
 

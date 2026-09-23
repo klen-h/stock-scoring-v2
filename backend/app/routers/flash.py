@@ -22,6 +22,7 @@ import os
 
 # ★ 2026-09-12：本文件所有时间戳统一走 rules.beijing_now*()（原来混用 datetime.now()，
 #   在 Render 上等于 UTC，与库里的北京时间对不上，见下方通知接口注释）
+from app.database import db
 from app.flash import store, service, scheduler, wechat, rules
 from app.signals import tracker
 
@@ -154,6 +155,96 @@ def flash_push_log(date: str = None, limit: int = 80):
     return {"stats": signal_bus.stats(date),
             "items": signal_bus.by_date(date, limit),
             "dates": signal_bus.recent_dates(7)}
+
+
+# ── ★ 系统自洽性审查（2026-09-23 新增）────────────────────────────────────────
+_ANALYSIS_TABLE = "radar_analysis"
+_ANALYSIS_READY = False
+
+
+def _analysis_ensure():
+    global _ANALYSIS_READY
+    if _ANALYSIS_READY:
+        return
+    db.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_ANALYSIS_TABLE} (
+            date TEXT PRIMARY KEY,
+            markdown TEXT,
+            items_used TEXT,
+            created_at TEXT
+        )
+    """)
+    _ANALYSIS_READY = True
+
+
+@router.get("/radar-analysis")
+def flash_radar_analysis(date: str = None, refresh: bool = False):
+    """把今日系统提示汇总交给 LLM，找「**系统自身**判断之间的矛盾/张力」（自洽性审查）。
+
+    ★ 与 `contradictions`（矛盾扫描）分工不同：那个扫的是**市场数据**层面的矛盾
+      （如"指数红盘但主力净流出"）；本端点扫的是**系统自己发出的多条提示是否打架**
+      （如"盘中警示说回避" vs "午间雷达说机会"、早盘判断被午后自己的判断推翻）——
+      回答用户的问题：「这么多提示，彼此矛盾吗？我该信哪一条？」
+
+    成本：每次最多一次 LLM 调用；结果按日**落库缓存**，同日再调直接读缓存
+    （`refresh=true` 强制重算）。提示词只喂「标题 + 正文前 300 字」并限制条数 ⇒
+    不把整份长报告塞进上下文。
+    """
+    from app.flash import signal_bus, rules
+    day = date or rules.beijing_now().strftime("%Y-%m-%d")
+
+    if not refresh:
+        try:
+            _analysis_ensure()
+            row = db.fetch_one(f"SELECT markdown, items_used, created_at FROM {_ANALYSIS_TABLE} "
+                              f"WHERE date = %s", (day,))
+            if row and row.get("markdown"):
+                return {"date": day, "markdown": row["markdown"], "cached": True,
+                        "items_used": row.get("items_used"), "created_at": row.get("created_at")}
+        except Exception as e:
+            print(f"[radar] 读缓存失败（改为现算）: {e}")
+
+    items = signal_bus.by_date(day, 40) or []
+    if not items:
+        return {"date": day, "markdown": "", "cached": False, "items_used": 0,
+                "error": "今日没有系统提示可分析"}
+
+    lines = []
+    for x in items:
+        body = (x.get("content") or "").replace("\n", " ")[:300]
+        lines.append(f"- [{str(x.get('ts'))[11:16]}][{x.get('category') or '其他'}] "
+                     f"{x.get('title')}｜{body}")
+    digest = "\n".join(lines)
+
+    system = ("你是 A 股量化系统的『自洽性审查员』。任务**不是**分析市场，而是审查"
+              "**系统自己今天发出的多条提示之间**是否矛盾/张力/前后反复。"
+              "结论先行、指名具体条目（用标题），不编造、不硬凑。")
+    user = (f"## 今日系统提示（时间线，共 {len(items)} 条）\n{digest}\n\n"
+            "## 请输出（markdown，总长 ≤ 6 句）\n"
+            "1. 最值得注意的**矛盾或张力**（最多 3 条）：涉及哪几条提示、矛盾点是什么、"
+            "更该相信哪一条（说明理由）\n"
+            "2. **时间上的反复**：早盘说 A、午后说非 A 的情况（没有就说没有）\n"
+            "3. 若整体自洽，直接写「未发现实质矛盾」—— **不要为了凑数编造**\n"
+            "4. 一句话：使用者此刻该优先信哪一条")
+    try:
+        from app.flash.llm import call_llm
+        txt = (call_llm(system, user, temperature=0.3, tier="fast") or "").strip()
+    except Exception as e:
+        return {"date": day, "markdown": "", "cached": False, "items_used": len(items),
+                "error": f"LLM 调用失败: {str(e)[:160]}"}
+    if not txt:
+        return {"date": day, "markdown": "", "cached": False, "items_used": len(items),
+                "error": "LLM 返回空（可稍后重试）"}
+
+    try:
+        _analysis_ensure()
+        db.upsert(_ANALYSIS_TABLE,
+                  {"date": day, "markdown": txt, "items_used": str(len(items)),
+                   "created_at": rules.beijing_now().isoformat(timespec="seconds")},
+                  conflict_columns=["date"])
+    except Exception as e:
+        print(f"[radar] 分析落库失败（本次仍返回）: {e}")
+    return {"date": day, "markdown": txt, "cached": False, "items_used": len(items)}
 
 
 @router.get("/audit")

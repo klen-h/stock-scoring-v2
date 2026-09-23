@@ -34,8 +34,16 @@ import time
 from typing import Dict, List, Optional
 
 _MAX_MEM = 200          # 内存环形缓冲上限
-_CONTENT_KEEP = 2000    # 落库/返回时的正文截断（页面展示足够）
+# ★ 2026-09-23：2000 → 8000。用户反馈今日雷达「文字内容不全」⇒ 直接原因是**前端**
+#   `.slice(0,400)`（已改为折叠展开、不再截断），但后端这一层也在截 —— 2000 字符
+#   装不下长报告（盘后复盘 3653 / 日报 3740 / 调研类更长）⇒ 展开后仍看不全。
+#   8000 可覆盖项目现有全部报告体裁；⚠️ 历史已落库的行**无法恢复**（截断发生在写入时）。
+_CONTENT_KEEP = 8000
 _DEDUP_SEC = 90.0       # 同标题+同开头正文的去重窗口
+# ★ 保留期：正文放宽后表会变大（每天 10~80 条 × 最多 8KB ≈ 数百 KB/天）⇒ 需要清理，
+#   否则无限增长。每天最多清一次（进程内日期标记，零额外开销）。
+_KEEP_DAYS = 30
+_last_cleanup_day = ""
 
 _mem: List[Dict] = []
 _lock = threading.Lock()
@@ -110,8 +118,28 @@ def record(title: str, content: str = "", category: Optional[str] = None,
                      item["category"], 1 if item["force"] else 0, ts))
         except Exception as e:
             print(f"[signal_bus] 落库失败（仅内存可见）: {e}")
+        _maybe_cleanup()
     except Exception as e:
         print(f"[signal_bus] 记录异常（已忽略）: {e}")
+
+
+def _maybe_cleanup() -> None:
+    """每天最多一次：删除 `_KEEP_DAYS` 天前的记录（正文放宽到 8KB 后防表无限增长）。"""
+    global _last_cleanup_day
+    try:
+        day = time.strftime("%Y-%m-%d")
+        if day == _last_cleanup_day:
+            return
+        _last_cleanup_day = day
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=_KEEP_DAYS)).strftime("%Y-%m-%d")
+        _ensure_table()
+        from app.database import db
+        n = db.execute("DELETE FROM push_log WHERE date < %s", (cutoff,))
+        if n:
+            print(f"[signal_bus] 清理 {_KEEP_DAYS} 天前的提示记录: {n} 条")
+    except Exception as e:
+        print(f"[signal_bus] 清理失败（不影响记录）: {e}")
 
 
 def by_date(date: Optional[str] = None, limit: int = 80) -> List[Dict]:

@@ -167,6 +167,10 @@ export const getPortfolioRadar = () => http.get('/score/batch/portfolio-radar', 
 //   记录点在 `flash.wechat.push_markdown_batched`（全部业务推送的单点入口）⇒ 覆盖
 //   盘中警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练 / 数据源健康等全部来源。
 export const getPushLog = (date, limit = 80) => http.get('/flash/push-log', { params: { date, limit }, timeout: 20000 })
+// ★ 系统自洽性审查（2026-09-23）：把今日全部系统提示交给 LLM，检查**系统自身**的判断
+//   是否互相矛盾/前后反复（对照：`contradictions` 扫的是**市场数据**层面的矛盾）。
+//   后端按日缓存 ⇒ 同日再调零成本；refresh=true 强制重算（消耗一次 LLM 调用）。
+export const getRadarAnalysis = (date, refresh = false) => http.get('/flash/radar-analysis', { params: { date, refresh }, timeout: 120000 })
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
