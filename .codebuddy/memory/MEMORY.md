@@ -13,6 +13,14 @@
 - 缓存命中决定评分吞吐：命中时并发 10 无 sleep，否则并发 3 + `sleep(0.3)` 防 WAF。
 - 版本门控 `app/sync_meta.py` 管理日更远端数据；研究脚本走 `app/research_cache.py` 并优先读本地包。
 - 两条链路并存：后端读 DB 包；前端本地评分读 GitHub Pages 的 `kline-pack` + `indicators-pack`。**`backend-pack.db.gz` 只给 Python，浏览器不读**。
+- ⚠️ **两条「包发布链」互相独立，故障不传染（易混，2026-09-23 澄清）**：
+  · `kline-data.yml`（18:00）→ 前端包 `kline-pack-*` + `indicators-pack` + `realtime-quotes.json`
+    （`deploy-pages` job 是 `needs: [frontend-pack]` ⇒ 抓取失败 ⇒ 发布 **skipped**，前端包不更新）
+  · `backend-pack.yml`（19:00）→ `backend-pack.db.gz`（**日批与后端唯一依赖**）
+  ⇒ **前端包失败 ≠ 日批失败**（日批只吃后端包）；唯一连带影响是 `realtime-quotes.json`
+  未更新 ⇒ backend-pack 用旧行情/自拉兜底 ⇒ 只影响 `codes` 表 `name`/`market_cap` 新鲜度。
+  ⇒ 前端包超时的**真瓶颈是 K 线阶段**（1566 只×单只请求，`PACK_QPS=2` 顺畅也 ~13 分钟）
+  + WAF 冷却，**不是** 240 批行情（那部分只占几分钟）⇒ 优化别找错瓶颈。
 - 已知待修：盘中技术面是昨收；`score_single` 实时算与 `batch/top` 缓存算盘中不同分；`incremental_update` 是死代码；`score_snapshot_loop` 15:15 早于数据刷新；**`gate-watch` 首次全池计算（2196 只）> 前端 20s 超时 ⇒ 建议改读 `gate_snapshot_history` 日批快照（2026-09-22 发现，线上 Render 更慢必超时）**。
 
 ## ⚠️ 路由顺序与「真跑验证」纪律（2026-09-22 观察池空的教训）
