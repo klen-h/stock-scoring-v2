@@ -387,10 +387,12 @@
                 <td class="py-2 px-3 cursor-help" :class="readyCls(p.ready)" :title="p.ready_hint || ''">
                   {{ p.ready ?? '—' }}/3 {{ p.ready_label || '' }}
                   <!-- ★ 2026-09-23：观察池状态从「提示文本」提升为**列内标签**（信息一直都在
-                       `p.in_watch`，只是埋在 alerts 里 ⇒ 不能一眼扫、也不能排序）。 -->
-                  <span v-if="p.in_watch"
-                    class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
-                    :title="`在观察池（ready ${p.in_watch_ready}/3）`">池</span>
+                       `p.in_watch`，只是埋在 alerts 里 ⇒ 不能一眼扫、也不能排序）。
+                       ★ 2026-09-24：可点 ⇒ 切到观察池 tab（与榜单同款、同语义）。 -->
+                  <a v-if="p.in_watch"
+                    class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-pointer hover:bg-sky-500/25"
+                    :title="`在观察池（ready ${p.in_watch_ready}/3）—— 点击切到观察池 tab`"
+                    @click.stop="switchTab('watch')">池</a>
                 </td>
                 <td class="py-2 px-3 text-right font-mono">
                   {{ p.score ?? '—' }}<span v-if="p.rank_pos" class="text-muted"> #{{ p.rank_pos }}</span>
@@ -716,10 +718,13 @@
                 {{ item.gate.ready }}/3
               </span>
               <!-- ★ 2026-09-23：逐行「是否已在观察池」。此前观察池只以漏斗卡里的**全局数字**出现，
-                   榜内看不出"这只已经在池里了"（观察池口径 = 日批 gate_snapshot 候选，即 ready≥2）。 -->
-              <span v-if="item.gate && item.gate.ready >= 2"
-                class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
-                title="已在「买入闸门观察池」（ready≥2 的候选）—— 切到观察池 tab 看它还差什么">池</span>
+                   榜内看不出"这只已经在池里了"（观察池口径 = 日批 gate_snapshot 候选，即 ready≥2）。
+                   ★ 2026-09-24：可点 ⇒ 切到观察池 tab（缺口②的「零成本版」：只给通路，
+                   **不做定位/高亮** —— 原因见 ScoreRank 顶部注释与当日 memory）。 -->
+              <a v-if="item.gate && item.gate.ready >= 2"
+                class="ml-1 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-pointer hover:bg-sky-500/25"
+                title="已在「买入闸门观察池」（ready≥2 的候选）—— 点击切到观察池 tab"
+                @click.stop="switchTab('watch')">池</a>
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
