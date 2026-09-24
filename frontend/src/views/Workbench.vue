@@ -227,8 +227,6 @@
             <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">持仓状态（{{ radarSummary.n || 0 }} 只 ·
-              风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
                 风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
