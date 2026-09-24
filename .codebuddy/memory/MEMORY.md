@@ -69,7 +69,7 @@
   `strategies/exit_alert.py`（止损缓冲 0.5% / 破支撑 1% / RSI 高位回落 10 点 / 放量下跌 2 倍量）。
 - 持仓聚合视图 = `backend/app/portfolio_radar.py` + `GET /api/score/batch/portfolio-radar`
   （前端「我的持仓」tab）：**全复用既有事实源**，配 single-flight + 进程缓存 + `scheduler` 预热。
-- **运维出口四件套**：① 数据新鲜度 `GET /api/system/status`（首页卡片，断链一眼可见）
+- **运维出口五件套**：① 数据新鲜度 `GET /api/system/status`（首页卡片，断链一眼可见）
   ② 文件型数据 `GET /api/system/runtime-files`（`app/data_files.py`：启动 + **每 6h 核对 +
   每项每日一次企微告警** —— 要加"定期体检"类检查可照它的模式）③ **进程内存
   `GET /api/system/memory`**（`routers/system.py`：RSS/峰值/线程 + **52 项模块级缓存探针** +
@@ -77,7 +77,13 @@
   （2026-09-23）：采样落库 `memory_probe` ⇒ **跨 OOM 重启仍有趋势**（③ 的 diff 基准在进程内，
   重启即清零，而那正是最需要对比的时刻）；每 30 分钟一条 + 5 分钟去抖；RSS ≥**80%** 上限推
   企微且**每自然日一次**（复用 `store.is_schedule_done` 北京日期比对）；保留 14 天。
+  ⑤ **数据库体积 `GET /api/system/db-usage`**（2026-09-24）：Supabase 免费档 **500MB/项目**，
+  ★ **超限 ⇒ 项目只读**（写入全失败、**不会自愈**，比 OOM 更致命）⇒ 必须常显。
+  PG 走 `pg_database_size` + `pg_stat_user_tables`（**分表体积/活行/死行 dead_ratio**），
+  SQLite 降级报库文件大小；60s 缓存；异常 fail-open；≥100% 报🔴只读、≥80% 报清理建议。
+  ⚠️ 普通 `VACUUM` **不缩小文件**，只有 `VACUUM FULL` 才会（短暂锁表 + 需临时空间）。
   ★ ③ 与 ④ 的采集**共用** `collect_memory_snapshot()`/`diff_caches()`（单一实现，防口径漂移）。
+  ★ 五件套共同原则：**先量后修、只读探针零副作用、失败静默不反噬主流程、大容器采样不复制**。
 
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
