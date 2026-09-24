@@ -177,7 +177,7 @@
             <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
           </div>
           <div class="bg-card border border-border rounded-lg p-4 text-xs text-muted">
-            今日待确认计划（教练卡）见右栏待办；开盘确认卡与 [执行/放弃] 按钮在 Phase 2 开放。
+            今日教练卡操作在右栏待办完成（执行/放弃均回写供复盘）；开盘确认 9:35 由系统自动执行。
           </div>
         </template>
 
@@ -194,6 +194,11 @@
               </div>
             </div>
             <div v-if="overviewErr" class="text-muted text-xs mt-2">—（加载失败）</div>
+          </div>
+          <!-- ★ Phase 2：教练卡盘中镜像（右栏为主，此处直达） -->
+          <div v-if="todoList.length" class="bg-card border border-amber-500/40 rounded-lg p-4">
+            <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
+            <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">持仓状态（{{ radarSummary.n || 0 }} 只 ·
@@ -324,18 +329,11 @@
             <router-link to="/coach" class="text-xs text-accent hover:underline">教练 →</router-link>
           </div>
           <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-          <div v-else-if="!todoList.length" class="text-muted text-xs">
-            {{ isReplay ? '当日无教练卡' : '无未决策事项 ✓' }}
+          <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+            {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
           </div>
-          <div v-for="a in todoList" :key="a.id" class="border-b border-border/40 py-2 text-xs">
-            <div class="flex gap-2 items-center">
-              <span class="font-mono text-muted">{{ (a.alert_time || '').slice(0, 5) }}</span>
-              <span class="font-semibold">{{ a.label }}</span>
-              <span v-if="a.code" class="text-muted">{{ a.code }} {{ a.name }}</span>
-            </div>
-            <div class="text-muted mt-1 whitespace-pre-wrap">{{ firstLine(a.message) }}</div>
-            <div class="text-[10px] text-muted mt-1">执行/放弃回写按钮 Phase 2 开放（现去企微或 /coach）</div>
-          </div>
+          <!-- ★ Phase 2：当天卡可交互（执行/放弃回写），回放只读带状态徽标 -->
+          <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
         </div>
 
         <!-- 持仓摘要 -->
@@ -397,6 +395,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MarkdownIt from 'markdown-it'
+import TodoCard from '../components/workbench/TodoCard.vue'
 import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
