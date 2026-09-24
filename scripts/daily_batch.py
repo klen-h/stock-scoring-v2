@@ -661,6 +661,22 @@ def task_trader_brief():
             f"（LLM {flag}{cached}；{push_note}）")
 
 
+def task_retention():
+    """数据库保留期清理（Supabase 500MB 上限治理）—— 2026-09-24 新增。
+
+    ★ 必须排在**所有写入任务之后**：清理不该与写入竞争，更不该删掉刚写进去的数据。
+    ★ 只清理「已逐一核实读取点只读最新」的表（清单与依据见 `app/db_retention.py` 文件头）
+      ⇒ **零功能影响**；默认保留 **14 天**，而当前数据仅 7~11 天 ⇒ **首轮不删任何东西**。
+      天数用环境变量 `RETENTION_DAYS` 覆盖。
+    ⚠️ 别为了"看起来省"把天数设大：保留期是「**先涨到上限再平**」——`mainforce_state`
+      现在 11 天/7.5MB，设 90 天反而会先涨到 ~61MB（涨 8 倍）。
+    ⚠️ 安全阀：无论怎么设，至少保留最近 3 个不同日期（防日批连挂时把表删空）。
+    """
+    from app import db_retention
+    rows = db_retention.cleanup()
+    return "保留期清理: " + db_retention.summarize(rows)
+
+
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
@@ -713,6 +729,10 @@ TASKS = {
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
     "trader_brief": (task_trader_brief, "交易员决策简报（盘后，幂等+企微推送）"),
+    # ★ 2026-09-24 新增：数据库保留期清理（Supabase 500MB 治理）——**排最后**，
+    #   在所有写入任务之后跑（清理不该与写入竞争）。只清「读取点只读最新」的表，
+    #   ⚠️ 反直觉：保留期是"先涨到上限再平"，天数宁短勿长（详见 app/db_retention.py）。
+    "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
                  "calendar", "mainforce_state", "gate_snapshot",
@@ -720,7 +740,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
                  "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic", "daily_report",
-                 "trader_brief"]
+                 "trader_brief", "retention"]
 
 
 def ensure_quotes():

@@ -84,6 +84,19 @@
   ⚠️ 普通 `VACUUM` **不缩小文件**，只有 `VACUUM FULL` 才会（短暂锁表 + 需临时空间）。
   ★ ③ 与 ④ 的采集**共用** `collect_memory_snapshot()`/`diff_caches()`（单一实现，防口径漂移）。
   ★ 五件套共同原则：**先量后修、只读探针零副作用、失败静默不反噬主流程、大容器采样不复制**。
+- **库体积治理 `app/db_retention.py`（2026-09-24）**：日批最后一步跑（`daily_batch` 的
+  `retention` 任务）。**只清理「已逐一核实全部读取点只读最新」的表** —— 当前为
+  `mainforce_state` / `ranking_live`（默认 `RETENTION_DAYS=14`）。⚠️⚠️ **反直觉**：保留期
+  不是"立刻变小"而是「**先涨到上限再平**」⇒ 天数宁短勿长（`mainforce_state` 现 11 天/7.5MB，
+  设 90 天会先涨到 ~61MB）。★ 安全阀 `KEEP_MIN_DAYS=3`：**至少保留最近 3 个不同日期**，
+  防日批连挂时 `date < cutoff` 把表删空。**加表前必须先核实所有读取点**（勿凭猜）。
+- ⚠️ **写测试脚本的硬纪律（2026-09-24 踩坑）**：`.env` 里的 `DATABASE_URL` 指向**线上
+  Supabase** ⇒ 不显式覆盖的话，测试会**直接跑在线上库**（实测误建了测试表）。
+  **必须在 `import app.database` 之前**设 `os.environ["DATABASE_URL"] = "sqlite:///backend/data/app.db"`
+  并断言 `db._use_postgres is False`。（顺带的好处：必要时本就不该连线上。）
+- ⚠️ 本地 Windows 控制台是 **GBK** ⇒ `print` 含 emoji/`⇒`/`✓` 会抛 `UnicodeEncodeError`
+  ⇒ 测试/脚本的日志一律用 **ASCII 标记**（`memory_watch.py` 已有教训）；临时用
+  `$env:PYTHONIOENCODING="utf-8"` 也可。
 
 ## Supabase egress 治理（2026-09-18 沉淀，详见根目录 `EGRESS.md`）
 - **egress 是账号级的**：本地进程与线上 Render **共用** 5GB/月（≈167MB/天）额度 ⇒「本地跑」不免费。
