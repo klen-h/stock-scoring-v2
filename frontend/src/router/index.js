@@ -3,7 +3,9 @@ import { isLoggedIn } from '../api'
 
 const routes = [
   { path: '/login', name: 'Login', component: () => import('../views/Login.vue'), meta: { public: true } },
-  { path: '/', name: 'Dashboard', component: () => import('../views/Dashboard.vue') },
+  // ★ 2026-09-25 工作台上线：'/' 默认落在工作台；旧 Dashboard 保留为"数据中心"（导航入口已改名）
+  { path: '/', name: 'Workbench', component: () => import('../views/Workbench.vue') },
+  { path: '/dashboard', name: 'Dashboard', component: () => import('../views/Dashboard.vue') },
   { path: '/market', name: 'Market', component: () => import('../views/MarketView.vue') },
   { path: '/sector', name: 'Sector', component: () => import('../views/SectorView.vue') },
   { path: '/mainline', name: 'Mainline', component: () => import('../views/MainlineView.vue') },
