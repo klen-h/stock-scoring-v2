@@ -108,7 +108,9 @@ export const getBacktestReportContent = (name) => http.get('/backtest/reports/co
 // A股大盘日报（scheduler 每日 16:20 生成，落库 daily_reports）
 export const getDailyReportList = (limit = 30) => http.get('/report/list', { params: { limit } })
 export const getDailyReport = (date) => http.get('/report/daily', { params: date ? { date } : {} })
-export const getTraderBrief = (refresh) => http.get('/system/trader-brief', { params: refresh ? { refresh: true } : {} })
+// ★ 2026-09-25 工作台：加可选 phase（premarket/intraday/postmarket），原调用兼容
+export const getTraderBrief = (refresh, phase) => http.get('/system/trader-brief',
+  { params: { ...(refresh ? { refresh: true } : {}), ...(phase ? { phase } : {}) } })
 
 // 矛盾扫描引擎
 export const getContradictions = (params = {}) => http.get('/contradictions', { params })
@@ -294,3 +296,7 @@ export const getCoachPlanExecutionRate = (days = 30) => http.get('/coach/plans/e
 export const getCoachPlans = (positionIds) => http.get('/coach/plans', { params: { position_ids: (positionIds || []).join(',') } })
 export const abandonCoachPlan = (id, reason) => http.post(`/coach/plans/${id}/abandon`, { reason })
 export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-reasons', { params: { limit } })
+
+// ── 工作台（2026-09-25）：回放按日期取数（后端 system.py 只读端点）──
+export const getWorkbenchDayIndex = (days = 30) => http.get('/workbench/day-index', { params: { days } })
+export const getWorkbenchDay = (date) => http.get('/workbench/day', { params: { date }, timeout: 30000 })

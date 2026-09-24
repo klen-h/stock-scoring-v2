@@ -735,3 +735,118 @@ def db_usage(top: int = 12, user: dict = Depends(get_current_user)) -> Dict:
                    "超 500MB ⇒ 项目**只读**，日批会全挂且不会自愈。")
     _DB_CACHE.update({"ts": now, "val": val})
     return val
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  工作台回放（2026-09-25，工作台开发文档 §6.2）
+#  GET /api/workbench/day-index —— 最近 N 天各数据源"有什么"（哪些天可回放）
+#  GET /api/workbench/day?date=  —— 指定日期的 Top50/简报/日报/教练卡聚合
+#  约束：只读 + 鉴权 + 失败返回空结构（单源失败不影响整体）；
+#        铁律：不新增后端文件（挂在本文件）、不碰评分/策略/回测引擎。
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/workbench/day-index")
+def workbench_day_index(days: int = Query(30, ge=1, le=90),
+                        user: dict = Depends(get_current_user)) -> Dict:
+    """最近 N 天各回放数据源的有无（工作台日期选择器与回放入口用）。
+
+    只做 DISTINCT/聚合并 LIMIT，全部小查询；任一数据源失败按缺该源处理。
+    """
+    from app.flash import rules
+    today = rules.beijing_now().date()
+    start = (today - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    out: Dict = {"days": [], "range": [start, today.strftime("%Y-%m-%d")]}
+
+    top_dates: Dict[str, bool] = {}
+    try:
+        rows = db.fetch(
+            "SELECT DISTINCT rank_date FROM ranking_history "
+            "WHERE rank_date >= %s ORDER BY rank_date DESC", (start,))
+        top_dates = {str(r.get("rank_date"))[:10]: True for r in (rows or [])}
+    except Exception:
+        top_dates = {}
+
+    briefs: Dict[str, list] = {}
+    try:
+        rows = db.fetch(
+            "SELECT date, phase FROM trader_briefs WHERE date >= %s "
+            "ORDER BY date DESC LIMIT 200", (start,))
+        for r in (rows or []):
+            briefs.setdefault(str(r.get("date"))[:10], []).append(r.get("phase"))
+    except Exception:
+        briefs = {}
+
+    reports: Dict[str, bool] = {}
+    try:
+        rows = db.fetch(
+            "SELECT date FROM daily_reports WHERE date >= %s "
+            "ORDER BY date DESC LIMIT 200", (start,))
+        reports = {str(r.get("date"))[:10]: True for r in (rows or [])}
+    except Exception:
+        reports = {}
+
+    coach_n: Dict[str, int] = {}
+    try:
+        rows = db.fetch(
+            "SELECT alert_date, COUNT(*) AS n FROM coach_alerts WHERE alert_date >= %s "
+            "GROUP BY alert_date ORDER BY alert_date DESC", (start,))
+        coach_n = {str(r.get("alert_date"))[:10]: int(r.get("n") or 0) for r in (rows or [])}
+    except Exception:
+        coach_n = {}
+
+    day_list = []
+    for k in range(days - 1, -1, -1):
+        d = (today - timedelta(days=k)).strftime("%Y-%m-%d")
+        day_list.append({
+            "date": d,
+            "top50": bool(top_dates.get(d)),
+            "briefs": briefs.get(d) or [],
+            "report": bool(reports.get(d)),
+            "coach_n": int(coach_n.get(d) or 0),
+        })
+    out["days"] = day_list
+    return out
+
+
+@router.get("/workbench/day")
+def workbench_day(date: str = Query(..., description="YYYY-MM-DD"),
+                  user: dict = Depends(get_current_user)) -> Dict:
+    """指定日期的回放聚合（Top50 / 盘前盘后简报 / 日报 / 教练卡），全部只读。
+
+    每个数据源独立 try——单源失败返回空结构，不影响其余（工作台铁律 11 同款）。
+    """
+    d = str(date or "")[:10]
+    out: Dict = {"date": d, "top50": [], "briefs": {}, "report_md": None, "coach": []}
+
+    try:
+        rows = db.fetch(
+            "SELECT rank_pos, code, name, total_score, signal FROM ranking_history "
+            "WHERE rank_date = %s ORDER BY rank_pos ASC LIMIT 50", (d,))
+        out["top50"] = [dict(r) for r in (rows or [])]
+    except Exception:
+        out["top50"] = []
+
+    try:
+        rows = db.fetch(
+            "SELECT phase, markdown FROM trader_briefs WHERE date = %s", (d,))
+        for r in (rows or []):
+            out["briefs"][r.get("phase")] = r.get("markdown")
+    except Exception:
+        out["briefs"] = {}
+
+    try:
+        row = db.fetch_one("SELECT markdown FROM daily_reports WHERE date = %s", (d,))
+        out["report_md"] = (row or {}).get("markdown")
+    except Exception:
+        out["report_md"] = None
+
+    try:
+        rows = db.fetch(
+            "SELECT id, alert_date, alert_time, rule_id, label, severity, code, name, "
+            "message, executed, abandon_reason, outcome_pct, outcome_date "
+            "FROM coach_alerts WHERE alert_date = %s ORDER BY id DESC LIMIT 100", (d,))
+        out["coach"] = [dict(r) for r in (rows or [])]
+    except Exception:
+        out["coach"] = []
+
+    return out

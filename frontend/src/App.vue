@@ -120,7 +120,8 @@ onMounted(() => {
 //   市场=盘面+消息（"现在市场怎么样"）；选股=找股；交易=操作；
 //   复盘=盘后总结与验证。要调整分组只改这个数组。
 const navGroups = [
-  { path: '/', label: '首页' },
+  { path: '/', label: '工作台' },
+  { path: '/dashboard', label: '数据中心' },   // ★ 2026-09-25：工作台上线后原首页改名
   { label: '市场', items: [
     { path: '/market', label: '市场行情' },
     { path: '/sector', label: '板块分化' },
