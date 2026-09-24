@@ -193,7 +193,7 @@ def collect_brief_data(phase: str) -> dict:
         for p in data.get("positions") or []:
             if p.get("status") == "pending":
                 _add("R4", "medium", f"9:35 关注确认：{p['name']}({p['code']}) "
-                                    f"（{p['strategy_name']}，信号日 {p['signal_date']}）")
+                                    f"（{_strategy_cn(p.get('strategy_name'))}，信号日 {p['signal_date']}）")
 
     for r in risks:
         add("R5", "high", f"持仓 {r['name']}({r['code']})：{r['detail']}")
@@ -236,7 +236,7 @@ def _data_to_markdown(data: dict) -> str:
         lines.append(f"市场状态: {data['regime']['state']}（{data['regime']['date']}）")
     if data.get("contradictions"):
         lines.append("未解决矛盾:")
-        lines += [f"  - [{c['level']}|{c['severity']}] {c['title']}（{c['date']}）"
+        lines += [f"  - {_cons_tag(c)} {c['title']}（{c['date']}）"
                   for c in data["contradictions"]]
     if data.get("mainlines"):
         lines.append("行业主线（近12日扎堆Top50）:")
@@ -254,11 +254,11 @@ def _data_to_markdown(data: dict) -> str:
     if data.get("positions"):
         lines.append("模拟盘持仓/待确认:")
         lines += [f"  - {p['name']}({p['code']}) [{p['status']}] "
-                  f"策略:{p['strategy_name']} 信号日:{p['signal_date']}"
+                  f"策略:{_strategy_cn(p.get('strategy_name'))} 信号日:{p['signal_date']}"
                   for p in data["positions"]]
     if data.get("strategy_counts"):
         lines.append("近2日战法信号数:")
-        lines += [f"  - {s['strategy_name']} {s['scan_date']}: {s['count']}只"
+        lines += [f"  - {_strategy_cn(s['strategy_name'])} {s['scan_date']}: {s['count']}只"
                   for s in data["strategy_counts"]]
     # ★ 2026-09-13 P1-6：两融 + 情绪温度计（喂给 LLM 判断"该防"段）
     ms = data.get("margin_sentiment") or {}
@@ -285,6 +285,31 @@ _SYSTEM_PROMPT = (
 )
 
 
+
+
+# ★ 2026-09-25（工作台反馈）：简报不再裸奔英文标识——战法 key/矛盾层级与严重度
+#   统一中文渲染（LLM 输入与降级骨架/企微推送三处同源受益）。
+_LEVEL_CN = {"L1": "预期差", "L2": "行为背离", "L3": "信息断层"}
+_SEVERITY_CN = {"severe": "严重", "warn": "警告", "info": "提示"}
+
+
+def _strategy_cn(name_en) -> str:
+    """战法英文 key → 中文名（注册表查不到时回退原值）。"""
+    try:
+        from app.strategies.base import get_strategy
+        s = get_strategy(str(name_en or ""))
+        if s is not None and getattr(s, "name", ""):
+            return s.name
+    except Exception:
+        pass
+    return str(name_en or "")
+
+
+def _cons_tag(c) -> str:
+    """矛盾条目 → '[信息断层·严重]' 式中文标签。"""
+    lv = _LEVEL_CN.get(str(c.get("level") or ""), str(c.get("level") or ""))
+    sv = _SEVERITY_CN.get(str(c.get("severity") or ""), str(c.get("severity") or ""))
+    return f"[{lv}·{sv}]" if (lv or sv) else ""
 
 
 def _render_actions_md(actions: list) -> str:
@@ -322,7 +347,7 @@ def _fallback_skeleton(data: dict, reason: str) -> str:
     lines = [f"> AI 暂不可用（{reason}），以下为规则版简报（仅确定性内容）", ""]
     lines.append("## 该关注")
     cons = (data.get("contradictions") or [])[:MAX_ITEMS_PER_SECTION]
-    lines += [f"- [{c['level']}|{c['severity']}] {c['title']}（{c['date']}）"
+    lines += [f"- {_cons_tag(c)} {c['title']}（{c['date']}）"
               for c in cons] or ["- 无未解决矛盾"]
     ml = (data.get("mainlines") or [])[:MAX_ITEMS_PER_SECTION]
     if ml:

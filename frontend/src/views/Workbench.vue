@@ -125,6 +125,48 @@
 
         <!-- 实时模式 · ① 盘前（阅读模式） -->
         <template v-else-if="selectedPhase === 'premarket'">
+          <!-- ★ 2026-09-25 用户反馈：数据中心(旧首页)的宏观方向/规则标签/市场环境整合进来 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">宏观与环境（独立信号，不进个股评分）</div>
+              <span v-if="macro && macro.locked" class="text-[10px] text-accent">
+                今日锁定 · 生成于 {{ (macro.generated_at || '').slice(11, 16) }}
+              </span>
+            </div>
+            <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
+            <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
+            <template v-else>
+              <div class="flex items-center gap-6 flex-wrap mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-3xl font-bold font-mono"
+                        :class="dirColor(macro.direction?.level, macro.direction?.score)">
+                    {{ macro.direction?.score ?? '—' }}
+                  </span>
+                  <div>
+                    <div class="text-xs font-semibold"
+                         :class="dirColor(macro.direction?.level, macro.direction?.score)">
+                      宏观方向 · {{ macro.direction?.level || '—' }}
+                    </div>
+                    <div class="text-[11px] text-muted">{{ macro.direction?.advisory || '' }}</div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="text-3xl font-bold font-mono">{{ temperature?.temperature ?? '—' }}</span>
+                  <div>
+                    <div class="text-xs font-semibold">市场环境 · {{ temperature?.level || '—' }}</div>
+                    <div class="text-[11px] text-muted">{{ temperature?.advisory || '' }}</div>
+                    <div class="text-[10px] text-muted">0~100，越高越亢奋</div>
+                  </div>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
+                      class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
+                <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
+                      class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
+              </div>
+            </template>
+          </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）</div>
@@ -224,10 +266,35 @@
         <!-- 实时模式 · ⑤ 复盘（阅读模式） -->
         <template v-else>
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">执行一致性</div>
-            <div v-if="!consistency" class="text-muted text-xs">—</div>
-            <div v-else class="text-xs">{{ JSON.stringify(consistency).slice(0, 400) }}</div>
-            <router-link to="/coach" class="text-xs text-accent hover:underline">教练页 →</router-link>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">执行一致性</div>
+              <router-link to="/coach" class="text-xs text-accent hover:underline">教练页 →</router-link>
+            </div>
+            <!-- ★ 2026-09-25 用户反馈：不再裸奔 JSON，按指标渲染 -->
+            <div v-if="!consistency" class="text-muted text-xs">—（暂无数据）</div>
+            <template v-else>
+              <div class="flex items-center gap-6 flex-wrap">
+                <div>
+                  <div class="text-3xl font-bold font-mono"
+                       :class="(consistency.exec_rate_pct || 0) >= 60 ? 'text-emerald-400' : 'text-amber-300'">
+                    {{ consistency.exec_rate_pct ?? '—' }}%
+                  </div>
+                  <div class="text-[11px] text-muted">执行率（分母=已决策）</div>
+                </div>
+                <div class="text-xs space-y-0.5">
+                  <div>窗口 {{ consistency.window_days }} 天 · 推送 <b>{{ consistency.pushed_total }}</b> 条</div>
+                  <div>
+                    已执行 <b class="text-emerald-400">{{ consistency.executed }}</b> ·
+                    已放弃 <b class="text-amber-300">{{ consistency.abandoned }}</b> ·
+                    未响应 <b class="text-muted">{{ consistency.ignored }}</b>
+                    <span v-if="consistency.abandon_rate_pct != null">
+                      （放弃率 {{ consistency.abandon_rate_pct }}%）
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div class="text-[11px] text-muted mt-1">{{ consistency.note }}</div>
+            </template>
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">决策简报（盘后）</div>
@@ -336,6 +403,7 @@ import {
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   getMarketOverview, getMarketTemperature, getMarketRegime,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
+  getMacroDaily, getMacroSnapshot,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -384,6 +452,9 @@ const consistency = ref(null)
 const reportMd = ref('')
 const statusHtml = ref('点击展开后加载…')
 const statusOpen = ref(false)
+// ★ 2026-09-25 用户反馈：盘前加"宏观与环境"卡（数据同数据中心：早盘锁定快照优先）
+const macro = ref(null)
+const macroErr = ref('')
 
 // 回放数据
 const replay = ref({ top50: [], briefs: {}, report_md: null, coach: [] })
@@ -538,6 +609,35 @@ async function loadReport(date) {
     reportMd.value = data?.markdown || data?.md || ''
   } catch { reportMd.value = '' }
 }
+// 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
+async function loadMacro() {
+  macroErr.value = ''
+  try {
+    const { data: dailyRes } = await getMacroDaily(todayStr())
+    if (dailyRes && dailyRes.snapshot) {
+      macro.value = { ...dailyRes.snapshot, locked: true }
+      return
+    }
+    const { data } = await getMacroSnapshot()
+    macro.value = { ...data, locked: false }
+  } catch (e) {
+    try {
+      const { data } = await getMacroSnapshot()
+      macro.value = { ...data, locked: false }
+    } catch {
+      macro.value = null
+      macroErr.value = (e && e.message) || '未知错误'
+    }
+  }
+}
+// 宏观方向配色：多→红（A股红涨）、空→绿，与数据中心一致
+function dirColor(level, score) {
+  if (score != null && Number(score) !== 0) return Number(score) > 0 ? 'text-red-400' : 'text-emerald-400'
+  const s = String(level || '')
+  if (s.includes('多') || s.includes('热')) return 'text-red-400'
+  if (s.includes('空') || s.includes('冷')) return 'text-emerald-400'
+  return 'text-amber-300'
+}
 async function loadDayIndex() {
   try {
     const { data } = await getWorkbenchDayIndex(30)
@@ -560,28 +660,45 @@ async function loadReplayDay(date) {
   dayLoading.value = false
 }
 async function loadStatus() {
+  // ★ 2026-09-25 用户反馈：/system/status 的 sources 是**列表**（[{name,status,lag_days}]），
+  //   memory 字段为 rss_mb/peak_mb/used_pct，db-usage 为 {total_mb,limit_mb,used_pct}——
+  //   此前按 dict 渲染出 "0: ok"、内存 —MB、库体积裸数字。
   let html = ''
   try {
     const { data } = await getSystemStatus()
-    const src = data?.sources || {}
-    freshnessOk.value = Object.keys(src).length > 0
-    const rows = Object.entries(src).slice(0, 10).map(([k, v]) => {
-      const st = (v && (v.status || v.fresh || v.ok)) ?? '?'
-      const age = v && (v.age_hours ?? v.age ?? '')
-      return `<div>${k}: <b>${st}</b>${age !== '' ? `（${age}h）` : ''}</div>`
-    }).join('')
-    html += rows || '<div>—</div>'
+    freshnessOk.value = !!data
+    const src = data?.sources
+    if (Array.isArray(src)) {
+      const rows = src.slice(0, 12).map(v => {
+        const st = v.status || '?'
+        const cls = st === 'ok' ? 'text-emerald-400' : 'text-amber-400'
+        const lag = (v.lag_days != null && v.lag_days !== 0) ? `，滞后 ${v.lag_days} 天` : ''
+        return `<div>${v.name}: <b class="${cls}">${st}</b>${lag}</div>`
+      }).join('')
+      html += `<div class="font-semibold mb-1">${data.summary || ''}</div>` + (rows || '<div>—</div>')
+    } else if (src && typeof src === 'object') {
+      html += Object.entries(src).slice(0, 10)
+        .map(([k, v]) => `<div>${k}: <b>${(v && (v.status || v.fresh || v.ok)) ?? '?'}</b></div>`).join('')
+    } else {
+      html += '<div>—</div>'
+    }
   } catch {
     freshnessOk.value = false
     html += '<div>状态加载失败</div>'
   }
   try {
     const { data } = await getSystemMemory({ types: 0 })
-    html += `<div class="mt-1">内存: ${data?.rss_mb ?? '—'}MB / ${data?.limit_mb ?? '—'}MB</div>`
+    if (data && data.rss_mb != null) {
+      html += `<div class="mt-1">内存: ${data.rss_mb}MB（峰值 ${data.peak_mb ?? '—'}MB）· 占用 ${data.used_pct ?? '—'}%</div>`
+    }
   } catch { /* 忽略 */ }
   try {
     const { data } = await getDbUsage()
-    html += `<div>库体积: ${typeof data === 'object' ? (data?.total_mb ?? JSON.stringify(data).slice(0, 60)) : data}</div>`
+    if (data && typeof data === 'object' && data.total_mb != null) {
+      html += `<div>库体积: ${data.total_mb} / ${data.limit_mb ?? '—'} MB（已用 ${data.used_pct ?? '—'}%）</div>`
+    } else if (data != null) {
+      html += `<div>库体积: ${data} MB</div>`
+    }
   } catch { /* 忽略 */ }
   statusHtml.value = html || '<div>—</div>'
 }
@@ -592,7 +709,7 @@ function onStatusToggle(e) {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') await loadBrief('premarket')
+  if (phase === 'premarket') { await loadBrief('premarket'); await loadMacro() }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
