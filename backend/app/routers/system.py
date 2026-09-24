@@ -729,6 +729,9 @@ def db_usage(top: int = 12, user: dict = Depends(get_current_user)) -> Dict:
     val["note"] = ("分表体积 = `pg_total_relation_size`（含索引/TOAST）。`dead_ratio` = 死行/活行，"
                    "偏高说明该 VACUUM（**不删数据**）；⚠️ 普通 VACUUM **不缩小文件**，"
                    "只有 `VACUUM FULL` 才会（代价：短暂锁表 + 需临时空间）。"
+                   "⚠️ **口径**：这里的总量 = `pg_database_size()`，通常**略小于** Supabase "
+                   "dashboard 的 Database size（后者还可能含 WAL/临时/扩展，实测 218 vs 231MB）"
+                   "⇒ **判断是否撞线以 dashboard 为准**（限制按它算），本端点用作趋势与分表定位。"
                    "超 500MB ⇒ 项目**只读**，日批会全挂且不会自愈。")
     _DB_CACHE.update({"ts": now, "val": val})
     return val
