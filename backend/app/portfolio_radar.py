@@ -53,6 +53,12 @@ _watch_cache = {"ts": 0.0, "map": {}}       # 观察池快照（日批）
 _WATCH_TTL = 1800.0                         # 30 分钟
 _holdings_cache = {"ts": 0.0, "val": []}    # 持仓（用户可改 ⇒ TTL 短）
 _HOLDINGS_TTL = 60.0                        # 1 分钟
+
+
+def invalidate_holdings() -> None:
+    """★ 2026-09-25：user_portfolio 落库方（routers/user.py）调用——写入即失效
+    持仓缓存。此前新加持仓要等 60s TTL 才进雷达（工作台"0 只"困惑的根因）。"""
+    _holdings_cache.update({"ts": 0.0, "val": []})
 _contra_ctx_cache = {"ts": 0.0, "val": None}  # 矛盾（盘后 + 午间各一次）
 _CONTRA_CTX_TTL = 900.0                     # 15 分钟
 _rank_cache = {"ts": 0.0, "val": {}}        # 榜单（日批）

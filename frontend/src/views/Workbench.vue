@@ -229,18 +229,59 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">持仓状态（{{ radarSummary.n || 0 }} 只 ·
               风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
+                风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+              <span v-if="radarAsOf" class="text-[10px] text-muted font-mono">数据时点 {{ radarAsOf.slice(11, 16) }}</span>
+            </div>
             <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
-            <div v-else-if="!radarItems.length" class="text-muted text-xs">—（当前无持仓记录）</div>
+            <div v-else-if="!radarItems.length" class="text-muted text-xs">
+              —（当前无持仓记录；新增后由写入方主动失效缓存，立即可见）
+            </div>
             <div v-else class="space-y-2">
+              <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
+                   写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
               <div v-for="it in radarItems" :key="it.code"
-                   class="flex items-center gap-3 border border-border/60 rounded px-3 py-2">
-                <span class="font-semibold">{{ it.name || it.code }}</span>
-                <span class="text-muted text-xs">{{ it.code }}</span>
-                <span class="ml-auto text-xl font-bold font-mono"
-                      :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
-                <span class="text-xs text-muted w-40 truncate text-right">
-                  {{ firstLine((it.reasons && (it.reasons.risk || [])[0]) || (it.reasons && (it.reasons.opportunity || [])[0]) || '') }}
-                </span>
+                   class="border border-border/60 rounded-lg px-3 py-2.5">
+                <!-- 主行：名称 + 盈亏大字 -->
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-semibold">{{ it.name || it.code }}</span>
+                  <span class="text-muted text-xs font-mono">{{ it.code }}</span>
+                  <span v-if="it.industry"
+                        class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
+                  <span class="ml-auto text-2xl font-bold font-mono"
+                        :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
+                </div>
+                <!-- 价格行 -->
+                <div class="flex items-center gap-2 flex-wrap mt-1 text-xs">
+                  <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
+                  <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
+                  <span v-if="it.mv" class="text-muted">市值 {{ fmtNum(it.mv) }} 元</span>
+                  <span v-if="it.drop_from_high != null && it.drop_from_high <= -3"
+                        class="text-amber-400">距日内高 {{ it.drop_from_high }}%</span>
+                </div>
+                <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
+                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
+                  <span v-if="it.phase_cn" class="px-1 rounded"
+                        :class="it.signal === 'distribution' ? 'bg-red-500/15 text-red-400'
+                                : it.signal === 'accum' ? 'bg-emerald-500/15 text-emerald-400'
+                                : 'bg-background border border-border text-muted'">主力·{{ it.phase_cn }}</span>
+                  <span v-if="it.score != null" class="text-muted">
+                    评分 <b class="text-gray-200 font-mono">{{ it.score }}</b>
+                    <template v-if="it.rank_pos">（{{ it.rank_date }} 榜单第 {{ it.rank_pos }}）</template>
+                  </span>
+                  <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                  <span v-if="it.ready_label" class="text-muted">闸门 {{ it.ready_label }}</span>
+                  <span v-for="s in (Array.isArray(it.strategies) ? it.strategies : [])" :key="s"
+                        class="px-1 rounded bg-accent/10 text-accent border border-accent/30">{{ s }}</span>
+                </div>
+                <!-- 风险/机会提示 -->
+                <div v-if="(it.alerts || []).length" class="mt-1 space-y-0.5">
+                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[11px]"
+                       :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
+                    {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -475,6 +516,7 @@ const coachErr = ref('')
 const radarItems = ref([])
 const radarSummary = ref({})
 const radarNote = ref('')
+const radarAsOf = ref('')
 const radarErr = ref('')
 const topItems = ref([])
 const topErr = ref('')
@@ -608,6 +650,7 @@ async function loadRadar() {
     radarItems.value = (data && data.items) || []
     radarSummary.value = (data && data.summary) || {}
     radarNote.value = (data && data.note) || ''
+    radarAsOf.value = (data && data.as_of) || ''
     radarErr.value = ''
   } catch (e) {
     radarErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）

@@ -71,6 +71,13 @@ def upsert_watchlist(item: dict = Body(...), user: dict = Depends(get_current_us
         "target_price": item.get("target_price"),
         "note": item.get("note", ""),
     }, conflict_columns=["user_id", "code"])
+
+    # ★ 2026-09-25：写入即失效持仓雷达缓存（新加持仓立即可见于 /batch/portfolio-radar）
+    try:
+        from app import portfolio_radar
+        portfolio_radar.invalidate_holdings()
+    except Exception:
+        pass
     return {"success": True}
 
 
@@ -288,5 +295,11 @@ def batch_sync(data: dict = Body(...), user: dict = Depends(get_current_user)):
                 "note": item.get("note", ""),
             }, conflict_columns=["user_id", "code"])
         result["portfolio"] = len(data["portfolio"])
+    # ★ 2026-09-25：写入即失效持仓雷达缓存（新加持仓立即可见于 /batch/portfolio-radar）
+    try:
+        from app import portfolio_radar
+        portfolio_radar.invalidate_holdings()
+    except Exception:
+        pass
     
     return {"success": True, "synced": result}
