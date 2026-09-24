@@ -592,3 +592,143 @@ def memory_diag(types: int = 1, top: int = 15, history: int = 0,
                  "已知模块级缓存内。进程重启后 diff 会显示 reset（= 又 OOM 过一次）；"
                  "跨重启的趋势看 history（或库里 memory_probe 表）。"),
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  数据库体积诊断（GET /api/system/db-usage）—— 2026-09-24 新增
+# ══════════════════════════════════════════════════════════════════════════
+# 【背景】Supabase 免费档 **500MB / 项目**（用户 2026-09-24 读到 **231.13MB = 46%**）。
+#   ★ 超限后果**比 Render OOM 更严重**：项目进入**只读**（写入全部失败）⇒ 日批全挂，
+#     且**不会自动恢复**（OOM 至少会重启自愈）⇒ 必须能提前看到，不能靠感觉撞线。
+#   ⚠️ 为什么要看**分表**而不只看总量：总量只回答"还剩多少"，分表才回答"**该动谁**"
+#     —— 本项目十几张表**无任何保留期**（`mainforce_state` ~2098 行/日、`ranking_live`
+#     ~1000 行/日、`backtest_prices` 已 82MB…），与内存诊断同一思路：先量再修。
+#
+# 【怎么用】首页自动调用 ⇒ 平时不用管；**动手清理前先看这里定位大表**。
+#   · `dead_ratio` 高（死行比 >1）⇒ 该 VACUUM（**不删任何数据**，零风险）
+#   ⚠️ 反直觉但重要：**普通 `VACUUM` 不缩小文件**（只把空间标记为可复用）⇒ dashboard
+#      上的数字**只有 `VACUUM FULL` 才会降**（代价：短暂锁表 + 需约等于表大小的临时空间）。
+#
+# 【成本与安全】纯只读。PG 走 `pg_stat_user_tables`（统计视图，毫秒级）+ 进程内 60s 缓存
+#   （首页会频繁刷新）；**SQLite 降级**（本地开发无 `pg_stat_*` ⇒ 改报库文件大小）；
+#   任何异常 fail-open 成 `available=false`（看护类接口绝不反噬主流程）。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 数据库上限（MB）。Supabase Free = 500MB/项目；换档时用环境变量覆盖，不必改码。
+_DB_LIMIT_MB = int(os.environ.get("DB_LIMIT_MB") or 500)
+_DB_CACHE: Dict = {"ts": 0.0, "val": None}
+_DB_TTL = 60.0          # 秒：库体积以"天"为尺度变化，60s 缓存对判读毫无影响
+
+
+def _db_num(v) -> Optional[float]:
+    """PG 的 bigint/numeric → float（前端与算术都要数字，不是 Decimal 字符串）。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _db_usage_impl(top: int = 12) -> Dict:
+    """查一次库体积（PG 分表；SQLite 降级只报文件大小）。异常 ⇒ available=False。"""
+    out: Dict = {"available": False,
+                 "engine": "postgresql" if db._use_postgres else "sqlite",
+                 "total_mb": None, "limit_mb": _DB_LIMIT_MB, "used_pct": None,
+                 "remaining_mb": None, "tables": [], "dead_note": None}
+    if not db._use_postgres:
+        # 本地 SQLite：没有 pg_stat_* ⇒ 只报库文件大小（够本地开发判读）
+        try:
+            p = getattr(db, "_db_path", None)
+            if p and os.path.exists(p):
+                out["available"] = True
+                out["total_mb"] = round(os.path.getsize(p) / 1048576.0, 1)
+        except Exception:
+            pass
+        return out
+    try:
+        row = db.fetch_one("SELECT pg_database_size(current_database()) AS bytes")
+        total = _db_num((row or {}).get("bytes"))
+        rows = db.fetch(
+            "SELECT relname AS name, pg_total_relation_size(relid) AS bytes, "
+            "       n_live_tup AS live, n_dead_tup AS dead "
+            "FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC")
+        tables = []
+        for r in rows or []:
+            b = _db_num(r.get("bytes")) or 0.0
+            if b < 1024:                      # <1KB（空表/元数据）不入榜，免得刷屏
+                continue
+            live = _db_num(r.get("live")) or 0.0
+            dead = _db_num(r.get("dead")) or 0.0
+            tables.append({"name": r.get("name"), "mb": round(b / 1048576.0, 2),
+                           "live": int(live), "dead": int(dead),
+                           "dead_ratio": (round(dead / live, 2) if live > 0 else None)})
+        out.update({"available": True, "tables": tables[:max(1, top)]})
+        if total:
+            out["total_mb"] = round(total / 1048576.0, 1)
+            out["remaining_mb"] = round(_DB_LIMIT_MB - out["total_mb"], 1)
+            out["used_pct"] = round(out["total_mb"] / _DB_LIMIT_MB * 100, 1)
+    except Exception as e:
+        out["error"] = str(e)[:120]
+        return out
+    # 死行提示（**只统计入榜的 top N**，文案里写明，别让人误以为是全库）
+    live_all = sum(t["live"] for t in out["tables"])
+    dead_all = sum(t["dead"] for t in out["tables"])
+    if dead_all > 0 and live_all > 0:
+        ratio = round(dead_all / live_all, 2)
+        out["dead_note"] = (f"Top{len(out['tables'])} 死行 {dead_all:,} / 活行 {live_all:,}"
+                            f"（比 {ratio}）⇒ "
+                            + ("偏高，建议 VACUUM（不删数据）" if dead_all > live_all * 0.5
+                               else "正常"))
+    return out
+
+
+@router.get("/db-usage")
+def db_usage(top: int = 12, user: dict = Depends(get_current_user)) -> Dict:
+    """数据库体积诊断（Supabase 500MB 上限的运维出口）。
+
+    返回要点：
+      total_mb / limit_mb / used_pct / remaining_mb   当前用量
+        **>80% 需警惕；≥100% ⇒ 项目只读（写入全失败，且不会自动恢复）**
+      tables      **按体积降序**的分表清单（mb / live 行 / dead 死行 / dead_ratio）
+      dead_note   死行比 ⇒ 是否该 VACUUM（**不删数据**、零风险）
+      summary     人类可读 markdown 一段（curl / 前端 / 未来告警复用同一段文本）
+
+    说明：本地 SQLite 无 `pg_stat_*` ⇒ 只报库文件大小；异常时 fail-open 成
+    `available=false`（不抛错、不影响首页其它卡片）。
+    """
+    import time as _time
+    from app.flash.rules import beijing_now
+    now = _time.time()
+    if _DB_CACHE["val"] is not None and now - _DB_CACHE["ts"] < _DB_TTL:
+        return dict(_DB_CACHE["val"], cached=True)
+
+    val = _db_usage_impl(top)
+    val["ok"] = True
+    val["generated_at"] = beijing_now().isoformat(timespec="seconds")
+
+    if val.get("available") and val.get("total_mb") is not None:
+        _s = [f"**数据库 {val['total_mb']}MB / {_DB_LIMIT_MB}MB（{val.get('used_pct')}%）**"
+              + (f"，剩余 {val['remaining_mb']}MB"
+                 if val.get("remaining_mb") is not None else "")]
+        tb = [t for t in (val.get("tables") or []) if t["mb"] >= 1][:5]
+        if tb:
+            _s.append("占用最多：" + "、".join(
+                f"{t['name']} {t['mb']}MB" + (f"（{t['live']:,}行）" if t["live"] else "")
+                for t in tb))
+        if val.get("dead_note"):
+            _s.append("死行：" + val["dead_note"])
+        pct = val.get("used_pct") or 0
+        if pct >= 100:
+            _s.append("🔴 **已超上限 ⇒ 数据库只读、写入会失败**（比 OOM 更严重，不会自动恢复）")
+        elif pct >= 80:
+            _s.append("⚠️ 已超 80% ⇒ 建议尽快清理（无保留期的大表加保留期 / 迁走历史）")
+        val["summary"] = "\n".join(_s)
+    else:
+        val["summary"] = ("库体积不可用（本地 SQLite 或权限不足）"
+                          + (f"：{val.get('error')}" if val.get("error") else ""))
+
+    val["note"] = ("分表体积 = `pg_total_relation_size`（含索引/TOAST）。`dead_ratio` = 死行/活行，"
+                   "偏高说明该 VACUUM（**不删数据**）；⚠️ 普通 VACUUM **不缩小文件**，"
+                   "只有 `VACUUM FULL` 才会（代价：短暂锁表 + 需临时空间）。"
+                   "超 500MB ⇒ 项目**只读**，日批会全挂且不会自愈。")
+    _DB_CACHE.update({"ts": now, "val": val})
+    return val

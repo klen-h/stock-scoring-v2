@@ -144,6 +144,28 @@
           <span v-if="memTrend[memTrend.length - 1] >= 70" class="text-amber-400"> ← 偏高，超 80% 会企微告警</span>
         </div>
       </div>
+
+      <!-- ★ 数据库体积（2026-09-24）：Supabase 免费档 500MB/项目，**超限变只读**
+           （写入全失败）⇒ 比 OOM 更严重、且不会自愈 ⇒ 必须看得见。分表体积回答"该动谁"。 -->
+      <div v-if="dbUsage" class="mt-3 pt-3 border-t border-border text-xs space-y-1">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-muted">数据库</span>
+          <template v-if="dbUsage.available && dbUsage.total_mb != null">
+            <span class="font-mono font-semibold" :class="memColor(dbUsage.used_pct)">
+              {{ dbUsage.total_mb }}MB / {{ dbUsage.limit_mb }}MB（{{ dbUsage.used_pct }}%）
+            </span>
+            <span class="text-muted">剩余 {{ dbUsage.remaining_mb }}MB</span>
+          </template>
+          <span v-else class="text-muted">不可用（{{ dbUsage.engine }}）</span>
+        </div>
+        <div v-if="dbTop.length" class="text-[11px] text-muted">
+          占用最多：<template v-for="(t, i) in dbTop" :key="t.name"><span class="text-gray-300">{{ t.name }}</span> {{ t.mb }}MB<template v-if="t.live">（{{ t.live }}行）</template><span v-if="i < dbTop.length - 1">、</span></template>
+        </div>
+        <div v-if="dbUsage.dead_note" class="text-[11px]"
+          :class="/偏高/.test(dbUsage.dead_note) ? 'text-amber-400' : 'text-muted'">
+          {{ dbUsage.dead_note }}
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -151,7 +173,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import * as echarts from 'echarts'
-import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis, getSystemStatus, getSystemMemory } from '../api'
+import { getMarketOverview, getIndexKline, getMarketTemperature, getMacroSnapshot, getMacroDaily, getFlashDiagnosis, getSystemStatus, getSystemMemory, getDbUsage } from '../api'
 
 const overview = ref({ indices: [], stats: {} })
 const sysStatus = ref(null)
@@ -160,6 +182,10 @@ const sysStaleCount = ref(0)
 const mem = ref(null)
 const memTop = computed(() => (mem.value?.caches || []).filter(c => (c.mb || 0) >= 0.5).slice(0, 4))
 const memGrow = computed(() => (mem.value?.diff?.growth || []).slice(0, 3))
+// ★ 2026-09-24：数据库体积（Supabase 免费档 500MB/项目 —— **超限变只读**：日批全挂且不会
+//   自愈，比 OOM 更致命）⇒ 与进程内存并列，首页常显。
+const dbUsage = ref(null)
+const dbTop = computed(() => (dbUsage.value?.tables || []).filter(t => (t.mb || 0) >= 1).slice(0, 4))
 // 采样趋势（取最多 8 个等距点）—— 来自库里 memory_probe 表 ⇒ **跨 OOM 重启仍连续**
 const memTrend = computed(() => {
   const h = mem.value?.history || []
@@ -225,6 +251,14 @@ async function loadMemory() {
     mem.value = data
   } catch (e) { console.warn('内存诊断加载失败', e) }
 }
+
+// 数据库体积（Supabase 500MB 上限）——后端有 60s 缓存，首页刷新不会真查库
+async function loadDbUsage() {
+  try {
+    const { data } = await getDbUsage({ top: 8 })
+    dbUsage.value = data
+  } catch (e) { console.warn('库体积加载失败', e) }
+}
 // 保留最后**两**段（模块.属性）—— 只取最后一段会让 `tencent._cache` 与 `macro._cache`
 // 显示成同一个「_cache」，无法判读（2026-09-23 首次线上数据即撞上：都显示 3 条）
 function shortKey(k) { return (k || '').split('.').slice(-2).join('.') }
@@ -236,6 +270,7 @@ function memColor(pct) {
 onMounted(async () => {
   loadSystemStatus()
   loadMemory()
+  loadDbUsage()
   try {
     const { data } = await getMarketOverview()
     overview.value = data

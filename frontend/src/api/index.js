@@ -254,6 +254,9 @@ export const getSystemStatus = () => http.get('/system/status')
 // ★ 2026-09-23：进程内存诊断（Render 500MB 反复 OOM 的运维出口；首页自动调用 ⇒
 //   每次加载都推进一次后端快照，diff 自然累积成"谁在涨"的时间序列）
 export const getSystemMemory = (params) => http.get('/system/memory', { params })
+// ★ 2026-09-24：数据库体积（Supabase 免费档 500MB/项目 —— **超限变只读、日批全挂且不会自愈**，
+//   比 OOM 更致命 ⇒ 与进程内存并列的运维出口）。分表体积 + 死行比（判断是否该 VACUUM）。
+export const getDbUsage = (params) => http.get('/system/db-usage', { params })
 export const getSystemPerformance = () => http.get('/system/performance', { timeout: 120000 })  // 首访冷路径 ~60s
 export const getUserWatchlist = () => http.get('/user/watchlist')
 export const upsertUserWatch = (item) => http.post('/user/watchlist', item)
