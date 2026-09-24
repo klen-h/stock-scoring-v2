@@ -35,6 +35,14 @@ REVIEW_WINDOWS = {               # 复盘窗口：任务名 → (开始分钟, �
     "postmarket": (903, 1439),   # 15:03-23:59（晚上开机也能补盘后）
 }
 
+# ★ 2026-09-24：**失败重试间隔**（复盘 & 盘前简报共用语义）。
+#   为什么必须拉开：`llm.py` 的 provider 熔断判据是「**连续失败 2 次 → 熔断 30 分钟**」，
+#   而循环原先每 60s / 120s 就重试一次 ⇒ 真失败会在**几分钟内**把 30 分钟熔断触发掉，
+#   之后窗口内剩余时间全部空转（盘前窗口只有 140 分钟）⇒ 用户看到"一直失败/又失败"。
+#   10 分钟间隔可显著减缓累积速度，也让每次重试都是**真实尝试**而非空转。
+RETRY_INTERVAL_SEC = int(os.environ.get("SCHED_RETRY_INTERVAL_SEC", "600") or 600)
+_review_last_try = {}            # {phase: ts} 上次尝试时间（进程内；重启后立即重试，可接受）
+
 # 运行状态（/api/flash/status 读取）
 status = {
     "running": False,
@@ -125,6 +133,10 @@ async def review_loop():
             for phase, (start, end) in REVIEW_WINDOWS.items():
                 task_key = f"review_{phase}"
                 if start <= t < end and not store.is_schedule_done(task_key):
+                    # ★ 2026-09-24：失败重试间隔（原为每 60s 重试 ⇒ 几分钟就撞 30 分钟熔断）
+                    if now.timestamp() - (_review_last_try.get(phase) or 0.0) < RETRY_INTERVAL_SEC:
+                        continue
+                    _review_last_try[phase] = now.timestamp()
                     print(f"[scheduler] 触发复盘: {phase}")
                     result = await _run_sync(service.run_review, phase)
                     # 只有成功（无 error）才标记完成；失败则允许窗口内重试
@@ -370,6 +382,8 @@ async def daily_report_loop():
 #   窗口放宽到 11:30：本机/免费实例不是 24 小时开机，上午任意时刻醒来都能补上
 #   （与 REVIEW_WINDOWS 的 premarket 同宽），配合 schedule_state 跨重启幂等。
 TRADER_BRIEF_PREMARKET_WINDOW = (550, 690)   # 北京时间 09:10-11:30
+TRADER_BRIEF_GIVEUP_MIN = 660                # 11:00 起：仍降级就推降级版兜底，不再等 LLM
+_brief_try = {"ts": 0.0, "n": 0}             # 进程内：上次尝试时间 + 尝试次数（重启即重试，可接受）
 
 
 async def trader_brief_premarket_loop():
@@ -377,6 +391,21 @@ async def trader_brief_premarket_loop():
 
     非交易日跳过：generate_trader_brief 以"当天日期"为键，周末跑会写出一条没有
     数据支撑的错日期简报，推了只会刷屏。
+
+    ★★ 2026-09-24 重写失败处理（用户反馈「盘前 LLM 分析**又**失败」）：
+      改前：`if md: mark_schedule_done(...)` —— 而 **LLM 失败时生成的是"规则骨架"，
+            正文同样非空** ⇒ 照样标记当日完成 ⇒ **当天彻底失去 LLM 分析**（不再重试）。
+            且循环每 2 分钟一轮、失败就立刻再来 ⇒ 快速触发 provider 熔断
+            （`llm.py`：同一 provider 连续失败 2 次 ⇒ **熔断 30 分钟**），而盘前窗口
+            只有 140 分钟 ⇒ 熔断后剩余时间全部空转 —— 这就是"又失败"的机制。
+      改后：① **降级/失败都不标记完成**（窗口内可重试）；只有真拿到 LLM 正文才算成功；
+            ② 重试间隔 `RETRY_INTERVAL_SEC`（默认 **10 分钟**）：减缓"连续失败"累积、
+               避免把 30 分钟熔断触发在窗口前段，且每次重试都是**真实尝试**；
+            ③ 第 2 次起 `reuse_data=True` ⇒ **复用已落库的采集结果**，不重新采集
+               （采集含金十 mp-api 超时 20s / 两融等慢接口）—— 即用户说的
+               「把内容存起来，等十分钟再触发」；
+            ④ **窗口末兜底**：到 `TRADER_BRIEF_GIVEUP_MIN`（11:00）仍降级 ⇒ 推降级版
+               并标记完成（保证每天至少有一条，不会因一直等 LLM 而整天没有简报）。
     """
     while True:
         try:
@@ -385,22 +414,43 @@ async def trader_brief_premarket_loop():
             if (rules.is_trading_day(now)
                     and TRADER_BRIEF_PREMARKET_WINDOW[0] <= t < TRADER_BRIEF_PREMARKET_WINDOW[1]
                     and not store.is_schedule_done("trader_brief_premarket")):
+                st = _brief_try
+                # ② 间隔未到就跳过（不空转；首次 n=0 时立即执行）
+                if st["n"] and now.timestamp() - st["ts"] < RETRY_INTERVAL_SEC:
+                    await asyncio.sleep(120)
+                    continue
+                st["n"] += 1
+                attempt = st["n"]
+                st["ts"] = now.timestamp()
                 from app.trader_brief import generate_trader_brief
-                res = await asyncio.to_thread(generate_trader_brief, "premarket")
+                # ★ force=True 必须：否则 force=False 会直接返回表里那条**降级**记录，
+                #   根本不会重新调用 LLM（重试路径的关键组合，见 generate_trader_brief）
+                # ★ ③ 第 2 次起复用已存内容（第 1 次是正常采集）
+                res = await asyncio.to_thread(
+                    generate_trader_brief, "premarket", True, attempt > 1)
                 md = (res or {}).get("markdown") or ""
-                if md:
+                degraded = (res or {}).get("degraded")
+                give_up = t >= TRADER_BRIEF_GIVEUP_MIN
+                if md and (not degraded or give_up):
+                    # ① 只有真成功（无降级）或 ④ 窗口末兜底 才标记完成
                     store.mark_schedule_done("trader_brief_premarket")
                     status["last_trader_brief"] = rules.beijing_now().isoformat()
-                    # 推送走业务开关（用户在前端关掉业务推送就不打扰）
+                    note = "（降级兜底：LLM 未恢复）" if degraded else ""
+                    st.update({"n": 0, "ts": 0.0})
                     if wechat.BUSINESS_ALERTS_ENABLED and (
                             wechat.WECHAT_WEBHOOK or wechat._hook_for("brief")):
                         await asyncio.to_thread(
-                            wechat.push_markdown_batched, "🧭 交易员决策简报（盘前）", md,
-                            category="brief")
-                    print(f"[scheduler] 盘前决策简报已生成: {res.get('date')} {len(md)} 字"
-                          f"（降级={res.get('degraded')}）")
+                            wechat.push_markdown_batched,
+                            f"🧭 交易员决策简报（盘前）{note}", md, category="brief")
+                    print(f"[scheduler] 盘前决策简报已生成{note}: {res.get('date')} "
+                          f"{len(md)} 字（降级={degraded}；第 {attempt} 次尝试）")
+                elif md:
+                    print(f"[scheduler] 盘前决策简报降级（{degraded}）⇒ **不标记完成**，"
+                          f"{RETRY_INTERVAL_SEC // 60} 分钟后重试（第 {attempt} 次尝试、"
+                          f"正文 {len(md)} 字）")
                 else:
-                    print("[scheduler] 盘前决策简报生成异常（正文为空），下轮重试")
+                    print(f"[scheduler] 盘前决策简报正文为空 ⇒ {RETRY_INTERVAL_SEC // 60} "
+                          f"分钟后重试（第 {attempt} 次尝试）")
         except Exception as e:
             print(f"[scheduler] 盘前决策简报失败: {e}")
             _notify_failure("盘前决策简报", str(e))

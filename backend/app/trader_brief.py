@@ -347,8 +347,17 @@ def _validate_refs(markdown: str, data: dict) -> str:
 
 
 
-def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
-    """生成（或读取当日已生成的）决策简报。返回 {ok, phase, markdown, data}。"""
+def generate_trader_brief(phase: str = None, force: bool = False,
+                          reuse_data: bool = False) -> dict:
+    """生成（或读取当日已生成的）决策简报。返回 {ok, phase, markdown, data}。
+
+    ★ 2026-09-24 新增 `reuse_data`：**重试时复用已落库的采集结果**（`data_json`），
+      不重新采集 —— 采集含金十 mp-api（超时 20s）/两融等慢接口，盘前窗口内重复采集
+      既慢又无意义；而 10 分钟内盘前输入（昨收 + 今日事件）基本不变。
+      这正是「失败后把内容存起来、等十分钟再触发」里的"内容"。
+      ⚠️ 配 `force=True` 使用（否则 `force=False` 会直接返回表里那条**降级**记录，
+         根本不会重新调用 LLM —— 这是重试路径必须注意的组合）。
+    """
     init_trader_brief_table()
     phase = phase or current_phase()
     today = beijing_now().strftime("%Y-%m-%d")
@@ -361,7 +370,20 @@ def generate_trader_brief(phase: str = None, force: bool = False) -> dict:
                     "markdown": row["markdown"], "cached": True}
 
     blocked = llm_blocked_reason()
-    data = collect_brief_data(phase)
+    if reuse_data:
+        # ★ 2026-09-24：重试复用已存采集结果（见函数 docstring）。取不到则退化为重新采集。
+        data = None
+        try:
+            row = db.fetch_one("SELECT data_json FROM trader_briefs "
+                               "WHERE date=%s AND phase=%s", (today, phase))
+            if row and row.get("data_json"):
+                data = json.loads(row["data_json"])
+        except Exception:
+            data = None
+        if not isinstance(data, dict) or not data:
+            data = collect_brief_data(phase)
+    else:
+        data = collect_brief_data(phase)
     actions_md = _render_actions_md(data.get("actions") or [])
     degraded = None
     if blocked:
