@@ -169,14 +169,53 @@ def _warfare_signal_stream(strategy_name: str = None) -> list:
     return signals
 
 
+# ★ 进程内缓存：回测价格每日一更 ⇒ 用 6h 长 TTL 减少 Supabase 传输。
+#
+# ⚠️⚠️ 2026-09-24 线上实测（`/api/system/memory`）：本缓存 **808 条 = 234.09MB**，
+#   占 Render 500MB 实例的 **47%**，是反复 OOM 的**头号原因**。三个缺失的保护
+#   （对照 `backtest/data.py` 的同名缓存 —— 那边一直是对的，这边是它的残缺版）：
+#     ① **无条数上限**：key 是 `(code, start)`，而**同一只股票的不同信号日会各自缓存
+#        一整段 bars**（start 不同 ⇒ 不同 key，数据高度重叠）⇒ 只增不减。
+#     ② **TTL 只"逻辑过期"、从不删除**：命中判断是 `now - ts <= TTL`，过期只是当 miss
+#        重新加载，**旧条目仍占着内存**（唯一清空时机 = 回填后的 `invalidate`，每天仅一次）
+#        ⇒ 形态就是"每天从 0 涨到几百条 = 几百 MB，回填时清空"（与监控图的**锯齿**吻合）。
+#     ③ **无单条上限**：start 很早的信号会缓存几百根 bar（实测均值 ≈ 290KB/条）。
+#   ⇒ 现对齐 `data.py` 的成熟做法：条数上限 200 + 单条 >900 根不缓存 + 满时淘汰最旧 1/4
+#     + 取用时清掉过期项。**语义零变化**（缓存只加速，miss 就回源 pack/DB）⇒ 最坏只是
+#     回测多花点时间，而回测是低频手动操作。
 _PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存（回测价格每日一更，长驻减少 Supabase 传输）
 _PRICES_TTL = 21600       # 6 小时：每日回填一次，无需短 TTL 反复重拉
+_PRICES_CACHE_MAX = 200   # ★ 2026-09-24：条数上限（对齐 data.py；无上限时实测达 808 条/234MB）
+_PRICES_BAR_MAX = 900     # ★ 2026-09-24：单条超过此根数不缓存（防单条吃几十 MB）
 
 
 def invalidate_prices_cache() -> None:
     """★ 审查 P2-⑳：backtest_prices 回填落库后由 data.invalidate_price_caches
     调用（写入即失效）——此前 6h 缓存无失效，晚间撮合最长读到回填前的旧价。"""
     _PRICES_CACHE.clear()
+
+
+def _prices_cache_get(key):
+    """取缓存；**过期即删**（★ 2026-09-24：原先过期只当 miss，条目留着不还内存）。"""
+    hit = _PRICES_CACHE.get(key)
+    if not hit:
+        return None
+    ts, bars = hit
+    if time.time() - ts > _PRICES_TTL:
+        _PRICES_CACHE.pop(key, None)
+        return None
+    return bars
+
+
+def _prices_cache_put(key, bars) -> None:
+    """写缓存（带上限）。★ 2026-09-24：单条上限 + 条数上限 + 满时淘汰最旧 1/4。"""
+    if len(bars) > _PRICES_BAR_MAX:      # 超大结果不缓存（内存优先）
+        return
+    if len(_PRICES_CACHE) >= _PRICES_CACHE_MAX:
+        # 简单淘汰：丢最旧插入的 1/4（dict 保序）
+        for k in list(_PRICES_CACHE)[: max(1, _PRICES_CACHE_MAX // 4)]:
+            _PRICES_CACHE.pop(k, None)
+    _PRICES_CACHE[key] = (time.time(), bars)
 
 
 def _load_prices_map(codes: set, start: str = None) -> dict:
@@ -193,9 +232,9 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
     m = {}
     miss = []
     for c in codes:
-        hit = _PRICES_CACHE.get((c, start))
-        if hit and now - hit[0] <= _PRICES_TTL:
-            m[c] = hit[1]
+        bars = _prices_cache_get((c, start))     # ★ 2026-09-24：过期即删（见 _prices_cache_get）
+        if bars is not None:
+            m[c] = bars
         else:
             miss.append(c)
     if miss:
@@ -208,7 +247,7 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
                     bars = pack_source.get_prices(c, start)
                     if bars:
                         bars.sort(key=lambda b: b["date"])
-                        _PRICES_CACHE[(c, start)] = (now, bars)
+                        _prices_cache_put((c, start), bars)   # ★ 2026-09-24：走带上限的写入口
                         m[c] = bars
                         miss.remove(c)
             if not miss:
@@ -233,7 +272,7 @@ def _load_prices_map(codes: set, start: str = None) -> dict:
         for c in miss:
             bars = tmp.get(c, [])
             bars.sort(key=lambda b: b["date"])
-            _PRICES_CACHE[(c, start)] = (now, bars)
+            _prices_cache_put((c, start), bars)           # ★ 2026-09-24：走带上限的写入口
             m[c] = bars
     return m
 
