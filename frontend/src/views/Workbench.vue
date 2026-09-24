@@ -52,25 +52,24 @@
       </span>
     </div>
 
-    <!-- 横向时间轴：5 节点等宽（不按真实时间比例） -->
-    <div class="bg-card border border-border rounded-lg p-2 grid grid-cols-2 md:grid-cols-5 gap-1">
+    <!-- 横向时间轴：5 节点等宽（不按真实时间比例）；各时段专属配色——
+         盘前蓝=计划筹备 / 盘中红=交易执行 / 午盘琥珀=休市过渡 / 盘后紫=数据结算 / 复盘绿=复盘沉淀 -->
+    <div class="bg-card border border-border rounded-lg p-2 grid grid-cols-2 md:grid-cols-5 gap-1.5">
       <button v-for="p in PHASES" :key="p.key"
-              class="relative rounded-md px-3 py-2 text-left transition-colors"
+              class="relative rounded-lg px-2 py-2.5 text-center transition-all border"
               :class="nodeClass(p.key)"
               @click="selectPhase(p.key)">
-        <div class="flex items-center justify-between">
-          <span class="text-sm font-semibold">{{ p.label }}</span>
-          <!-- 徽标：未决策教练卡数（当天） / 简报降级 -->
-          <span v-if="badge(p.key)" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1
-                                          rounded-full text-[10px] leading-[18px] text-center font-bold"
-                :class="p.key === 'premarket' && briefDegraded ? 'bg-amber-500 text-black' : 'bg-red-500 text-white'">
-            {{ badge(p.key) }}
-          </span>
-        </div>
-        <div class="text-[11px] text-muted font-mono">{{ p.time }}</div>
+        <!-- 徽标：未决策教练卡数（当天） / 简报降级 -->
+        <span v-if="badge(p.key)" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1
+                                        rounded-full text-[10px] leading-[18px] text-center font-bold shadow"
+              :class="p.key === 'premarket' && briefDegraded ? 'bg-amber-500 text-black' : 'bg-red-500 text-white'">
+          {{ badge(p.key) }}
+        </span>
+        <div class="text-sm font-bold tracking-wide" :class="PHASE_STYLE[p.key].text">{{ p.label }}</div>
+        <div class="text-[11px] font-mono text-muted mt-0.5">{{ p.time }}</div>
         <!-- 温和自动跟随提示：用户停在别处而实时阶段已推进 -->
         <div v-if="isToday && livePhase === p.key && selectedPhase !== p.key"
-             class="text-[10px] text-accent mt-0.5 animate-pulse">●已进入{{ p.label }}，点击切换</div>
+             class="text-[10px] mt-1 animate-pulse" :class="PHASE_STYLE[p.key].text">● 已进入，点击切换</div>
       </button>
     </div>
 
@@ -415,6 +414,15 @@ const PHASES = [
   { key: 'postmarket', label: '盘后', time: '15:00' },
   { key: 'review', label: '复盘', time: '19:30' },
 ]
+// 各时段专属配色（类名必须写成完整字面量，Tailwind JIT 才会生成）：
+//   盘前蓝=计划筹备 / 盘中红=交易执行 / 午盘琥珀=休市过渡 / 盘后紫=数据结算 / 复盘绿=复盘沉淀
+const PHASE_STYLE = {
+  premarket:  { text: 'text-sky-400',    border: 'border-sky-500/60',    bg: 'bg-sky-500/10',    hover: 'hover:border-sky-500/40 hover:bg-sky-500/5' },
+  intraday:   { text: 'text-rose-400',   border: 'border-rose-500/60',   bg: 'bg-rose-500/10',   hover: 'hover:border-rose-500/40 hover:bg-rose-500/5' },
+  midday:     { text: 'text-amber-300',  border: 'border-amber-500/60',  bg: 'bg-amber-500/10',  hover: 'hover:border-amber-500/40 hover:bg-amber-500/5' },
+  postmarket: { text: 'text-violet-400', border: 'border-violet-500/60', bg: 'bg-violet-500/10', hover: 'hover:border-violet-500/40 hover:bg-violet-500/5' },
+  review:     { text: 'text-emerald-400', border: 'border-emerald-500/60', bg: 'bg-emerald-500/10', hover: 'hover:border-emerald-500/40 hover:bg-emerald-500/5' },
+}
 
 // ── 基础状态 ──
 const route = useRoute()
@@ -512,10 +520,13 @@ function badge(key) {
   return ''
 }
 function nodeClass(key) {
+  const st = PHASE_STYLE[key]
   const active = selectedPhase.value === key
-  const future = isToday.value && PHASES.findIndex(p => p.key === key) > PHASES.findIndex(p => p.key === livePhase.value)
+  const idx = PHASES.findIndex(p => p.key === key)
+  const future = isToday.value && idx > PHASES.findIndex(p => p.key === livePhase.value)
   return [
-    active ? 'bg-background/60 border border-accent/50' : 'hover:bg-background/40 border border-transparent',
+    // 激活：时段专属底色+边框；未激活：透明边框 + 悬停同色系浅底
+    active ? `${st.bg} ${st.border} shadow-sm` : `border-transparent ${st.hover}`,
     future && !active ? 'opacity-40' : '',
   ]
 }
