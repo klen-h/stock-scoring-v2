@@ -135,41 +135,68 @@
             <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
             <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
             <template v-else>
-              <div class="flex items-center gap-6 flex-wrap mb-2">
-                <div class="flex items-center gap-2">
-                  <span class="text-3xl font-bold font-mono"
+              <!-- 分节一：宏观方向 + 市场环境 -->
+              <div class="flex items-start gap-8 flex-wrap">
+                <div class="flex items-center gap-3">
+                  <span class="text-4xl font-bold font-mono leading-none"
                         :class="dirColor(macro.direction?.level, macro.direction?.score)">
                     {{ macro.direction?.score ?? '—' }}
                   </span>
                   <div>
-                    <div class="text-xs font-semibold"
+                    <div class="text-sm font-semibold"
                          :class="dirColor(macro.direction?.level, macro.direction?.score)">
                       宏观方向 · {{ macro.direction?.level || '—' }}
                     </div>
-                    <div class="text-[11px] text-muted">{{ macro.direction?.advisory || '' }}</div>
+                    <div class="text-[11px] text-muted mt-0.5">{{ macro.direction?.advisory || '' }}</div>
                   </div>
                 </div>
-                <div class="flex items-center gap-2">
-                  <span class="text-3xl font-bold font-mono">{{ temperature?.temperature ?? '—' }}</span>
+                <div class="w-px self-stretch bg-border hidden sm:block"></div>
+                <div class="flex items-center gap-3">
+                  <span class="text-4xl font-bold font-mono leading-none">{{ temperature?.temperature ?? '—' }}</span>
                   <div>
-                    <div class="text-xs font-semibold">市场环境 · {{ temperature?.level || '—' }}</div>
-                    <div class="text-[11px] text-muted">{{ temperature?.advisory || '' }}</div>
+                    <div class="text-sm font-semibold">市场环境 · {{ temperature?.level || '—' }}</div>
+                    <div class="text-[11px] text-muted mt-0.5">{{ temperature?.advisory || '' }}</div>
                     <div class="text-[10px] text-muted">0~100，越高越亢奋</div>
                   </div>
                 </div>
               </div>
-              <div class="flex flex-wrap gap-1">
+              <div class="flex flex-wrap gap-1 mt-3">
                 <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
                       class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
                 <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
                       class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
+              </div>
+
+              <!-- 分节二：事件诊断（快讯 LLM，独立信号） -->
+              <div class="border-t border-border/60 my-3 pt-3">
+                <div class="flex items-start gap-4 flex-wrap text-xs">
+                  <span class="text-muted pt-0.5">事件诊断</span>
+                  <span v-if="!flashDiag" class="text-muted">—（当日无诊断）</span>
+                  <template v-else>
+                    <span class="font-bold text-sm"
+                          :class="flashDiag.correlation_diagnosis?.correlation_state === 'D状态'
+                                  ? 'text-amber-400' : 'text-gray-100'">
+                      {{ flashDiag.correlation_diagnosis?.correlation_state || '无法判断' }}
+                      <span class="text-muted font-normal text-[11px]">
+                        {{ flashDiag.correlation_diagnosis?.d_state_type || '不适用' }}
+                      </span>
+                    </span>
+                    <span class="text-gray-300 flex-1 min-w-[220px] leading-relaxed">
+                      {{ flashDiag.dominant_narrative?.narrative || flashDiag.market_mood || '—' }}
+                    </span>
+                    <span class="text-muted">
+                      仓位 <b class="text-accent text-sm">{{ flashDiag.daily_strategy?.overall_position || '—' }}</b>
+                    </span>
+                    <router-link to="/monitor" class="text-accent hover:underline">事件面详情</router-link>
+                  </template>
+                </div>
               </div>
             </template>
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）</div>
-              <router-link to="/report" class="text-xs text-accent hover:underline">完整简报 →</router-link>
+              <router-link to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
             </div>
             <div v-if="briefErr" class="text-muted text-xs">—（加载失败：{{ briefErr }}）</div>
             <div v-else-if="!briefMd" class="text-muted text-xs">加载中…</div>
@@ -224,7 +251,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">评分榜 Top10</div>
-              <router-link to="/score" class="text-xs text-accent hover:underline">查看完整榜 →</router-link>
+              <router-link to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
             </div>
             <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
             <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
@@ -248,7 +275,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">观察池</div>
-              <router-link to="/score" class="text-xs text-accent hover:underline">详情 →</router-link>
+              <router-link to="/score" class="text-xs text-accent hover:underline">详情</router-link>
             </div>
             <div v-if="gwErr" class="text-muted text-xs">—（加载失败）</div>
             <div v-else class="text-xs text-muted">
@@ -325,7 +352,7 @@
               待办 · 未决策教练卡
               <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]">{{ todoCount }}</span>
             </div>
-            <router-link to="/coach" class="text-xs text-accent hover:underline">教练 →</router-link>
+            <router-link to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
           </div>
           <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
           <div v-else-if="!todayCoach.length" class="text-muted text-xs">
@@ -339,7 +366,7 @@
         <div class="bg-card border border-border rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold">持仓摘要</div>
-            <router-link to="/paper" class="text-xs text-accent hover:underline">模拟盘 →</router-link>
+            <router-link to="/paper" class="text-xs text-accent hover:underline">模拟盘</router-link>
           </div>
           <div v-if="radarErr" class="text-muted text-xs">—（加载失败）</div>
           <template v-else>
@@ -401,7 +428,7 @@ import {
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   getMarketOverview, getMarketTemperature, getMarketRegime,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
-  getMacroDaily, getMacroSnapshot,
+  getMacroDaily, getMacroSnapshot, getFlashDiagnosis,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -462,6 +489,8 @@ const statusOpen = ref(false)
 // ★ 2026-09-25 用户反馈：盘前加"宏观与环境"卡（数据同数据中心：早盘锁定快照优先）
 const macro = ref(null)
 const macroErr = ref('')
+// 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
+const flashDiag = ref(null)
 
 // 回放数据
 const replay = ref({ top50: [], briefs: {}, report_md: null, coach: [] })
@@ -619,6 +648,13 @@ async function loadReport(date) {
     reportMd.value = data?.markdown || data?.md || ''
   } catch { reportMd.value = '' }
 }
+// 事件诊断（最新 LLM 油金相关性输出，与 Dashboard 同源）
+async function loadFlashDiag() {
+  try {
+    const { data } = await getFlashDiagnosis({ limit: 1 })
+    flashDiag.value = data?.latest?.output || null
+  } catch { flashDiag.value = null }
+}
 // 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
 async function loadMacro() {
   macroErr.value = ''
@@ -719,7 +755,7 @@ function onStatusToggle(e) {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') { await loadBrief('premarket'); await loadMacro() }
+  if (phase === 'premarket') { await loadBrief('premarket'); await Promise.all([loadMacro(), loadFlashDiag()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
