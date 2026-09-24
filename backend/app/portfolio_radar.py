@@ -230,6 +230,67 @@ def _contradiction_context() -> Dict:
     return ctx
 
 
+# ★ 2026-09-25（交易方法论落地计划 A5）：基本面雷区排雷标签 v0
+#   数据：stock_finance_zz（zzshare finance_latest 快照，bal_json/cf_json/ind_json）
+#   规则（v0，先规则后回测）：商誉/总资产 >30% → 商誉悬顶；
+#     扣非净利 >0 但经营现金流 <0 → 利润含金量警示（金融行业跳过——银行负债结构
+#     天然导致经营现金流口径失真）。
+_FUND_FLAG_TTL = 6 * 3600.0
+_fund_flag_cache: Dict[str, tuple] = {}   # {code: (ts, flags)}
+
+
+def _fundamental_flags(codes: List[str], industry_of=None) -> Dict[str, List[Dict]]:
+    """按 code 返回排雷提示（风险级）。财报低频 → 进程缓存 6h；失败返回 {}。"""
+    import json as _json
+    import time as _t
+    now = _t.time()
+    want = [c for c in dict.fromkeys(codes)
+            if c not in _fund_flag_cache or now - _fund_flag_cache[c][0] > _FUND_FLAG_TTL]
+    try:
+        if want:
+            from app.database import db
+            rows = db.fetch(
+                "SELECT code, bal_json, cf_json, ind_json FROM stock_finance_zz "
+                "WHERE code = ANY(%s) LIMIT 500", (want,))
+            fetched = {str(r.get("code")): r for r in (rows or [])}
+            for c in want:
+                flags: List[Dict] = []
+                r = fetched.get(c)
+                if r:
+                    def _j(v):
+                        try:
+                            d = _json.loads(v) if isinstance(v, str) else (v or {})
+                            return (d[0] if isinstance(d, list) and d else d) or {}
+                        except Exception:
+                            return {}
+                    bal, cf, ind = _j(r.get("bal_json")), _j(r.get("cf_json")), _j(r.get("ind_json"))
+                    gw, ta = bal.get("goodwill"), bal.get("total_assets")
+                    try:
+                        if gw and ta and float(ta) > 0 and float(gw) / float(ta) > 0.30:
+                            flags.append({"level": "risk",
+                                          "text": f"商誉/总资产 {float(gw) / float(ta) * 100:.0f}%（商誉悬顶，警惕减值）"})
+                    except (TypeError, ValueError):
+                        pass
+                    ocf, ap = cf.get("net_operate_cash_flow"), ind.get("adjusted_profit")
+                    ind_name = (industry_of(c) or "") if industry_of else ""
+                    try:
+                        if (not is_financial(ind_name) and ocf is not None
+                                and float(ocf) < 0 and ap is not None and float(ap) > 0):
+                            flags.append({"level": "risk",
+                                          "text": "净利润为正但经营现金流为负（利润含金量警示）"})
+                    except (TypeError, ValueError):
+                        pass
+                _fund_flag_cache[c] = (now, flags)
+    except Exception as e:
+        print(f"[portfolio_radar] fundamental flags failed: {e}")
+    return {c: _fund_flag_cache[c][1] for c in codes if c in _fund_flag_cache}
+
+
+def is_financial(ind_name: str) -> bool:
+    """金融行业判定（排雷现金流规则跳过——银行负债结构致经营现金流口径失真）。"""
+    return "金融" in (ind_name or "")
+
+
 def _alerts_for(item: Dict, industry: Optional[str], ctx: Dict) -> List[Dict]:
     """单只持仓的提示列表（最多 `_MSG_CAP` 条，风险优先）。"""
     out: List[Dict] = []
@@ -405,6 +466,12 @@ def _build_impl() -> Dict:
             item["strategies"] = sig_map[code]
 
         item["alerts"] = _alerts_for(item, item.get("industry"), ctx)
+        # ★ A5：合并基本面排雷标签（商誉悬顶/现金流含金量）
+        try:
+            _fmap = _fundamental_flags([code], industry_of=lambda c: industry_map.get(c) or "")
+            item["alerts"] = (item["alerts"] or []) + _fmap.get(code, [])
+        except Exception:
+            pass
         items.append(item)
 
     # 排序：风险多的优先，其次机会多，最后按盈亏

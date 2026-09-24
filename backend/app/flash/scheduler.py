@@ -1078,6 +1078,70 @@ def _calc_vol_ratios(codes: list, quotes: dict) -> dict:
     return ratios
 
 
+# ── 交易计划触发提醒（A4，2026-09-25 交易方法论落地计划）──────────────────
+#   框架：盘前写预案（买价/止损/目标），盘中不临场——命中即推企微并闭环计划状态。
+#   规则：现价 ≤ stop_loss → 认错线触发（置 status='hit'）；
+#         现价 ≥ target → 兑现触发（置 status='hit'）；
+#         |现价/buy_price−1| ≤ 2% → 到达买点附近（仅提醒，不闭环）。
+#   去重：每计划每类型每日一次；行情读内存缓存（零额外请求）。
+_PLAN_TRIGGER_DEDUPE = {"date": None, "keys": set()}
+
+
+async def trade_plan_trigger_loop():
+    while True:
+        try:
+            now = rules.beijing_now()
+            today = now.strftime("%Y-%m-%d")
+            if _PLAN_TRIGGER_DEDUPE["date"] != today:
+                _PLAN_TRIGGER_DEDUPE.update({"date": today, "keys": set()})
+            t = now.hour * 60 + now.minute
+            is_open = False
+            try:
+                is_open = bool(flash_rules.get_china_market_status().get("is_open"))
+            except Exception:
+                pass
+            if now.weekday() < 5 and 570 <= t < 900 and is_open:
+                from app.tencent import _cache as _tcache
+                stocks = _tcache.get("stocks") or {}
+                if stocks:
+                    from app.database import db
+                    plans = db.fetch(
+                        "SELECT id, code, name, buy_price, stop_loss, target "
+                        "FROM user_trade_plans WHERE status = 'waiting' LIMIT 100") or []
+                    for p in plans:
+                        q = stocks.get(str(p.get("code") or "")) or {}
+                        price = float(q.get("price") or 0)
+                        if price <= 0:
+                            continue
+                        hits = []
+                        if p.get("stop_loss") and price <= float(p["stop_loss"]):
+                            hits.append(("stop", f"认错线触发：{p['name']}({p['code']}) "
+                                                 f"现价 {price:.2f} 跌破止损 {float(p['stop_loss']):.2f}——按计划认错"))
+                        if p.get("target") and price >= float(p["target"]):
+                            hits.append(("target", f"兑现触发：{p['name']}({p['code']}) "
+                                                   f"现价 {price:.2f} 触及目标 {float(p['target']):.2f}——按计划兑现"))
+                        if p.get("buy_price") and abs(price / float(p["buy_price"]) - 1) <= 0.02:
+                            hits.append(("buy", f"到达买点附近：{p['name']}({p['code']}) "
+                                                f"现价 {price:.2f} ≈ 买价 {float(p['buy_price']):.2f}（±2%），按预案试仓"))
+                        for kind, text in hits:
+                            key = f"{p['id']}|{kind}|{today}"
+                            if key in _PLAN_TRIGGER_DEDUPE["keys"]:
+                                continue
+                            _PLAN_TRIGGER_DEDUPE["keys"].add(key)
+                            try:
+                                from app.flash.wechat import notify
+                                notify("risk", "交易计划触发", text, force=True)
+                            except Exception as e2:
+                                print(f"[plan-trigger] push failed: {e2}")
+                            if kind in ("stop", "target"):
+                                db.execute(
+                                    "UPDATE user_trade_plans SET status='hit', hit_at=%s WHERE id=%s",
+                                    (now.isoformat(), p["id"]))
+        except Exception as e:
+            print(f"[plan-trigger] error: {e}")
+        await asyncio.sleep(60)
+
+
 async def open_confirmation_loop():
     """工作日开盘后，对白名单战法最近一次扫描信号做「买点确认」：
     实时开盘价 vs 参考介入价 vs 止损位 → 低吸/正常/回踩/放弃指引，推送企微。
@@ -1773,6 +1837,8 @@ async def start():
     #   stock_cache(行情缓存，可用 STOCK_CACHE_INTERVAL 调频降载)
     tasks = [asyncio.create_task(flash_loop()),
              asyncio.create_task(track_loop()),
+             # ★ A4 交易计划触发提醒（盘中 60s，内部自门控交易时段）
+             asyncio.create_task(trade_plan_trigger_loop()),
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),

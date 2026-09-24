@@ -125,6 +125,26 @@
         <!-- 实时模式 · ① 盘前（阅读模式） -->
         <template v-else-if="selectedPhase === 'premarket'">
           <!-- ★ 2026-09-25 用户反馈：数据中心(旧首页)的宏观方向/规则标签/市场环境整合进来 -->
+          <!-- ★ A3 情绪预判卡 v0（近似口径，B1 官方数据后替换） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">情绪预判
+                <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span></div>
+              <span class="text-sm font-bold"
+                    :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
+                {{ emotion?.verdict || '—' }}</span>
+            </div>
+            <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
+            <div v-else class="grid grid-cols-4 gap-2 text-center text-xs">
+              <div><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up }}</div><div class="text-muted text-[10px]">涨停</div></div>
+              <div><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down }}</div><div class="text-muted text-[10px]">跌停</div></div>
+              <div><div class="text-lg font-bold font-mono">{{ emotion.max_streak }}</div><div class="text-muted text-[10px]">连板高度</div></div>
+              <div><div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
+                {{ fmtPct(emotion.prev_limit_today_pct) }}</div><div class="text-muted text-[10px]">昨日涨停今日</div></div>
+            </div>
+            <div class="text-[10px] text-muted mt-2">判读：情绪决定今天"接力的强更强 / 分歧 / 退潮"，对应降低或提高买入标准。</div>
+          </div>
+
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">宏观与环境（独立信号，不进个股评分）</div>
@@ -193,6 +213,20 @@
               </div>
             </template>
           </div>
+          <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">隔夜与今日（财经日历）</div>
+              <router-link to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
+            </div>
+            <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
+            <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
+            <div v-for="(e, i) in calendarToday" :key="i" class="text-xs border-b border-border/40 py-1">
+              <span class="font-mono text-muted mr-2">{{ (e.time || e.date || '').slice(0, 16) }}</span>
+              {{ e.title || e.event || e.content || e.name || '—' }}
+            </div>
+          </div>
+
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）</div>
@@ -221,6 +255,74 @@
             </div>
             <div v-if="overviewErr" class="text-muted text-xs mt-2">—（加载失败）</div>
           </div>
+          <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
+              <div><div class="text-[10px] text-muted">上涨</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">下跌</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">涨停</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">跌停</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">两市成交额</div>
+                <div class="text-base font-bold font-mono text-gray-200">
+                  {{ overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">情绪判读</div>
+                <div class="text-base font-bold"
+                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
+                  {{ emotion?.verdict || '—' }}</div></div>
+            </div>
+            <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
+              昨日涨停 {{ emotion.prev_limit_count }} 只 · 今日平均表现
+              <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
+              · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak }}</b>
+              <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
+              <span class="text-[10px]">· {{ emotion.note }}</span>
+            </div>
+          </div>
+
+          <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="text-sm font-semibold mb-2">涨停梯队与清单
+              <span class="text-[10px] text-muted font-normal">（zzshare 口径，数据空=限流/非交易日）</span></div>
+            <div v-if="(limitReview.steps || []).length === 0 && (limitReview.stocks || []).length === 0"
+                 class="text-muted text-xs">—（当日无复盘数据）</div>
+            <template v-else>
+              <div v-if="(limitReview.steps || []).length" class="flex flex-wrap gap-1.5 mb-2">
+                <span v-for="(s, i) in limitReview.steps.slice(0, 10)" :key="i"
+                      class="px-1.5 py-0.5 rounded text-[11px] bg-rose-500/10 text-rose-300 border border-rose-500/25">
+                  {{ Object.values(s).slice(0, 3).join(' · ') }}
+                </span>
+              </div>
+              <div v-if="(limitReview.stocks || []).length" class="text-xs space-y-0.5">
+                <div v-for="(s, i) in limitReview.stocks.slice(0, 8)" :key="i"
+                     class="flex gap-2 border-b border-border/30 py-0.5">
+                  <span class="text-muted font-mono">{{ Object.values(s)[0] }}</span>
+                  <span class="truncate">{{ Object.values(s).slice(1, 4).join(' · ') }}</span>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- ★ A1 主线板块 Top5（当日板块快照） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">板块涨幅 Top5</div>
+              <router-link to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
+            </div>
+            <div v-if="!sectorTop.length" class="text-muted text-xs">—（当日无板块快照）</div>
+            <div v-else class="space-y-1 text-xs">
+              <div v-for="(s, i) in sectorTop" :key="i" class="flex items-center gap-2 border-b border-border/40 py-1">
+                <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
+                <span class="font-semibold">{{ s.industry || s.name || s.code || '—' }}</span>
+                <span class="ml-auto font-mono" :class="pctClass(s.pct_change ?? s.change_pct)">
+                  {{ signNum(s.pct_change ?? s.change_pct) }}%</span>
+              </div>
+            </div>
+          </div>
+
           <!-- ★ Phase 2：教练卡盘中镜像（右栏为主，此处直达） -->
           <div v-if="todoList.length" class="bg-card border border-amber-500/40 rounded-lg p-4">
             <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
@@ -467,7 +569,8 @@ import {
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   getMarketOverview, getMarketTemperature, getMarketRegime,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
-  getMacroDaily, getMacroSnapshot, getFlashDiagnosis,
+  getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
+  getMarketEmotion, getMarketLimitReview,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -529,6 +632,12 @@ const statusOpen = ref(false)
 // ★ 2026-09-25 用户反馈：盘前加"宏观与环境"卡（数据同数据中心：早盘锁定快照优先）
 const macro = ref(null)
 const macroErr = ref('')
+// ★ 盘中看盘序/情绪（2026-09-25 交易方法论 A1/A3/B2）
+const emotion = ref(null)
+const limitReview = ref(null)
+const sectorTop = ref([])
+const calendarToday = ref([])
+const calendarErr = ref('')
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -696,6 +805,37 @@ async function loadFlashDiag() {
     flashDiag.value = data?.latest?.output || null
   } catch { flashDiag.value = null }
 }
+// ★ A2 隔夜与今日：财经日历今日事件（防御性渲染，字段以接口实际返回为准）
+async function loadCalendarToday() {
+  try {
+    const { data } = await getCalendar({ days: 1 })
+    const items = (data && data.items) || []
+    calendarToday.value = items.filter(it =>
+      String(it.date || it.time || '').includes(todayStr())).slice(0, 6)
+    calendarErr.value = ''
+  } catch { calendarErr.value = '加载失败' }
+}
+// 情绪快照 v0（涨停/跌停/赚钱效应/连板高度/判读——近似口径，B1 官方数据后替换）
+async function loadEmotion() {
+  try {
+    const { data } = await getMarketEmotion()
+    emotion.value = data || null
+  } catch { emotion.value = null }
+}
+// 涨停复盘（zzshare：连板梯队 + 涨停清单；匿名可能空 → 占位）
+async function loadLimitReview() {
+  try {
+    const { data } = await getMarketLimitReview(selectedDate.value !== todayStr ? selectedDate.value : undefined)
+    limitReview.value = data || { steps: [], stocks: [] }
+  } catch { limitReview.value = { steps: [], stocks: [] } }
+}
+// 主线板块 Top5（当日板块快照按涨跌幅降序，防御性渲染）
+async function loadSectorTop() {
+  try {
+    const { data } = await getSectorSnapshot(todayStr(), { limit: 5 })
+    sectorTop.value = ((data && data.data) || []).slice(0, 5)
+  } catch { sectorTop.value = [] }
+}
 // 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
 async function loadMacro() {
   macroErr.value = ''
@@ -796,9 +936,12 @@ function onStatusToggle(e) {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') { await loadBrief('premarket'); await Promise.all([loadMacro(), loadFlashDiag()]) }
+  if (phase === 'premarket') { await loadBrief('premarket'); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
+  if (phase === 'intraday' || phase === 'midday') {
+    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop()])
+  }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
 }
 function selectPhase(key) {
@@ -824,7 +967,7 @@ function startPolling() {
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   timers.push(setInterval(() => {
     livePhase.value = computePhase()          // 温和自动跟随：只更新提示，不硬切
-    loadOverview(); loadTemperature()
+    loadOverview(); loadTemperature(); loadEmotion()
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }

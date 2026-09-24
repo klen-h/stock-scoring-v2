@@ -298,5 +298,9 @@ export const abandonCoachPlan = (id, reason) => http.post(`/coach/plans/${id}/ab
 export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-reasons', { params: { limit } })
 
 // ── 工作台（2026-09-25）：回放按日期取数（后端 system.py 只读端点）──
+// ── 工作台·盘中看盘序（2026-09-25 交易方法论 A1/A3/B2）──
+export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 20000 })
+export const getMarketLimitReview = (date) => http.get('/market/limit-review', { params: { date }, timeout: 30000 })
+
 export const getWorkbenchDayIndex = (days = 30) => http.get('/workbench/day-index', { params: { days } })
 export const getWorkbenchDay = (date) => http.get('/workbench/day', { params: { date }, timeout: 30000 })
