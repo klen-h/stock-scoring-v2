@@ -108,13 +108,38 @@ for _prefix, _code in _ALL_CODES:
 #   _cache = {
 #     stocks: { "000001": {行情数据}, "000002": {...}, ... },  # 缓存的行情
 #     last_update: 1700000000,       # 上次刷新的 Unix 时间戳（秒）
+#     data_ts: 1700000000,           # ★ **这批行情数据自身的时刻**（见下方语义说明）
+#     from_snapshot: False,          # ★ True=来自收盘快照（盘后/周末，数据是上一交易日的）
 #     lock: <threading.Lock 对象>    # 线程锁，防止并发刷新冲突
 #   }
+#
+# ★★ 2026-09-25：`last_update` 与 `data_ts` **必须分开** —— 它们语义不同，
+#   混用会**谎报数据新鲜度**（真实踩过）：
+#     · `last_update` = **缓存被填充的时刻**。`restore_market_snapshot` 会故意把它设为
+#       当前时间（注释："标记为新鲜，避免 overview 误判过期"）⇒ 它**不是**数据时间。
+#     · `data_ts`     = **数据自身的产生时刻**。实时刷新 = 抓取时刻；快照恢复 = 快照的
+#       `saved_at`。消费者要显示"数据截至"必须用这个。
+#   ⚠️ 实例：休市日恢复 09-24 收盘快照时，`last_update` 是 09-25 17:48，
+#     调用方若直接显示它，就会把**昨天的收盘数据标成今天 17:48** —— 用户据此决策会踩坑。
 #
 # threading.Lock 是 Python 的互斥锁：
 #   多个 HTTP 请求同时进来时，防止它们同时触发刷新（会重复请求、浪费资源）。
 #   类似前端"防抖/节流"，但这里是为了线程安全。
-_cache = {"stocks": {}, "last_update": 0, "lock": threading.Lock()}
+_cache = {"stocks": {}, "last_update": 0, "data_ts": 0.0, "from_snapshot": False,
+          "lock": threading.Lock()}
+
+
+def _parse_ts(v) -> float:
+    """把快照 `saved_at`（ISO 字符串 / 数字时间戳）转成 Unix 秒；无法解析返回 0.0。"""
+    try:
+        if v is None:
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
 BATCH_SIZE = 80  # 每次请求腾讯最多放多少只股票（腾讯单次上限约 100，留余量用 80）
 
 # 有效代码缓存：首次全量扫描后，记住哪些代码是真实存在的（price>0）。
@@ -365,6 +390,9 @@ def refresh_all_stocks(force: bool = False):
 
         _cache["stocks"] = stocks
         _cache["last_update"] = time.time()
+        # ★ 实时抓取 ⇒ 数据时刻 = 抓取时刻；且不再是快照数据（见 _cache 结构注释）
+        _cache["data_ts"] = _cache["last_update"]
+        _cache["from_snapshot"] = False
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {mode}刷新完成: {len(stocks)} 只股票")
         return stocks
 
@@ -419,6 +447,11 @@ def restore_market_snapshot(restore_stocks: bool = True) -> bool:
         with _cache["lock"]:
             _cache["stocks"] = snap["stocks"]
             _cache["last_update"] = time.time()   # 标记为新鲜，避免 overview 误判过期
+            # ★★ 2026-09-25：必须**另外**记下数据真实时刻 —— `last_update` 上面被故意
+            #   设成"现在"，它表达的是"缓存可用"，**不是"数据是这时候的"**。
+            #   消费方（如大小盘风格的 as_of）用 data_ts + from_snapshot 才能诚实标注。
+            _cache["data_ts"] = _parse_ts(snap.get("saved_at"))
+            _cache["from_snapshot"] = True
         print(f"[snapshot] 已从收盘快照恢复行情: {len(snap['stocks'])} 只 "
               f"(快照时间 {snap.get('saved_at')})")
         return True

@@ -654,6 +654,32 @@
                      :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
                   {{ emotion?.verdict || '—' }}</div></div>
             </div>
+            <!-- ★★ 2026-09-25 用户需求 1（框架 C5「盘中 9:30-10:00 定方向：黄白线/权重护盘」）：
+                 看盘序"指数→家数→成交额"之后**必须回答的方向问题** ——
+                 今天涨的是**权重**（指数好看、个股不跟）还是**个股**（题材在扩散）？
+                 两者的操作完全相反：权重护盘时"看指数做个股"最容易亏（指数红、账户绿）；
+                 小盘活跃时个股信号才可信。数据同源 `/market/overview.style`（零新增请求）。
+                 ⚠️ 数据时刻：盘中为实时（≤2 分钟滞后）；**休市/盘后是收盘快照**，已在行内标明。 -->
+            <div v-if="ovStyle?.available" class="border-t border-border/40 mt-2 pt-2 text-[11px]">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-muted">大小盘风格</span>
+                <span class="font-semibold cursor-help" :class="styleCls" :title="styleTitle">
+                  {{ ovStyle.label }}</span>
+                <span class="text-muted font-mono">
+                  大 <b :class="pctClass(ovBig?.avg)">{{ signNum(ovBig?.avg) }}%</b>
+                  <template v-if="ovMid">/ 中 <b :class="pctClass(ovMid?.avg)">{{ signNum(ovMid?.avg) }}%</b></template>
+                  / 小 <b :class="pctClass(ovSmall?.avg)">{{ signNum(ovSmall?.avg) }}%</b>
+                </span>
+                <!-- 背离用中性色：它是"加权−等权"的差值，正负不直接等于"涨/跌"，
+                     用红绿会被误读成行情涨跌（正=权重强于个股，对做个股其实偏负面） -->
+                <span class="text-muted">· 背离（加权−等权）
+                  <b class="font-mono text-gray-300">{{ signNum(ovStyle.spread) }}%</b></span>
+                <span v-if="ovStyle.from_snapshot" class="text-amber-400/80 text-[10px]"
+                      title="行情缓存来自数据库收盘快照（盘后/周末不重新抓取）">
+                  （{{ ovStyle.as_of }} 快照，非实时）</span>
+              </div>
+              <div class="text-muted mt-0.5">{{ ovStyle.note }}</div>
+            </div>
             <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
               昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
               <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
@@ -1292,6 +1318,29 @@ const relCls = (r) => (r === '一致' ? 'text-emerald-400'
 const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
+// ★ 2026-09-25 用户需求 1：大小盘风格 / 黄白线背离（框架 C5「9:30-10:00 定方向」）。
+//   `overview.style` 由后端在同一份内存行情缓存上算出 ⇒ **零新增请求**。
+const ovStyle = computed(() => overview.value?.style || null)
+const ovGrp = (k) => (ovStyle.value?.groups || []).find(g => g.key === k) || null
+const ovBig = computed(() => ovGrp('big'))
+const ovMid = computed(() => ovGrp('mid'))
+const ovSmall = computed(() => ovGrp('small'))
+// 配色语义：**权重护盘=琥珀**（指数被权重撑起、个股不跟 ⇒ 是"陷阱"型红盘，要警惕）；
+//   小盘活跃=红（A股红=涨，题材扩散对做个股是好事）；均衡=灰。
+const styleCls = computed(() => (ovStyle.value?.verdict === 'small_active' ? 'text-red-400'
+  : ovStyle.value?.verdict === 'weight_support' ? 'text-amber-300' : 'text-gray-300'))
+// 悬停详情：口径 + 各组明细 + 数据时刻（⚠️ 休市日是**收盘快照**，必须标明，别当成实时）
+const styleTitle = computed(() => {
+  const s = ovStyle.value
+  if (!s?.available) return ''
+  const gs = (s.groups || []).map(g =>
+    `${g.label} ${g.n}只 等权${signNum(g.avg)}%（上涨占比 ${g.up_ratio}%）`).join('\n')
+  return `白线（流通市值加权） ${signNum(s.weighted)}%\n`
+    + `黄线（等权） ${signNum(s.equal)}%\n`
+    + `背离（加权−等权） ${signNum(s.spread)}%（正=权重强于个股）\n`
+    + `真实上证指数 ${signNum(s.index_pct)}%（对照）\n\n${gs}\n\n`
+    + `数据 ${s.as_of || '—'}${s.from_snapshot ? '（收盘快照，非实时）' : ''}\n${s.note || ''}`
+})
 const radarSummaryKeyed = computed(() => radarSummary.value || {})
 // 组合待办：未决策教练卡（当天实时 / 回放日全部）
 const todayCoach = computed(() => {

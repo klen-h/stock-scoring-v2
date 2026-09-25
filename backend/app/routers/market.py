@@ -120,6 +120,130 @@ def _level_advisory(t: float):
     return "过冷", "市场恐慌普跌，宜观望；仅关注超跌反弹机会", 72
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  大小盘风格 / 黄白线背离 —— 2026-09-25（用户需求 1：看盘序的"定方向"层）
+# ══════════════════════════════════════════════════════════════════════════
+# 【回答什么问题】交易方法论落地计划 C5 原话：
+#   "盘中：9:30-10:00 定方向（黄白线/权重护盘）| 大市值组 vs 全市场涨幅对比 [可算]"
+#   翻译成人话：**今天是权重在拉指数（个股不跟），还是个股自己的行情（题材扩散）？**
+#   这决定了"看指数做个股"还是"看个股做个股"——是盘中最先要分清的一件事。
+#
+# 【口径 —— 关键在"加权 vs 等权"】
+#   · **白线（加权）** = 按流通市值加权平均涨幅。权重股（银行/白酒/两桶油）主导，
+#     等价于「指数涨幅」——真实指数涨跌就是被这些票决定的。
+#   · **黄线（等权）**  = 算术平均涨幅 ⇒ 每只票一票，即 `stats.avg_change_pct`。
+#   · **背离 spread = 加权 − 等权**：
+#        spread > 0 ⇒ 权重强于个股（白线在黄线之上）⇒ **指数好看，多数个股没跟上**
+#        spread < 0 ⇒ 个股强于权重（黄线在上）⇒ **题材活跃，赚钱效应在个股**
+#   再叠加「大/中/小三组等权涨幅差」看**风格偏离**（big − small）。
+#
+# ⚠️⚠️ 三条诚实标注（都写进返回值的 note，不让人误读）：
+#   ① 加权用的是**流通市值**（腾讯 `float_cap`），而真实指数权重是**自由流通市值 +
+#      分级靠档 + 新股计入规则** ⇒ 这是**近似**，不等于精确复现上证指数
+#      （故返回值同时带上真实指数涨幅供对照，两者不一致时以指数为准）。
+#   ② `change_pct` **未剔除停牌股**（停牌记 0），此处与 `stats.avg_change_pct`
+#      **口径完全一致** —— ★ 这是必须的：若两处口径不同，页面上会出现两个不同的
+#      "平均涨幅"，用户会立刻不信任整个页面。
+#   ③ 非交易时段缓存是**上一交易日收盘快照**（见 main.py 收盘恢复）⇒ 带 `as_of`
+#      标注时刻，不假装是实时数据（"权重护盘"在盘后看就是在复盘昨天）。
+_SIZE_BIG_N = 100          # "大市值组"= 流通市值前 N（≈权重股骨架；全市场约 4000+ 只）
+_STYLE_BAND = 0.5          # 大小盘风格判定带宽（%）：|大−小| 未超此值视为"风格均衡"
+
+
+def _grp(label: str, key: str, sub: list) -> Optional[Dict]:
+    """一组的等权统计（avg / 上涨占比 / 家数）。空组返回 None。"""
+    if not sub:
+        return None
+    vals = [v for _, v in sub]
+    return {
+        "key": key, "label": label, "n": len(sub),
+        "avg": round(sum(vals) / len(vals), 2),
+        # 上涨占比：比 avg 更抗极端值（一只涨停能显著抬高 avg，但只贡献 1/N 的占比）
+        "up_ratio": round(sum(1 for v in vals if v > 0) / len(vals) * 100, 1),
+    }
+
+
+def _size_style(stocks: Dict, index_pct: Optional[float]) -> Dict:
+    """大小盘风格 + 黄白线背离。**纯内存计算、零网络**；数据不足返回 available=False。
+
+    ⚠️ 本函数被 `market_overview` 每个请求调用一次（该接口前端 30s 轮询）
+       ⇒ 只遍历一次内存字典（~4000 行）+ 一次排序，无网络、无 DB，开销可忽略。
+    """
+    try:
+        rows = []
+        for s in stocks.values():
+            chg = s.get("change_pct")
+            if chg is None:
+                continue
+            cap = float(s.get("float_cap") or s.get("market_cap") or 0)
+            rows.append((cap, float(chg)))
+        # 太少 ⇒ 缓存尚未就绪（首次启动全量扫描需 2-4 分钟）：宁可不显示，也不给错结论
+        if len(rows) < 200:
+            return {"available": False, "note": "行情缓存未就绪（首次全量扫描需 2-4 分钟）"}
+        total_cap = sum(cap for cap, _ in rows)
+        if total_cap <= 0:
+            return {"available": False, "note": "市值字段缺失"}
+
+        equal = sum(chg for _, chg in rows) / len(rows)                  # 黄线（等权）
+        weighted = sum(cap * chg for cap, chg in rows) / total_cap       # 白线（流通市值加权）
+        spread = round(weighted - equal, 2)
+
+        rows.sort(key=lambda x: -x[0])                                   # 市值降序
+        n = len(rows)
+        cut_mid = max(_SIZE_BIG_N, n // 2)     # ★ max 兜底：小市场（n<200）时中/小盘不重叠
+        g_big = _grp("大市值", "big", rows[:_SIZE_BIG_N])
+        g_mid = _grp("中市值", "mid", rows[_SIZE_BIG_N:cut_mid])
+        g_small = _grp("小市值", "small", rows[cut_mid:])
+
+        diff = round(g_big["avg"] - g_small["avg"], 2) if (g_big and g_small) else None
+        if diff is None:
+            verdict, label = "unknown", "数据不足"
+        elif diff >= _STYLE_BAND:
+            verdict, label = "weight_support", "权重护盘"
+        elif diff <= -_STYLE_BAND:
+            verdict, label = "small_active", "小盘活跃"
+        else:
+            verdict, label = "balanced", "风格均衡"
+
+        # ── 人话解释（⚠️ 不能含 Markdown 标记：前端是纯文本插值，星号会原样显示）──
+        notes = []
+        if verdict == "weight_support":
+            notes.append("大盘明显强于小盘：指数靠权重撑着，个股没跟上"
+                         "——别被指数红盘误导，先看小票是否补涨")
+        elif verdict == "small_active":
+            notes.append("小盘强于大盘：题材在扩散，赚钱效应在个股"
+                         "——个股信号的可信度相对更高")
+        else:
+            notes.append("大小盘基本同步，无明显风格偏离")
+        if spread >= 0.8:
+            notes.append(f"指数口径（加权 {weighted:+.2f}%）明显强于等权体感（{equal:+.2f}%）"
+                         "——权重在拉抬指数，多数个股体感偏弱")
+        elif spread <= -0.8:
+            notes.append(f"指数口径（加权 {weighted:+.2f}%）弱于等权（{equal:+.2f}%）"
+                         "——权重拖累指数，而个股相对活跃")
+        # ⚠️ 必须用 `data_ts`（数据自身时刻）而**不是** `last_update`（缓存填充时刻）：
+        #   休市日恢复 09-24 收盘快照时，`last_update` 被刻意设成"现在"
+        #   （见 tencent._cache 结构注释）⇒ 用它会把昨天的数据标成今天，**谎报新鲜度**。
+        data_ts = _cache.get("data_ts") or 0
+        return {
+            "available": True, "verdict": verdict, "label": label,
+            "groups": [g for g in (g_big, g_mid, g_small) if g],
+            "weighted": round(weighted, 2),      # 白线（流通市值加权）
+            "equal": round(equal, 2),            # 黄线（等权）
+            "spread": spread,                    # 黄白线背离（加权 − 等权）
+            "big_minus_small": diff,             # 风格差（大市值 − 小市值）
+            "index_pct": index_pct,              # 真实指数涨幅（对照用）
+            "note": "；".join(notes),
+            "as_of": (datetime.fromtimestamp(data_ts).strftime("%m-%d %H:%M")
+                      if data_ts else None),
+            # True = 数据来自收盘快照（盘后/周末）⇒ 前端应标注"上一交易日"，别当成实时
+            "from_snapshot": bool(_cache.get("from_snapshot")),
+        }
+    except Exception as e:
+        print(f"[market] size style failed: {e}")          # ASCII（铁律⑥）
+        return {"available": False, "note": "计算失败"}
+
+
 @router.get("/overview")
 def market_overview(background_tasks: BackgroundTasks):
     """
@@ -177,6 +301,14 @@ def market_overview(background_tasks: BackgroundTasks):
             "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
             "total_amount": round(sum(s["amount"] for s in stocks.values()), 2),   # 总成交额
         }
+        # ★ 2026-09-25（用户需求 1）：大小盘风格 / 黄白线背离 —— 复用**同一份**内存缓存
+        #   （零新增请求、零新增数据源）。看盘序"9:30-10:00 定方向"缺的那一层。
+        #   真实指数涨幅取自上面已拉到的 indices（对照用，见 `_size_style` 注释①）。
+        _idx_pct = next((i["change_pct"] for i in result["indices"]
+                         if i["name"] == "上证指数"), None)
+        result["style"] = _size_style(stocks, _idx_pct)
+    else:
+        result["style"] = {"available": False, "note": "行情缓存未就绪"}
 
     # ── 第三部分：仅盘中才触发后台刷新（盘后/周末数据静态，无需重拉）──
     # A 股数据仅盘中有时效性：盘后/周末启动时已从收盘快照恢复缓存（见 main.py），
