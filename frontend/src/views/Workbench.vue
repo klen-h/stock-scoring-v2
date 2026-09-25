@@ -168,51 +168,53 @@
             <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
             <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
             <template v-else>
-              <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行） -->
-              <div class="flex items-center gap-6 flex-wrap">
-                <div class="flex items-center gap-3">
+              <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行，
+                   严格单行不换行：长文本一律 truncate，悬停 title 看全文） -->
+              <div class="flex items-center gap-5 min-w-0">
+                <div class="flex items-center gap-2.5 flex-shrink-0">
                   <span class="text-4xl font-bold font-mono leading-none"
                         :class="dirColor(macro.direction?.level, macro.direction?.score)">
                     {{ macro.direction?.score ?? '—' }}
                   </span>
-                  <div>
-                    <div class="text-sm font-semibold"
+                  <div class="min-w-0">
+                    <div class="text-xs font-semibold whitespace-nowrap"
                          :class="dirColor(macro.direction?.level, macro.direction?.score)">
                       宏观方向 · {{ macro.direction?.level || '—' }}
                     </div>
-                    <div class="text-[11px] text-muted mt-0.5">{{ macro.direction?.advisory || '' }}</div>
+                    <div class="text-[11px] text-muted truncate max-w-[240px]"
+                         :title="macro.direction?.advisory">{{ macro.direction?.advisory || '' }}</div>
                   </div>
                 </div>
-                <div class="w-px h-12 bg-border"></div>
-                <div class="flex items-center gap-3">
+                <div class="w-px h-12 bg-border flex-shrink-0"></div>
+                <div class="flex items-center gap-2.5 flex-shrink-0">
                   <span class="text-4xl font-bold font-mono leading-none">{{ temperature?.temperature ?? '—' }}</span>
                   <div>
-                    <div class="text-sm font-semibold">市场环境 · {{ temperature?.level || '—' }}</div>
-                    <div class="text-[11px] text-muted mt-0.5">{{ temperature?.advisory || '' }}</div>
-                    <div class="text-[10px] text-muted">0~100，越高越亢奋</div>
+                    <div class="text-xs font-semibold whitespace-nowrap">市场环境 · {{ temperature?.level || '—' }}</div>
+                    <div class="text-[11px] text-muted whitespace-nowrap">0~100，越高越亢奋</div>
                   </div>
                 </div>
-                <div class="w-px h-12 bg-border"></div>
-                <div class="flex items-center gap-3 flex-1 min-w-[260px]">
-                  <div>
-                    <div class="text-sm font-bold"
+                <div class="w-px h-12 bg-border flex-shrink-0"></div>
+                <div class="flex items-center gap-3 flex-1 min-w-0">
+                  <div class="flex-shrink-0">
+                    <div class="text-sm font-bold whitespace-nowrap"
                          :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
                                  ? 'text-amber-400' : 'text-gray-100'">
                       {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}
                     </div>
-                    <div class="text-[10px] text-muted">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
+                    <div class="text-[10px] text-muted whitespace-nowrap">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
                   </div>
-                  <span class="text-gray-300 flex-1 min-w-[180px] leading-relaxed text-xs">
+                  <span class="text-gray-300 flex-1 truncate text-xs"
+                        :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
                     {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
                   </span>
-                  <span class="text-muted text-xs whitespace-nowrap">
+                  <span class="text-muted text-xs whitespace-nowrap flex-shrink-0">
                     仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
                   </span>
                   <router-link target="_blank" to="/monitor"
-                               class="text-accent hover:underline text-xs whitespace-nowrap">详情</router-link>
+                               class="text-accent hover:underline text-xs whitespace-nowrap flex-shrink-0">详情</router-link>
                 </div>
               </div>
-              <div class="flex flex-wrap gap-1 mt-3">
+              <div class="flex flex-wrap gap-1 mt-2.5">
                 <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
                       class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
                 <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
