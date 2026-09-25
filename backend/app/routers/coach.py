@@ -57,9 +57,15 @@ def execute_alert(alert_id: int, payload: dict = Body(...),
 
 
 @router.get("/consistency")
-def get_consistency(days: int = 30, user: dict = Depends(get_current_user)):
-    """执行一致性度量（第一版口径：执行率分母=已决策，未响应单列不进分母）。"""
-    return audit.execution_consistency(days=min(max(days, 1), 365))
+def get_consistency(days: int = 30, day: str = None,
+                    user: dict = Depends(get_current_user)):
+    """执行一致性度量（执行率分母=已决策，未响应单列不进分母）。
+
+    `day`（YYYY-MM-DD，可选）：**只统计该日** —— 供盘后「今日执行回看」。
+    ⚠️ 不能用 `days=1` 顶替"今天"（那是"近 1 天"，含昨天）。
+    """
+    d = (day or "").strip()[:10] or None
+    return audit.execution_consistency(days=min(max(days, 1), 365), day=d)
 
 
 @router.get("/plans/execution-rate")

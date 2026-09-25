@@ -964,6 +964,10 @@ def build_decision_card() -> dict:
             positions_scan.append({
                 "code": it.get("code"), "name": it.get("name"),
                 "pnl_pct": it.get("pnl_pct"), "phase_cn": it.get("phase_cn"),
+                # ★ 2026-09-25：补下传**英文阶段枚举** `phase` —— 前端要用共享配色表
+                #   （`displayMeta.PHASE_STYLE`，键=英文枚举）上色；原先只给了 `phase_cn`，
+                #   前端只能显示纯灰文本（用户反馈"主力阶段颜色没生效"的直接原因）。
+                "phase": it.get("phase"),
                 "alerts": alerts, "fit": fit,
                 # ★ 预案字段
                 "suggested_pct": _sug,

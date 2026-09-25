@@ -294,7 +294,10 @@ export const unfreezePaperRisk = () => http.post('/paper/risk/unfreeze')
 export const getCoachAlerts = (limit = 50) => http.get('/coach/alerts', { params: { limit } })
 export const executeCoachAlert = (id, executed, reason = '') =>
   http.post(`/coach/alerts/${id}/execute`, { executed, reason })
-export const getCoachConsistency = (days = 30) => http.get('/coach/consistency', { params: { days } })
+// ★ 2026-09-25：加 `day`（YYYY-MM-DD，可选）= **只统计该日** —— 供盘后「今日执行回看」。
+//   ⚠️ 不能用 `days=1` 顶替"今天"（那是"近 1 天"，`alert_date >= 昨天`，会把昨天算进来）。
+export const getCoachConsistency = (days = 30, day = '') =>
+  http.get('/coach/consistency', { params: { days, day } })
 export const getCoachPlanExecutionRate = (days = 30) => http.get('/coach/plans/execution-rate', { params: { days } })
 export const getCoachPlans = (positionIds) => http.get('/coach/plans', { params: { position_ids: (positionIds || []).join(',') } })
 export const abandonCoachPlan = (id, reason) => http.post(`/coach/plans/${id}/abandon`, { reason })

@@ -483,7 +483,13 @@
                   <a :href="stockHref(p.code)" target="_blank"
                      class="font-semibold hover:underline">{{ p.name }}</a>
                   <span class="font-mono" :class="pctClass(p.pnl_pct)">{{ fmtPct(p.pnl_pct) }}</span>
-                  <span class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
+                  <!-- ★ 2026-09-25：主力阶段改用**共享** `PHASE_STYLE` 上色（用户："颜色逻辑一致…没生效"）
+                       —— 原来这里是**纯灰文本**（`主力 盘整`），因为后端只下传了 `phase_cn` 中文、
+                       没给英文枚举 ⇒ 前端无法查配色表。现已让后端补 `phase`。 -->
+                  <span v-if="p.phase" class="px-1 rounded cursor-help text-[10px]"
+                        :class="(MF_PHASE_STYLE[p.phase] || {}).cls || 'bg-white/5 text-muted'"
+                        :title="(MF_PHASE_STYLE[p.phase] || {}).tip || ''">{{ p.phase_cn || p.phase }}</span>
+                  <span v-else class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
                   <span v-if="p.suggested_pct != null"
                         class="px-1 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
                         :title="`建议仓位上限 ${p.suggested_pct}%（个股档位 ${p.position_label || '—'}）${(p.sizing_reasons || []).length ? '：' + p.sizing_reasons.join('；') : ''}`">
@@ -1131,10 +1137,13 @@
                 </div>
                 <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
                 <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
-                  <span v-if="it.phase_cn" class="px-1 rounded"
-                        :class="it.signal === 'distribution' ? 'bg-red-500/15 text-red-400'
-                                : it.signal === 'accum' ? 'bg-emerald-500/15 text-emerald-400'
-                                : 'bg-background border border-border text-muted'">主力·{{ it.phase_cn }}</span>
+                  <!-- ★ 2026-09-25：改用**共享** `PHASE_STYLE`。原实现只认 `signal`——
+                       出货红 / 吸筹绿，**盘整、下跌、拉升、洗盘一律灰** ⇒ 六种阶段实际只呈现两色
+                       （用户反馈"主力阶段颜色没生效"，这是真凶之一）。 -->
+                  <span v-if="it.phase" class="px-1 rounded cursor-help"
+                        :class="(MF_PHASE_STYLE[it.phase] || {}).cls || 'bg-white/5 text-muted'"
+                        :title="(MF_PHASE_STYLE[it.phase] || {}).tip || ''">主力·{{ it.phase_cn || it.phase }}</span>
+                  <span v-else-if="it.phase_cn" class="px-1 rounded text-muted">主力·{{ it.phase_cn }}</span>
                   <span v-if="it.score != null" class="text-muted">
                     评分 <b class="text-gray-200 font-mono">{{ it.score }}</b>
                     <template v-if="it.rank_pos">（{{ it.rank_date }} 榜单第 {{ it.rank_pos }}）</template>
@@ -1236,6 +1245,200 @@
 
         <!-- 实时模式 · ④ 盘后（阅读模式） -->
         <template v-else-if="selectedPhase === 'postmarket'">
+          <!-- ★★ 2026-09-25（用户："把合理的都做了"）—— **P0 盘后「今日结算」**：
+               原盘后只有"系统榜 + 推送日志"，看不到"我今天的结果"（`summary` 里没有盈亏字段）
+               ⇒ 收盘时页面在讲"系统"、不在讲"你"。本卡补上：当日收益 / 涨跌家数 / 累计浮盈 /
+               逐只当日表现。口径见 `portfolioDay` 注释（按市值加权，缺股数的不计入加权）。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">今日结算（组合当日表现）
+                <span class="text-[10px] text-muted font-normal">
+                  （按持仓市值加权<template v-if="portfolioDay && portfolioDay.usable !== portfolioDay.n">
+                  · 参与加权 {{ portfolioDay.usable }}/{{ portfolioDay.n }} 只</template><template
+                  v-if="radarAsOf"> · 数据 {{ radarAsOf.slice(11, 16) }}</template>）</span></div>
+              <router-link target="_blank" to="/paper" class="text-xs text-accent hover:underline">模拟盘</router-link>
+            </div>
+            <template v-if="portfolioDay">
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center text-xs">
+                <div>
+                  <div class="text-2xl font-bold font-mono" :class="pctClass(portfolioDay.dayPct)">
+                    {{ portfolioDay.dayPct == null ? '—' : signNum(portfolioDay.dayPct) + '%' }}</div>
+                  <div class="text-muted">当日收益（加权）</div>
+                  <div v-if="portfolioDay.dayAmt != null" class="font-mono text-[11px]"
+                       :class="pctClass(portfolioDay.dayAmt)">
+                    {{ portfolioDay.dayAmt > 0 ? '+' : '' }}{{ fmtNum(portfolioDay.dayAmt) }} 元</div>
+                </div>
+                <div>
+                  <div class="text-2xl font-bold font-mono">
+                    <span class="text-red-400">{{ portfolioDay.up }}</span>
+                    <span class="text-muted text-base"> / </span>
+                    <span class="text-emerald-400">{{ portfolioDay.down }}</span></div>
+                  <div class="text-muted">持仓涨 / 跌<template v-if="portfolioDay.flat">（平 {{ portfolioDay.flat }}）</template></div>
+                </div>
+                <div>
+                  <div class="text-2xl font-bold font-mono" :class="pctClass(portfolioDay.pnlPct)">
+                    {{ portfolioDay.pnlPct == null ? '—' : signNum(portfolioDay.pnlPct) + '%' }}</div>
+                  <div class="text-muted">累计浮盈（加权）</div>
+                </div>
+                <div>
+                  <div class="text-2xl font-bold font-mono text-gray-200">
+                    {{ fmtNum(portfolioDay.mvNow) }}<span class="text-muted text-[10px]"> 元</span></div>
+                  <div class="text-muted">持仓市值</div>
+                </div>
+              </div>
+              <!-- 逐只当日表现：★ 条长用**固定刻度**（±10% 满格，最小 3% 保底）而不是榜内归一化
+                   —— 固定刻度才能**跨日比较**（与竞价刻度尺同一条理由）。 -->
+              <div v-if="portfolioDay.ranked.length" class="mt-3 pt-3 border-t border-border/40 space-y-1">
+                <div class="text-[10px] text-muted">持仓当日表现（按当日涨跌排序 · 条长刻度 ±10%）</div>
+                <div v-for="h in portfolioDay.ranked" :key="h.code"
+                     class="flex items-center gap-2 text-[11px] font-mono">
+                  <a :href="stockHref(h.code)" target="_blank"
+                     class="w-[76px] shrink-0 truncate hover:text-accent">{{ h.name || h.code }}</a>
+                  <span class="flex-1 h-2.5 rounded-sm bg-border/25 overflow-hidden">
+                    <span class="block h-full rounded-sm"
+                          :class="Number(h.day_pct) >= 0 ? 'bg-red-500/60' : 'bg-emerald-500/60'"
+                          :style="{ width: Math.max(3, Math.min(100, Math.abs(Number(h.day_pct) || 0) * 10)) + '%' }"></span>
+                  </span>
+                  <span class="w-[56px] shrink-0 text-right" :class="pctClass(h.day_pct)">{{ signNum(h.day_pct) }}%</span>
+                </div>
+              </div>
+              <div class="text-[10px] text-muted mt-2">
+                当日盈亏 = 今日市值 − 昨收市值（同股数）· 累计浮盈 = 今日市值 / 持仓成本 − 1；
+                ⚠️ 停牌或无行情的持仓**不计入加权**（仍计入涨跌家数）。
+              </div>
+            </template>
+            <div v-else class="text-muted text-xs">—（无持仓，或持仓数据未就绪）</div>
+          </div>
+          <!-- ★★ 2026-09-25（盘后补强 · 缺口1）「**今日盘面定稿**」——
+               15:00 时页面上**没有"今天是什么行情"**：日报要 22:16 才生成，而 zzshare 快照此刻
+               仍是**昨天的**（`limit-review` 实测 stale=True）⇒ 两者都不能用。
+               ⇒ 本卡改用**内存行情**（收盘后不再变化 = 收盘定稿）给出：涨跌家数 / 涨跌停 /
+               成交额 / 情绪判读 + 大小盘风格 + 昨日涨停赚钱效应 + 板块主线 Top5。
+               ⚠️ 与盘中「看盘序」是**同一份数据**，差别只在时点（15:00 看 = 定稿）；
+                  这里**不抽公共组件**：两处措辞与取舍不同（盘中强调实时、盘后强调定稿，
+                  且盘后刻意不含炸板率/大面率 —— 那两项来自 zzshare 快照，15:00 还是昨天的，
+                  放进来会拿昨天的数据冒充今天）。
+               ⚠️ 成交额与家数依赖常驻的 `overview`（全天轮询）✓；情绪/板块由 `loadPhaseData`
+                  在切到盘后时补拉（见该函数注释）。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">今日盘面定稿
+                <span class="text-[10px] text-muted font-normal">（收盘口径<template
+                  v-if="emotion?.as_of"> · 数据 {{ emotion.as_of.slice(11, 16) }}</template>）</span></div>
+              <span v-if="emotion && emotion.trading_day === false"
+                    class="text-[10px] text-amber-400">⚠ 非交易日（为最近交易日快照）</span>
+            </div>
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-3">
+              <div><div class="text-[10px] text-muted">上涨</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">下跌</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">涨停</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">跌停</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">两市成交额</div>
+                <div class="text-base font-bold font-mono text-gray-200">
+                  {{ overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">情绪判读</div>
+                <div class="text-base font-bold"
+                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
+                  {{ emotion?.verdict || '—' }}</div></div>
+            </div>
+            <!-- 大小盘风格（决定"今天赚指数还是赚个股"，与盘后结算卡互为解释） -->
+            <div v-if="ovStyle?.available" class="border-t border-border/40 pt-2 text-[11px]">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-muted">大小盘风格</span>
+                <span class="font-semibold cursor-help" :class="styleCls" :title="styleTitle">{{ ovStyle.label }}</span>
+                <span class="text-muted font-mono">
+                  大 <b :class="pctClass(ovBig?.avg)">{{ signNum(ovBig?.avg) }}%</b>
+                  <template v-if="ovMid">/ 中 <b :class="pctClass(ovMid?.avg)">{{ signNum(ovMid?.avg) }}%</b></template>
+                  / 小 <b :class="pctClass(ovSmall?.avg)">{{ signNum(ovSmall?.avg) }}%</b></span>
+                <span class="text-muted">· 背离（加权−等权）
+                  <b class="font-mono text-gray-300">{{ signNum(ovStyle.spread) }}%</b></span>
+              </div>
+              <div class="text-muted mt-0.5">{{ ovStyle.note }}</div>
+            </div>
+            <!-- 情绪定稿：赚钱效应 + 连板高度（明日预判的输入） -->
+            <div v-if="emotion" class="border-t border-border/40 mt-2 pt-2 text-[11px] text-muted">
+              昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
+              <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
+              · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak ?? '—' }}</b>
+              <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
+              <span class="text-[10px]">· {{ emotion.note }}</span>
+            </div>
+            <!-- 板块主线（收盘时刻的东财实时接口） -->
+            <div v-if="sectorTop.length" class="border-t border-border/40 mt-2 pt-2">
+              <div class="text-[11px] text-muted mb-1">板块主线 Top5
+                <span class="text-[10px]">（含板块内领涨股）</span>
+                <router-link target="_blank" to="/sector" class="text-accent hover:underline ml-1">板块详情</router-link></div>
+              <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+                <span v-for="(s, i) in sectorTop.slice(0, 5)" :key="i" class="font-mono">
+                  <span class="text-muted">{{ i + 1 }}</span>
+                  <span class="font-semibold text-gray-200">{{ s.name || s.industry || s.code }}</span>
+                  <b :class="pctClass(s.change_pct ?? s.pct_change)">{{ signNum(s.change_pct ?? s.pct_change) }}%</b>
+                  <span v-if="s.leader" class="text-muted">（{{ s.leader }}
+                    <b :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</b>）</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <!-- ★★ 2026-09-25（盘后补强 · 缺口2）「**今日执行**」——
+               15:00 该回答"今天系统推了几条、我做了几条"。此前只有右栏"未决策待办"（存量）
+               与复盘里的**窗口统计**（近 N 天），**唯独缺"今天"这一天**。
+               后端 `/coach/consistency` 本次新增 `day` 参数（按日精确）。
+               ⚠️ 口径（后端定义）：分母 = **已决策**，"未响应"单列不进分母 ——
+                  "没看见"与"看见了但放弃"是两回事，混算会虚高执行率。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">今日执行（教练卡）
+                <span class="text-[10px] text-muted font-normal">（{{ todayStr }} · 只统计今日**已推送**）</span></div>
+              <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练页</router-link>
+            </div>
+            <div v-if="todayExecErr" class="text-muted text-xs">—（加载失败：{{ todayExecErr }}）</div>
+            <template v-else-if="todayExec">
+              <div v-if="!todayExec.pushed_total" class="text-muted text-xs">
+                —（今天没有推送的教练卡）。没有推送通常意味着**今天没有触发纪律条件**，属正常。
+              </div>
+              <template v-else>
+                <div class="flex items-center gap-6 flex-wrap text-xs">
+                  <div>
+                    <div class="text-2xl font-bold font-mono"
+                         :class="(todayExec.exec_rate_pct || 0) >= 60 ? 'text-emerald-400' : 'text-amber-300'">
+                      {{ todayExec.exec_rate_pct ?? '—' }}%</div>
+                    <div class="text-[11px] text-muted">执行率（分母=已决策）</div>
+                  </div>
+                  <div class="space-y-0.5">
+                    <div>今日推送 <b class="font-mono text-gray-200">{{ todayExec.pushed_total }}</b> 条</div>
+                    <div>已执行 <b class="text-emerald-400 font-mono">{{ todayExec.executed }}</b> ·
+                      已放弃 <b class="text-amber-300 font-mono">{{ todayExec.abandoned }}</b> ·
+                      未响应 <b class="text-muted font-mono">{{ todayExec.ignored }}</b></div>
+                  </div>
+                </div>
+                <!-- 今日清单（与上方数字同口径：只列已推送的） -->
+                <div v-if="todayPushedCards.length" class="mt-2 pt-2 border-t border-border/40 space-y-1 text-xs">
+                  <div v-for="a in todayPushedCards" :key="a.id" class="flex items-center gap-2 flex-wrap">
+                    <span class="text-muted font-mono">{{ (a.alert_time || '').slice(11, 16) }}</span>
+                    <span class="font-semibold text-gray-200">{{ a.label || a.rule_id }}</span>
+                    <a :href="stockHref(a.code)" target="_blank"
+                       class="hover:text-accent">{{ a.name || a.code }}</a>
+                    <span class="ml-auto"
+                          :class="a.executed === 'yes' ? 'text-emerald-400'
+                                  : a.executed === 'no' ? 'text-amber-300' : 'text-muted'">
+                      {{ a.executed === 'yes' ? '已执行' : a.executed === 'no' ? '已放弃' : '未响应' }}</span>
+                  </div>
+                </div>
+                <div class="text-[10px] text-muted mt-1">{{ todayExec.note }}</div>
+              </template>
+            </template>
+            <div v-else class="text-muted text-xs">—（加载中…）</div>
+          </div>
+          <!-- ★ 2026-09-25 用户："评分榜 Top10 和观察池（买入闸门候选）左右卡片布局"
+               ⇒ 两卡**并排**（都是"清单"性质、各自不长；并排后盘后首屏更紧凑）。
+               ⚠️ 断点 **xl**(1280)：主区被常驻右栏占掉 320px；窄屏回退单列（信息不丢）。
+               ⚠️ **不加竖分割线** —— 两边是独立卡片、各有边框（与盘中分栏同一条理由）。 -->
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
+          <div class="min-w-0">
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">评分榜 Top10</div>
@@ -1260,16 +1463,67 @@
               </div>
             </div>
           </div>
+          </div>
+          <div class="min-w-0">
+          <!-- ★ 2026-09-25（P1 观察池实化）：原实现只渲染**一行**"候选 N 只，前三：A、B、C"，
+               而后端返回的 `{code,name,ready,label,missing,phase_cn,strategies}` 与
+               总览 `{regime,total,ready3,counts,strategy_hits,data_date}` **全都拿到了却没用**
+               ⇒ 一张卡占位、几乎零信息。现在展开成列表 + 就绪度分布。
+               ⚠️ 口径（后端注释）：ready≥2 = "主力有根据 + 不追高，只等市况/时机"的**候池**，
+                  三绿是低频条件 ⇒ 池空属正常，不写成"没有机会"。 -->
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">观察池</div>
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">观察池（买入闸门候选）
+                <span class="text-[10px] text-muted font-normal">
+                  （ready≥2 的"等时机"池<template v-if="gwMeta.regime"> · 市况 {{ gwMeta.regime }}</template><template
+                  v-if="gwMeta.data_date"> · 数据 {{ gwMeta.data_date }}</template>）</span></div>
               <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">详情</router-link>
             </div>
-            <div v-if="gwErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else class="text-xs text-muted">
-              候选 {{ gwItems.length }} 只<span v-if="gwItems.length">，前三：
-              {{ gwItems.slice(0, 3).map(x => x.name || x.code).join('、') }}</span>
+            <div v-if="gwErr" class="text-muted text-xs">—（加载失败：{{ gwErr }}）</div>
+            <template v-else-if="gwItems.length">
+              <div class="text-[11px] text-muted mb-1.5">
+                候选 <b class="text-gray-200 font-mono">{{ gwMeta.total || gwItems.length }}</b> 只 ·
+                三绿 <b class="text-emerald-400 font-mono">{{ gwMeta.ready3 || 0 }}</b> 只
+                <span v-if="gwMeta.counts" class="ml-1">
+                  （分布 1绿 {{ gwMeta.counts[1] || 0 }} / 2绿 {{ gwMeta.counts[2] || 0 }} / 3绿 {{ gwMeta.counts[3] || 0 }}）</span>
+                <span v-if="gwMeta.strategy_hits" class="ml-1">· 有战法信号 {{ gwMeta.strategy_hits }} 只</span>
+              </div>
+              <div class="space-y-1 text-xs">
+                <div v-for="g in gwItems.slice(0, 8)" :key="g.code"
+                     class="flex items-center gap-2 border-b border-border/40 py-1"
+                     :title="g.hint || g.missing || ''">
+                  <a :href="stockHref(g.code)" target="_blank"
+                     class="font-semibold hover:text-accent truncate max-w-[88px]">{{ g.name || g.code }}</a>
+                  <!-- ★ 2026-09-25 用户："点击代码跳到雪球" —— 与榜单页/持仓卡同口径
+                       （名称 → 本地详情页，代码 → 雪球）。 -->
+                  <a :href="xqUrl(g.code)" target="_blank" rel="noopener" title="雪球"
+                     class="font-mono text-muted hover:text-accent shrink-0">{{ g.code }}</a>
+                  <span class="px-1 rounded font-mono text-[10px] shrink-0"
+                        :class="g.ready === 3 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-300'">
+                    {{ g.ready }}/3</span>
+                  <span class="text-muted truncate">{{ g.label || g.missing || '' }}</span>
+                  <!-- ★ 2026-09-25 用户："盘整、下跌的…跟现项目观察池的颜色逻辑一致"
+                       ⇒ 主力阶段改用**共享** `PHASE_STYLE`（绿=机会/红=风险：吸筹绿、出货红、
+                          拉升琥珀、洗盘青、下跌灰、盘整淡）—— 与榜单页持仓表逐字同一份。 -->
+                  <span v-if="g.phase" class="px-1 rounded shrink-0 cursor-help"
+                        :class="(MF_PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
+                        :title="(MF_PHASE_STYLE[g.phase] || {}).tip || ''">{{ g.phase_cn || g.phase }}</span>
+                  <!-- ★ 同日：战法名改用**中文**（共享 `strategyShort`）——
+                       未登记的战法回退英文名，不隐藏（否则新增战法没人发现漏登记）。 -->
+                  <span v-for="(s, si) in (g.strategies || [])" :key="si"
+                        class="ml-auto px-1 rounded bg-accent/10 text-accent border border-accent/30 text-[10px] shrink-0">
+                    {{ strategyShort(s) }}</span>
+                </div>
+              </div>
+              <div v-if="gwItems.length > 8" class="text-[10px] text-muted mt-1">
+                仅列前 8 只（共 {{ gwItems.length }} 只，全部见榜单页）
+              </div>
+            </template>
+            <div v-else class="text-muted text-xs">
+              —（当前无 ready≥2 的候选。三绿是**低频**条件，平时池空属正常）
             </div>
+          </div>
+          </div>
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">今日系统时间线</div>
@@ -1427,6 +1681,49 @@
             <div v-if="!reportMd" class="text-muted text-xs">—（未生成）</div>
             <div v-else class="md-body" v-html="renderMd(reportMd)"></div>
           </div>
+
+          <!-- ★★ 2026-09-25（P1「明日准备」）—— 复盘 → 次日的**交接棒**。
+               复盘原本 6 块全在回答"今天发生了什么"，**没有一块回答"明天要做什么"**
+               ⇒ 复盘的结论没有被转成明日待办，一天的首尾（复盘 → 次日盘前）没接上。
+               数据：`/user/plans` 的 `status=waiting` 计划（含 A4 的结构化触发条件）。
+               ⚠️ 本卡只摆事实，不催办、不改状态。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">明日准备（待触发计划）
+                <span class="text-[10px] text-muted font-normal">（未触发 {{ plans.length }} 条）</span></div>
+              <router-link target="_blank" to="/trade-plans" class="text-xs text-accent hover:underline">计划管理</router-link>
+            </div>
+            <div v-if="plansErr" class="text-muted text-xs">—（加载失败：{{ plansErr }}）</div>
+            <div v-else-if="!plans.length" class="text-muted text-xs">
+              —（暂无待触发计划）。复盘出的想法应当**在今晚写成计划** —— 盘前写预案、盘中不临场；
+              有触发条件的计划会由系统盘中每 60s 比对行情并推送。
+            </div>
+            <div v-else class="space-y-1.5 text-xs">
+              <div v-for="p in plans" :key="p.id" class="border-b border-border/40 pb-1.5">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-1 rounded text-[10px] shrink-0"
+                        :class="p.plan_type === 'add' ? 'bg-red-500/15 text-red-400'
+                                : p.plan_type === 'target' ? 'bg-amber-500/15 text-amber-300'
+                                : p.plan_type === 'stop' ? 'bg-emerald-500/15 text-emerald-400'
+                                : 'bg-sky-500/15 text-sky-400'">{{ PLAN_TYPE_CN[p.plan_type] || '试仓' }}</span>
+                  <a :href="stockHref(p.code)" target="_blank"
+                     class="font-semibold hover:text-accent">{{ p.name || p.code }}</a>
+                  <span class="font-mono text-muted">{{ p.code }}</span>
+                  <span v-if="p.buy_price" class="font-mono text-muted">买 {{ p.buy_price }}</span>
+                  <span v-if="p.stop_loss" class="font-mono text-emerald-400/90">止损 {{ p.stop_loss }}</span>
+                  <span v-if="p.target" class="font-mono text-red-400/90">目标 {{ p.target }}</span>
+                </div>
+                <!-- A4 结构化触发条件：到点只需执行、不需临场判断 -->
+                <div v-if="p.trigger_high_open != null || p.trigger_volume_break != null"
+                     class="text-[11px] text-accent/90 mt-0.5">
+                  触发：<template v-if="p.trigger_high_open != null">高开 ≥ {{ p.trigger_high_open }}%</template>
+                  <template v-if="p.trigger_high_open != null && p.trigger_volume_break != null"> ｜ </template>
+                  <template v-if="p.trigger_volume_break != null">放量过 {{ p.trigger_volume_break }}</template>
+                </div>
+                <div v-if="p.reason" class="text-[11px] text-muted mt-0.5">{{ p.reason }}</div>
+              </div>
+            </div>
+          </div>
         </template>
       </div>
 
@@ -1505,6 +1802,11 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MarkdownIt from 'markdown-it'
 import TodoCard from '../components/workbench/TodoCard.vue'
+// ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
+//   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
+//   ⚠️ 本文件已有一个同名 `PHASE_STYLE` —— 那是**时段**配色（盘前/竞价/盘中…），
+//      语义完全不同 ⇒ 主力阶段配色必须**重命名导入**（`MF_PHASE_STYLE`），避免撞名。
+import { PHASE_STYLE as MF_PHASE_STYLE, strategyShort } from '../composables/displayMeta'
 import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
@@ -1524,6 +1826,10 @@ import {
   //   A1 收尾时改用实时 `/sector/industry`（含领涨股）才发现 ⇒ 两个都补上。
   getSectorIndustry, getSectorSnapshot,
   getSectorAmountShare,
+  // ★ 2026-09-25（P1「明日准备」）：待触发交易计划 —— 接口**早已存在**
+  //   （`/user/plans`，含 status / plan_type / trigger_high_open / trigger_volume_break），
+  //   此前工作台从未用过 ⇒ 复盘的结论没有被转成"明日待办"，一天的首尾没接上。
+  getUserPlans,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -1539,6 +1845,10 @@ function xqUrl(code) {
   return `https://xueqiu.com/S/${pfx}${c}`
 }
 const stockHref = (code) => `#/stock/${code}`
+// ★ 2026-09-25（P1「明日准备」）：交易计划类型中文
+//   （口径同 `backend/schema.sql` 的 `user_trade_plans.plan_type` 注释：
+//    trial 试仓 / add 加仓 / target 兑现 / stop 认错 —— 决定文案与仓位提示）
+const PLAN_TYPE_CN = { trial: '试仓', add: '加仓', target: '兑现', stop: '认错' }
 
 // ── 常量 ──
 const PHASES = [
@@ -1593,6 +1903,18 @@ const topItems = ref([])
 const topErr = ref('')
 const gwItems = ref([])
 const gwErr = ref('')
+// ★ 2026-09-25（P1 观察池实化）：原实现只取 `items`，**把总览字段全丢了**
+//   （regime / total / ready3 / counts / data_date / strategy_hits 后端都返回了）
+//   ⇒ 卡里只能写"候选 N 只"。现在一并存下来，卡上就能回答"池子多大、几个快出手了、哪天的数据"。
+const gwMeta = ref({})
+// ★ 2026-09-25（P1「明日准备」）：待触发交易计划（status=waiting）
+const plans = ref([])
+const plansErr = ref('')
+// ★ 2026-09-25（盘后补强 · 缺口2）「今日执行」：今天推了几条教练卡、执行/放弃/未响应各几。
+//   ⚠️ 走 `/coach/consistency?day=today`（**按日精确**），**不是**复盘那张"近 N 天"的窗口统计 ——
+//     后端 `/coach/consistency` 本次新增 `day` 参数（`days=1` 是"近 1 天"，含昨天，不能顶替"今天"）。
+const todayExec = ref(null)
+const todayExecErr = ref('')
 const pushItems = ref([])
 const pushConnErr = ref(false)
 const consistency = ref(null)
@@ -2018,9 +2340,93 @@ async function loadGateWatch() {
   try {
     const { data } = await getGateWatch(80)
     gwItems.value = (data && data.items) || []
+    // ★ 2026-09-25：总览字段一并保存（原来只留 items ⇒ 卡里只能写"候选 N 只"）
+    gwMeta.value = {
+      regime: (data && data.regime) || '',
+      total: (data && data.total) || 0,
+      ready3: (data && data.ready3) || 0,
+      counts: (data && data.counts) || {},
+      strategy_hits: (data && data.strategy_hits) || 0,
+      source: (data && data.source) || '',
+      data_date: (data && data.data_date) || '',
+    }
     gwErr.value = ''
   } catch (e) { gwErr.value = (e && e.message) || '未知错误' }
 }
+
+// ★ 2026-09-25（P1「明日准备」）：待触发的交易计划 —— 复盘 → 次日的**交接棒**。
+//   口径：只取 `status === 'waiting'`（已触发/已完成的不该再叫"待办"）。
+//   ⚠️ 这里只把"明天开盘要盯的条件"摆出来，不自动改状态、不催办。
+async function loadPlans() {
+  try {
+    const { data } = await getUserPlans()
+    plans.value = ((data && data.data) || []).filter(p => (p.status || 'waiting') === 'waiting')
+    plansErr.value = ''
+  } catch (e) {
+    plansErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
+  }
+}
+
+// ★ 2026-09-25（盘后补强 · 缺口2）：**今日执行回看** —— 只统计"今天"已推送的教练卡。
+//   `days` 传 1 只是满足签名（走 `day` 分支时它被忽略），真正生效的是 `bjToday()`。
+async function loadTodayExec() {
+  try {
+    const { data } = await getCoachConsistency(1, bjToday())
+    todayExec.value = data || null
+    todayExecErr.value = ''
+  } catch (e) {
+    todayExecErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
+  }
+}
+
+// ★★ 2026-09-25（用户："把合理的都做了"）—— P0 盘后「**今日结算**」。
+//   【为什么要它】盘后原本只有"系统榜 + 推送日志"，**看不到"我今天的结果"**：
+//     `portfolio_radar.summary` 只有 {n, risk, opportunity, in_watch}，全页无盈亏汇总
+//     ⇒ 收盘时页面在讲"系统"，不在讲"你"（与盘前有持仓预案、盘中有持仓卡的取向不一致）。
+//   【口径（如实标注在卡上）】按**当前持仓市值加权**：
+//     组合当日收益 = 今日市值 / 昨收市值 − 1，其中个股昨收市值 = 今日市值 /(1 + 当日涨跌%)
+//     ⇒ 加总后再相除，**不是** `Σ(市值×涨幅)/Σ市值`（后者忽略复利、只是近似）。
+//   ⚠️ 缺 `shares`（无股数）或当日无行情的持仓**只计入家数、不计入加权** ⇒
+//     卡上同时显示"参与加权 N 只"，避免"3 只持仓却按 1 只算"这种数字对不上。
+const portfolioDay = computed(() => {
+  const all = radarItems.value || []
+  if (!all.length) return null
+  const usable = all.filter(x => x.day_pct != null && Number(x.price) > 0 && Number(x.shares) > 0)
+  const up = all.filter(x => Number(x.day_pct) > 0).length
+  const down = all.filter(x => Number(x.day_pct) < 0).length
+  if (!usable.length) {
+    return { n: all.length, usable: 0, dayPct: null, pnlPct: null, dayAmt: null,
+             mvNow: null, up, down, flat: all.length - up - down,
+             best: null, worst: null, ranked: [] }
+  }
+  let mvNow = 0, mvPrev = 0, costSum = 0
+  for (const x of usable) {
+    const r = Number(x.day_pct) / 100
+    const mv = Number(x.price) * Number(x.shares)
+    mvNow += mv
+    mvPrev += mv / (1 + r)          // ← 昨收市值（r = 当日涨跌%，含 0 ⇒ 停牌不计变动）
+    costSum += Number(x.cost || 0) * Number(x.shares)
+  }
+  const r100 = (v) => (v == null ? null : Math.round(v * 100) / 100)
+  const ranked = [...usable].sort((a, b) => Number(b.day_pct) - Number(a.day_pct))
+  return {
+    n: all.length, usable: usable.length,
+    dayPct: mvPrev > 0 ? r100((mvNow / mvPrev - 1) * 100) : null,
+    pnlPct: costSum > 0 ? r100((mvNow / costSum - 1) * 100) : null,
+    dayAmt: mvPrev > 0 ? Math.round(mvNow - mvPrev) : null,   // 当日盈亏（元）
+    mvNow: Math.round(mvNow),
+    up, down, flat: all.length - up - down,
+    best: ranked[0] || null, worst: ranked[ranked.length - 1] || null,
+    ranked,
+  }
+})
+
+// ★ 2026-09-25（缺口2）：今日**已推送**的教练卡清单 —— 与「今日执行」的数字**同口径**
+//   （`pushed` + `alert_date = 今天`）。`pushed` 是本次为列表接口补上的字段
+//   （见后端 `_ALERT_LIST_COLS` 注释），缺它就只能把"落库但未推送"的建议也列进来，
+//   导致清单条数与上方数字对不上。
+const todayPushedCards = computed(() => (coachList.value || [])
+  .filter(a => String(a.alert_date || '').slice(0, 10) === todayStr && a.pushed))
 async function loadPush(date) {
   try {
     const { data } = await getPushLog(date || undefined, 80)
@@ -2306,11 +2712,17 @@ async function loadPhaseData(phase) {
   if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadSizing()]) }
   // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
   else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
-  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
+  // ★ 2026-09-25（盘后补强 · 缺口1）：盘后补拉**情绪快照 + 板块** —— 「今日盘面定稿」卡要用。
+  //   原来只 `loadTop/loadGateWatch` ⇒ 15:00 的页面**完全没有"今天什么行情"**
+  //   （日报要 22:16 才生成，zzshare 快照此刻还是**昨天的** ⇒ 都不能用）。
+  //   ⚠️ `emotion` 走**内存行情**（收盘后不再变化 ⇒ 即收盘定稿），这是 15:00 唯一可用的今日口径。
+  // ★ 同日（缺口2）：再补「今日执行」（按日精确的执行一致性）。
+  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadTodayExec(); }
   // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
   //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
-  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); }
+  // ★ 2026-09-25（P1）：复盘也拉"待触发计划"（明日准备）—— 复盘正是"把今天结论转成明天待办"的时点
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); }
   if (phase === 'intraday' || phase === 'midday') {
     await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals(),
                        loadAmountShare()])

@@ -313,12 +313,13 @@ def write_back_execution(alert_id: int, executed: str, reason: str = "") -> bool
 #  对照审计
 # ==============================================================================
 
-def execution_consistency(days: int = 30) -> dict:
+def execution_consistency(days: int = 30, day: Optional[str] = None) -> dict:
     """
     **执行一致性度量（第一版口径，评审 ④：先定标尺）**
 
     定义（务必先看清分母再谈"提升"）：
-      - 统计范围：近 `days` 天内**已推送**（pushed=1）的建议。
+      - 统计范围：`day` 指定时 = **该日**（`alert_date = day`）；未指定 = 近 `days` 天
+        （`alert_date >= 今日-days`）；两种都要求**已推送**（pushed=1）。
       - **已决策** = executed ∈ {yes,no}（用户做了明确选择）。
       - **未响应** = executed IS NULL（用户没理会）→ **单列，不进分母**：
         "没看见"与"看见了但放弃"是两回事，混算会虚高执行率。
@@ -327,22 +328,31 @@ def execution_consistency(days: int = 30) -> dict:
 
     为什么不用"建议胜率"当 KPI：教练的价值是**劝住冲动**，不是选股。
     简报 §3.2 的原话——"教练 KPI 是本周劝住几次操作"。
+
+    ★ 2026-09-25 新增 `day`（供盘后「今日执行回看」）：**"今天"必须按日精确取** ——
+      不能拿 `days=1` 顶替（那是"近 1 天"，条件是 `alert_date >= 昨天`，会把昨天算进"今天"）。
     """
     ensure_tables()
+    if day:
+        sql = ("SELECT executed, COUNT(*) AS c FROM coach_alerts "
+               "WHERE pushed=1 AND alert_date = %s GROUP BY executed")
+        params = (str(day)[:10],)
+    else:
+        sql = ("SELECT executed, COUNT(*) AS c FROM coach_alerts "
+               "WHERE pushed=1 AND alert_date >= %s GROUP BY executed")
+        params = (_days_ago(days),)
     try:
-        rows = db.fetch(
-            "SELECT executed, COUNT(*) AS c FROM coach_alerts "
-            "WHERE pushed=1 AND alert_date >= %s GROUP BY executed",
-            (_days_ago(days),))
+        rows = db.fetch(sql, params)
     except Exception as e:
         print(f"[coach] 执行一致性查询失败: {e}")
-        return {"window_days": days, "error": str(e)}
+        return {"window_days": days, "day": day, "error": str(e)}
     counts = {str(r["executed"]): int(r["c"] or 0) for r in (rows or [])}
     yes, no = counts.get("yes", 0), counts.get("no", 0)
     ignored = counts.get("None", 0)
     decided = yes + no
     return {
-        "window_days": days,
+        "day": day,                                     # 指定日模式（None = 窗口模式）
+        "window_days": None if day else days,
         "pushed_total": decided + ignored,
         "decided": decided,
         "ignored": ignored,
@@ -374,7 +384,12 @@ def abandon_reasons(limit: int = 20) -> List[dict]:
 #   ⚠️ `numbers_json` **前端零引用**（已核）⇒ 列表不取它（要看明细走详情/回放接口）。
 _ALERT_LIST_COLS = ("id", "alert_date", "alert_time", "rule_id", "label", "severity",
                     "code", "name", "executed", "abandon_reason", "outcome_pct",
-                    "outcome_date")
+                    "outcome_date",
+                    # ★ 2026-09-25：补 `pushed` —— 盘后「今日执行」卡要按"今日**已推送**的"
+                    #   过滤清单（与执行率口径 pushed=1 对齐）；缺它时前端只能把
+                    #   "落库但未推送"的建议也列进来（会与上方数字对不上）。
+                    #   一个整数字段，体积可忽略；其它调用方忽略即可。
+                    "pushed")
 
 
 def recent_alerts(limit: int = 50, trunc: Optional[int] = 300) -> List[dict]:

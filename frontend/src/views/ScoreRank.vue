@@ -1139,6 +1139,9 @@ import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, ge
   //   （同一类问题在 Workbench.vue 的 getSectorSnapshot 上也存在过，已一并修。）
   getMarketOverview } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
+// ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——
+//   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
+import { PHASE_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
 
@@ -1177,46 +1180,9 @@ const pushLogLoading = ref(false)
 const pushLogError = ref('')
 // 双信号交叉筛选（战法命中 = 闸门 ready ∩ 战法信号，两个独立体系）
 const watchOnlyStrategy = ref(false)
-const STRATEGY_SHORT = {
-  ma_convergence_breakout: '收敛突破', single_yang_unbroken: '单阳不破',
-  dragon_turnaround: '龙回头', ma_pullback: '回踩',
-  limit_up_boomerang: '涨停回马枪', wizard_pointer: '神奇指针', old_duck_head: '老鸭头',
-}
-function strategyShort(n) { return STRATEGY_SHORT[n] || n }
-
-// ★ 主力阶段配色（2026-09-22，用户要求"不同状态用不同颜色标签"）
-//   键用**英文枚举**（后端 `phase` 即此，稳定）；显示用后端 `phase_cn`
-//   （唯一映射源 `mainforce/phases.PHASE_CN`，前端不再自建中文映射）。
-//   语义与全站主力标签一致（**绿=机会 / 红=风险**，非 A 股红涨绿跌）：
-//     吸筹=机会｜出货=风险｜**拉升=追高警惕**（trade_gate/战法过滤的拦截条件，
-//     故用琥珀而非红）｜洗盘=中性持有｜下跌=回避｜盘整=无方向。
-//   ⚠️ 类名必须是**静态字面量**（Tailwind 只在源码里扫字符串，拼接会漏扫）。
-const PHASE_STYLE = {
-  accumulation: {
-    cls: 'bg-emerald-500/20 text-emerald-400',
-    tip: '吸筹段：主力低位建仓、时间换空间（闸门 A「主力有根据」的来源）',
-  },
-  shakeout: {
-    cls: 'bg-cyan-500/20 text-cyan-300',
-    tip: '洗盘段：缩量回调不破位＝主力没走，持有/观察',
-  },
-  markup: {
-    cls: 'bg-amber-500/20 text-amber-400',
-    tip: '拉升段：放量上攻，**追高风险**（闸门与战法过滤都会拦 markup）',
-  },
-  distribution: {
-    cls: 'bg-red-500/20 text-red-400',
-    tip: '出货段：高位放量滞涨，筹码换手给散户（回测 10 日 -7.5pt）',
-  },
-  decline: {
-    cls: 'bg-zinc-500/20 text-zinc-400',
-    tip: '下跌段：无主力接管，回避',
-  },
-  sideways: {
-    cls: 'bg-white/5 text-muted',
-    tip: '盘整段：无明显方向',
-  },
-}
+// ★ 2026-09-25：`STRATEGY_SHORT` / `strategyShort` / `PHASE_STYLE`（主力阶段配色）已移到
+//   `composables/displayMeta.js` **共享** —— 工作台观察池要用同一份配色与战法中文名
+//   （用户要求两处一致），复制两份必然漂移。模板里的引用名不变，见文件顶部 import。
 // ── 持仓雷达的局部格式化（2026-09-23）────────────────────────────────────────
 // ★ 复用语义，不新建第二套：
 //   · 主力阶段 → 全站 `PHASE_STYLE`（绿=机会 / 红=风险）
@@ -1232,13 +1198,7 @@ function pnlCls(v) {
   if (!Number.isFinite(n) || n === 0) return 'text-muted'
   return n > 0 ? 'text-red-400' : 'text-emerald-400'
 }
-/** 闸门就绪配色：3/3 绿（三条件齐）｜2/3 琥珀（等状态）｜≤1 灰（还差条件）—— 与观察池列同语义 */
-function readyCls(ready) {
-  if (ready == null) return 'text-muted'
-  if (ready >= 3) return 'text-emerald-400 font-bold'
-  if (ready === 2) return 'text-amber-400'
-  return 'text-muted'
-}
+// ★ 2026-09-25：`readyCls`（闸门就绪配色）已移到 `composables/displayMeta.js`（共享，见顶部 import）
 /** 持仓提示级别配色：risk 红 / opportunity 绿 / info 灰 */
 function alertCls(level) {
   return level === 'risk' ? 'text-red-400'
