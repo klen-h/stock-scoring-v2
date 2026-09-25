@@ -702,9 +702,12 @@ const todoCount = computed(() => todoList.value.length)
 const globalsRow = computed(() => {
   const defs = [
     { key: 'a50', label: 'A50期货' },
+    { key: 'hstech', label: '恒生科技' },
     { key: 'usdcnh', label: '离岸USDCNH' },
     { key: 'brent', label: '布伦特' },
     { key: 'nasdaq', label: '纳指期货' },
+    { key: 'us10y', label: '美债10Y' },
+    { key: 'dxy', label: '美元指数' },
   ]
   return defs.map(({ key, label }) => {
     const v = globals.value[key] || {}
