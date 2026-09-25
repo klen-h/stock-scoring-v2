@@ -19,27 +19,23 @@
         </select>
       </label>
 
-      <!-- 上下两列：A股 / 外盘（★ 2026-09-25 用户要求：不再挤成一行） -->
-      <div class="flex-1 min-w-[420px] grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
-        <div class="flex items-center gap-3 flex-wrap">
-          <span class="text-[10px] text-muted w-7">A股</span>
-          <span v-for="ix in topIndices" :key="ix.name" class="flex items-center gap-1">
-            <span class="text-muted text-[11px]">{{ ix.name }}</span>
-            <span class="font-mono text-xs">{{ fmtNum(ix.price) }}</span>
-            <span class="font-mono text-xs font-semibold" :class="pctClass(ix.change_pct)">
-              {{ signNum(ix.change_pct) }}%
-            </span>
-          </span>
+      <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），一行排开空间足够；
+           细分隔线区分 A股与外盘 -->
+      <div class="flex-1 min-w-[560px] flex items-start gap-3 flex-wrap">
+        <div v-for="ix in topIndices" :key="ix.name" class="text-center px-1.5">
+          <div class="text-[10px] text-muted">{{ ix.name }}</div>
+          <div class="text-xs font-mono font-semibold leading-snug">{{ fmtNum(ix.price) }}</div>
+          <div class="text-xs font-mono font-bold" :class="pctClass(ix.change_pct)">
+            {{ signNum(ix.change_pct) }}%
+          </div>
         </div>
-        <div class="flex items-center gap-3 flex-wrap">
-          <span class="text-[10px] text-muted w-7">外盘</span>
-          <span v-for="g in globalsRow" :key="g.key" class="flex items-center gap-1">
-            <span class="text-muted text-[11px]">{{ g.label }}</span>
-            <span class="font-mono text-xs">{{ g.price ?? '—' }}</span>
-            <span class="font-mono text-xs font-semibold" :class="pctClass(g.pct)">
-              {{ signNum(g.pct) }}%
-            </span>
-          </span>
+        <div class="w-px self-stretch bg-border"></div>
+        <div v-for="g in globalsRow" :key="g.key" class="text-center px-1.5">
+          <div class="text-[10px] text-muted">{{ g.label }}</div>
+          <div class="text-xs font-mono font-semibold leading-snug">{{ g.price ?? '—' }}</div>
+          <div class="text-xs font-mono font-bold" :class="pctClass(g.pct)">
+            {{ signNum(g.pct) }}%
+          </div>
         </div>
       </div>
 
