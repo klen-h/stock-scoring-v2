@@ -138,8 +138,192 @@ def position_sizing(codes: Optional[List[str]] = None,
             "positions": positions}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  组合回撤纪律（周回撤熔断）—— 2026-09-25（用户需求 2）
+# ══════════════════════════════════════════════════════════════════════════
+# 【需求原话】交易方法论落地计划 A6："G 系列补**周回撤熔断**（周内净值回撤 ≥X% 降仓，
+#   X 用现有 G2 的 5% 对齐）"。框架纪律："达到日/周最大回撤停止交易"。
+#
+# 【★★ 为什么落在**用户真实账户**而不是模拟盘】（先量后做的实测结论）：
+#   · 模拟盘 `paper_positions` 当前 **0 持仓**、最后信号 **2026-09-11**，且战法白名单为空
+#     ⇒ **它已经静止**（不开新仓）⇒ 给它加熔断**没有实际作用**；且它只有
+#     `peak_equity`（无日度净值序列）⇒ 周维度还得先攒数据。
+#   · 用户账户 `user_portfolio` 有 `shares`/`cost`/`created_at`，历史收盘价实测可取
+#     （`tencent.get_kline` 与 `backtest_prices` 逐日一致）⇒ **立刻可算**。
+#   ⇒ 保护用户真金白银才是要点。模拟盘 G5 留待它恢复开仓后再议。
+#
+# 【口径】组合净值(d) = Σ(shares_i × close_i(d))，即**持仓市值**（不含现金）。
+#   · 建仓日之前不计该票（用 `created_at` 的日期部分，避免"凭空持仓"）。
+#   · 某日缺价做**前向填充**（取该日之前最近收盘）；整只票无价则剔除并记入 `missing`。
+#   · 回撤 = (窗口内峰值 − 最新) / 峰值 × 100。
+#   ⚠️⚠️ **近似，必须明示**：按「**当前持仓**」回算历史 ⇒ 若窗口内有过加/减仓，
+#      曲线与真实净值不同（加仓会推高市值、看起来像"上涨"）⇒ 输出 `note`，前端要显示。
+#
+# 【阈值】对齐已有的 **G2**（`paper_trading.DRAWDOWN_FREEZE_PCT = 5.0`）——
+#   同一条纪律不该有两套数值；这里引用而非另写常量（防漂移）。
+# 【动作】框架说"**降仓**"（比 G2 的"冻结"轻）⇒ 触发时把组合总仓位上限打对折，
+#   并同步下调每只的 `suggested_pct`。★ 为什么不直接冻结：周回撤是**短周期**波动，
+#   直接冻结会把正常周内回撤放大成"停摆"；降仓既守纪律又保留机会。
+#   （该判断可被未来数据推翻 ⇒ 系数写成常量、可配。）
+PORTFOLIO_DD_WINDOW = 5            # 回看交易日数（≈一周）
+DD_TOTAL_SCALE = 0.5               # 触发后总仓位上限系数（降仓）
+_DD_CACHE = {"ts": 0.0, "val": None}
+_DD_TTL = 180                      # 3 分钟：历史价有 KLINE_CACHE，此层避免轮询重复回算
+
+
+def _dd_threshold() -> float:
+    """回撤阈值（%）—— **引用 G2 的常量**，单一事实源（防两套数值漂移）。"""
+    try:
+        from app.strategies.paper_trading import DRAWDOWN_FREEZE_PCT
+        return float(DRAWDOWN_FREEZE_PCT)
+    except Exception:
+        return 5.0
+
+
+def _recent_closes(code: str, count: int) -> Dict[str, float]:
+    """{date: close}（最近 count 个交易日）。失败返回 {}（fail-open）。"""
+    try:
+        from app.tencent import get_kline
+        ks = get_kline(str(code), period="day", count=count)
+        return {str(k.get("date")): float(k.get("close") or 0)
+                for k in (ks or []) if k.get("date") and (k.get("close") or 0) > 0}
+    except Exception as e:
+        print(f"[position_sizing] kline failed {code}: {e}")        # ASCII（铁律⑥）
+        return {}
+
+
+def _px_at(px: Dict[str, float], day: str) -> Optional[float]:
+    """该票在 day 的收盘价（**前向填充**：取 day 及之前最近一天）；无则 None。"""
+    best = None
+    for d in sorted(px):
+        if d <= day:
+            best = px[d]
+        else:
+            break
+    return best
+
+
+def _portfolio_drawdown_uncached(window: int) -> Dict:
+    out = {"available": False, "window": window, "triggered": False, "drawdown_pct": None,
+           "threshold_pct": _dd_threshold(), "curve": [], "positions": [],
+           "missing": [], "nav_latest": None, "nav_peak": None, "peak_date": None,
+           "advice": None, "note": None}
+    try:
+        from app.database import db
+        from app.portfolio_scope import portfolio_where
+        w, p = portfolio_where()
+        rows = db.fetch("SELECT code, name, shares, cost, created_at FROM user_portfolio "
+                        f"{w}", p) or []
+    except Exception as e:
+        print(f"[position_sizing] portfolio read failed: {e}")       # ASCII（铁律⑥）
+        out["note"] = "读取持仓失败"
+        return out
+
+    holds = []
+    for r in rows:
+        code = str(r.get("code") or "").strip()
+        try:
+            sh = float(r.get("shares") or 0)
+        except (TypeError, ValueError):
+            sh = 0.0
+        if not code or sh <= 0:
+            continue
+        holds.append({"code": code, "name": r.get("name") or code, "shares": sh,
+                      "cost": float(r.get("cost") or 0),
+                      "since": str(r.get("created_at") or "")[:10]})
+    if not holds:
+        out["note"] = "暂无持仓（无数据可算）"
+        return out
+
+    for h in holds:
+        h["px"] = _recent_closes(h["code"], window + 3)
+        if not h["px"]:
+            out["missing"].append(h["code"])
+    live = [h for h in holds if h["px"]]
+    if not live:
+        out["note"] = "持仓均无历史价格，无法回算"
+        return out
+
+    # 交易日轴 = **各票日期的并集**，取最近 window 个。
+    #   ⚠️ 用并集而非"全市场交易日历"：好处是零额外查询、且不会引入持仓之外的日期；
+    #      代价是**某票长期停牌时曲线会少几个点**（该票停牌期间无价、也无前向填充点）。
+    #      对回撤判定影响有限（峰值/最新都取已有采样点），但极端情况可能低估
+    #      ⇒ 已在 note 里声明"按当前持仓回算"的近似性质。
+    dates = sorted({d for h in live for d in h["px"]})[-window:]
+    curve = []
+    for d in dates:
+        nav, used = 0.0, 0
+        for h in live:
+            if h["since"] and d < h["since"]:
+                continue                      # 该日尚未建仓
+            px = _px_at(h["px"], d)
+            if px is None:
+                continue
+            nav += h["shares"] * px
+            used += 1
+        if nav > 0:
+            curve.append({"date": d, "nav": round(nav, 2), "n": used})
+    if len(curve) < 2:
+        # ⚠️ 数据不足是**常见且正常的**（如"今天刚建仓"）：必须说清"为什么空、什么时候有"，
+        #   否则用户看到空白只会怀疑功能坏了（本项目已多次踩"空白无解释"的坑）。
+        since_min = min((h["since"] for h in live if h["since"]), default=None)
+        out["note"] = (f"可回算的交易日不足（{len(curve)} 天，至少需 2 天）"
+                       + (f"；当前持仓最早建仓日 {since_min}" if since_min else "")
+                       + "——需持仓跨越 2 个交易日以上，下一个交易日盘后即可见")
+        return out
+
+    latest = curve[-1]
+    peak = max(curve, key=lambda x: x["nav"])
+    dd = (peak["nav"] - latest["nav"]) / peak["nav"] * 100
+    out.update({
+        "available": True, "curve": curve,
+        "nav_latest": latest["nav"], "nav_peak": peak["nav"], "peak_date": peak["date"],
+        "drawdown_pct": round(dd, 2),
+        "triggered": dd >= out["threshold_pct"],
+        "positions": [
+            {"code": h["code"], "name": h["name"], "shares": h["shares"], "cost": h["cost"],
+             "value": (round(h["shares"] * _px_at(h["px"], latest["date"]), 2)
+                       if _px_at(h["px"], latest["date"]) else None),
+             "pnl_pct": (round((_px_at(h["px"], latest["date"]) / h["cost"] - 1) * 100, 2)
+                         if h["cost"] > 0 and _px_at(h["px"], latest["date"]) else None)}
+            for h in live],
+    })
+    span = f"{curve[0]['date'][5:]}~{latest['date'][5:]}"
+    if out["triggered"]:
+        out["advice"] = (f"组合市值自 {peak['date'][5:]} 峰值回撤 {dd:.1f}%"
+                         f"（阈值 {out['threshold_pct']:g}%）⇒ 按纪律降仓："
+                         f"总仓位上限 ×{DD_TOTAL_SCALE:g}，暂不加新仓")
+    else:
+        out["advice"] = (f"组合市值自 {peak['date'][5:]} 峰值回撤 {dd:.1f}%，"
+                         f"未达 {out['threshold_pct']:g}% 阈值")
+    # ⚠️ note 是**给前端插值显示的纯文本** ⇒ 不能含 Markdown 标记
+    parts = [f"口径：持仓市值（不含现金）· 窗口 {span}（{len(curve)} 个交易日）· 按当前持仓回算"]
+    parts.append("⚠️ 未考虑窗口内加减仓，期间有交易则曲线会失真")
+    if out["missing"]:
+        parts.append("⚠️ 无历史价已剔除：" + "、".join(out["missing"]))
+    out["note"] = "；".join(parts)
+    return out
+
+
+def portfolio_drawdown(window: int = PORTFOLIO_DD_WINDOW) -> Dict:
+    """用户组合「近 window 个交易日」净值回撤（周回撤熔断数据源）。带 3 分钟进程缓存。"""
+    import time
+    now = time.time()
+    c = _DD_CACHE.get("val")
+    if c is not None and now - _DD_CACHE["ts"] < _DD_TTL:
+        return c
+    val = _portfolio_drawdown_uncached(window)
+    if val.get("available"):            # 失败不写缓存 ⇒ 下次重试
+        _DD_CACHE.update(ts=now, val=val)
+    return val
+
+
 def position_sizing_for_portfolio() -> dict:
-    """读 user_portfolio 全部持仓 → 仓位建议（供 /api/user/position-sizing）。"""
+    """读 user_portfolio 全部持仓 → 仓位建议（供 /api/user/position-sizing）。
+
+    ★ 2026-09-25（用户需求 2）：叠加**组合周回撤降仓** —— 触发时下调总上限与每只建议，
+      理由写进 `market_reasons`（与既有降档因子同一套"可解释"机制）。
+    """
     codes = []
     try:
         from app.database import db
@@ -156,4 +340,23 @@ def position_sizing_for_portfolio() -> dict:
                 codes.append(c)
     except Exception:
         pass
-    return position_sizing(codes)
+    res = position_sizing(codes)
+    # ★ 2026-09-25（用户需求 2）：组合周回撤熔断 —— 触发则**降仓**（框架："周内净值回撤 ≥X% 降仓"）。
+    #   fail-open：拿不到数据就不加这条因子（绝不因辅助信息拖垮仓位建议）。
+    try:
+        dd = portfolio_drawdown()
+        res["portfolio_drawdown"] = dd
+        if dd.get("triggered"):
+            old = res.get("total_limit_pct") or 0
+            new_total = _snap(old * DD_TOTAL_SCALE)
+            res["total_limit_pct"] = new_total
+            res.setdefault("market_reasons", []).append(
+                f"组合近 {dd['window']} 个交易日回撤 {dd['drawdown_pct']}% "
+                f"≥ {dd['threshold_pct']:g}% → 总上限 ×{DD_TOTAL_SCALE:g}"
+                f"（{old}% → {new_total}%）")
+            # ★ 上限降了，每只建议必须同步下调 —— 否则出现"总上限 15% 但单只建议 30%"的自相矛盾
+            for p in res.get("positions") or []:
+                p["suggested_pct"] = _snap(min(p.get("position_pct") or 0, new_total))
+    except Exception as e:
+        print(f"[position_sizing] drawdown overlay failed: {e}")     # ASCII（铁律⑥）
+    return res

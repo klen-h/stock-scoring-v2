@@ -359,6 +359,19 @@
                       <template v-if="sizing && sizing.total_limit_pct != null">
                         · 上限 <b class="text-accent font-mono">{{ sizing.total_limit_pct }}%</b>
                       </template>
+                      <!-- ★ 2026-09-25 用户需求 2（框架 A6「周回撤熔断」）：
+                           组合近 5 个交易日**持仓市值回撤** ≥5%（对齐 G2 阈值）⇒ 后端已自动把
+                           总上限降半仓（见 total_limit_pct），此处只显示状态与数值，让人知道"为什么降了"。
+                           悬停看完整口径/曲线/近似警告（⚠️ 按当前持仓回算，有交易会失真）。 -->
+                      <template v-if="pdd && pdd.available">
+                        · 周回撤 <b class="font-mono cursor-help"
+                                    :class="pdd.triggered ? 'text-red-400' : 'text-gray-300'"
+                                    :title="pddTitle">{{ pdd.drawdown_pct }}%</b>
+                        <span v-if="pdd.triggered" class="text-red-400">（已降仓）</span>
+                      </template>
+                      <template v-else-if="pdd && pdd.note">
+                        · <span class="text-muted cursor-help" :title="pdd.note">周回撤 —</span>
+                      </template>
                       · <router-link target="_blank" to="/monitor" class="text-accent hover:underline">详情</router-link>
                     </div>
                   </div>
@@ -1252,6 +1265,17 @@ const macroSentiment = ref(null)
 // ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
 //   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
 const sizing = ref(null)
+// ★ 2026-09-25 用户需求 2：组合**周回撤熔断**（同接口的 `portfolio_drawdown`）——
+//   组合近 5 个交易日持仓市值回撤 ≥5%（对齐 G2）⇒ 后端已把总上限降半仓，这里显示状态。
+const pdd = computed(() => sizing.value?.portfolio_drawdown || null)
+const pddTitle = computed(() => {
+  const p = pdd.value
+  if (!p) return ''
+  if (!p.available) return p.note || '暂无数据'
+  const cur = (p.curve || []).map(c => `${String(c.date).slice(5)} ${Number(c.nav).toLocaleString('zh-CN')}`).join(' → ')
+  return `组合持仓市值路径：${cur}\n峰值 ${Number(p.nav_peak).toLocaleString('zh-CN')}（${p.peak_date}）`
+    + ` → 最新 ${Number(p.nav_latest).toLocaleString('zh-CN')}\n${p.advice || ''}\n${p.note || ''}`
+})
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 用户："对错了要回溯修正，形成闭环，
 //   否则情绪模型永远校准不了"。数据来自 `/api/market/emotion-review`（读同日两组字段）。
 const emotionReview = ref(null)
@@ -1805,7 +1829,10 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
   else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
-  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadBrief('postmarket'); await loadReport(todayStr); }
+  // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
+  //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
+  //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
     await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals()])
   }
