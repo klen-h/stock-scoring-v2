@@ -373,6 +373,13 @@ def append_macro_history(panel: dict) -> None:
         #     （而它恰恰是算"自 A 股收盘以来外盘变了多少"最该看的那个）。
         #   · `vix` —— 全球风险偏好/恐慌度，风控用。
         "a50": _e("a50"), "vix": _e("vix"),
+        # ★ 2026-09-25（用户需求「中概/美股现货」）：必须**显式加进历史** ——
+        #   本函数是**手工白名单**（不是自动全量面板）。若只加 `macro._PANEL_MAP`，
+        #   面板会有数据、而"自 A 股收盘以来的隔夜变化"（`macro._OVERNIGHT_KEYS`）
+        #   因取不到基准而**静默跳过** —— 这类"面板有、隔夜没有"的缺失最难发现。
+        #   ⚠️ 冷启动：今天起的记录才有这些键 ⇒ 隔夜块**下一个交易日 15:03 后**才生效。
+        "us_dji": _e("us_dji"), "us_spx": _e("us_spx"),
+        "us_ixic": _e("us_ixic"), "cn_hxc": _e("cn_hxc"),
         "copperOilRatio": d.get("copper_oil_ratio"),
         "goldSilverRatio": d.get("gold_silver_ratio"),
         "gldRatio": d.get("gold_oil_ratio"),
