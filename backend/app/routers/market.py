@@ -1705,6 +1705,29 @@ def _zz_snapshot(day: str) -> Dict:
         return {}
 
 
+def _dedup_uplimit_stocks(rows) -> list:
+    """`uplimit_stocks` 去重（按 `stock_code`，保留首条）。
+
+    ★★ 2026-09-25（用户贴出"金辰股份 ×6"问这是否正常）—— **上游本身返回重复行**：
+      实测 2026-09-24 该表 22 行，**去重后只有 3 只票**（金辰股份 ×6 / 上工申贝 ×9 /
+      福建水泥 ×7），**只有 `id` 不同**，其余字段（代码/名称/连板/涨停时间/成交额）完全一致
+      ⇒ 前端按行渲染必然出现"同一只票刷屏"。
+    ⚠️ 口径提醒（调用方必读）：该表**不是当日全量涨停清单**（当日涨停 52 只，此表仅 3 只）
+      ⇒ 展示时必须如实标注"非全量"，**权威家数以 `uplimit_hot.ban_info` 为准**（见 `ladder.total`）。
+      宁可标"明细（3 只）"，也不能让用户以为"今天只有 3 只涨停"。
+    """
+    out, seen = [], set()
+    for r in (rows or []):
+        if not isinstance(r, dict):
+            continue
+        c = str(r.get("stock_code") or "")
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        out.append(r)
+    return out
+
+
 @router.get("/limit-review")
 def market_limit_review(date: str = None):
     from app.flash import rules as _rules
@@ -1732,7 +1755,7 @@ def market_limit_review(date: str = None):
         if isinstance(us, dict):
             us = us.get("data") or us.get("items")
         if isinstance(us, list) and us:
-            out["stocks"] = us[:50]
+            out["stocks"] = _dedup_uplimit_stocks(us)[:50]   # ★ 上游有重复行，见函数注释
         rs = snap.get("review_uplimit_reason")
         if isinstance(rs, list) and rs:
             out["steps"] = rs[:20]
@@ -1751,7 +1774,7 @@ def market_limit_review(date: str = None):
             out["steps"] = df.to_dict("records")[:20]
         df2 = api.uplimit_stocks(date1=d)
         if df2 is not None and hasattr(df2, "to_dict"):
-            out["stocks"] = df2.to_dict("records")[:50]
+            out["stocks"] = _dedup_uplimit_stocks(df2.to_dict("records"))[:50]   # ★ 同上
         if out["steps"] or out["stocks"]:
             out["source"] = "live"
             out["as_of"] = _now_str
@@ -1774,7 +1797,14 @@ def market_limit_review(date: str = None):
             if isinstance(us, dict):
                 us = us.get("data") or us.get("items")
             if isinstance(us, list) and us:
-                out["stocks"] = us[:50]
+                out["stocks"] = _dedup_uplimit_stocks(us)[:50]   # ★ 上游有重复行，见函数注释
+            # ★ 2026-09-25 修复：降级分支**漏读了同一份快照里的 `review_uplimit_reason`**
+            #   ⇒ `steps`（题材归因）在最常见的场景（"今天日批还没跑 ⇒ 退回昨日快照"）
+            #   **永远是空的** —— 数据就在手上却没读（实测：stale=True 时 steps=0）。
+            #   与上面的主分支口径对齐（同样 `[:20]`）。
+            rs = last.get("review_uplimit_reason")
+            if isinstance(rs, list) and rs:
+                out["steps"] = rs[:20]
             if out["ladder"] or out["stocks"]:
                 out["source"] = "snapshot"
                 out["as_of"] = str(last.get("date") or "")[:10]

@@ -879,11 +879,17 @@
         <!-- 实时模式 · ② 盘中 / ③ 午盘（执行模式：大字、少文字）
              ★ 2026-09-25 用户要求：指数大字卡删除——与顶栏重复，指数保留顶栏常驻 -->
         <template v-else-if="selectedPhase === 'intraday' || selectedPhase === 'midday'">
+          <!-- ★★ 2026-09-25（用户："同理，你调整一下盘中的布局" + "这个部分我想用一个长卡片展示"）：
+               **① 看盘序 = 全宽长卡，不参与分栏** —— 它内部是 6 格横向指标 + 数行横向信息
+               （大小盘风格 / 尾盘承接 / 昨日涨停表现 / 竞价 Top5），天然"横着读"
+               ⇒ 挤进半列必然折行。②③④⑤ 才分栏（安排见下方注释）。 -->
           <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div v-if="emotion && emotion.trading_day === false"
                  class="text-[11px] text-amber-400 mb-2">⚠ 今日休市——以下为最近交易日快照数据，非实时</div>
-            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
+            <!-- ★ 2026-09-25 用户："这里可以加个上下边距" ⇒ 6 格指标区加 `py-3`（与下方
+                 风格/尾盘/昨日涨停各行的呼吸感一致；它们各自带 border-t + mt-2 pt-2）。 -->
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-3">
               <div><div class="text-[10px] text-muted">上涨</div>
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">下跌</div>
@@ -971,13 +977,26 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
+                 · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
+                 · 右列 = **行动**（④ 待执行决策 ⑤ 持仓状态）
+               与竞价看板同一切法逻辑（左"读"右"做"），但**不加竖线**（多张独立卡各有边框）。
+               ⚠️ 断点 **xl**(1280)；两列各自 `space-y-4` 堆叠、不做行对齐 ——
+                 ⑤ 持仓状态的高度随持仓只数变化，行对齐必在短列留大片空洞。 -->
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
+          <div class="min-w-0 space-y-4">
           <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位）
                ★ 2026-09-25：优先读**已落库快照**（`zz_daily_snapshots`）—— 原实现每次直连
                  zzshare ⇒ 匿名受限/盘中易失败，而日批明明已落库一份完整 payload。 -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">涨停梯队与清单
+              <!-- ★ 2026-09-25：补**数据时点**。原来只写"读已落库快照"却**不说是哪天的**，
+                   而最常见状态恰恰是"今天日批还没跑 ⇒ 退回昨日快照"
+                   ⇒ 会被当成"今天的涨停数据"读（`stale`=双源都失败后的降级兜底）。 -->
               <span class="text-[10px] text-muted font-normal">
-                （zzshare 口径 · {{ limitReview.source === 'snapshot' ? '读已落库快照' : '实时直连' }}）</span></div>
+                （zzshare 口径 · {{ limitReview.source === 'snapshot' ? '读已落库快照' : '实时直连' }}
+                <template v-if="limitReview.as_of">· 数据 <b class="font-mono">{{ limitReview.as_of }}</b></template>
+                <span v-if="limitReview.stale" class="text-amber-400">· 上一交易日（今日快照未生成）</span>）</span></div>
             <!-- ★★ 连板梯队结构（`uplimit_hot.ban_info`，此前**只落库、从未展示**）
                  —— 价值在**梯队完整性**：某级别为 0 而更高有 ⇒ 断层 ⇒ 高标孤立无承接，
                  短线退潮的常见前兆（实测 09-23 即 5/6 板空档却有 7 板）。 -->
@@ -1031,21 +1050,115 @@
             <div v-if="(limitReview.steps || []).length === 0 && (limitReview.stocks || []).length === 0"
                  class="text-muted text-xs">—（当日无复盘数据）</div>
             <template v-else>
+              <!-- ★ 2026-09-25：题材归因 `steps` 同样**按名取**（原 `Object.values` 位置取法脆弱，
+                   真实字段是 plate_code / plate_name / plate_score / stocks）。
+                   `plate_score` 量纲不对外 ⇒ 不直接展示，改显示**该题材的涨停家数**
+                   （与上面的"连板梯队"构成"题材梯队"视角），强度分放悬停。 -->
               <div v-if="(limitReview.steps || []).length" class="flex flex-wrap gap-1.5 mb-2">
                 <span v-for="(s, i) in limitReview.steps.slice(0, 10)" :key="i"
-                      class="px-1.5 py-0.5 rounded text-[11px] bg-rose-500/10 text-rose-300 border border-rose-500/25">
-                  {{ Object.values(s).slice(0, 3).join(' · ') }}
+                      class="px-1.5 py-0.5 rounded text-[11px] bg-rose-500/10 text-rose-300 border border-rose-500/25"
+                      :title="`题材强度分 ${s.plate_score ?? '—'}（口径未对外，仅相对比较）；题材代码 ${s.plate_code || '—'}`">
+                  {{ s.plate_name || s.plate_code || '—' }}
+                  <b v-if="(s.stocks || []).length" class="font-mono">{{ (s.stocks || []).length }}只</b>
                 </span>
               </div>
+              <!-- ★★ 2026-09-25 修复（用户问："这个数据是正常的吗？"）—— **数据正常、渲染错位**：
+                   原实现按 `Object.values(s)[0]` / `.slice(1,4)` **按位置**取值，而 zzshare 的
+                   `uplimit_stocks` 每行有 **27 个字段**（字典序第一个是 `amount` = 成交额）
+                   ⇒ 8 行全渲染成 "3.83 · ·"（成交额 + 三个空字符串字段）。
+                   ⇒ 改为**按字段名**取。⭐ 泛化：**永远不要靠 dict 的字段顺序取值** ——
+                     数据源加一个字段（这里加的是 `auction_*`）就会静默错位，且**看起来像数据坏了**。
+                   真实字段：stock_code / stock_name / up_limit_desc（如"2连板"）/
+                   up_limit_time（涨停时间）/ amount（成交额,亿）/ market_c（流通市值,亿）。 -->
               <div v-if="(limitReview.stocks || []).length" class="text-xs space-y-0.5">
-                <div v-for="(s, i) in limitReview.stocks.slice(0, 8)" :key="i"
-                     class="flex gap-2 border-b border-border/30 py-0.5">
-                  <span class="text-muted font-mono">{{ Object.values(s)[0] }}</span>
-                  <span class="truncate">{{ Object.values(s).slice(1, 4).join(' · ') }}</span>
+                <!-- ★ 2026-09-25：如实标注**这不是全量** —— 该表当日仅 3 只（全市场涨停 52 只），
+                     不写清会被读成"今天只有这几只涨停"。权威家数看上方"连板梯队"。
+                     （后端已按 stock_code 去重：上游同一只票会返回多行，只有 id 不同。） -->
+                <div class="text-[10px] text-muted mb-0.5">
+                  涨停明细（{{ limitReview.stocks.length }} 只 · zzshare 明细表，<b class="text-amber-400/90">非当日全量</b>；全量家数见上方梯队）
+                </div>
+                <div v-for="(s, i) in limitReview.stocks.slice(0, 8)" :key="s.stock_code || i"
+                     class="flex items-center gap-2 border-b border-border/30 py-0.5">
+                  <a v-if="s.stock_code" :href="stockHref(s.stock_code)" target="_blank"
+                     class="font-semibold hover:text-accent truncate max-w-[92px]">{{ s.stock_name || s.stock_code }}</a>
+                  <span v-else class="truncate">{{ s.stock_name || '—' }}</span>
+                  <span class="text-muted font-mono">{{ s.stock_code || '' }}</span>
+                  <span v-if="s.up_limit_desc" class="px-1 rounded bg-red-500/15 text-red-400">{{ s.up_limit_desc }}</span>
+                  <span v-if="s.up_limit_time" class="text-muted font-mono">{{ s.up_limit_time }}</span>
+                  <span v-if="s.amount != null" class="ml-auto text-muted font-mono">成交 {{ s.amount }}亿</span>
                 </div>
               </div>
             </template>
           </div>
+
+          <!-- ★ 2026-09-25 用户："持仓状态放在涨停梯队与清单下面，主线板块 Top5 移到右边"
+               ⇒ 左列 = ② 涨停梯队与清单 + ⑤ 持仓状态；右列 = ③ 主线板块 + ④ 待执行决策。
+               ★ 本次**必须搬内容**（顺序变更无法用"选切点"实现）：先在 ② 之后**插入副本**，
+                 再删除 ④ 之后的原块（**先插后删** ⇒ 中途失败也不会丢卡片）。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
+                风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+              <span v-if="radarAsOf" class="text-[10px] text-muted font-mono">数据时点 {{ radarAsOf.slice(11, 16) }}</span>
+            </div>
+            <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
+            <div v-else-if="!radarItems.length" class="text-muted text-xs">
+              —（当前无持仓记录；新增后由写入方主动失效缓存，立即可见）
+            </div>
+            <div v-else class="space-y-2">
+              <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
+                   写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
+              <div v-for="it in radarItems" :key="it.code"
+                   class="border border-border/60 rounded-lg px-3 py-2.5">
+                <!-- 主行：名称 + 盈亏大字 -->
+                <div class="flex items-center gap-2 flex-wrap">
+                  <a :href="stockHref(it.code)" target="_blank"
+                     class="font-semibold hover:text-accent">{{ it.name || it.code }}</a>
+                  <a :href="xqUrl(it.code)" target="_blank"
+                     class="text-muted text-xs font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
+                  <span v-if="it.industry"
+                        class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
+                  <span class="ml-auto text-2xl font-bold font-mono"
+                        :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
+                </div>
+                <!-- 价格行 -->
+                <div class="flex items-center gap-2 flex-wrap mt-1 text-xs">
+                  <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
+                  <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
+                  <span v-if="it.mv" class="text-muted">市值 {{ fmtNum(it.mv) }} 元</span>
+                  <span v-if="it.drop_from_high != null && it.drop_from_high <= -3"
+                        class="text-amber-400">距日内高 {{ it.drop_from_high }}%</span>
+                </div>
+                <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
+                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
+                  <span v-if="it.phase_cn" class="px-1 rounded"
+                        :class="it.signal === 'distribution' ? 'bg-red-500/15 text-red-400'
+                                : it.signal === 'accum' ? 'bg-emerald-500/15 text-emerald-400'
+                                : 'bg-background border border-border text-muted'">主力·{{ it.phase_cn }}</span>
+                  <span v-if="it.score != null" class="text-muted">
+                    评分 <b class="text-gray-200 font-mono">{{ it.score }}</b>
+                    <template v-if="it.rank_pos">（{{ it.rank_date }} 榜单第 {{ it.rank_pos }}）</template>
+                  </span>
+                  <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                  <span v-if="it.ready_label" class="text-muted">闸门 {{ it.ready_label }}</span>
+                  <span v-for="s in (Array.isArray(it.strategies) ? it.strategies : [])" :key="s"
+                        class="px-1 rounded bg-accent/10 text-accent border border-accent/30">{{ s }}</span>
+                </div>
+                <!-- 风险/机会提示 -->
+                <div v-if="(it.alerts || []).length" class="mt-1 space-y-0.5">
+                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[11px]"
+                       :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
+                    {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          </div>
+          <!-- 右列：**盘面参考 + 行动**（③ 主线板块 ④ 待执行决策）——
+               ★ 无竖分割线：两边都是**独立卡片**（各带边框），再加一条线是重复装饰
+                 （用户："盘中卡片与卡片之间就不需要用分割线了"）。 -->
+          <div class="min-w-0 space-y-4">
 
           <!-- ★ A1 主线板块 Top5 + **板块内强势股**（看盘序第 4-5 层）
                ★ 2026-09-25：改用实时行业板块列表（原为昨日 15:10 快照）并补上「领涨股」——
@@ -1117,64 +1230,7 @@
             <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
             <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
           </div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
-                风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
-              <span v-if="radarAsOf" class="text-[10px] text-muted font-mono">数据时点 {{ radarAsOf.slice(11, 16) }}</span>
-            </div>
-            <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
-            <div v-else-if="!radarItems.length" class="text-muted text-xs">
-              —（当前无持仓记录；新增后由写入方主动失效缓存，立即可见）
-            </div>
-            <div v-else class="space-y-2">
-              <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
-                   写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
-              <div v-for="it in radarItems" :key="it.code"
-                   class="border border-border/60 rounded-lg px-3 py-2.5">
-                <!-- 主行：名称 + 盈亏大字 -->
-                <div class="flex items-center gap-2 flex-wrap">
-                  <a :href="stockHref(it.code)" target="_blank"
-                     class="font-semibold hover:text-accent">{{ it.name || it.code }}</a>
-                  <a :href="xqUrl(it.code)" target="_blank"
-                     class="text-muted text-xs font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
-                  <span v-if="it.industry"
-                        class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
-                  <span class="ml-auto text-2xl font-bold font-mono"
-                        :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
-                </div>
-                <!-- 价格行 -->
-                <div class="flex items-center gap-2 flex-wrap mt-1 text-xs">
-                  <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
-                  <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
-                  <span v-if="it.mv" class="text-muted">市值 {{ fmtNum(it.mv) }} 元</span>
-                  <span v-if="it.drop_from_high != null && it.drop_from_high <= -3"
-                        class="text-amber-400">距日内高 {{ it.drop_from_high }}%</span>
-                </div>
-                <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
-                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
-                  <span v-if="it.phase_cn" class="px-1 rounded"
-                        :class="it.signal === 'distribution' ? 'bg-red-500/15 text-red-400'
-                                : it.signal === 'accum' ? 'bg-emerald-500/15 text-emerald-400'
-                                : 'bg-background border border-border text-muted'">主力·{{ it.phase_cn }}</span>
-                  <span v-if="it.score != null" class="text-muted">
-                    评分 <b class="text-gray-200 font-mono">{{ it.score }}</b>
-                    <template v-if="it.rank_pos">（{{ it.rank_date }} 榜单第 {{ it.rank_pos }}）</template>
-                  </span>
-                  <span v-if="it.in_watch" class="text-sky-400">观察池</span>
-                  <span v-if="it.ready_label" class="text-muted">闸门 {{ it.ready_label }}</span>
-                  <span v-for="s in (Array.isArray(it.strategies) ? it.strategies : [])" :key="s"
-                        class="px-1 rounded bg-accent/10 text-accent border border-accent/30">{{ s }}</span>
-                </div>
-                <!-- 风险/机会提示 -->
-                <div v-if="(it.alerts || []).length" class="mt-1 space-y-0.5">
-                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[11px]"
-                       :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
-                    {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
-                  </div>
-                </div>
-              </div>
-            </div>
+          </div>
           </div>
         </template>
 
