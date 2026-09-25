@@ -8,6 +8,25 @@ on:
   #   daily-batch 由 workflow_run 自动接棒（约 74 分钟 → ~21:57 结束）。
   # ★ 2026-09-13：整体由 16:00/17:00 推迟到 18:00/19:00 —— 腾讯当日 K 线在 16:00
   #   时常未更新完整，会打出「缺末根」的当日数据。
+  #
+  # ★★ 2026-09-25（P0，用户批准）：**加回一条兜底 schedule** ——
+  #   【为什么】整条触发链 = cron-job.org → backend-pack → workflow_run → daily-batch，
+  #   没有任何一环由 GitHub 自己保证 ⇒ 第三方抖一天 = 日批停一天 = 人工补
+  #   （历史上 zz_daily/周报等都因此断过档）。
+  #   【为什么兜在上游】日批没有新包会被 `ensure_pack_fresh` 卡 30 分钟后中止
+  #   ⇒ 只兜日批没用；兜上游则上游完成后 workflow_run **自动**接棒日批。
+  #   【为什么是 UTC 14:00（北京 22:00）】正常路径 ~21:57 全链完成 ⇒ 此刻查
+  #     「最近 12h 有无成功的 backend-pack」可**可靠判定**今天是否已跑：
+  #     已跑 ⇒ skip（避免每天双跑：重复 1h43m 计算 + 重烧 LLM + Pages 覆盖）；
+  #     没跑（第三方挂）⇒ 真正兜底：22:00-23:43 补包 → 日批 workflow_run 接棒。
+  #     ⚠️ 不能早于 21:00：正常路径 20:43 才完成，早了会把"正在跑"误判成"没跑"。
+  #   【跨午夜补跑的安全性】23:43 完成后日批 ~00:57 结束 ⇒ 各任务的日期键
+  #     必须用 `_batch_trading_day()`（最近已完成交易日）—— trader_brief/zz_finance/
+  #     weekly_report/subfactor_ic 均已按此修（2026-09-19/25）。
+  #   【幂等】各任务写库均 ON CONFLICT ⇒ 双跑不会出两份数据；本 guard 用
+  #     `gh run list` 判定（无 DB 依赖），比查 schedule_state 更轻且不占数据库配额。
+  schedule:
+    - cron: '0 14 * * 1-5'    # ★ GitHub cron 是 UTC！= 北京 22:00，周一~周五（不看节假日，无妨）
   workflow_dispatch:
     inputs:
       workers:
@@ -44,8 +63,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ★ 守卫（2026-09-25 扩展）：三种触发三种判定 ——
+  #   · workflow_run：上游（自己）不可能 —— 本 workflow 没有上游，此分支保留以防误配
+  #   · schedule（兜底）：最近 12h 已有成功 run ⇒ 今天已跑过 ⇒ **skip 整个 workflow**
+  #     （否则兜底 cron 会每天固定双跑一次 1h43m 的计算 + 重烧 LLM + 覆盖 Pages）
+  #   · workflow_dispatch（手动/第三方）：直接放行
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          EVENT="${{ github.event_name }}"
+          echo "event=$EVENT"
+          SKIP=false
+          if [ "$EVENT" = "schedule" ]; then
+            # 兜底守卫：最近 12 小时内已有成功的 backend-pack ⇒ 今天正常路径已跑过
+            OK=$(gh run list --workflow=backend-pack.yml --status=success \
+                   --created=">=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M)" \
+                   --json databaseId --jq 'length' 2>/dev/null || echo 0)
+            echo "recent_success_runs=$OK"
+            if [ "$OK" -gt 0 ]; then
+              echo "⏭ 最近 12h 已有成功的 backend-pack（正常路径已完成）⇒ 兜底跳过"
+              SKIP=true
+            fi
+          fi
+          echo "skip=$SKIP" >> "$GITHUB_OUTPUT"
+
   backend-pack:
     name: 后端包（K线 + 预计算指标 + 主力行为）
+    needs: guard
+    # ★ schedule 兜底判定"今天已跑过"时整体跳过（deploy-pages 因 needs 也会自动 skip）
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     # ★ 2026-09-10 池扩容到战法池口径（1431 → ~2080 只，+45%）后实测需 ~130 分钟，
     #   原 150 分钟余量太薄，放宽到 180。
