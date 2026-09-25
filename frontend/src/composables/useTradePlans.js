@@ -52,7 +52,10 @@ function saveToStorage() {
 }
 
 // ── CRUD ──
-export function addPlan({ code, name, buy_price, stop_loss, target, reason = '', expected = '' }) {
+export function addPlan({ code, name, buy_price, stop_loss, target, reason = '', expected = '',
+  // ★ 2026-09-25（A4）：结构化触发条件（plan_type/trigger_high_open/trigger_volume_break）
+  //   这几个字段由后端 plan_trigger_loop 每 60s 比对行情判定并推企微。
+  plan_type = 'trial', trigger_high_open = null, trigger_volume_break = null }) {
   const plan = {
     id: 'tp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     code,
@@ -62,6 +65,9 @@ export function addPlan({ code, name, buy_price, stop_loss, target, reason = '',
     target: Number(target),
     reason,
     expected,
+    plan_type,
+    trigger_high_open: trigger_high_open === null ? null : Number(trigger_high_open),
+    trigger_volume_break: trigger_volume_break === null ? null : Number(trigger_volume_break),
     created_at: Date.now(),
     status: 'waiting',
     hit_at: null,

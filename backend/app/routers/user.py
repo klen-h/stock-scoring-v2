@@ -95,9 +95,32 @@ def delete_watchlist(code: str, user: dict = Depends(get_current_user)):
 #  交易计划
 # ================================================================
 
+# ★ 2026-09-25（交易方法论落地计划 A4）：结构化触发条件的新列。
+#   ⚠️ 为什么必须在这里 ALTER：线上 `user_trade_plans` 早已存在，而
+#     schema.sql 用的是 `CREATE TABLE IF NOT EXISTS` —— **它不会给已存在的表加列**
+#     ⇒ 只改 schema.sql 的结果是"新库有、老库没有"，线上永远缺列（读 `r.get()` 恒为 None，
+#       功能静默失效，且没有任何报错）。⇒ 与 `market_emotion_daily` 同款处理：建表之外补一次。
+_PLAN_COLS_READY = False
+
+
+def _ensure_plan_columns() -> None:
+    """幂等补齐 A4 的三列。PG/SQLite 对「列已存在」报错文案不同，故统一忽略异常。"""
+    global _PLAN_COLS_READY
+    if _PLAN_COLS_READY:
+        return
+    for col, ddl in (("plan_type", "TEXT DEFAULT 'trial'"),
+                     ("trigger_high_open", "REAL"),
+                     ("trigger_volume_break", "REAL")):
+        try:
+            db.execute(f"ALTER TABLE user_trade_plans ADD COLUMN {col} {ddl}")
+        except Exception:
+            pass                    # 列已存在 ⇒ 忽略（幂等）
+    _PLAN_COLS_READY = True
+
 @router.get("/plans")
 def get_plans(user: dict = Depends(get_current_user)):
     """获取交易计划列表"""
+    _ensure_plan_columns()
     rows = db.fetch(
         "SELECT * FROM user_trade_plans WHERE user_id = %s ORDER BY created_at DESC",
         (user["user_id"],)
@@ -116,6 +139,10 @@ def get_plans(user: dict = Depends(get_current_user)):
             "status": r.get("status", "waiting"),
             "hit_at": r.get("hit_at"),
             "created_at": r.get("created_at", ""),
+            # ★ A4：结构化触发条件（老行为 NULL ⇒ 前端按"未设置"处理，不影响既有计划）
+            "plan_type": r.get("plan_type") or "trial",
+            "trigger_high_open": r.get("trigger_high_open"),
+            "trigger_volume_break": r.get("trigger_volume_break"),
         })
     return {"data": items}
 
@@ -123,10 +150,11 @@ def get_plans(user: dict = Depends(get_current_user)):
 @router.post("/plans")
 def upsert_plan(item: dict = Body(...), user: dict = Depends(get_current_user)):
     """添加或更新交易计划"""
+    _ensure_plan_columns()
     plan_id = item.get("id")
     if not plan_id:
         plan_id = f"tp_{int(datetime.now().timestamp() * 1000)}"
-    
+
     db.upsert("user_trade_plans", {
         "id": plan_id,
         "user_id": user["user_id"],
@@ -139,6 +167,10 @@ def upsert_plan(item: dict = Body(...), user: dict = Depends(get_current_user)):
         "expected": item.get("expected", ""),
         "status": item.get("status", "waiting"),
         "hit_at": item.get("hit_at"),
+        # ★ A4 结构化触发条件（缺省 None ⇒ 该条件不参与触发判断）
+        "plan_type": item.get("plan_type") or "trial",
+        "trigger_high_open": item.get("trigger_high_open"),
+        "trigger_volume_break": item.get("trigger_volume_break"),
     }, conflict_columns=["id"])
     return {"success": True, "id": plan_id}
 
@@ -146,6 +178,7 @@ def upsert_plan(item: dict = Body(...), user: dict = Depends(get_current_user)):
 @router.put("/plans/{plan_id}")
 def update_plan(plan_id: str, item: dict = Body(...), user: dict = Depends(get_current_user)):
     """更新交易计划"""
+    _ensure_plan_columns()      # ★ A4：三处写入口（POST/PUT/GET）都保证列在，避免半新半旧
     # 构建更新字段
     updates = {k: v for k, v in item.items() if v is not None}
     updates["id"] = plan_id

@@ -90,6 +90,28 @@
           <input v-model="form.expected" placeholder="预期接下来会怎么走"
             class="w-full mt-1 bg-bg border border-border rounded px-2 py-1 text-sm focus:outline-none focus:border-accent/50"/>
         </div>
+        <!-- ★ 2026-09-25（A4）：**结构化触发条件** —— 选填。
+             写进去后，盘中由系统（plan_trigger_loop，每 60s）自动比对行情并推企微，
+             不用盯盘；不填则该条不参与触发判断（老计划行为不变）。 -->
+        <div>
+          <label class="text-xs text-muted">计划类型</label>
+          <select v-model="form.plan_type"
+            class="w-full mt-1 bg-bg border border-border rounded px-2 py-1 text-sm focus:outline-none focus:border-accent/50">
+            <option value="trial">试仓</option>
+            <option value="add">加仓</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs text-muted">高开试仓阈值 %</label>
+          <input v-model.number="form.trigger_high_open" type="number" step="0.1" placeholder="如 3（高开≥3% 提示）"
+            class="w-full mt-1 bg-bg border border-border rounded px-2 py-1 text-sm focus:outline-none focus:border-accent/50"/>
+        </div>
+        <div class="md:col-span-2">
+          <label class="text-xs text-muted">放量过价</label>
+          <input v-model.number="form.trigger_volume_break" type="number" step="0.001" placeholder="站上此价且当日涨幅≥1% 提示"
+            class="w-full mt-1 bg-bg border border-border rounded px-2 py-1 text-sm focus:outline-none focus:border-accent/50"/>
+        </div>
+        <div class="md:col-span-2"></div>
       </div>
       <div class="flex gap-2 mt-3">
         <button @click="submitForm" class="px-4 py-1 rounded text-xs bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30">添加</button>
@@ -117,6 +139,8 @@
             <th class="text-right py-2.5 px-3">目标</th>
             <th class="text-center py-2.5 px-3">盈亏比</th>
             <th class="text-center py-2.5 px-3">状态</th>
+            <!-- ★ A4：结构化触发条件（盘中由系统比对并推企微） -->
+            <th class="text-left py-2.5 px-3">触发条件</th>
             <th class="text-right py-2.5 px-3">T+1</th>
             <th class="text-left py-2.5 px-3">理由/预期</th>
             <th class="text-center py-2.5 px-3">操作</th>
@@ -149,6 +173,23 @@
               <span class="px-2 py-0.5 rounded-full text-xs" :class="statusBadgeClass(row.plan.status)">
                 {{ statusLabel(row.plan.status) }}
               </span>
+            </td>
+            <!-- ★ A4 触发条件：只显示**已设置**的项；全空 ⇒ 显示"—（仅三维价位）" -->
+            <td class="py-2 px-3 text-xs">
+              <div class="flex flex-wrap gap-1">
+                <span class="px-1 rounded bg-background border border-border text-muted text-[10px]">
+                  {{ row.plan.plan_type === 'add' ? '加仓' : '试仓' }}</span>
+                <span v-if="row.plan.trigger_high_open"
+                      class="px-1 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[10px]"
+                      :title="`开盘涨幅 ≥ ${row.plan.trigger_high_open}% 时提示试仓`">
+                  高开≥{{ row.plan.trigger_high_open }}%</span>
+                <span v-if="row.plan.trigger_volume_break"
+                      class="px-1 rounded bg-rose-500/10 border border-rose-500/25 text-rose-300 text-[10px]"
+                      :title="`现价站上 ${row.plan.trigger_volume_break} 且当日涨幅 ≥1% 时提示执行`">
+                  放量过 {{ row.plan.trigger_volume_break }}</span>
+                <span v-if="!row.plan.trigger_high_open && !row.plan.trigger_volume_break"
+                      class="text-muted text-[10px]">—（仅三维价位）</span>
+              </div>
             </td>
             <!-- T+1 -->
             <td class="py-2 px-3 text-right font-mono text-xs">
@@ -233,7 +274,10 @@ async function toggleNotification() {
 
 // ── 添加表单 ──
 const showAddForm = ref(false)
-const form = reactive({ code: '', name: '', buy_price: null, stop_loss: null, target: null, reason: '', expected: '' })
+const form = reactive({ code: '', name: '', buy_price: null, stop_loss: null, target: null, reason: '', expected: '',
+  // ★ 2026-09-25（A4）：结构化触发条件 —— 盘前把"什么情况才动手"写进计划，
+  //   盘中由 plan_trigger_loop 每 60s 比对行情并推企微 ⇒ 到点只执行、不临场决策。
+  plan_type: 'trial', trigger_high_open: null, trigger_volume_break: null })
 const formError = ref('')
 const searchResults = ref([])
 const showSearchDropdown = ref(false)
@@ -248,6 +292,8 @@ function resetForm() {
   form.code = ''; form.name = ''
   form.buy_price = null; form.stop_loss = null; form.target = null
   form.reason = ''; form.expected = ''
+  // ★ A4：触发条件也要重置，否则下一个计划会继承上一个的条件（静默出错）
+  form.plan_type = 'trial'; form.trigger_high_open = null; form.trigger_volume_break = null
   formError.value = ''; searchResults.value = []
 }
 function onCodeSearch() {
@@ -297,6 +343,10 @@ function submitForm() {
     code: form.code, name: form.name || form.code,
     buy_price: form.buy_price, stop_loss: form.stop_loss, target: form.target,
     reason: form.reason, expected: form.expected,
+    // ★ A4 结构化触发条件（空值 ⇒ 该条不参与触发判断）
+    plan_type: form.plan_type || 'trial',
+    trigger_high_open: form.trigger_high_open || null,
+    trigger_volume_break: form.trigger_volume_break || null,
   })
   resetForm()
   refresh()

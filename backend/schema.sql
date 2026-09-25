@@ -251,7 +251,17 @@ CREATE TABLE IF NOT EXISTS user_trade_plans (
     expected TEXT DEFAULT '',
     status TEXT DEFAULT 'waiting',
     hit_at TEXT,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    -- ★ 2026-09-25（交易方法论落地计划 A4）：**结构化触发条件** ——
+    --   框架要的是"盘前写预案、盘中不临场"：光有买价/止损/目标三个数字，
+    --   盘中仍要靠人判断"今天该不该动"。这几列把**触发条件本身**写进计划，
+    --   由 plan_trigger_loop 每 60s 比对行情并推送 ⇒ 到点只需执行，不需再判断。
+    --   plan_type: trial 试仓 / add 加仓 / target 兑现 / stop 认错（决定文案与仓位提示）
+    --   trigger_high_open: 高开试仓阈值（%）—— 开盘涨幅 ≥ 该值即提示试仓
+    --   trigger_volume_break: 放量过价（价格）—— 现价上穿且当日涨幅 ≥1% 即提示
+    plan_type TEXT DEFAULT 'trial',
+    trigger_high_open REAL,
+    trigger_volume_break REAL
 );
 
 CREATE TABLE IF NOT EXISTS user_portfolio (

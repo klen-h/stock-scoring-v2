@@ -1189,7 +1189,8 @@ async def trade_plan_trigger_loop():
                 if stocks:
                     from app.database import db
                     plans = db.fetch(
-                        "SELECT id, code, name, buy_price, stop_loss, target "
+                        "SELECT id, code, name, buy_price, stop_loss, target, "
+                        "plan_type, trigger_high_open, trigger_volume_break "
                         "FROM user_trade_plans WHERE status = 'waiting' LIMIT 100") or []
                     for p in plans:
                         q = stocks.get(str(p.get("code") or "")) or {}
@@ -1206,6 +1207,38 @@ async def trade_plan_trigger_loop():
                         if p.get("buy_price") and abs(price / float(p["buy_price"]) - 1) <= 0.02:
                             hits.append(("buy", f"到达买点附近：{p['name']}({p['code']}) "
                                                 f"现价 {price:.2f} ≈ 买价 {float(p['buy_price']):.2f}（±2%），按预案试仓"))
+                        # ★★ 2026-09-25（A4）两条**结构化条件** —— 用户盘前写死"什么情况才动手"，
+                        #   盘中由系统判断并提醒 ⇒ 到点只需执行，不用临场决策。
+                        #   ⚠️ 零新增请求：全部读 `tencent._cache` 内存行情（与上面同源）。
+                        try:
+                            chg = float(q.get("change_pct") or 0)
+                            _op = float(q.get("open") or 0)
+                            # 昨收**反推**而非依赖 `prev_close` 字段是否存在：
+                            #   prev = price / (1 + change_pct/100) ⇒ 数学等价，且行情缓存
+                            #   一定同时有 price 与 change_pct（open 可能缺 ⇒ 下面判 0 跳过）。
+                            # ⚠️ 用反推而不是"直接读 prev_close"，是因为不确定行情源是否提供该字段
+                            #   —— 依赖一个不确定存在的字段会让整个条件静默失效（今天已踩过两次）。
+                            prev = price / (1 + chg / 100.0) if abs(chg) < 99 else 0
+                            if p.get("trigger_high_open") and _op > 0 and prev > 0:
+                                open_pct = (_op / prev - 1) * 100
+                                thr = float(p["trigger_high_open"])
+                                if open_pct >= thr:
+                                    hits.append(("high_open",
+                                                 f"高开试仓条件达成：{p['name']}({p['code']}) "
+                                                 f"开盘 {_op:.2f}（高开 {open_pct:+.2f}% ≥ 阈值 {thr:g}%）"
+                                                 f"，现价 {price:.2f}——按预案试仓"))
+                            if p.get("trigger_volume_break"):
+                                tb = float(p["trigger_volume_break"])
+                                # "放量过价"的**可判据近似**：现价站上该价 **且** 当日涨幅 ≥1%
+                                # （真正的"放量"需量比，而量比要读 kline_cache；此处用涨幅过滤
+                                #  横盘磨过价格的情形，够用且零成本）。
+                                if price >= tb and chg >= 1.0:
+                                    hits.append(("volume_break",
+                                                 f"放量过价触发：{p['name']}({p['code']}) "
+                                                 f"现价 {price:.2f} 站上 {tb:.2f}（当日 {chg:+.2f}%）"
+                                                 f"——按预案执行"))
+                        except Exception as e3:
+                            print(f"[plan-trigger] structured check failed {p.get('code')}: {e3}")
                         for kind, text in hits:
                             key = f"{p['id']}|{kind}|{today}"
                             if key in _PLAN_TRIGGER_DEDUPE["keys"]:
