@@ -42,7 +42,8 @@
       <!-- 情绪/市况模块（归并为一组） -->
       <div class="flex items-center gap-3 border-l border-border pl-4">
         <div class="text-center">
-          <div class="text-lg font-bold font-mono leading-none">{{ temperature?.temperature ?? '—' }}</div>
+          <div class="text-lg font-bold font-mono leading-none"
+               :class="levelColor(temperature?.level || '')">{{ temperature?.temperature ?? '—' }}</div>
           <div class="text-[10px] text-muted mt-0.5">情绪·{{ temperature?.level || '—' }}</div>
         </div>
         <div class="w-px h-8 bg-border"></div>
@@ -173,12 +174,12 @@
               <div class="flex items-center gap-5 min-w-0">
                 <div class="flex items-center gap-2.5 flex-shrink-0">
                   <span class="text-4xl font-bold font-mono leading-none"
-                        :class="dirColor(macro.direction?.level, macro.direction?.score)">
+                        :class="dirColor(macro.direction?.level)">
                     {{ macro.direction?.score ?? '—' }}
                   </span>
                   <div class="min-w-0">
                     <div class="text-xs font-semibold whitespace-nowrap"
-                         :class="dirColor(macro.direction?.level, macro.direction?.score)">
+                         :class="dirColor(macro.direction?.level)">
                       宏观方向 · {{ macro.direction?.level || '—' }}
                     </div>
                     <div class="text-[11px] text-muted truncate max-w-[240px]"
@@ -919,12 +920,15 @@ async function loadMacro() {
   }
 }
 // 宏观方向配色：多→红（A股红涨）、空→绿，与数据中心一致
-function dirColor(level, score) {
-  if (score != null && Number(score) !== 0) return Number(score) > 0 ? 'text-red-400' : 'text-emerald-400'
-  const s = String(level || '')
-  if (s.includes('多') || s.includes('热')) return 'text-red-400'
-  if (s.includes('空') || s.includes('冷')) return 'text-emerald-400'
-  return 'text-amber-300'
+// ★ 2026-09-25 用户要求：宏观方向/温度配色与数据中心 tab 逐字一致（等级字符串映射）
+function dirColor(level) {
+  return { '强多': 'text-red-400', '偏多': 'text-orange-400', '中性': 'text-amber-400',
+           '偏空': 'text-cyan-400', '强空': 'text-blue-400' }[level] || 'text-muted'
+}
+
+function levelColor(level) {
+  return { '过热': 'text-red-400', '偏热': 'text-orange-400', '中性': 'text-amber-400',
+           '偏冷': 'text-cyan-400', '过冷': 'text-blue-400' }[level] || 'text-muted'
 }
 async function loadDayIndex() {
   try {
