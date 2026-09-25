@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 def _bj_now():
     """北京时间（本文件局部助手；全项目时间源约定见 app/flash/rules.py）"""
     return datetime.now(timezone(timedelta(hours=8)))
+import json
 import time
 import threading
 from app.tencent import (
@@ -810,6 +811,232 @@ def emotion_review(days: int = Query(30, ge=3, le=200)):
                        "本表自 2026-09-25 起落库且只在交易日写，"
                        "历史无法补算（回算口径与实时不一致）⇒ 需自然积累几天。")
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  尾盘承接（14:30 窗口）—— 2026-09-25（用户需求 3，框架 C2 附带）
+# ══════════════════════════════════════════════════════════════════════════
+# 【回答什么问题】框架原话："盘中：14:30 承接（回封/抢筹/跳水）"。
+#   尾盘半小时的**承接强度**决定**是否持仓过夜**：
+#     · 走强（涨停增加 / 指数翘尾 / 量能跟上）⇒ 资金愿意持股过夜；
+#     · 走弱（炸板增多 / 指数跳水）      ⇒ 有资金在尾盘撤退。
+#   这正是"隔夜仓"的决策依据，也是原看盘序里唯一缺的**尾段**维度。
+#
+# 【★★ 口径的关键：必须有一个"14:30 的基线"】
+#   内存行情只有**当前值**，没有"14:30 那一刻" ⇒ 若不在 14:30 记录，事后**无法还原**
+#   （本项目没有 A 股分时数据，`get_kline` 只有日线）。
+#   ⇒ 由 `scheduler.intraday_alert_loop`（3 分钟一轮、覆盖 13:00-15:00）在 **14:30-14:36**
+#      落一条基线（一天一次）到 `market_tail_snapshot`；本函数对比"基线 vs 现在"。
+#   ⚠️ 与 `market_emotion_daily` 同款：**当天没开机/没访问就没有基线** ⇒ 返回空 + 说明原因。
+#
+# 【指标与判定】框架要求"影子运行先看数据质量" ⇒ 阈值取**保守初值** + 落库攒样本 + 标注待校准：
+#   Δ涨停（核心，±5 家记 ±2 分）｜指数尾段涨跌（±0.3% 记 ±1）｜Δ上涨家数（±200 记 ±1）
+#   综合分 ≥ +2 ⇒ 尾盘走强（可持股过夜）｜≤ −2 ⇒ 尾盘走弱（减仓过夜）｜其余 ⇒ 平稳
+#
+# ⚠️ 两条诚实标注（写进返回值）：
+#   ① 只对比"14:30 → 现在"**两个时点**，看不出"先炸板后回封"的**路径**
+#      （要路径需连续采样，成本高；先用两点法攒样本，不够再升级）；
+#   ② 阈值是**经验初值**，需累积样本后校准（本表每交易日一行）。
+_TAIL_KEEP_DAYS = 400
+_TAIL_TABLE_READY = False
+# 尾盘基线要记的指数（与 `intraday_alerts._INDEX_WATCH` 同集：上证/创业板指/科创50）
+_TAIL_INDICES = (("000001", "上证指数"), ("399006", "创业板指"), ("000688", "科创50"))
+
+
+def _ensure_tail_table() -> None:
+    """建表（幂等）。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险。"""
+    global _TAIL_TABLE_READY
+    if _TAIL_TABLE_READY:
+        return
+    from app.database import db
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS market_tail_snapshot (
+            date TEXT PRIMARY KEY,
+            as_of TEXT,
+            limit_up TEXT, limit_down TEXT,
+            up TEXT, down TEXT,
+            amount TEXT,
+            idx_json TEXT,
+            created_at TEXT
+        )
+    """)
+    _TAIL_TABLE_READY = True
+
+
+def _breadth_now() -> Dict:
+    """当前市场宽度（**纯内存缓存、零网络**）。口径与 `market_overview.stats` 逐字一致
+    （全部股票的 `change_pct`，含停牌记 0、不剔除）—— ★ 两处口径必须一致，
+    否则页面上会出现两个不同的"涨停家数"。"""
+    stocks = _cache.get("stocks") or {}
+    if not stocks:
+        return {}
+    changes = [s.get("change_pct") for s in stocks.values()
+               if s.get("change_pct") is not None]
+    if not changes:
+        return {}
+    return {
+        "total": len(stocks),
+        "up": sum(1 for c in changes if c > 0),
+        "down": sum(1 for c in changes if c < 0),
+        "limit_up": sum(1 for c in changes if c >= 9.9),
+        "limit_down": sum(1 for c in changes if c <= -9.9),
+        "amount": round(sum(float(s.get("amount") or 0) for s in stocks.values()), 2),
+    }
+
+
+def _index_snapshot() -> Dict[str, Dict]:
+    """一次请求取 `_TAIL_INDICES` 全部指数（`{code: {name, price, change_pct}}`）。失败返回 {}。"""
+    try:
+        from app.tencent import _fetch_tencent
+        codes = ",".join(("sh" if c.startswith("0") else "sz") + c for c, _ in _TAIL_INDICES)
+        data = _fetch_tencent(codes)
+        out = {}
+        for code, name in _TAIL_INDICES:
+            prefix = "sh" if code.startswith("0") else "sz"
+            info = data.get(f"{prefix}{code}") or {}
+            if info.get("price"):
+                out[code] = {"name": name, "price": float(info["price"]),
+                             "change_pct": float(info.get("change_pct") or 0)}
+        return out
+    except Exception as e:
+        print(f"[market] tail index snapshot failed: {e}")          # ASCII（铁律⑥）
+        return {}
+
+
+def _save_tail_baseline() -> Dict:
+    """记录当天的「尾盘基线」（14:30 窗口，**一天一次**）。供调度器调用；失败静默。
+
+    幂等：`market_tail_snapshot.date` 主键，已有则跳过（不覆盖 —— 基线必须保持"14:30 那一刻"）。
+    ⚠️ 若那一刻内存行情缓存为空（首次全量扫描未完成/刚重启）⇒ **不记**，
+       否则会写一个全 0 的基线、之后所有对比都失真。
+    """
+    try:
+        _ensure_tail_table()
+        # ⚠️ 非交易日**不写**：休市日内存缓存是**上一交易日收盘快照** ⇒ 写进去会造成
+        #   "日期=休市日、数据=上一交易日"的错位记录（与 `_save_emotion_daily` 同款防线）。
+        try:
+            from app.flash.rules import is_trading_day
+            if not is_trading_day(_bj_now()):
+                return {"saved": False, "reason": "not trading day"}
+        except Exception:
+            pass                      # 日历判断失败不阻塞（宁可多写一条也不静默失效）
+        day = _bj_now().strftime("%Y-%m-%d")
+        from app.database import db
+        if db.fetch_one("SELECT date FROM market_tail_snapshot WHERE date=%s", (day,)):
+            return {"saved": False, "reason": "already"}
+        b = _breadth_now()
+        if not b:
+            return {"saved": False, "reason": "no market cache"}
+        idx = _index_snapshot()
+        now = _bj_now()
+        db.upsert("market_tail_snapshot", {
+            "date": day, "as_of": now.isoformat(),
+            "limit_up": str(b["limit_up"]), "limit_down": str(b["limit_down"]),
+            "up": str(b["up"]), "down": str(b["down"]),
+            "amount": str(b["amount"]),
+            "idx_json": json.dumps(idx, ensure_ascii=False),
+            "created_at": now.isoformat(),
+        }, conflict_columns=["date"])
+        try:                             # 保留期清理（与写入同频，一天一次）
+            cutoff = (_bj_now() - timedelta(days=_TAIL_KEEP_DAYS)).strftime("%Y-%m-%d")
+            db.execute("DELETE FROM market_tail_snapshot WHERE date < %s", (cutoff,))
+        except Exception:
+            pass
+        print(f"[market] tail baseline saved {day} limit_up={b['limit_up']}")   # ASCII
+        return {"saved": True, "date": day, "limit_up": b["limit_up"]}
+    except Exception as e:
+        print(f"[market] tail baseline failed (non-fatal): {e}")     # ASCII（铁律⑥）
+        return {"saved": False, "reason": str(e)[:80]}
+
+
+def tail_review(date: str = None) -> Dict:
+    """尾盘承接：对比「14:30 基线」与「现在（收盘后即收盘值）」。只读；失败返回空结构。"""
+    out = {"available": False, "date": None, "as_of": None, "verdict": None, "label": None,
+           "score": None, "advice": None, "note": None, "deltas": {}, "baseline": {},
+           "now": {}, "indices": []}
+    try:
+        _ensure_tail_table()
+        from app.database import db
+        day = date or _bj_now().strftime("%Y-%m-%d")
+        row = db.fetch_one("SELECT * FROM market_tail_snapshot WHERE date=%s", (day,))
+        if not row:
+            out["note"] = (f"{day} 无尾盘基线（14:30 窗口未被记录）——"
+                           "该基线需 14:30 时后端在线且行情缓存已就绪，历史无法补算")
+            return out
+        base = {
+            "limit_up": _num_or_none(row.get("limit_up")),
+            "limit_down": _num_or_none(row.get("limit_down")),
+            "up": _num_or_none(row.get("up")),
+            "down": _num_or_none(row.get("down")),
+            "amount": _num_or_none(row.get("amount")),
+        }
+        now = _breadth_now()
+        if not now:
+            out["note"] = "行情缓存未就绪，无法对比（稍后重试）"
+            return out
+        b_idx = json.loads(row.get("idx_json") or "{}")
+        n_idx = _index_snapshot() or b_idx           # 取不到实时就退化为基线（Δ=0）
+        indices = []
+        for code, name in _TAIL_INDICES:
+            bp = (b_idx.get(code) or {}).get("price")
+            np_ = (n_idx.get(code) or {}).get("price")
+            d = (round((np_ / bp - 1) * 100, 2) if bp and np_ else None)
+            indices.append({"code": code, "name": name, "price": np_,
+                            "d_pct": d,
+                            "change_pct": (n_idx.get(code) or {}).get("change_pct")})
+        d_lu = now["limit_up"] - (base["limit_up"] or 0)
+        d_up = now["up"] - (base["up"] or 0)
+        d_amt = round((now["amount"] - (base["amount"] or 0)) / 1e8, 0)   # 亿元
+        # 指数尾段：取跌幅最大者代言（走弱时它最能说明问题；走强时取涨幅最大者）
+        ds = [i["d_pct"] for i in indices if i["d_pct"] is not None]
+        idx_worst = min(ds) if ds else None
+        idx_best = max(ds) if ds else None
+        score = 0
+        if d_lu >= 5:
+            score += 2
+        elif d_lu <= -5:
+            score -= 2
+        ref = idx_worst if (idx_worst is not None and idx_worst < 0) else idx_best
+        if ref is not None:
+            if ref >= 0.3:
+                score += 1
+            elif ref <= -0.3:
+                score -= 1
+        if d_up >= 200:
+            score += 1
+        elif d_up <= -200:
+            score -= 1
+        if score >= 2:
+            verdict, label = "strong", "尾盘走强"
+            advice = ("尾盘承接强（涨停增加/指数翘尾）⇒ 资金愿意持股过夜，"
+                      "已有仓位可持有；不追高，隔夜仓按原计划")
+        elif score <= -2:
+            verdict, label = "weak", "尾盘走弱"
+            advice = ("尾盘承接弱（涨停减少/指数跳水）⇒ 有资金在尾盘撤退，"
+                      "按纪律**减仓过夜**（尤其高位/浮盈大的），不新开仓")
+        else:
+            verdict, label = "flat", "尾盘平稳"
+            advice = "尾盘承接中性，无明确方向；隔夜仓按原计划，不因尾盘临时加仓"
+        out.update({
+            "available": True, "date": day, "as_of": row.get("as_of"),
+            "verdict": verdict, "label": label, "score": score, "advice": advice,
+            "baseline": base, "now": now, "indices": indices,
+            "deltas": {"limit_up": d_lu, "up": d_up, "amount_yi": d_amt,
+                       "idx_worst": idx_worst, "idx_best": idx_best},
+        })
+        # ⚠️ 给前端的解释文案：**不能含 Markdown 标记**（纯文本插值）
+        out["note"] = ("口径：14:30 基线 → 现在（两点法，非路径）· 阈值 ±5 家 / ±0.3% / ±200 家"
+                       " 为经验初值，影子运行期持续校准（本表每交易日一行）")
+    except Exception as e:
+        print(f"[market] tail review failed: {e}")                  # ASCII（铁律⑥）
+        out["note"] = "读取失败"
+    return out
+
+
+@router.get("/tail-review")
+def market_tail_review(date: str = Query(None)):
+    """尾盘承接（14:30 → 现在/收盘）。只读；无基线时返回解释而不是错误。"""
+    return tail_review(date)
 
 
 @router.get("/emotion")

@@ -3,12 +3,16 @@
 【文件作用】内置定时调度器（FastAPI lifespan 启动的 asyncio 后台任务）
 ================================================================================
 
-三个循环（时间均为北京时间）：
+循环（时间均为北京时间；下列为主要几条，完整清单见文件末尾 start()）：
   快讯轮询  flash_loop   每 10 分钟全天（无新事件近零成本）
   信号跟踪  track_loop   每 15 分钟，仅 A 股交易时段实际执行
   三段复盘  review_loop  每分钟检查时间窗（09:10/11:32/15:03），每日各一次
               ★ 2026-09-25：盘前/盘后两段会**顺带落一次情绪快照**（`_snapshot_emotion`）
                 —— 供「盘前预判 vs 当日实际」对账（P3），使该闭环不依赖用户是否在线。
+  盘中告警  intraday_alert_loop  交易时段每 3 分钟（9:40-11:30 / 13:00-15:00）
+              ★ 2026-09-25：14:30 窗口**顺带落一次尾盘基线**（`_snapshot_tail_baseline`）
+                —— 供「14:30 承接（回封/抢筹/跳水）」对比（C2）。⚠️ 内存行情只有当前值，
+                不在当时记就无法事后还原（本项目无分时数据）⇒ 必须在窗口内落库。
 
 时间窗 + "今日已跑"标记（schedule_state.json）共同保证幂等：
 错过窗口（如服务重启）会在窗口后补跑一次，同一天不会重复跑。
@@ -565,6 +569,39 @@ def _trading_session_now() -> bool:
     return _trading_session()
 
 
+TAIL_BASELINE_WINDOW = (14 * 60 + 30, 14 * 60 + 37)   # 14:30~14:36（3 分钟一轮 ⇒ 必然命中）
+_tail_base_day = {"date": None}                        # 进程内"今天已落"标记
+
+
+async def _snapshot_tail_baseline(now) -> None:
+    """14:30 窗口记录一次「尾盘基线」（一天一次）。**失败静默、绝不影响风险告警**。
+
+    ★ 为什么必须在这里落（2026-09-25，用户需求 3「14:30 尾盘承接」）：
+      内存行情只有**当前值**，没有"14:30 那一刻" ⇒ 若不在 14:30 记录，事后**无法还原**
+      （本项目没有 A 股分时数据，`get_kline` 只有日线）。
+      本循环 3 分钟一轮、覆盖 13:00-15:00 ⇒ 正好覆盖窗口 ⇒ **零新增循环**。
+    ★ 为什么用**进程内**标记而非 `schedule_state`：与 `_snapshot_emotion` 同理 ——
+      进程内标记零 DB 依赖（落库失败不会牵连本循环）；重启后窗口内会再落一次，无害
+      （`market._save_tail_baseline` 自身幂等，已有基线则跳过、**不覆盖**）。
+    ⚠️⚠️ 必须判返回值：`_run_sync` **自己吞异常并返回 None**（见本文件开头注释）⇒
+      不判返回值就会把失败当成功、记上"今天已落" ⇒ **当天永远补不上基线**。
+    """
+    t = now.hour * 60 + now.minute
+    if not (TAIL_BASELINE_WINDOW[0] <= t < TAIL_BASELINE_WINDOW[1]):
+        return
+    day = now.strftime("%Y-%m-%d")
+    if _tail_base_day["date"] == day:
+        return
+    try:
+        from app.routers.market import _save_tail_baseline
+        r = await _run_sync(_save_tail_baseline)
+        if r and (r.get("saved") or r.get("reason") == "already"):
+            _tail_base_day["date"] = day
+        print(f"[scheduler] tail baseline {day}: {r}")          # ASCII（铁律⑥）
+    except Exception as e:
+        print(f"[scheduler] tail baseline failed (non-fatal): {e}")
+
+
 async def intraday_alert_loop():
     """盘中风险警示：交易时段每 **3 分钟**检查一次（上证急跌/涨跌比/跌停家数），
     触发极端阈值才推企微（每类每档每日一次 + 全局最小间隔防骚扰）。
@@ -587,6 +624,9 @@ async def intraday_alert_loop():
                     status["last_intraday_alert"] = rules.beijing_now().isoformat()
             except Exception as e:
                 print(f"[scheduler] 盘中风险警示失败: {e}")
+            # ★ 2026-09-25（用户需求 3）：14:30 窗口顺带落「尾盘基线」（一天一次）。
+            #   放在告警之后、且内部自吞异常 ⇒ 基线绝不拖垮告警循环。
+            await _snapshot_tail_baseline(rules.beijing_now())
         await asyncio.sleep(180)
 
 

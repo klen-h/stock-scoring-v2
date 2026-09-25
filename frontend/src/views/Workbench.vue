@@ -693,6 +693,27 @@
               </div>
               <div class="text-muted mt-0.5">{{ ovStyle.note }}</div>
             </div>
+            <!-- ★★ 2026-09-25 需求 3（框架 C2「14:30 承接：回封/抢筹/跳水」）：
+                 尾盘半小时的承接强度**决定是否持仓过夜** —— 走强=资金愿持股过夜；
+                 走弱=有资金尾盘撤退（该减仓过夜）。对比 14:30 基线 vs 现在。
+                 ⚠️ 基线需 14:30 时后端在线（由 intraday_alert_loop 落库）；无基线时整块不渲染。 -->
+            <div v-if="tailReview?.available" class="border-t border-border/40 mt-2 pt-2 text-[11px]">
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-muted">尾盘承接</span>
+                <span class="font-semibold cursor-help" :class="tailCls" :title="tailTitle">
+                  {{ tailReview.label }}</span>
+                <span class="text-muted font-mono">
+                  Δ涨停 <b :class="pctClass(tailReview.deltas.limit_up)">{{ tailDelta(tailReview.deltas.limit_up) }}</b>
+                  · Δ上涨 <b :class="pctClass(tailReview.deltas.up)">{{ tailDelta(tailReview.deltas.up) }}</b>
+                  · 尾盘量能 <b class="text-gray-300">{{ tailReview.deltas.amount_yi }}亿</b>
+                </span>
+                <span v-for="i in (tailReview.indices || [])" :key="i.code"
+                      class="text-muted font-mono" title="该指数 14:30 → 现价的变化">
+                  {{ i.name }} <b :class="pctClass(i.d_pct)">{{ signNum(i.d_pct) }}%</b>
+                </span>
+              </div>
+              <div class="text-muted mt-0.5">{{ tailReview.advice }}</div>
+            </div>
             <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
               昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
               <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
@@ -1017,6 +1038,30 @@
             </template>
           </div>
 
+          <!-- ★ 2026-09-25 需求 3：尾盘承接（复盘回看今天尾盘的**最终**承接结果 ——
+               此时"现在"即收盘值，Δ 就是"14:30 → 收盘"的尾段变化，正是决定隔夜仓的那半小时）。 -->
+          <div v-if="tailReview?.available" class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">尾盘承接
+                <span class="text-[10px] text-muted font-normal">（14:30 → 收盘 · 决定隔夜仓）</span></div>
+              <div class="text-xs font-semibold cursor-help" :class="tailCls" :title="tailTitle">
+                {{ tailReview.label }}</div>
+            </div>
+            <div class="text-xs flex items-center gap-2 flex-wrap">
+              <span class="text-muted font-mono">
+                Δ涨停 <b :class="pctClass(tailReview.deltas.limit_up)">{{ tailDelta(tailReview.deltas.limit_up) }}</b>
+                · Δ上涨 <b :class="pctClass(tailReview.deltas.up)">{{ tailDelta(tailReview.deltas.up) }}</b>
+                · 尾盘量能 <b class="text-gray-300">{{ tailReview.deltas.amount_yi }}亿</b>
+              </span>
+              <span v-for="i in (tailReview.indices || [])" :key="i.code"
+                    class="text-muted font-mono">
+                {{ i.name }} <b :class="pctClass(i.d_pct)">{{ signNum(i.d_pct) }}%</b>
+              </span>
+            </div>
+            <div class="text-[11px] text-gray-300 mt-1">{{ tailReview.advice }}</div>
+            <div class="text-[10px] text-muted mt-1">{{ tailReview.note }}</div>
+          </div>
+
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">执行一致性</div>
@@ -1154,6 +1199,7 @@ import {
   getMarketEmotion, getMarketLimitReview,
   getUserPositionSizing,
   getEmotionReview,
+  getMarketTailReview,
   // ★ 2026-09-25 修复：**这两个原本就没 import** —— `loadSectorTop` 里一直在用
   //   `getSectorSnapshot` 却从未导入 ⇒ `vite build` 不做未定义变量检查（ESM 下被当成全局
   //   变量，不报错），而运行时抛 `ReferenceError` 被 `try/catch` 静默吞掉
@@ -1279,6 +1325,9 @@ const pddTitle = computed(() => {
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 用户："对错了要回溯修正，形成闭环，
 //   否则情绪模型永远校准不了"。数据来自 `/api/market/emotion-review`（读同日两组字段）。
 const emotionReview = ref(null)
+// ★ 2026-09-25 需求 3（框架 C2）：尾盘承接（14:30 基线 → 现在/收盘）—— 决定是否持仓过夜。
+//   数据来自 `/market/tail-review`（后端对比 14:30 落库的基线；无基线时整块不渲染）。
+const tailReview = ref(null)
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -1339,6 +1388,18 @@ const barW = (n) => {
 const relCls = (r) => (r === '一致' ? 'text-emerald-400'
   : r === '偏保守' ? 'text-amber-300'
     : r === '偏乐观' ? 'text-red-400' : 'text-muted')
+// ★ 2026-09-25 需求 3：尾盘承接的配色（与涨跌色一致，避免误读）：
+//   走强=红（资金愿意持股过夜）｜走弱=绿（有资金尾盘撤退）｜平稳=灰
+const tailCls = computed(() => (tailReview.value?.verdict === 'strong' ? 'text-red-400'
+  : tailReview.value?.verdict === 'weak' ? 'text-emerald-400' : 'text-gray-300'))
+// Δ用的是**整数家数/亿**，用 signNum（两位小数）会显示 "+6.00" ⇒ 单独一个整数格式
+const tailDelta = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + Math.round(Number(v)))
+const tailTitle = computed(() => {
+  const t = tailReview.value
+  if (!t?.available) return ''
+  const idx = (t.indices || []).map(i => `${i.name} ${signNum(i.d_pct)}%`).join('｜')
+  return `14:30 → ${t.as_of ? String(t.as_of).slice(11, 16) : '现在'}（含收盘）\n${idx}\n${t.advice || ''}\n${t.note || ''}`
+})
 const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
@@ -1594,6 +1655,16 @@ async function loadEmotionReview() {
     }
   } catch { emotionReview.value = null }
 }
+// ★ 2026-09-25 需求 3：尾盘承接（14:30 基线 → 现在/收盘）。⚠️ **刻意不用当日缓存** ——
+//   它在盘中是持续变化的（14:30 后每分钟都可能不同），缓存会锁死第一次的值。
+//   后端很轻：未到 14:30 / 无基线时只读一行表就返回（零腾讯请求）。
+async function loadTailReview() {
+  try {
+    const { data } = await getMarketTailReview(
+      selectedDate.value !== todayStr ? selectedDate.value : undefined)
+    tailReview.value = data || null
+  } catch { tailReview.value = null }
+}
 async function loadReport(date) {
   const day = date || selectedDate.value
   if (_dayCached('report', day)) return
@@ -1832,7 +1903,7 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
   //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
-  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadBrief('postmarket'); await loadReport(todayStr); }
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
     await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals()])
   }
@@ -1868,7 +1939,7 @@ function startPolling() {
     //   主工作区**永不自动切换**；提示见模板里的「● 已进入，点击切换」。
     //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
-    loadOverview(); loadTemperature(); loadEmotion(); loadGlobals()
+    loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
