@@ -203,15 +203,17 @@
                     </div>
                     <div class="text-[10px] text-muted whitespace-nowrap">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
                   </div>
-                  <span class="text-gray-300 flex-1 truncate text-xs"
-                        :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
-                    {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
-                  </span>
-                  <span class="text-muted text-xs whitespace-nowrap flex-shrink-0">
-                    仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
-                  </span>
-                  <router-link target="_blank" to="/monitor"
-                               class="text-accent hover:underline text-xs whitespace-nowrap flex-shrink-0">详情</router-link>
+                  <!-- ★ 2026-09-25 用户要求：文字部分同一 div 上下布局（叙事上 / 仓位·详情下） -->
+                  <div class="flex-1 min-w-0 text-xs">
+                    <div class="text-gray-300 truncate"
+                         :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
+                      {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
+                    </div>
+                    <div class="text-muted whitespace-nowrap">
+                      仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
+                      · <router-link target="_blank" to="/monitor" class="text-accent hover:underline">详情</router-link>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="flex flex-wrap gap-1 mt-2.5">
