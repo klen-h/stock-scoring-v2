@@ -57,7 +57,7 @@
       <span class="flex items-center gap-1.5 cursor-pointer" @click="statusOpen = true">
         <span class="inline-block w-2 h-2 rounded-full"
               :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
-        <span class="text-muted text-xs">数据新鲜度</span>
+        <span class="text-muted text-xs">数据新鲜度<template v-if="statusTime"> · 截至 {{ statusTime }}</template></span>
       </span>
     </div>
 
@@ -227,6 +227,57 @@
               </div>
             </template>
           </div>
+          <!-- ★ P1 今日决策卡（规则引擎确定性输出；空状态给生成按钮，不静默） -->
+          <div class="bg-card border border-accent/40 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">今日决策卡
+                <span class="text-[10px] text-muted font-normal">（规则引擎 · 无 LLM · 确定性输出）</span></div>
+              <button v-if="dcErr" @click="loadDecisionCard()"
+                      class="px-2 py-0.5 rounded bg-accent/20 text-accent text-xs">生成今日决策卡</button>
+            </div>
+            <div v-if="dcLoading" class="text-muted text-xs">生成中…</div>
+            <div v-else-if="dcErr" class="text-xs">
+              <div class="text-red-400 mb-1">生成失败：{{ dcErr }}</div>
+              <button class="px-2 py-0.5 rounded border border-border text-muted" @click="loadDecisionCard()">重试</button>
+            </div>
+            <template v-else-if="dc">
+              <!-- 做不做 -->
+              <div class="flex items-center gap-3 mb-2">
+                <span class="text-2xl font-bold"
+                      :class="dc.stance.level.includes('空仓') ? 'text-muted' : 'text-red-400'">{{ dc.stance.level }}</span>
+                <span class="text-xs text-muted">{{ dc.stance.why }}</span>
+              </div>
+              <!-- 做什么 / 做多少 / 错了怎么办 -->
+              <div class="text-xs space-y-1.5">
+                <div>
+                  <span class="text-muted">做什么：</span>
+                  <b>{{ dc.do.whitelist.join('、') || '无白名单战法（推送静默）' }}</b>
+                  <template v-if="(dc.do.candidates || []).length">
+                    · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
+                  </template>
+                </div>
+                <div v-if="(dc.do.avoid || []).length">
+                  <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
+                </div>
+                <div><span class="text-muted">做多少：</span>{{ dc.how_much.total_cap
+                  }}<template v-if="dc.how_much.single_cap && dc.how_much.single_cap !== '—'"> · {{ dc.how_much.single_cap }}</template></div>
+                <div><span class="text-muted">错了怎么办：</span>{{ dc.if_wrong.stop_rule
+                  }}<template v-if="dc.if_wrong.retreating"> · <span class="text-amber-400">{{ dc.if_wrong.retreating }}</span></template></div>
+                <div><span class="text-muted">环境：</span>情绪 {{ dc.environment.emotion_verdict || '—' }}
+                  · {{ dc.environment.emotion_detail }}</div>
+              </div>
+              <!-- 持仓扫描 -->
+              <div v-if="(dc.positions_scan || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
+                <div class="text-muted mb-1">持仓扫描</div>
+                <div v-for="p in dc.positions_scan" :key="p.code" class="py-0.5">
+                  <b>{{ p.name }}</b> {{ fmtPct(p.pnl_pct) }} · 主力 {{ p.phase_cn || '—' }}
+                  <span v-if="p.fit" class="text-emerald-400 ml-1">{{ p.fit }}</span>
+                  <span v-for="(a, j) in (p.alerts || [])" :key="j" class="text-red-400 ml-1">⚠ {{ a.text }}</span>
+                </div>
+              </div>
+            </template>
+          </div>
+
           <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
@@ -243,7 +294,8 @@
 
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">决策简报（盘前）</div>
+              <div class="text-sm font-semibold">决策简报（盘前）<span
+                v-if="premarketOver" class="ml-2 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[10px]">盘前已结束 · 以下为盘前回顾（09:10 生成），勿据此做盘中决策</span></div>
               <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
             </div>
             <div v-if="briefErr" class="text-muted text-xs">—（加载失败：{{ briefErr }}）</div>
@@ -285,6 +337,20 @@
               · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak }}</b>
               <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
               <span class="text-[10px]">· {{ emotion.note }}</span>
+            </div>
+            <!-- ★ P1 竞价看板：昨日涨停股今日高开（9:25 竞价定稿后有效；休市日显示最近交易日） -->
+            <div v-if="emotion && emotion.auction && emotion.auction.count"
+                 class="border-t border-border/40 mt-2 pt-2 text-xs">
+              <div class="mb-1">竞价看板：昨日涨停 {{ emotion.auction.count }} 只 ·
+                平均高开 <b :class="pctClass(emotion.auction.avg_gap)">{{ signNum(emotion.auction.avg_gap) }}%</b>
+                <span class="text-muted">（高开幅度 Top5）</span></div>
+              <div class="flex flex-wrap gap-1.5">
+                <span v-for="g in (emotion.auction.top || [])" :key="g.code"
+                      class="px-1.5 py-0.5 rounded border border-border/60 font-mono"
+                      :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'">
+                  {{ g.name }} {{ signNum(g.gap_pct) }}%
+                </span>
+              </div>
             </div>
           </div>
 
@@ -577,6 +643,7 @@ import {
   getMarketOverview, getMarketTemperature, getMarketRegime,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
+  getWorkbenchDecisionCard,
   getMarketEmotion, getMarketLimitReview,
 } from '../api'
 
@@ -657,6 +724,10 @@ const limitReview = ref({ steps: [], stocks: [] })
 const sectorTop = ref([])
 const calendarToday = ref([])
 const calendarErr = ref('')
+// ★ P1 决策卡（规则引擎确定性输出；空状态由后端 error 兜底）
+const dc = ref(null)
+const dcLoading = ref(false)
+const dcErr = ref('')
 // ★ 2026-09-25 盘中外盘四件套（A50/离岸/布伦特/纳指期货）——宏面板已在抓，
 //   一次新浪批量请求 60s 缓存，工作台只是读取，零新增请求
 const globals = ref({})
@@ -682,6 +753,12 @@ function computePhase() {
   return 'review'
 }
 const livePhase = ref(computePhase())
+// ★ 盘前是否已结束（9:30 后）：用于盘前视图的"回顾"标注
+const premarketOver = computed(() => {
+  const d = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000)
+  const m = d.getHours() * 60 + d.getMinutes()
+  return m >= 570
+})
 const renderMd = (md) => mdRenderer.render(String(md || ''))
 const firstLine = (s) => String(s || '').split('\n').find(x => x.trim()) || ''
 const fmtNum = (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }))
@@ -728,6 +805,7 @@ const regimeClass = computed(() => ({
   '震荡偏空（阴跌）': 'text-amber-400', '防御': 'text-emerald-400',
 }[regimeLabel.value] || 'text-muted'))
 const freshnessOk = ref(true)
+const statusTime = ref('')
 
 // 徽标：盘前=简报降级 ⚠️；盘中/午盘/盘后=未决策教练卡数；复盘=未决策数
 function badge(key) {
@@ -848,12 +926,34 @@ async function loadFlashDiag() {
   } catch { flashDiag.value = null }
 }
 // ★ A2 隔夜与今日：财经日历今日事件（防御性渲染，字段以接口实际返回为准）
+async function loadDecisionCard() {
+  dcLoading.value = true
+  dcErr.value = ''
+  try {
+    const { data } = await getWorkbenchDecisionCard()
+    if (data && data.error) { dcErr.value = data.error; dc.value = null }
+    else dc.value = data
+  } catch (e) {
+    dcErr.value = (e && e.message) || '生成失败'
+  } finally { dcLoading.value = false }
+}
 async function loadCalendarToday() {
+  // ★ P0-1 去重（同一事件多源重复，如"中秋节"×4）+ 按星级排序（重要事件排前）
+  const dedupeSort = (rows) => {
+    const seen = new Set()
+    return (rows || [])
+      .filter(it => {
+        const k = `${it.title || ''}|${it.country || ''}|${it.date || ''}`
+        if (seen.has(k)) return false
+        seen.add(k)
+        return true
+      })
+      .sort((a, b) => (b.star || 0) - (a.star || 0))
+  }
   try {
     const { data } = await getCalendar({ days: 1 })
-    const items = (data && data.items) || []
-    calendarToday.value = items.filter(it =>
-      String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
+    calendarToday.value = dedupeSort((data && data.items) || [])
+        .filter(it => String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
     calendarErr.value = ''
   } catch (e) {
     // ★ 2026-09-25：带出真实原因（Render 重部署窗口/冷启动超时是最常见场景），
@@ -862,9 +962,8 @@ async function loadCalendarToday() {
     try {
       await new Promise(r => setTimeout(r, 2500))
       const { data } = await getCalendar({ days: 1 })
-      const items = (data && data.items) || []
-      calendarToday.value = items.filter(it =>
-        String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
+      calendarToday.value = dedupeSort((data && data.items) || [])
+        .filter(it => String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
       calendarErr.value = ''
     } catch (e2) {
       calendarErr.value = (e2 && e2.message) || '重试仍失败'
@@ -961,6 +1060,7 @@ async function loadStatus() {
   try {
     const { data } = await getSystemStatus()
     freshnessOk.value = !!data
+    if (data?.generated_at) statusTime.value = String(data.generated_at).slice(11, 16)
     const src = data?.sources
     if (Array.isArray(src)) {
       const rows = src.slice(0, 12).map(v => {
@@ -1003,7 +1103,7 @@ function onStatusToggle(e) {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') { await loadBrief('premarket'); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday()]) }
+  if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
@@ -1033,8 +1133,16 @@ function startPolling() {
   timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   timers.push(setInterval(() => {
-    livePhase.value = computePhase()          // 温和自动跟随：只更新提示，不硬切
+    const prev = livePhase.value
+    livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals()
+    // ★ 2026-09-25 P0-7 阶段自动流转：阶段推进时自动切换主工作区
+    //   （用户此前反馈"页面主体停在盘前、顶栏已是盘中数据"的混搭问题）
+    const order = PHASES.map(p => p.key)
+    if (isToday.value && order.indexOf(livePhase.value) > order.indexOf(selectedPhase.value)) {
+      selectedPhase.value = livePhase.value
+      loadPhaseData(selectedPhase.value)
+    }
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
