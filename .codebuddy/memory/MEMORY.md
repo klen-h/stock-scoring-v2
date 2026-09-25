@@ -104,6 +104,34 @@
   ⇒ 每重启一次就整份重读。已治理 4 处 —— `mainflow_history` 整表读 8.7MB/次、
   `market_snapshot` 整行 336KB/次（两处读取点）、`stock_industry JOIN stock_finance` 1.68 万行/次、
   研究脚本 `backtest_prices` 22.7 万行/次（无 `start` 读全历史）。常态 ~140MB/天 → 预期 ~20MB/天。
+- ⚠️ **实测未达预期（2026-09-25 复查，用户报"今日 332MB"）**：探针 14 天窗口
+  （`stats_reset=2026-09-11`）累计 ≈**3.82GB** ⇒ **~273MB/天**——**不是某天突增，是长期水平**。
+  上条"已治理"的 3 处在实测中**仍在大量出网**：`mainflow_history` 整表 125 次、
+  `SELECT code FROM stock_industry` 160 次、`backtest_prices` 大 IN ~105 次。
+  **新定位的两个「零缓存」元凶**：`contradictions/l3_scanner._load_reports()`
+  （`stock_finance_zz` 整表读 ≈10MB/次、**完全无缓存**）、`mainline._latest_unknown()`
+  （只需判 Top50 的行业，却读全表 5932 行）。
+  ★ 教训：**"已治理"清单必须定期用探针复验**，否则文档与现网脱节；且探针**必须先看 `stats_reset`**
+  （否则把 14 天累计当一天，结论会差 14 倍）。
+- **当天治理结果（2026-09-25）**：✅ `l3_scanner._load_reports` 加三层缓存（内存 10min →
+  本机 gzip 12h → 回源，指纹 `(行数, MAX(updated_at))`；实测首次 4.9s → 落盘 1.4MB →
+  新进程 0.38s 零回源，省 ~28MB/天）；✅ `mainline._latest_unknown` 改 `code IN (Top50)`
+  （原读全表 5932 行 ⇒ ≤50 行，省 ~9MB/天）；✅ 查明**日批早就设了 `DATA_SOURCE=pack`**
+  ⇒ `backtest_prices` 那 ~500MB/14天 来自 **Render（默认 db）+ 本地不带 pack 的脚本**，
+  已在 `render.yaml` 补 `DATA_SOURCE=pack`（需控制台手动配）。
+  ⏳ **`load_flow_map` 回源（~76MB/天，最大头）未修**：三层缓存已实现且正常，
+  回源全是**环境**造成（Actions 全新 runner 无本机磁盘缓存 / Render 文件系统临时 +
+  冷启动 / 本地版本变更）⇒ **唯一根治是把 `mainflow_history` 并入数据包**（方案见 `EGRESS.md` §七）。
+  ⚠️ 不能靠"SQL 只读近期"绕过：该表本就只 ~146 交易日/只（10.9 万行 ≈7.8MB），无冗余可裁。
+- **`python backend/run.py` 默认带 `--reload`（硬编码，2026-09-25 已加开关）**：它就是 egress
+  头号放大器 —— **每改一次 `backend/**` 的 .py = 一次重启 = 整份重读**。现在可关：
+  `python run.py --no-reload` 或 `RELOAD=0`（可写进 `backend/.env`）；**默认仍为开**（不改变习惯）。
+  ⚠️ 改 `frontend/**` **不**触发后端重启（只有 vite HMR）⇒ 前后端的"改代码成本"完全不同。
+  ⚠️ 用户本地 `.env` 是 `DATA_SOURCE=local`（大表走本机包、零 Supabase），但
+  **`mainflow_history` 不在包里**（pack 只有 klines/indicators/codes）⇒ 关掉 reload 对本地
+  是直接有效的省流量手段。
+  ★ 协作纪律：**改 backend/** 的 .py 会重启用户本地服务** ⇒ 批量改、别反复改；
+  用户要连续改代码时应先关 reload。
 - **跨进程版本门控四手段**：① `sync_meta` 版本号（写入方能配合）② 数据自身 `saved_at`
   （写入方在别的机器、无法要求其配合）③ `pg_stat_user_tables` 写入计数指纹（无时间戳列可用）
   ④ 兜底 TTL。**探测只取版本列**（单行几十字节），别整行读。

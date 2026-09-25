@@ -74,7 +74,35 @@ def _preflight() -> None:
     sys.exit(1)
 
 
+def want_reload(argv=None, env=None) -> bool:
+    """是否开启热重载。**默认 True**（保持历史行为）；以下任一方式关闭：
+
+        python run.py --no-reload
+        RELOAD=0 python run.py        # 或写进 backend/.env 的 RELOAD=0
+
+    ★★ 2026-09-25 新增（egress 治理，用户实测反馈驱动）
+      `reload=True` 是本项目 **egress 的头号放大器**（`EGRESS.md` §二）：
+        改一次 `backend/**` 下的文件 → uvicorn 重启 → **所有进程内缓存失效**
+        → 整份重读低频大表（实测 `mainflow_history` 整表 8.4MB/次、
+        `stock_finance_zz` 近 10MB/次、`stock_industry` 全表 …）。
+      而本地开发恰恰是"高改代码"环境：一次会话改十几次后端文件 = 十几次整份重读。
+      ⇒ 需要连续改代码时关掉它（改完自己重启一次），比开着 reload 省得多。
+      ⚠️ 前端文件（`frontend/**`）不受影响：改 Vue 只触发 vite HMR，不重启后端。
+    """
+    argv = sys.argv if argv is None else argv
+    env = os.environ if env is None else env
+    if "--no-reload" in [str(a).strip() for a in argv]:
+        return False
+    return (str(env.get("RELOAD") or "")).strip() != "0"
+
+
 if __name__ == "__main__":
     _preflight()
     # __name__ == "__main__" 表示该文件被直接运行（而不是被 import）
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    _rl = want_reload()
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=_rl)
+    # 注：uvicorn.run 在 reload=True 时是**父进程常驻**（实际服务在子进程），
+    #     下面的提示只在进程退出后才会打印，属预期。
+    if not _rl:
+        print("[run] reload 已关闭（改代码不会重启，egress 友好）；"
+              "需要热重载请去掉 --no-reload / 清掉 RELOAD=0")

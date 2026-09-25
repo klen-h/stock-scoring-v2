@@ -297,7 +297,13 @@ def get_mainline_summary(days: int = 12) -> dict:
 
 
 def _latest_unknown() -> int:
-    """最新一天 Top50 中未映射行业的股票数（监控映射质量）。"""
+    """最新一天 Top50 中未映射行业的股票数（监控映射质量）。
+
+    ★ 2026-09-25（egress 治理，探针实测驱动）：原实现把 `stock_industry` **整表 code
+      读一遍**（实测 5,932 行/次；该语句 14 天 160 次 / 94.9 万行）——而本函数只判
+      **Top50 这 50 只**有没有行业映射。改成 `code IN (Top50)` 后单次 ≤50 行，
+      语义完全等价（"Top50 中不在 stock_industry 里" ⇔ "Top50 中不在 stock_industry∩Top50 里"）。
+    """
     today = beijing_now().strftime("%Y-%m-%d")
     row = db.fetch_one(
         "SELECT date FROM industry_mainline "
@@ -305,12 +311,16 @@ def _latest_unknown() -> int:
     if not row:
         return -1
     date = row["date"]
-    inds = {r["code"] for r in db.fetch(
-        "SELECT code FROM stock_industry")}
     rows = db.fetch(
         "SELECT code FROM ranking_history WHERE rank_date = %s AND rank_pos <= 50",
         (date,))
-    return sum(1 for r in rows or [] if r["code"] not in inds)
+    codes = [str(r["code"]) for r in (rows or []) if r.get("code")]
+    if not codes:
+        return 0
+    ph = ",".join(["%s"] * len(codes))
+    have = {str(r["code"]) for r in db.fetch(
+        f"SELECT code FROM stock_industry WHERE code IN ({ph})", tuple(codes)) or []}
+    return sum(1 for c in codes if c not in have)
 
 
 def push_mainline_report(days: int = 12) -> dict:

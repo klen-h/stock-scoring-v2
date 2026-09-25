@@ -21,9 +21,75 @@
 ================================================================================
 """
 
+import gzip
+import json
+import os
+import time
 from typing import Dict, Optional
 
 from app.database import db
+
+# ── 整表读的缓存（2026-09-25 egress 治理，探针实测驱动）─────────────────────────
+# 问题：`_load_reports()` 整表读 `stock_finance_zz`（含 ind/bal/cf 三个大 JSON），
+#   实测 ≈**10MB/次**；pg_stat_statements 里该语句 14 天 39 次 / ≤392MB —— 而财报是
+#   **日频/季度**数据。原先**完全无缓存** ⇒ 每次扫描/每次新进程都重来一遍。
+# 做法（照 `mainforce/flow.py` 的三层模式）：进程内存(10min) → **本机 gzip 持久缓存**
+#   (12h，跨进程/跨重启) → 才回源。指纹 = (行数, MAX(updated_at))，是**单行**查询（几十字节）。
+_L3_CACHE = {"ts": 0.0, "ver": None, "val": None}
+_L3_MEM_TTL = 600                 # 进程内 10 分钟（同一进程内多次扫描零查询）
+_L3_DISK_TTL = 12 * 3600          # 本机持久缓存 12 小时（财报不会一天内反复变）
+_L3_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "l3_finance_src.json.gz")
+# ⚠️ 路径层数：本文件在 `backend/app/contradictions/` 下，与 `mainforce/flow.py` 同深度
+#   ⇒ 同样上溯 3 层（contradictions → app → backend）才是 backend（约定落 `backend/data/`）。
+
+
+def _src_fingerprint():
+    """`stock_finance_zz` 变更指纹（行数 + MAX(updated_at)）：单行查询，几十字节。
+
+    取不到（异常/无表）返回 None ⇒ 调用方**不走缓存直接回源**（正确性优先：
+    宁可多花一次流量，也不拿无法判新的缓存做排雷判断）。
+    """
+    try:
+        r = db.fetch_one(
+            "SELECT COUNT(*) AS n, MAX(updated_at) AS u FROM stock_finance_zz")
+        return f"{int((r or {}).get('n') or 0)}|{(r or {}).get('u') or ''}"
+    except Exception:
+        return None
+
+
+def _disk_load(ver):
+    """读本机 gzip 缓存（零 egress）。指纹不符 / 过期 / 异常 ⇒ None（调用方回源）。"""
+    if ver is None:
+        return None
+    try:
+        if not os.path.exists(_L3_PATH):
+            return None
+        with gzip.open(_L3_PATH, "rt", encoding="utf-8") as f:
+            d = json.load(f)
+        if str(d.get("ver")) != str(ver):
+            return None
+        if time.time() - float(d.get("ts") or 0) > _L3_DISK_TTL:
+            return None
+        return d.get("rows") or None
+    except Exception:
+        return None
+
+
+def _disk_save(ver, rows):
+    """写本机 gzip 缓存（原子替换）。失败静默（不影响主流程）。"""
+    if ver is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(_L3_PATH), exist_ok=True)
+        tmp = _L3_PATH + ".tmp"
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump({"ver": ver, "ts": time.time(), "rows": rows}, f,
+                      ensure_ascii=False)
+        os.replace(tmp, _L3_PATH)
+    except Exception as e:
+        print(f"[l3] 本机缓存写入失败（不影响扫描）: {e}")        # ASCII（铁律⑥）
 
 OCF_NI_SEVERE = 0.30      # 净现比低于此 = 大断层（年报口径）
 OCF_NI_WARN = 0.50        # 净现比低于此 = 中断层（年报口径）
@@ -48,9 +114,24 @@ def _period_scale(report_date: str) -> float:
 
 
 def _load_reports() -> list:
+    """读全池财报（含 ind/bal/cf 三个 JSON 字段的**解析结果**）。
+
+    ★ 2026-09-25（egress 治理）：三层缓存 —— 进程内存(10min) → 本机 gzip(12h) → 才回源。
+      见文件头 `_L3_*` 注释（整表 ≈10MB/次，原先每次扫描都重来）。缓存的是**解析后**
+      的 dict 列表（JSON 兼容），顺带省掉每次重复 `json.loads` 大字段的开销。
+    """
+    now = time.time()
+    c = _L3_CACHE["val"]
+    if c is not None and now - _L3_CACHE["ts"] < _L3_MEM_TTL:
+        return c
+    ver = _src_fingerprint()
+    cached = _disk_load(ver)
+    if cached is not None:
+        _L3_CACHE.update(ts=now, ver=ver, val=cached)
+        print(f"[l3] 财报源命中本机缓存（{len(cached)} 行）-> 零 Supabase 流量")
+        return cached
     rows = db.fetch(
         "SELECT code, report_date, ind_json, bal_json, cf_json FROM stock_finance_zz")
-    import json
     out = []
     for r in rows or []:
         try:
@@ -61,6 +142,8 @@ def _load_reports() -> list:
             continue
         out.append({"code": r["code"], "report_date": str(r.get("report_date") or ""),
                     "ind": ind, "bal": bal, "cf": cf})
+    _disk_save(ver, out)
+    _L3_CACHE.update(ts=now, ver=ver, val=out)
     return out
 
 

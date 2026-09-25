@@ -159,6 +159,51 @@ backend/run.py 默认带 --reload  →  改一次代码就重启一次
 
 - [ ] **观察点（最优先）**：下一个完整交易日后看 Supabase egress 曲线。
       预期从 ~140MB/天 降到 **~20MB/天** 量级。若没降，用 §一 的方法重新定位。
+- [x] **~~观察点~~ 2026-09-25 实测：远未达预期**（用户报「今日 332MB」后的复查）
+      · 口径：`egress_probe.py snapshot --tag today` + `top`，`stats_reset = 2026-09-11 21:27`
+        ⇒ **14 天窗口**（⚠️ 这正是 §一 警告的"把 N 天累计当一天"）。
+      · 探针口径累计读 ≈ **3.82 GB / 14 天** ⇒ **~273 MB/天**；面板同日显示 332MB ⇒ 量级一致
+        ⇒ **不是某天突增，是长期水平**。
+      · §六「已治理」的 4 处里，**至少 3 处仍在大量出网**（见下表）⇒ 需逐个复查。
+- **2026-09-25 实测 Top（14 天累计，探针口径；完整 SQL 已核）**
+  | 语句 | 次数 | 行数 | 估计 | 定位（已核到函数） |
+  |---|---|---|---|---|
+  | `SELECT code,date,main_net,… FROM mainflow_history ORDER BY code,date` | 125 | 11.69M | ≤1249MB | `mainforce/flow.load_flow_map`（三层缓存**已实现**，本机 `data/flow-map.db` 存在；但仍 9 次/天回源）|
+  | `SELECT code,report_date,ind_json,bal_json,cf_json FROM stock_finance_zz` | 39 | 203K | ≤392MB | **`contradictions/l3_scanner._load_reports()`** —— **完全无缓存**，每次整表读 ≈10MB |
+  | `SELECT code FROM stock_industry` | 160 | 949K | ≤124MB | **`mainline._latest_unknown()`** —— 只需判 Top50 的行业，却读全表 5932 行 |
+  | `stock_industry JOIN stock_finance` | 69 | 1.16M | ≤152MB | `scoring/engine._industry_dist`（有指纹门控 + 本机 `industry_dist_src.json`，~5 次/天）|
+  | `backtest_prices` 大 IN（**全历史 OHLCV**） | ~105 | ~4.5M | ~500MB | `backtest/strategies._load_prices_map`（回测路径；未走 pack 时走 DB）|
+  | `backtest_prices` 逐只 `code=$1 AND date<=$2 ORDER BY date` | 8848 | 726K | ≤58MB | **未定位**（单次仅 82 行 ≈ 8KB ⇒ ≈5MB/天，**低优先**）|
+- **待修 → 2026-09-25 当天已修 ①②，③ 有方案未动，④ 查明是配置问题**
+  - ✅ **① `l3_scanner._load_reports` 加三层缓存**（进程内存 10min → 本机 gzip 12h → 回源；
+    指纹 = `(行数, MAX(updated_at))` 单行查询）。实测：首次 5386 行 4.9s，落盘 **1.4MB gzip**；
+    模拟新进程第二次 **0.38s / 零回源**（快 13 倍）。打桩 9/9（指纹变化 ⇒ 回源、
+    指纹不可用 ⇒ 回源不读无判据缓存、缓存损坏 ⇒ 回源不崩）。**预计省 ~28MB/天**。
+  - ✅ **② `mainline._latest_unknown` 改 `code IN (Top50)`**（原读全表 5932 行 ⇒ ≤50 行，语义等价）。
+    **预计省 ~9MB/天**。
+  - ✅ **④ 查明：日批早就设了 `DATA_SOURCE: pack`**（`daily-batch.yml`）⇒ 那 ~500MB 的
+    `backtest_prices` 大 IN **不是日批**，而是 **Render（默认 db）+ 本地不带 pack 的脚本**。
+    ⇒ 已在 `render.yaml` 变量清单补上 `DATA_SOURCE=pack` 并写明原因（⚠️ 该文件只是文档，
+    **需在 Render 控制台手动加**）；本地脚本一律先设 `DATA_SOURCE=local`（读本机包，零流量；
+    ⚠️ `local` 模式包陈旧会静默回退 DB ⇒ 先 `python scripts/sync_local.py --force`）。
+  - ⏳ **③ `load_flow_map` 回源（~76MB/天，最大头）——需改数据包，未动**
+    现状：三层缓存（内存 → 本机 SQLite → 回源）**已实现且正常**（本机 `data/flow-map.db` 在，
+    带 `sync_meta` 版本门控）。仍回源 9 次/天的原因是**环境**：
+    · **Actions** 每次是全新 runner ⇒ 本机磁盘缓存天然不存在（日批 1~2 次/天）→ 这部分已由
+      `DATA_SOURCE=pack` 覆盖不了（**pack 里没有 mainflow_history 这张表**）；
+    · **Render** 免费实例文件系统临时 + 冷启动 ⇒ 每次重启丢缓存 ⇒ 整表 8.4MB；
+    · 本地新进程：版本一变（日批回填后 touch）就回源一次。
+    ⚠️ **不能靠"改 SQL 只读近期"解决**：该表本就只 ~146 个交易日/只（10.9 万行≈7.8MB），
+    没有可裁的冗余。
+    ⇒ **唯一根治 = 把 `mainflow_history` 并入数据包**（3 步）：① `generate_backend_pack.py` 加
+    一张 `mainflow` 表（+~2-3MB gz）；② `pack_source` 加 `get_flow()`；③ `flow.load_flow_map`
+    在 `pack_source.enabled()` 时优先读包。
+    **未直接做的原因（诚实说明）**：改的是**每日数据链**（Actions 产包 → Pages → 各消费方），
+    验证需真跑一次产包（读全表 K 线，本地跑会花大流量）⇒ 收益大但验证成本高且影响面广，
+    应由用户明确批准后再动。
+- **本地开发纪律（§二 的落地补充）**：改**后端**代码时**别开 `--reload`**（每改一次 = 一次重启 =
+  整份重读大表）；不用本地后端时**关掉它**（进程在跑就有持续读取）；跑研究脚本前先设
+  `DATA_SOURCE=pack`（本机数据包，零 egress）。
 - [ ] `app/routers/performance.py:96` —— per-`(day, code)` 循环查询 ~600 次往返/次调用
       （`全项目审查_..._20260913.md` 第 21 条，**尚未实测**，可合并为 `date IN`）。
 - [ ] `app/backtest/data.py:172`、`app/backtest/strategies.py:172` —— 两份价格缓存
