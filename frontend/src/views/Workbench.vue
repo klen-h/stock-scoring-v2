@@ -701,19 +701,35 @@
             </template>
           </div>
 
-          <!-- ★ A1 主线板块 Top5（当日板块快照） -->
+          <!-- ★ A1 主线板块 Top5 + **板块内强势股**（看盘序第 4-5 层）
+               ★ 2026-09-25：改用实时行业板块列表（原为昨日 15:10 快照）并补上「领涨股」——
+                 此前缺的正是"板块内强势股"这一层（东财板块接口自带 leader 字段，零成本）。 -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">板块涨幅 Top5</div>
+              <div class="text-sm font-semibold">主线板块 Top5
+                <span class="text-[10px] text-muted font-normal">（实时 · 含板块内领涨股）</span></div>
               <router-link target="_blank" to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
             </div>
-            <div v-if="!sectorTop.length" class="text-muted text-xs">—（当日无板块快照）</div>
+            <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
             <div v-else class="space-y-1 text-xs">
-              <div v-for="(s, i) in sectorTop" :key="i" class="flex items-center gap-2 border-b border-border/40 py-1">
-                <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
-                <span class="font-semibold">{{ s.industry || s.name || s.code || '—' }}</span>
-                <span class="ml-auto font-mono" :class="pctClass(s.pct_change ?? s.change_pct)">
-                  {{ signNum(s.pct_change ?? s.change_pct) }}%</span>
+              <div v-for="(s, i) in sectorTop" :key="i" class="border-b border-border/40 py-1">
+                <div class="flex items-center gap-2">
+                  <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
+                  <span class="font-semibold">{{ s.name || s.industry || s.code || '—' }}</span>
+                  <span v-if="s.up_count !== undefined" class="text-[10px] text-muted">
+                    涨{{ s.up_count }}/跌{{ s.down_count }}</span>
+                  <span class="ml-auto font-mono" :class="pctClass(s.change_pct ?? s.pct_change)">
+                    {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
+                </div>
+                <!-- 板块内强势股（快照回退路径没有 leader 字段 ⇒ 该行不渲染） -->
+                <div v-if="s.leader" class="flex items-center gap-1.5 pl-6 mt-0.5 text-[11px]">
+                  <span class="text-muted">领涨</span>
+                  <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
+                     class="hover:text-accent">{{ s.leader }}</a>
+                  <span v-else>{{ s.leader }}</span>
+                  <span class="font-mono" :class="pctClass(s.leader_change_pct)">
+                    {{ signNum(s.leader_change_pct) }}%</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1027,6 +1043,12 @@ import {
   getMarketEmotion, getMarketLimitReview,
   getUserPositionSizing,
   getEmotionReview,
+  // ★ 2026-09-25 修复：**这两个原本就没 import** —— `loadSectorTop` 里一直在用
+  //   `getSectorSnapshot` 却从未导入 ⇒ `vite build` 不做未定义变量检查（ESM 下被当成全局
+  //   变量，不报错），而运行时抛 `ReferenceError` 被 `try/catch` 静默吞掉
+  //   ⇒ **板块卡一直显示"（当日无板块快照）"**，从构建与日志里都看不出来。
+  //   A1 收尾时改用实时 `/sector/industry`（含领涨股）才发现 ⇒ 两个都补上。
+  getSectorIndustry, getSectorSnapshot,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -1484,8 +1506,25 @@ async function loadLimitReview() {
     limitReview.value = data || { steps: [], stocks: [] }
   } catch { limitReview.value = { steps: [], stocks: [] } }
 }
-// 主线板块 Top5（当日板块快照按涨跌幅降序，防御性渲染）
+// 主线板块 Top5（★ A1 看盘序第 4-5 层：板块 → **板块内强势股**）
+//   ★ 2026-09-25 改动：**主用实时行业板块列表**（`/sector/industry`），快照仅作回退。
+//   为什么必须改（两个真问题）：
+//     ① 原先用 `/sector/snapshot/{date}` —— 那是**每日 15:10 落的快照**
+//        ⇒ 盘中看到的永远是**上一个交易日**的板块排名（今天盘中的板块变化完全看不到）；
+//     ② 快照表**不含领涨股**，而"看盘序"的第 5 步恰恰是「板块内强势股」⇒ 缺一层。
+//   `/sector/industry` 是实时东财接口（`eastmoney._get_cached` 有 TTL 缓存，
+//   不会每帧真请求），自带 `leader` / `leader_change_pct` / `leader_code`
+//   ⇒ 一次调用同时解决"实时"与"领涨股"，**零新增接口**。
+//   ⚠️ 失败/空数据回退快照：休市或接口异常时仍有内容（只是没有领涨股）。
 async function loadSectorTop() {
+  try {
+    const { data } = await getSectorIndustry({ limit: 5 })
+    const rows = (data && data.data) || []
+    if (rows.length) {
+      sectorTop.value = rows.slice(0, 5)
+      return
+    }
+  } catch { /* 落到快照回退 */ }
   try {
     const { data } = await getSectorSnapshot(todayStr, { limit: 5 })
     sectorTop.value = ((data && data.data) || []).slice(0, 5)
