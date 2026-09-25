@@ -129,7 +129,9 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">情绪预判
-                <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span></div>
+                <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span>
+                <span v-if="emotion.trading_day === false"
+                      class="ml-1 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]">休市日·显示最近交易日数据</span></div>
               <span class="text-sm font-bold"
                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
                 {{ emotion?.verdict || '—' }}</span>
@@ -257,6 +259,8 @@
           </div>
           <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
           <div class="bg-card border border-border rounded-lg p-4">
+            <div v-if="emotion && emotion.trading_day === false"
+                 class="text-[11px] text-amber-400 mb-2">⚠ 今日休市——以下为最近交易日快照数据，非实时</div>
             <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
               <div><div class="text-[10px] text-muted">上涨</div>
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>

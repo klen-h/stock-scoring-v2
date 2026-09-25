@@ -452,8 +452,12 @@ def market_emotion():
     else:
         verdict = "分歧/常态"
 
+    from app.flash.rules import is_trading_day as _is_tday
     val = {
         "as_of": _bj_now().strftime("%Y-%m-%d %H:%M"),
+        # ★ 2026-09-25 用户指出：中秋等休市日，行情缓存是最近交易日的静态数据——
+        #   前端需知道"这是回放性质的数据"以免误读为当日实时
+        "trading_day": _is_tday(),
         "up": up, "down": down,
         "limit_up": len(limit_up_codes), "limit_down": limit_down,
         "prev_limit_count": len(prev_limit),
