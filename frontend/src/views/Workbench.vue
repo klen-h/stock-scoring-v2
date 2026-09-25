@@ -7,8 +7,8 @@
       <button class="text-xs underline" @click="backToToday">切回今天</button>
     </div>
 
-    <!-- 顶栏：日期 · 市况/温度/指数 · 数据新鲜度（常驻） -->
-    <div class="bg-card border border-border rounded-lg px-4 py-2.5 flex items-center gap-4 flex-wrap text-sm">
+    <!-- 顶栏：日期 · 上下两列（A股/外盘）· 情绪市况模块 · 数据新鲜度（常驻） -->
+    <div class="bg-card border border-border rounded-lg px-4 py-2 flex items-center gap-4 flex-wrap text-sm">
       <label class="flex items-center gap-2">
         <span class="text-muted text-xs">日期</span>
         <select v-model="selectedDate"
@@ -19,43 +19,45 @@
         </select>
       </label>
 
-      <!-- 指数（overview 前三） -->
-      <span v-for="ix in topIndices" :key="ix.name" class="flex items-center gap-1">
-        <span class="text-muted text-xs">{{ ix.name }}</span>
-        <span class="font-mono text-xs">{{ fmtNum(ix.price) }}</span>
-        <span class="font-mono text-xs font-semibold" :class="pctClass(ix.change_pct)">
-          {{ signNum(ix.change_pct) }}%
-        </span>
-      </span>
+      <!-- 上下两列：A股 / 外盘（★ 2026-09-25 用户要求：不再挤成一行） -->
+      <div class="flex-1 min-w-[420px] grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-[10px] text-muted w-7">A股</span>
+          <span v-for="ix in topIndices" :key="ix.name" class="flex items-center gap-1">
+            <span class="text-muted text-[11px]">{{ ix.name }}</span>
+            <span class="font-mono text-xs">{{ fmtNum(ix.price) }}</span>
+            <span class="font-mono text-xs font-semibold" :class="pctClass(ix.change_pct)">
+              {{ signNum(ix.change_pct) }}%
+            </span>
+          </span>
+        </div>
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="text-[10px] text-muted w-7">外盘</span>
+          <span v-for="g in globalsRow" :key="g.key" class="flex items-center gap-1">
+            <span class="text-muted text-[11px]">{{ g.label }}</span>
+            <span class="font-mono text-xs">{{ g.price ?? '—' }}</span>
+            <span class="font-mono text-xs font-semibold" :class="pctClass(g.pct)">
+              {{ signNum(g.pct) }}%
+            </span>
+          </span>
+        </div>
+      </div>
 
-      <!-- ★ 2026-09-25 用户要求：外盘四件套常驻顶栏（A50 SGX 全天/离岸/布伦特/纳指期货，
-           宏面板 60s 缓存已抓，读取零新增请求；CN 休市日 A50 仍在报价） -->
-      <span v-for="g in globalsRow" :key="g.key" class="flex items-center gap-1">
-        <span class="text-muted text-xs">{{ g.label }}</span>
-        <span class="font-mono text-xs">{{ g.price ?? '—' }}</span>
-        <span class="font-mono text-xs font-semibold" :class="pctClass(g.pct)">
-          {{ signNum(g.pct) }}%
-        </span>
-      </span>
-
-      <!-- 情绪温度 -->
-      <span class="flex items-center gap-1">
-        <span class="text-muted text-xs">情绪</span>
-        <span v-if="temperature" class="font-mono text-xs"
-              :class="pctClass(-(100 - Number(temperature.temperature || 50)))">
-          {{ temperature.temperature ?? '—' }} {{ temperature.level || '' }}
-        </span>
-        <span v-else class="text-muted text-xs">—</span>
-      </span>
-
-      <!-- 市场状态 -->
-      <span class="flex items-center gap-1">
-        <span class="text-muted text-xs">市况</span>
-        <span class="text-xs font-semibold" :class="regimeClass">{{ regimeLabel }}</span>
-      </span>
+      <!-- 情绪/市况模块（归并为一组） -->
+      <div class="flex items-center gap-3 border-l border-border pl-4">
+        <div class="text-center">
+          <div class="text-lg font-bold font-mono leading-none">{{ temperature?.temperature ?? '—' }}</div>
+          <div class="text-[10px] text-muted mt-0.5">情绪·{{ temperature?.level || '—' }}</div>
+        </div>
+        <div class="w-px h-8 bg-border"></div>
+        <div>
+          <div class="text-xs font-semibold" :class="regimeClass">{{ regimeLabel }}</div>
+          <div class="text-[10px] text-muted">市况</div>
+        </div>
+      </div>
 
       <!-- 数据新鲜度（点开看底部状态区） -->
-      <span class="ml-auto flex items-center gap-1.5 cursor-pointer" @click="statusOpen = true">
+      <span class="flex items-center gap-1.5 cursor-pointer" @click="statusOpen = true">
         <span class="inline-block w-2 h-2 rounded-full"
               :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
         <span class="text-muted text-xs">数据新鲜度</span>
