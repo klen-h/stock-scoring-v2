@@ -631,6 +631,142 @@ def signal_industry_cached(limit: int = 12) -> dict:
     return val
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  战法质量 · 「为什么推送静默」—— 2026-09-25（用户需求 A）
+# ══════════════════════════════════════════════════════════════════════════
+# 【要解决的问题】决策卡"做什么"一栏只写「无白名单战法（推送静默）」，读者**分不清**是：
+#     · **市场不对**（战法在防守市天然失效）⇒ 正常，等环境转好，不该改战法
+#     · **战法坏了**（真的衰减/失效）      ⇒ 要下架或重调
+#     · **系统故障**（重算失败/缓存过期）  ⇒ 要修
+#   三者处置完全不同，而界面上长得一模一样。
+# 【做法】**零新增计算**：`recommendation._recompute_whitelist()` 早已把这些算好并落库到
+#   `whitelist_state`（key='whitelist'，6h TTL），本函数**只读不重算**
+#   （重算要 ~30s 且读 strategy_results 全表 + 闸门全历史），再叠加当前 `regime` 让那句"静默"自解释。
+# ⚠️ 失败静默返回空结构 —— 辅助信息绝不拖垮决策卡。
+_STRAT_Q_CACHE = {"ts": 0.0, "val": None}
+_STRAT_Q_TTL = 600              # 10 分钟（数据源自身 6h TTL 且只在盘后重算，无需频繁读库）
+
+_REGIME_CN_SHORT = {"offensive": "进攻型（牛市/强势上涨）",
+                    "neutral": "震荡型（盘整/无方向）",
+                    "neutral_bearish": "震荡偏空（重心下移，反弹宜减不宜追）",
+                    "defensive": "防御型（熊市/弱势下跌）"}
+
+
+def strategy_quality() -> dict:
+    """战法质量 + **「为什么静默」的自解释**。只读 `whitelist_state`，不触发重算。"""
+    out = {"available": False, "why": None, "whitelist": [], "rows": [],
+           "alerts": [], "regime": None, "criterion": None,
+           "computed_at": None, "note": None}
+    # 当前市场状态：先读进程内存缓存（零 DB 开销），**空了必须回退落库表**
+    #   ⚠️ 实测踩到：`get_regime_cache()` 只是**进程内存**，新进程/当日尚未判定时返回 `{}`
+    #   ⇒ 若只靠它，"市场处于防御态"这句**本功能的核心解释会静默消失**
+    #   （页面照常渲染、只是少了一行字 —— 这种缺失最难被发现）。
+    try:
+        rc = {}
+        try:
+            from app.backtest.market_regime import get_regime_cache
+            rc = get_regime_cache() or {}
+        except Exception:
+            rc = {}
+        if not rc.get("state"):
+            from app.database import db
+            _row = db.fetch_one("SELECT date, state, regime_score, adx, ma_trend "
+                                "FROM market_regime_history ORDER BY date DESC LIMIT 1")
+            if _row:
+                rc = {"date": _row.get("date"), "state": _row.get("state"),
+                      "detail": {"regime_score": _row.get("regime_score"),
+                                 "adx": _row.get("adx"),
+                                 "ma_trend": _row.get("ma_trend")}}
+        if rc.get("state"):
+            _d = rc.get("detail") or {}
+            out["regime"] = {"state": rc.get("state"),
+                             "cn": _REGIME_CN_SHORT.get(rc.get("state"), rc.get("state")),
+                             "date": rc.get("date"),
+                             "score": _d.get("regime_score"),
+                             "ma_trend": _d.get("ma_trend")}
+    except Exception as e:
+        print(f"[trader_brief] regime for strategy quality failed: {e}")   # ASCII（铁律⑥）
+    try:
+        import json as _json
+        from app.database import db
+        from app.strategies.recommendation import STRATEGY_ZH
+        row = db.fetch_one("SELECT value_json, updated_at FROM whitelist_state "
+                           "WHERE key='whitelist'")
+        if not row:
+            out["note"] = "尚无战法质量统计（盘后重算后落库）"
+            return out
+        v = row.get("value_json")
+        v = _json.loads(v) if isinstance(v, str) else (v or {})
+        stats = v.get("stats") or {}
+        out["available"] = True
+        out["whitelist"] = v.get("list") or []
+        out["alerts"] = v.get("alerts") or []
+        out["criterion"] = v.get("criterion")
+        out["computed_at"] = row.get("updated_at")
+        alert_by_key = {str(a).split(":")[0].strip(): a for a in out["alerts"]}
+        wl = set(out["whitelist"])
+        for k, s in stats.items():
+            if not isinstance(s, dict):
+                continue
+            out["rows"].append({
+                "key": k, "cn": STRATEGY_ZH.get(k, k),
+                "n": s.get("n"), "wins": s.get("wins"), "losses": s.get("losses"),
+                "win_rate": s.get("win_rate"), "avg_ret": s.get("avg_ret"),
+                "profit_factor": s.get("profit_factor"), "median_ret": s.get("median_ret"),
+                "recent_n": s.get("recent_n"), "recent_win_rate": s.get("recent_win_rate"),
+                "recent_avg_ret": s.get("recent_avg_ret"),
+                "pass": bool(s.get("pass_all_time")) and bool(s.get("pass_recent")),
+                "insufficient": bool(s.get("recent_insufficient")),
+                "alert": s.get("half_life_alert") or alert_by_key.get(k),
+            })
+        # 排序：未达标且样本大的排前面（"问题最大"的先看到）；样本不足的沉底
+        out["rows"].sort(key=lambda x: (x["insufficient"] or False,
+                                        x["pass"] or False,
+                                        -(x["n"] or 0)))
+        # ── ★ 核心：把"静默"翻译成人话 ──────────────────────────────
+        if out["whitelist"]:
+            out["why"] = ("当前可推送：" + "、".join(
+                STRATEGY_ZH.get(x, x) for x in out["whitelist"]))
+        else:
+            reasons = []
+            if not any(r["pass"] for r in out["rows"]):
+                reasons.append("无战法达到判据（期望值/胜率双轨）")
+            st = (out["regime"] or {}).get("state")
+            if st in ("defensive", "neutral_bearish"):
+                reasons.append("市场处于"
+                               + _REGIME_CN_SHORT.get(st, st)
+                               + "——形态突破类战法在弱势市天然失效")
+            if out["alerts"]:
+                reasons.append(f"{len(out['alerts'])} 个战法出现半衰期衰减"
+                               "（后半段胜率不足前半段一半）")
+            # ⚠️ 这里**不能写 Markdown 的 `**`**：前端是纯文本插值渲染，
+            #   星号会原样显示出来（本句是给人读的解释，不是 markdown 消息）。
+            out["why"] = ("；".join(reasons) +
+                          " ⇒ 按设计静默推送（宁可不推，也不推正在衰减的信号）"
+                          if reasons else "白名单为空 ⇒ 静默推送")
+    except Exception as e:
+        print(f"[trader_brief] strategy quality failed: {e}")              # ASCII（铁律⑥）
+        out["note"] = "计算失败"
+    return out
+
+
+def strategy_quality_cached() -> dict:
+    """`strategy_quality` 的 10 分钟进程缓存（**失败不写缓存**，便于下次重试）。
+
+    ⚠️ `import time` 在函数内（本模块顶层无 `time`；漏了会在**调用时**抛 NameError
+      而 import 冒烟抓不到 —— 2026-09-25 已踩过一次，见 `signal_industry_cached` 注释）。
+    """
+    import time
+    now = time.time()
+    c = _STRAT_Q_CACHE.get("val")
+    if c is not None and now - _STRAT_Q_CACHE["ts"] < _STRAT_Q_TTL:
+        return c
+    val = strategy_quality()
+    if val.get("available"):
+        _STRAT_Q_CACHE.update(ts=now, val=val)
+    return val
+
+
 _REGIME_STANCE = {
     # 市况 → (档位, 总仓上限, 单票上限, 一句话)
     "offensive": ("开仓日", "总仓 ≤60%", "单票 ≤10%",
@@ -793,4 +929,9 @@ def build_decision_card() -> dict:
         #   并附**原始细分口径**（用户："融捷(锂)/焦作万方(电解铝)笼统归入有色/化工链条，
         #   分类口径要标注"）。零新增网络 + 30 分钟缓存；失败返回空结构。
         "signals_industry": signal_industry_cached(),
+        # ★ 2026-09-25（用户需求 A）：战法质量 + **"为什么推送静默"的自解释**。
+        #   决策卡"做什么"只显示"无白名单战法（推送静默）"⇒ 分不清是市场不对 / 战法坏了 /
+        #   系统故障（三者处置完全不同）。此处把 `whitelist_state` 已算好的 stats/alerts
+        #   叠加当前 regime 暴露出来。零新增计算 + 10 分钟缓存；失败返回空结构。
+        "strategy_quality": strategy_quality_cached(),
     }

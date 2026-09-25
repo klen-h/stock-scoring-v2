@@ -455,6 +455,63 @@
                     · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
                   </template>
                 </div>
+                <!-- ★ 2026-09-25（用户需求 A）：**「为什么静默」的自解释**。
+                     原先只显示"无白名单战法（推送静默）"⇒ 分不清是【市场不对】/【战法坏了】/
+                     【系统故障】—— 三者处置完全不同（前两者什么都不用做，后者要修）。
+                     数据是 `recommendation` 早已算好并落库的 `whitelist_state` ⇒ 零新增计算。 -->
+                <div v-if="dc.strategy_quality?.available"
+                     class="mt-1.5 pt-1.5 border-t border-border/50">
+                  <div class="flex items-start gap-1.5 flex-wrap">
+                    <span class="text-muted shrink-0">战法质量：</span>
+                    <span class="text-[11px] leading-snug"
+                          :class="dc.strategy_quality.whitelist?.length ? 'text-emerald-400' : 'text-amber-300'">
+                      {{ dc.strategy_quality.why }}
+                    </span>
+                  </div>
+                  <div v-if="dc.strategy_quality.regime" class="text-[10px] text-muted mt-0.5">
+                    市场状态：<span class="text-gray-300">{{ dc.strategy_quality.regime.cn }}</span>
+                    （{{ dc.strategy_quality.regime.date }} · 评分
+                    <span class="font-mono">{{ dc.strategy_quality.regime.score }}</span>
+                    · 均线 {{ dc.strategy_quality.regime.ma_trend }}）
+                  </div>
+                  <table v-if="dc.strategy_quality.rows?.length" class="w-full text-[11px] mt-1.5">
+                    <thead class="text-muted">
+                      <tr class="border-b border-border/50">
+                        <th class="text-left py-0.5 font-normal">战法</th>
+                        <th class="text-right py-0.5 font-normal">样本</th>
+                        <th class="text-right py-0.5 font-normal">胜率</th>
+                        <th class="text-right py-0.5 font-normal">均收益</th>
+                        <th class="text-right py-0.5 font-normal">盈亏比</th>
+                        <th class="text-left py-0.5 pl-2 font-normal">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="s in dc.strategy_quality.rows" :key="s.key"
+                          class="border-b border-border/30">
+                        <td class="py-0.5">{{ s.cn }}</td>
+                        <td class="py-0.5 text-right font-mono text-muted">{{ s.n }}</td>
+                        <td class="py-0.5 text-right font-mono"
+                            :class="(s.win_rate || 0) >= 50 ? 'text-rise' : 'text-fall'">
+                          {{ s.win_rate }}%</td>
+                        <td class="py-0.5 text-right font-mono"
+                            :class="(s.avg_ret || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                          {{ (s.avg_ret || 0) >= 0 ? '+' : '' }}{{ s.avg_ret }}%</td>
+                        <td class="py-0.5 text-right font-mono">{{ s.profit_factor }}</td>
+                        <td class="py-0.5 pl-2">
+                          <span v-if="s.pass" class="text-emerald-400">达标</span>
+                          <span v-else-if="s.insufficient" class="text-muted">样本不足</span>
+                          <span v-else class="text-amber-300" :title="s.alert || '未达判据'">
+                            未达标<template v-if="s.alert"> ⚠</template></span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  <div class="text-[10px] text-muted mt-1">
+                    判据 {{ dc.strategy_quality.criterion }}（期望值 / 胜率双轨，任一轨跌破即暂停推送）
+                    · 统计于 {{ (dc.strategy_quality.computed_at || '').slice(5, 16).replace('T', ' ') }}
+                    · 口径：T+1 开盘成交、涨停一字剔除、含主力闸门过滤
+                  </div>
+                </div>
                 <div v-if="(dc.do?.avoid || []).length">
                   <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
                 </div>
