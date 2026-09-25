@@ -17,6 +17,8 @@
 ================================================================================
 """
 
+from typing import Dict
+
 from fastapi import APIRouter, Query, BackgroundTasks
 from datetime import datetime, timedelta, timezone
 
@@ -365,6 +367,23 @@ _EMOTION_VERDICT_TTL = 120
 _emotion_light = {"ts": 0.0, "val": None}
 
 
+def _num_or_none(v):
+    """安全转 float；**转不动就返回 None**（而不是 0）。
+
+    ★ 2026-09-25（emotion 二次 500）：为什么必须区分 `None` 与 0 ——
+      · `None` ⇒ 调用方走"**数据缺失，跳过**"（如 `if yc:`）
+      · `0`    ⇒ 会被当成**真实数值**参与除法/比较 ⇒ 除零、或把"没有数据"误判成
+                 "涨跌幅 0%"（脏数据伪装成有效值，比崩掉更难发现）。
+    兼容 PG 的 TEXT 列、东财风格的 `'-'`/`''`、以及 `None`。
+    """
+    try:
+        if v is None or v == "" or v == "-":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _emotion_closes_map():
     """近 8 个交易日全市场收盘（每日一次批量查询，进程内缓存）。"""
     from app.flash import rules as _rules
@@ -372,6 +391,11 @@ def _emotion_closes_map():
     if _EMOTION_CLOSES["date"] == today and _EMOTION_CLOSES["closes"] is not None:
         return _EMOTION_CLOSES["closes"]
     closes: Dict[str, Dict[str, float]] = {}
+    # ★ 2026-09-25：rows 必须**预置** —— 原先只在 `if _max_d:` 分支内赋值，一旦取不到
+    #   MAX(date)（空表/查询异常），下面的 `for r in rows or []` 会抛 UnboundLocalError；
+    #   该异常被下方 except 吞掉（只 print）⇒ closes 为空 ⇒ 进而让 market_emotion 的
+    #   `dates_all[-1]` 空列表索引崩成 500。两处都要修（这里是上游）。
+    rows = []
     try:
         from app.database import db
         # date 列是 TEXT：先取最新交易日，再用 ISO 字符串比较取近 9 天
@@ -384,11 +408,85 @@ def _emotion_closes_map():
                 "SELECT code, date, close FROM backtest_prices "
                 "WHERE date >= %s ORDER BY code, date LIMIT 60000", (_start,))
         for r in rows or []:
-            closes.setdefault(str(r.get("code")), {})[str(r.get("date"))] = float(r.get("close") or 0)
+            # ★ 2026-09-25：逐行安全转换 —— 原先 `float(r.get("close") or 0)` 若撞上一个
+            #   坏值（`'-'`/空串）会抛异常并被**外层 except 整批吞掉** ⇒ `closes` 只填到
+            #   坏行就静默中断（缺数据不是崩，最容易被误当成"就是这样"）。
+            #   现在：坏行只**跳过该行**（不填 0，免得被当成真实收盘价），其余继续。
+            _c = _num_or_none(r.get("close"))
+            if _c is None:
+                continue
+            closes.setdefault(str(r.get("code")), {})[str(r.get("date"))] = _c
     except Exception as e:
         print(f"[market] emotion closes load failed: {e}")
     _EMOTION_CLOSES.update({"date": today, "closes": closes})
     return closes
+
+
+# ── ★ 2026-09-25：情绪快照每日落库（用户需求「成功返回了就入库」）────────────
+#   目的：① 复盘/回放能看到历史情绪；② 不再只有当日值、历史不可追。
+#   ⚠️ 为什么"每天只写一次"：market_emotion() 自带 120s 判读缓存 ⇒ 若每次算成都写库，
+#      一天会写几百次（写放大 + 产生 dead tuple）。用进程内标记 + date 主键 upsert 兜底。
+#   ⚠️ 为什么只在**交易日**写：休市日返回的是"最近交易日快照"（trading_day=False），
+#      写进去会把真实交易日那天的数据覆盖成同一份 ⇒ 破坏历史口径（用户已在界面看到
+#      "休市日·显示最近交易日数据"标注）。
+_EMOTION_SAVED = {"date": None}
+_EMOTION_TABLE_READY = False
+_EMOTION_KEEP_DAYS = 400          # 保留约一年半够回放；同时防无限增长（同 db_retention 思路）
+
+
+def _ensure_emotion_table() -> None:
+    """建表（幂等）。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险（同 memory_probe 做法）。"""
+    global _EMOTION_TABLE_READY
+    if _EMOTION_TABLE_READY:
+        return
+    from app.database import db
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS market_emotion_daily (
+            date TEXT PRIMARY KEY,
+            as_of TEXT,
+            trading_day TEXT,
+            up TEXT, down TEXT,
+            limit_up TEXT, limit_down TEXT,
+            prev_limit_count TEXT, prev_limit_today_pct TEXT,
+            max_streak TEXT, leader TEXT, leader_name TEXT,
+            verdict TEXT,
+            created_at TEXT
+        )
+    """)
+    _EMOTION_TABLE_READY = True
+
+
+def _save_emotion_daily(val: Dict) -> None:
+    """当天首次算成时落库（每日一次）。失败静默 —— 看护类写入绝不反噬接口。"""
+    try:
+        if not val.get("trading_day"):
+            return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
+        day = _bj_now().strftime("%Y-%m-%d")
+        if _EMOTION_SAVED["date"] == day:
+            return                       # 本进程今天已写过
+        from app.database import db
+        _ensure_emotion_table()
+        db.upsert("market_emotion_daily", {
+            "date": day, "as_of": val.get("as_of"),
+            "trading_day": str(val.get("trading_day")),
+            "up": str(val.get("up")), "down": str(val.get("down")),
+            "limit_up": str(val.get("limit_up")), "limit_down": str(val.get("limit_down")),
+            "prev_limit_count": str(val.get("prev_limit_count")),
+            "prev_limit_today_pct": str(val.get("prev_limit_today_pct")),
+            "max_streak": str(val.get("max_streak")),
+            "leader": str(val.get("leader")), "leader_name": str(val.get("leader_name")),
+            "verdict": val.get("verdict"),
+            "created_at": _bj_now().isoformat(),
+        }, conflict_columns=["date"])
+        _EMOTION_SAVED["date"] = day
+        try:                             # 保留期清理（与写入同频，一天一次）
+            cutoff = (_bj_now() - timedelta(days=_EMOTION_KEEP_DAYS)).strftime("%Y-%m-%d")
+            db.execute("DELETE FROM market_emotion_daily WHERE date < %s", (cutoff,))
+        except Exception:
+            pass
+        print(f"[market] emotion 快照已落库 {day} verdict={val.get('verdict')}")
+    except Exception as e:
+        print(f"[market] emotion 落库失败（不影响接口）: {e}")
 
 
 @router.get("/emotion")
@@ -404,10 +502,19 @@ def market_emotion():
         return _emotion_light["val"]
 
     stocks = _cache.get("stocks") or {}
-    up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0)
-    down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0)
-    limit_up_codes = [c for c, s in stocks.items() if (s.get("change_pct") or 0) >= 9.5]
-    limit_down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.5)
+    # ★★ 2026-09-25（用户："只有 A 股，真需要『今日』展示吗"）：
+    #   **"今天涨停 0 家"** 与 **"今天没有行情数据"** 是两件完全不同的事，而原先两者都输出
+    #   **0** ⇒ 休市日界面显示"涨停 0 / 跌停 0"，被读成"今天一只都没涨停"，实际是"今天没开盘"。
+    #   ⇒ 无行情时这些"今日"字段一律返回 **None**（缺失），由前端显示「—」，
+    #     并用 `data_date` 说明**价格数据截至哪天**。
+    #   ★ 与本文件 `_num_or_none` 同一条纪律：**缺失就报缺失，不要伪装成 0**。
+    has_live = bool(stocks)          # 行情缓存非空 ⇒ 有当日（或最近交易日）报价
+    up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0) if has_live else None
+    down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0) if has_live else None
+    limit_up_codes = ([c for c, s in stocks.items() if (s.get("change_pct") or 0) >= 9.5]
+                      if has_live else [])
+    limit_down = (sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.5)
+                  if has_live else None)
 
     closes = _emotion_closes_map()
     dates_all = sorted({d for m in closes.values() for d in m})
@@ -425,33 +532,46 @@ def market_emotion():
                 continue
             prev_limit.append(code)
             q = stocks.get(code) or {}
-            if q.get("price"):
-                perf.append((q["price"] / c_prev - 1) * 100)
+            # ★ 2026-09-25：`q["price"]` 同样可能不是数字（行情源异常/字符串）⇒ 直接除会 TypeError
+            _px = _num_or_none(q.get("price"))
+            if _px:                       # 非数字或缺失 ⇒ 跳过该股（不参与赚钱效应均值）
+                perf.append((_px / c_prev - 1) * 100)
     money = sum(perf) / len(perf) if perf else None
 
     # 连板高度（近似）：今日涨停股按近 8 日收盘连涨判定
-    max_streak, leader = 0, None
-    for code in limit_up_codes:
-        m = closes.get(code) or {}
-        streak = 1
-        seq = sorted(m.items())
-        for i in range(len(seq) - 1, 0, -1):
-            if seq[i][0] > (dates_all[-1] or ""):
-                continue
-            if seq[i - 1][1] and seq[i][1] / seq[i - 1][1] - 1 >= 0.095:
-                streak += 1
-            else:
-                break
-        if streak > max_streak:
-            max_streak, leader = streak, code
+    # ★ 2026-09-25：连板高度由"今日涨停名单"推导 ⇒ 无行情时它不是 0 而是**无意义** ⇒ None
+    max_streak, leader = (0, None) if has_live else (None, None)
+    # ★ 2026-09-25（500 事故）：`dates_all` 可能为空 —— `closes` 读取失败时上游异常被吞
+    #   （见 _emotion_closes_map），此时原代码的 `dates_all[-1]` 对空列表抛 IndexError
+    #   ⇒ 只要当天有涨停股（limit_up_codes 非空）接口必 500。整段用 if dates_all 保护。
+    if dates_all:
+        for code in limit_up_codes:
+            m = closes.get(code) or {}
+            streak = 1
+            seq = sorted(m.items())
+            for i in range(len(seq) - 1, 0, -1):
+                if seq[i][0] > (dates_all[-1] or ""):
+                    continue
+                if seq[i - 1][1] and seq[i][1] / seq[i - 1][1] - 1 >= 0.095:
+                    streak += 1
+                else:
+                    break
+            if streak > max_streak:
+                max_streak, leader = streak, code
 
     # ★ A4 竞价看板：昨日涨停股今日高开幅度（9:25 竞价定稿后有效）
     gaps = []
     for code in limit_up_codes:
         q = stocks.get(code) or {}
-        o = float(q.get("open") or 0)
-        yc = (closes.get(code) or {}).get(d_prev) if d_prev else 0
-        if o > 0 and yc > 0:
+        o = _num_or_none(q.get("open"))
+        # ★★ 2026-09-25（用户贴出 traceback，line 532）：`yc` 取自 `closes`，而 `closes` 只覆盖
+        #   `backtest_prices` 回填过的股票；`limit_up_codes` 却来自**全市场行情缓存** ⇒
+        #   **该股不在 closes 里时 `.get()` 返回 None** ⇒ 原 `if o > 0 and yc > 0` 直接
+        #   `None > 0` ⇒ TypeError ⇒ 整个接口 500。
+        #   ⚠️ 之所以平时不崩：多数交易日两者恰好能对上（或 `d_prev` 为 None 时走 `else 0`）。
+        #   ⇒ 缺数据时**跳过该股**（`continue`），而不是填 0 参与除法（`o / 0` 会再炸一次）。
+        yc = _num_or_none((closes.get(code) or {}).get(d_prev)) if d_prev else None
+        if o and yc and o > 0 and yc > 0:
             gaps.append({"code": code, "name": (q.get("name") or code),
                          "gap_pct": round((o / yc - 1) * 100, 2)})
     gaps.sort(key=lambda x: x["gap_pct"], reverse=True)
@@ -459,7 +579,9 @@ def market_emotion():
                "avg_gap": round(sum(g["gap_pct"] for g in gaps) / len(gaps), 2) if gaps else None,
                "top": gaps[:5]}
 
-    if limit_up_codes.__len__() >= 60 or max_streak >= 6:
+    if not has_live:
+        verdict = None       # ★ 2026-09-25：无行情 ⇒ 不判读（休市显示"分歧/常态"同样是误导）
+    elif limit_up_codes.__len__() >= 60 or max_streak >= 6:
         verdict = "亢奋"
     elif len(limit_up_codes) < 20 and (money is not None and money < 0):
         verdict = "冰点"
@@ -469,11 +591,15 @@ def market_emotion():
     from app.flash.rules import is_trading_day as _is_tday
     val = {
         "as_of": _bj_now().strftime("%Y-%m-%d %H:%M"),
-        # ★ 2026-09-25 用户指出：中秋等休市日，行情缓存是最近交易日的静态数据——
-        #   前端需知道"这是回放性质的数据"以免误读为当日实时
+        # ★ 2026-09-25：休市时行情缓存可能是"最近交易日的静态数据" ⇒ 前端需知道
+        #   "这不是当日实时"以免误读（与下面的 has_live / data_date 一起判断）。
         "trading_day": _is_tday(),
+        # ★ `has_live=False` ⇒ 下面所有"今日"计数为 None（缺失，非 0）——见函数上方注释
+        "has_live": has_live,
+        # ★ 价格数据截至哪一天（休市时前端用它解释"—"的含义，而不是让人猜）
+        "data_date": (dates_all[-1] if dates_all else None),
         "up": up, "down": down,
-        "limit_up": len(limit_up_codes), "limit_down": limit_down,
+        "limit_up": (len(limit_up_codes) if has_live else None), "limit_down": limit_down,
         "prev_limit_count": len(prev_limit),
         "prev_limit_today_pct": round(money, 2) if money is not None else None,
         "max_streak": max_streak, "leader": leader,
@@ -483,6 +609,7 @@ def market_emotion():
         "note": "涨停/连板为 >=9.5% 近似口径（10cm 主板），官方口径待 zzshare 接入",
     }
     _emotion_light.update(ts=now, val=val)
+    _save_emotion_daily(val)         # ★ 2026-09-25：当天首次算成时落库（每日一次，见其注释）
     return val
 
 

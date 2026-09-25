@@ -502,9 +502,17 @@ def build_decision_card() -> dict:
     except Exception:
         em = {}
     emotion_verdict = em.get("verdict")
+    # ★ 2026-09-25：两处修订 ——
+    #   ① 文案：原"昨日涨停今日 X%"缺"平均"，易被读成"今日大盘涨跌"⇒ 改「昨涨停股今均」+ 股数。
+    #   ② ⚠️ 原写法 `em.get('prev_limit_today_pct', '—')` 有坑：`.get(k, default)` **只在 key
+    #      缺失时**才用 default，**值为 None 时照样返回 None** ⇒ 简报会打出 "None%"。
+    #      且不能用 `or '—'`（会把合法的 **0.0** 也变成"—"，0% 是有效读数）⇒ 显式判 None。
+    _pct = em.get("prev_limit_today_pct")
+    _cnt = em.get("prev_limit_count")
     emotion_detail = (f"涨停 {em.get('limit_up', '—')}/跌停 {em.get('limit_down', '—')} · "
-                      f"连板高度 {em.get('max_streak', '—')} · 昨日涨停今日 "
-                      f"{em.get('prev_limit_today_pct', '—')}%")
+                      f"连板高度 {em.get('max_streak', '—')} · "
+                      f"昨涨停股今均{('（' + str(_cnt) + '只）') if _cnt else ''} "
+                      f"{_pct if _pct is not None else '—'}%")
 
     # 做什么：白名单战法（中文名）+ 评分候选 Top3 + 回避方向（宏观空头标签）
     wl = [_strategy_cn(x) for x in get_push_whitelist()]
