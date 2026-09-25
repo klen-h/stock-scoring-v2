@@ -74,9 +74,19 @@ init_trader_brief_table()
 #  数据聚合（只读已有表）
 # ================================================================
 
-def collect_brief_data(phase: str) -> dict:
-    """按 phase 聚合决策简报的输入数据（全部来自已有表，缺失静默降级）。"""
-    today = beijing_now().strftime("%Y-%m-%d")
+def collect_brief_data(phase: str, date: str = None) -> dict:
+    """按 phase 聚合决策简报的输入数据（全部来自已有表，缺失静默降级）。
+
+    ★ 2026-09-25（用户批准修 P0）：`date` = **本轮要处理的交易日**，日批补跑时必须传。
+      【为什么】日批语义是"处理最近一个**已完成**交易日"，但它可能在跨午夜（或休市日）
+      才跑到 ⇒ 若这里用 `beijing_now()`，`data["date"]` 会标成"今天/周六"，
+      而数据全部来自上一交易日 ⇒ **简报自我描述错误**（"数据窗口 09-26"却写着 09-25 的事）。
+      ⚠️ 本字段只作**标记**：下游取数一律 `MAX(...)` / `ORDER BY DESC` 取最新
+        （见 5)/6) 的查询）⇒ **传参不改变取数结果，只修正日期标注**。
+      ★ 泛化：凡"以日期为键"的函数，被批处理调用时都要能**接收外部日期**，
+        不能自己 `now()` —— 否则跨午夜补跑必然写错日期（本项目已踩过多次）。
+    """
+    today = date or beijing_now().strftime("%Y-%m-%d")
     data = {"date": today, "phase": phase}
 
     # 1) 市场状态
@@ -378,7 +388,7 @@ def _validate_refs(markdown: str, data: dict) -> str:
 
 
 def generate_trader_brief(phase: str = None, force: bool = False,
-                          reuse_data: bool = False) -> dict:
+                          reuse_data: bool = False, date: str = None) -> dict:
     """生成（或读取当日已生成的）决策简报。返回 {ok, phase, markdown, data}。
 
     ★ 2026-09-24 新增 `reuse_data`：**重试时复用已落库的采集结果**（`data_json`），
@@ -387,10 +397,19 @@ def generate_trader_brief(phase: str = None, force: bool = False,
       这正是「失败后把内容存起来、等十分钟再触发」里的"内容"。
       ⚠️ 配 `force=True` 使用（否则 `force=False` 会直接返回表里那条**降级**记录，
          根本不会重新调用 LLM —— 这是重试路径必须注意的组合）。
+
+    ★★ 2026-09-25（用户批准修 P0）：新增 `date` = **本轮要处理的交易日**（`YYYY-MM-DD`）。
+      【为什么必须加】`today` 是幂等键 + 落库主键，而它原先**硬编码 `beijing_now()`**
+      ⇒ 日批跨午夜补跑（周六 00:30 跑周五的批）时会：
+        · 于 `is_trading_day` 判断处被跳过（旧日批逻辑）⇒ **周五盘后简报永远补不出来**；
+        · 即使放行，也会往 `trader_briefs` 写一条**日期=周六**的错行。
+      ⇒ 根治 = 让日期**由调用方传入**（日批传 `_batch_trading_day()`）。
+      ⚠️ 不传时行为与原来完全一致（默认 `beijing_now()`）⇒ **纯新增参数，零回归**。
+      （落库是 `ON CONFLICT (date, phase) DO UPDATE` ⇒ 补跑写历史日期安全、幂等。）
     """
     init_trader_brief_table()
     phase = phase or current_phase()
-    today = beijing_now().strftime("%Y-%m-%d")
+    today = date or beijing_now().strftime("%Y-%m-%d")
 
     if not force:
         row = db.fetch_one("SELECT markdown FROM trader_briefs "
@@ -411,9 +430,9 @@ def generate_trader_brief(phase: str = None, force: bool = False,
         except Exception:
             data = None
         if not isinstance(data, dict) or not data:
-            data = collect_brief_data(phase)
+            data = collect_brief_data(phase, date=today)
     else:
-        data = collect_brief_data(phase)
+        data = collect_brief_data(phase, date=today)
     actions_md = _render_actions_md(data.get("actions") or [])
     degraded = None
     if blocked:

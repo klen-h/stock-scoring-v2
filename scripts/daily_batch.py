@@ -627,18 +627,36 @@ def task_trader_brief():
       依赖：market_regime / contradictions / ranking_history(Top10) / mainline /
             strategy_results / user_portfolio，全部是前面任务写好的 → 排在最后。
 
-    三条纪律：
-      · **非交易日直接跳过**：generate_trader_brief 以"当天日期"为键，周末跑会写出一条
-        没有数据支撑的错日期简报，推了只会刷屏
-      · **幂等**：命中当日已有简报就不再调 LLM（要重生成加 `--force`）
+    ★★ 2026-09-25（用户批准修 P0）—— 改用「**本轮交易日**」而非「此刻」：
+      原写法 `if not is_trading_day(beijing_now()): return 跳过` 与已修的
+      `task_zz_finance` 同型 ⇒ **日批跨午夜补跑（周六 00:30 才跑到这个任务）时一律跳过，
+      且无自愈 ⇒ 周五盘后简报永远补不出来**，只能人工补。
+      修法两处**必须同时改**（缺一即错）：
+        ① 判据换成 `_batch_trading_day()`（= 最近一个已完成交易日），并把它**传给**
+           `generate_trader_brief(date=...)` —— 否则简报会以"今天（周六）"为键落库，
+           写出一条没有数据支撑的错日期记录（下面原注释担心的正是这个，
+           但解法不是"跳过"，而是"**把正确日期传进去**"）。
+        ② **命中已有简报时不再推送** —— `push_markdown_batched` **没有去重**
+           （只往 signal_bus 记录，不做拦截）⇒ 原实现在重跑时会把同一条**再推一遍**。
+           改①之后**休市日也会跑**（cron-job.org 是周一~周五按星期触发，不看节假日，
+           而 `_batch_trading_day()` 会返回上一交易日）⇒ 若不加这条，
+           **每个休市日都会把上一交易日的简报重推一次** ⇒ 刷屏。
+           ★ 教训：**一处放行必须同步一处收口**。
+
+    三条纪律（更新）：
+      · **按本轮交易日判断**：由 `_batch_trading_day()` 决定处理哪个交易日（见上）
+      · **幂等且不重复推送**：命中已有简报 ⇒ 不烧 LLM、**也不重推**（重生成/重推加 `--force`）
       · **推送失败不影响主流程**：正文已落库，前端 /report 照常可见
     """
-    from app.flash.rules import beijing_now, is_trading_day
-    bj = beijing_now()
-    if not is_trading_day(bj):
-        return f"交易员简报: {bj:%Y-%m-%d} 非交易日跳过"
+    d = _batch_trading_day()
     from app.trader_brief import generate_trader_brief
-    res = generate_trader_brief(phase="postmarket", force=_force_requested())
+    force = _force_requested()
+    res = generate_trader_brief(phase="postmarket", force=force, date=d.isoformat())
+    # ★ 命中已有 ⇒ 立即收口：不重烧 LLM、**不重复推送**（见 docstring ★★②）。
+    #   需要重推时用日批 `--force` —— 那是唯一的重生成+重推通道。
+    if res.get("cached"):
+        return (f"交易员简报: {res.get('date')} postmarket 命中已有简报"
+                f"（未重烧 LLM、未重复推送；重推请加 --force）")
     md = res.get("markdown") or ""
     if not md:
         raise RuntimeError("交易员简报生成异常（正文为空）")
@@ -656,9 +674,9 @@ def task_trader_brief():
         push_note = f"推送失败（不影响简报）: {str(e)[:80]}"
         print(f"  企微推送失败（不影响简报）: {e}")
     flag = f"降级({res['degraded']})" if res.get("degraded") else "正常"
-    cached = "，命中当日已有简报未重烧 LLM" if res.get("cached") else ""
+    # （原 `cached` 分支已被上面的短路 return 取代 —— 走到这里必定是新生成，保留会误导）
     return (f"交易员简报: {res.get('date')} postmarket {len(md)} 字"
-            f"（LLM {flag}{cached}；{push_note}）")
+            f"（LLM {flag}；{push_note}）")
 
 
 def task_retention():
