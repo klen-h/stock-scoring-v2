@@ -461,6 +461,43 @@ def generate_trader_brief(phase: str = None, force: bool = False,
 #  只读：不写库、不发推送；数据全部来自 collect_brief_data + 宏观快照 + 情绪快照
 # ══════════════════════════════════════════════════════════════════════════
 
+# ★ 2026-09-25：持仓「预案」动作等级（前端按此配色）。
+#   用户反馈："持仓联动（目前最弱）——持仓 1 只工行、风险 0、机会 0；盘前应对持仓自动扫描…
+#   1 只低波银行在 28.1 分环境下其实是合理的，**这个结论应该由系统说出来**。"
+PLAN_ACT = "act"          # 有风险提示 ⇒ 今天优先处理
+PLAN_EXIT = "exit"        # 该股档位为 0 ⇒ 不持有/择机清
+PLAN_PROTECT = "protect"  # 浮盈较高 ⇒ 保护利润
+PLAN_HOLD = "hold"        # 其余 ⇒ 按建议仓位持有
+
+
+def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None):
+    """把「持仓现状 + 仓位建议 + 环境匹配」合成一句 **今天怎么处理它**。
+
+    ★ 设计取舍：**确定性规则、无 LLM**，且**只给纪律提醒不给交易指令**
+      （沿用 `coach/monitor.py::POSITION_NOTE` 的口径，别写"系统已自动卖出"这类话）。
+    ★ 优先级（高→低）：风险提示 ⇒ 档位为 0 ⇒ 高浮盈保护 ⇒ 环境匹配 ⇒ 持有。
+      ⚠️ 故意**不做**"减仓到 X%"这类推算：我们只知道建议档位，不知道你的总资产占比，
+        硬凑比例就是臆测（宁缺勿编）。
+    """
+    risks = [a for a in (alerts or []) if (a or {}).get("level") == "risk"]
+    if risks:
+        return {"level": PLAN_ACT,
+                "text": f"优先处理：{risks[0].get('text') or '有风险提示'}"}
+    if suggested_pct == 0:
+        return {"level": PLAN_EXIT,
+                "text": f"建议仓位 0%（{position_label or '档位为 0'}）⇒ 不持有/择机清"}
+    if pnl is not None and pnl >= 20.0:
+        return {"level": PLAN_PROTECT,
+                "text": f"浮盈 {pnl:.1f}% ⇒ 考虑保护利润（上移止盈位或减半）"}
+    if fit:
+        # 环境匹配的结论由系统说出来（用户明确要求）
+        return {"level": PLAN_HOLD,
+                "text": f"持有（建议仓位 ≤{suggested_pct}%）；{fit}"}
+    if suggested_pct is not None:
+        return {"level": PLAN_HOLD, "text": f"持有（建议仓位 ≤{suggested_pct}%）"}
+    return {"level": None, "text": "—（仓位建议缺失，仅作参考）"}
+
+
 _REGIME_STANCE = {
     # 市况 → (档位, 总仓上限, 单票上限, 一句话)
     "offensive": ("开仓日", "总仓 ≤60%", "单票 ≤10%",
@@ -539,7 +576,20 @@ def build_decision_card() -> dict:
     except Exception:
         pass
 
-    # 持仓风险扫描（portfolio_radar：alerts/主力阶段/盈亏；环境匹配一句话）
+    # 持仓扫描 + 预案（★ 2026-09-25：从"它现在怎样"升级为"**今天怎么处理它**"）
+    #   数据全现成、零新增网络：
+    #     · portfolio_radar.build()  → 盈亏/主力阶段/alerts（含 -8%/-12%/冲高回落等风险阈值）
+    #     · position_sizing_for_portfolio() → 个股档位 suggested_pct（= min(个股档位, 总上限)）
+    #   用户原话："持仓联动（目前最弱）…这个结论应该由系统说出来"。
+    sizing_by_code = {}
+    try:
+        from app.coach.position_sizing import position_sizing_for_portfolio
+        for s in (position_sizing_for_portfolio().get("positions") or []):
+            sizing_by_code[str(s.get("code"))] = s
+    except Exception as e:
+        # ASCII（项目铁律⑥：本地 GBK 控制台中文 print 会抛 UnicodeEncodeError）
+        print(f"[decision-card] position sizing failed: {e}")
+
     positions_scan = []
     try:
         from app.portfolio_radar import build as _radar_build
@@ -547,16 +597,26 @@ def build_decision_card() -> dict:
             fit = None
             try:
                 if reg in ("neutral_bearish", "neutral") and (it.get("pnl_pct") or 0) > 0:
-                    fit = "防御持仓与偏冷环境匹配 ✓"
+                    fit = "防御持仓与偏冷环境匹配"
             except Exception:
                 pass
+            alerts = it.get("alerts") or []
+            _sz = sizing_by_code.get(str(it.get("code"))) or {}
+            _sug = _sz.get("suggested_pct")
+            plan = _position_plan(it.get("pnl_pct"), alerts, _sug,
+                                  _sz.get("position_label"), fit)
             positions_scan.append({
                 "code": it.get("code"), "name": it.get("name"),
                 "pnl_pct": it.get("pnl_pct"), "phase_cn": it.get("phase_cn"),
-                "alerts": it.get("alerts") or [], "fit": fit,
+                "alerts": alerts, "fit": fit,
+                # ★ 预案字段
+                "suggested_pct": _sug,
+                "position_label": _sz.get("position_label") or "",
+                "sizing_reasons": (_sz.get("reasons") or [])[:2],
+                "plan": plan.get("text"), "plan_level": plan.get("level"),
             })
     except Exception as e:
-        print(f"[decision-card] 持仓扫描失败: {e}")
+        print(f"[decision-card] positions scan failed: {e}")       # ASCII（铁律⑥）
 
     # ★ 2026-09-25：负面清单聚合（用户需求："负面清单和主线推荐同等重要"）。
     #   ⚠️ **零新增数据源** —— 素材早已算好，此前只是散在别处、没有汇总成"今天要避开的"：

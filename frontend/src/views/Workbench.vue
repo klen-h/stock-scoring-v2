@@ -391,13 +391,27 @@
                   <span class="ml-1 text-gray-300">{{ n.reason }}</span>
                 </div>
               </div>
-              <!-- 持仓扫描 -->
+              <!-- ★ 2026-09-25 用户："持仓联动（目前最弱）——盘前应对持仓自动扫描…这个结论
+                   应该由系统说出来" ⇒ 从「持仓扫描」升级为「持仓预案」：每只给出**今天怎么处理**
+                   （plan_level 决定配色）+ 建议仓位上限。数据来自后端 dc.positions_scan
+                   （portfolio_radar 的 alerts × position_sizing 的个股档位，零新增数据源）。
+                   ⚠️ 是**纪律提醒**，不是交易指令（后端文案已沿用 coach 口径）。 -->
               <div v-if="(dc.positions_scan || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
-                <div class="text-muted mb-1">持仓扫描</div>
+                <div class="text-muted mb-1">持仓预案（今天怎么处理）</div>
                 <div v-for="p in dc.positions_scan" :key="p.code" class="py-0.5">
-                  <b>{{ p.name }}</b> {{ fmtPct(p.pnl_pct) }} · 主力 {{ p.phase_cn || '—' }}
-                  <span v-if="p.fit" class="text-emerald-400 ml-1">{{ p.fit }}</span>
-                  <span v-for="(a, j) in (p.alerts || [])" :key="j" class="text-red-400 ml-1">⚠ {{ a.text }}</span>
+                  <div class="flex items-start gap-1.5 flex-wrap">
+                    <a :href="stockHref(p.code)" target="_blank"
+                       class="font-semibold hover:underline">{{ p.name }}</a>
+                    <span class="font-mono" :class="pctClass(p.pnl_pct)">{{ fmtPct(p.pnl_pct) }}</span>
+                    <span class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
+                    <span v-if="p.suggested_pct != null"
+                          class="px-1 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
+                          :title="`建议仓位上限 ${p.suggested_pct}%（个股档位 ${p.position_label || '—'}）${(p.sizing_reasons || []).length ? '：' + p.sizing_reasons.join('；') : ''}`">
+                      ≤{{ p.suggested_pct }}%
+                    </span>
+                  </div>
+                  <div class="mt-0.5" :class="planClass(p.plan_level)">{{ p.plan || '—' }}</div>
+                  <div v-for="(a, j) in (p.alerts || [])" :key="j" class="text-[11px] text-muted">· {{ a.text }}</div>
                 </div>
               </div>
             </template>
@@ -905,6 +919,12 @@ const fmtNum = (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { m
 const fmtPct = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
 const signNum = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}`)
 const pctClass = (v) => (Number(v) > 0 ? 'text-red-400' : Number(v) < 0 ? 'text-emerald-400' : 'text-muted')
+// ★ 2026-09-25：持仓预案的动作等级配色（后端 `_position_plan` 输出的 plan_level）：
+//   act=优先处理(红加粗) / exit=档位0该清(红) / protect=保护利润(琥珀) / hold=持有(绿) / 其余(灰)
+const planClass = (lv) => (lv === 'act' ? 'text-red-400 font-semibold'
+  : lv === 'exit' ? 'text-red-400'
+    : lv === 'protect' ? 'text-amber-400'
+      : lv === 'hold' ? 'text-emerald-400' : 'text-gray-300')
 const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
