@@ -1355,12 +1355,36 @@ async function loadRegime() {
     regimeLabel.value = ({ offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空（阴跌）', defensive: '防御' })[r.regime] || (r.regime || '—')
   } catch { regimeLabel.value = '—' }
 }
+// ══════════════════════════════════════════════════════════════════════════
+//  当日数据缓存（★ 2026-09-25 用户建议）
+// ══════════════════════════════════════════════════════════════════════════
+//  【背景】下面前 6 个 loader 拉的都是"**生成后当天不再变**"的数据（盘前/盘后生成一次、
+//    早盘锁定、30 日统计），但它们挂在 `loadPhaseData()` 里 ⇒ **每次切换阶段都会重拉**
+//    ⇒ 在 6 个 tab 之间来回点几次，就白拉几次。（120s 轮询里只有"会变"的那几项，
+//      这一点架构上本来是对的 —— 重复发生在**切 tab**，不在轮询。）
+//  【只缓存"确定当日不变"的】✅ 简报 / 财经日历 / **早盘锁定**的宏观 / 执行一致性 / 日报 / 情绪对账
+//    ❌ 一律不缓存：情绪快照、外盘、隔夜变化、板块、涨停梯队、持仓雷达、决策卡
+//      —— 它们**会变**，缓存会让人看到过期结论（比多一次请求危险得多）。
+//  【三条纪律】
+//    ① 键带**日期**：换日或切回放日期自动失效，绝不串数据；
+//    ② **只在拿到有效数据时才记**：失败/空一律不记，下次仍会重试；
+//    ③ 简报若 `degraded`（LLM 失败降级版）⇒ **不记**：后端的盘前循环窗口内还会重试
+//       生成 LLM 版，缓存降级版等于把"临时降级"永久化。
+const _dayCache = {}          // { key: 'YYYY-MM-DD' }
+const _dayCached = (key, day) => _dayCache[key] === day
+const _dayMark = (key, day) => { _dayCache[key] = day }
+
 async function loadBrief(phase) {
+  const day = selectedDate.value
+  const ck = `brief:${phase}`
+  if (_dayCached(ck, day)) return
   briefErr.value = ''
   try {
     const { data } = await getTraderBrief(false, phase)
     briefMd.value = data?.markdown || ''
     briefDegraded.value = !!data?.degraded
+    // ★ 纪律③：降级版不缓存（后端窗口内还会重试出 LLM 版）
+    if (briefMd.value && !briefDegraded.value) _dayMark(ck, day)
   } catch (e) {
     briefErr.value = (e && e.message) || '未知错误'
   }
@@ -1404,22 +1428,35 @@ async function loadPush(date) {
   }
 }
 async function loadConsistency() {
+  const day = selectedDate.value
+  if (_dayCached('consistency', day)) return
   try {
     const { data } = await getCoachConsistency(30)
     consistency.value = data || null
+    if (consistency.value) _dayMark('consistency', day)      // 纪律②：空则不缓存
   } catch { consistency.value = null }
 }
 // ★ 2026-09-25 P3：情绪对账（失败静默 ⇒ 卡片显示"暂无数据"，不影响复盘其它块）
 async function loadEmotionReview() {
+  const day = selectedDate.value
+  if (_dayCached('emotionReview', day)) return
   try {
     const { data } = await getEmotionReview(30)
     emotionReview.value = data || null
+    // ★ 对账数据盘后才更新 ⇒ 有内容才缓存（今天还没数据时不该锁死）
+    if (emotionReview.value && (emotionReview.value.items || []).length) {
+      _dayMark('emotionReview', day)
+    }
   } catch { emotionReview.value = null }
 }
 async function loadReport(date) {
+  const day = date || selectedDate.value
+  if (_dayCached('report', day)) return
   try {
     const { data } = await getDailyReport(date)
     reportMd.value = data?.markdown || data?.md || ''
+    // ★ 日报 19:30 才生成 ⇒ **空就绝不缓存**，否则当天再也拉不到（这个坑很隐蔽）
+    if (reportMd.value) _dayMark('report', day)
   } catch { reportMd.value = '' }
 }
 // 事件诊断（最新 LLM 油金相关性输出，与 Dashboard 同源）
@@ -1454,11 +1491,15 @@ async function loadCalendarToday() {
       })
       .sort((a, b) => (b.star || 0) - (a.star || 0))
   }
+  const cday = selectedDate.value
+  if (_dayCached('calendar', cday)) return
   try {
     const { data } = await getCalendar({ days: 1 })
     calendarToday.value = dedupeSort((data && data.items) || [])
         .filter(it => String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
     calendarErr.value = ''
+    // ★ 当日财经事件是静态的（盘前就定）⇒ 有数据才缓存；空则不缓存（当天还会补录事件）
+    if (calendarToday.value.length) _dayMark('calendar', cday)
   } catch (e) {
     // ★ 2026-09-25：带出真实原因（Render 重部署窗口/冷启动超时是最常见场景），
     //   并自动重试一次——loadPhaseData 只在进盘前时调用，重试成本低
@@ -1532,11 +1573,16 @@ async function loadSectorTop() {
 }
 // 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
 async function loadMacro() {
+  // ★ 只缓存"早盘锁定"那一份（dailyRes.snapshot）：它是当日 08:55-13:00 锁定的，
+  //   当天不再变 ⇒ 切 tab 重拉纯属浪费。
+  //   ⚠️ 回退路径（`getMacroSnapshot()` 实时计算）**不缓存** —— 那个会随外盘变。
+  if (_dayCached('macroLocked', todayStr)) return
   macroErr.value = ''
   try {
     const { data: dailyRes } = await getMacroDaily(todayStr)
     if (dailyRes && dailyRes.snapshot) {
       macro.value = { ...dailyRes.snapshot, locked: true }
+      _dayMark('macroLocked', todayStr)
       return
     }
     const { data } = await getMacroSnapshot()
