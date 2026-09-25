@@ -288,6 +288,14 @@
               <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
               <span class="text-[10px]">· {{ emotion.note }}</span>
             </div>
+            <!-- ★ A1 外盘驱动：A50（SGX 全天）/ 离岸 / 布伦特 / 纳指期货（宏面板 60s 缓存） -->
+            <div class="border-t border-border/40 mt-2 pt-2 grid grid-cols-4 gap-2 text-center">
+              <div v-for="g in globalsRow" :key="g.key">
+                <div class="text-[10px] text-muted">{{ g.label }}</div>
+                <div class="text-sm font-bold font-mono">{{ g.price ?? '—' }}</div>
+                <div class="text-[11px] font-mono" :class="pctClass(g.pct)">{{ signNum(g.pct) }}%</div>
+              </div>
+            </div>
           </div>
 
           <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位） -->
@@ -655,10 +663,14 @@ const macro = ref(null)
 const macroErr = ref('')
 // ★ 盘中看盘序/情绪（2026-09-25 交易方法论 A1/A3/B2）
 const emotion = ref(null)
-const limitReview = ref(null)
+// 初始即给完整结构：模板首帧（接口返回前）会读取 steps/stocks，null 会崩
+const limitReview = ref({ steps: [], stocks: [] })
 const sectorTop = ref([])
 const calendarToday = ref([])
 const calendarErr = ref('')
+// ★ 2026-09-25 盘中外盘四件套（A50/离岸/布伦特/纳指期货）——宏面板已在抓，
+//   一次新浪批量请求 60s 缓存，工作台只是读取，零新增请求
+const globals = ref({})
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -698,6 +710,23 @@ const todayCoach = computed(() => {
 })
 const todoList = computed(() => todayCoach.value.filter(a => !a.executed))
 const todoCount = computed(() => todoList.value.length)
+// 外盘四件套行：从宏面板取 price/prev_close，pct 现算
+const globalsRow = computed(() => {
+  const defs = [
+    { key: 'a50', label: 'A50期货' },
+    { key: 'usdcnh', label: '离岸USDCNH' },
+    { key: 'brent', label: '布伦特' },
+    { key: 'nasdaq', label: '纳指期货' },
+  ]
+  return defs.map(({ key, label }) => {
+    const v = globals.value[key] || {}
+    const price = v.price
+    const prev = v.prev_close
+    const pct = (price && prev) ? (price / prev - 1) * 100 : null
+    return { key, label, price: price ?? null, pct }
+  })
+})
+
 const worstHolding = computed(() => {
   const arr = (radarItems.value || []).filter(x => x.pnl_pct != null)
   return arr.length ? arr.reduce((a, b) => (Number(a.pnl_pct) < Number(b.pnl_pct) ? a : b)) : null
@@ -837,6 +866,13 @@ async function loadCalendarToday() {
   } catch { calendarErr.value = '加载失败' }
 }
 // 情绪快照 v0（涨停/跌停/赚钱效应/连板高度/判读——近似口径，B1 官方数据后替换）
+// 外盘四件套（A50 期货覆盖 SGX T+夜盘时段，CN 休市日常仍有报价——已实测中秋在报价）
+async function loadGlobals() {
+  try {
+    const { data } = await getMacroSnapshot()
+    globals.value = data || {}
+  } catch { globals.value = globals.value || {} }
+}
 async function loadEmotion() {
   try {
     const { data } = await getMarketEmotion()
@@ -961,7 +997,7 @@ async function loadPhaseData(phase) {
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
-    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop()])
+    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals()])
   }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
 }
@@ -988,7 +1024,7 @@ function startPolling() {
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   timers.push(setInterval(() => {
     livePhase.value = computePhase()          // 温和自动跟随：只更新提示，不硬切
-    loadOverview(); loadTemperature(); loadEmotion()
+    loadOverview(); loadTemperature(); loadEmotion(); loadGlobals()
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
