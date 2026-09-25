@@ -1132,7 +1132,12 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis } from '../api'
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
+  // ★ 2026-09-25 修复：`checkMarketAlerts()` 一直在调 `getMarketOverview()` 却**从未 import**
+  //   ⇒ 运行时抛 ReferenceError 被 `try/catch` 吞掉 ⇒ `marketAlerts` 恒为空数组
+  //   ⇒ **异动监控的市场警示规则（_ALERT_RULES）从来没生效过**，且构建/日志都看不出。
+  //   （同一类问题在 Workbench.vue 的 getSectorSnapshot 上也存在过，已一并修。）
+  getMarketOverview } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
