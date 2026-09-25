@@ -802,6 +802,12 @@ def _save_emotion_daily(val: Dict) -> None:
       ⚠️ 仍只在**交易日**写：休市日返回的是"最近交易日回放"，写进去会覆盖真实交易日口径。
     """
     try:
+        # ★★ 2026-09-26：补建表 —— 原先**只**在读取端（`emotion_review`）调 `_ensure_emotion_table()`。
+        #   若写入先于任何读取发生 ⇒ `db.upsert` 撞"表不存在" ⇒ 异常被下面的 except **静默吞掉**
+        #   （只 print 到日志）⇒ 该表可能一直空着且无人察觉（本轮审计正是先看到"0 行"）。
+        #   对齐同类实现：`_save_tail_baseline()` 开头就调 `_ensure_tail_table()`。
+        #   ⚠️ 本函数幂等（`_EMOTION_TABLE_READY` 缓存 + `CREATE TABLE IF NOT EXISTS`）⇒ 无额外开销。
+        _ensure_emotion_table()
         if not val.get("trading_day"):
             return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
         day = _bj_now().strftime("%Y-%m-%d")

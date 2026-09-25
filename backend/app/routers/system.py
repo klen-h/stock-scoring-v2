@@ -12,19 +12,135 @@
 """
 
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import islice
 import os
 import sys
 import threading
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
 from app.auth import get_current_user
 from app.database import db
 
 router = APIRouter()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  日批完成回调（2026-09-26，用户："我的方案是日批 actions 完成的时候发到企微"）
+#  POST /api/system/batch-done   —— **不走 JWT**（调用方是 GitHub Actions，无用户态）
+#
+#  ★ 为什么是"回调"而不是"后端轮询"：用户明确要求**事件驱动**。
+#    演进留档：① 前端页面自己重试 → 用户否决"不要让页面自己等"；
+#              ② 后端每 5 分钟轮询三表 → 用户否决"而不是轮询的方式"；
+#              ③ 本接口 = 由 `daily-batch.yml` 跑完后主动调用 ⇒ 通知时刻 = 完成时刻、零轮询。
+#  ★ 鉴权：共享密钥 `BATCH_CALLBACK_TOKEN`（后端 env 与 GitHub secret 各配一次同一个值）。
+#    ⚠️ **未配置该 env 时一律 403**（安全默认）—— 否则任何知道 URL 的人都能刷你的企微。
+#  ★ 为什么收到回调还要校验"三源就绪"：Actions 支持 `workflow_dispatch` 指定 `tasks`
+#    （只跑局部任务）⇒ 那种回调不该说"复盘就绪"。校验不过**不报错**，只回
+#    `ready=false` + 缺失项（Actions 日志里能直接看出原因），且**不标记**，允许补跑后重试。
+#  ★ 幂等：`store.mark_schedule_done(task, date_str=day)` 按**日批日**记账
+#    ⇒ 同一天补跑多次只推一条（也天然覆盖跨午夜完成的兜底日）。
+# ══════════════════════════════════════════════════════════════════════════
+
+_BATCH_TOKEN = os.environ.get("BATCH_CALLBACK_TOKEN", "")
+_BJ = timezone(timedelta(hours=8))          # 北京时间（库里的 TEXT 时间列都按它写）
+
+# ★★ 2026-09-26 判据改为「**最新一行是否刚被写入**」（**不再比对日期键**）
+#   【为什么必须改】本项目日期键有**两派**（实测确认）：
+#     · **运行日派**：`daily_reports.date`（`run_daily_report()` 原用 `_today()`）、
+#       `contradictions.date`（`task_contradiction_scan` 原用 `store._today()`）⇒ 休市日也写"当日"；
+#     · **交易日派**：`ranking_history.rank_date`（休市日不写）。
+#   原判据按**同一个 `day`** 查三表 ⇒ **跨午夜兜底日三表必然对不齐 ⇒ ready=False
+#   ⇒ 通知永远发不出**（而兜底日恰恰最需要通知）。
+#   ⇒ 改成判"这张表有没有**刚被写入**"：它直接对应"日批刚跑完"，且**完全不依赖日期键语义**。
+#   ⚠️ 为什么同时还能挡住"后端自己那条 19:30 日报循环"造成的提前回报：
+#     该循环在**读到日报已存在时会跳过**，不会反复写入；且它写的是同一 `daily_reports` 表
+#     —— 若它先跑，日批随后会**覆盖**该行（`upsert ... conflict_columns=["date"]`）⇒
+#     写入时间随日批刷新 ⇒ 判据仍正确。
+_READY_WINDOW_HOURS = float(os.environ.get("BATCH_DONE_WINDOW_HOURS", "6") or 6)
+
+# 判据：三张表各自**最新一行**的写入时间都要落在窗口内（表名/列名硬编码，无注入面）
+_READY_CHECKS = (
+    ("日报", "daily_reports", "created_at"),
+    ("评分快照", "ranking_history", "created_at"),
+    ("矛盾扫描", "contradictions", "created_at"),
+)
+
+
+def _to_dt(v):
+    """`created_at` → aware datetime。兼容两种列型：TEXT(ISO 带时区) 与 timestamp。"""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=_BJ)
+    s = str(v).strip().replace("Z", "+00:00")
+    if s.endswith("+00"):              # PostgreSQL timestamptz 输出形如 `…+00`（实测 ranking_history 就是）
+        s += ":00"                     # ⚠️ `fromisoformat` 到 3.11 才认 `+00` ⇒ 补成 `+00:00`，兼容更早版本
+    try:
+        dt = datetime.fromisoformat(s)
+        return dt if dt.tzinfo else dt.replace(tzinfo=_BJ)
+    except Exception:
+        return None
+
+
+def _report_ready_missing() -> list:
+    """**尚未就绪**的日批关键项（空列表 = 齐了）。
+
+    判据 = "该表最新一行的写入时间在最近 `_READY_WINDOW_HOURS` 小时内"
+    ⇒ **不看日期键**（两派语义都不影响），只回答"日批刚才有没有写这张表"。
+    ⚠️ 查询失败按"缺失"处理 —— 宁可晚说"就绪"，也不谎报。
+    """
+    from app.flash.rules import beijing_now
+    cut = beijing_now() - timedelta(hours=_READY_WINDOW_HOURS)
+    out = []
+    for name, table, col in _READY_CHECKS:
+        try:
+            row = db.fetch_one(f"SELECT MAX({col}) AS ts FROM {table}")
+            ts = _to_dt((row or {}).get("ts"))
+            if ts is None or ts < cut:
+                out.append(f"{name}(最新写入 {ts or '无'})")
+        except Exception as e:
+            print(f"[system] batch-done 检查[{name}]失败: {e}")      # ASCII（铁律⑥）
+            out.append(name)
+    return out
+
+
+@router.post("/batch-done")
+def batch_done(payload: dict = Body(default={}),
+               x_batch_token: str = Header(default="")):
+    """日批（GitHub Actions）完成回调 ⇒ 推一条企微「复盘已就绪」。当日一次（幂等）。"""
+    if not _BATCH_TOKEN or x_batch_token != _BATCH_TOKEN:
+        # 不透露细节（不区分"未配置"与"token 不对"，避免探测）
+        raise HTTPException(status_code=403, detail="invalid token")
+    day = str((payload or {}).get("date") or "").strip()[:10]
+    if not day:
+        # 兜底日会跨午夜（~00:57 完成）⇒ 用"最近**已完成**交易日"，与日批各任务的日期键同源
+        from app.flash.rules import latest_completed_trading_day
+        day = str(latest_completed_trading_day())[:10]
+    from app.flash import store
+    if store.is_schedule_done("batch_done_notify", date_str=day):
+        return {"ok": True, "date": day, "skipped": "已在当日通知过"}
+    missing = _report_ready_missing()
+    if missing:
+        # 不推、不标记 ⇒ Actions 日志可见原因，且补跑后仍可重试
+        print(f"[system] batch-done 收到但数据未就绪（{day}）缺: {'/'.join(missing)}")  # ASCII
+        return {"ok": True, "date": day, "ready": False, "missing": missing}
+    md = (f"## 日批完成 · 复盘已就绪（{day}）\n\n"
+          "日报 / 评分快照 / 矛盾扫描均已生成 ⇒ 工作台「**复盘**」可以看了：\n"
+          "今天什么行情、我做得对不对（执行一致性）、明天要准备什么。\n\n"
+          "（本通知由日批跑完后**即时**回调后端发出，不是轮询检测；当日只发这一条。）")
+    try:
+        from app.flash.wechat import push_markdown_batched
+        # force=True：关键通知不受业务推送开关限制；⚠️ 该函数无返回值（内部吞异常）
+        push_markdown_batched("日批完成 · 复盘已就绪", md, True)
+    except Exception as e:
+        print(f"[system] batch-done 推送失败: {e}")                  # ASCII（铁律⑥）
+        raise HTTPException(status_code=500, detail=f"推送失败: {e}")
+    store.mark_schedule_done("batch_done_notify", date_str=day)
+    print(f"[system] 日批完成通知已发（{day}）")                      # ASCII（铁律⑥）
+    return {"ok": True, "date": day, "ready": True, "pushed": True}
 
 
 def _latest_trading_day() -> str:

@@ -328,8 +328,12 @@ def task_strategy_scan():
 def task_contradiction_scan():
     """L2 行为背离扫描（指数vs宽度 / 板块vs资金流 / 北向vs指数）。"""
     from app.contradictions.scanner import scan_all
-    from app.contradictions.store import save_contradictions, _today
-    d = _today()
+    from app.contradictions.store import save_contradictions
+    # ★★ 2026-09-26：日期改用**本轮交易日**（原为 `store._today()` = 运行日）
+    #   ⇒ 原先休市日/跨午夜会写出"键与内容不符"的记录（实测 09-25 休市仍留下 `date=09-25`
+    #     的 2 条，而同一天 `ranking_history` 按交易日**不写** ⇒ 两表日期键对不上，
+    #     连带通知判据失效）。口径详见 `_batch_trading_day()`。
+    d = _batch_trading_day().isoformat()
     items = scan_all(date=d)
     saved = save_contradictions(d, items)
     return f"矛盾扫描: {len(items)} 条，保存 {saved}"
@@ -423,7 +427,10 @@ def task_contradiction_report():
 def task_daily_report():
     """A 股大盘日报（依赖上面的扫描结果，必须最后跑）。"""
     from app.daily_report import run_daily_report
-    res = run_daily_report()
+    # ★★ 2026-09-26：传**本轮交易日**（原来不传 ⇒ 函数内部 `_today()` 用运行日）
+    #   ⇒ 修掉"跨午夜/休市日写出次日键的日报"（实测 09-25 休市那次写成 09-26）。
+    #   口径详见 `_batch_trading_day()`。
+    res = run_daily_report(date=_batch_trading_day().isoformat())
     if not res or not res.get("date"):
         raise RuntimeError("日报生成异常（返回空）")
     return f"日报已生成: {res['date']} len={res.get('len')}"

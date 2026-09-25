@@ -1245,6 +1245,41 @@
 
         <!-- 实时模式 · ④ 盘后（阅读模式） -->
         <template v-else-if="selectedPhase === 'postmarket'">
+          <!-- ★★ 2026-09-25 加固（用户问："盘后这些数据真的能在 15:00 百分百能拿到吗？"）——
+               答案**不是百分百**，所以要让它**自证**：本行逐项显示每个模块的就绪状态
+               **与数据时点**，让"哪些是今天的、哪些是上一交易日的、哪个失败了"一眼可辨，
+               而不是让人对着可能是旧数据的数字做决策。
+               ★ 四类数据的真实机制（详见各卡注释）：
+                 ① 数据库类（今日执行 / 系统时间线）—— **一定能拿到** ✓
+                 ② 内存行情类（今日结算 / 盘面定稿）—— 交易时段由调度器每 2~3 分钟刷新 ⇒
+                    15:00 拿到的是**收盘定稿** ✓；⚠️ 但"进程在 15:00 前重启"的 ≤3 分钟窗口内，
+                    缓存是**数据库收盘快照**（上一交易日）⇒ 看是否出现"收盘快照"警示。
+                 ③ **日批快照类（观察池）** —— 快照由**晚间日批**写入 ⇒ 15:00 显示的是
+                    **上一交易日**的池子（已在下方标注 `data_date`）⚠️ 最容易误读的一项。
+                 ④ 外部接口类（板块 Top5 / 外盘）—— 东财等**可能限流/失败** ⇒ 不保证（失败则不显示该块）。
+               ⚠️ 因此本页所有"今日/收盘"表述都以**数据自带时刻**为准，不用"请求时刻"顶替
+                 （后端 `_cache['data_ts']` 与 `from_snapshot` 就是为此存在的）。 -->
+          <div class="bg-card border border-border rounded-lg px-4 py-2 text-[11px] flex items-center gap-x-3 gap-y-1 flex-wrap">
+            <span class="text-muted">盘后数据就绪</span>
+            <span :class="radarErr ? 'text-red-400' : radarItems.length ? 'text-emerald-400' : 'text-amber-400'">
+              持仓结算 {{ radarErr ? '失败' : (radarItems.length ? '✓' : '加载中') }}</span>
+            <span :class="emotion ? 'text-emerald-400' : 'text-amber-400'">
+              盘面定稿 {{ emotion ? '✓' : '未就绪' }}<template v-if="ovStyle?.as_of">（{{ ovStyle.as_of }}<template
+                v-if="ovStyle.from_snapshot"> · <b>快照</b></template>）</template></span>
+            <span :class="topErr ? 'text-red-400' : topItems.length ? 'text-emerald-400' : 'text-amber-400'">
+              评分榜 {{ topErr ? '失败' : (topItems.length ? '✓' : '加载中') }}</span>
+            <span :class="gwErr ? 'text-red-400' : gwItems.length ? 'text-emerald-400' : 'text-muted'">
+              观察池 {{ gwErr ? '失败' : (gwItems.length ? '✓' : '空（正常）') }}<template
+                v-if="gwMeta.data_date">（{{ gwMeta.data_date }}<template
+                v-if="gwMeta.source === 'snapshot'"> 日批快照</template>）</template></span>
+            <span :class="todayExecErr ? 'text-red-400' : todayExec ? 'text-emerald-400' : 'text-amber-400'">
+              今日执行 {{ todayExecErr ? '失败' : (todayExec ? '✓' : '加载中') }}<template
+                v-if="todayExec && !todayExec.pushed_total">（今日无推送）</template></span>
+            <span :class="sectorTop.length ? 'text-emerald-400' : 'text-muted'">
+              板块 Top5 {{ sectorTop.length ? '✓' : '未返回（外部接口可能受限）' }}</span>
+            <span class="text-muted flex-1 min-w-[160px] text-[10px]">
+              ⚠️ 观察池/板块快照类由**晚间日批**写入 ⇒ 15:00 看到的是上一交易日；其余各项走内存行情与数据库，收盘后即定稿。</span>
+          </div>
           <!-- ★★ 2026-09-25（用户："把合理的都做了"）—— **P0 盘后「今日结算」**：
                原盘后只有"系统榜 + 推送日志"，看不到"我今天的结果"（`summary` 里没有盈亏字段）
                ⇒ 收盘时页面在讲"系统"、不在讲"你"。本卡补上：当日收益 / 涨跌家数 / 累计浮盈 /
@@ -1324,8 +1359,15 @@
             <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
               <div class="text-sm font-semibold">今日盘面定稿
                 <span class="text-[10px] text-muted font-normal">（收盘口径<template
-                  v-if="emotion?.as_of"> · 数据 {{ emotion.as_of.slice(11, 16) }}</template>）</span></div>
-              <span v-if="emotion && emotion.trading_day === false"
+                  v-if="ovStyle?.as_of"> · 行情 {{ ovStyle.as_of }}</template>）</span></div>
+              <!-- ★ 2026-09-25 加固（用户问"15:00 真能拿到吗"）：**数据时刻必须取"数据自身时刻"**
+                   `ovStyle.as_of`（后端来自 `_cache['data_ts']`），而不是 `emotion.as_of`
+                   （那只是**计算时刻**）—— 两者在"进程重启后从收盘快照恢复"时会差一整天，
+                   用错就是**谎报新鲜度**（后端注释里专门警告过这一点）。 -->
+              <span v-if="ovStyle?.from_snapshot" class="text-[10px] text-amber-400"
+                    title="行情缓存来自数据库收盘快照（进程刚重启或非交易时段不重新抓取）⇒ 这是**上一交易日**的数据，不是今天的">
+                ⚠ 来自收盘快照（非实时）</span>
+              <span v-else-if="emotion && emotion.trading_day === false"
                     class="text-[10px] text-amber-400">⚠ 非交易日（为最近交易日快照）</span>
             </div>
             <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-3">
@@ -1554,8 +1596,10 @@
             <span :class="consistency ? 'text-emerald-400' : 'text-amber-400'">
               执行一致性 {{ consistency ? '✓' : '未生成' }}</span>
             <span v-if="!reportMd" class="text-amber-400">
-              —— 日批（GitHub Actions）尚未跑完：昨日实际完成于 <b>22:16</b>，完整数据约 <b>22:30</b> 后就绪；
-              届时点上方时间轴「复盘」或刷新本页即可。</span>
+              —— 日批（GitHub Actions）尚未跑完：正常路径 = 上游包 <b>20:43</b> 完成 → 日批
+              <b>~21:57</b> 全链完成（日报实测 <b>22:16</b>）；⚠️ 兜底日会拖到 <b>~00:57</b>。
+              <b>日批跑完会企微通知你</b>（Actions 完成即回调后端推一条，**事件驱动、无轮询**），
+              收到通知再回来即可 —— 本页不会自己轮询等待。</span>
           </div>
           <!-- ★ 2026-09-25 P3（用户："复盘建议做『盘前预判 vs 实际走势』对账 —— 预测『分歧/常态』，
                实际是否退潮？对错了要回溯修正，形成闭环，**否则情绪模型永远校准不了**"）：
@@ -2748,6 +2792,12 @@ let timers = []
 function startPolling() {
   stopPolling()
   if (isReplay.value) return
+  // ★★ 2026-09-26（用户拍板）：**不要"页面自己等"** —— 原方案（复盘未就绪时每 5 分钟重拉）
+  //   已由**后端日批完成通知**取代（`scheduler.report_ready_notify_loop`：日报 / 评分快照 /
+  //   矛盾扫描三者齐 ⇒ 企微推一条「日批完成 · 复盘已就绪」）。
+  //   ⇒ 这是"**推**"而不是"拉"：页面不必轮询、不必一直开着，用户收到通知再打开即可。
+  //   ⚠️ 此处**刻意不加**自动重试定时器 —— 保留本注释是防止日后有人"好心补回来"
+  //     （那会重新制造"开着页面等"的体验，且用户已明确否决）。
   timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s

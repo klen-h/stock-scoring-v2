@@ -964,17 +964,25 @@ def _llm_interpret_markdown(data_md: str) -> str:
         return ""
 
 
-def run_daily_report(push: bool = False) -> dict:
+def run_daily_report(push: bool = False, date: str = None) -> dict:
     """
-    生成当日日报：硬数据 + LLM 解读 → 落盘 + 落库（+ 可选推送）。
+    生成日报：硬数据 + LLM 解读 → 落盘 + 落库（+ 可选推送）。
 
     企微推送默认关闭：日报已有前端阅读页（/report），每日推送会刷屏。
     需要推送时显式开启：run_daily_report(push=True) 或环境变量 DAILY_REPORT_PUSH=1。
     返回摘要 dict。
+
+    ★★ 2026-09-26：新增 `date` 参数（**由调用方传「本轮交易日」**）。
+      【为什么】原先固定 `_today()`（**运行日**）⇒ 跨午夜/休市日跑会写出"键与内容不符"的记录：
+        实测 2026-09-25（中秋休市）那次日批跨到 09-26 00:14 ⇒ 库里留下
+        `daily_reports.date = 2026-09-26`、标题「# A股日报 2026-09-26」，而正文全是
+        上一交易日（09-24）的行情 ⇒ 用户按日期找日报会**找不到 / 找错**。
+      【口径】与 `scripts/daily_batch.py::_batch_trading_day()` 同源（交易日）。
+      ⚠️ 默认 `None` = 仍用 `_today()` ⇒ **手动脚本 / 前端重算等"就是要当天"的调用不受影响**。
     """
     ensure_table()
     os.makedirs(_REVIEWS_DIR, exist_ok=True)
-    date = _today()
+    date = date or _today()
     data_md = build_data_md()
     llm_md = _llm_interpret(data_md)
     md = (f"# A股日报 {date}\n> 生成：{_now()}\n\n---\n\n"

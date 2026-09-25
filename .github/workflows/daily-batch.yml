@@ -123,6 +123,34 @@ jobs:
             --tasks ${{ github.event.inputs.tasks || 'all' }} \
             ${{ github.event.inputs.force == 'true' && '--force' || '' }}
 
+      # ★★ 2026-09-26（用户："我的方案是日批 actions 完成的时候发到企微，**而不是轮询的方式**"）
+      #   日批跑完**主动回调**后端 ⇒ 后端即时推一条企微「复盘已就绪」（**事件驱动、零轮询**）。
+      #   演进留档：① 前端页面自己重试 → 用户否决"不要让页面自己等"；
+      #             ② 后端每 5 分钟轮询三表 → 用户否决"而不是轮询的方式"；③ 本步骤。
+      #   ⚠️ **失败**不走这里：`daily_batch.py` 内部已在推失败告警（workflow env 里有
+      #     `WECHAT_WEBHOOK`）⇒ 成功/失败两种情形都有通知渠道，无需 `if: always()`。
+      #   ⚠️ 需要两个 GitHub secret：`BATCH_CALLBACK_TOKEN`（须与 Render env 同名同值）与
+      #     `RENDER_BACKEND_URL`（keep-alive.yml 已在用）。**未配置则跳过**，不让 CI 变红。
+      - name: Notify backend (batch done)
+        if: success()
+        run: |
+          if [ -z "${{ secrets.BATCH_CALLBACK_TOKEN }}" ]; then
+            echo "未配置 BATCH_CALLBACK_TOKEN，跳过完成通知（见本步骤注释）"
+            exit 0
+          fi
+          if [ -z "${{ secrets.RENDER_BACKEND_URL }}" ]; then
+            echo "未配置 RENDER_BACKEND_URL，跳过完成通知"
+            exit 0
+          fi
+          # 日期用北京时间（runner 是 UTC）—— 后端也接受省略（会取最近已完成交易日）
+          BJ_DATE=$(date -u -d '+8 hours' +%Y-%m-%d)
+          curl -sS --max-time 60 -X POST \
+            "${{ secrets.RENDER_BACKEND_URL }}/api/system/batch-done" \
+            -H "X-Batch-Token: ${{ secrets.BATCH_CALLBACK_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"date\":\"$BJ_DATE\"}" \
+            -w "\nHTTP %{http_code}\n" || echo "通知失败（不影响日批结果，后端未就绪时可稍后补跑）"
+
       - name: Summary
         if: always()
         run: |

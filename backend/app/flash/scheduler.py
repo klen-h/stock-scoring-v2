@@ -427,6 +427,17 @@ async def daily_report_loop():
         await asyncio.sleep(120)
 
 
+# ── 日批完成通知：**已改为事件驱动**（2026-09-26 二次修正）──
+#   ★ 用户原话："我的方案是日批 actions 完成的时候发到企微，**而不是轮询的方式**"。
+#   演进留档（防止日后有人"好心补回"轮询）：
+#     ① 最初：**前端页面每 5 分钟自己重试**（拉）⇒ 用户否决"不要让页面自己等"；
+#     ② 我改成：**后端每 5 分钟轮询三张表**判断齐了再推 ⇒ 用户再次否决"而不是轮询的方式"；
+#     ③ 现方案：`daily-batch.yml` 跑完**主动** `POST /api/system/batch-done` ⇒ 后端收到即推
+#        （**事件驱动**：通知时刻 = 完成时刻，零轮询）。
+#   ⇒ 实现见 `app/routers/system.py` 的同名接口（含"三源就绪"校验，防止 Actions 提前回报）。
+#   ⚠️ 本文件**不再保留任何相关循环** —— 请不要在这里重新添加轮询。
+
+
 # ── 交易员决策简报·盘前（9:10 起，只读模式保留：只调 LLM + 一次推送）──
 #   为什么放这里：简报要"开盘前"给出今日该关注/该防/该做；盘后那份由日批（Actions）
 #   生成并推送（scripts/daily_batch.py 的 trader_brief 任务），两者以 (date, phase)
@@ -2042,6 +2053,9 @@ async def start():
              *_heavy(backtest_report_loop),
              *_heavy(score_snapshot_loop),
              *_heavy(market_snapshot_loop),
+             # ★ 2026-09-26：日批完成通知**不走调度器**（用户要求事件驱动、不要轮询）
+             #   ⇒ 见 `routers/system.py` 的 `POST /api/system/batch-done`，
+             #     由 `daily-batch.yml` 跑完后主动调用。
              # ★ 例外（不受 READ_ONLY 约束，与 macro_daily 同类）：盘中风险警示是
             #   **实时**功能，Actions 无法替代 —— 关掉就等于"没有盘中止损提醒"。
             #   代价极低：交易时段每 **3 分钟**一轮、每轮 **3 个**腾讯指数请求
