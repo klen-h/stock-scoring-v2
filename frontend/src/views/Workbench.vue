@@ -854,7 +854,21 @@ async function loadCalendarToday() {
     calendarToday.value = items.filter(it =>
       String(it.date || it.time || '').includes(todayStr())).slice(0, 6)
     calendarErr.value = ''
-  } catch { calendarErr.value = '加载失败' }
+  } catch (e) {
+    // ★ 2026-09-25：带出真实原因（Render 重部署窗口/冷启动超时是最常见场景），
+    //   并自动重试一次——loadPhaseData 只在进盘前时调用，重试成本低
+    calendarErr.value = (e && e.message) || '加载失败'
+    try {
+      await new Promise(r => setTimeout(r, 2500))
+      const { data } = await getCalendar({ days: 1 })
+      const items = (data && data.items) || []
+      calendarToday.value = items.filter(it =>
+        String(it.date || it.time || '').includes(todayStr())).slice(0, 6)
+      calendarErr.value = ''
+    } catch (e2) {
+      calendarErr.value = (e2 && e2.message) || '重试仍失败'
+    }
+  }
 }
 // 情绪快照 v0（涨停/跌停/赚钱效应/连板高度/判读——近似口径，B1 官方数据后替换）
 // 外盘四件套（A50 期货覆盖 SGX T+夜盘时段，CN 休市日常仍有报价——已实测中秋在报价）
