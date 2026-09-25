@@ -249,7 +249,7 @@
               <div class="text-[10px] text-muted mt-2 border-t border-border/40 pt-2">
                 判读：昨涨停股**高开且不炸** ⇒ 接力情绪好；**低开或高开回落** ⇒ 分歧转弱。
                 <a class="text-accent hover:underline cursor-pointer" @click="selectPhase('premarket')">
-                  回看盘前决策卡 →</a>
+                  回看盘前决策卡</a>
               </div>
             </template>
           </div>
@@ -678,10 +678,31 @@
             </div>
           </div>
 
-          <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位） -->
+          <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位）
+               ★ 2026-09-25：优先读**已落库快照**（`zz_daily_snapshots`）—— 原实现每次直连
+                 zzshare ⇒ 匿名受限/盘中易失败，而日批明明已落库一份完整 payload。 -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">涨停梯队与清单
-              <span class="text-[10px] text-muted font-normal">（zzshare 口径，数据空=限流/非交易日）</span></div>
+              <span class="text-[10px] text-muted font-normal">
+                （zzshare 口径 · {{ limitReview.source === 'snapshot' ? '读已落库快照' : '实时直连' }}）</span></div>
+            <!-- ★★ 连板梯队结构（`uplimit_hot.ban_info`，此前**只落库、从未展示**）
+                 —— 价值在**梯队完整性**：某级别为 0 而更高有 ⇒ 断层 ⇒ 高标孤立无承接，
+                 短线退潮的常见前兆（实测 09-23 即 5/6 板空档却有 7 板）。 -->
+            <div v-if="limitReview.ladder?.dist?.length" class="mb-2">
+              <div class="flex items-center gap-1.5 flex-wrap text-[11px]">
+                <span class="text-muted">连板梯队</span>
+                <span v-for="d in limitReview.ladder.dist" :key="d.level"
+                      class="px-1.5 py-0.5 rounded border font-mono"
+                      :class="d.count === 0
+                        ? 'border-amber-500/50 bg-amber-500/10 text-amber-400'
+                        : 'border-border/60 text-gray-300'">
+                  {{ d.level }}板 {{ d.count }}</span>
+                <span class="text-muted">最高 <b class="text-gray-300">{{ limitReview.ladder.max_count }}</b> 板
+                  · 当日涨停 {{ limitReview.ladder.total }} 只</span>
+              </div>
+              <div v-if="limitReview.ladder.broken" class="text-[11px] text-amber-400 mt-1">
+                ⚠ {{ limitReview.ladder.note }}</div>
+            </div>
             <div v-if="(limitReview.steps || []).length === 0 && (limitReview.stocks || []).length === 0"
                  class="text-muted text-xs">—（当日无复盘数据）</div>
             <template v-else>
@@ -928,7 +949,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">执行一致性</div>
-              <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练页 →</router-link>
+              <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练页</router-link>
             </div>
             <!-- ★ 2026-09-25 用户反馈：不再裸奔 JSON，按指标渲染 -->
             <div v-if="!consistency" class="text-muted text-xs">—（暂无数据）</div>
@@ -964,7 +985,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">A股日报</div>
-              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整日报 →</router-link>
+              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整日报 </router-link>
             </div>
             <div v-if="!reportMd" class="text-muted text-xs">—（未生成）</div>
             <div v-else class="md-body" v-html="renderMd(reportMd)"></div>

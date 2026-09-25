@@ -17,7 +17,7 @@
 ================================================================================
 """
 
-from typing import Dict
+from typing import Dict, Optional
 
 from fastapi import APIRouter, Query, BackgroundTasks
 from datetime import datetime, timedelta, timezone
@@ -841,11 +841,98 @@ def market_emotion():
 #  匿名可用但数据范围受限；失败返回空结构（工作台占位展示）。
 # ══════════════════════════════════════════════════════════════════════════
 
+def _build_ladder(uh: Dict) -> Optional[Dict]:
+    """把 `uplimit_hot.ban_info`（连板分布）转成"梯队结构 + 断层"判读。
+
+    ★★ 2026-09-25（用户批准做「唤醒闲置数据」）—— `ban_info` 是 zzshare 每日落库的
+      **连板梯度分布**（`{"1":{"count":37},"2":{"count":9},…,"6":{"count":1}}`），
+      此前**只落库、从未展示**。它的价值在**梯队完整性**：
+        · 各级别连续 ⇒ 梯队健康（有承接、有补涨）；
+        · 中间某级为 0 而更高级别非 0 ⇒ **断层** ⇒ 高标孤立无承接，
+          是短线圈公认的退潮前兆（例：实测 09-23 为 `1:38/2:3/3:7/4:2/**5:0/6:0**/7:1`
+          ⇒ 5、6 板空档却有 7 板 ⇒ 典型"高标孤零零"）。
+    ⚠️ 口径：`count` 是"当日**封住** N 连板的**家数**"（收盘口径，非盘中）。
+    """
+    bi = (uh or {}).get("ban_info")
+    if not isinstance(bi, dict) or not bi:
+        return None
+    dist = []
+    for k, v in bi.items():
+        try:
+            lvl = int(str(k))
+        except (TypeError, ValueError):
+            continue
+        cnt = (v or {}).get("count") if isinstance(v, dict) else v
+        try:
+            cnt = int(cnt or 0)
+        except (TypeError, ValueError):
+            cnt = 0
+        dist.append({"level": lvl, "count": cnt})
+    if not dist:
+        return None
+    dist.sort(key=lambda x: x["level"])
+    max_lvl = max(x["level"] for x in dist)
+    real_max = max((x["level"] for x in dist if x["count"] > 0), default=0)
+    # 断层 = 该级别为 0 且**存在更高且非 0** 的级别（"上面还有人不算断层"要排除）
+    gaps = [x["level"] for x in dist
+            if x["count"] == 0 and any(y["level"] > x["level"] and y["count"] > 0
+                                       for y in dist)]
+    note = None
+    if gaps:
+        note = ("连板梯队断层："
+                + "、".join(f"{g}板" for g in gaps)
+                + f"为 0，但存在 {real_max} 板 —— 高标孤立、缺少中位承接"
+                  "（短线退潮的常见前兆）")
+    return {
+        "max_count": real_max,
+        "dist": dist,
+        "levels": max_lvl,
+        "total": sum(x["count"] for x in dist),
+        "gaps": gaps,
+        "broken": bool(gaps),
+        "note": note,
+    }
+
+
+def _zz_snapshot(day: str) -> Dict:
+    """读 `zz_daily_snapshots` 某日 payload（**零外部请求**；无则 `{}`）。失败静默。"""
+    try:
+        from app.zzshare_daily import load_range
+        rows = load_range(day, day) or []
+        return rows[0] if rows else {}
+    except Exception as e:
+        print(f"[market] zz snapshot read failed: {e}")        # ASCII（铁律⑥）
+        return {}
+
+
 @router.get("/limit-review")
 def market_limit_review(date: str = None):
     from app.flash import rules as _rules
     d = date or _bj_now().strftime("%Y-%m-%d")
-    out = {"date": d, "steps": [], "stocks": []}
+    out = {"date": d, "steps": [], "stocks": [], "ladder": None, "source": None}
+    # ★★ 2026-09-25：**优先读已落库快照**（`zz_daily_snapshots`，日批写入）
+    #   为什么改：原实现**每次都直连 zzshare** ⇒ ① 匿名调用数据范围受限（本函数原注释
+    #   自己写着"匿名可用但数据范围受限"）；② 依赖 token 与网络、盘中易失败；
+    #   ③ 明明每天已经落库了一份完整 payload，却不用。
+    #   ⇒ 先读快照（零请求、稳定），**读不到再回退直连**（保持原行为兜底）。
+    snap = _zz_snapshot(d)
+    if snap:
+        uh = snap.get("uplimit_hot") or {}
+        if not uh.get("_error"):
+            out["ladder"] = _build_ladder(uh)
+        us = snap.get("uplimit_stocks")
+        if isinstance(us, dict):
+            us = us.get("data") or us.get("items")
+        if isinstance(us, list) and us:
+            out["stocks"] = us[:50]
+        rs = snap.get("review_uplimit_reason")
+        if isinstance(rs, list) and rs:
+            out["steps"] = rs[:20]
+        if out["ladder"] or out["stocks"]:
+            out["source"] = "snapshot"
+    if out["ladder"] or out["stocks"]:
+        return out
+    # ── 回退：直连 zzshare（快照缺失/失败时）──
     try:
         from app.zzshare_client import get_api
         api = get_api()
@@ -855,6 +942,7 @@ def market_limit_review(date: str = None):
         df2 = api.uplimit_stocks(date1=d)
         if df2 is not None and hasattr(df2, "to_dict"):
             out["stocks"] = df2.to_dict("records")[:50]
+        out["source"] = "live"
     except Exception as e:
         print(f"[market] limit-review failed (degrade to empty): {e}")
     return out
