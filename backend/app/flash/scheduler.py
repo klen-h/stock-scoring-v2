@@ -695,6 +695,13 @@ async def contradiction_report_loop():
 # 16:10 起（错开 15:40 战法扫描高峰）：① 东财/腾讯的当日日线收盘后需 15-60 分钟
 # 结算才完整；② 15:40 回填/扫描/regime 三任务并发抢数据源 → 断连/WAF 成功率骤降
 BACKTEST_BACKFILL_WINDOW = (970, 1440)   # 北京时间 16:10-23:59
+# ★ 2026-09-25：**失败重试节流**（进程内即可，重启即重试，无害）。
+#   起因：把「回填不完整 ⇒ 不标记完成」落实后，窗口 16:10-23:59 内每 5 分钟检查一次
+#   ⇒ 真故障时会**重试近百次**，而每次 `backfill_daily` 都要拉几百只 K 线
+#   ⇒ Supabase egress 打爆（本表 71MB，是全项目 egress 大头之一）。
+#   30 分钟节流 ⇒ 一个窗口最多重试 ~16 次，既给数据源充分恢复时间，也不失控。
+BACKFILL_RETRY_INTERVAL_SEC = 1800
+_backfill_last_try = 0.0
 
 async def backtest_prices_refresh_loop():
     """
@@ -703,12 +710,19 @@ async def backtest_prices_refresh_loop():
     错过窗口晚上开机也能补。新交易日价格入库后，战法回测才能完成
     T+1 撮合与持有期平仓。
     """
+    global _backfill_last_try          # 模块级节流时间戳（见 BACKFILL_RETRY_INTERVAL_SEC）
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "backtest_backfill"
         if (now.weekday() < 5 and BACKTEST_BACKFILL_WINDOW[0] <= t < BACKTEST_BACKFILL_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
+            # ★ 2026-09-25：节流（见 BACKFILL_RETRY_INTERVAL_SEC 注释）。
+            #   成功路径不受影响（成功即 mark_done ⇒ 后续不再进本分支）。
+            if now.timestamp() - _backfill_last_try < BACKFILL_RETRY_INTERVAL_SEC:
+                await asyncio.sleep(300)
+                continue
+            _backfill_last_try = now.timestamp()
             print("[scheduler] 触发回测价格库增量回填")
             # ★ 数据源当日K线就绪校验：未就绪不 mark_done，5 分钟后重试。
             #   否则"空手而归 + mark_done"会让整库静默滞后一天
@@ -723,13 +737,27 @@ async def backtest_prices_refresh_loop():
             try:
                 from backfill_history import backfill_daily
                 stats = await asyncio.to_thread(backfill_daily)
-                store.mark_schedule_done(task_key)
                 status["last_backtest_backfill"] = rules.beijing_now().isoformat()
                 print(f"[scheduler] 回测价格回填完成: {stats}")
                 # 行情落后于沪深300 → 部分回填失败（backfill 内部失败不抛异常，
                 # 但会静默导致行情停更、宏观/战法回测饿死），主动告警便于排查数据源
                 missing = stats.get("stock_missing") or []
                 etf_missing = stats.get("etf_missing") or []
+                # ★★ 2026-09-25（用户报 09-24 数据异常后实测）—— **回填不完整就不许标记完成**。
+                #   原实现是「跑完就 mark_done」，而 `backfill_daily` **内部失败不抛异常**
+                #   （只把失败股票放进 `stock_missing`）⇒ **标记照打 ⇒ 当天不再重试
+                #   ⇒ 该日数据永久不完整**。
+                #   实测证据：`backtest_prices` 2026-09-24 只有 **271 行**，而 09-23 是 829 行
+                #   —— 只完成任务 1/3，却已 mark_done ⇒ 至今未自愈。
+                #   阈值取 **50**（正常应是个位数）：宽到不会因个别退市/停牌股反复重试，
+                #   窄到能拦住"只完成 1/3"这类真故障。
+                _incomplete = len(missing) + len(etf_missing) >= 50
+                if not _incomplete:
+                    store.mark_schedule_done(task_key)
+                else:
+                    print(f"[scheduler] 回测价格回填**不完整**（缺 {len(missing)} 只个股 + "
+                          f"{len(etf_missing)} 只ETF >= 50）⇒ **不标记完成**，"
+                          f"节流后重试（避免该日数据永久缺失）")
                 if etf_missing:
                     _notify_failure(
                         "回测价格回填",

@@ -107,9 +107,16 @@
         </span>
         <div class="text-sm font-bold tracking-wide truncate" :class="PHASE_STYLE[p.key].text">{{ p.label }}</div>
         <div class="text-[11px] font-mono text-muted mt-0.5">{{ p.time }}</div>
-        <!-- 温和自动跟随提示：用户停在别处而实时阶段已推进 -->
-        <div v-if="isToday && livePhase === p.key && selectedPhase !== p.key"
-             class="text-[10px] mt-1 animate-pulse truncate" :class="PHASE_STYLE[p.key].text">● 已进入，点击切换</div>
+        <!-- 温和自动跟随提示：用户停在别处而实时阶段已推进
+             ★ 2026-09-25 用户反馈："选择当前流转状态的时候高度会缩小" —— 根因就是这里：
+               原为 `v-if="... && selectedPhase !== p.key"` ⇒ **一旦选中该节点，这行直接消失**
+               ⇒ 该按钮比其它按钮矮一截，整条时间轴跟着抖动。
+               ⇒ 改为"**始终渲染、选中时用 invisible 隐身**"（`visibility:hidden` 仍占位）
+                  ⇒ 高度恒定，提示照旧只在未选中时可见。 -->
+        <div v-if="isToday && livePhase === p.key"
+             class="text-[10px] mt-1 truncate"
+             :class="[PHASE_STYLE[p.key].text, selectedPhase === p.key ? 'invisible' : 'animate-pulse']">
+          ● 已进入，点击切换</div>
       </button>
     </div>
 

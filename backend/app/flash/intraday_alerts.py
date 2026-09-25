@@ -59,19 +59,51 @@ from typing import Dict, List
 #   盘中判定整体偏 8 小时 ⇒ 警示永不触发）。统一改用项目「全链路北京时间」口径。
 from app.flash.rules import beijing_now
 
-_LAST_PUSH = {}          # {alert_key: date_str} 每类每日一次
+_LAST_PUSH = {}          # {alert_key: date_str} 每类每日一次（**进程内快缓存**，见 _can_push）
 _LAST_ANY_PUSH = None    # 全局最小间隔
+# ★★ 2026-09-25（用户反馈"**一直在发**企微"）—— 根因：去重只有进程内变量。
+#   实测触发条件：`run.py` 启动时带 **`reload=True`** ⇒ 代码一改 uvicorn 就重载 ⇒
+#   进程重启 ⇒ `_LAST_PUSH` 清空 ⇒ **同一条警示当天重推一次**。
+#   用户当天反复看到同一条「🟡 创业板指 下跌 -2.68%」就是这么来的
+#   （14:15 那条；当天我一直在改后端，reload 了十几次 ⇒ 推了十几次）。
+#   生产（Render 不带 reload）不会这么频繁，但**重启即重推**本身就不该发生
+#   —— 该"每日一次"是**业务语义**，不是进程语义。
+#   ⇒ 改为**落库去重**（`schedule_state`，task = `alert:{key}`，按北京日期比较）：
+#     · 进程内 dict 保留（避免每轮都查库：3 分钟一轮 × 6 类 = 无谓查询）；
+#     · **只在"候选命中"时才查库**（见 `_can_push` 调用点）⇒ 平静的日子零额外查询；
+#     · 行数固定不增长（同一 key 每天 upsert 覆盖同一行，不是每天新增一行）。
+#   复用 `store.is_schedule_done/mark_schedule_done`（**已有的唯一实现**，避免再造一套）。
+
+
+def _alert_task(key: str) -> str:
+    """把警示 key 映射成 `schedule_state` 的 task 名（单行、可读、便于排查）。"""
+    return f"alert:{key}"[:120]
 
 
 def _trading_session(now=None) -> bool:
-    """交易时段（含尾盘集合竞价前）：9:40-11:30 / 13:00-15:00。
+    """交易时段（含尾盘集合竞价前）：9:40-11:30 / 13:00-15:00，**且必须是交易日**。
 
     ★ 2026-09-19：默认取**北京时间**（原 `datetime.now()` 依赖容器 `TZ=Asia/Shanghai`，
       UTC 环境下整体偏 8 小时 ⇒ 判定全部落空、盘中警示静默失效）。
+
+    ★★ 2026-09-25（用户反馈"一直在发企微"）—— **补交易日判断**：
+      原先只看「时刻 + 周末」⇒ **法定节假日休市日（中秋等）的 13:00-15:00 照样判为交易时段**
+      ⇒ `_index_watch_quotes()` 从腾讯拿到的是**上一个交易日的静态收盘值**（今天没有行情）
+      ⇒ 用静态值触发警示并推企微。**用户实测**：2026-09-25（中秋休市）14:xx 收到
+      「🟡 创业板指 下跌 -2.68%」—— 那正是 **09-24 的收盘跌幅**，今天根本没开盘。
+      ⚠️ 这与 `flash/rules.get_market_clock()` 里 `is_*_trading` 是**同一个坑**：
+         **「在交易时刻」≠「是交易日」** —— 凡"是否开市/能否交易"必须两个条件都判。
+      ⚠️ 日历判断失败时**退回旧行为**（宁可多查一轮，也不要让风险警示整天静默）。
     """
     now = now or beijing_now()
     if now.weekday() >= 5:
         return False
+    try:
+        from app.flash.rules import is_trading_day
+        if not is_trading_day(now):
+            return False
+    except Exception as e:
+        print(f"[intraday_alert] trading-day check failed (fallback to time-only): {e}")
     m = now.hour * 60 + now.minute
     return (9 * 60 + 40) <= m <= (11 * 60 + 30) or (13 * 60) <= m <= (15 * 60)
 
@@ -80,6 +112,17 @@ def _can_push(today: str, key: str) -> bool:
     global _LAST_ANY_PUSH
     if _LAST_PUSH.get(key) == today:
         return False
+    # ★★ 2026-09-25：**跨重启去重** —— 进程内变量扛不住 uvicorn reload（见文件头注释）。
+    #   本函数只在"候选命中"时被调用（平静的日子完全不查库）⇒ 开销可忽略。
+    #   ⚠️ 读库失败按"未推过"处理（fail-open）：宁可极小概率多推一条，
+    #      也不要因为一次 DB 抖动而**整天静默漏掉真正的风险警示**。
+    try:
+        from app.flash import store
+        if store.is_schedule_done(_alert_task(key), today):
+            _LAST_PUSH[key] = today          # 回填进程内缓存，后续轮次不再查库
+            return False
+    except Exception as e:
+        print(f"[intraday_alert] dedup db check failed (fail-open): {e}")
     # ★ 2026-09-19：全局最小间隔 30 → 10 → **5 分钟**。原值比检查间隔还长 ⇒ 检查再快也被它吃掉
     #   （例：「上证🟡」推完后 20 分钟才出现的「跌停潮🔴」会被拦到下个窗口）。
     #   总条数上限由「每类每档每日一次」兜住（3 个指数 + 涨跌比 + 跌停 + 黑天鹅 = 6 类，
@@ -93,6 +136,11 @@ def _mark_pushed(today: str, key: str) -> None:
     global _LAST_ANY_PUSH
     _LAST_PUSH[key] = today
     _LAST_ANY_PUSH = beijing_now()
+    try:
+        from app.flash import store
+        store.mark_schedule_done(_alert_task(key), today)     # 落库：跨重启/跨进程生效
+    except Exception as e:
+        print(f"[intraday_alert] dedup db mark failed: {e}")
 
 
 # ★ 2026-09-19：多指数各用各的阈值。
