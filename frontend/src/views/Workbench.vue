@@ -87,7 +87,10 @@
               <div v-else class="grid grid-cols-2 md:grid-cols-3 gap-1 text-xs">
                 <div v-for="r in replay.top50" :key="r.code"
                      class="flex items-center justify-between border border-border/60 rounded px-2 py-1">
-                  <span class="truncate">{{ r.rank_pos }}. {{ r.name || r.code }}</span>
+                  <span class="truncate">
+                    <a :href="stockHref(r.code)" target="_blank" class="hover:text-accent">{{ r.name || r.code }}</a>
+                    <a :href="xqUrl(r.code)" target="_blank" class="text-muted font-mono ml-1" title="雪球">{{ r.code }}</a>
+                  </span>
                   <span class="font-mono font-semibold ml-2">{{ r.total_score }}</span>
                 </div>
               </div>
@@ -209,7 +212,7 @@
                     <span class="text-muted">
                       仓位 <b class="text-accent text-sm">{{ flashDiag.daily_strategy?.overall_position || '—' }}</b>
                     </span>
-                    <router-link to="/monitor" class="text-accent hover:underline">事件面详情</router-link>
+                    <router-link target="_blank" to="/monitor" class="text-accent hover:underline">事件面详情</router-link>
                   </template>
                 </div>
               </div>
@@ -219,7 +222,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">隔夜与今日（财经日历）</div>
-              <router-link to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
+              <router-link target="_blank" to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
             </div>
             <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
             <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
@@ -232,7 +235,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）</div>
-              <router-link to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
+              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
             </div>
             <div v-if="briefErr" class="text-muted text-xs">—（加载失败：{{ briefErr }}）</div>
             <div v-else-if="!briefMd" class="text-muted text-xs">加载中…</div>
@@ -314,7 +317,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">板块涨幅 Top5</div>
-              <router-link to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
+              <router-link target="_blank" to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
             </div>
             <div v-if="!sectorTop.length" class="text-muted text-xs">—（当日无板块快照）</div>
             <div v-else class="space-y-1 text-xs">
@@ -349,8 +352,10 @@
                    class="border border-border/60 rounded-lg px-3 py-2.5">
                 <!-- 主行：名称 + 盈亏大字 -->
                 <div class="flex items-center gap-2 flex-wrap">
-                  <span class="font-semibold">{{ it.name || it.code }}</span>
-                  <span class="text-muted text-xs font-mono">{{ it.code }}</span>
+                  <a :href="stockHref(it.code)" target="_blank"
+                     class="font-semibold hover:text-accent">{{ it.name || it.code }}</a>
+                  <a :href="xqUrl(it.code)" target="_blank"
+                     class="text-muted text-xs font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
                   <span v-if="it.industry"
                         class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
                   <span class="ml-auto text-2xl font-bold font-mono"
@@ -396,7 +401,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">评分榜 Top10</div>
-              <router-link to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
+              <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
             </div>
             <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
             <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
@@ -404,10 +409,10 @@
               <div v-for="(r, i) in topItems" :key="r.code"
                    class="flex items-center gap-2 border-b border-border/40 py-1.5">
                 <span class="w-6 text-muted font-mono">{{ i + 1 }}</span>
-                <router-link :to="'/stock/' + r.code" class="font-semibold hover:text-accent">
-                  {{ r.name || r.code }}
-                </router-link>
-                <span class="text-muted font-mono">{{ r.code }}</span>
+                <a :href="stockHref(r.code)" target="_blank"
+                   class="font-semibold hover:text-accent">{{ r.name || r.code }}</a>
+                <a :href="xqUrl(r.code)" target="_blank"
+                   class="text-muted font-mono hover:text-accent" title="雪球">{{ r.code }}</a>
                 <span v-if="r.change_pct != null" class="font-mono" :class="pctClass(r.change_pct)">
                   {{ signNum(r.change_pct) }}%
                 </span>
@@ -420,7 +425,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">观察池</div>
-              <router-link to="/score" class="text-xs text-accent hover:underline">详情</router-link>
+              <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">详情</router-link>
             </div>
             <div v-if="gwErr" class="text-muted text-xs">—（加载失败）</div>
             <div v-else class="text-xs text-muted">
@@ -444,7 +449,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">执行一致性</div>
-              <router-link to="/coach" class="text-xs text-accent hover:underline">教练页 →</router-link>
+              <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练页 →</router-link>
             </div>
             <!-- ★ 2026-09-25 用户反馈：不再裸奔 JSON，按指标渲染 -->
             <div v-if="!consistency" class="text-muted text-xs">—（暂无数据）</div>
@@ -480,7 +485,7 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">A股日报</div>
-              <router-link to="/report" class="text-xs text-accent hover:underline">完整日报 →</router-link>
+              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整日报 →</router-link>
             </div>
             <div v-if="!reportMd" class="text-muted text-xs">—（未生成）</div>
             <div v-else class="md-body" v-html="renderMd(reportMd)"></div>
@@ -497,7 +502,7 @@
               待办 · 未决策教练卡
               <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]">{{ todoCount }}</span>
             </div>
-            <router-link to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
+            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
           </div>
           <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
           <div v-else-if="!todayCoach.length" class="text-muted text-xs">
@@ -511,7 +516,7 @@
         <div class="bg-card border border-border rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold">持仓摘要</div>
-            <router-link to="/paper" class="text-xs text-accent hover:underline">模拟盘</router-link>
+            <router-link target="_blank" to="/paper" class="text-xs text-accent hover:underline">模拟盘</router-link>
           </div>
           <div v-if="radarErr" class="text-muted text-xs">—（加载失败）</div>
           <template v-else>
@@ -578,6 +583,18 @@ import {
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
+
+// ★ 2026-09-25 用户要求：工作台所有跳转一律新开标签页（原页轮询/状态不丢）；
+//   个股"代码"→雪球（自动拼 SH/SZ/BJ 前缀），股票"名称"→本地个股详情页。
+//   本项目为 hash 路由 ⇒ 站内链接直接用 '#/path' + target="_blank" 即可。
+function xqUrl(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
+  if (!c) return ''
+  const pfx = c.startsWith('6') || c.startsWith('9') ? 'SH'
+    : (c.startsWith('4') || c.startsWith('8') ? 'BJ' : 'SZ')
+  return `https://xueqiu.com/S/${pfx}${c}`
+}
+const stockHref = (code) => `#/stock/${code}`
 
 // ── 常量 ──
 const PHASES = [

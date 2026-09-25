@@ -3,7 +3,10 @@
     <div class="flex gap-2 items-center flex-wrap">
       <span class="font-mono text-muted">{{ (alert.alert_time || '').slice(0, 5) }}</span>
       <span class="font-semibold">{{ alert.label }}</span>
-      <span v-if="alert.code" class="text-muted">{{ alert.code }} {{ alert.name }}</span>
+      <span v-if="alert.code" class="text-muted">
+        <a :href="xqUrl(alert.code)" target="_blank" class="hover:text-accent" title="雪球">{{ alert.code }}</a>
+        <a :href="'#/stock/' + alert.code" target="_blank" class="hover:text-accent">{{ alert.name }}</a>
+      </span>
       <span v-if="readonly" class="ml-auto"
             :class="alert.executed === 'yes' ? 'text-emerald-400' : alert.executed === 'no' ? 'text-amber-400' : 'text-muted'">
         {{ alert.executed === 'yes' ? '已执行' : alert.executed === 'no' ? '已放弃' : '未决策' }}
@@ -50,6 +53,13 @@
 //   - 放弃必须填理由（后端 400 校验同款），理由回写供周报复盘
 //   - 教练卡是纪律提醒，不是自动交易指令——按钮语义是"我已执行/我放弃"
 import { ref } from 'vue'
+
+// 雪球链接（A股代码前缀 SH/SZ/BJ）——与 Workbench.vue 同口径
+function xqUrl(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
+  const pfx = c.startsWith('6') || c.startsWith('9') ? 'SH' : (c.startsWith('4') || c.startsWith('8') ? 'BJ' : 'SZ')
+  return `https://xueqiu.com/S/${pfx}${c}`
+}
 import { executeCoachAlert } from '../../api'
 
 const props = defineProps({
