@@ -19,9 +19,9 @@
         </select>
       </label>
 
-      <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），一行排开空间足够；
+      <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），居中排开空间足够；
            细分隔线区分 A股与外盘 -->
-      <div class="flex-1 min-w-[560px] flex items-start gap-3 flex-wrap">
+      <div class="flex-1 min-w-[560px] flex items-center justify-center gap-3 flex-wrap">
         <div v-for="ix in topIndices" :key="ix.name" class="text-center px-1.5">
           <div class="text-[10px] text-muted">{{ ix.name }}</div>
           <div class="text-xs font-mono font-semibold leading-snug">{{ fmtNum(ix.price) }}</div>
