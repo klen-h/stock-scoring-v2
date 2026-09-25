@@ -127,6 +127,7 @@ const navGroups = [
     { path: '/sector', label: '板块分化' },
     { path: '/mainline', label: '行业主线' },
     { path: '/capital', label: '资金流向' },
+    { path: '/lhb', label: '龙虎榜' },
     { path: '/monitor', label: '快讯监控' },
     { path: '/calendar', label: '财经日历' },
   ]},

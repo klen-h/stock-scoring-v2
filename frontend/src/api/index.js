@@ -270,6 +270,9 @@ export const deleteUserPlan = (id) => http.delete(`/user/plans/${id}`)
 export const getUserPortfolio = () => http.get('/user/portfolio')
 // 仓位建议（W1.5）：后端数据联动（regime+宏观+情绪+宽度+主力筹码），替代前端写死规则
 export const getUserPositionSizing = () => http.get('/user/position-sizing')
+// ★ 2026-09-25：龙虎榜（读库 lhb_history，每日 17:45 同步）。
+//   不传 code ⇒ 某日净买/净卖榜 + 统计；传 code ⇒ 该股上榜历史（含席位明细，如有）。
+export const getDragonTiger = (params) => http.get('/capital/dragon-tiger', { params })
 export const upsertUserPortfolio = (item) => http.post('/user/portfolio', item)
 export const deleteUserPortfolio = (code) => http.delete(`/user/portfolio/${code}`)
 export const batchSyncUser = (data) => http.post('/user/sync', data)

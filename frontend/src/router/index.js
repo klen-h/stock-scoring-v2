@@ -22,6 +22,8 @@ const routes = [
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },
   { path: '/trade-plans', name: 'TradePlans', component: () => import('../views/TradePlans.vue') },
   { path: '/capital', name: 'Capital', component: () => import('../views/CapitalView.vue') },
+  // ★ 2026-09-25：龙虎榜（数据层早已完备，此前无入口）
+  { path: '/lhb', name: 'Lhb', component: () => import('../views/LhbView.vue') },
   { path: '/report', name: 'DailyReport', component: () => import('../views/DailyReport.vue') },
   { path: '/contradictions', name: 'Contradictions', component: () => import('../views/ContradictionsView.vue') },
   { path: '/performance', name: 'Performance', component: () => import('../views/Performance.vue') },
