@@ -241,12 +241,21 @@
               <button class="px-2 py-0.5 rounded border border-border text-muted" @click="loadDecisionCard()">重试</button>
             </div>
             <template v-else-if="dc">
-              <!-- 做不做 -->
-              <div class="flex items-center gap-3 mb-2">
-                <span class="text-2xl font-bold"
-                      :class="dc.stance.level.includes('空仓') ? 'text-muted' : 'text-red-400'">{{ dc.stance.level }}</span>
-                <span class="text-xs text-muted">{{ dc.stance.why }}</span>
-              </div>
+              <!-- 做不做（★ 2026-09-25：dc.stance 可能缺失 ⇒ 必须局部保护。
+                   此前 dbdb3cf 给 dc.do/how_much/if_wrong/environment 都加了 `?.`，唯独漏了
+                   stance ⇒ 模板渲染即抛 TypeError: Cannot read properties of undefined
+                   (reading 'level')；它后面还紧跟 `.includes()`，连兜底机会都没有。
+                   ⚠️ 为什么不把外层 `v-else-if="dc"` 收紧成 `dc && dc.stance`：那样 stance
+                   缺失时**整卡都不渲染**，会把同块内仍有数据的"做什么/做多少/错了怎么办"
+                   一并丢掉 —— 局部保护才是对的。 -->
+              <template v-if="dc.stance">
+                <div class="flex items-center gap-3 mb-2">
+                  <span class="text-2xl font-bold"
+                        :class="(dc.stance.level || '').includes('空仓') ? 'text-muted' : 'text-red-400'">{{ dc.stance.level || '—' }}</span>
+                  <span class="text-xs text-muted">{{ dc.stance.why }}</span>
+                </div>
+              </template>
+              <div v-else class="text-xs text-muted mb-2">暂无立场结论（决策卡缺 stance 字段）</div>
               <!-- 做什么 / 做多少 / 错了怎么办 -->
               <div class="text-xs space-y-1.5">
                 <div>
