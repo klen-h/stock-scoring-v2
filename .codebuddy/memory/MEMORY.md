@@ -343,6 +343,19 @@
   `_add` ⇒ **只有"有持仓被标记主力出货"（risks 非空）时才抛 NameError**，而该函数被
   决策卡与盘前简报共用 ⇒ 两者一起失败。⇒ **同一作用域内的近名函数（`_add`/`add`）要警惕**；
   用**静态断言测试**锁住（`inspect.getsource` 里查 `_add("R5"` 存在、裸 `add("R5"` 不存在）。
+- ★★ **`py_compile` 查不出 `NameError` ⇒ 后端改动必须做「真实 import」冒烟（2026-09-25）**：
+  `macro.py` 新函数写 `-> Optional[dict]` 但该文件**从未 import typing** ⇒ **定义期抛 NameError
+  ⇒ 整个模块加载失败**，而 `py_compile` 照样报 "compile OK"（它只查语法、不解析名字）。
+  ⇒ **验证固定动作**：`python -c "import sys; sys.path.insert(0,'backend'); import app.<改动模块>"`
+  （或让测试脚本真的 import 它）—— 本轮就是靠这个抓到的。
+  ⚠️ 同理：**源码字符串断言要排除注释/docstring**（我断言 `"get_sentiment()" not in source`
+  被自己写的解释性注释打假 ⇒ 9/10 假失败）。
+- ★★ **用户说"把 A 改名成 B"时，先确认 A 和 B 是不是同一个概念（2026-09-25）**：
+  用户要求把「负相关（弱）」改成「压制因素」，但前者是**油金相关性**状态、后者是**对 A 股的
+  利空因素** —— **不是一回事**，直接改名会制造错误认知。
+  ⇒ 追问一句"你要的是不是**另一个东西出现在同一个位置**"，往往能挖出真实需求
+  （本例真需求 = 多空标签没标题 ⇒ 加「支撑因素/压制因素」两栏即可，语义不动）。
+  ★ 泛化：**用户描述的是"体验痛点"，给出的却是"实现方案"** —— 痛点要满足，方案要复核。
 - 生产 Python 3.9；禁用 PEP 604（`str | None`），用 `Optional` 或 `from __future__ import annotations`。
 - FastAPI 路由：没有 `await` 的必须写 `def`，禁止假 async 阻塞事件循环。
 
