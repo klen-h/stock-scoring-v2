@@ -188,9 +188,11 @@
                 </div>
                 <div class="w-px h-12 bg-border flex-shrink-0"></div>
                 <div class="flex items-center gap-2.5 flex-shrink-0">
-                  <span class="text-4xl font-bold font-mono leading-none">{{ temperature?.temperature ?? '—' }}</span>
+                  <span class="text-4xl font-bold font-mono leading-none"
+                        :class="levelColor(temperature?.level || '')">{{ temperature?.temperature ?? '—' }}</span>
                   <div>
-                    <div class="text-xs font-semibold whitespace-nowrap">市场环境 · {{ temperature?.level || '—' }}</div>
+                    <div class="text-xs font-semibold whitespace-nowrap"
+                         :class="levelColor(temperature?.level || '')">市场环境 · {{ temperature?.level || '—' }}</div>
                     <div class="text-[11px] text-muted whitespace-nowrap">0~100，越高越亢奋</div>
                   </div>
                 </div>
