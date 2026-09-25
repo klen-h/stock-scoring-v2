@@ -28,6 +28,16 @@
         </span>
       </span>
 
+      <!-- ★ 2026-09-25 用户要求：外盘四件套常驻顶栏（A50 SGX 全天/离岸/布伦特/纳指期货，
+           宏面板 60s 缓存已抓，读取零新增请求；CN 休市日 A50 仍在报价） -->
+      <span v-for="g in globalsRow" :key="g.key" class="flex items-center gap-1">
+        <span class="text-muted text-xs">{{ g.label }}</span>
+        <span class="font-mono text-xs">{{ g.price ?? '—' }}</span>
+        <span class="font-mono text-xs font-semibold" :class="pctClass(g.pct)">
+          {{ signNum(g.pct) }}%
+        </span>
+      </span>
+
       <!-- 情绪温度 -->
       <span class="flex items-center gap-1">
         <span class="text-muted text-xs">情绪</span>
@@ -246,20 +256,9 @@
           </div>
         </template>
 
-        <!-- 实时模式 · ② 盘中 / ③ 午盘（执行模式：大字、少文字） -->
+        <!-- 实时模式 · ② 盘中 / ③ 午盘（执行模式：大字、少文字）
+             ★ 2026-09-25 用户要求：指数大字卡删除——与顶栏重复，指数保留顶栏常驻 -->
         <template v-else-if="selectedPhase === 'intraday' || selectedPhase === 'midday'">
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">市场警示</div>
-            <div class="grid grid-cols-3 gap-3">
-              <div v-for="ix in topIndices" :key="ix.name">
-                <div class="text-muted text-xs">{{ ix.name }}</div>
-                <div class="text-2xl font-bold font-mono" :class="pctClass(ix.change_pct)">
-                  {{ signNum(ix.change_pct) }}%
-                </div>
-              </div>
-            </div>
-            <div v-if="overviewErr" class="text-muted text-xs mt-2">—（加载失败）</div>
-          </div>
           <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div v-if="emotion && emotion.trading_day === false"
@@ -287,14 +286,6 @@
               · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak }}</b>
               <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
               <span class="text-[10px]">· {{ emotion.note }}</span>
-            </div>
-            <!-- ★ A1 外盘驱动：A50（SGX 全天）/ 离岸 / 布伦特 / 纳指期货（宏面板 60s 缓存） -->
-            <div class="border-t border-border/40 mt-2 pt-2 grid grid-cols-4 gap-2 text-center">
-              <div v-for="g in globalsRow" :key="g.key">
-                <div class="text-[10px] text-muted">{{ g.label }}</div>
-                <div class="text-sm font-bold font-mono">{{ g.price ?? '—' }}</div>
-                <div class="text-[11px] font-mono" :class="pctClass(g.pct)">{{ signNum(g.pct) }}%</div>
-              </div>
             </div>
           </div>
 
@@ -635,7 +626,6 @@ const dayLoading = ref(false)
 
 // 模块数据（各自独立，失败互不影响）
 const overview = ref({ indices: [], stats: {} })
-const overviewErr = ref('')
 const temperature = ref(null)
 const regimeLabel = ref('—')
 const briefMd = ref('')
@@ -774,7 +764,7 @@ async function safe(fn, setter, errSetter) {
 }
 
 async function loadOverview() {
-  await safe(() => getMarketOverview(), d => { overview.value = d || {} }, s => { overviewErr.value = s })
+  await safe(() => getMarketOverview(), d => { overview.value = d || {} })
 }
 async function loadTemperature() {
   try {
@@ -1046,6 +1036,8 @@ watch(selectedDate, async (d) => {
 onMounted(async () => {
   await loadDayIndex()
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
+  // ★ 外盘四件套已移顶栏常驻（所有阶段可见）——挂载即加载 + 120s 轮询刷新
+  loadGlobals()
   await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadCoach(), loadRadar(), loadPush(todayStr)])
   loadPhaseData(selectedPhase.value)
   startPolling()
