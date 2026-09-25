@@ -196,7 +196,12 @@ def collect_brief_data(phase: str) -> dict:
                                     f"（{_strategy_cn(p.get('strategy_name'))}，信号日 {p['signal_date']}）")
 
     for r in risks:
-        add("R5", "high", f"持仓 {r['name']}({r['code']})：{r['detail']}")
+        # ★★ 2026-09-25 修 bug：此处原写作 `add(...)`，但本作用域定义的是 `_add`（见上方 L177）
+        #   ⇒ **只要 risks 非空就抛 NameError**（"有持仓被标记主力出货"时），
+        #   而 `collect_brief_data` 被 `build_decision_card` 与盘前简报**共用** ⇒ 两者一起失败
+        #   （决策卡显示"生成失败"）。⚠️ 平时不触发，正是因为持仓里没有出货标记 —— 典型的
+        #   「只在特定数据条件下爆炸」的 bug，靠走查而非运行很难发现。
+        _add("R5", "high", f"持仓 {r['name']}({r['code']})：{r['detail']}")
 
     sev_order = {"high": 0, "medium": 1, "low": 2}
     actions.sort(key=lambda a: sev_order.get(a["severity"], 3))
@@ -553,6 +558,30 @@ def build_decision_card() -> dict:
     except Exception as e:
         print(f"[decision-card] 持仓扫描失败: {e}")
 
+    # ★ 2026-09-25：负面清单聚合（用户需求："负面清单和主线推荐同等重要"）。
+    #   ⚠️ **零新增数据源** —— 素材早已算好，此前只是散在别处、没有汇总成"今天要避开的"：
+    #     · `data["position_risks"]`（L157-172 已聚合：持仓 ∩ 主力出货嫌疑，带 severity）
+    #     · `data["candidates"]` 里 `mainforce_signal == "distribution"`
+    #       （评分看多 ∩ 主力出货 = 信号冲突，对应 actions 的 R2，但这里能拿到 code 便于点击）
+    #     · `data["actions"]` 的 R1（矛盾扫描命中持仓敞口）
+    #   覆盖范围说明（诚实标注）：**不含**解禁/减持/停牌/问询/新股 —— 那些无数据源
+    #   （工作台注释自述"公告/解禁类待 C1 数据源"）⇒ 接入后在此追加即可。
+    negatives = []
+    for r in (data.get("position_risks") or []):
+        negatives.append({"code": r.get("code"), "name": r.get("name"), "level": "high",
+                          "scope": "持仓", "reason": r.get("detail") or "主力出货嫌疑"})
+    for c in (data.get("candidates") or []):
+        if (c.get("mainforce_signal") or "") == "distribution":
+            negatives.append({"code": c.get("code"), "name": c.get("name"), "level": "high",
+                              "scope": "候选",
+                              "reason": (f"评分 {c.get('total_score')} 分看多，但主力标记出货"
+                                         "（信号冲突，暂缓买入）")})
+    for a in (data.get("actions") or []):
+        if a.get("rule_id") == "R1":
+            negatives.append({"code": None, "name": None,
+                              "level": a.get("severity") or "high", "scope": "矛盾",
+                              "reason": a.get("text") or ""})
+
     return {
         "date": data.get("date"),
         "regime": reg,
@@ -564,5 +593,7 @@ def build_decision_card() -> dict:
         "do": {"whitelist": wl, "candidates": candidates, "avoid": avoid},
         "how_much": {"total_cap": stance[1], "single_cap": stance[2]},
         "if_wrong": {"stop_rule": stop_rule, "retreating": retreating},
+        # ★ 负面清单（今天要避开的）；空数组 ⇒ 前端不渲染该块
+        "negatives": negatives,
         "positions_scan": positions_scan,
     }

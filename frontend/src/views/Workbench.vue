@@ -321,6 +321,20 @@
                 <div><span class="text-muted">环境：</span>情绪 {{ dc.environment?.emotion_verdict || '—' }}
                   · {{ dc.environment?.emotion_detail }}</div>
               </div>
+              <!-- ★ 2026-09-25 用户需求："负面清单和主线推荐同等重要" ⇒ 决策卡补「负面清单」。
+                   数据来自后端 dc.negatives（持仓主力出货 / 候选评分与主力信号冲突 / 矛盾敞口）。
+                   ⚠️ 本版**不含**解禁/减持/停牌/问询/新股（无数据源，待 C1 接入后由后端追加，
+                   前端无需改动）。空数组 ⇒ 整块不渲染（不给"假清空"的安心感）。 -->
+              <div v-if="(dc.negatives || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
+                <div class="text-muted mb-1">负面清单（今天要避开的）</div>
+                <div v-for="(n, i) in dc.negatives" :key="i" class="py-0.5">
+                  <span class="px-1 rounded text-[10px]"
+                        :class="n.level === 'high' ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'">{{ n.scope }}</span>
+                  <a v-if="n.code" :href="stockHref(n.code)" target="_blank"
+                     class="ml-1 font-semibold text-red-400 hover:underline">{{ n.name || n.code }}</a>
+                  <span class="ml-1 text-gray-300">{{ n.reason }}</span>
+                </div>
+              </div>
               <!-- 持仓扫描 -->
               <div v-if="(dc.positions_scan || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
                 <div class="text-muted mb-1">持仓扫描</div>
