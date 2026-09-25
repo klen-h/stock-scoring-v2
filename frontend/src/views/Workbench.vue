@@ -160,6 +160,55 @@
           </template>
         </template>
 
+        <!-- ★ 2026-09-25 用户："9:15–9:25 是盘前到盘中的关键过渡（竞价额、竞价涨幅榜、
+             昨日强势股溢价），时间轴上 9:30 直接从盘前跳盘中，少了一环。"
+             ⇒ 新增「竞价」视图：只用**已有**数据（`market_emotion.auction` + `prev_limit_today_pct`），
+             零新增接口。当前覆盖"昨日强势股今日溢价/高开榜"；
+             ⚠️ **竞价额/全市场竞价涨幅榜暂缺**（需后端扩展 `auction`，见 memory 待办）。 -->
+        <template v-else-if="selectedPhase === 'auction'">
+          <div class="bg-card border border-indigo-500/40 rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">竞价看板
+                <span class="text-[10px] text-muted font-normal">（9:20 后不可撤单 · 9:25 定稿）</span></div>
+              <span class="text-[10px] text-muted font-mono">{{ emotion?.as_of || '' }}</span>
+            </div>
+            <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
+            <template v-else>
+              <div class="grid grid-cols-3 gap-3 text-center text-xs mb-3">
+                <div>
+                  <div class="text-lg font-bold font-mono">{{ emotion.auction?.count ?? '—' }}</div>
+                  <div class="text-muted text-[10px]">昨涨停今日高开数</div>
+                </div>
+                <div>
+                  <div class="text-lg font-bold font-mono" :class="pctClass(emotion.auction?.avg_gap)">
+                    {{ signNum(emotion.auction?.avg_gap) }}%</div>
+                  <div class="text-muted text-[10px]">平均高开幅度</div>
+                </div>
+                <div>
+                  <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
+                    {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
+                  <div class="text-muted text-[10px]">昨涨停今均（溢价）</div>
+                </div>
+              </div>
+              <div v-if="(emotion.auction?.top || []).length" class="flex flex-wrap gap-1.5">
+                <a v-for="g in emotion.auction.top" :key="g.code" :href="stockHref(g.code)" target="_blank"
+                   class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-xs hover:border-accent"
+                   :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'">
+                  {{ g.name }} {{ signNum(g.gap_pct) }}%
+                </a>
+              </div>
+              <div v-else class="text-[11px] text-muted">
+                —（暂无高开数据。竞价 9:25 定稿后本页有效；休市日无数据属正常）
+              </div>
+              <div class="text-[10px] text-muted mt-2 border-t border-border/40 pt-2">
+                判读：昨涨停股**高开且不炸** ⇒ 接力情绪好；**低开或高开回落** ⇒ 分歧转弱。
+                <a class="text-accent hover:underline cursor-pointer" @click="selectPhase('premarket')">
+                  回看盘前决策卡 →</a>
+              </div>
+            </template>
+          </div>
+        </template>
+
         <!-- 实时模式 · ① 盘前（阅读模式） -->
         <template v-else-if="selectedPhase === 'premarket'">
           <!-- ★ 2026-09-25 用户反馈：数据中心(旧首页)的宏观方向/规则标签/市场环境整合进来 -->
@@ -805,6 +854,10 @@ const stockHref = (code) => `#/stock/${code}`
 // ── 常量 ──
 const PHASES = [
   { key: 'premarket', label: '盘前', time: '09:10' },
+  // ★ 2026-09-25 用户："9:15–9:25 是盘前到盘中的关键过渡（竞价额、竞价涨幅榜、
+  //   昨日强势股溢价），时间轴上 9:30 直接从盘前跳盘中，少了一环。"
+  //   ⇒ 补「竞价」节点：9:15 开始（9:20 后不可撤单、9:25 定稿）。
+  { key: 'auction', label: '竞价', time: '09:15' },
   { key: 'intraday', label: '盘中', time: '09:30' },
   { key: 'midday', label: '午盘', time: '11:30' },
   { key: 'postmarket', label: '盘后', time: '15:00' },
@@ -814,6 +867,8 @@ const PHASES = [
 //   盘前蓝=计划筹备 / 盘中红=交易执行 / 午盘琥珀=休市过渡 / 盘后紫=数据结算 / 复盘绿=复盘沉淀
 const PHASE_STYLE = {
   premarket:  { text: 'text-sky-400',    border: 'border-sky-500/60',    bg: 'bg-sky-500/10',    hover: 'hover:border-sky-500/40 hover:bg-sky-500/5' },
+  // 竞价：indigo —— 语义上是"盘前(蓝) → 盘中(红)"的过渡色（类名必须静态字面量，Tailwind 才扫得到）
+  auction:    { text: 'text-indigo-400', border: 'border-indigo-500/60', bg: 'bg-indigo-500/10', hover: 'hover:border-indigo-500/40 hover:bg-indigo-500/5' },
   intraday:   { text: 'text-rose-400',   border: 'border-rose-500/60',   bg: 'bg-rose-500/10',   hover: 'hover:border-rose-500/40 hover:bg-rose-500/5' },
   midday:     { text: 'text-amber-300',  border: 'border-amber-500/60',  bg: 'bg-amber-500/10',  hover: 'hover:border-amber-500/40 hover:bg-amber-500/5' },
   postmarket: { text: 'text-violet-400', border: 'border-violet-500/60', bg: 'bg-violet-500/10', hover: 'hover:border-violet-500/40 hover:bg-violet-500/5' },
@@ -897,10 +952,13 @@ function bjToday() {
   return d.toISOString().slice(0, 10)
 }
 function computePhase() {
-  // 与后端 current_phase 同分界（09:30/15:00），UI 细分 5 段（09:10 前归复盘）
+  // 与后端 current_phase 同分界（09:30/15:00），UI 在盘前侧再细分成 6 段
   const d = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000)
   const m = d.getHours() * 60 + d.getMinutes()
-  if (m >= 550 && m < 570) return 'premarket'
+  if (m >= 550 && m < 555) return 'premarket'    // 9:10-9:15 盘前（简报/决策卡已生成）
+  // ★ 2026-09-25：9:15-9:30 独立为「竞价」段。此前整段并进盘前 ⇒ 时间轴上"竞价"这一环
+  //   不可见（用户："9:30 直接从盘前跳盘中，少了一环"）。9:20 后不可撤单、9:25 定稿。
+  if (m >= 555 && m < 570) return 'auction'
   if (m >= 570 && m < 690) return 'intraday'
   if (m >= 690 && m < 900) return 'midday'
   if (m >= 900 && m < 1170) return 'postmarket'
@@ -1319,6 +1377,8 @@ function onStatusToggle(e) {
 async function loadPhaseData(phase) {
   if (isReplay.value) return
   if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadSizing()]) }
+  // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
+  else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
