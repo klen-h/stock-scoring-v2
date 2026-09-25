@@ -50,7 +50,12 @@ def _metrics_table(m: dict, wechat: bool = False) -> str:
         ("最大回撤", _fmt(m.get("max_drawdown"), "%")),
         ("夏普比率", _fmt(m.get("sharpe"))),
         ("基准收益(沪深300)", _fmt(m.get("benchmark_return"), "%")),
-        ("超额收益", _fmt(m.get("excess_return"), "%")),
+        ("超额收益(vs沪深300)", _fmt(m.get("excess_return"), "%")),
+        # ★ 2026-09-25（A6 基准双口径，专业审视 B4）：叠加候选池等权基准 ——
+        #   战法池 20~50 亿中小盘为主，沪深300 是大盘蓝筹 ⇒ 基准与持仓风格错配：
+        #   "跑赢沪深300"不代表跑赢同类。两个基准并列展示，谁都不替换（信息增量不同）。
+        ("基准收益(池等权)", _fmt(m.get("benchmark_ew_return"), "%")),
+        ("超额收益(vs池等权)", _fmt(m.get("excess_ew_return"), "%")),
         ("样本天数", _fmt(m.get("period_days"))),
     ]
     reasons = m.get("exit_reasons") or {}

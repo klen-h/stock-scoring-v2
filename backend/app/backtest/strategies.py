@@ -326,6 +326,20 @@ def _run_warfare(signals: list, label: str, prices_map: dict = None) -> dict:
     start_d, end_d = curve[0]["date"], curve[-1]["date"]
     bench = _benchmark_ret(start_d, end_d, prices_map)
     metrics = engine.compute_metrics(trades, curve, bench)
+    # ★★ 2026-09-25（A6 基准双口径，专业审视 B4）：叠加「候选池等权」第二基准 ——
+    #   战法池以 20~50 亿中小盘为主，而沪深300 是大盘蓝筹 ⇒ **基准与持仓风格错配**：
+    #   「跑赢沪深300」不代表跑赢自己的同类（一轮中小盘补跌里策略可以"跑赢大盘"却绝对亏钱）。
+    #   等权池 = `backtest_prices` 覆盖的全体个股（≈系统实际跟踪池）⇒ 无需新数据源。
+    #   ⚠️ 宏观方向分回测（backtest_macro）**不加**：它的策略标的就是沪深300ETF，
+    #      拿池等权当基准是另一回事（语义不同）。
+    ew, ew_n = _equal_weight_ret(start_d, end_d)
+    if ew is not None:
+        metrics["benchmark_ew_return"] = round(ew * 100, 2)
+        # metrics["total_return"] 已是百分数（compute_metrics 内 ×100），此处对齐口径
+        metrics["excess_ew_return"] = round((metrics.get("total_return") or 0) - ew * 100, 2)
+        metrics["benchmark_ew_n"] = ew_n
+        metrics["note"] = ((metrics.get("note") or "")
+                           + f"等权池基准覆盖 {ew_n} 只（backtest_prices 全体）。")
     # ★ 文案透明化：说明"为什么样本期停在几天前"（机制性滞后）
     hold = WARFARE_HOLD_DAYS_V2 if exit_policy() == "v2" else WARFARE_HOLD_DAYS
     note = f"{start_d} ~ {end_d}（已平仓区间）"
@@ -610,3 +624,47 @@ def _benchmark_ret(start: str, end: str, prices_map: dict = None) -> float:
     if len(bars) < 2:
         return 0.0
     return bars[-1]["close"] / bars[0]["open"] - 1
+
+
+# 等权池收益缓存：键 (start, end)。周报一次生成会对 total/in_sample/out_sample
+# 三段各调一次（区间常重叠）⇒ 缓存避免重复逐只加载（839 只 × 数 ms ≈ 数秒/次）。
+_EW_CACHE = {}
+
+
+def _pool_codes() -> list:
+    """等权池成分 = `backtest_prices` 的全部**个股**（过滤指数：只留 6 位纯数字代码）。"""
+    try:
+        rows = db.fetch("SELECT DISTINCT code FROM backtest_prices") or []
+        return [str(r["code"]) for r in rows
+                if str(r.get("code") or "").isdigit() and len(str(r["code"])) == 6]
+    except Exception as e:
+        print(f"[backtest] 等权池代码清单读取失败: {e}")        # ASCII（铁律⑥）
+        return []
+
+
+def _equal_weight_ret(start: str, end: str):
+    """候选池**等权**区间收益（start 日开盘 → end 日收盘，与 `_benchmark_ret` **同口径**）。
+
+    返回 `(平均收益, 样本数)`；池子为空/全失败返回 `(None, 0)`（渲染层显示"—"，不显示 0
+    —— 0 会被误读成"基准恰好持平"，与"基准缺失"是两回事）。
+    ⚠️ 口径必须与 `_benchmark_ret` 逐字一致（首日 open → 末日 close）：两个基准口径不同
+       的话，报告里"跑赢A跑输B"的结论就不可信。
+    """
+    key = (start, end)
+    if key in _EW_CACHE:
+        return _EW_CACHE[key]
+    rets = []
+    for c in _pool_codes():
+        try:
+            bars = [b for b in (data.load_prices(c, start, end) or [])
+                    if b.get("open") and b.get("close")]
+        except Exception:
+            continue
+        if len(bars) < 2:
+            continue
+        if bars[0]["open"] > 0:
+            rets.append(bars[-1]["close"] / bars[0]["open"] - 1)
+    out = ((sum(rets) / len(rets), len(rets)) if rets else (None, 0))
+    if rets:
+        _EW_CACHE[key] = out      # ★ 只缓存成功结果：DB/包抖动一次不该让本进程永远 None
+    return out
