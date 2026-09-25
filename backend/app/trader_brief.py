@@ -912,8 +912,8 @@ def build_decision_card() -> dict:
     #     · `data["candidates"]` 里 `mainforce_signal == "distribution"`
     #       （评分看多 ∩ 主力出货 = 信号冲突，对应 actions 的 R2，但这里能拿到 code 便于点击）
     #     · `data["actions"]` 的 R1（矛盾扫描命中持仓敞口）
-    #   覆盖范围说明（诚实标注）：**不含**解禁/减持/停牌/问询/新股 —— 那些无数据源
-    #   （工作台注释自述"公告/解禁类待 C1 数据源"）⇒ 接入后在此追加即可。
+    #   覆盖范围说明（诚实标注）：**解禁已于 2026-09-25 接入**（见下方 risk_events，C1）；
+    #   **仍不含**减持/质押/停牌/问询/新股 —— 那些暂无结构化数据源（接入后在此追加即可）。
     negatives = []
     for r in (data.get("position_risks") or []):
         negatives.append({"code": r.get("code"), "name": r.get("name"), "level": "high",
@@ -930,6 +930,36 @@ def build_decision_card() -> dict:
                               "level": a.get("severity") or "high", "scope": "矛盾",
                               "reason": a.get("text") or ""})
 
+    # ★★ 2026-09-25（用户需求 C1「风险事件闸门」）—— 补上此前明确标注"无数据源"的那一块。
+    #   《专业审视》C2 原话："强势股最典型的死亡路径：大额解禁 / 减持 / 质押 / 商誉 / 立案…
+    #   系统目前对这些**零感知** —— 技术面会继续给高分直到崩塌。"
+    #   本轮用**限售解禁**（唯一可前瞻的：日期提前数月公开）做闸门，阈值 10% 有回测依据
+    #   （见 `risk_events.py` 文件头：≥10% 档前 20 日超额 -2.74%、胜率 40%）。
+    #   ⚠️ 只查**决策卡涉及的代码**（用户真实持仓 + 候选）⇒ 不把整张表塞进 payload。
+    #   ⚠️ 用 `positions_scan`（用户真实持仓）而不是 `data["positions"]`（模拟盘）。
+    try:
+        from app.risk_events import upcoming_risks
+        _scan = data.get("positions_scan") or []
+        _hold = {p.get("code") for p in _scan if p.get("code")}
+        _codes = list(_hold) + [c.get("code") for c in (data.get("candidates") or [])
+                                if c.get("code")]
+        rk = upcoming_risks(codes=_codes)
+        for x in (rk.get("high") or []):
+            held = x["code"] in _hold
+            negatives.append({
+                "code": x["code"], "name": x["name"], "level": "high",
+                "scope": "持仓" if held else "候选",
+                # ⚠️ 前端插值显示 ⇒ 文案不能含 Markdown 标记
+                "reason": ("20 日内大额解禁：" + (x.get("detail") or "")
+                           + ("（只减不加）" if held else "（暂缓买入）")),
+            })
+        # 完整结果也放进 payload：前端可显示"已扫描过、今日无命中"（避免"没有 = 没做"的误解）
+        data["risk_events"] = {"high": rk.get("high") or [],
+                               "watch": rk.get("watch") or [],
+                               "scanned": len(_codes), "note": rk.get("note")}
+    except Exception as e:
+        print(f"[decision-card] risk events failed: {e}")           # ASCII（铁律⑥）
+
     return {
         "date": data.get("date"),
         "regime": reg,
@@ -943,6 +973,9 @@ def build_decision_card() -> dict:
         "if_wrong": {"stop_rule": stop_rule, "retreating": retreating},
         # ★ 负面清单（今天要避开的）；空数组 ⇒ 前端不渲染该块
         "negatives": negatives,
+        # ★ 2026-09-25（C1）：风险事件扫描结果 —— 含"扫过了但无命中"的状态，
+        #   避免用户把"没有条目"误解成"没做这件事"。
+        "risk_events": data.get("risk_events") or None,
         "positions_scan": positions_scan,
         # ★ 2026-09-25（P2）：战法信号 × 行业交叉表 —— 回答"58 只信号分布在哪些行业"，
         #   并附**原始细分口径**（用户："融捷(锂)/焦作万方(电解铝)笼统归入有色/化工链条，

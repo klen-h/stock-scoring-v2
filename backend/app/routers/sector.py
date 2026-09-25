@@ -56,6 +56,19 @@ def sector_concept_flow(limit: int = Query(200, ge=1, le=500)):
     return _wrap(get_sector_flow("concept", limit=limit))
 
 
+@router.get("/amount-share")
+def sector_amount_share(top: int = Query(15, ge=1, le=100)):
+    """行业成交额占比（2026-09-25，框架「板块主线层 · 成交占比」）。
+
+    ★ 与上面几个端点**数据源不同**：那些走东财（可能被封），这个走**腾讯内存行情 +
+      落库行业映射自行聚合** ⇒ **零外部请求、不受东财可用性影响**。
+    返回 {available, rows:[{industry, amount_yi, share_pct, stock_n, avg_change_pct}],
+          total_amount_yi, top5_share_pct, unmapped_share_pct, as_of, note}
+    """
+    from app.sector_industry import industry_amount_share
+    return industry_amount_share(top=top)
+
+
 # ── 个股 → 行业映射表（本地反建，供评分引擎算板块分化因子用）──
 
 @router.get("/stock-industry/{code}")

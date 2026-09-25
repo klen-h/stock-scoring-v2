@@ -423,6 +423,78 @@ def get_northbound() -> dict:
 
 
 # ================================================================
+#  限售解禁日历（东财 datacenter-web）—— 2026-09-25（用户需求 C1 风险事件闸门）
+# ================================================================
+# 【为什么单独一类】专业审视 C2："强势股最典型的死亡路径：**大额解禁** / 股东减持公告 /
+#   质押平仓风险 / 商誉减值 / 立案调查。系统目前对这些零感知 —— 技术面会继续给高分直到崩塌。"
+#   解禁是其中**唯一可前瞻**的（日期公开、提前数月可知）⇒ 优先级最高。
+#
+# ★★ 为什么这个接口能用（而板块接口当天不能用）：
+#   它走 **datacenter-web** 域，与 push2/clist 是**两条独立链路**
+#   ⇒ 2026-09-25 实测：clist 被封（RemoteDisconnected），而本接口 **HTTP 200 / success=True** ✓
+#   ⇒ **不要因为它俩都叫"东财"就以为会一起挂**（反之亦然）。
+#
+# ⚠️ 字段实测（2026-09-25）：
+#   SECURITY_CODE / SECURITY_NAME_ABBR / FREE_DATE（解禁日）/ LIFT_MARKET_CAP（**万元**）/
+#   FREE_SHARES_TYPE（首发机构配售/定向增发/股权激励…）
+#   **`LIFT_MARKET_CAP_RATIO`（占流通市值比）实测为 `None`** ⇒ 占比必须自己算
+#   （解禁市值 ÷ 流通市值，流通市值取腾讯行情的 `float_cap`）。
+_LIFT_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+_LIFT_TTL = 21600          # 6 小时：解禁日历是**静态**数据（提前数月可知），无需频繁拉
+_LIFT_PAGE = 100
+_LIFT_MAX_PAGES = 30       # 防御性上限（30×100 = 3000 条，足够覆盖一个季度）
+
+
+def get_lift_stage(start: str, end: str) -> list:
+    """限售解禁日历：拉取 `[start, end]`（`YYYY-MM-DD`）区间的解禁记录。
+
+    返回 `[{code, name, free_date, cap_wan, kind}]`（`cap_wan` 单位**万元**）。
+    失败返回 `[]`（绝不抛异常）。结果按区间缓存 6 小时。
+    """
+    def loader():
+        out = []
+        for pn in range(1, _LIFT_MAX_PAGES + 1):
+            params = {
+                "reportName": "RPT_LIFT_STAGE", "columns": "ALL",
+                "filter": f"(FREE_DATE>='{start}')(FREE_DATE<='{end}')",
+                "pageSize": str(_LIFT_PAGE), "pageNumber": str(pn),
+                "sortColumns": "FREE_DATE", "sortTypes": "1",
+                "source": "WEB", "client": "WEB",
+            }
+            try:
+                r = _session.get(_LIFT_URL, params=params, timeout=12)
+                js = r.json()
+            except Exception as e:
+                print(f"[eastmoney] 解禁日历抓取失败 p{pn}: {e}")       # ASCII（铁律⑥）
+                break
+            if not js.get("success"):
+                print(f"[eastmoney] 解禁日历返回 success=False: {js.get('message')}")
+                break
+            res = js.get("result") or {}
+            rows = res.get("data") or []
+            if not rows:
+                break
+            for d in rows:
+                code = str(d.get("SECURITY_CODE") or "").strip()
+                if len(code) != 6:
+                    continue
+                out.append({
+                    "code": code,
+                    "name": d.get("SECURITY_NAME_ABBR") or "",
+                    # FREE_DATE 形如 "2026-09-28 00:00:00" ⇒ 只取日期部分
+                    "free_date": str(d.get("FREE_DATE") or "")[:10],
+                    "cap_wan": float(d.get("LIFT_MARKET_CAP") or 0),
+                    "kind": d.get("FREE_SHARES_TYPE") or "",
+                })
+            if len(rows) < _LIFT_PAGE:
+                break
+            time.sleep(0.5)          # 翻页间隔：宁可慢也别触发风控（历史教训见文件头）
+        return out
+
+    return _get_cached(f"lift|{start}|{end}", _LIFT_TTL, loader)
+
+
+# ================================================================
 #  新浪降级源（板块数据兜底）
 # ================================================================
 # 东财 push2 偶发限流 / 字段调整（板块数据不稳定的主因）。这里加新浪财经兜底：

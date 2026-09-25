@@ -263,10 +263,35 @@ def task_zz_finance():
     return f"财报扩展: {stats}"
 
 
+def task_risk_calendar():
+    """风险事件日历同步（限售解禁）—— C1 风险闸门的数据底座。
+
+    ★ 与行情无关（解禁日期提前数月公开）⇒ 逻辑上**不受休市影响**；
+      但当前日批在休市日整体不跑（见文件头关于"休市日该分 A/B 两类"的讨论）。
+    ⚠️ `ratio`（解禁市值/流通市值）需要 `tencent._cache` 的 `float_cap`
+      ⇒ 必须排在**行情刷新之后**（TASKS 的顺序已是"行情 → 数据底座 → 扫描 → 汇总"）。
+    """
+    from app.risk_events import sync_lift_calendar
+    return f"风险日历: {sync_lift_calendar()}"
+
+
 def task_sector_snapshot():
-    """板块每日快照（板块动量序列，非交易日自动跳过）。"""
+    """板块每日快照（板块动量序列，非交易日自动跳过）。
+
+    ★ 2026-09-25：顺带落「行业成交额占比」（`sector_amount_daily`，供后续做"占比变化"）。
+      ⚠️ 两者**数据源完全独立**（板块快照走东财接口；成交占比走腾讯内存行情 + 落库映射）
+      ⇒ 必须**分别 try**：东财被封时板块快照会 skip，而成交占比照常落库
+      （这正是它比板块快照更稳的原因，别让一个失败拖垮另一个）。
+    """
     from app.sector_industry import take_snapshot
-    return f"板块快照: {take_snapshot()}"
+    snap = take_snapshot()
+    try:
+        from app.sector_industry import save_amount_share
+        amt = save_amount_share()
+    except Exception as e:
+        amt = f"失败（不影响板块快照）: {str(e)[:80]}"
+        print(f"[sector] amount share save failed: {e}")
+    return f"板块快照: {snap} ｜ 成交占比: {amt}"
 
 
 def task_strategy_scan():
@@ -709,6 +734,9 @@ TASKS = {
     # ★ 2026-09-12 迁入：原 Render 每日 07:00 循环被只读模式关闭 → 日历停在 09-04。
     #   放在 LLM 类任务（矛盾报告/日报）之前，保证复盘 prompt 里的事件排期是新的。
     "calendar": (task_calendar, "财经日历刷新（LLM 事件排期来源）"),
+    # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
+    #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
+    "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
     # ★ 2026-09-09 迁入：Render 只读模式停掉了原 17:30 循环 → 表停在 09-04。
     #   依赖 mainflow（资金流）与 market_snapshot（流通股本快照），故置其后。
     "mainforce_state": (task_mainforce_state, "主力行为状态（排行榜标签/日报依赖）"),

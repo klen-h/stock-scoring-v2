@@ -543,9 +543,11 @@
                   · {{ dc.environment?.emotion_detail }}</div>
               </div>
               <!-- ★ 2026-09-25 用户需求："负面清单和主线推荐同等重要" ⇒ 决策卡补「负面清单」。
-                   数据来自后端 dc.negatives（持仓主力出货 / 候选评分与主力信号冲突 / 矛盾敞口）。
-                   ⚠️ 本版**不含**解禁/减持/停牌/问询/新股（无数据源，待 C1 接入后由后端追加，
-                   前端无需改动）。空数组 ⇒ 整块不渲染（不给"假清空"的安心感）。 -->
+                   数据来自后端 dc.negatives（持仓主力出货 / 候选信号冲突 / 矛盾敞口
+                   / ★ C1 大额解禁）。
+                   ⚠️ 更新（2026-09-25）：**解禁已接入**（C1 风险事件闸门，阈值 10% 有回测依据）；
+                   仍**不含**减持/质押/停牌/问询/新股（暂无结构化数据源）。
+                   空数组 ⇒ 整块不渲染（不给"假清空"的安心感）。 -->
               <div v-if="(dc.negatives || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
                 <div class="text-muted mb-1">负面清单（今天要避开的）</div>
                 <div v-for="(n, i) in dc.negatives" :key="i" class="py-0.5">
@@ -555,6 +557,14 @@
                      class="ml-1 font-semibold text-red-400 hover:underline">{{ n.name || n.code }}</a>
                   <span class="ml-1 text-gray-300">{{ n.reason }}</span>
                 </div>
+                <!-- ★ C1：把"扫过的范围"说出来（否则用户不知道解禁也查过了） -->
+                <div v-if="dc.risk_events?.scanned" class="text-[10px] text-muted mt-1">
+                  其中已扫解禁风险：{{ dc.risk_events.scanned }} 只持仓/候选（未来 20 天）</div>
+              </div>
+              <!-- ★ C1 且**无命中**时也留一行：避免"没有条目"被误解成"没做这件事" -->
+              <div v-else-if="dc.risk_events?.scanned"
+                   class="border-t border-border/40 mt-2 pt-2 text-xs text-muted">
+                负面清单：无（已扫 {{ dc.risk_events.scanned }} 只持仓/候选的未来 20 天解禁风险，无命中）
               </div>
               <!-- ★ 2026-09-25 用户："持仓联动（目前最弱）——盘前应对持仓自动扫描…这个结论
                    应该由系统说出来" ⇒ 从「持仓扫描」升级为「持仓预案」：每只给出**今天怎么处理**
@@ -842,6 +852,38 @@
                   <span v-else>{{ s.leader }}</span>
                   <span class="font-mono" :class="pctClass(s.leader_change_pct)">
                     {{ signNum(s.leader_change_pct) }}%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ★★ 2026-09-25 需求 4（框架「板块主线层 · 成交占比」）：
+                 资金此刻**真金白银**集中在哪个板块 —— 与上面的"涨幅榜"互补
+                 （涨得好 ≠ 成交额集中；一个真主线通常两者兼具）。
+                 ⚠️ 数据源**独立于上面的东财接口**：走腾讯内存行情 + 落库行业映射自行聚合
+                 ⇒ 东财被封时上面可能空白，而这块照常显示（这正是它更可靠的原因）。
+                 ⚠️ 行业是**最细分子板块**（一票一行业、不重复计算）⇒ 只展示 Top + Top5 集中度。 -->
+            <div v-if="amountShare?.available" class="border-t border-border/40 mt-3 pt-2">
+              <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                <div class="text-xs font-semibold">行业成交额占比
+                  <span class="text-[10px] text-muted font-normal">
+                    （{{ amountShare.industry_n }} 个细分行业 · Top5 占 {{ amountShare.top5_share_pct }}%）</span>
+                </div>
+                <span class="text-[10px] text-muted cursor-help" :title="amountShare.note">
+                  数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? '（收盘快照）' : '' }}</span>
+              </div>
+              <div class="space-y-0.5 text-[11px]">
+                <div v-for="(r, i) in amountShare.rows" :key="r.industry"
+                     class="flex items-center gap-2 border-b border-border/30 py-0.5">
+                  <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
+                  <span class="font-semibold w-24 truncate" :title="r.industry">{{ r.industry }}</span>
+                  <span class="flex-1 h-1.5 rounded bg-border/40 overflow-hidden min-w-[40px]">
+                    <span class="block h-full bg-accent/70"
+                          :style="{ width: barWShare(r.share_pct) }"></span>
+                  </span>
+                  <span class="font-mono text-gray-300 w-14 text-right">{{ r.share_pct }}%</span>
+                  <span class="font-mono text-muted w-16 text-right">{{ r.amount_yi }}亿</span>
+                  <span class="font-mono w-14 text-right" :class="pctClass(r.avg_change_pct)">
+                    {{ signNum(r.avg_change_pct) }}%</span>
                 </div>
               </div>
             </div>
@@ -1206,6 +1248,7 @@ import {
   //   ⇒ **板块卡一直显示"（当日无板块快照）"**，从构建与日志里都看不出来。
   //   A1 收尾时改用实时 `/sector/industry`（含领涨股）才发现 ⇒ 两个都补上。
   getSectorIndustry, getSectorSnapshot,
+  getSectorAmountShare,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -1289,6 +1332,16 @@ const emotion = ref(null)
 // 初始即给完整结构：模板首帧（接口返回前）会读取 steps/stocks，null 会崩
 const limitReview = ref({ steps: [], stocks: [] })
 const sectorTop = ref([])
+// ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
+//   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
+//   ⚠️ 数据源独立于上面的东财接口 ⇒ 东财被封时上面可能空白、而这块照常显示。
+const amountShare = ref(null)
+// 占比条宽度：以**榜首为满格**（相对长度比绝对百分比更直观）
+const barWShare = (pct) => {
+  const rows = amountShare.value?.rows || []
+  const max = Math.max(1, ...rows.map(r => Number(r.share_pct) || 0))
+  return Math.round(((Number(pct) || 0) / max) * 100) + '%'
+}
 const calendarToday = ref([])
 const calendarErr = ref('')
 // ★ P1 决策卡（规则引擎确定性输出；空状态由后端 error 兜底）
@@ -1787,6 +1840,14 @@ async function loadSectorTop() {
     sectorTop.value = ((data && data.data) || []).slice(0, 5)
   } catch { sectorTop.value = [] }
 }
+// ★ 2026-09-25 需求 4：行业成交额占比（失败静默 ⇒ 整块不渲染，不影响板块卡其余部分）。
+//   ⚠️ **刻意不用当日缓存**：资金在板块间的流动是盘中变量（120s 轮询刷新才有意义）。
+async function loadAmountShare() {
+  try {
+    const { data } = await getSectorAmountShare(15)
+    amountShare.value = data || null
+  } catch { amountShare.value = null }
+}
 // 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
 async function loadMacro() {
   // ★ 只缓存"早盘锁定"那一份（dailyRes.snapshot）：它是当日 08:55-13:00 锁定的，
@@ -1905,7 +1966,8 @@ async function loadPhaseData(phase) {
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
   else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
-    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals()])
+    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals(),
+                       loadAmountShare()])
   }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
 }
@@ -1940,6 +2002,7 @@ function startPolling() {
     //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
+    loadAmountShare()      // ★ 需求 4：资金在板块间的流动是盘中变量 ⇒ 纳入轮询
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }

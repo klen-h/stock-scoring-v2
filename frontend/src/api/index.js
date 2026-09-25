@@ -307,6 +307,9 @@ export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 200
 export const getEmotionReview = (days = 30) => http.get('/market/emotion-review', { params: { days } })
 // ★ 2026-09-25 需求 3：尾盘承接（14:30 基线 → 现在/收盘）—— 决定是否持仓过夜
 export const getMarketTailReview = (date) => http.get('/market/tail-review', { params: { date } })
+// ★ 2026-09-25 需求 4：行业成交额占比（腾讯内存行情 + 落库映射聚合 ⇒ 零外部请求，
+//   不受东财封禁影响；东财板块接口本身也不带成交额字段）
+export const getSectorAmountShare = (top = 15) => http.get('/sector/amount-share', { params: { top } })
 export const getMarketLimitReview = (date) => http.get('/market/limit-review', { params: { date }, timeout: 30000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 

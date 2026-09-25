@@ -588,6 +588,169 @@ def build_map(verbose: bool = True) -> dict:
             "multi_level": multi, "cost_sec": cost, "failed_sectors": failed}
 
 
+# ================================================================
+#  三、行业成交额占比（2026-09-25，用户需求：框架「板块主线层 · 成交占比」）
+# ================================================================
+# 【回答什么问题】框架板块主线层的判据之一是"**成交占比**" —— 资金此刻集中在哪个板块。
+#   与已有的两项互补（不是重复）：`mainline` 看的是 **Top50 里的行业分布**（评分维度）、
+#   `crowded` 看的是**个股涨幅**（ret20/ret60/距250日高点）——**都看不出真金白银的分布**。
+#
+# 【★★ 为什么不用东财板块接口】
+#   ① `eastmoney.get_sectors` 的 `_SECTOR_FIELDS` 里**根本没有成交额字段**（东财是 f6）；
+#   ② 且该接口实测**会封**：2026-09-25 本地实测一次即 `RemoteDisconnected`
+#      （文件头也记着"封禁持续几小时到几天"）。
+#   ⇒ 改用**腾讯内存行情（含 amount）+ 落库的行业映射**自行聚合：
+#      · **零外部请求**（行情本就每 120s 刷新；映射每月重建一次）
+#      · **不依赖东财可用性** ⇒ 东财挂了这块照常能用（正是它比板块卡更可靠的原因）。
+#
+# ⚠️ 口径与自检：
+#   · 按 `main_industry`（**最细分子板块**）聚合 —— 一票一行业 ⇒ **不会重复计算**，
+#     故"行业合计"应≈全市场 ⇒ `unmapped_share_pct` 就是这个自检的残差（映射缺失率）。
+#     代价：最细分使板块数多、单块金额小 ⇒ 前端只看 Top N + 集中度（Top5 占比）。
+#   · `avg_change_pct` 是该行业**等权**平均涨幅（行业整体强弱），与个股评分口径无关。
+_IMAP_CACHE = {"ts": 0.0, "val": None}
+_IMAP_TTL = 3600          # 映射每月重建 ⇒ 1 小时进程缓存足够（表 ~5000 行，别每次查）
+
+
+def _ensure_amount_table() -> None:
+    """建表（幂等）。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险。"""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS sector_amount_daily (
+            date TEXT, industry TEXT,
+            amount TEXT, share_pct TEXT, avg_change_pct TEXT, stock_n TEXT,
+            created_at TEXT,
+            PRIMARY KEY (date, industry)
+        )
+    """)
+
+
+def _industry_map() -> dict:
+    """`{code: main_industry}` 全表映射（1 小时进程缓存）。失败返回上次的/空。"""
+    now = time.time()
+    cached = _IMAP_CACHE.get("val")
+    if cached is not None and now - _IMAP_CACHE["ts"] < _IMAP_TTL:
+        return cached
+    try:
+        rows = db.fetch("SELECT code, main_industry FROM stock_industry") or []
+        m = {str(r["code"]): r["main_industry"]
+             for r in rows if r.get("code") and r.get("main_industry")}
+        if m:
+            _IMAP_CACHE.update(ts=now, val=m)
+        return m
+    except Exception as e:
+        print(f"[industry] industry map load failed: {e}")       # ASCII（铁律⑥）
+        return cached or {}
+
+
+def industry_amount_share(top: int = 15) -> dict:
+    """各行业成交额 + 占全市场比重（**纯内存 + 落库映射，零外部请求**）。只读、fail-open。"""
+    out = {"available": False, "rows": [], "total_amount_yi": None,
+           "top5_share_pct": None, "unmapped_share_pct": None, "industry_n": None,
+           "as_of": None, "from_snapshot": False, "note": None}
+    try:
+        from datetime import datetime
+        from app.tencent import _cache
+        stocks = _cache.get("stocks") or {}
+        if not stocks:
+            out["note"] = "行情缓存未就绪（首次全量扫描需 2-4 分钟）"
+            return out
+        imap = _industry_map()
+        if not imap:
+            out["note"] = "行业映射为空（需先构建 stock_industry：POST /api/sector/industry-map/build）"
+            return out
+        agg = defaultdict(lambda: {"amt": 0.0, "chg": [], "n": 0})
+        total = 0.0
+        unmapped = 0.0
+        for code, s in stocks.items():
+            amt = float(s.get("amount") or 0)
+            if amt <= 0:
+                continue
+            total += amt
+            ind = imap.get(str(code))
+            if not ind:
+                unmapped += amt
+                continue
+            g = agg[ind]
+            g["amt"] += amt
+            g["n"] += 1
+            chg = s.get("change_pct")
+            if chg is not None:
+                g["chg"].append(float(chg))
+        if total <= 0:
+            out["note"] = "成交额合计为 0（行情缓存异常）"
+            return out
+        rows = [{
+            "industry": ind,
+            "amount_yi": round(g["amt"] / 1e8, 1),
+            "share_pct": round(g["amt"] / total * 100, 2),
+            "stock_n": g["n"],
+            "avg_change_pct": (round(sum(g["chg"]) / len(g["chg"]), 2) if g["chg"] else None),
+        } for ind, g in agg.items()]
+        for r in rows:
+            r["is_other"] = r["industry"] in ("其它行业", "其他行业")
+        # ★★ 东财的「其它行业」是**兜底杂桶**（`mainline` 里也 skip 它不产生信号）——
+        #   实测 2026-09-24 它有 1086 亿、排到**第 2**，会把真正的主线行业挤出视野。
+        #   ⇒ 排序时**沉底**（仍保留在数据里 ⇒ "合计≈全市场"的自检不被破坏）。
+        rows.sort(key=lambda x: (x["is_other"], -x["amount_yi"]))
+        # ⚠️ 用 `data_ts`（数据自身时刻）而不是 `last_update`（缓存填充时刻）—— 见 tencent._cache
+        data_ts = _cache.get("data_ts") or 0
+        out.update({
+            "available": True, "rows": rows[:max(1, top)], "industry_n": len(rows),
+            "total_amount_yi": round(total / 1e8, 0),
+            "top5_share_pct": round(sum(r["share_pct"] for r in rows[:5]), 2),
+            "unmapped_share_pct": round(unmapped / total * 100, 2),
+            "as_of": (datetime.fromtimestamp(data_ts).strftime("%m-%d %H:%M")
+                      if data_ts else None),
+            "from_snapshot": bool(_cache.get("from_snapshot")),
+        })
+        # ⚠️ 前端插值文案：**不能含 Markdown 标记**
+        note = (f"口径：{len(rows)} 个细分行业（一票一行业，按个股成交额聚合）· "
+                "零外部请求（腾讯内存行情 + 落库映射）· "
+                "绝对金额受行情缓存覆盖度影响，看占比更可靠")
+        if out["unmapped_share_pct"] >= 1:
+            note += f"；⚠️ {out['unmapped_share_pct']}% 成交额无行业映射（未计入，会影响占比绝对值）"
+        out["note"] = note
+    except Exception as e:
+        print(f"[industry] amount share failed: {e}")               # ASCII（铁律⑥）
+        out["note"] = "计算失败"
+    return out
+
+
+def save_amount_share(date_str: str = None) -> dict:
+    """把当日行业成交额占比落库（供**未来**做"占比变化"—— 需积累几日才有意义）。
+
+    幂等：`(date, industry)` 主键 + `ON CONFLICT DO UPDATE`（重跑安全）。
+    ⚠️ 由日批调用（那时 `tencent._cache` 已是当日收盘快照）。
+    """
+    from app.flash.rules import beijing_now, is_trading_day
+    now_dt = beijing_now()
+    # ⚠️ 非交易日**不落**（仅当调用方未显式指定日期时）：休市日内存缓存是
+    #   **上一交易日收盘快照** ⇒ 会写"日期=休市日、数据=上一交易日"的错位记录
+    #   （与尾盘基线、情绪日表同款防线）。
+    if date_str is None and not is_trading_day(now_dt):
+        return {"saved": 0, "skipped": "not trading day"}
+    date = date_str or now_dt.strftime("%Y-%m-%d")
+    d = industry_amount_share(top=9999)          # 全量（不只 Top N）
+    if not d.get("available"):
+        return {"saved": 0, "date": date, "skipped": d.get("note")}
+    _ensure_amount_table()
+    now = beijing_now().isoformat(timespec="seconds")
+    saved = 0
+    for r in d["rows"]:
+        try:
+            db.upsert("sector_amount_daily", {
+                "date": date, "industry": r["industry"],
+                "amount": str(r["amount_yi"]), "share_pct": str(r["share_pct"]),
+                "avg_change_pct": ("" if r["avg_change_pct"] is None else str(r["avg_change_pct"])),
+                "stock_n": str(r["stock_n"]), "created_at": now,
+            }, conflict_columns=["date", "industry"])
+            saved += 1
+        except Exception as e:
+            print(f"[industry] amount row save failed {r['industry']}: {e}")
+    print(f"[industry] amount share saved {date}: {saved} industries")   # ASCII
+    return {"saved": saved, "date": date, "total_amount_yi": d.get("total_amount_yi")}
+
+
 def get_stock_industry(code: str) -> dict:
     """查单只股票的行业归属。无记录返回空 dict。"""
     row = db.fetch_one("SELECT * FROM stock_industry WHERE code = %s", (code,))
