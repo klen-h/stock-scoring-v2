@@ -200,29 +200,24 @@
                       class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
               </div>
 
-              <!-- 分节二：事件诊断（快讯 LLM，独立信号） -->
-              <div class="border-t border-border/60 my-3 pt-3">
-                <div class="flex items-start gap-4 flex-wrap text-xs">
-                  <span class="text-muted pt-0.5">事件诊断</span>
-                  <span v-if="!flashDiag" class="text-muted">—（当日无诊断）</span>
-                  <template v-else>
-                    <span class="font-bold text-sm"
-                          :class="flashDiag.correlation_diagnosis?.correlation_state === 'D状态'
-                                  ? 'text-amber-400' : 'text-gray-100'">
-                      {{ flashDiag.correlation_diagnosis?.correlation_state || '无法判断' }}
-                      <span class="text-muted font-normal text-[11px]">
-                        {{ flashDiag.correlation_diagnosis?.d_state_type || '不适用' }}
-                      </span>
-                    </span>
-                    <span class="text-gray-300 flex-1 min-w-[220px] leading-relaxed">
-                      {{ flashDiag.dominant_narrative?.narrative || flashDiag.market_mood || '—' }}
-                    </span>
-                    <span class="text-muted">
-                      仓位 <b class="text-accent text-sm">{{ flashDiag.daily_strategy?.overall_position || '—' }}</b>
-                    </span>
-                    <router-link target="_blank" to="/monitor" class="text-accent hover:underline">事件面详情</router-link>
-                  </template>
+              <div class="w-px h-12 bg-border"></div>
+              <!-- 事件诊断（快讯 LLM，独立信号） -->
+              <div class="flex items-center gap-2 min-w-[240px] flex-1">
+                <div>
+                  <div class="text-sm font-bold"
+                       :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
+                               ? 'text-amber-400' : 'text-gray-100'">
+                    {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}
+                  </div>
+                  <div class="text-[10px] text-muted">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
                 </div>
+                <span class="text-gray-300 flex-1 min-w-[180px] leading-relaxed text-xs">
+                  {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
+                </span>
+                <span class="text-muted text-xs whitespace-nowrap">
+                  仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
+                </span>
+                <router-link target="_blank" to="/monitor" class="text-accent hover:underline text-xs whitespace-nowrap">详情</router-link>
               </div>
             </template>
           </div>
@@ -852,7 +847,7 @@ async function loadCalendarToday() {
     const { data } = await getCalendar({ days: 1 })
     const items = (data && data.items) || []
     calendarToday.value = items.filter(it =>
-      String(it.date || it.time || '').includes(todayStr())).slice(0, 6)
+      String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
     calendarErr.value = ''
   } catch (e) {
     // ★ 2026-09-25：带出真实原因（Render 重部署窗口/冷启动超时是最常见场景），
@@ -863,7 +858,7 @@ async function loadCalendarToday() {
       const { data } = await getCalendar({ days: 1 })
       const items = (data && data.items) || []
       calendarToday.value = items.filter(it =>
-        String(it.date || it.time || '').includes(todayStr())).slice(0, 6)
+        String(it.date || it.time || '').includes(todayStr)).slice(0, 6)
       calendarErr.value = ''
     } catch (e2) {
       calendarErr.value = (e2 && e2.message) || '重试仍失败'
@@ -895,7 +890,7 @@ async function loadLimitReview() {
 // 主线板块 Top5（当日板块快照按涨跌幅降序，防御性渲染）
 async function loadSectorTop() {
   try {
-    const { data } = await getSectorSnapshot(todayStr(), { limit: 5 })
+    const { data } = await getSectorSnapshot(todayStr, { limit: 5 })
     sectorTop.value = ((data && data.data) || []).slice(0, 5)
   } catch { sectorTop.value = [] }
 }
@@ -903,7 +898,7 @@ async function loadSectorTop() {
 async function loadMacro() {
   macroErr.value = ''
   try {
-    const { data: dailyRes } = await getMacroDaily(todayStr())
+    const { data: dailyRes } = await getMacroDaily(todayStr)
     if (dailyRes && dailyRes.snapshot) {
       macro.value = { ...dailyRes.snapshot, locked: true }
       return
