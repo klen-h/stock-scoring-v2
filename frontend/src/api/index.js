@@ -302,6 +302,12 @@ export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-r
 export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 20000 })
 export const getMarketLimitReview = (date) => http.get('/market/limit-review', { params: { date }, timeout: 30000 })
 
-export const getWorkbenchDayIndex = (days = 30) => http.get('/workbench/day-index', { params: { days } })
-export const getWorkbenchDay = (date) => http.get('/workbench/day', { params: { date }, timeout: 30000 })
-export const getWorkbenchDecisionCard = () => http.get('/workbench/decision-card', { timeout: 30000 })
+// ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！
+//   后端 `routers/system.py` 在 main.py 里挂在 `prefix="/api/system"` 下
+//   ⇒ `@router.get("/workbench/decision-card")` 的真实路径是 `/api/system/workbench/decision-card`。
+//   此前写 `/workbench/...` ⇒ FastAPI 不匹配 ⇒ **落到后端 SPA 静态兜底** ⇒ 返回 200 + `text/html`
+//   （首页 HTML）⇒ axios 拿到的是字符串而非 JSON ⇒ 解构后字段全空、页面"空白"，
+//   但 Network 面板显示 200 且有内容（极易误判为"后端旧进程/数据缺失"）。
+export const getWorkbenchDayIndex = (days = 30) => http.get('/system/workbench/day-index', { params: { days } })
+export const getWorkbenchDay = (date) => http.get('/system/workbench/day', { params: { date }, timeout: 30000 })
+export const getWorkbenchDecisionCard = () => http.get('/system/workbench/decision-card', { timeout: 30000 })
