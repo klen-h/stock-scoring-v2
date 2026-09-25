@@ -303,7 +303,10 @@ export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-r
 // ── 工作台（2026-09-25）：回放按日期取数（后端 system.py 只读端点）──
 // ── 工作台·盘中看盘序（2026-09-25 交易方法论 A1/A3/B2）──
 export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 20000 })
+// ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
+export const getEmotionReview = (days = 30) => http.get('/market/emotion-review', { params: { days } })
 export const getMarketLimitReview = (date) => http.get('/market/limit-review', { params: { date }, timeout: 30000 })
+// ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！
 //   后端 `routers/system.py` 在 main.py 里挂在 `prefix="/api/system"` 下

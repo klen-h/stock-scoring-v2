@@ -433,9 +433,14 @@ _EMOTION_SAVED = {"date": None}
 _EMOTION_TABLE_READY = False
 _EMOTION_KEEP_DAYS = 400          # 保留约一年半够回放；同时防无限增长（同 db_retention 思路）
 
+# ★ 2026-09-25：收盘后补记的「实际结果」列（P3 对账用）。列名集中一处 ⇒ 建表/加列/读取不漂移。
+_EMOTION_CLOSE_COLS = ("close_as_of", "close_up", "close_down", "close_limit_up",
+                       "close_limit_down", "close_max_streak",
+                       "close_prev_limit_today_pct", "close_verdict")
+
 
 def _ensure_emotion_table() -> None:
-    """建表（幂等）。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险（同 memory_probe 做法）。"""
+    """建表（幂等）+ **幂等加列**。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险。"""
     global _EMOTION_TABLE_READY
     if _EMOTION_TABLE_READY:
         return
@@ -450,43 +455,229 @@ def _ensure_emotion_table() -> None:
             prev_limit_count TEXT, prev_limit_today_pct TEXT,
             max_streak TEXT, leader TEXT, leader_name TEXT,
             verdict TEXT,
-            created_at TEXT
+            created_at TEXT,
+            close_as_of TEXT,
+            close_up TEXT, close_down TEXT,
+            close_limit_up TEXT, close_limit_down TEXT,
+            close_max_streak TEXT, close_prev_limit_today_pct TEXT,
+            close_verdict TEXT
         )
     """)
+    # ★ 2026-09-25：`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表加列 ⇒ 老库需补 ALTER。
+    #   逐列 `try/except` 忽略"列已存在"（双库的报错文案不同，故不匹配具体错误文本）。
+    for _c in _EMOTION_CLOSE_COLS:
+        try:
+            db.execute(f"ALTER TABLE market_emotion_daily ADD COLUMN {_c} TEXT")
+        except Exception:
+            pass
     _EMOTION_TABLE_READY = True
 
 
+def _load_emotion_daily(day: str) -> Dict:
+    """读 `market_emotion_daily` 当天那行（无则返回 `{}`）。失败静默。"""
+    try:
+        _ensure_emotion_table()
+        from app.database import db
+        r = db.fetch_one("SELECT * FROM market_emotion_daily WHERE date = %s", (day,))
+        return dict(r) if r else {}
+    except Exception:
+        return {}
+
+
+def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict) -> Dict:
+    """把一次情绪快照组装成"整行"（**双库安全的写法**）。
+
+    ⚠️⚠️ 为什么必须组装成**整行**：`db.upsert` 在 PG 下只更新传入的列，但在 **SQLite 分支
+    实际是 `INSERT OR REPLACE` —— 整行替换，未提供的列会被清空**。只传 `close_*` 会在本地
+    把主字段抹掉（而线上是好的）⇒ 这种"双库行为不一致"最难查。
+    ⇒ 一律：**先读当天已有行 → 合并 → 写全字段**。
+
+    主字段（盘前/首次算出）= 预判；`close_*`（收盘后算出）= 实际结果。
+    """
+
+    def _s(v):
+        return None if v is None else str(v)
+
+    base = {
+        "date": day, "as_of": old.get("as_of"),
+        "trading_day": old.get("trading_day"),
+        "up": old.get("up"), "down": old.get("down"),
+        "limit_up": old.get("limit_up"), "limit_down": old.get("limit_down"),
+        "prev_limit_count": old.get("prev_limit_count"),
+        "prev_limit_today_pct": old.get("prev_limit_today_pct"),
+        "max_streak": old.get("max_streak"),
+        "leader": old.get("leader"), "leader_name": old.get("leader_name"),
+        "verdict": old.get("verdict"),
+        "created_at": old.get("created_at"),
+        "close_as_of": old.get("close_as_of"),
+        "close_up": old.get("close_up"), "close_down": old.get("close_down"),
+        "close_limit_up": old.get("close_limit_up"),
+        "close_limit_down": old.get("close_limit_down"),
+        "close_max_streak": old.get("close_max_streak"),
+        "close_prev_limit_today_pct": old.get("close_prev_limit_today_pct"),
+        "close_verdict": old.get("close_verdict"),
+    }
+    if base["created_at"] is None:
+        base["created_at"] = _bj_now().isoformat()
+
+    if after_close:
+        # 收盘后 ⇒ 只补 `close_*`（**主字段保留盘前预判的原值**，这是对账的前提）
+        base.update({
+            "close_as_of": val.get("as_of"),
+            "close_up": _s(val.get("up")), "close_down": _s(val.get("down")),
+            "close_limit_up": _s(val.get("limit_up")),
+            "close_limit_down": _s(val.get("limit_down")),
+            "close_max_streak": _s(val.get("max_streak")),
+            "close_prev_limit_today_pct": _s(val.get("prev_limit_today_pct")),
+            "close_verdict": val.get("verdict"),
+        })
+    elif not old.get("verdict"):
+        # 盘前/盘中且**尚无预判** ⇒ 记为首个"预判"（已存在则不动，保持"第一次算成"的口径）
+        base.update({
+            "as_of": val.get("as_of"),
+            "trading_day": _s(val.get("trading_day")),
+            "up": _s(val.get("up")), "down": _s(val.get("down")),
+            "limit_up": _s(val.get("limit_up")), "limit_down": _s(val.get("limit_down")),
+            "prev_limit_count": _s(val.get("prev_limit_count")),
+            "prev_limit_today_pct": _s(val.get("prev_limit_today_pct")),
+            "max_streak": _s(val.get("max_streak")),
+            "leader": _s(val.get("leader")), "leader_name": _s(val.get("leader_name")),
+            "verdict": val.get("verdict"),
+        })
+    return base
+
+
 def _save_emotion_daily(val: Dict) -> None:
-    """当天首次算成时落库（每日一次）。失败静默 —— 看护类写入绝不反噬接口。"""
+    """落库：**盘前/盘中**记「预判」，**收盘后**补记「实际结果」。失败静默。
+
+    ★★ 2026-09-25 改造（用户需求 P3：「盘前预判 vs 实际走势」对账闭环）——
+      【为什么改】原实现是"当天首次算成时写一次" ⇒ 一天只有一条 ⇒ **无法自对账**：
+        收盘后想看"我盘前判的『分歧/常态』兑现了吗"，却**没有收盘那条可比**
+        （主键是 date，同一天写第二次会覆盖第一次）。
+      【怎么改】同一条记录里放两组字段，**纯新增列、老数据天然兼容**：
+        · 主字段 `up/down/limit_up/.../verdict` = **盘前/盘中首次**算出的「预判」
+        · `close_*` 字段                        = **收盘后**算出的「实际结果」
+        ⚠️ 为什么不用"一天两条"：`date` 是主键，改主键=数据迁移（老库有风险），
+           而加列是纯新增；`close_*` 为 NULL ⇒ 对账时**跳过该日**（不会误判成"预判错了"）。
+      【时刻口径要诚实】「预判」= **首次算成的时刻**（可能是 09:10 盘前，也可能是用户
+        中午才第一次打开页面）⇒ 对账输出里带 `as_of` 让人自己看时刻，别假装都是盘前。
+      ⚠️ 仍只在**交易日**写：休市日返回的是"最近交易日回放"，写进去会覆盖真实交易日口径。
+    """
     try:
         if not val.get("trading_day"):
             return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
         day = _bj_now().strftime("%Y-%m-%d")
-        if _EMOTION_SAVED["date"] == day:
-            return                       # 本进程今天已写过
+        now = _bj_now()
+        after_close = (now.hour * 60 + now.minute) >= 900      # 15:00 之后
         from app.database import db
-        _ensure_emotion_table()
-        db.upsert("market_emotion_daily", {
-            "date": day, "as_of": val.get("as_of"),
-            "trading_day": str(val.get("trading_day")),
-            "up": str(val.get("up")), "down": str(val.get("down")),
-            "limit_up": str(val.get("limit_up")), "limit_down": str(val.get("limit_down")),
-            "prev_limit_count": str(val.get("prev_limit_count")),
-            "prev_limit_today_pct": str(val.get("prev_limit_today_pct")),
-            "max_streak": str(val.get("max_streak")),
-            "leader": str(val.get("leader")), "leader_name": str(val.get("leader_name")),
-            "verdict": val.get("verdict"),
-            "created_at": _bj_now().isoformat(),
-        }, conflict_columns=["date"])
+        old = _load_emotion_daily(day)
+        # 幂等：盘前已记过预判就不再写；盘后同一时刻已记过就不再写（省掉无意义的写放大）
+        if after_close and old.get("close_as_of") == val.get("as_of"):
+            return
+        if not after_close and old.get("verdict"):
+            return
+        row = _emotion_daily_row(day, val, after_close, old)
+        db.upsert("market_emotion_daily", row, conflict_columns=["date"])
         _EMOTION_SAVED["date"] = day
         try:                             # 保留期清理（与写入同频，一天一次）
             cutoff = (_bj_now() - timedelta(days=_EMOTION_KEEP_DAYS)).strftime("%Y-%m-%d")
             db.execute("DELETE FROM market_emotion_daily WHERE date < %s", (cutoff,))
         except Exception:
             pass
-        print(f"[market] emotion 快照已落库 {day} verdict={val.get('verdict')}")
+        print(f"[market] emotion snapshot saved {day} "
+              f"{'close' if after_close else 'open'} verdict={val.get('verdict')}")
     except Exception as e:
-        print(f"[market] emotion 落库失败（不影响接口）: {e}")
+        print(f"[market] emotion save failed (non-fatal): {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  情绪对账（GET /api/market/emotion-review?days=）—— 2026-09-25（用户需求 P3）
+# ══════════════════════════════════════════════════════════════════════════
+# 【回答的问题】用户原话："复盘（19:30）：建议做『盘前预判 vs 实际走势』对账 ——
+#   预测『分歧/常态』，实际是否退潮？对错了要回溯修正，形成闭环，
+#   **否则情绪模型永远校准不了**。"
+#
+# 【对什么】同一天记录里的两组字段（见 `_emotion_daily_row`）：
+#   · 预判 = 主字段 `verdict`（盘前/盘中**首次**算成）
+#   · 实际 = `close_*`（**收盘后**算出）
+#
+# 【怎么判"对"】`verdict` 是**状态档位**（冰点 < 分歧/常态 < 亢奋），不是概率预测
+#   ⇒ 用"起终档位差"比二值对/错更诚实：
+#     · 一致   ⇒ 收盘仍同档（状态稳定 ⇒ 判读可信）
+#     · 偏保守 ⇒ 实际更热（预判没看到升温）
+#     · 偏乐观 ⇒ 实际更冷（预判没看到退潮）
+#   ⇒ 命中率 = 一致 / **可对账天数**（两侧都有值才算；只有单侧的跳过，**不算错**）
+#
+# ⚠️ 两条诚实标注（写进 note，别让人误判）：
+#   ① 「预判」的时刻是 `as_of` —— 可能是 09:10 盘前，也可能是你中午才第一次打开页面，
+#      所以每条都带上时刻，别假装都是盘前；
+#   ② 本表 **2026-09-25 才开始落库**（且只在交易日写）⇒ **历史无法补算**
+#      （用 backtest_prices 回算的口径与实时口径不一致，回算等于污染数据）⇒ 需自然积累。
+_VERDICT_ORDER = {"冰点": 0, "分歧/常态": 1, "亢奋": 2}
+
+
+def _delta(cur, prev):
+    """变化量 (实际 - 预判)，任一缺失返回 None（**不填 0** —— 0 会被读成"没变化"）。"""
+    try:
+        if cur is None or prev is None:
+            return None
+        return round(float(cur) - float(prev), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+@router.get("/emotion-review")
+def emotion_review(days: int = Query(30, ge=3, le=200)):
+    """「盘前预判 vs 当日实际」情绪对账（P3 闭环）。只读；失败返回空结构不抛错。"""
+    out = {"days": days, "items": [], "summary": {}, "note": None}
+    try:
+        _ensure_emotion_table()
+        from app.database import db
+        rows = db.fetch("SELECT * FROM market_emotion_daily ORDER BY date DESC LIMIT %s",
+                        (days,)) or []
+    except Exception as e:
+        print(f"[market] emotion review failed: {e}")        # ASCII（铁律⑥）
+        out["note"] = "读取失败"
+        return out
+
+    items, n_ok, n_hit = [], 0, 0
+    for r in rows:
+        pre_v, act_v = r.get("verdict"), r.get("close_verdict")
+        comparable = bool(pre_v and act_v)
+        rel = None
+        if comparable:
+            n_ok += 1
+            a, b = _VERDICT_ORDER.get(pre_v), _VERDICT_ORDER.get(act_v)
+            if a is not None and a == b:
+                rel, n_hit = "一致", n_hit + 1
+            elif a is not None and b is not None:
+                rel = "偏保守" if b > a else "偏乐观"
+        items.append({
+            "date": str(r.get("date") or ""),
+            "pre_as_of": r.get("as_of"), "pre_verdict": pre_v,
+            "pre_limit_up": _num_or_none(r.get("limit_up")),
+            "pre_max_streak": _num_or_none(r.get("max_streak")),
+            "pre_money": _num_or_none(r.get("prev_limit_today_pct")),
+            "act_as_of": r.get("close_as_of"), "act_verdict": act_v,
+            "act_limit_up": _num_or_none(r.get("close_limit_up")),
+            "act_max_streak": _num_or_none(r.get("close_max_streak")),
+            "act_money": _num_or_none(r.get("close_prev_limit_today_pct")),
+            "d_limit_up": _delta(_num_or_none(r.get("close_limit_up")),
+                                 _num_or_none(r.get("limit_up"))),
+            "d_max_streak": _delta(_num_or_none(r.get("close_max_streak")),
+                                   _num_or_none(r.get("max_streak"))),
+            "d_money": _delta(_num_or_none(r.get("close_prev_limit_today_pct")),
+                              _num_or_none(r.get("prev_limit_today_pct"))),
+            "relation": rel, "comparable": comparable,
+        })
+    out["items"] = items
+    out["summary"] = {"total": len(items), "comparable": n_ok, "hit": n_hit,
+                      "hit_rate": (round(n_hit / n_ok * 100, 1) if n_ok else None)}
+    if not n_ok:
+        out["note"] = ("暂无可对账数据：需同一天既有「预判」又有「收盘实际」。"
+                       "本表自 2026-09-25 起落库且只在交易日写，"
+                       "历史无法补算（回算口径与实时不一致）⇒ 需自然积累几天。")
+    return out
 
 
 @router.get("/emotion")

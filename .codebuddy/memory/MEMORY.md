@@ -391,6 +391,15 @@
 - ★★ **改"枚举/节点数"时必须同步所有硬编码它的地方（2026-09-25）**：给 `PHASES` 加了「竞价」
   节点（5→6），却漏改时间轴容器的 `md:grid-cols-5` ⇒ 第 6 个被挤到第二行（用户一眼看出来）。
   ⇒ **加/删枚举项后，全局搜它的数量硬编码**（grid 列数、注释里的"N 段"、切片 `[:5]`、测试断言）。
+- ★★ **`db.upsert` 在 SQLite 分支是 `INSERT OR REPLACE`（整行替换）—— 别依赖"部分更新"（2026-09-25）**：
+  `database.py` 里 PG 走 `ON CONFLICT DO UPDATE SET`（**只更新传入的列**），
+  而 **SQLite 走 `INSERT OR REPLACE`：未提供的列会被清空** ⇒ 「只补几列」在线上正常、**本地被抹**。
+  ⇒ **跨库写库一律「先读已有行 → 合并 → 写全字段」**（本项目 `market._emotion_daily_row` 即此模式）。
+  ★ 泛化：**任何"部分字段更新"的 SQL 都要先确认两端语义一致**，否则会出现"线上好、本地坏"。
+- ★★ **同进程里打桩后，不能再用 `importlib.reload` 验真实路径（2026-09-25）**：
+  测试里替换了 `app.database.db` 与模块函数，`reload(module)` **不会还原**被替换的
+  `app.database.db` ⇒ 所谓"真实调用"仍打在假对象上（本轮就是这么被骗过一次）。
+  ⇒ **真实调用必须开独立进程跑**（本次改用独立脚本才确认真实建表与加列成功）。
 - 生产 Python 3.9；禁用 PEP 604（`str | None`），用 `Optional` 或 `from __future__ import annotations`。
 - FastAPI 路由：没有 `await` 的必须写 `def`，禁止假 async 阻塞事件循环。
 

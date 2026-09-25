@@ -770,6 +770,62 @@
 
         <!-- 实时模式 · ⑤ 复盘（阅读模式） -->
         <template v-else>
+          <!-- ★ 2026-09-25 P3（用户："复盘建议做『盘前预判 vs 实际走势』对账 —— 预测『分歧/常态』，
+               实际是否退潮？对错了要回溯修正，形成闭环，**否则情绪模型永远校准不了**"）：
+               同日两组字段对比 —— 预判（主字段，盘前/盘中**首次**算出）vs 实际（`close_*`，收盘后）。
+               ⚠️ 两条诚实：① 「预判」的时刻是 `as_of`（可能不是盘前）⇒ 每条都显示时刻，不假装；
+               ② 本表自 2026-09-25 起落库且只在交易日写 ⇒ 需要几天才看得出命中率。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">情绪对账（预判 vs 实际）
+                <span class="text-[10px] text-muted font-normal">（近 30 天 · 只统计两侧数据都全的日子）</span>
+              </div>
+              <div v-if="emotionReview?.summary?.comparable" class="text-xs">
+                命中 <b class="font-mono text-accent">{{ emotionReview.summary.hit }}/{{ emotionReview.summary.comparable }}</b>
+                <span class="text-muted">（{{ emotionReview.summary.hit_rate }}%）</span>
+              </div>
+            </div>
+            <div v-if="!emotionReview" class="text-muted text-xs">—（加载失败）</div>
+            <template v-else>
+              <div v-if="emotionReview.note" class="text-[11px] text-amber-400 mb-2">{{ emotionReview.note }}</div>
+              <table v-if="(emotionReview.items || []).length" class="w-full text-xs">
+                <thead class="text-muted">
+                  <tr class="border-b border-border">
+                    <th class="text-left py-1.5">日期</th>
+                    <th class="text-left py-1.5">预判（时刻）</th>
+                    <th class="text-left py-1.5">实际（时刻）</th>
+                    <th class="text-left py-1.5">结论</th>
+                    <th class="text-right py-1.5" title="实际涨停家数 − 预判时涨停家数">Δ涨停</th>
+                    <th class="text-right py-1.5" title="实际连板高度 − 预判时">Δ连板</th>
+                    <th class="text-right py-1.5" title="实际赚钱效应 − 预判时（%）">Δ溢价</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="it in emotionReview.items" :key="it.date" class="border-b border-border/40">
+                    <td class="py-1.5 font-mono">{{ (it.date || '').slice(5) }}</td>
+                    <td class="py-1.5">
+                      <span class="text-gray-300">{{ it.pre_verdict || '—' }}</span>
+                      <span class="text-muted text-[10px] ml-1">{{ (it.pre_as_of || '').slice(11, 16) }}</span>
+                    </td>
+                    <td class="py-1.5">
+                      <span class="text-gray-200">{{ it.act_verdict || '—' }}</span>
+                      <span class="text-muted text-[10px] ml-1">{{ (it.act_as_of || '').slice(11, 16) }}</span>
+                    </td>
+                    <td class="py-1.5" :class="relCls(it.relation)">{{ it.relation || '—' }}</td>
+                    <td class="py-1.5 text-right font-mono" :class="pctClass(it.d_limit_up)">{{ it.d_limit_up ?? '—' }}</td>
+                    <td class="py-1.5 text-right font-mono" :class="pctClass(it.d_max_streak)">{{ it.d_max_streak ?? '—' }}</td>
+                    <td class="py-1.5 text-right font-mono" :class="pctClass(it.d_money)">{{ it.d_money ?? '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="text-[10px] text-muted mt-2">
+                读法：「一致」= 收盘仍同档（判读可信）；「偏保守」= 实际比预判更热（没看到升温）；
+                「偏乐观」= 实际更冷（没看到退潮）。⚠️ `verdict` 是**状态档位不是概率预测**，
+                故按"起终档位差"判定，而非二值对/错。
+              </div>
+            </template>
+          </div>
+
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">执行一致性</div>
@@ -906,6 +962,7 @@ import {
   getWorkbenchDecisionCard,
   getMarketEmotion, getMarketLimitReview,
   getUserPositionSizing,
+  getEmotionReview,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -1011,6 +1068,9 @@ const macroSentiment = ref(null)
 // ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
 //   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
 const sizing = ref(null)
+// ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 用户："对错了要回溯修正，形成闭环，
+//   否则情绪模型永远校准不了"。数据来自 `/api/market/emotion-review`（读同日两组字段）。
+const emotionReview = ref(null)
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -1066,6 +1126,11 @@ const barW = (n) => {
   const max = Math.max(1, ...rows.map(r => r.count || 0))
   return Math.round(((n || 0) / max) * 100) + '%'
 }
+// ★ 2026-09-25 P3：情绪对账的结论配色 —— 一致=绿 / 偏保守=琥珀 / **偏乐观=红**
+//   （"偏乐观"最危险：它意味着没看到退潮，而退潮是要降仓的）
+const relCls = (r) => (r === '一致' ? 'text-emerald-400'
+  : r === '偏保守' ? 'text-amber-300'
+    : r === '偏乐观' ? 'text-red-400' : 'text-muted')
 const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
@@ -1257,6 +1322,13 @@ async function loadConsistency() {
     const { data } = await getCoachConsistency(30)
     consistency.value = data || null
   } catch { consistency.value = null }
+}
+// ★ 2026-09-25 P3：情绪对账（失败静默 ⇒ 卡片显示"暂无数据"，不影响复盘其它块）
+async function loadEmotionReview() {
+  try {
+    const { data } = await getEmotionReview(30)
+    emotionReview.value = data || null
+  } catch { emotionReview.value = null }
 }
 async function loadReport(date) {
   try {
@@ -1463,7 +1535,7 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
   else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
-  else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
     await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals()])
   }
