@@ -87,11 +87,16 @@
       </span>
     </div>
 
-    <!-- 横向时间轴：5 节点等宽（不按真实时间比例）；各时段专属配色——
-         盘前蓝=计划筹备 / 盘中红=交易执行 / 午盘琥珀=休市过渡 / 盘后紫=数据结算 / 复盘绿=复盘沉淀 -->
-    <div class="bg-card border border-border rounded-lg p-2 grid grid-cols-2 md:grid-cols-5 gap-1.5">
+    <!-- 横向时间轴：**6 节点等宽、始终一行**（不按真实时间比例）；各时段专属配色——
+         盘前蓝=计划筹备 / 竞价靛=过渡定稿 / 盘中红=交易执行 / 午盘琥珀=休市过渡 /
+         盘后紫=数据结算 / 复盘绿=复盘沉淀
+         ★ 2026-09-25：加「竞价」后节点变 6 个，而这里仍是 `md:grid-cols-5` ⇒ 第 6 个被挤到
+           第二行（用户反馈"宽度缩小，一行展示就行，空间够的"）。⇒ 改 6 列并收窄内外间距：
+           一行放得下 6 个，且 9:25「已进入」提示仍能显示（该提示会临时撑高，故纵向留 py-2）。
+         ⚠️ 改节点数时**必须同步这里**（grid 列数 + 注释里的段数）。 -->
+    <div class="bg-card border border-border rounded-lg p-1.5 grid grid-cols-3 md:grid-cols-6 gap-1">
       <button v-for="p in PHASES" :key="p.key"
-              class="relative rounded-lg px-2 py-2.5 text-center transition-all border"
+              class="relative rounded-lg px-1.5 py-2 text-center transition-all border min-w-0"
               :class="nodeClass(p.key)"
               @click="selectPhase(p.key)">
         <!-- 徽标：未决策教练卡数（当天） / 简报降级 -->
@@ -100,11 +105,11 @@
               :class="p.key === 'premarket' && briefDegraded ? 'bg-amber-500 text-black' : 'bg-red-500 text-white'">
           {{ badge(p.key) }}
         </span>
-        <div class="text-sm font-bold tracking-wide" :class="PHASE_STYLE[p.key].text">{{ p.label }}</div>
+        <div class="text-sm font-bold tracking-wide truncate" :class="PHASE_STYLE[p.key].text">{{ p.label }}</div>
         <div class="text-[11px] font-mono text-muted mt-0.5">{{ p.time }}</div>
         <!-- 温和自动跟随提示：用户停在别处而实时阶段已推进 -->
         <div v-if="isToday && livePhase === p.key && selectedPhase !== p.key"
-             class="text-[10px] mt-1 animate-pulse" :class="PHASE_STYLE[p.key].text">● 已进入，点击切换</div>
+             class="text-[10px] mt-1 animate-pulse truncate" :class="PHASE_STYLE[p.key].text">● 已进入，点击切换</div>
       </button>
     </div>
 
@@ -190,7 +195,41 @@
                   <div class="text-muted text-[10px]">昨涨停今均（溢价）</div>
                 </div>
               </div>
-              <div v-if="(emotion.auction?.top || []).length" class="flex flex-wrap gap-1.5">
+              <!-- ★ 2026-09-25 扩展：全市场竞价视角（用户要的"竞价额、竞价涨幅榜"）——
+                   上面那块只覆盖"昨日涨停股"，这里补**全市场**高开/低开榜与家数统计。
+                   ⚠️ 成交额是**截至 as_of 的累计值**（竞价时段即竞价额），文案已如实标注。 -->
+              <div v-if="emotion.auction?.market_count" class="border-t border-border/40 mt-2 pt-2">
+                <div class="text-[11px] text-muted mb-1.5">
+                  全市场：高开 <b class="text-red-400 font-mono">{{ emotion.auction.up_open }}</b> 家 ·
+                  低开 <b class="text-emerald-400 font-mono">{{ emotion.auction.down_open }}</b> 家 ·
+                  平均高开 <b class="font-mono" :class="pctClass(emotion.auction.avg_gap_all)">{{ signNum(emotion.auction.avg_gap_all) }}%</b>
+                  <template v-if="emotion.auction.total_amount_wan != null">
+                    · 累计成交 <b class="text-accent font-mono">{{ fmtAmountWan(emotion.auction.total_amount_wan) }}</b>
+                  </template>
+                  <span class="text-[10px] cursor-help" :title="emotion.auction.amount_note">ⓘ</span>
+                </div>
+                <div class="mb-1 text-[10px] text-muted">高开榜 Top20（全市场）</div>
+                <div class="flex flex-wrap gap-1">
+                  <a v-for="g in (emotion.auction.market_top || [])" :key="'mt' + g.code"
+                     :href="stockHref(g.code)" target="_blank"
+                     class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-[11px] hover:border-accent"
+                     :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}`">
+                    {{ g.name }} {{ signNum(g.gap_pct) }}%
+                  </a>
+                </div>
+                <div class="mb-1 mt-2 text-[10px] text-muted">低开榜 Top20（全市场）</div>
+                <div class="flex flex-wrap gap-1">
+                  <a v-for="g in (emotion.auction.market_bottom || [])" :key="'mb' + g.code"
+                     :href="stockHref(g.code)" target="_blank"
+                     class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-[11px] hover:border-accent text-emerald-400"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}`">
+                    {{ g.name }} {{ signNum(g.gap_pct) }}%
+                  </a>
+                </div>
+              </div>
+              <div v-if="(emotion.auction?.top || []).length" class="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/40">
+                <span class="text-[10px] text-muted w-full mb-0.5">昨日涨停股高开 Top5（接力视角）</span>
                 <a v-for="g in emotion.auction.top" :key="g.code" :href="stockHref(g.code)" target="_blank"
                    class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-xs hover:border-accent"
                    :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'">
@@ -1015,6 +1054,12 @@ const planClass = (lv) => (lv === 'act' ? 'text-red-400 font-semibold'
   : lv === 'exit' ? 'text-red-400'
     : lv === 'protect' ? 'text-amber-400'
       : lv === 'hold' ? 'text-emerald-400' : 'text-gray-300')
+// ★ 2026-09-25：成交额（输入**万元**）→ 友好显示（≥1 亿转"亿"）。用于竞价段的"累计成交"。
+const fmtAmountWan = (v) => {
+  if (v == null || Number.isNaN(Number(v))) return '—'
+  const n = Number(v)
+  return Math.abs(n) >= 10000 ? (n / 10000).toFixed(2) + '亿' : n.toFixed(0) + '万'
+}
 // ★ 2026-09-25：信号×行业 的条形宽度（相对**本表最大值**，避免绝对刻度在大盘股/小行业间失真）
 const barW = (n) => {
   const rows = dc.value?.signals_industry?.rows || []

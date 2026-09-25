@@ -575,9 +575,40 @@ def market_emotion():
             gaps.append({"code": code, "name": (q.get("name") or code),
                          "gap_pct": round((o / yc - 1) * 100, 2)})
     gaps.sort(key=lambda x: x["gap_pct"], reverse=True)
+    # ★ 2026-09-25 扩展（用户："竞价看板…（**竞价额、竞价涨幅榜**、昨日强势股溢价）"）：
+    #   上面 `gaps` 只算「**昨日涨停股**」的高开（池子小、偏接力视角）⇒ 这里补**全市场**视角：
+    #   全市场高开榜 / 低开榜 + 高开低开家数 + 两市累计成交额。
+    #   ⚠️ **语义随时段变**：`amount_wan` 在竞价时段是竞价额，盘中/盘后就是**当日累计**成交额
+    #      ⇒ 故字段命名为 `total_amount_wan` 并附 `amount_note`，**不叫"竞价额"**（避免误导）。
+    market_gaps, up_open, down_open = [], 0, 0
+    total_amount_wan = 0.0
+    for _c, _s in (stocks or {}).items():
+        _amt = _num_or_none(_s.get("amount_wan")) or 0.0
+        total_amount_wan += _amt
+        _pc = _num_or_none(_s.get("prev_close"))
+        _op = _num_or_none(_s.get("open"))
+        if not _pc or not _op or _pc <= 0 or _op <= 0:
+            continue                      # ★ 缺数据就跳过（不填 0 参与统计）
+        _g = (_op / _pc - 1) * 100
+        if _g > 0:
+            up_open += 1
+        elif _g < 0:
+            down_open += 1
+        market_gaps.append({"code": _c, "name": _s.get("name") or _c,
+                            "gap_pct": round(_g, 2), "amount_wan": round(_amt)})
+    market_gaps.sort(key=lambda x: -x["gap_pct"])
     auction = {"count": len(gaps),
                "avg_gap": round(sum(g["gap_pct"] for g in gaps) / len(gaps), 2) if gaps else None,
-               "top": gaps[:5]}
+               "top": gaps[:5],
+               # ── 全市场视角（2026-09-25 新增）──
+               "market_top": market_gaps[:20],
+               "market_bottom": list(reversed(market_gaps[-20:])) if market_gaps else [],
+               "market_count": len(market_gaps),
+               "up_open": up_open, "down_open": down_open,
+               "avg_gap_all": (round(sum(x["gap_pct"] for x in market_gaps) / len(market_gaps), 2)
+                               if market_gaps else None),
+               "total_amount_wan": (round(total_amount_wan) if total_amount_wan else None),
+               "amount_note": "成交额为截至 as_of 的**累计值**（9:15-9:25 期间即竞价额）"}
 
     if not has_live:
         verdict = None       # ★ 2026-09-25：无行情 ⇒ 不判读（休市显示"分歧/常态"同样是误导）
