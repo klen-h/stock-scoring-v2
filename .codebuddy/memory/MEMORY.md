@@ -396,6 +396,22 @@
   而 **SQLite 走 `INSERT OR REPLACE`：未提供的列会被清空** ⇒ 「只补几列」在线上正常、**本地被抹**。
   ⇒ **跨库写库一律「先读已有行 → 合并 → 写全字段」**（本项目 `market._emotion_daily_row` 即此模式）。
   ★ 泛化：**任何"部分字段更新"的 SQL 都要先确认两端语义一致**，否则会出现"线上好、本地坏"。
+- ★★★ **前端「未 import 却调用」= 静默失效，必须专门排查（2026-09-25，一次抓到 2 处）**：
+  `Workbench.loadSectorTop` 调 `getSectorSnapshot`、`ScoreRank.checkMarketAlerts` 调
+  `getMarketOverview`，**都从未 import** ⇒ **`vite build` 不做未定义标识符检查**（ESM 下当全局变量，
+  构建通过），**运行时抛 `ReferenceError` 被 `try/catch` 吞掉** ⇒ 卡片永远显示"—"、
+  规则永远不生效，而**构建日志与运行日志全都看不出**。
+  ⇒ **加/改前端调用 API 后，务必确认名字在 `import {} from '../api'` 里**；
+  定期用脚本比对（api/index.js 的 `export const` 全量 vs 各文件使用）——
+  ⚠️ **但脚本会误报**（多行 import、注释里的同名字符串）⇒ **结论必须人工核实**。
+  ★ 泛化：**关键路径上的 `try/catch` 会把"代码写错"变成"功能静默为空"**，比直接报错难查得多。
+- ★★ **不确定存在的字段不要依赖：宁可数学反推（2026-09-25）**：A4 判"高开"需要昨收，
+  但不确定行情缓存是否提供 `prev_close` ⇒ 改用 **`prev = price / (1 + change_pct/100)` 反推**
+  （价格与涨跌幅一定都有）。★ **依赖一个"可能不存在"的字段，会让整块逻辑静默失效**。
+- ★★ **给已存在的表加列，`CREATE TABLE IF NOT EXISTS` 不管用（2026-09-25，第二次踩）**：
+  只改 `schema.sql` 的结果是"**新库有、老库没有**"（线上永远是旧结构，读出来恒为 None、无报错）。
+  ⇒ 一律在**代码里补幂等 `ALTER TABLE ... ADD COLUMN`**（`try/except` 忽略"列已存在"，
+  因为 PG/SQLite 报错文案不同）。
 - ★★ **PowerShell 里 `git commit -m '...'`：内容里连中文全角引号都不能有（2026-09-25）**：
   写成 `-m '...看到"仍缺 56 只"，就断言...'` ⇒ 报 `pathspec '56' did not match`
   —— **PowerShell 对全角引号 `“”` 也参与引号配对**，字符串被提前闭合，后面的碎片被当成路径参数。
