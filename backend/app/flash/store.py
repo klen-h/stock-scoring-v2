@@ -368,6 +368,11 @@ def append_macro_history(panel: dict) -> None:
         "us10yt": _e("us10y"), "silver": _e("silver"), "copper": _e("copper"),
         "nasdaq": _e("nasdaq"), "nke": _e("nikkei"), "hstech": _e("hstech"),
         "dxy": _e("dxy"), "usdcnh": _e("usdcnh"),
+        # ★ 2026-09-25 新增两项（纯新增，旧记录无此键 ⇒ 消费方须按"缺失跳过"处理）：
+        #   · `a50` —— 新加坡富时 A50 期货，是**对 A 股最直接**的外盘品种，原先竟然没存
+        #     （而它恰恰是算"自 A 股收盘以来外盘变了多少"最该看的那个）。
+        #   · `vix` —— 全球风险偏好/恐慌度，风控用。
+        "a50": _e("a50"), "vix": _e("vix"),
         "copperOilRatio": d.get("copper_oil_ratio"),
         "goldSilverRatio": d.get("gold_silver_ratio"),
         "gldRatio": d.get("gold_oil_ratio"),

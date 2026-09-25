@@ -292,11 +292,28 @@ def get_market_clock() -> dict:
     is_a_stock = a_morning or a_afternoon
     is_hstech_ext = 900 <= t < 990
     is_nikkei = (480 <= t < 630) or (690 <= t < 840)
+    # ★ 2026-09-25 新增（纯新增字段，不改动既有语义）：港股**常规**连续竞价时段。
+    #   原先只有 `is_hstech_extended`（15:00-16:30 的指数延展），缺 9:30-16:00 常规段
+    #   ⇒ 前端想标注"恒科现在是否在开市"时只能自己拼逻辑（会造成口径漂移，
+    #   本函数注释已声明"全项目唯一实现"，故在此补齐）。
+    is_hk = (570 <= t < 720) or (780 <= t < 960)     # 港股 9:30-12:00 / 13:00-16:00
     is_us = t >= 1290 or t < 240     # 跨午夜，正确回绕
+    # ★ 2026-09-25 新增（测试中发现）：**是否交易日**（走节假日日历）。
+    #   ⚠️ 关键区别：上面各 `is_*_trading` **只看时刻、不看节假日** ⇒ 休市日的 13:02
+    #   它们照样为 True（实测 2026-09-25 中秋休市日 `is_a_stock_trading=True`）⇒
+    #   任何要回答"这个市场**真的**在交易吗"的消费方，必须写成
+    #   `is_xxx_trading **and** is_trading_day`，否则休市日白天会误报"开市中"。
+    #   （**仅新增字段**，既有字段语义完全不变 ⇒ 既有调用方行为不受影响。）
+    try:
+        _is_tday = bool(is_trading_day())
+    except Exception:
+        _is_tday = True        # 日历判断失败时不阻断：退回"只看时刻"的旧行为
     return {
         "beijing_time": f"{now.hour:02d}:{now.minute:02d}",
+        "is_trading_day": _is_tday,
         "is_a_stock_trading": is_a_stock,
         "is_hstech_extended": is_hstech_ext,
+        "is_hk_trading": is_hk,
         "is_nikkei_trading": is_nikkei,
         "is_us_trading": is_us,
         "is_asia_equity_closed": not (is_a_stock or is_hstech_ext or is_nikkei),

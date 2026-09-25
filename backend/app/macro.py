@@ -472,6 +472,109 @@ _LEVEL_ADVISORY = {
 }
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  隔夜变化：自「上次 A 股收盘」以来的外盘累计涨跌 —— 2026-09-25（用户需求 P1）
+# ══════════════════════════════════════════════════════════════════════════
+# 【要解决的问题】外盘 24h 连续，于是**同一个涨跌幅在不同时段含义完全不同**：
+#   · A 股收盘**后**新涨的 0.5% ⇒ 是新增信息，A 股开盘需要消化（**重要**）
+#   · A 股收盘**前**就有的 0.5% ⇒ 昨天盘中已反映（**不重要**）
+#   只看 `change_pct`（相对昨结）无法区分这两者 ⇒ 必须算出"收盘以来新增了多少"。
+#
+# 【基准怎么选】`macro_history` 每天有 **09:10（盘前）+ 15:03（盘后）** 两条
+#   （2026-09-25 实测：可配对 24 天）。基准 = **最近一条 A 股收盘后（15:00 之后）的快照**：
+#     · 盘中/盘前看 ⇒ 从**昨天 15:03** 起算
+#     · 盘后看     ⇒ 从**今天 15:03** 起算
+#     · 休市日看   ⇒ 从**上一个交易日 15:03** 起算（今天 9-25 休市即是此情形）
+#
+# 【三条纪律】
+#   ① **缺失不填 0**：取不到基准或价格就**跳过该项**（`items` 少一项 ≠ 变化为 0），
+#      全取不到则 `base_time=None`，前端显示"—"。
+#   ② **不参与评分/信号**：纯展示用（其预测力已被实证否定 —— 见 `coach/rules.py` 与
+#      `scripts/regime_external_lead_test.py`：纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115）
+#      ⇒ 价值在**解释**（今天为什么低开）与**风控**（VIX/美元急变），不在预测。
+#   ③ **失败静默**：辅助信息绝不拖垮宏观快照。
+#
+# ⚠️ 历史 entry 的键名与面板**不一致**（`store.append_macro_history` 里 `nikkei` 存为
+#    `nke`、`us10y` 存为 `us10yt`）⇒ 用三元组显式映射，别用同名假设。
+# ⚠️ 历史 `time` 格式**不统一**（有的带 `+08:00`、有的不带）⇒ 只按字符串前 16 位取 HH:MM。
+# 三元组：(面板键, 历史键, 中文名)。顺序即固定展示顺序（前端还会按|变化|排序取前几项）。
+_OVERNIGHT_KEYS = [
+    ("a50",    "a50",    "A50期货"),
+    ("nasdaq", "nasdaq", "纳指期货"),
+    ("dxy",    "dxy",    "美元指数"),
+    ("hstech", "hstech", "恒生科技"),
+    ("brent",  "brent",  "布伦特"),
+    ("usdcnh", "usdcnh", "离岸人民币"),
+    ("gold",   "gold",   "黄金"),
+    ("nikkei", "nke",    "日经225"),
+]
+
+
+def _pnum(v):
+    """安全转 float：非数字/缺失/`'-'` 一律返回 None（**不是 0**，见模块内 `_OVERNIGHT_KEYS` 纪律①）。"""
+    try:
+        if v is None or v == "" or v == "-":
+            return None
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _overnight_base():
+    """取基准快照 = 最近一条「A 股收盘后（15:00 之后）」的 macro_history 记录。
+
+    返回 `(entry_dict, time_str)`；找不到返回 `(None, None)`。
+    ★ 自己排序而不依赖上游顺序：`load_macro_history` 的注释说正序，但此处不赌它。
+    """
+    try:
+        from app.flash import store as _store
+        hist = sorted((_store.load_macro_history() or []),
+                      key=lambda x: str((x or {}).get("time") or ""))
+    except Exception as e:
+        print(f"[macro] 隔夜基准读取失败: {e}")
+        return None, None
+    for h in reversed(hist):
+        t = str((h or {}).get("time") or "")
+        if len(t) >= 16 and t[11:16] >= "15:00":      # 只看 A 股收盘之后的快照
+            return h, t
+    return None, None
+
+
+def get_overnight_change(panel: dict) -> dict:
+    """自上次 A 股收盘以来，各外盘品种的累计涨跌幅（%）。纯展示，不参与评分。
+
+    返回 `{base_time, as_of, items: [{key,label,pct}], note}`；`items` 按 |pct| 降序。
+    `base_time=None` ⇒ 还没有可用基准（历史尚未积累到收盘后的记录）。
+    """
+    out = {"base_time": None, "items": [], "note": None}
+    base, base_time = _overnight_base()
+    out["base_time"] = base_time
+    if not base:
+        out["note"] = "暂无基准（macro_history 还没有 A 股收盘后的快照）"
+        return out
+    for p_key, h_key, label in _OVERNIGHT_KEYS:
+        b = _pnum((base.get(h_key) or {}).get("price"))
+        c = _pnum((panel.get(p_key) or {}).get("price"))
+        if not b or not c:            # ★ 纪律①：缺失就跳过，绝不填 0
+            continue
+        try:
+            out["items"].append({"key": p_key, "label": label,
+                                 "pct": round((c / b - 1) * 100, 2)})
+        except (TypeError, ZeroDivisionError):
+            continue
+    out["items"].sort(key=lambda x: -abs(x["pct"]))
+    return out
+
+
+def _safe_overnight(panel: dict) -> dict:
+    """`get_overnight_change` 的**失败静默**包装（纪律③：辅助信息绝不拖垮宏观快照）。"""
+    try:
+        return get_overnight_change(panel)
+    except Exception as e:
+        print(f"[macro] 隔夜变化计算失败: {e}")
+        return {"base_time": None, "items": [], "note": "计算失败"}
+
+
 def get_macro_snapshot() -> dict:
     """
     一份自包含的快照：面板 + 衍生指标 + 规则标签 + 方向分 + 市场温度。
@@ -524,6 +627,19 @@ def get_macro_snapshot() -> dict:
     triggered, group_scores, score, level = evaluate_rules(
         panel, temperature, northbound_net_yi)
 
+    # ★ 2026-09-25：多市场交易时段 —— 复用 `flash/rules.get_market_clock()` 的**唯一实现**
+    #   （该函数注释声明"全项目唯一实现"，故此处 import 而非前端再写一套，避免口径漂移）。
+    #   用途：工作台顶栏标注"当前哪个外盘在开市"。动因（用户 2026-09-25）：外盘 24h 连续，
+    #   **同一个涨跌幅在不同时段含义不同** —— A 股收盘后新涨的 0.5% 需要消化（重要），
+    #   A 股收盘前就有的 0.5% 昨天已反映（不重要），界面必须能区分。
+    #   失败静默：时钟不该拖垮整个宏观快照。
+    clock = None
+    try:
+        from app.flash.rules import get_market_clock
+        clock = get_market_clock()
+    except Exception as e:
+        print(f"[macro] 市场时钟获取失败: {e}")
+
     snapshot = {
         "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
         "data_time": data_time,
@@ -541,6 +657,10 @@ def get_macro_snapshot() -> dict:
         },
         "market_temperature": temperature,
         "northbound_net_yi": northbound_net_yi,
+        "clock": clock,
+        # ★ 2026-09-25（用户需求 P1）：自上次 A 股收盘以来的外盘累计变化 —— 回答
+        #   "A 股开盘前若不知道外盘在这段时间走了多少，就会漏东西"。纯展示、失败静默。
+        "overnight": _safe_overnight(panel),
         "notes": notes,
     }
     with _cache_lock:

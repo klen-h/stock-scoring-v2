@@ -37,6 +37,32 @@
             {{ signNum(g.pct) }}%
           </div>
         </div>
+        <!-- ★ 2026-09-25（用户："A 股开盘前若没总结外盘正常开市的时间，会漏点什么"）：
+             外盘是 24h 连续的 ⇒ **同一个涨跌幅在不同时段含义完全不同**（A 股收盘后新涨的
+             0.5% 需要消化；收盘前就有的 0.5% 昨天已反映）。故在此常显"**此刻哪些市场在开市**"
+             —— 一眼看清手里这些数字是"活的"还是"上一收盘的静态值"。
+             时段判定**复用后端 `market_clock`**（唯一实现），前端不复制逻辑。 -->
+        <div v-if="macroClock" class="text-center px-1.5 border-l border-border/60"
+             :title="`北京时间 ${macroClock.beijing_time}｜A股 9:30-15:00 · 港股 9:30-16:00 · 日经 8:00-14:00 · 美股 21:30-04:00`">
+          <div class="text-[10px] text-muted">外盘开市</div>
+          <div class="text-[11px] font-semibold leading-snug"
+               :class="openMarkets.length ? 'text-emerald-400' : 'text-muted'">
+            {{ openMarkets.length ? openMarkets.map(m => m.label).join('/') : '全部收盘' }}
+          </div>
+          <div class="text-[10px] text-muted font-mono">{{ macroClock.beijing_time }}</div>
+        </div>
+        <!-- ★ 2026-09-25 P1（用户："到了 A 股开盘，如果没总结外盘正常开市时间，会漏点什么"）：
+             显示**自上次 A 股收盘以来**外盘的累计变化 —— 这才是"A 股开盘要消化的新增信息"。
+             只按 |变化| 取前 2 项（顶栏防过载），全部项与口径说明放 title。
+             ⚠️ 用 `change_pct`（相对昨结）做不到这件事：它含"A 股收盘前就已反映"的部分。 -->
+        <div v-if="overnightItems.length" class="text-center px-1.5 border-l border-border/60"
+             :title="overnightTitle">
+          <div class="text-[10px] text-muted">隔夜{{ overnightBaseLabel }}</div>
+          <div v-for="o in overnightItems.slice(0, 2)" :key="o.key"
+               class="text-[11px] font-mono leading-snug" :class="pctClass(o.pct)">
+            {{ o.label }} {{ signNum(o.pct) }}%
+          </div>
+        </div>
       </div>
 
       <!-- 情绪/市况模块（归并为一组） -->
@@ -142,19 +168,36 @@
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">情绪预判
                 <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span>
-                <span v-if="emotion?.trading_day === false"
-                      class="ml-1 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]">休市日·显示最近交易日数据</span></div>
+                <!-- ★ 2026-09-25：原徽标写"显示最近交易日数据"，但休市时行情缓存为空 ⇒
+                     实际输出的是 0（不是最近交易日快照）⇒ **徽标承诺与实际不符**。
+                     改为按 `has_live` 如实说明：无实时行情 ⇒ 今日字段均不可用（显示"—"）。
+                     ⚠️ 用 `=== false` 严格判断：旧后端没有该字段（undefined）时不误报。 -->
+                <span v-if="emotion && emotion.has_live === false"
+                      class="ml-1 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px] cursor-help"
+                      :title="`当前无实时行情（休市或行情源未刷新）⇒ 涨停/跌停/连板高度不可用（显示—）；可用于参考的历史价格截至 ${emotion.data_date || '—'}`">
+                  无实时行情{{ emotion.data_date ? `（价格截至 ${emotion.data_date.slice(5)}）` : '' }}
+                </span></div>
               <span class="text-sm font-bold"
                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
                 {{ emotion?.verdict || '—' }}</span>
             </div>
             <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
             <div v-else class="grid grid-cols-4 gap-2 text-center text-xs">
-              <div><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up }}</div><div class="text-muted text-[10px]">涨停</div></div>
-              <div><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down }}</div><div class="text-muted text-[10px]">跌停</div></div>
-              <div><div class="text-lg font-bold font-mono">{{ emotion.max_streak }}</div><div class="text-muted text-[10px]">连板高度</div></div>
-              <div><div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
-                {{ fmtPct(emotion.prev_limit_today_pct) }}</div><div class="text-muted text-[10px]">昨日涨停今日</div></div>
+              <!-- ★ 2026-09-25：三个"今日"字段在无行情时后端返回 None ⇒ 显示「—」
+                   （此前后端返回 0，看起来像"今天一只都没涨停"，其实是"今天没开盘"） -->
+              <div><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up ?? '—' }}</div><div class="text-muted text-[10px]">涨停</div></div>
+              <div><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down ?? '—' }}</div><div class="text-muted text-[10px]">跌停</div></div>
+              <div><div class="text-lg font-bold font-mono">{{ emotion.max_streak ?? '—' }}</div><div class="text-muted text-[10px]">连板高度</div></div>
+              <!-- ★ 2026-09-25 用户问「昨日涨停今日 -1.16% 是什么意思」⇒ 原文案缺"平均"二字、
+                   也不给股数，容易被读成"今天的涨跌幅是 -1.16%"。
+                   口径：**昨日涨幅≥9.5% 的那批股票，今天的平均涨跌幅**（=赚钱效应）；
+                   为正 ⇒ 接力意愿强（昨涨停今天还有人买）；为负 ⇒ 追涨者平均亏钱、情绪转弱。
+                   列宽有限 ⇒ 只微调文案，完整解释放 title（悬停可见）。 -->
+              <div :title="`昨日涨停的 ${emotion.prev_limit_count ?? '?'} 只股票，今天的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
+                <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
+                  {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
+                <div class="text-muted text-[10px] cursor-help">昨涨停今均<template v-if="emotion.prev_limit_count">（{{ emotion.prev_limit_count }}只）</template></div>
+              </div>
             </div>
             <div class="text-[10px] text-muted mt-2">判读：情绪决定今天"接力的强更强 / 分歧 / 退潮"，对应降低或提高买入标准。</div>
           </div>
@@ -232,8 +275,11 @@
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">今日决策卡
                 <span class="text-[10px] text-muted font-normal">（规则引擎 · 无 LLM · 确定性输出）</span></div>
-              <button v-if="dcErr" @click="loadDecisionCard()"
-                      class="px-2 py-0.5 rounded bg-accent/20 text-accent text-xs">生成今日决策卡</button>
+              <!-- ★ 2026-09-25：按钮**常显**（原先只在 dcErr 时出现）—— 决策卡只按当日缓存一次，
+                   用户需要能随时主动重算（如盘前数据更新后）。 -->
+              <button @click="loadDecisionCard()" :disabled="dcLoading"
+                      class="px-2 py-0.5 rounded bg-accent/20 text-accent text-xs disabled:opacity-50">
+                {{ dcLoading ? '生成中…' : (dcErr ? '生成今日决策卡' : '重新生成') }}</button>
             </div>
             <div v-if="dcLoading" class="text-muted text-xs">生成中…</div>
             <div v-else-if="dcErr" class="text-xs">
@@ -341,9 +387,10 @@
                   {{ emotion?.verdict || '—' }}</div></div>
             </div>
             <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
-              昨日涨停 {{ emotion.prev_limit_count }} 只 · 今日平均表现
+              昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
               <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
-              · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak }}</b>
+              <!-- ★ 2026-09-25：无行情时后端返回 None ⇒ 显示「—」（原为 0，会被读成"没有连板"） -->
+              · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak ?? '—' }}</b>
               <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
               <span class="text-[10px]">· {{ emotion.note }}</span>
             </div>
@@ -740,6 +787,12 @@ const dcErr = ref('')
 // ★ 2026-09-25 盘中外盘四件套（A50/离岸/布伦特/纳指期货）——宏面板已在抓，
 //   一次新浪批量请求 60s 缓存，工作台只是读取，零新增请求
 const globals = ref({})
+// ★ 2026-09-25：多市场时段（后端 `/macro/snapshot.clock`，源自 `flash/rules.get_market_clock()`
+//   的**唯一实现**）⇒ 用于顶栏"外盘开市"指示，前端不自算时段以免口径漂移。
+const macroClock = ref(null)
+// ★ 2026-09-25 P1：自上次 A 股收盘以来的外盘累计变化（后端 `/macro/snapshot.overnight`
+//   ⇒ 基准取自 macro_history 的"收盘后快照"）。纯展示、不参与评分。
+const macroOvernight = ref(null)
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -804,6 +857,42 @@ const globalsRow = computed(() => {
     return { key, label, price: price ?? null, pct }
   })
 })
+// ★ 2026-09-25：当前**正在交易**的市场（顶栏"外盘开市"指示）——
+//   一律取后端 `market_clock` 的布尔字段，前端**不自己算时段**（唯一实现原则）。
+//   `clock` 拿不到（旧后端/接口失败）⇒ 返回空 ⇒ 该指示块整体不渲染（安全降级）。
+const openMarkets = computed(() => {
+  const c = macroClock.value
+  if (!c) return []
+  const out = []
+  // ⚠️ A 股必须**同时**满足"在交易时刻"与"今天是交易日"：`is_a_stock_trading` 只看时刻，
+  //    休市日的 13:02 它仍然为 True（实测 2026-09-25 中秋休市日）⇒ 必须叠加 `is_trading_day`。
+  //    用 `!== false` 兼容未升级的后端（字段缺失时不误判为休市）。
+  if (c.is_a_stock_trading && c.is_trading_day !== false) out.push({ k: 'cn', label: 'A股' })
+  // 港股/日经/美股：项目只有 A 股节假日日历，无对应假期表 ⇒ 按**交易时段**判定（近似）。
+  if (c.is_hk_trading || c.is_hstech_extended) out.push({ k: 'hk', label: '港股' })
+  if (c.is_nikkei_trading) out.push({ k: 'jp', label: '日经' })
+  if (c.is_us_trading) out.push({ k: 'us', label: '美股' })
+  return out
+})
+// ★ 2026-09-25 P1：隔夜变化的**显示层**（顶栏一格）。后端已按 |变化| 降序 ⇒ 直接取前 2 项；
+//   全部项放 title（避免顶栏信息过载）。⚠️ 空数组 ⇒ 整格不渲染（后端算不出基准时）。
+const overnightItems = computed(() => (macroOvernight.value?.items || []))
+const overnightBaseLabel = computed(() => {
+  const t = macroOvernight.value?.base_time
+  // "2026-09-24T15:03:26+08:00" → "（自 09-24 15:03）"
+  return t ? `（自 ${String(t).slice(5, 16).replace('T', ' ')}）` : ''
+})
+const overnightTitle = computed(() => {
+  const it = overnightItems.value
+  const t = macroOvernight.value?.base_time
+  const base = t ? String(t).slice(5, 16).replace('T', ' ') : '—'
+  const head = `自上次 A 股收盘（${base}）以来外盘累计变化：`
+  const body = it.length
+    ? it.map(x => `${x.label} ${signNum(x.pct)}%`).join('\n')
+    : (macroOvernight.value?.note || '暂无数据')
+  // ⚠️ 明说是"解释/风控"用途 —— 纳指隔夜对 A 股次日的预测力在可交易口径下已实测塌陷
+  return `${head}\n${body}\n（仅用于解释开盘与风控；其预测力已被实证否定，不作为交易信号）`
+})
 
 const worstHolding = computed(() => {
   const arr = (radarItems.value || []).filter(x => x.pnl_pct != null)
@@ -864,7 +953,12 @@ async function loadTemperature() {
 async function loadRegime() {
   try {
     const { data } = await getMarketRegime()
-    regimeLabel.value = ({ offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空（阴跌）', defensive: '防御' })[data?.regime] || (data?.regime || '—')
+    // ★ 2026-09-25 修正：该接口响应体是 `{data: {regime: ...}}` **双层包装**
+    //   ⇒ axios 解构出的 data 是"整个响应体"，regime 实际在 `data.data.regime`。
+    //   原先直接读 `data?.regime` 恒为 undefined ⇒ 界面长期显示"—"。
+    //   这里兼容两层（后端若改成单层也不受影响）。
+    const r = (data && data.data) || data || {}
+    regimeLabel.value = ({ offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空（阴跌）', defensive: '防御' })[r.regime] || (r.regime || '—')
   } catch { regimeLabel.value = '—' }
 }
 async function loadBrief(phase) {
@@ -986,6 +1080,8 @@ async function loadGlobals() {
     const { data } = await getMacroSnapshot()
     // ★ /macro/snapshot 的品种在 data.panel 里（外层是 direction/derived/tags）
     globals.value = (data && data.panel) || {}
+    macroClock.value = (data && data.clock) || null   // ★ 时段的唯一来源（见 macroClock 定义）
+    macroOvernight.value = (data && data.overnight) || null   // ★ P1：隔夜累计变化
   } catch { globals.value = globals.value || {} }
 }
 async function loadEmotion() {
@@ -1142,16 +1238,15 @@ function startPolling() {
   timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   timers.push(setInterval(() => {
-    const prev = livePhase.value
+    // ★ 2026-09-25 用户再次明确：**不要自动流转**。
+    //   此处原先有「P0-7 阶段自动流转」—— 阶段推进就 `selectedPhase = livePhase`
+    //   把主工作区**切走**（注释说是为修"主体停在盘前、顶栏已是盘中"的混搭）。
+    //   ⚠️ 但用户裁定：自动切换会打断正在读的内容（盘前简报读到一半被切走），
+    //   宁可自己点。⇒ **只更新 livePhase（供时间轴上的温和提示用）**，
+    //   主工作区**永不自动切换**；提示见模板里的「● 已进入，点击切换」。
+    //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals()
-    // ★ 2026-09-25 P0-7 阶段自动流转：阶段推进时自动切换主工作区
-    //   （用户此前反馈"页面主体停在盘前、顶栏已是盘中数据"的混搭问题）
-    const order = PHASES.map(p => p.key)
-    if (isToday.value && order.indexOf(livePhase.value) > order.indexOf(selectedPhase.value)) {
-      selectedPhase.value = livePhase.value
-      loadPhaseData(selectedPhase.value)
-    }
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
