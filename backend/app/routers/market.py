@@ -571,6 +571,19 @@ _EMOTION_CLOSE_COLS = ("close_as_of", "close_up", "close_down", "close_limit_up"
                        "close_limit_down", "close_max_streak",
                        "close_prev_limit_today_pct", "close_verdict")
 
+# ★★ 2026-09-25（竞价段评估 #1）：竞价窗口（9:15-9:25）的快照字段。
+#   【为什么必须落库】竞价数据**只在 9:15-9:25 这 10 分钟存在**（内存行情里的 open/amount），
+#     不落库就**永久丢失** ⇒ ① 没有参照系：看不出"高开 47 家、平均 +0.8%"算强还是弱；
+#     ② 永远无法回测"竞价强度 → 当日走势"（A4 竞价看板的校准依据）。
+#     同库已有同款模式可照抄（`close_*` 双字段、`market_tail_snapshot` 尾盘基线）。
+#   【与 close_* 的区别】`close_*` = 收盘实际；`auction_*` = **开盘前的定调**。
+#     ⚠️ 语义边界：`auction_*` **只在 9:15-9:25 窗口内写**，且**允许窗口内重复覆盖**
+#       （9:25 定稿值最重要）；窗口外一律不写 —— 9:25 后的 `amount` 已含连续竞价成交，
+#       写成"竞价额"会失真（与后端 `amount_note` 的诚实标注同一条纪律）。
+_EMOTION_AUCTION_COLS = ("auction_as_of", "auction_count", "auction_avg_gap",
+                         "auction_up_open", "auction_down_open",
+                         "auction_avg_gap_all", "auction_total_amount_wan")
+
 
 def _ensure_emotion_table() -> None:
     """建表（幂等）+ **幂等加列**。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险。"""
@@ -593,12 +606,16 @@ def _ensure_emotion_table() -> None:
             close_up TEXT, close_down TEXT,
             close_limit_up TEXT, close_limit_down TEXT,
             close_max_streak TEXT, close_prev_limit_today_pct TEXT,
-            close_verdict TEXT
+            close_verdict TEXT,
+            auction_as_of TEXT,
+            auction_count TEXT, auction_avg_gap TEXT,
+            auction_up_open TEXT, auction_down_open TEXT,
+            auction_avg_gap_all TEXT, auction_total_amount_wan TEXT
         )
     """)
     # ★ 2026-09-25：`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表加列 ⇒ 老库需补 ALTER。
     #   逐列 `try/except` 忽略"列已存在"（双库的报错文案不同，故不匹配具体错误文本）。
-    for _c in _EMOTION_CLOSE_COLS:
+    for _c in (_EMOTION_CLOSE_COLS + _EMOTION_AUCTION_COLS):
         try:
             db.execute(f"ALTER TABLE market_emotion_daily ADD COLUMN {_c} TEXT")
         except Exception:
@@ -617,7 +634,8 @@ def _load_emotion_daily(day: str) -> Dict:
         return {}
 
 
-def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict) -> Dict:
+def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict,
+                       auction: bool = False) -> Dict:
     """把一次情绪快照组装成"整行"（**双库安全的写法**）。
 
     ⚠️⚠️ 为什么必须组装成**整行**：`db.upsert` 在 PG 下只更新传入的列，但在 **SQLite 分支
@@ -625,7 +643,11 @@ def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict) -> Dic
     把主字段抹掉（而线上是好的）⇒ 这种"双库行为不一致"最难查。
     ⇒ 一律：**先读当天已有行 → 合并 → 写全字段**。
 
-    主字段（盘前/首次算出）= 预判；`close_*`（收盘后算出）= 实际结果。
+    三组字段（各自独立、互不覆盖）：
+      · 主字段（盘前/首次算出）= 当日**预判**
+      · `close_*`（收盘后算出）  = 当日**实际结果**（对账用）
+      · `auction_*`（**仅 9:15-9:25 窗口**，`auction=True` 时写）= 开盘前**定调**
+        ⇒ ⚠️ 竞价组**允许窗口内重复覆盖**（9:25 定稿值最重要），其余两组保持"写一次"语义。
     """
 
     def _s(v):
@@ -649,11 +671,31 @@ def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict) -> Dic
         "close_max_streak": old.get("close_max_streak"),
         "close_prev_limit_today_pct": old.get("close_prev_limit_today_pct"),
         "close_verdict": old.get("close_verdict"),
+        # ★ 竞价组（默认从已有行继承 —— 缺了这几行，SQLite 的整行替换会把竞价数据抹掉）
+        "auction_as_of": old.get("auction_as_of"),
+        "auction_count": old.get("auction_count"),
+        "auction_avg_gap": old.get("auction_avg_gap"),
+        "auction_up_open": old.get("auction_up_open"),
+        "auction_down_open": old.get("auction_down_open"),
+        "auction_avg_gap_all": old.get("auction_avg_gap_all"),
+        "auction_total_amount_wan": old.get("auction_total_amount_wan"),
     }
     if base["created_at"] is None:
         base["created_at"] = _bj_now().isoformat()
 
-    if after_close:
+    if auction:
+        # 竞价窗口（9:15-9:25）⇒ 写 `auction_*`（**允许覆盖**：9:25 的定稿值才是最终口径）
+        a = val.get("auction") or {}
+        base.update({
+            "auction_as_of": _s(val.get("as_of")),
+            "auction_count": _s(a.get("count")),
+            "auction_avg_gap": _s(a.get("avg_gap")),
+            "auction_up_open": _s(a.get("up_open")),
+            "auction_down_open": _s(a.get("down_open")),
+            "auction_avg_gap_all": _s(a.get("avg_gap_all")),
+            "auction_total_amount_wan": _s(a.get("total_amount_wan")),
+        })
+    elif after_close:
         # 收盘后 ⇒ 只补 `close_*`（**主字段保留盘前预判的原值**，这是对账的前提）
         base.update({
             "close_as_of": val.get("as_of"),
@@ -701,10 +743,27 @@ def _save_emotion_daily(val: Dict) -> None:
             return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
         day = _bj_now().strftime("%Y-%m-%d")
         now = _bj_now()
+        hhmm = now.hour * 100 + now.minute
         after_close = (now.hour * 60 + now.minute) >= 900      # 15:00 之后
         from app.database import db
         old = _load_emotion_daily(day)
         # 幂等：盘前已记过预判就不再写；盘后同一时刻已记过就不再写（省掉无意义的写放大）
+        # ★★ 2026-09-25（竞价段评估 #1）：**9:15-9:25 窗口单独落库竞价字段**。
+        #   【为什么必须单独分支】主字段的幂等是"盘前写过就不再动"（保持"第一次算成"口径），
+        #     而竞价数据**只在窗口内有效、且逐分钟变化**（9:25 定稿值最重要）⇒ 语义冲突。
+        #     ⇒ 竞价组独立、窗口内**允许覆盖**（取最新）；窗口外**一律不写**
+        #       （9:25 之后的 amount 已含连续竞价成交，写成"竞价额"会失真 —— 与后端
+        #        `amount_note` 同一条诚实纪律）。
+        #   ⚠️ 刻意**不设** `_EMOTION_SAVED`：那个标记的语义是"当日主字段已记过"，
+        #      竞价分支只写了 auction 列 ⇒ 设了会让后来者误判主字段也写过。
+        if 915 <= hhmm < 925:
+            if old.get("auction_as_of") == val.get("as_of"):
+                return                       # 同一时刻已记过（省写放大）
+            row = _emotion_daily_row(day, val, after_close, old, auction=True)
+            db.upsert("market_emotion_daily", row, conflict_columns=["date"])
+            print(f"[market] auction snapshot saved {day} "
+                  f"count={(val.get('auction') or {}).get('count')}")   # ASCII（铁律⑥）
+            return
         if after_close and old.get("close_as_of") == val.get("as_of"):
             return
         if not after_close and old.get("verdict"):
@@ -1039,6 +1098,84 @@ def market_tail_review(date: str = Query(None)):
     return tail_review(date)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  竞价判读 —— 2026-09-25（用户："这些结论可不可以生成在页面里，用户就不需要思考太多"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【回答什么】把竞价看板的**数字**翻成两句人话：**接力意愿**（昨日涨停股今天还接不接）
+#   与**全市场开局**（普遍高开还是普跌）。框架原话："溢价为正 = 情绪没退"。
+#
+# ⚠️⚠️ 三条边界（都写进返回值，避免被当成预测）：
+#   ① **这是"开盘前强度"的描述，不是涨跌预测** —— 高开只是起点，方向由 9:30-10:00 的
+#      冲高回落/回封确认（框架本身就这么要求）。
+#   ② **阈值是经验初值、未经回测**（项目纪律：不造无依据的"闸门"）⇒ 故本判读
+#      **纯展示、不进任何信号或仓位**；且**只落库事实**（`auction_*`），判读由规则实时算
+#      ⇒ 将来校准阈值后，历史数据自动受益（"存事实、不存结论"）。
+#   ③ 数据缺失（休市 / 行情源未就绪）⇒ 返回 None，前端**不显示**（不假装有判读）。
+_AUCTION_GAP_STRONG = 1.0     # 昨涨停股平均高开 ≥ +1.0% ⇒ 接力强（经验初值）
+_AUCTION_GAP_WEAK = -1.0      # ≤ -1.0% ⇒ 接力弱
+_AUCTION_RATIO_UP = 1.5       # 高开:低开 ≥1.5 且全市场平均 ≥ +0.1% ⇒ 普遍高开
+_AUCTION_RATIO_DOWN = 0.67    # ≤0.67 且全市场平均 ≤ -0.1% ⇒ 普遍低开
+_AUCTION_ALL_BAND = 0.1
+
+
+def _auction_read(a: Dict, has_live: bool) -> Optional[Dict]:
+    """竞价数字 → 「接力意愿 + 全市场开局」两句判读。数据不足返回 None（不硬编）。"""
+    if not has_live or not a:
+        return None
+    gap = a.get("avg_gap")           # 昨日涨停股平均高开（接力意愿）
+    all_gap = a.get("avg_gap_all")   # 全市场平均高开
+    up, down = a.get("up_open"), a.get("down_open")
+    if gap is None and all_gap is None:
+        return None
+
+    # ① 接力意愿
+    if gap is None:
+        relay, relay_cn = None, None
+    elif gap >= _AUCTION_GAP_STRONG:
+        relay, relay_cn = "strong", f"接力意愿强（昨涨停股今均高开 {gap:+.2f}%，仍有人接）"
+    elif gap <= _AUCTION_GAP_WEAK:
+        relay, relay_cn = "weak", f"接力转弱（昨涨停股今均 {gap:+.2f}%，追涨者平均亏钱）"
+    else:
+        relay, relay_cn = "neutral", f"接力中性（昨涨停股今均 {gap:+.2f}%）"
+
+    # ② 全市场开局
+    ratio = (up / max(down or 0, 1)) if (up is not None and down is not None) else None
+    if ratio is None or all_gap is None:
+        market, market_cn = None, None
+    elif ratio >= _AUCTION_RATIO_UP and all_gap >= _AUCTION_ALL_BAND:
+        market, market_cn = "bullish", f"普遍高开（{up} : {down}，平均 {all_gap:+.2f}%）"
+    elif ratio <= _AUCTION_RATIO_DOWN and all_gap <= -_AUCTION_ALL_BAND:
+        market, market_cn = "bearish", f"普遍低开（{up} : {down}，平均 {all_gap:+.2f}%）"
+    else:
+        market, market_cn = "mixed", f"开局分化（{up} : {down}，平均 {all_gap:+.2f}%）"
+
+    # ③ 组合结论 + 动作（克制：只给"该注意什么"，不给买卖指令）
+    combo = (relay, market)
+    if combo == ("strong", "bullish"):
+        level, text = "good", "顺风开局：接力未退 + 普遍高开"
+        action = "按盘前计划执行；⚠️ 高开只是起点，9:30-10:00 快速回落按「冲高回落」纪律处理"
+    elif combo == ("strong", "bearish"):
+        level, text = "mixed", "背离：强势股有人接，但大盘整体低开"
+        action = "资金只在少数强势股抱团 ⇒ 只做有信号的标的，别用普涨思维"
+    elif combo == ("weak", "bullish"):
+        level, text = "mixed", "背离：指数高开（权重/普涨），但强势股接力退潮"
+        action = "谨防「指数红、个股绿」⇒ 降低追涨标准，看个股别只看指数"
+    elif combo == ("weak", "bearish"):
+        level, text = "bad", "退潮开局：接力弱 + 普遍低开"
+        action = "以防守为主：不加仓、不追高，持仓按止损纪律执行"
+    else:
+        level, text = "neutral", "开局一般（无明显接力强/弱或普涨/普跌）"
+        action = "按盘前判断执行，等 9:30-10:00 的方向确认再动作"
+
+    return {
+        "level": level, "text": text, "action": action,
+        "relay": relay, "relay_cn": relay_cn,
+        "market": market, "market_cn": market_cn,
+        "note": ("阈值为经验初值（未回测）⇒ 纯展示、不进信号与仓位；且只描述**开盘前强度**，"
+                 "不预测涨跌 —— 方向由 9:30-10:00 验证"),
+    }
+
+
 @router.get("/emotion")
 def market_emotion():
     """情绪快照 v0：涨停/跌停家数 + 昨日涨停赚钱效应 + 连板高度近似 + 三档判读。
@@ -1130,6 +1267,28 @@ def market_emotion():
     #   全市场高开榜 / 低开榜 + 高开低开家数 + 两市累计成交额。
     #   ⚠️ **语义随时段变**：`amount_wan` 在竞价时段是竞价额，盘中/盘后就是**当日累计**成交额
     #      ⇒ 故字段命名为 `total_amount_wan` 并附 `amount_note`，**不叫"竞价额"**（避免误导）。
+    # ★ 2026-09-25（竞价段评估 #3）：给全市场榜单加"**与我有关**"的标记 ——
+    #   原先只有名字+幅度，看不出这 20 只高开里有没有**池内/战法信号/我的持仓**
+    #   （看榜单的目的正是"里面有没有我能接的"）。
+    #   ⚠️ 零新增重查询：`signal_industry_cached()` 有 30 分钟进程缓存（读 strategy_results 最新日，
+    #      与决策卡的「信号×行业」同源）；持仓只取 user_portfolio 的 code 集合（小表 + scope 过滤）。
+    #   ⚠️ 失败静默（辅助标记绝不拖垮竞价看板）。
+    sig_codes, held_codes = set(), set()
+    try:
+        from app.trader_brief import signal_industry_cached
+        for _r in ((signal_industry_cached() or {}).get("rows") or []):
+            sig_codes.update(str(c) for c in (_r.get("codes") or []))
+    except Exception as e:
+        print(f"[market] auction sig marks failed: {e}")        # ASCII（铁律⑥）
+    try:
+        from app.database import db as _db
+        from app.portfolio_scope import portfolio_where
+        _w, _p = portfolio_where()
+        held_codes = {str(r.get("code")) for r in
+                      (_db.fetch(f"SELECT code FROM user_portfolio {_w}", _p) or [])}
+    except Exception as e:
+        print(f"[market] auction held marks failed: {e}")       # ASCII（铁律⑥）
+
     market_gaps, up_open, down_open = [], 0, 0
     total_amount_wan = 0.0
     for _c, _s in (stocks or {}).items():
@@ -1145,7 +1304,9 @@ def market_emotion():
         elif _g < 0:
             down_open += 1
         market_gaps.append({"code": _c, "name": _s.get("name") or _c,
-                            "gap_pct": round(_g, 2), "amount_wan": round(_amt)})
+                            "gap_pct": round(_g, 2), "amount_wan": round(_amt),
+                            # ★ "与我有关"标记（见上方 sig_codes/held_codes 注释）
+                            "sig": _c in sig_codes, "held": _c in held_codes})
     market_gaps.sort(key=lambda x: -x["gap_pct"])
     auction = {"count": len(gaps),
                "avg_gap": round(sum(g["gap_pct"] for g in gaps) / len(gaps), 2) if gaps else None,
@@ -1159,6 +1320,8 @@ def market_emotion():
                                if market_gaps else None),
                "total_amount_wan": (round(total_amount_wan) if total_amount_wan else None),
                "amount_note": "成交额为截至 as_of 的**累计值**（9:15-9:25 期间即竞价额）"}
+    # ★ 2026-09-25：把数字翻成两句人话（接力意愿 / 全市场开局）—— 见 `_auction_read` 的边界声明
+    auction["verdict"] = _auction_read(auction, has_live)
 
     if not has_live:
         verdict = None       # ★ 2026-09-25：无行情 ⇒ 不判读（休市显示"分歧/常态"同样是误导）

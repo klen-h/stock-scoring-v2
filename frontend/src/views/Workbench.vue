@@ -194,9 +194,22 @@
 
         <!-- ★ 2026-09-25 用户："9:15–9:25 是盘前到盘中的关键过渡（竞价额、竞价涨幅榜、
              昨日强势股溢价），时间轴上 9:30 直接从盘前跳盘中，少了一环。"
-             ⇒ 新增「竞价」视图：只用**已有**数据（`market_emotion.auction` + `prev_limit_today_pct`），
-             零新增接口。当前覆盖"昨日强势股今日溢价/高开榜"；
-             ⚠️ **竞价额/全市场竞价涨幅榜暂缺**（需后端扩展 `auction`，见 memory 待办）。 -->
+             ⇒ 新增「竞价」视图，**零新增接口**（全部来自 `market_emotion` 快照）。
+             现状（2026-09-25 晚更新 —— ⚠️ 原注释写的"竞价额/全市场榜单暂缺"**已过时**）：
+               · 昨日涨停股视角：高开家数 / 平均高开 / 溢价（昨涨停今均）+ 高开 Top5
+               · 全市场视角：高开·低开家数 / 平均高开 / 累计成交额 + 高开榜·低开榜 Top20
+             ⚠️ **已知缺口**（评估结论，等用户定做哪个）：
+               ① 竞价数据**未落库**（`market_emotion_daily` 只存 up/down/limit_up/…/verdict，
+                  不含 auction 的高开家数/平均/成交额）⇒ **无法与近几日对比，也无法回测
+                  "竞价强度 → 当日走势"**；而同库已有成熟的"先落库攒样本"模式（close_*、
+                  尾盘承接基线）可照抄。
+               ② 刷新节奏：`startPolling` 的 120s 轮询**已含 `loadEmotion()`**（数据会自动更新），
+                  但竞价窗口只有 10 分钟 ⇒ 最多刷 5 次，**9:24→9:25 定稿瞬间可能滞后 ≤2 分钟**；
+                  若要盯最后几分钟，可给竞价时段单独加快到 30~60s（尚未做）。
+                  ⚠️ 我最初误判为"不在轮询里"—— 起因是搜索输出被截断（只看到 2098-2108 行），
+                     没读到 2109 行的 `loadEmotion()`。**"没搜到" ≠ "不存在"**。
+               ③ 高开榜只给名字与幅度，**未标注"是否池内 / 有信号"**（数据现成）。
+               ④ 无竞价量比（需"昨日同期竞价额"，本项目无分时数据 ⇒ 短期做不到，诚实标注）。 -->
         <template v-else-if="selectedPhase === 'auction'">
           <div class="bg-card border border-indigo-500/40 rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
@@ -206,6 +219,26 @@
             </div>
             <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
             <template v-else>
+              <!-- ★★ 2026-09-25 用户："这些结论可不可以生成在页面里，这样用户就不需要思考太多"
+                   ⇒ 判读**置顶**（数字在下作支撑）：接力意愿 + 全市场开局 + 「该注意什么」。
+                   ⚠️ 后端已声明三条边界（悬停可见完整口径）：这是**开盘前强度描述、不是涨跌预测**；
+                      阈值为**经验初值、未回测** ⇒ 纯展示、不进信号与仓位；数据缺则不显示。 -->
+              <div v-if="emotion.auction?.verdict"
+                   class="mb-3 rounded border border-border/50 px-2 py-1.5 space-y-0.5">
+                <div class="text-xs font-semibold cursor-help"
+                     :class="{ good: 'text-rise', mixed: 'text-amber-300',
+                               bad: 'text-fall', neutral: 'text-gray-300' }[emotion.auction.verdict.level]"
+                     :title="emotion.auction.verdict.note">
+                  竞价判读 · {{ emotion.auction.verdict.text }}
+                </div>
+                <div class="text-[11px] text-muted">
+                  <template v-if="emotion.auction.verdict.relay_cn">{{ emotion.auction.verdict.relay_cn }}</template>
+                  <template v-if="emotion.auction.verdict.relay_cn && emotion.auction.verdict.market_cn"> · </template>
+                  <template v-if="emotion.auction.verdict.market_cn">{{ emotion.auction.verdict.market_cn }}</template>
+                </div>
+                <div class="text-[11px] text-accent/90">
+                  该注意：{{ emotion.auction.verdict.action }}</div>
+              </div>
               <div class="grid grid-cols-3 gap-3 text-center text-xs mb-3">
                 <div>
                   <div class="text-lg font-bold font-mono">{{ emotion.auction?.count ?? '—' }}</div>
@@ -235,23 +268,29 @@
                   </template>
                   <span class="text-[10px] cursor-help" :title="emotion.auction.amount_note">ⓘ</span>
                 </div>
-                <div class="mb-1 text-[10px] text-muted">高开榜 Top20（全市场）</div>
+                <div class="mb-1 text-[10px] text-muted">高开榜 Top20（全市场）
+                  <span class="cursor-help" title="带「★」= 有战法信号；带「持」= 我的持仓；加亮边框 = 与我有关。看榜单的目的正是「里面有没有我能接的」。">★信号 · 持持仓</span>
+                </div>
                 <div class="flex flex-wrap gap-1">
                   <a v-for="g in (emotion.auction.market_top || [])" :key="'mt' + g.code"
                      :href="stockHref(g.code)" target="_blank"
-                     class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-[11px] hover:border-accent"
-                     :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'"
-                     :title="`成交 ${fmtAmountWan(g.amount_wan)}`">
-                    {{ g.name }} {{ signNum(g.gap_pct) }}%
+                     class="px-1.5 py-0.5 rounded border font-mono text-[11px]"
+                     :class="[g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400',
+                              (g.sig || g.held) ? 'border-accent/70' : 'border-border/60 hover:border-accent']"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
+                    <span v-if="g.held" class="text-accent">持</span><span
+                      v-else-if="g.sig" class="text-accent">★</span>{{ g.name }} {{ signNum(g.gap_pct) }}%
                   </a>
                 </div>
                 <div class="mb-1 mt-2 text-[10px] text-muted">低开榜 Top20（全市场）</div>
                 <div class="flex flex-wrap gap-1">
                   <a v-for="g in (emotion.auction.market_bottom || [])" :key="'mb' + g.code"
                      :href="stockHref(g.code)" target="_blank"
-                     class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-[11px] hover:border-accent text-emerald-400"
-                     :title="`成交 ${fmtAmountWan(g.amount_wan)}`">
-                    {{ g.name }} {{ signNum(g.gap_pct) }}%
+                     class="px-1.5 py-0.5 rounded border font-mono text-[11px] text-emerald-400"
+                     :class="(g.sig || g.held) ? 'border-accent/70' : 'border-border/60 hover:border-accent'"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
+                    <span v-if="g.held" class="text-accent">持</span><span
+                      v-else-if="g.sig" class="text-accent">★</span>{{ g.name }} {{ signNum(g.gap_pct) }}%
                   </a>
                 </div>
               </div>
@@ -2097,6 +2136,13 @@ function startPolling() {
   if (isReplay.value) return
   timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
+  // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
+  //   ⇒ 最多刷 5 次，**9:24→9:25 的定稿瞬间可能滞后 ≤2 分钟**（那是最关键的几十秒）。
+  //   ⇒ 竞价时段单独加快到 **30s**；⚠️ 只在窗口内真正发请求（`computePhase()` 是纯函数，
+  //     其余时段空转 ⇒ 零成本、零额外流量）。
+  timers.push(setInterval(() => {
+    if (computePhase() === 'auction') loadEmotion()
+  }, 30000))
   timers.push(setInterval(() => {
     // ★ 2026-09-25 用户再次明确：**不要自动流转**。
     //   此处原先有「P0-7 阶段自动流转」—— 阶段推进就 `selectedPhase = livePhase`
