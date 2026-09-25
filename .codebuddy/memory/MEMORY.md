@@ -370,6 +370,16 @@
   ⇒ 展示类/聚合类改动，**先用一条只查长度或少量样本的探针脚本摸清真实分布**（egress 极小），
   再写过滤规则；过滤判据宁可**用正向判据**（如"必须含中文"）而不是**列举黑名单前缀**
   （后者每来一种新来源就要改一次）。
+- ★★ **PG / SQLite 双库的四个坑（2026-09-25 一天内全踩到，`db` 层只转占位符、不转方言）**：
+  ① **JSON 列**：`seats_json` 在 PG 是 `JSON` 类型 ⇒ psycopg2 读出来**已经是 list/dict**
+     （**不能再 `json.loads`**），SQLite 则是 TEXT（需 loads）⇒ **必须兼容两种形态**；
+     且 SQL 侧比较要 `seats_json::text NOT IN ('[]','null')` —— 直接和空串比会报
+     **`invalid input syntax for type json`**。
+  ② **`Decimal`**：PG 的 `SUM(numeric)` / `numeric` 列返回 **`Decimal`** ⇒ 直接塞进响应会
+     被序列化成**字符串**（前端拿到 `"1211695537"` 而非数字）⇒ **显式 `float(v)`**。
+  ③ **`NULLS LAST`** 是 **PG 专有**、SQLite 不支持 ⇒ 排序改用 `COALESCE(col, 0)`。
+  ④ 占位符统一 `%s`（`db` 层自动转换），**别写 `?`**。
+  ⇒ 写跨库 SQL / 读数值与 JSON 列时，**默认按"两边都要能跑"设计**，并在真机上各验一次。
 - 生产 Python 3.9；禁用 PEP 604（`str | None`），用 `Optional` 或 `from __future__ import annotations`。
 - FastAPI 路由：没有 `await` 的必须写 `def`，禁止假 async 阻塞事件循环。
 
