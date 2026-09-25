@@ -328,6 +328,21 @@
     `macro.get_overnight_change` 已实现（基准取自 `macro_history` 的 `HH:MM>=15:00` 最近一条）。
   ⚠️ **`macro_history` 的键名与面板不一致**（`nikkei`→**`nke`**、`us10y`→**`us10yt`**）
     ⇒ 跨"面板/历史"取数必须**显式映射**，别用同名假设（已用 `_OVERNIGHT_KEYS` 三元组）。
+- ★★ **PowerShell 里 `git commit -m` 的引号规则（2026-09-25 连踩两次后的正确版）**：
+  · 双引号 `"..."` ⇒ 会展开 `$`、反引号是转义符 ⇒ 危险，**改用单引号**。
+  · ⚠️ **但单引号串里不能出现半角引号（`'`）** —— 一旦出现就**提前闭合**，后面的正文
+    被当成额外 pathspec ⇒ 报 `error: pathspec 'xxx' did not match any file(s) known to git`。
+  · ⚠️⚠️ **最坑的是它会伪装成功**：`git push` 仍输出 `Everything up-to-date`（因为根本没生成
+    commit）⇒ **极易误判为"已提交"**。
+  · **正确做法**：message 里**一个引号都不用**（连全角引号也避免），用「」和（）；
+    或干脆 `git commit -F <msgfile>` 从文件读。
+  · **必查**：提交后看 `[main xxxxx] 标题` 那一行 + `git log --oneline -1`，
+    **不能只看 push 输出**。
+- ★★ **「只在特定数据条件下爆炸」的 bug 靠走查最难发现（2026-09-25 实例）**：
+  `trader_brief.collect_brief_data` 为 R5 追加 action 时误写成 `add(...)`，而本作用域只定义了
+  `_add` ⇒ **只有"有持仓被标记主力出货"（risks 非空）时才抛 NameError**，而该函数被
+  决策卡与盘前简报共用 ⇒ 两者一起失败。⇒ **同一作用域内的近名函数（`_add`/`add`）要警惕**；
+  用**静态断言测试**锁住（`inspect.getsource` 里查 `_add("R5"` 存在、裸 `add("R5"` 不存在）。
 - 生产 Python 3.9；禁用 PEP 604（`str | None`），用 `Optional` 或 `from __future__ import annotations`。
 - FastAPI 路由：没有 `await` 的必须写 `def`，禁止假 async 阻塞事件循环。
 
