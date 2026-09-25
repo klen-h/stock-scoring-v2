@@ -130,7 +130,7 @@
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">情绪预判
                 <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span>
-                <span v-if="emotion.trading_day === false"
+                <span v-if="emotion?.trading_day === false"
                       class="ml-1 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]">休市日·显示最近交易日数据</span></div>
               <span class="text-sm font-bold"
                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
