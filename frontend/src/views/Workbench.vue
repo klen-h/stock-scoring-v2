@@ -466,6 +466,38 @@
             </template>
           </div>
 
+          <!-- ★ 2026-09-25（P2）用户："决策简报里 ma_convergence_breakout 说『需结合行业分布判断』，
+               但页面没给分布 —— **58 只信号的行业交叉表应该直接画出来**。"
+               且"融捷（锂）和焦作万方（电解铝）笼统归入『有色/化工链条』，**分类口径要标注**"。
+               ⇒ 数据来自后端 `dc.signals_industry`（零新增数据源：strategy_results + stock_industry）。
+               行业名 = 归一化一级；**悬停显示原始细分口径**（如 有色 → 锂/电解铝）。
+               ⚠️ 原始名里新浪 node（new_xxx）已被后端过滤，不会出现乱码。 -->
+          <div v-if="dc && (dc.signals_industry?.rows || []).length"
+               class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">信号 × 行业
+                <span class="text-[10px] text-muted font-normal">
+                  （{{ dc.signals_industry.date }} 扫描 · 共 {{ dc.signals_industry.total_codes }} 只有信号）</span>
+              </div>
+              <span class="text-[10px] text-muted cursor-help"
+                    title="行业为归一化后的一级分类；悬停任意一行可看该行业的原始细分口径与战法构成">行业＝一级 · 悬停看口径</span>
+            </div>
+            <div class="space-y-1 text-xs">
+              <div v-for="r in dc.signals_industry.rows" :key="r.industry"
+                   class="flex items-center gap-2 cursor-help"
+                   :title="`${r.industry}：${r.count} 只信号｜战法构成 ${Object.entries(r.strategies || {}).map(([k, v]) => k + ' ' + v).join(' / ')}${(r.raw || []).length ? '｜原始细分：' + r.raw.join('、') : ''}`">
+                <span class="w-[70px] truncate text-gray-200">{{ r.industry }}</span>
+                <div class="flex-1 h-2.5 rounded bg-white/5 overflow-hidden">
+                  <div class="h-full rounded bg-accent/60" :style="{ width: barW(r.count) }"></div>
+                </div>
+                <span class="w-8 text-right font-mono text-gray-300">{{ r.count }}</span>
+                <span class="w-[140px] truncate text-[10px] text-muted">
+                  {{ (r.raw || []).length ? r.raw.join(' / ') : (r.industry === '未映射' ? '无行业映射' : '') }}
+                </span>
+              </div>
+            </div>
+          </div>
+
           <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
@@ -983,6 +1015,12 @@ const planClass = (lv) => (lv === 'act' ? 'text-red-400 font-semibold'
   : lv === 'exit' ? 'text-red-400'
     : lv === 'protect' ? 'text-amber-400'
       : lv === 'hold' ? 'text-emerald-400' : 'text-gray-300')
+// ★ 2026-09-25：信号×行业 的条形宽度（相对**本表最大值**，避免绝对刻度在大盘股/小行业间失真）
+const barW = (n) => {
+  const rows = dc.value?.signals_industry?.rows || []
+  const max = Math.max(1, ...rows.map(r => r.count || 0))
+  return Math.round(((n || 0) / max) * 100) + '%'
+}
 const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))

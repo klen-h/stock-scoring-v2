@@ -498,6 +498,139 @@ def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None):
     return {"level": None, "text": "—（仓位建议缺失，仅作参考）"}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  战法信号 × 行业 交叉表 —— 2026-09-25（用户需求 P2）
+# ══════════════════════════════════════════════════════════════════════════
+# 【要解决的问题】用户原话：
+#   · "决策简报：ma_convergence_breakout 说『需结合行业分布判断』，但页面没给分布 ——
+#      **58 只信号的行业交叉表应该直接画出来**。"
+#   · "融捷（锂）和焦作万方（电解铝）笼统归入『有色/化工链条』，**分类口径要标注**。"
+#
+# 【数据源】零新增网络：`strategy_results`（最新扫描日） + `stock_industry`（映射表）。
+#   ⚠️ 性能实测（2026-09-25）：最新一日 **10 行共 331 KB**（最大 ma_convergence_breakout 190 KB /
+#      single_yang_unbroken 116 KB）。`gate_history.py` 注释里的"读 6 行大 JSON 要 15.7s"是
+#      **热路径上叠加查询**所致；本函数单独查 + 30 分钟进程缓存 ⇒ 可忽略。
+#
+# 【口径标注】`main_industry` 是**归一化后的一级行业**（如"有色"），而
+#   `main_industry_code` 保留**原始细分名**（如"锂"/"电解铝"）⇒ 后者正是用户要的"口径"。
+#   ⚠️ 但实测发现两种来源**混用**：新浪源存的是 node（`new_dlhy`/`new_dqhy`，**不可读**），
+#      东财源存的是原始行业名（`油服工程`/`塑料`，可读）⇒ **必须过滤**（见 _raw_industry_label）。
+_SIG_IND_CACHE = {"ts": 0.0, "val": None}
+_SIG_IND_TTL = 1800.0        # 30 分钟：信号是日频，缓存半天也无害
+
+
+def _raw_industry_label(raw: str) -> str:
+    """原始行业名的**可读化**：只保留含中文的（行业名一定是中文）。
+
+    ⚠️ 实测（2026-09-25，**真实数据**）：`main_industry_code` 里混着多种**不可读代码** ——
+        新浪 node（`new_dlhy`）、东财板块码（**`BK1386`/`BK0440`**）、以及 `-`。
+        ⇒ 判据不能只列举前缀（`new_`），改为「**必须含中文**」⇒ 更鲁棒，新增来源也不用再改。
+      （打桩测试是发现不了 `BK1386` 的 —— 造不出真实全集 ⇒ **必须真跑一次真实数据**。）
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    if not any("\u4e00" <= ch <= "\u9fff" for ch in raw):
+        return ""
+    return raw
+
+
+def signal_industry_cross(limit: int = 12) -> dict:
+    """战法信号 × 行业 交叉表：每个行业有多少信号、由哪些战法贡献、**原始细分口径**是什么。
+
+    返回 `{date, rows: [{industry, count, strategies: {战法: n}, codes, raw}], total_codes, note}`；
+    `rows` 按信号数降序、截断 `limit` 条。**失败静默**返回空结构（辅助信息不拖垮调用方）。
+    """
+    import json as _json
+    out = {"date": None, "rows": [], "total_codes": 0, "note": None}
+    try:
+        r = db.fetch_one("SELECT MAX(scan_date) AS d FROM strategy_results")
+        d = str((r or {}).get("d") or "")
+        if not d:
+            out["note"] = "暂无战法扫描结果"
+            return out
+        rows = db.fetch(
+            "SELECT strategy_name, results_json FROM strategy_results WHERE scan_date = %s", (d,))
+        code_map: dict = {}          # code -> {code, name, strategies: [战法名]}
+        for x in rows or []:
+            sn = x.get("strategy_name") or ""
+            try:
+                arr = _json.loads(x.get("results_json") or "[]")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(arr, dict):                    # 兼容未来可能的 {signals: []} 结构
+                arr = arr.get("signals") or arr.get("data") or []
+            for it in (arr or []):
+                if not isinstance(it, dict):
+                    continue
+                c = str(it.get("code") or "").strip()
+                if not c:
+                    continue
+                e = code_map.setdefault(c, {"code": c, "name": it.get("name") or c,
+                                            "strategies": []})
+                if sn and sn not in e["strategies"]:
+                    e["strategies"].append(sn)
+        if not code_map:
+            out["note"] = "扫描结果里没有可解析的信号明细"
+            return out
+        # 行业映射：分批 IN（避免单条 SQL 参数过多）
+        codes = list(code_map)
+        ind: dict = {}
+        for i in range(0, len(codes), 500):
+            chunk = codes[i:i + 500]
+            ph = ",".join(["%s"] * len(chunk))
+            for r2 in db.fetch(
+                    f"SELECT code, main_industry, main_industry_code FROM stock_industry "
+                    f"WHERE code IN ({ph})", chunk) or []:
+                ind[str(r2.get("code"))] = (r2.get("main_industry") or "未映射",
+                                            _raw_industry_label(r2.get("main_industry_code")))
+        agg: dict = {}
+        for c, e in code_map.items():
+            m, raw = ind.get(c, ("未映射", ""))
+            a = agg.setdefault(m, {"industry": m, "count": 0, "codes": [],
+                                   "raw": set(), "strategies": {}})
+            a["count"] += 1
+            a["codes"].append(c)
+            if raw:
+                a["raw"].add(raw)
+            for sn in e["strategies"]:
+                # ★ 直接用**中文战法名**做 key（复用 `_strategy_cn` 唯一映射源）——
+                #   避免前端再抄一份英文→中文表（那正是项目里"前端写死 vs 后端动态漂移"的老坑）。
+                cn = _strategy_cn(sn) or sn
+                a["strategies"][cn] = a["strategies"].get(cn, 0) + 1
+        out["date"] = d
+        out["total_codes"] = len(code_map)
+        out["rows"] = sorted(agg.values(), key=lambda x: -x["count"])[:max(1, limit)]
+        for a in out["rows"]:
+            a["raw"] = sorted(a["raw"])[:4]              # 原始细分名（口径标注，最多 4 个）
+            a["top_strategy"] = (max(a["strategies"].items(), key=lambda kv: kv[1])[0]
+                                 if a["strategies"] else None)
+    except Exception as e:
+        # ASCII（项目铁律⑥：本地 GBK 控制台中文 print 会抛 UnicodeEncodeError）
+        print(f"[trader_brief] signal x industry cross failed: {e}")
+        out["note"] = "计算失败"
+    return out
+
+
+def signal_industry_cached(limit: int = 12) -> dict:
+    """`signal_industry_cross` 的 30 分钟进程缓存包装（失败也不写缓存，便于下次重试）。
+
+    ⚠️ `import time` 必须在**函数内**（本模块顶层没有 time）。★ 2026-09-25 踩坑：
+      漏了它 ⇒ **调用时**才抛 `NameError`，而 `import app.trader_brief` **抓不到**
+      （定义期不求值函数体）⇒ **验证纪律升级：新增函数必须被真实调用一次**，
+      仅做 import 冒烟只能挡住"定义期"错误（如缺 `Optional` 的注解）。
+    """
+    import time
+    now = time.time()
+    c = _SIG_IND_CACHE.get("val")
+    if c is not None and now - _SIG_IND_CACHE["ts"] < _SIG_IND_TTL:
+        return c
+    val = signal_industry_cross(limit)
+    if val.get("rows"):
+        _SIG_IND_CACHE.update(ts=now, val=val)
+    return val
+
+
 _REGIME_STANCE = {
     # 市况 → (档位, 总仓上限, 单票上限, 一句话)
     "offensive": ("开仓日", "总仓 ≤60%", "单票 ≤10%",
@@ -656,4 +789,8 @@ def build_decision_card() -> dict:
         # ★ 负面清单（今天要避开的）；空数组 ⇒ 前端不渲染该块
         "negatives": negatives,
         "positions_scan": positions_scan,
+        # ★ 2026-09-25（P2）：战法信号 × 行业交叉表 —— 回答"58 只信号分布在哪些行业"，
+        #   并附**原始细分口径**（用户："融捷(锂)/焦作万方(电解铝)笼统归入有色/化工链条，
+        #   分类口径要标注"）。零新增网络 + 30 分钟缓存；失败返回空结构。
+        "signals_industry": signal_industry_cached(),
     }
