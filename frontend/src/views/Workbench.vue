@@ -360,13 +360,22 @@
                   <span class="cursor-help" title="带「★」= 有战法信号；带「持」= 我的持仓。看榜单的目的正是「里面有没有我能接的」。条长 = 相对本榜最大幅度 ⇒ 可看出**断层**（一字板那一簇 vs 后面的普通高开）。">★信号 · 持持仓 · 条长看断层</span>
                 </div>
                 <div class="space-y-1">
+                  <!-- ★ 2026-09-26（用户："竞价看板的高开榜和低开榜双击股票名跳到雪球"）：
+                       一个元素承载两个动作 ⇒ 单击（整行）= 本地详情页，**双击（仅名字）= 雪球**。
+                       ⚠️ 浏览器在 `dblclick` 之前**必定先发两次 click** ⇒ 单击动作必须**延迟**
+                         （见脚本区 `auctionRowClick` 的注释），否则双击会先弹出两个本地页。
+                       ⚠️ 双击**只绑在名字上**（`@dblclick.stop`）：双击行的其它位置不会有反应
+                         （"取消单击"逻辑正好让它变成无动作）。 -->
                   <a v-for="g in auctionBars(emotion.auction.market_top)" :key="'mt' + g.code"
                      :href="stockHref(g.code)" target="_blank"
                      class="flex items-center gap-1.5 text-[11px] font-mono group"
+                     @click.prevent="auctionRowClick(g.code)"
                      :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
                     <span class="w-3 shrink-0 text-accent">{{ g.held ? '持' : (g.sig ? '★' : '') }}</span>
-                    <span class="w-[76px] shrink-0 truncate group-hover:underline"
-                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'">{{ g.name }}</span>
+                    <span class="w-[76px] shrink-0 truncate group-hover:underline cursor-pointer"
+                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'"
+                          title="双击跳雪球（单击看本地详情）"
+                          @dblclick.stop.prevent="auctionNameDblClick(g.code)">{{ g.name }}</span>
                     <span class="flex-1 h-3 rounded-sm bg-border/25 overflow-hidden">
                       <span class="block h-full rounded-sm bg-red-500/60"
                             :style="{ width: g.w + '%' }"></span>
@@ -382,13 +391,18 @@
                   <span class="cursor-help" title="条长 = 相对本榜最大跌幅 ⇒ 看**恐慌有没有加速**（跌幅断层越大，越可能是集中砸盘而非普跌）。">条长看断层</span>
                 </div>
                 <div class="space-y-1">
+                  <!-- ★ 2026-09-26（同高开榜）：单击（整行）= 本地详情页，**双击（仅名字）= 雪球**；
+                       单击延迟/DoubleClick 冲突处理见脚本区 `auctionRowClick` 注释。 -->
                   <a v-for="g in auctionBars(emotion.auction.market_bottom)" :key="'mb' + g.code"
                      :href="stockHref(g.code)" target="_blank"
                      class="flex items-center gap-1.5 text-[11px] font-mono group"
+                     @click.prevent="auctionRowClick(g.code)"
                      :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
                     <span class="w-3 shrink-0 text-accent">{{ g.held ? '持' : (g.sig ? '★' : '') }}</span>
-                    <span class="w-[76px] shrink-0 truncate group-hover:underline"
-                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'">{{ g.name }}</span>
+                    <span class="w-[76px] shrink-0 truncate group-hover:underline cursor-pointer"
+                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'"
+                          title="双击跳雪球（单击看本地详情）"
+                          @dblclick.stop.prevent="auctionNameDblClick(g.code)">{{ g.name }}</span>
                     <span class="flex-1 h-3 rounded-sm bg-border/25 overflow-hidden">
                       <span class="block h-full rounded-sm bg-emerald-500/60"
                             :style="{ width: g.w + '%' }"></span>
@@ -1088,7 +1102,10 @@
                   <a v-if="s.stock_code" :href="stockHref(s.stock_code)" target="_blank"
                      class="font-semibold hover:text-accent truncate max-w-[92px]">{{ s.stock_name || s.stock_code }}</a>
                   <span v-else class="truncate">{{ s.stock_name || '—' }}</span>
-                  <span class="text-muted font-mono">{{ s.stock_code || '' }}</span>
+                  <!-- ★ 2026-09-26（用户："盘中的涨停梯队与清单的股票代码跳到雪球"）：
+                       全站口径一致 —— **名称→本地详情页**（上面那条 `<a>` 已是），**代码→雪球**。 -->
+                  <a v-if="s.stock_code" :href="xqUrl(s.stock_code)" target="_blank" rel="noopener"
+                     class="text-muted font-mono hover:text-accent">{{ s.stock_code }}</a>
                   <span v-if="s.up_limit_desc" class="px-1 rounded bg-red-500/15 text-red-400">{{ s.up_limit_desc }}</span>
                   <span v-if="s.up_limit_time" class="text-muted font-mono">{{ s.up_limit_time }}</span>
                   <span v-if="s.amount != null" class="ml-auto text-muted font-mono">成交 {{ s.amount }}亿</span>
@@ -1195,6 +1212,11 @@
                   <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
                      class="hover:text-accent">{{ s.leader }}</a>
                   <span v-else>{{ s.leader }}</span>
+                  <!-- ★ 2026-09-26（用户："主线板块 top5 加多一个股票代码，也跳到雪球"）：
+                       后端 `/sector/industry` **本就返回 `leader_code`**（零后端改动），
+                       补上代码并跳雪球 —— 与全站口径一致（名称→本地详情页、代码→雪球）。 -->
+                  <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
+                     class="font-mono text-muted hover:text-accent">{{ s.leader_code }}</a>
                   <span class="font-mono" :class="pctClass(s.leader_change_pct)">
                     {{ signNum(s.leader_change_pct) }}%</span>
                 </div>
@@ -1277,8 +1299,10 @@
                 v-if="todayExec && !todayExec.pushed_total">（今日无推送）</template></span>
             <span :class="sectorTop.length ? 'text-emerald-400' : 'text-muted'">
               板块 Top5 {{ sectorTop.length ? '✓' : '未返回（外部接口可能受限）' }}</span>
-            <span class="text-muted flex-1 min-w-[160px] text-[10px]">
-              ⚠️ 观察池/板块快照类由**晚间日批**写入 ⇒ 15:00 看到的是上一交易日；其余各项走内存行情与数据库，收盘后即定稿。</span>
+            <!-- ★ 2026-09-26（用户："这个文字改为鼠标经过显示此说明"）：
+                 原为**常显**的一整行小字（占宽度、每次都在抢注意力）⇒ 收成一个 `ⓘ` 悬停说明。 -->
+            <span class="text-muted text-[10px] cursor-help shrink-0"
+                  title="观察池 / 板块快照类由【晚间日批】写入 ⇒ 15:00 看到的是上一交易日；其余各项走内存行情与数据库，收盘后即定稿。">ⓘ</span>
           </div>
           <!-- ★★ 2026-09-25（用户："把合理的都做了"）—— **P0 盘后「今日结算」**：
                原盘后只有"系统榜 + 推送日志"，看不到"我今天的结果"（`summary` 里没有盈亏字段）
@@ -1419,7 +1443,12 @@
                   <span class="text-muted">{{ i + 1 }}</span>
                   <span class="font-semibold text-gray-200">{{ s.name || s.industry || s.code }}</span>
                   <b :class="pctClass(s.change_pct ?? s.pct_change)">{{ signNum(s.change_pct ?? s.pct_change) }}%</b>
+                  <!-- ★ 2026-09-26：与盘中「主线板块 Top5」**保持同一口径** —— 领涨股补上
+                       **代码**并跳雪球（后端 `/sector/industry` 本就返回 `leader_code`，零后端改动）。
+                       理由：两处是同一份 `sectorTop` 的两种展示，只改一处会造成"同名模块口径不一致"。 -->
                   <span v-if="s.leader" class="text-muted">（{{ s.leader }}
+                    <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
+                       class="text-muted hover:text-accent">{{ s.leader_code }}</a>
                     <b :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</b>）</span>
                 </span>
               </div>
@@ -1479,9 +1508,13 @@
                ⇒ 两卡**并排**（都是"清单"性质、各自不长；并排后盘后首屏更紧凑）。
                ⚠️ 断点 **xl**(1280)：主区被常驻右栏占掉 320px；窄屏回退单列（信息不丢）。
                ⚠️ **不加竖分割线** —— 两边是独立卡片、各有边框（与盘中分栏同一条理由）。 -->
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
-          <div class="min-w-0">
-          <div class="bg-card border border-border rounded-lg p-4">
+          <!-- ★ 2026-09-26（用户："评分榜 Top10 和观察池（买入闸门候选）等高"）：
+               `items-start` → **`items-stretch`** + 列与卡片都加 `h-full`
+               ⇒ 两卡等高（与复盘"执行一致性 | 明日准备"同一做法）。
+               ⚠️ 窄屏回退单列时 `h-full` 无害（行高仍由内容决定）。 -->
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-stretch">
+          <div class="min-w-0 h-full">
+          <div class="bg-card border border-border rounded-lg p-4 h-full">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">评分榜 Top10</div>
               <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
@@ -1513,7 +1546,7 @@
                ⇒ 一张卡占位、几乎零信息。现在展开成列表 + 就绪度分布。
                ⚠️ 口径（后端注释）：ready≥2 = "主力有根据 + 不追高，只等市况/时机"的**候池**，
                   三绿是低频条件 ⇒ 池空属正常，不写成"没有机会"。 -->
-          <div class="bg-card border border-border rounded-lg p-4">
+          <div class="bg-card border border-border rounded-lg p-4 h-full">
             <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
               <div class="text-sm font-semibold">观察池（买入闸门候选）
                 <span class="text-[10px] text-muted font-normal">
@@ -1567,15 +1600,10 @@
           </div>
           </div>
           </div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">今日系统时间线</div>
-            <div v-if="!pushItems.length" class="text-muted text-xs">—</div>
-            <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
-              <span class="font-mono text-muted mr-2">{{ (p.ts || '').slice(11, 16) }}</span>
-              <span class="font-semibold">{{ p.title }}</span>
-              <span class="text-muted ml-2">{{ firstLine(p.content) }}</span>
-            </div>
-          </div>
+          <!-- ★ 2026-09-26（用户："删除盘后的"）—— 删掉盘后主区这张卡：
+               它与右栏「今日系统时间线」**完全同源**（同一个 `pushItems` ← `push_log`），
+               而右栏是**全时段常驻**的 ⇒ 盘后照样能看到 ⇒ 留两份只会同屏重复。
+               （右栏那份已"条数放开 + 320px 限高滚动"，见其注释。） -->
         </template>
 
         <!-- 实时模式 · ⑤ 复盘（阅读模式） -->
@@ -1681,7 +1709,21 @@
             <div class="text-[10px] text-muted mt-1">{{ tailReview.note }}</div>
           </div>
 
-          <div class="bg-card border border-border rounded-lg p-4">
+          <!-- ★ 2026-09-26（用户："我想把执行一致性卡片和明日准备（待触发计划）卡片左右布局"）：
+               两卡都短（执行一致性 = 一个大数字 + 两行；明日准备 = N 条计划）
+               ⇒ 并排后复盘首屏更紧凑，且**语义相配**：
+                 一个答"今天做得对不对"（执行），一个答"明天要做什么"（交接棒）。
+               ⚠️ 断点 **xl**(1280)：主区被常驻右栏占掉 320px；窄屏回退单列（信息一条不丢）。
+               ⚠️ **不加竖分割线** —— 两边是独立卡片、各自有边框（与盘后/盘中分栏同一理由）。
+               ⚠️ 顺带把「明日准备」**上移**到两篇长文（决策简报 / A股日报）之前：
+                 原顺序把"行动"夹在两篇长文之间 ⇒ 改为"先结论与行动、后长文"。
+               ★ 2026-09-26 追加（用户："讲执行一致性和明日准备的高度保持一致吧"）：
+                 外层 `items-start` → **`items-stretch`**，且列与卡片都加 `h-full`
+                 ⇒ 两卡**等高**（否则短的那张只占自身高度，旁边留一块空白，看起来像缺内容）。
+                 ⚠️ 窄屏回退单列时 `h-full` 无害（行高仍由内容决定）。 -->
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-stretch">
+          <div class="min-w-0 h-full">
+          <div class="bg-card border border-border rounded-lg p-4 h-full flex flex-col">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">执行一致性</div>
               <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练页</router-link>
@@ -1689,6 +1731,12 @@
             <!-- ★ 2026-09-25 用户反馈：不再裸奔 JSON，按指标渲染 -->
             <div v-if="!consistency" class="text-muted text-xs">—（暂无数据）</div>
             <template v-else>
+              <!-- ★ 2026-09-26（用户："执行一致性卡片下部分有空白处，有没有好的布局方式？"）：
+                   该卡内容天然少（一个大数字 + 两行），而**等高**后被"明日准备"拉到同样高度
+                   ⇒ 底部留白。解法：内容区 `flex-1 + items-center`**垂直居中**（把留白分摊到上下，
+                   成为呼吸感），`note` 用 `mt-auto` + 上边框**贴底**当脚注
+                   ⇒ 视觉上"上半是数字、下半是说明"，而不是一堆空白堆在底部（那看着像缺内容）。 -->
+              <div class="flex-1 flex items-center">
               <div class="flex items-center gap-6 flex-wrap">
                 <div>
                   <div class="text-3xl font-bold font-mono"
@@ -1709,29 +1757,19 @@
                   </div>
                 </div>
               </div>
-              <div class="text-[11px] text-muted mt-1">{{ consistency.note }}</div>
+              </div>
+              <div class="text-[11px] text-muted mt-auto pt-2 border-t border-border/40">
+                {{ consistency.note }}</div>
             </template>
           </div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">决策简报（盘后）</div>
-            <div v-if="!briefMd" class="text-muted text-xs">—（未生成）</div>
-            <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
           </div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">A股日报</div>
-              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整日报 </router-link>
-            </div>
-            <div v-if="!reportMd" class="text-muted text-xs">—（未生成）</div>
-            <div v-else class="md-body" v-html="renderMd(reportMd)"></div>
-          </div>
-
+          <div class="min-w-0">
           <!-- ★★ 2026-09-25（P1「明日准备」）—— 复盘 → 次日的**交接棒**。
                复盘原本 6 块全在回答"今天发生了什么"，**没有一块回答"明天要做什么"**
                ⇒ 复盘的结论没有被转成明日待办，一天的首尾（复盘 → 次日盘前）没接上。
                数据：`/user/plans` 的 `status=waiting` 计划（含 A4 的结构化触发条件）。
                ⚠️ 本卡只摆事实，不催办、不改状态。 -->
-          <div class="bg-card border border-border rounded-lg p-4">
+          <div class="bg-card border border-border rounded-lg p-4 h-full">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">明日准备（待触发计划）
                 <span class="text-[10px] text-muted font-normal">（未触发 {{ plans.length }} 条）</span></div>
@@ -1767,6 +1805,22 @@
                 <div v-if="p.reason" class="text-[11px] text-muted mt-0.5">{{ p.reason }}</div>
               </div>
             </div>
+          </div>
+          </div>
+          </div>
+          <!-- 长文卡（保持在最后：先看结论与行动，再看长文） -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="text-sm font-semibold mb-2">决策简报（盘后）</div>
+            <div v-if="!briefMd" class="text-muted text-xs">—（未生成）</div>
+            <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">A股日报</div>
+              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整日报 </router-link>
+            </div>
+            <div v-if="!reportMd" class="text-muted text-xs">—（未生成）</div>
+            <div v-else class="md-body" v-html="renderMd(reportMd)"></div>
           </div>
         </template>
       </div>
@@ -1811,17 +1865,27 @@
           </template>
         </div>
 
-        <!-- 今日/当日系统推送摘要 -->
+        <!-- ★ 2026-09-26（用户："将今日雷达摘要改为今日系统时间线，给个最大高度，溢出滚动"）：
+             ① 名称与盘后主区那张**统一** —— 两处本来就是同一数据源（`push_log`，见上一轮问答）
+                ⇒ 叫法一致后，"今日系统时间线"在右栏（全天常驻）与盘后（完整回看）指的是同一份东西；
+                ⚠️ 回放历史日时标题**带日期**（原为「<日期> 推送」⇒ 现统一为「<日期> 系统时间线」），
+                   否则"今日"二字会误导（回放的是历史日推送）。
+             ② 由 `slice(0, 5)` 改为**全部** + `max-h-80 overflow-y-auto`
+                ⇒ 右栏能看到完整时间线，但卡片高度**封顶 320px**（不会把整页撑长）；
+                原先只显示 5 条，压根不会溢出 ⇒ "溢出滚动"的前提就是**放开条数**。 -->
         <div class="bg-card border border-border rounded-lg p-4">
-          <div class="text-sm font-semibold mb-2">{{ isReplay ? selectedDate + ' 推送' : '今日雷达摘要' }}</div>
+          <div class="text-sm font-semibold mb-2">
+            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}</div>
           <div v-if="pushConnErr" class="text-[10px] text-amber-400">连接中断（保留上次数据）</div>
           <div v-if="!pushItems.length" class="text-muted text-xs">—</div>
-          <div v-for="(p, i) in pushItems.slice(0, 5)" :key="i" class="text-xs border-b border-border/40 py-1.5">
-            <div class="flex items-center gap-2">
-              <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
-              <span class="font-semibold truncate">{{ p.title }}</span>
+          <div v-else class="max-h-80 overflow-y-auto pr-1">
+            <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
+                <span class="font-semibold truncate">{{ p.title }}</span>
+              </div>
+              <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
             </div>
-            <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
           </div>
         </div>
       </aside>
@@ -1889,6 +1953,39 @@ function xqUrl(code) {
   return `https://xueqiu.com/S/${pfx}${c}`
 }
 const stockHref = (code) => `#/stock/${code}`
+
+// ══ ★★ 2026-09-26（用户："竞价看板的高开榜和低开榜双击股票名跳到雪球"）══
+// 【为什么需要这套东西】同一个元素要承载两个动作：
+//     单击（整行）→ 本地详情页 ｜ **双击（股票名）→ 雪球**。
+//   ⚠️⚠️ 而浏览器在触发 `dblclick` 之前**必定先发两次 `click`** ⇒ 不处理的话，
+//     双击会在跳雪球之前先弹出**两个**本地详情页（体验就是"双击开一堆页"）。
+//   ⇒ 做法：单击**延迟** `DBL_MS` 再执行；第二次 click（无论后面有没有 dblclick）到达就**取消**它。
+//     · 双击名字：click1 建定时器 → click2 取消 → dblclick 跳雪球 ⇒ **只跳雪球** ✓
+//     · 双击行其它位置：click1 → click2 取消 ⇒ **什么都不发生** ✓（正好符合"只名字可双击"）
+//     · 单击行/名字：定时器到期 ⇒ 跳本地详情页 ✓
+//   ⚠️ 代价（诚实说明）：单击跳转要等 ~260ms —— 这是"双击"这个交互本身的成本，不是实现缺陷。
+const DBL_MS = 260
+let _auctionClickTimer = null
+function auctionRowClick(code) {
+  if (_auctionClickTimer) {          // 第二次 click ⇒ 属于双击序列 ⇒ 撤销单击动作
+    clearTimeout(_auctionClickTimer)
+    _auctionClickTimer = null
+    return
+  }
+  _auctionClickTimer = setTimeout(() => {
+    _auctionClickTimer = null
+    // ⚠️ `stockHref` 是 hash 路径（`#/stock/xxx`）⇒ `window.open` 前必须**补成绝对 URL**，
+    //   否则新标签会开到"当前路径 + hash"这种古怪地址。
+    window.open(new URL(stockHref(code), location.href).href, '_blank')
+  }, DBL_MS)
+}
+function auctionNameDblClick(code) {
+  if (_auctionClickTimer) {          // 兜底：确保单击动作不会在双击之后补跳一次
+    clearTimeout(_auctionClickTimer)
+    _auctionClickTimer = null
+  }
+  window.open(xqUrl(code), '_blank')
+}
 // ★ 2026-09-25（P1「明日准备」）：交易计划类型中文
 //   （口径同 `backend/schema.sql` 的 `user_trade_plans.plan_type` 注释：
 //    trial 试仓 / add 加仓 / target 兑现 / stop 认错 —— 决定文案与仓位提示）
@@ -2792,9 +2889,13 @@ let timers = []
 function startPolling() {
   stopPolling()
   if (isReplay.value) return
-  // ★★ 2026-09-26（用户拍板）：**不要"页面自己等"** —— 原方案（复盘未就绪时每 5 分钟重拉）
-  //   已由**后端日批完成通知**取代（`scheduler.report_ready_notify_loop`：日报 / 评分快照 /
-  //   矛盾扫描三者齐 ⇒ 企微推一条「日批完成 · 复盘已就绪」）。
+  // ★★ 2026-09-26 最终形态（用户两次否决后的结论）：**不要"页面自己等"，也不要"服务端轮询"**
+  //   演进：① 页面每 5 分钟重拉（拉）→ 用户否决"不要让页面自己等"；
+  //         ② 后端轮询三表齐了就推 → 用户否决"而不是轮询的方式"；
+  //         ③ **现方案（事件驱动）**：`daily-batch.yml` 跑完 → `POST /api/system/batch-done`
+  //            → 后端即推「日批完成 · 复盘已就绪」。
+  //   判据 = 日报 / 评分快照 / 矛盾扫描三表**最新一行是否刚被写入**（`routers/system.py`，
+  //   刻意**不看日期键** —— 本项目日期键有"运行日/交易日"两派，按日期判会在跨午夜日失效）。
   //   ⇒ 这是"**推**"而不是"拉"：页面不必轮询、不必一直开着，用户收到通知再打开即可。
   //   ⚠️ 此处**刻意不加**自动重试定时器 —— 保留本注释是防止日后有人"好心补回来"
   //     （那会重新制造"开着页面等"的体验，且用户已明确否决）。
