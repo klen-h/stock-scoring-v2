@@ -172,6 +172,19 @@ def get_sentiment(days: int = 10) -> dict | None:
     return None
 
 
+def peek_sentiment() -> dict | None:
+    """**只读进程内缓存**的情绪温度计（不触发任何网络请求）。
+
+    ★ 2026-09-25（工作台宏观卡用）：给 `/macro/snapshot` 暴露情绪温度计（含巴菲特指标、
+      日成交额等 12 子项）。⚠️ 那里是**同步热路径**，若直接调 `get_sentiment()`，在缓存冷时会
+      **阻塞最多 20s**（金十 timeout=20）⇒ 首页直接卡住。
+      ⇒ 这里只在缓存已有值时返回；缓存由**盘前采集调度**填充（`_TTL=86400`，一天一次）。
+      ⇒ 冷缓存返回 None ⇒ 前端显示「—」（**宁缺勿卡**，符合项目"失败静默降级"铁律）。
+    """
+    data = _sentiment_cache.get("data")
+    return data or None
+
+
 def margin_line() -> str:
     """两融一行（LLM prompt/日报复用）；失败返回空串。"""
     d = get_margin()

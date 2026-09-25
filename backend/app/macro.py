@@ -28,6 +28,11 @@
 
 import requests
 import time
+# ★ 2026-09-25：补 typing（项目铁律③：生产 Python 3.9，禁用 PEP 604 的 `str | None`，
+#   用 `Optional[X]`）。⚠️ 此前本文件没用过 Optional，导出 `_safe_sentiment() -> Optional[dict]`
+#   时遗漏 import ⇒ 定义期即抛 NameError ⇒ **整个 macro.py 加载失败**，而 `py_compile` 只查
+#   语法不查名字，**发现不了** ⇒ 必须靠真实 import 的测试兜住。
+from typing import Optional
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -576,6 +581,23 @@ def _safe_overnight(panel: dict) -> dict:
         return {"base_time": None, "items": [], "note": "计算失败"}
 
 
+def _safe_sentiment() -> Optional[dict]:
+    """A股情绪温度计（金十，含巴菲特指标/日成交额等 12 子项）—— 失败静默。
+
+    ★ 2026-09-25（用户："巴菲特指标 94（过热）与温度 28.1（偏冷）并存，这正是『市场分歧明显』
+      的体现，建议做成多空两栏对照，而不是埋在长句里"）⇒ 把温度计的 `subs`（**后端已按得分
+      降序排好**，过热/过冷子项一目了然）暴露给工作台做两栏对照。
+    ⚠️ 必须用 `peek_sentiment()`（**只读缓存、不拉网**）—— snapshot 是同步热路径，
+      直接 `get_sentiment()` 在缓存冷时会阻塞最多 20s。冷缓存 ⇒ None ⇒ 前端显示「—」。
+    """
+    try:
+        from app.flash.margin_sentiment import peek_sentiment
+        return peek_sentiment()
+    except Exception as e:
+        print(f"[macro] sentiment peek failed: {e}")       # ASCII（铁律⑥）
+        return None
+
+
 def get_macro_snapshot() -> dict:
     """
     一份自包含的快照：面板 + 衍生指标 + 规则标签 + 方向分 + 市场温度。
@@ -662,6 +684,9 @@ def get_macro_snapshot() -> dict:
         # ★ 2026-09-25（用户需求 P1）：自上次 A 股收盘以来的外盘累计变化 —— 回答
         #   "A 股开盘前若不知道外盘在这段时间走了多少，就会漏东西"。纯展示、失败静默。
         "overnight": _safe_overnight(panel),
+        # ★ 2026-09-25：情绪温度计（含巴菲特指标/日成交额等）—— 供工作台做"过热 vs 过冷"
+        #   两栏对照。⚠️ peek（只读缓存不拉网），冷缓存返回 None。
+        "sentiment": _safe_sentiment(),
         "notes": notes,
     }
     with _cache_lock:

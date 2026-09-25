@@ -257,16 +257,72 @@
                     </div>
                     <div class="text-muted whitespace-nowrap">
                       仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
+                      <!-- ★ 2026-09-25 用户："仓位建议『轻仓观望』后面补上具体上限数字" ——
+                           LLM 那句是**定性**的，这里补上仓位引擎算出的**定量上限**
+                           （`/api/user/position-sizing` 的 total_limit_pct；个股页已在用，只补上）。
+                           ⚠️ 用 `!= null` 而不是 `||`：**0 是合法上限**（空仓），不能被吞掉。 -->
+                      <template v-if="sizing && sizing.total_limit_pct != null">
+                        · 上限 <b class="text-accent font-mono">{{ sizing.total_limit_pct }}%</b>
+                      </template>
                       · <router-link target="_blank" to="/monitor" class="text-accent hover:underline">详情</router-link>
                     </div>
                   </div>
                 </div>
               </div>
-              <div class="flex flex-wrap gap-1 mt-2.5">
-                <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
-                      class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
-                <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
-                      class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
+              <!-- ★ 2026-09-25 用户："『负相关（弱）』这个标题用户看不懂，改成『压制因素』"
+                   + "巴菲特指标 94（过热）与温度 28.1（偏冷）并存，正是市场分歧明显的体现，
+                   建议做成多空两栏对照，而不是埋在长句里"。
+                   ⚠️ 说明：`correlation_state`（正相关/负相关/D状态）指的是**油金相关性**，
+                   与"对 A 股的压制因素"不是一回事 ⇒ **不改它的语义**（改了会误导）。
+                   改成给多空标签**加标题 + 左右两栏**：左＝支撑因素（利多）／右＝压制因素（利空）
+                   ⇒ 一次同时满足"看得懂"与"两栏对照"。 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 mt-2.5">
+                <div class="flex items-start gap-1.5 min-w-0">
+                  <span class="text-[11px] text-emerald-400 flex-shrink-0 mt-0.5 w-[52px]">支撑因素</span>
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
+                          class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
+                    <span v-if="!(macro.tags_bull || []).length" class="text-[11px] text-muted">—（无）</span>
+                  </div>
+                </div>
+                <div class="flex items-start gap-1.5 min-w-0">
+                  <span class="text-[11px] text-red-400 flex-shrink-0 mt-0.5 w-[52px]">压制因素</span>
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
+                          class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
+                    <span v-if="!(macro.tags_bear || []).length" class="text-[11px] text-muted">—（无）</span>
+                  </div>
+                </div>
+              </div>
+              <!-- ★ 2026-09-25：情绪温度计子项的**过热 vs 过冷**两栏对照 —— 直接回答
+                   "为什么巴菲特指标过热(94)而市场温度偏冷(28)" = 市场分歧明显的可视化。
+                   数据来自 `/macro/snapshot.sentiment`（金十 12 子项，后端已按得分降序）。
+                   ⚠️ peek 缓存 ⇒ 冷缓存时为 null ⇒ 整块不渲染（不假装有数据）。 -->
+              <div v-if="macroSentiment" class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 mt-2 pt-2 border-t border-border/40">
+                <div class="flex items-start gap-1.5 min-w-0">
+                  <span class="text-[11px] text-red-400 flex-shrink-0 mt-0.5 w-[52px] cursor-help"
+                        title="情绪温度计里得分高的子项（越热越需要警惕追高）">过热项</span>
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <span v-for="s in hotSubs" :key="'h' + s.key"
+                          class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20"
+                          :title="`${s.name}：值 ${s.value ?? '—'}，热度分 ${s.score}`">{{ s.name }} {{ s.value ?? '' }}({{ s.score }})</span>
+                    <span v-if="!hotSubs.length" class="text-[11px] text-muted">—（无）</span>
+                  </div>
+                </div>
+                <div class="flex items-start gap-1.5 min-w-0">
+                  <span class="text-[11px] text-emerald-400 flex-shrink-0 mt-0.5 w-[52px] cursor-help"
+                        title="得分低的子项（越冷越可能是低位机会）">过冷项</span>
+                  <div class="flex flex-wrap gap-1 min-w-0">
+                    <span v-for="s in coldSubs" :key="'c' + s.key"
+                          class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
+                          :title="`${s.name}：值 ${s.value ?? '—'}，热度分 ${s.score}`">{{ s.name }} {{ s.value ?? '' }}({{ s.score }})</span>
+                    <span v-if="!coldSubs.length" class="text-[11px] text-muted">—（无）</span>
+                  </div>
+                </div>
+                <div class="md:col-span-2 text-[10px] text-muted">
+                  情绪温度计 {{ macroSentiment.score }}分/{{ macroSentiment.zone }}区（{{ macroSentiment.date }}）·
+                  过热与过冷**同时出现**＝市场分歧明显；两项都在 80/20 之外时说明方向一致
+                </div>
               </div>
             </template>
           </div>
@@ -715,6 +771,7 @@ import {
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
   getMarketEmotion, getMarketLimitReview,
+  getUserPositionSizing,
 } from '../api'
 
 const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
@@ -807,6 +864,13 @@ const macroClock = ref(null)
 // ★ 2026-09-25 P1：自上次 A 股收盘以来的外盘累计变化（后端 `/macro/snapshot.overnight`
 //   ⇒ 基准取自 macro_history 的"收盘后快照"）。纯展示、不参与评分。
 const macroOvernight = ref(null)
+// ★ 2026-09-25：情绪温度计（金十，`/macro/snapshot.sentiment`）—— 含巴菲特指标/日成交额等
+//   12 子项，用于"过热 vs 过冷"两栏对照（回答"为什么巴菲特指标过热而市场温度偏冷"）。
+//   ⚠️ 后端是 peek（只读缓存不拉网）⇒ 冷缓存为 null ⇒ 整块不渲染。
+const macroSentiment = ref(null)
+// ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
+//   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
+const sizing = ref(null)
 // 事件诊断（快讯 LLM 输出，用户要求并入宏观与环境卡）
 const flashDiag = ref(null)
 
@@ -907,6 +971,10 @@ const overnightTitle = computed(() => {
   // ⚠️ 明说是"解释/风控"用途 —— 纳指隔夜对 A 股次日的预测力在可交易口径下已实测塌陷
   return `${head}\n${body}\n（仅用于解释开盘与风控；其预测力已被实证否定，不作为交易信号）`
 })
+// ★ 2026-09-25：情绪温度计"过热 / 过冷"子项（后端已按得分降序，这里按阈值切分）。
+//   阈值沿用 `margin_sentiment.sentiment_line()` 的口径（≥80 过热 / ≤20 过冷），保持单一来源。
+const hotSubs = computed(() => ((macroSentiment.value?.subs) || []).filter(s => s.score >= 80).slice(0, 4))
+const coldSubs = computed(() => ((macroSentiment.value?.subs) || []).filter(s => s.score <= 20).slice(0, 4))
 
 const worstHolding = computed(() => {
   const arr = (radarItems.value || []).filter(x => x.pnl_pct != null)
@@ -1096,7 +1164,15 @@ async function loadGlobals() {
     globals.value = (data && data.panel) || {}
     macroClock.value = (data && data.clock) || null   // ★ 时段的唯一来源（见 macroClock 定义）
     macroOvernight.value = (data && data.overnight) || null   // ★ P1：隔夜累计变化
+    macroSentiment.value = (data && data.sentiment) || null   // ★ 情绪温度计（供两栏对照）
   } catch { globals.value = globals.value || {} }
+}
+// ★ 2026-09-25：仓位建议定量上限（失败静默 ⇒ 宏观卡只显示定性词，不显示空括号）
+async function loadSizing() {
+  try {
+    const { data } = await getUserPositionSizing()
+    sizing.value = data || null
+  } catch (e) { console.warn('仓位建议加载失败', e) }
 }
 async function loadEmotion() {
   try {
@@ -1222,7 +1298,7 @@ function onStatusToggle(e) {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday()]) }
+  if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadSizing()]) }
   else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); }
   else if (phase === 'review') { await loadConsistency(); await loadBrief('postmarket'); await loadReport(todayStr); }
   if (phase === 'intraday' || phase === 'midday') {
