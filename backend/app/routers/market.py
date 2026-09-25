@@ -1180,6 +1180,36 @@ _AUCTION_RATIO_UP = 1.5       # 高开:低开 ≥1.5 且全市场平均 ≥ +0.1
 _AUCTION_RATIO_DOWN = 0.67    # ≤0.67 且全市场平均 ≤ -0.1% ⇒ 普遍低开
 _AUCTION_ALL_BAND = 0.1
 
+# ★★ 2026-09-25（A 档 1：竞价看板"图表化"）：全市场涨幅**六档**分档。
+#   【为什么需要】用户看板的"高开 643 : 低开 1915"只是两个**总数**，看不出"跌得多深" ——
+#     同样 1915 家低开，"全在 -0.5% 内"（阴跌磨人）与"一半跌超 3%"（恐慌盘）含义天差地别。
+#     ⇒ 分布才是"直观"的前提（两行文字永远读不出形状）。
+#   ⚠️ 六档**必须覆盖全部取值（含平开 0）** ⇒ 合计恒等于全市场家数（否则前端占比之和
+#     凑不满 100%，又是一处"数字对不上"，比没有图更糟）。
+#   ⚠️ 与既有 `up_open/down_open` 的口径差异（**不改**，仅在此声明）：那两个计数
+#     **不含平开**（`_g == 0` 两边都不计）⇒ `up_open + down_open` 可能 < 家数，属既有语义。
+_AUCTION_BIN_LABELS = ("≥+5%", "+2~+5%", "0~+2%", "0~-2%", "-2~-5%", "≤-5%")
+_AUCTION_BIN_DIRS = ("up", "up", "up", "down", "down", "down")
+
+
+def _auction_bin(g: float) -> int:
+    """涨幅(%) → 档位下标 0..5（**逐档左闭右开**判定）。
+
+    ⚠️ 抽成纯函数是为了可打桩：边界值（0 / ±2 / ±5）是这类分档最容易错的地方，
+       而错误的分档**不会报错**、只会安静地把图画歪 —— 必须能单独测。
+    """
+    if g >= 5:
+        return 0
+    if g >= 2:
+        return 1
+    if g >= 0:
+        return 2
+    if g >= -2:
+        return 3
+    if g >= -5:
+        return 4
+    return 5
+
 
 def _auction_read(a: Dict, has_live: bool) -> Optional[Dict]:
     """竞价数字 → 「接力意愿 + 全市场开局」两句判读。数据不足返回 None（不硬编）。"""
@@ -1353,6 +1383,7 @@ def market_emotion():
         print(f"[market] auction held marks failed: {e}")       # ASCII（铁律⑥）
 
     market_gaps, up_open, down_open = [], 0, 0
+    bin_counts = [0] * 6          # ★ A 档 1：六档分布计数（见 `_AUCTION_BIN_LABELS`）
     total_amount_wan = 0.0
     for _c, _s in (stocks or {}).items():
         _amt = _num_or_none(_s.get("amount_wan")) or 0.0
@@ -1366,6 +1397,8 @@ def market_emotion():
             up_open += 1
         elif _g < 0:
             down_open += 1
+        # ★ A 档 1：顺手分档 —— 与 market_gaps **同一个循环**，零新增遍历/查询（见上方常量注释）
+        bin_counts[_auction_bin(_g)] += 1
         market_gaps.append({"code": _c, "name": _s.get("name") or _c,
                             "gap_pct": round(_g, 2), "amount_wan": round(_amt),
                             # ★ "与我有关"标记（见上方 sig_codes/held_codes 注释）
@@ -1381,6 +1414,10 @@ def market_emotion():
                "up_open": up_open, "down_open": down_open,
                "avg_gap_all": (round(sum(x["gap_pct"] for x in market_gaps) / len(market_gaps), 2)
                                if market_gaps else None),
+               # ★ A 档 1：分布（前端画条目 % —— 只给 count 与标签，**占比由前端就地算**，
+               #   避免同一口径在两处各算一遍、日后改档位时只改一处）
+               "histogram": [{"label": _AUCTION_BIN_LABELS[i], "count": bin_counts[i],
+                              "dir": _AUCTION_BIN_DIRS[i]} for i in range(6)],
                "total_amount_wan": (round(total_amount_wan) if total_amount_wan else None),
                "amount_note": "成交额为截至 as_of 的**累计值**（9:15-9:25 期间即竞价额）"}
     # ★ 2026-09-25：把数字翻成两句人话（接力意愿 / 全市场开局）—— 见 `_auction_read` 的边界声明

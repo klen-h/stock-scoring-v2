@@ -219,6 +219,16 @@
             </div>
             <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
             <template v-else>
+              <!-- ★★ 2026-09-25（用户："改完之后页面长度变长了，有些可以改成左右布局"）：
+                   竞价看板内部**左右分栏**，按"信息性质"切（不按先后）：
+                     · 左列 = 判读 + 三个数字 + 刻度尺 + 全市场家数/分布 + 接力 Top5（**整体冷热**）
+                     · 右列 = 两个榜单**并排**（高开｜低开，**具体标的**）
+                   收益：两榜从"上下 20 行"变"左右各 10 行"（省一半高度），且"整体冷热"与
+                     "个股榜"不再上下叠 ⇒ 卡片高度约 660px → 330px。
+                   ⚠️ 断点用 **xl**：主区已被常驻右栏占掉 320px，lg(1024) 分栏后每列不足 350px
+                     会把条形榜挤坏；窄屏自动回退单列（信息一条不丢）。 -->
+              <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-2 items-start">
+              <div class="min-w-0">
               <!-- ★★ 2026-09-25 用户："这些结论可不可以生成在页面里，这样用户就不需要思考太多"
                    ⇒ 判读**置顶**（数字在下作支撑）：接力意愿 + 全市场开局 + 「该注意什么」。
                    ⚠️ 后端已声明三条边界（悬停可见完整口径）：这是**开盘前强度描述、不是涨跌预测**；
@@ -239,21 +249,55 @@
                 <div class="text-[11px] text-accent/90">
                   该注意：{{ emotion.auction.verdict.action }}</div>
               </div>
-              <div class="grid grid-cols-3 gap-3 text-center text-xs mb-3">
+              <!-- ★ 2026-09-25（口径标注）：三个数**时刻不同**却并排，最容易误读 ——
+                   ② 是**开盘缺口**（竞价那一刻）、③ 是**现值**（含盘中），悬停给完整口径。
+                   典型误读场景：高开 +2% 而现值 -1% ⇒ 不是"矛盾"，是**高开后被砸**（更弱）。 -->
+              <div class="grid grid-cols-3 gap-3 text-center text-xs mb-2">
                 <div>
                   <div class="text-lg font-bold font-mono">{{ emotion.auction?.count ?? '—' }}</div>
-                  <div class="text-muted text-[10px]">昨涨停今日高开数</div>
+                  <div class="text-muted text-[10px] cursor-help"
+                       title="昨日涨停的股票中，今天**开盘高开**（开盘价 > 昨收）的家数；开盘不涨不跌或低开的不计入。">昨涨停今高开数</div>
                 </div>
                 <div>
                   <div class="text-lg font-bold font-mono" :class="pctClass(emotion.auction?.avg_gap)">
                     {{ signNum(emotion.auction?.avg_gap) }}%</div>
-                  <div class="text-muted text-[10px]">平均高开幅度</div>
+                  <div class="text-muted text-[10px] cursor-help"
+                       title="昨日涨停股今日**开盘缺口**的平均值 =（开盘价 / 昨收 − 1）。只反映竞价那一刻的接力意愿，不含盘中变化。">平均高开（缺口）</div>
                 </div>
                 <div>
                   <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
                     {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
-                  <div class="text-muted text-[10px]">昨涨停今均（溢价）</div>
+                  <div class="text-muted text-[10px] cursor-help"
+                       title="同一批股票的**当前价 vs 昨收** = 真实盈亏（含盘中）。⚠️ 与左边「平均高开」不是同一时刻：高开 +2% 而现值 -1% ⇒ 高开后一路被砸，比单纯低开更弱。">昨涨停今均（现价）</div>
                 </div>
+              </div>
+              <!-- ★ 2026-09-25（A 档 3）：刻度尺 —— 把「接力溢价」与「全市场平均」放到**同一根尺**
+                   上，背离直接看得见（此前两个数分处两块，要靠心算才知差多少）。
+                   ⚠️ 固定 ±3% 刻度（而非自适应）才能**跨日横比**；超出时游标贴边，
+                      右侧数值仍显示真实值（不撒谎）。0 刻度处加亮，尺带 `bg-card` 的小标注
+                      防止两个游标靠近时文字糊在一起。 -->
+              <div v-if="auctionScale.relayPos != null || auctionScale.allPos != null"
+                   class="relative h-11 mb-3 select-none">
+                <div class="absolute inset-x-0 top-5 h-px bg-border"></div>
+                <div class="absolute top-4 left-1/2 w-px h-3 bg-border"></div>
+                <span class="absolute left-0 top-6 text-[9px] text-muted bg-card pr-1">-3%</span>
+                <span class="absolute right-0 top-6 text-[9px] text-muted bg-card pl-1">+3%</span>
+                <template v-if="auctionScale.relayPos != null">
+                  <div class="absolute top-3 -translate-x-1/2 w-px h-2 bg-amber-400"
+                       :style="{ left: auctionScale.relayPos + '%' }"></div>
+                  <div class="absolute top-0 -translate-x-1/2 text-[9px] font-mono text-amber-300 whitespace-nowrap bg-card px-0.5"
+                       :style="{ left: auctionScale.relayPos + '%' }"
+                       title="接力：昨日涨停股今日平均开盘缺口（强势股有没有人接）">
+                    接力 {{ signNum(auctionScale.relay) }}%</div>
+                </template>
+                <template v-if="auctionScale.allPos != null">
+                  <div class="absolute top-5 -translate-x-1/2 w-px h-2 bg-gray-400"
+                       :style="{ left: auctionScale.allPos + '%' }"></div>
+                  <div class="absolute top-8 -translate-x-1/2 text-[9px] font-mono text-gray-400 whitespace-nowrap bg-card px-0.5"
+                       :style="{ left: auctionScale.allPos + '%' }"
+                       title="全市场：所有个股平均开盘缺口（大盘开局冷暖）">
+                    全市场 {{ signNum(auctionScale.all) }}%</div>
+                </template>
               </div>
               <!-- ★ 2026-09-25 扩展：全市场竞价视角（用户要的"竞价额、竞价涨幅榜"）——
                    上面那块只覆盖"昨日涨停股"，这里补**全市场**高开/低开榜与家数统计。
@@ -267,33 +311,31 @@
                     · 累计成交 <b class="text-accent font-mono">{{ fmtAmountWan(emotion.auction.total_amount_wan) }}</b>
                   </template>
                   <span class="text-[10px] cursor-help" :title="emotion.auction.amount_note">ⓘ</span>
+                  <!-- ★ 2026-09-25：下面分布条的总数含「平开」（= 0%）⇒ 与这里的"高开+低开"**对不上**
+                       是正常的（平开两边都不计）。不说明的话又是一处"数字对不上"。 -->
+                  <span class="text-[10px] cursor-help"
+                        title="高开/低开不含「平开」（开盘价恰好等于昨收）⇒ 高开+低开 略小于全市场家数，下面的分布条总数才是全量。">ⓘ</span>
                 </div>
-                <div class="mb-1 text-[10px] text-muted">高开榜 Top20（全市场）
-                  <span class="cursor-help" title="带「★」= 有战法信号；带「持」= 我的持仓；加亮边框 = 与我有关。看榜单的目的正是「里面有没有我能接的」。">★信号 · 持持仓</span>
+                <!-- ★★ 2026-09-25（A 档 1）：全市场涨幅**分布条** —— 用户反馈"不够直观"的根因
+                     是：两个总数（643:1915）读不出"跌得多深"。同样 1915 家低开，
+                     "全在 -0.5% 内"（阴跌）与"一半跌超 3%"（恐慌）是完全不同的盘面。
+                     · 条长对**最大档**归一化（图上看得出形状）；右侧另标真实家数与占比（读数准确）。
+                     · 六档合计 = 全市场家数（后端保证），不会出现"占比加不满 100%"。 -->
+                <div v-if="auctionHist.length" class="mb-2.5 space-y-[3px]">
+                  <div v-for="b in auctionHist" :key="'ah' + b.label"
+                       class="flex items-center gap-2 text-[10px]">
+                    <span class="w-[52px] shrink-0 text-right text-muted font-mono">{{ b.label }}</span>
+                    <span class="flex-1 h-2.5 rounded-sm bg-border/25 overflow-hidden">
+                      <span class="block h-full rounded-sm"
+                            :class="b.dir === 'up' ? 'bg-red-500/60' : 'bg-emerald-500/60'"
+                            :style="{ width: b.w + '%' }"></span>
+                    </span>
+                    <span class="w-[68px] shrink-0 font-mono text-muted">
+                      {{ b.count }}<span class="text-[9px] ml-1">{{ b.pctNum }}%</span></span>
+                  </div>
                 </div>
-                <div class="flex flex-wrap gap-1">
-                  <a v-for="g in (emotion.auction.market_top || [])" :key="'mt' + g.code"
-                     :href="stockHref(g.code)" target="_blank"
-                     class="px-1.5 py-0.5 rounded border font-mono text-[11px]"
-                     :class="[g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400',
-                              (g.sig || g.held) ? 'border-accent/70' : 'border-border/60 hover:border-accent']"
-                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
-                    <span v-if="g.held" class="text-accent">持</span><span
-                      v-else-if="g.sig" class="text-accent">★</span>{{ g.name }} {{ signNum(g.gap_pct) }}%
-                  </a>
                 </div>
-                <div class="mb-1 mt-2 text-[10px] text-muted">低开榜 Top20（全市场）</div>
-                <div class="flex flex-wrap gap-1">
-                  <a v-for="g in (emotion.auction.market_bottom || [])" :key="'mb' + g.code"
-                     :href="stockHref(g.code)" target="_blank"
-                     class="px-1.5 py-0.5 rounded border font-mono text-[11px] text-emerald-400"
-                     :class="(g.sig || g.held) ? 'border-accent/70' : 'border-border/60 hover:border-accent'"
-                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
-                    <span v-if="g.held" class="text-accent">持</span><span
-                      v-else-if="g.sig" class="text-accent">★</span>{{ g.name }} {{ signNum(g.gap_pct) }}%
-                  </a>
-                </div>
-              </div>
+              <!-- 接力 Top5（从卡底搬到左列：与上面的"接力溢价"同源，放一起读更顺） -->
               <div v-if="(emotion.auction?.top || []).length" class="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/40">
                 <span class="text-[10px] text-muted w-full mb-0.5">昨日涨停股高开 Top5（接力视角）</span>
                 <a v-for="g in emotion.auction.top" :key="g.code" :href="stockHref(g.code)" target="_blank"
@@ -302,8 +344,60 @@
                   {{ g.name }} {{ signNum(g.gap_pct) }}%
                 </a>
               </div>
-              <div v-else class="text-[11px] text-muted">
+              <div v-else class="text-[11px] text-muted mt-2">
                 —（暂无高开数据。竞价 9:25 定稿后本页有效；休市日无数据属正常）
+              </div>
+              </div>
+              <!-- ★ 2026-09-25 用户："左右的两部分搞个分割线" ⇒ 左列（整体冷热）与右列（个股榜）
+                   之间加**主竖线**（比两榜之间那条 `border-border/40` 更实，形成主次层次）；
+                   窄屏回退单列时线自动消失（`xl:` 前缀）。
+                   右列内：两个榜单**并排**（各 20 行条形）。 -->
+              <div v-if="emotion.auction?.market_count"
+                   class="min-w-0 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 items-start
+                          xl:border-l xl:border-border xl:pl-4">
+              <div class="min-w-0">
+                <div class="mb-1 text-[10px] text-muted">高开榜 Top20（全市场）
+                  <span class="cursor-help" title="带「★」= 有战法信号；带「持」= 我的持仓。看榜单的目的正是「里面有没有我能接的」。条长 = 相对本榜最大幅度 ⇒ 可看出**断层**（一字板那一簇 vs 后面的普通高开）。">★信号 · 持持仓 · 条长看断层</span>
+                </div>
+                <div class="space-y-1">
+                  <a v-for="g in auctionBars(emotion.auction.market_top)" :key="'mt' + g.code"
+                     :href="stockHref(g.code)" target="_blank"
+                     class="flex items-center gap-1.5 text-[11px] font-mono group"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
+                    <span class="w-3 shrink-0 text-accent">{{ g.held ? '持' : (g.sig ? '★' : '') }}</span>
+                    <span class="w-[76px] shrink-0 truncate group-hover:underline"
+                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'">{{ g.name }}</span>
+                    <span class="flex-1 h-3 rounded-sm bg-border/25 overflow-hidden">
+                      <span class="block h-full rounded-sm bg-red-500/60"
+                            :style="{ width: g.w + '%' }"></span>
+                    </span>
+                    <span class="w-[52px] shrink-0 text-right text-red-400">{{ signNum(g.gap_pct) }}%</span>
+                  </a>
+                </div>
+              </div>
+              <!-- ★ 2026-09-25 用户："左右的两部分搞个分割线" ⇒ 两榜之间的**次级**竖线
+                   （主分界在"左列｜右列"上，用更实的 border）；窄屏并排失效时线也自动消失。 -->
+              <div class="min-w-0 md:border-l md:border-border/40 md:pl-4">
+                <div class="mb-1 text-[10px] text-muted">低开榜 Top20（全市场）
+                  <span class="cursor-help" title="条长 = 相对本榜最大跌幅 ⇒ 看**恐慌有没有加速**（跌幅断层越大，越可能是集中砸盘而非普跌）。">条长看断层</span>
+                </div>
+                <div class="space-y-1">
+                  <a v-for="g in auctionBars(emotion.auction.market_bottom)" :key="'mb' + g.code"
+                     :href="stockHref(g.code)" target="_blank"
+                     class="flex items-center gap-1.5 text-[11px] font-mono group"
+                     :title="`成交 ${fmtAmountWan(g.amount_wan)}${g.sig ? '｜有战法信号' : ''}${g.held ? '｜我的持仓' : ''}`">
+                    <span class="w-3 shrink-0 text-accent">{{ g.held ? '持' : (g.sig ? '★' : '') }}</span>
+                    <span class="w-[76px] shrink-0 truncate group-hover:underline"
+                          :class="(g.sig || g.held) ? 'text-accent' : 'text-gray-200'">{{ g.name }}</span>
+                    <span class="flex-1 h-3 rounded-sm bg-border/25 overflow-hidden">
+                      <span class="block h-full rounded-sm bg-emerald-500/60"
+                            :style="{ width: g.w + '%' }"></span>
+                    </span>
+                    <span class="w-[52px] shrink-0 text-right text-emerald-400">{{ signNum(g.gap_pct) }}%</span>
+                  </a>
+                </div>
+              </div>
+              </div>
               </div>
               <div class="text-[10px] text-muted mt-2 border-t border-border/40 pt-2">
                 判读：昨涨停股**高开且不炸** ⇒ 接力情绪好；**低开或高开回落** ⇒ 分歧转弱。
@@ -1568,6 +1662,58 @@ const barW = (n) => {
   const max = Math.max(1, ...rows.map(r => r.count || 0))
   return Math.round(((n || 0) / max) * 100) + '%'
 }
+
+// ══ ★★ 2026-09-25「竞价看板图表化」（用户：截图不够直观，问能不能用图表）══
+// 【为什么不用 echarts】Workbench 是打开最频繁的页；echarts 虽在依赖里（别的页面在用），
+//   但引进来会让本页首包 +约 350KB(gzip)。而这里要表达的三件事 —— **分布 / 断层 / 刻度** ——
+//   用 CSS 条 + absolute 定位就能完整表达：零依赖、无需 resize/主题适配、与卡片风格天然一致。
+// 【A1】全市场涨幅分布：条长对**最大档**归一化（看形状），右侧另标家数与占比（读数准确）。
+const auctionHist = computed(() => {
+  const a = emotion.value?.auction
+  const rows = a?.histogram || []
+  const total = a?.market_count || rows.reduce((s, r) => s + (Number(r.count) || 0), 0)
+  if (!rows.length || !total) return []
+  const max = Math.max(1, ...rows.map(r => Number(r.count) || 0))
+  return rows.map(r => {
+    const n = Number(r.count) || 0
+    return {
+      ...r,
+      pctNum: Math.round((n / total) * 1000) / 10,     // 占全市场 %（1 位小数）
+      w: Math.max(1, Math.round((n / max) * 100)),     // 条长（含 1% 保底 ⇒ 0 家也留一丝）
+    }
+  })
+})
+
+// 【A2】榜单 → 条形：**全部 20 只都画条**（用户 2026-09-25：“改为 top20 吧”）。
+//   条长对**榜内最大幅度**归一化 —— 目的正是看"断层"（一字板那一簇 vs 后面的普通高开）。
+//   ★ 为什么能直接 20 行而不炸高度：两榜已**左右并排**（各 ~350px 宽）⇒ 右列高度
+//     ≈ 20 行 ≈ 左列高度 ⇒ 卡片总高几乎不变（并排的"预算冗余"正好被 20 行用掉）。
+//   ★ 原先"10 行条形 + 11-20 紧凑标签"的双份展示已**删除**：同一批股票出现两次既重复、
+//     又让"下面那堆没标题的标签"像另一组数据（用户正是因此要求合并为 20 行）。
+const AUCTION_BAR_N = 20
+const auctionBars = (list) => {
+  const arr = (list || []).slice(0, AUCTION_BAR_N)
+  const max = Math.max(1, ...arr.map(x => Math.abs(Number(x.gap_pct) || 0)))
+  return arr.map(g => ({
+    ...g,
+    w: Math.max(3, Math.round((Math.abs(Number(g.gap_pct) || 0) / max) * 100)),
+  }))
+}
+
+// 【A3】刻度尺：把「接力溢价」与「全市场平均」放到**同一根尺**上看背离。
+//   ⚠️ 固定 ±3% 刻度（非自适应）才能跨日横比；超出范围时游标贴边，但**数值仍显示真实值**
+//     （图可以clamp，读数绝不撒谎）。
+const AUCTION_SCALE = 3
+const auctionScale = computed(() => {
+  const a = emotion.value?.auction
+  const pos = (v) => (v == null || Number.isNaN(Number(v))
+    ? null
+    : Math.max(0, Math.min(100, ((Number(v) + AUCTION_SCALE) / (2 * AUCTION_SCALE)) * 100)))
+  return {
+    relay: a?.avg_gap ?? null, relayPos: pos(a?.avg_gap),
+    all: a?.avg_gap_all ?? null, allPos: pos(a?.avg_gap_all),
+  }
+})
 // ★ 2026-09-25 P3：情绪对账的结论配色 —— 一致=绿 / 偏保守=琥珀 / **偏乐观=红**
 //   （"偏乐观"最危险：它意味着没看到退潮，而退潮是要降仓的）
 const relCls = (r) => (r === '一致' ? 'text-emerald-400'
