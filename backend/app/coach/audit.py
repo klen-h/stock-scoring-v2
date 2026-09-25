@@ -368,10 +368,31 @@ def abandon_reasons(limit: int = 20) -> List[dict]:
         return []
 
 
-def recent_alerts(limit: int = 50) -> List[dict]:
+# ★ 2026-09-25（egress 治理，探针实测驱动）：列表页要的列 + 截断 `message`。
+#   原 `SELECT *` 会把 `numbers_json`（规则触发的数值明细）与完整 `message` 一起过网；
+#   实测该语句 46 分钟 **40 次 / 2,840 行 ≈1.28MB**（页面开一天 ≈13MB）。
+#   ⚠️ `numbers_json` **前端零引用**（已核）⇒ 列表不取它（要看明细走详情/回放接口）。
+_ALERT_LIST_COLS = ("id", "alert_date", "alert_time", "rule_id", "label", "severity",
+                    "code", "name", "executed", "abandon_reason", "outcome_pct",
+                    "outcome_date")
+
+
+def recent_alerts(limit: int = 50, trunc: Optional[int] = 300) -> List[dict]:
+    """最近 N 条教练卡（**列表口径**：不含 `numbers_json`，`message` 截断到 `trunc` 字符）。
+
+    `trunc=None` ⇒ 退回原 `SELECT *` 全字段（需要完整正文的调用方用）。
+    """
     ensure_tables()
     try:
-        rows = db.fetch("SELECT * FROM coach_alerts ORDER BY id DESC LIMIT %s", (limit,))
+        if trunc is None:
+            rows = db.fetch("SELECT * FROM coach_alerts ORDER BY id DESC LIMIT %s",
+                            (limit,))
+        else:
+            cols = ", ".join(_ALERT_LIST_COLS)
+            rows = db.fetch(
+                f"SELECT {cols}, SUBSTR(message, 1, %s) AS message "
+                f"FROM coach_alerts ORDER BY id DESC LIMIT %s",
+                (int(trunc), int(limit)))
         return [dict(r) for r in (rows or [])]
     except Exception as e:
         print(f"[coach] 建议查询失败: {e}")

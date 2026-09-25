@@ -152,8 +152,10 @@ def flash_push_log(date: str = None, limit: int = 80):
        未配 webhook 时也会记录；页面据此仍能看到"系统今天判断过什么"。
     """
     from app.flash import signal_bus
+    # ★ 2026-09-25（egress 治理）：列表页只显示 `firstLine(content)` ⇒ 正文截到 400 字符
+    #   （原样返回全文时该接口 46 分钟就传了 ≤1.9MB，页面开一天 ≈20MB）。
     return {"stats": signal_bus.stats(date),
-            "items": signal_bus.by_date(date, limit),
+            "items": signal_bus.by_date(date, limit, trunc=400),
             "dates": signal_bus.recent_dates(7)}
 
 

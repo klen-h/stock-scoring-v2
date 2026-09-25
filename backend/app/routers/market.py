@@ -25,7 +25,9 @@ from datetime import datetime, timedelta, timezone
 def _bj_now():
     """北京时间（本文件局部助手；全项目时间源约定见 app/flash/rules.py）"""
     return datetime.now(timezone(timedelta(hours=8)))
+import gzip
 import json
+import os
 import time
 import threading
 from app.tencent import (
@@ -499,6 +501,59 @@ _EMOTION_CLOSES = {"date": None, "closes": None}   # {code: {date: close}} 近 8
 _EMOTION_VERDICT_TTL = 120
 _emotion_light = {"ts": 0.0, "val": None}
 
+# ★ 2026-09-25（egress 治理，探针实测驱动）：`_emotion_closes_map()` 的**本机 gzip 持久缓存**。
+#   原先只有**进程内**缓存 ⇒ 每重启一个新进程就整批重读一次
+#   （实测 46 分钟内 4 次 / 2.68 万行 / ≤2.15MB；本地 `run.py --reload` 改代码即重启 ⇒ 一天可几十次）。
+#   指纹 = `backtest_prices` 的 `MAX(date)`（**单行**查询、几十字节；该表日更 ⇒ 每天失效一次）。
+#   ⚠️ 与 l3 / flow 同款纪律：指纹取不到 ⇒ **不走缓存、直接回源**（正确性优先）。
+_EMOTION_CLOSES_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data", "emotion_closes.json.gz")
+_EMOTION_CLOSES_DISK_TTL = 12 * 3600
+
+
+def _closes_fingerprint():
+    """`backtest_prices` 最新交易日（单行查询）。取不到返回 None（⇒ 调用方回源）。"""
+    try:
+        from app.database import db
+        r = db.fetch_one("SELECT MAX(date) AS d FROM backtest_prices")
+        return str((r or {}).get("d") or "") or None
+    except Exception:
+        return None
+
+
+def _closes_disk_load(ver):
+    """本机缓存（零 egress）。指纹不符 / 过期 / 异常 ⇒ None。"""
+    if ver is None:
+        return None
+    try:
+        if not os.path.exists(_EMOTION_CLOSES_PATH):
+            return None
+        with gzip.open(_EMOTION_CLOSES_PATH, "rt", encoding="utf-8") as f:
+            obj = json.load(f)
+        if str(obj.get("ver")) != str(ver):
+            return None
+        if time.time() - float(obj.get("ts") or 0) > _EMOTION_CLOSES_DISK_TTL:
+            return None
+        return obj.get("closes") or None
+    except Exception:
+        return None
+
+
+def _closes_disk_save(ver, closes):
+    """写本机缓存（原子替换）。空结果 / 指纹缺失不写（下次仍会重试）。"""
+    if ver is None or not closes:
+        return
+    try:
+        os.makedirs(os.path.dirname(_EMOTION_CLOSES_PATH), exist_ok=True)
+        tmp = _EMOTION_CLOSES_PATH + ".tmp"
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
+            json.dump({"ver": ver, "ts": time.time(), "closes": closes}, f,
+                      ensure_ascii=False)
+        os.replace(tmp, _EMOTION_CLOSES_PATH)
+    except Exception as e:
+        print(f"[market] emotion closes 本机缓存写入失败: {e}")    # ASCII（铁律⑥）
+
 
 def _num_or_none(v):
     """安全转 float；**转不动就返回 None**（而不是 0）。
@@ -523,6 +578,13 @@ def _emotion_closes_map():
     today = _rules.beijing_now().strftime("%Y-%m-%d")
     if _EMOTION_CLOSES["date"] == today and _EMOTION_CLOSES["closes"] is not None:
         return _EMOTION_CLOSES["closes"]
+    # ★ 本机持久缓存（跨进程 / 跨重启）：指纹没变就别再整批读一次（见上方常量注释）
+    ver = _closes_fingerprint()
+    disk = _closes_disk_load(ver)
+    if disk is not None:
+        print(f"[market] emotion closes 命中本机缓存（{len(disk)} 只）-> 零 Supabase 流量")
+        _EMOTION_CLOSES.update({"date": today, "closes": disk})
+        return disk
     closes: Dict[str, Dict[str, float]] = {}
     # ★ 2026-09-25：rows 必须**预置** —— 原先只在 `if _max_d:` 分支内赋值，一旦取不到
     #   MAX(date)（空表/查询异常），下面的 `for r in rows or []` 会抛 UnboundLocalError；
@@ -551,6 +613,7 @@ def _emotion_closes_map():
             closes.setdefault(str(r.get("code")), {})[str(r.get("date"))] = _c
     except Exception as e:
         print(f"[market] emotion closes load failed: {e}")
+    _closes_disk_save(ver, closes)
     _EMOTION_CLOSES.update({"date": today, "closes": closes})
     return closes
 

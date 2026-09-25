@@ -145,16 +145,33 @@ def _maybe_cleanup() -> None:
         print(f"[signal_bus] 清理失败（不影响记录）: {e}")
 
 
-def by_date(date: Optional[str] = None, limit: int = 80) -> List[Dict]:
-    """某日全部系统提示（默认今天），按时间倒序。DB 优先，失败回退内存。"""
+def by_date(date: Optional[str] = None, limit: int = 80,
+            trunc: Optional[int] = None) -> List[Dict]:
+    """某日全部系统提示（默认今天），按时间倒序。DB 优先，失败回退内存。
+
+    ★ 2026-09-25（egress 治理，探针实测驱动）：新增 `trunc` = **正文最大字符数**。
+      背景：`content` 上限 8KB（见 `_CONTENT_KEEP`），而**列表页只需要首行**
+      （前端右栏用 `firstLine(content)` 显示）。实测该语句 46 分钟内 **42 次 / 2,436 行 /
+      ≤1.9MB** —— 页面开一天（8 小时）约 **20MB**。
+      ⇒ 列表接口传 `trunc` 后单次从 ~46KB 降到 ~5KB（约 −89%）。
+      ⚠️ 默认 `None`（不截断）⇒ 其他调用方（radar 分析等）行为**完全不变**。
+      ⚠️ 用 `SUBSTR(content, 1, %s)` 而**不是** `LEFT()` —— SQLite 没有 `LEFT` 函数，
+         而 `SUBSTR` 是 SQLite/PG 双库都支持的写法（本项目双库纪律）。
+    """
     target = date or time.strftime("%Y-%m-%d")
     out: List[Dict] = []
     try:
         _ensure_table()
         from app.database import db
-        rows = db.fetch(
-            "SELECT ts, title, content, category, force_flag FROM push_log "
-            "WHERE date = %s ORDER BY ts DESC LIMIT %s", (target, int(limit)))
+        if trunc:
+            rows = db.fetch(
+                "SELECT ts, title, SUBSTR(content, 1, %s) AS content, category, force_flag "
+                "FROM push_log WHERE date = %s ORDER BY ts DESC LIMIT %s",
+                (int(trunc), target, int(limit)))
+        else:
+            rows = db.fetch(
+                "SELECT ts, title, content, category, force_flag FROM push_log "
+                "WHERE date = %s ORDER BY ts DESC LIMIT %s", (target, int(limit)))
         for r in rows or []:
             out.append({"ts": r.get("ts"), "title": r.get("title"),
                         "content": r.get("content"),
