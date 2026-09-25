@@ -531,7 +531,8 @@ def _overnight_base():
         hist = sorted((_store.load_macro_history() or []),
                       key=lambda x: str((x or {}).get("time") or ""))
     except Exception as e:
-        print(f"[macro] 隔夜基准读取失败: {e}")
+        # ⚠️ 项目铁律⑥：后端日志必须 ASCII（本地 Windows GBK 控制台，中文会抛 UnicodeEncodeError）
+        print(f"[macro] overnight base load failed: {e}")
         return None, None
     for h in reversed(hist):
         t = str((h or {}).get("time") or "")
@@ -571,7 +572,7 @@ def _safe_overnight(panel: dict) -> dict:
     try:
         return get_overnight_change(panel)
     except Exception as e:
-        print(f"[macro] 隔夜变化计算失败: {e}")
+        print(f"[macro] overnight change failed: {e}")     # ASCII（铁律⑥）
         return {"base_time": None, "items": [], "note": "计算失败"}
 
 
@@ -638,7 +639,7 @@ def get_macro_snapshot() -> dict:
         from app.flash.rules import get_market_clock
         clock = get_market_clock()
     except Exception as e:
-        print(f"[macro] 市场时钟获取失败: {e}")
+        print(f"[macro] market clock failed: {e}")        # ASCII（铁律⑥）
 
     snapshot = {
         "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
