@@ -304,3 +304,4 @@ export const getMarketLimitReview = (date) => http.get('/market/limit-review', {
 
 export const getWorkbenchDayIndex = (days = 30) => http.get('/workbench/day-index', { params: { days } })
 export const getWorkbenchDay = (date) => http.get('/workbench/day', { params: { date }, timeout: 30000 })
+export const getWorkbenchDecisionCard = () => http.get('/workbench/decision-card', { timeout: 30000 })

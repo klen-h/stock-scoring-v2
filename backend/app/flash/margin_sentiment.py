@@ -192,7 +192,7 @@ def sentiment_line() -> str:
     d = get_sentiment()
     if not d:
         return ""
-    s = f"情绪温度计({d['date']}): {d['score']}分/{d['zone']}区"
+    s = f"短线情绪温度计·两融口径({d['date']}): {d['score']}分/{d['zone']}区"
     hot = [x for x in d["subs"] if x["score"] >= 80][:2]
     cold = [x for x in d["subs"] if x["score"] <= 20][:2]
     if hot:

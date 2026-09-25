@@ -445,6 +445,20 @@ def market_emotion():
         if streak > max_streak:
             max_streak, leader = streak, code
 
+    # ★ A4 竞价看板：昨日涨停股今日高开幅度（9:25 竞价定稿后有效）
+    gaps = []
+    for code in limit_up_codes:
+        q = stocks.get(code) or {}
+        o = float(q.get("open") or 0)
+        yc = (closes.get(code) or {}).get(d_prev) if d_prev else 0
+        if o > 0 and yc > 0:
+            gaps.append({"code": code, "name": (q.get("name") or code),
+                         "gap_pct": round((o / yc - 1) * 100, 2)})
+    gaps.sort(key=lambda x: x["gap_pct"], reverse=True)
+    auction = {"count": len(gaps),
+               "avg_gap": round(sum(g["gap_pct"] for g in gaps) / len(gaps), 2) if gaps else None,
+               "top": gaps[:5]}
+
     if limit_up_codes.__len__() >= 60 or max_streak >= 6:
         verdict = "亢奋"
     elif len(limit_up_codes) < 20 and (money is not None and money < 0):
@@ -463,6 +477,7 @@ def market_emotion():
         "prev_limit_count": len(prev_limit),
         "prev_limit_today_pct": round(money, 2) if money is not None else None,
         "max_streak": max_streak, "leader": leader,
+        "auction": auction,
         "leader_name": (stocks.get(leader) or {}).get("name") if leader else None,
         "verdict": verdict,
         "note": "涨停/连板为 >=9.5% 近似口径（10cm 主板），官方口径待 zzshare 接入",

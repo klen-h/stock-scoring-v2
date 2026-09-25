@@ -71,7 +71,10 @@ def _ensure_table() -> None:
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    # ★ 2026-09-25（工作台 P0-5）：本地时间在 Render=UTC，推送时间线整体偏移 8 小时
+    #   （实测 01:41 实为 09:41 北京）——统一北京时间唯一时间源
+    from app.flash.rules import beijing_now
+    return beijing_now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def record(title: str, content: str = "", category: Optional[str] = None,

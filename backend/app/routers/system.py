@@ -850,3 +850,16 @@ def workbench_day(date: str = Query(..., description="YYYY-MM-DD"),
         out["coach"] = []
 
     return out
+
+
+@router.get("/workbench/decision-card")
+def workbench_decision_card(user: dict = Depends(get_current_user)) -> Dict:
+    """今日决策卡（规则引擎确定性聚合：做不做/做什么/做多少/错了怎么办/持仓扫描）。
+
+    只读、无 LLM、无写入；生成失败返回 error 结构（工作台空状态兜底）。
+    """
+    try:
+        from app.trader_brief import build_decision_card
+        return build_decision_card()
+    except Exception as e:
+        return {"error": str(e)[:200]}

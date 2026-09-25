@@ -448,3 +448,113 @@ def generate_trader_brief(phase: str = None, force: bool = False,
     items = (data.get("actions") or [])[:MAX_ITEMS_PER_SECTION]
     return {"ok": True, "date": today, "phase": phase, "markdown": md,
             "items": items, "degraded": degraded}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  工作台·今日决策卡（2026-09-25 交易方法论 P1，规则引擎确定性输出，无 LLM）
+#  回答四问：今日做不做 / 做什么 / 做多少 / 错了怎么办 + 持仓风险扫描
+#  只读：不写库、不发推送；数据全部来自 collect_brief_data + 宏观快照 + 情绪快照
+# ══════════════════════════════════════════════════════════════════════════
+
+_REGIME_STANCE = {
+    # 市况 → (档位, 总仓上限, 单票上限, 一句话)
+    "offensive": ("开仓日", "总仓 ≤60%", "单票 ≤10%",
+                  "趋势市，按战法白名单正常开仓"),
+    "neutral": ("轻仓试错", "总仓 ≤30%", "单票 ≤10%",
+                "震荡市，仅白名单战法、轻仓试错"),
+    "neutral_bearish": ("空仓观察", "总仓 ≤30%（但战法入场全禁，实际 0 新仓）", "—",
+                        "低波阴跌：战法入场已全禁，存量持仓按剧本管理"),
+    "defensive": ("空仓观察", "总仓 ≤10%", "—",
+                  "防御市，保留防御性持仓，停止开新仓"),
+}
+
+
+def build_decision_card() -> dict:
+    """今日决策卡（确定性规则聚合）：做不做/做什么/做多少/错了怎么办 + 持仓扫描。
+
+    ★ 2026-09-25（交易方法论 P1，工作台盘前）：
+      - 无 LLM：全部规则/数据聚合，确定性输出，只读不写库不发推送
+      - 档位映射 _REGIME_STANCE；止损规则引用退出 v2 常量（口径单源）
+      - 持仓扫描复用 portfolio_radar（alerts/主力阶段），环境匹配一句话
+    """
+    from app.flash import rules as flash_rules
+    from app.macro import get_macro_panel
+    from app.strategies.recommendation import get_push_whitelist
+    from app.backtest.strategies import WARFARE_HOLD_DAYS_V2, WARFARE_STOP_PCT_V2
+
+    data = collect_brief_data("premarket")
+    reg = (data.get("regime") or {}).get("state") or "unknown"
+    stance = _REGIME_STANCE.get(reg) or ("数据不足", "—", "—", "市况未判定，观望")
+
+    # 市场环境温度（/market/temperature 同源：全市场实时缓存计算；独立于两融情绪温度计）
+    temp = None
+    try:
+        from app.routers.market import market_temperature as _mtemp
+        temp = (_mtemp() or {}).get("temperature")
+    except Exception:
+        temp = None
+
+    # 情绪快照（涨停/跌停/赚钱效应/连板高度）
+    em = None
+    try:
+        from app.routers.market import market_emotion
+        em = market_emotion() or {}
+    except Exception:
+        em = {}
+    emotion_verdict = em.get("verdict")
+    emotion_detail = (f"涨停 {em.get('limit_up', '—')}/跌停 {em.get('limit_down', '—')} · "
+                      f"连板高度 {em.get('max_streak', '—')} · 昨日涨停今日 "
+                      f"{em.get('prev_limit_today_pct', '—')}%")
+
+    # 做什么：白名单战法（中文名）+ 评分候选 Top3 + 回避方向（宏观空头标签）
+    wl = [_strategy_cn(x) for x in get_push_whitelist()]
+    candidates = [
+        {"rank": c.get("rank_pos"), "code": c.get("code"), "name": c.get("name"),
+         "score": c.get("total_score"), "signal": c.get("signal")}
+        for c in (data.get("candidates") or [])[:3]
+    ]
+    avoid = (data.get("macro") or {}).get("tags_bear") or []
+    avoid = [t for t in avoid][:3]
+
+    # 错了怎么办：v2 常量 + 退潮信号（宽度不足且昨涨停溢价为负 → 禁止接力）
+    stop_rule = (f"按 v2 纪律：介入价 ×(1−{WARFARE_STOP_PCT_V2:.0%}) 止损、"
+                 f"{WARFARE_HOLD_DAYS_V2} 个交易日到期，跌破计划位机械执行")
+    retreating = None
+    try:
+        if (em.get("limit_up") or 0) < 20 and (em.get("prev_limit_today_pct") or 0) < 0:
+            retreating = "涨停宽度不足且昨涨停溢价为负 → 禁止接力，降仓"
+    except Exception:
+        pass
+
+    # 持仓风险扫描（portfolio_radar：alerts/主力阶段/盈亏；环境匹配一句话）
+    positions_scan = []
+    try:
+        from app.portfolio_radar import build as _radar_build
+        for it in (_radar_build().get("items") or []):
+            fit = None
+            try:
+                if reg in ("neutral_bearish", "neutral") and (it.get("pnl_pct") or 0) > 0:
+                    fit = "防御持仓与偏冷环境匹配 ✓"
+            except Exception:
+                pass
+            positions_scan.append({
+                "code": it.get("code"), "name": it.get("name"),
+                "pnl_pct": it.get("pnl_pct"), "phase_cn": it.get("phase_cn"),
+                "alerts": it.get("alerts") or [], "fit": fit,
+            })
+    except Exception as e:
+        print(f"[decision-card] 持仓扫描失败: {e}")
+
+    return {
+        "date": data.get("date"),
+        "regime": reg,
+        "stance": {"level": stance[0], "total_cap": stance[1],
+                   "single_cap": stance[2], "why": stance[3]},
+        "environment": {"temperature": temp,
+                        "emotion_verdict": emotion_verdict,
+                        "emotion_detail": emotion_detail},
+        "do": {"whitelist": wl, "candidates": candidates, "avoid": avoid},
+        "how_much": {"total_cap": stance[1], "single_cap": stance[2]},
+        "if_wrong": {"stop_rule": stop_rule, "retreating": retreating},
+        "positions_scan": positions_scan,
+    }
