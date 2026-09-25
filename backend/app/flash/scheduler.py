@@ -747,17 +747,24 @@ async def backtest_prices_refresh_loop():
                 #   原实现是「跑完就 mark_done」，而 `backfill_daily` **内部失败不抛异常**
                 #   （只把失败股票放进 `stock_missing`）⇒ **标记照打 ⇒ 当天不再重试
                 #   ⇒ 该日数据永久不完整**。
-                #   实测证据：`backtest_prices` 2026-09-24 只有 **271 行**，而 09-23 是 829 行
+                #   实测证据：`backtest_prices` 2026-09-24 只有 **271 行**，而 09-23 是 839 行
                 #   —— 只完成任务 1/3，却已 mark_done ⇒ 至今未自愈。
-                #   阈值取 **50**（正常应是个位数）：宽到不会因个别退市/停牌股反复重试，
-                #   窄到能拦住"只完成 1/3"这类真故障。
+                #   ★ 阈值 **50** 的依据（手动补齐后的**终态实测**，不是推断）：
+                #     跑完 `backfill_lagging()` 后 `stock_missing` **只剩 2 只**
+                #     （`601238 广汽集团`/`603400 华之杰`，数据源无返回）⇒ 常态缺失是个位数级
+                #     ⇒ 50 有 ~25 倍余量，同时能拦住"只完成 1/3"（缺 558）这类真故障。
+                #   ⚠️ 记一笔我在这里的**误判**：补齐到 93% 时我看到"仍缺 56 只"，
+                #     就断言"数据源长期无返回、属常态缺失"并把阈值放宽到 100 ——
+                #     **那是中间态**（那 56 只只是当轮还没轮到），跑完只剩 2 只。
+                #     ⇒ 教训：**别拿"进度中间态"当"稳态"来定阈值**（同 `_can_push` 那类
+                #       "还没跑完 ≠ 永远跑不完"）。已按终态改回 50。
                 _incomplete = len(missing) + len(etf_missing) >= 50
                 if not _incomplete:
                     store.mark_schedule_done(task_key)
                 else:
-                    print(f"[scheduler] 回测价格回填**不完整**（缺 {len(missing)} 只个股 + "
-                          f"{len(etf_missing)} 只ETF >= 50）⇒ **不标记完成**，"
-                          f"节流后重试（避免该日数据永久缺失）")
+                    print(f"[scheduler] 回测价格回填不完整（缺 {len(missing)} 只个股 + "
+                          f"{len(etf_missing)} 只ETF >= 50）⇒ 不标记完成，节流后重试"
+                          f"（避免该日数据永久缺失）")
                 if etf_missing:
                     _notify_failure(
                         "回测价格回填",
