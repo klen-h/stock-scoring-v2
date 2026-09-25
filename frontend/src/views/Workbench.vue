@@ -251,20 +251,20 @@
               <div class="text-xs space-y-1.5">
                 <div>
                   <span class="text-muted">做什么：</span>
-                  <b>{{ dc.do.whitelist.join('、') || '无白名单战法（推送静默）' }}</b>
-                  <template v-if="(dc.do.candidates || []).length">
+                  <b>{{ (dc.do?.whitelist || []).join('、') || '无白名单战法（推送静默）' }}</b>
+                  <template v-if="(dc.do?.candidates || []).length">
                     · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
                   </template>
                 </div>
-                <div v-if="(dc.do.avoid || []).length">
+                <div v-if="(dc.do?.avoid || []).length">
                   <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
                 </div>
-                <div><span class="text-muted">做多少：</span>{{ dc.how_much.total_cap
-                  }}<template v-if="dc.how_much.single_cap && dc.how_much.single_cap !== '—'"> · {{ dc.how_much.single_cap }}</template></div>
-                <div><span class="text-muted">错了怎么办：</span>{{ dc.if_wrong.stop_rule
-                  }}<template v-if="dc.if_wrong.retreating"> · <span class="text-amber-400">{{ dc.if_wrong.retreating }}</span></template></div>
-                <div><span class="text-muted">环境：</span>情绪 {{ dc.environment.emotion_verdict || '—' }}
-                  · {{ dc.environment.emotion_detail }}</div>
+                <div><span class="text-muted">做多少：</span>{{ dc.how_much?.total_cap
+                  }}<template v-if="dc.how_much?.single_cap && dc.how_much.single_cap !== '—'"> · {{ dc.how_much.single_cap }}</template></div>
+                <div><span class="text-muted">错了怎么办：</span>{{ dc.if_wrong?.stop_rule
+                  }}<template v-if="dc.if_wrong?.retreating"> · <span class="text-amber-400">{{ dc.if_wrong.retreating }}</span></template></div>
+                <div><span class="text-muted">环境：</span>情绪 {{ dc.environment?.emotion_verdict || '—' }}
+                  · {{ dc.environment?.emotion_detail }}</div>
               </div>
               <!-- 持仓扫描 -->
               <div v-if="(dc.positions_scan || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
