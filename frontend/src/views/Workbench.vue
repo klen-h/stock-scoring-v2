@@ -702,6 +702,38 @@
               </div>
               <div v-if="limitReview.ladder.broken" class="text-[11px] text-amber-400 mt-1">
                 ⚠ {{ limitReview.ladder.note }}</div>
+              <!-- ★ review 意见①：高度塌陷（全首板无连板）是**另一种冰点**，
+                   与"断层"并列显示，情绪刻画才完整。 -->
+              <div v-else-if="limitReview.ladder.collapsed"
+                   class="text-[11px] text-sky-400 mt-1">❄ {{ limitReview.ladder.note }}</div>
+            </div>
+            <!-- ★★ review 意见③④：炸板率(A) + 大面率(B) —— **刻意拆成两个指标**：
+                 A=接力意愿（资金愿不愿把板封死）｜B=亏钱烈度（炸了砸多深）。
+                 一只票摸板收 +7% ⇒ A 判"炸"（接力确实失败）、B 判"不炸"（对打板客仍是面）
+                 ⇒ 两者都对，因为是两件事。组合读法：**A 高 B 低 = 分歧大但亏钱温和；
+                 双高 = 真退潮**。口径细节全在 stats.meta 里（悬停可见）。 -->
+            <div v-if="limitReview.stats" class="mb-2 border-t border-border/40 pt-2">
+              <div class="flex items-center gap-3 flex-wrap text-[11px]"
+                   :title="limitReview.stats.meta">
+                <span class="text-muted">炸板率(A) <b class="font-mono text-amber-300">{{ limitReview.stats.break_rate ?? '—' }}%</b>
+                  <span class="text-[10px]">接力意愿</span></span>
+                <span class="text-muted">大面率(B) <b class="font-mono text-red-400">{{ limitReview.stats.big_loss_rate ?? '—' }}%</b>
+                  <span class="text-[10px]">亏钱烈度</span></span>
+                <span class="text-muted">封板率 <b class="font-mono text-gray-300">{{ limitReview.stats.seal_rate ?? '—' }}%</b></span>
+                <span class="text-[10px] text-muted">
+                  曾涨停 {{ limitReview.stats.total?.touched }}（一字 {{ limitReview.stats.total?.oneword }}）
+                  · 分母已剔一字与新股</span>
+              </div>
+              <!-- 分桶：20cm 的炸板与 10cm 不是一个情绪含义，混在一起会稀释信号 -->
+              <div v-if="Object.keys(limitReview.stats.buckets || {}).length"
+                   class="flex items-center gap-2 flex-wrap text-[10px] mt-1">
+                <span class="text-muted">分桶</span>
+                <span v-for="(v, k) in limitReview.stats.buckets" :key="k"
+                      class="px-1.5 py-0.5 rounded border border-border/60 text-muted">
+                  {{ k }} 炸板 <b class="font-mono text-amber-300">{{ v.break_rate ?? '—' }}%</b>
+                  / 大面 <b class="font-mono text-red-400">{{ v.big_loss_rate ?? '—' }}%</b>
+                  <span class="text-[9px]">(n={{ v.denom }})</span></span>
+              </div>
             </div>
             <div v-if="(limitReview.steps || []).length === 0 && (limitReview.stocks || []).length === 0"
                  class="text-muted text-xs">—（当日无复盘数据）</div>

@@ -883,15 +883,193 @@ def _build_ladder(uh: Dict) -> Optional[Dict]:
                 + "、".join(f"{g}板" for g in gaps)
                 + f"为 0，但存在 {real_max} 板 —— 高标孤立、缺少中位承接"
                   "（短线退潮的常见前兆）")
+    # ★ 2026-09-25（用户 review 意见①）：补一个**相邻信号**。
+    #   `{1:38, 2:0, 3:0}`（全首板、无任何连板）按上面的"断层"定义**不算断层**
+    #   （因为不存在"更高且非零"的级别），但它是**另一种冰点**：
+    #   **高度塌陷** —— 没人敢做二板，接力意愿缺失。
+    #   ⇒ 两个信号并列，情绪刻画才完整（断层 = 有高标但缺承接；塌陷 = 连高度都没有）。
+    total_cnt = sum(x["count"] for x in dist)
+    collapsed = real_max <= 1 and total_cnt >= 15
+    if collapsed:
+        _cnote = (f"高度塌陷：最高仅 {real_max} 板、无连板（当日涨停 {total_cnt} 只）"
+                  "—— 接力意愿缺失，情绪处于冰点档")
+        note = (_cnote if not note else note + "；" + _cnote)
     return {
         "max_count": real_max,
         "dist": dist,
         "levels": max_lvl,
-        "total": sum(x["count"] for x in dist),
+        "total": total_cnt,
         "gaps": gaps,
         "broken": bool(gaps),
+        "collapsed": collapsed,
         "note": note,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  炸板率（A）+ 大面率（B）—— 2026-09-25（用户 review 意见落地）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么拆成两个指标】A 与 B 衡量的**不是同一件事**：
+#   · A 炸板率 = **接力意愿**（资金愿不愿意把板封死）—— 同花顺/通达信标准口径；
+#   · B 大面率 = **亏钱烈度**（炸了之后砸多深）—— 对打板客的实际伤害。
+#   混在一起会产生歧义：一只票摸板后收 +7% ⇒ A 判「炸」（对，接力确实失败了），
+#   B 判「不炸」（但它对打板客仍是 -3% 的面）⇒ 两者都对，因为是两回事。
+#   ★ 组合读法（比单一数字信息量大得多）：
+#     **炸板率高 + 大面率低** = 分歧大但亏钱效应温和；
+#     **双高** = 真正的退潮信号。
+# 【四条口径细节（决定数据质量，比选 A/B 更重要）】
+#   ① **收盘判定用阈值缓冲**，不比精确涨停价：`涨幅 ≥ 板幅 − 0.2%` 才算封住
+#      （避免一分钱误差/复权问题把**回封**票误判成炸板）；
+#   ② **按板幅分桶**：20cm 的炸板与 10cm 完全不是一个情绪含义，混在一起会稀释信号
+#      ⇒ 主板 10% / 双创 20% / 北交所 30% / ST 5% 分桶，ST 单列；
+#   ③ **剔除新股**（上市不足 60 个交易日，无涨跌幅或规则特殊）**且一字板不计入分母**
+#      —— 一字板不可能炸，留在分母会**系统性压低**炸板率；
+#   ④ 分母与口径写进返回的 `meta`，前端标注，否则日后自己都会怀疑数字。
+# 【数据源】`backtest_prices`（`high/low/close/name` 全有）⇒ **零新增数据源**。
+#   板幅与涨停价**复用 `backtest.engine` 的 `_limit_pct` / `_round_tick`**
+#   （项目唯一实现，避免多处口径漂移）。
+_NEW_STOCK_MIN_DAYS = 60          # 上市不足 60 个交易日视为新股
+_BREAK_TOL = 0.002                # ① 阈值缓冲：板幅 −0.2%
+_SEAL_TOL = 0.001                 # 曾涨停判定容差（最高价触价即可）
+_BIG_LOSS_PCT = 5.0               # ② 大面率定义：炸板且收盘涨幅 < 5%
+_first_seen_cache = {"ts": 0.0, "map": None}   # 每只最早出现日期（日级缓存，防重复扫表）
+
+
+def _first_seen_map() -> Dict:
+    """`{code: 最早交易日}` —— 用于剔除新股。**日级进程缓存**（该查询扫全表，不能每次做）。"""
+    import time as _t
+    now = _t.time()
+    if _first_seen_cache["map"] is not None and now - _first_seen_cache["ts"] < 3600:
+        return _first_seen_cache["map"]
+    out = {}
+    try:
+        from app.database import db
+        for r in db.fetch("SELECT code, MIN(date) AS d0 FROM backtest_prices "
+                          "GROUP BY code") or []:
+            out[str(r.get("code"))] = str(r.get("d0") or "")
+    except Exception as e:
+        print(f"[market] first-seen map failed: {e}")          # ASCII（铁律⑥）
+    _first_seen_cache.update(ts=now, map=out)
+    return out
+
+
+def _bucket_of(code: str, name: str) -> str:
+    """按板幅分桶（②）：主板10 / 双创20 / 北交所30 / ST5。"""
+    from app.backtest.engine import _limit_pct
+    lp = _limit_pct(str(code), str(name or ""))
+    if abs(lp - 0.05) < 1e-9:
+        return "ST5"
+    if abs(lp - 0.20) < 1e-9:
+        return "20cm"
+    if abs(lp - 0.30) < 1e-9:
+        return "30cm"
+    return "主板"
+
+
+def _limit_stats(day: str) -> Optional[Dict]:
+    """炸板率(A) + 大面率(B)，按板幅分桶。失败/数据不足返回 None。"""
+    try:
+        from app.backtest.engine import _limit_pct, _round_tick
+        from app.database import db
+        prev = (db.fetch_one("SELECT MAX(date) AS d FROM backtest_prices "
+                             "WHERE date < %s", (day,)) or {}).get("d")
+        if not prev:
+            return None
+        rows = db.fetch("SELECT t.code, t.name, t.high, t.low, t.close, "
+                        "p.close AS prev_close "
+                        "FROM backtest_prices t JOIN backtest_prices p "
+                        "  ON p.code = t.code AND p.date = %s "
+                        "WHERE t.date = %s", (str(prev), day)) or []
+        seen = _first_seen_map()
+        # 每个桶：曾涨停(不含一字) / 一字 / 炸板 / 大面
+        buckets = {}
+        skip_new = skip_bad = 0
+        for r in rows:
+            code = str(r.get("code") or "")
+            name = str(r.get("name") or "")
+            try:
+                high = float(r.get("high") or 0)
+                low = float(r.get("low") or 0)
+                close = float(r.get("close") or 0)
+                pc = float(r.get("prev_close") or 0)
+            except (TypeError, ValueError):
+                continue
+            if high <= 0 or low <= 0 or close <= 0 or pc <= 0:
+                skip_bad += 1
+                continue
+            d0 = seen.get(code) or ""
+            if d0 and d0 > _shift_days(day, -_NEW_STOCK_MIN_DAYS * 2):
+                skip_new += 1                       # ③ 剔除新股
+                continue
+            lp = _limit_pct(code, name)
+            up_price = _round_tick(pc * (1 + lp))
+            chg = close / pc - 1
+            touched = high >= up_price * (1 - _SEAL_TOL)          # 曾触及涨停
+            if not touched:
+                continue
+            sealed = chg >= lp - _BREAK_TOL                       # ① 缓冲后判封住
+            is_oneword = (abs(high - low) < 1e-9) and sealed      # ③ 一字板
+            b = buckets.setdefault(_bucket_of(code, name),
+                                   {"touched": 0, "sealed": 0, "oneword": 0,
+                                    "broken": 0, "big_loss": 0})
+            b["touched"] += 1
+            # ⚠️ 口径说明：`sealed` **包含一字板**（一字当然也是"封住了"）
+            #   ⇒ 自洽式是 `sealed + broken == touched`，不是 `== touched - oneword`。
+            #   `oneword` 是 `sealed` 的**子集**、也是炸板率分母里的**扣除项**。
+            if sealed:
+                b["sealed"] += 1
+                if is_oneword:
+                    b["oneword"] += 1
+            else:
+                b["broken"] += 1
+                if (close / pc - 1) * 100 < _BIG_LOSS_PCT:        # ② 大面
+                    b["big_loss"] += 1
+        if not buckets:
+            return None
+        # 炸板率分母 = 曾涨停 **− 一字板**（一字不可能炸，留在分母会系统性压低炸板率）
+        out_buckets = {}
+        tot = {"touched": 0, "sealed": 0, "oneword": 0, "broken": 0, "big_loss": 0}
+        for k, b in buckets.items():
+            den = max(0, b["touched"] - b["oneword"])
+            out_buckets[k] = {
+                **b, "denom": den,
+                "break_rate": (round(b["broken"] / den * 100, 1) if den else None),
+                "big_loss_rate": (round(b["big_loss"] / den * 100, 1) if den else None),
+            }
+            for kk in tot:
+                tot[kk] += b[kk]
+        den_all = max(0, tot["touched"] - tot["oneword"])
+        return {
+            "date": day, "prev_date": str(prev),
+            "break_rate": (round(tot["broken"] / den_all * 100, 1) if den_all else None),
+            "big_loss_rate": (round(tot["big_loss"] / den_all * 100, 1) if den_all else None),
+            "seal_rate": (round(tot["sealed"] / tot["touched"] * 100, 1)
+                          if tot["touched"] else None),
+            "buckets": out_buckets, "total": tot,
+            "skipped": {"new_stock": skip_new, "bad_data": skip_bad},
+            "meta": (f"口径：曾触及涨停（最高价≥涨停价）为分母，"
+                     f"剔除一字板（{tot['oneword']} 只，一字不会炸，留在分母会压低炸板率）"
+                     f"与新股（上市<{_NEW_STOCK_MIN_DAYS}交易日，剔除 {skip_new} 只）；"
+                     f"封住判定用板幅−{_BREAK_TOL * 100:.1f}% 缓冲（防一分钱误差误判回封）；"
+                     f"大面率 = 炸板且收盘涨幅<{_BIG_LOSS_PCT:.0f}% 的占比；"
+                     f"按板幅分桶（主板10/cm 双创20cm 北交所30cm ST5）；"
+                     f"sealed 含一字板（自洽式 sealed+broken=touched）。"
+                     f"⚠️ **样本局限**：数据源 backtest_prices 只覆盖回填过的股票"
+                     f"（当日 {len(rows)} 只，非全市场）⇒ 本组绝对家数会**少于**官方口径"
+                     f"（如 zzshare 的涨停清单），**比率可用、家数不可直接对比**"),
+        }
+    except Exception as e:
+        print(f"[market] limit stats failed: {e}")             # ASCII（铁律⑥）
+        return None
+
+
+def _shift_days(day: str, delta: int) -> str:
+    """日期加减（自然日，仅用于"上市满 N 个交易日"的宽松近似）。"""
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        return (_dt.strptime(str(day)[:10], "%Y-%m-%d") + _td(days=delta)).strftime("%Y-%m-%d")
+    except Exception:
+        return str(day)[:10]
 
 
 def _zz_snapshot(day: str) -> Dict:
@@ -909,7 +1087,15 @@ def _zz_snapshot(day: str) -> Dict:
 def market_limit_review(date: str = None):
     from app.flash import rules as _rules
     d = date or _bj_now().strftime("%Y-%m-%d")
-    out = {"date": d, "steps": [], "stocks": [], "ladder": None, "source": None}
+    # ★ 2026-09-25（用户 review 意见②）：**双数据源的时点标注**。
+    #   快照是**收盘定稿**（日批写），直连 zzshare 是**动态值** ⇒ 两者语义不同，
+    #   必须让消费方知道"这份数字是什么时候的"：
+    #     · `as_of`  = 数据时点（快照 ⇒ 快照日期；直连 ⇒ 现在）
+    #     · `stale`  = 直连失败后**退回旧快照**的标记（而不是让整块数据消失 ——
+    #                  盘前页面最怕某块突然空白）
+    _now_str = _bj_now().strftime("%Y-%m-%d %H:%M")
+    out = {"date": d, "steps": [], "stocks": [], "ladder": None, "stats": None,
+           "source": None, "as_of": _now_str, "stale": False}
     # ★★ 2026-09-25：**优先读已落库快照**（`zz_daily_snapshots`，日批写入）
     #   为什么改：原实现**每次都直连 zzshare** ⇒ ① 匿名调用数据范围受限（本函数原注释
     #   自己写着"匿名可用但数据范围受限"）；② 依赖 token 与网络、盘中易失败；
@@ -930,9 +1116,11 @@ def market_limit_review(date: str = None):
             out["steps"] = rs[:20]
         if out["ladder"] or out["stocks"]:
             out["source"] = "snapshot"
+            out["as_of"] = str(snap.get("date") or d)[:10]      # 快照 = 收盘定稿时刻
     if out["ladder"] or out["stocks"]:
+        out["stats"] = _limit_stats(d)          # ★ 炸板率/大面率（来自 backtest_prices）
         return out
-    # ── 回退：直连 zzshare（快照缺失/失败时）──
+    # ── 回退：直连 zzshare（快照缺失时，拿到的是**动态值**）──
     try:
         from app.zzshare_client import get_api
         api = get_api()
@@ -942,7 +1130,34 @@ def market_limit_review(date: str = None):
         df2 = api.uplimit_stocks(date1=d)
         if df2 is not None and hasattr(df2, "to_dict"):
             out["stocks"] = df2.to_dict("records")[:50]
-        out["source"] = "live"
+        if out["steps"] or out["stocks"]:
+            out["source"] = "live"
+            out["as_of"] = _now_str
     except Exception as e:
-        print(f"[market] limit-review failed (degrade to empty): {e}")
+        print(f"[market] limit-review live failed: {e}")        # ASCII（铁律⑥）
+    if out["ladder"] or out["stocks"]:
+        out["stats"] = _limit_stats(d)
+        return out
+    # ── ★★ 用户 review 意见②：双源都失败时**降级为最后可用快照 + stale 标记**，
+    #   而不是让整块数据消失（盘前页面最怕某块突然空白）。
+    try:
+        from app.zzshare_daily import load_range
+        older = load_range(_shift_days(d, -30), d) or []
+        if older:
+            last = older[-1]
+            uh = last.get("uplimit_hot") or {}
+            if not uh.get("_error"):
+                out["ladder"] = _build_ladder(uh)
+            us = last.get("uplimit_stocks")
+            if isinstance(us, dict):
+                us = us.get("data") or us.get("items")
+            if isinstance(us, list) and us:
+                out["stocks"] = us[:50]
+            if out["ladder"] or out["stocks"]:
+                out["source"] = "snapshot"
+                out["as_of"] = str(last.get("date") or "")[:10]
+                out["stale"] = True          # ★ 明确标注"这是旧数据"
+    except Exception as e:
+        print(f"[market] limit-review stale fallback failed: {e}")   # ASCII（铁律⑥）
+    out["stats"] = _limit_stats(d)
     return out
