@@ -9,15 +9,36 @@
 
     <!-- 顶栏：日期 · 上下两列（A股/外盘）· 情绪/市况模块（内含下方数据新鲜度，2026-09-25 挪入） -->
     <div class="bg-card border border-border rounded-lg px-4 py-2 flex items-center gap-4 flex-wrap text-sm">
-      <label class="flex items-center gap-2">
-        <span class="text-muted text-xs">日期</span>
-        <select v-model="selectedDate"
-                class="bg-background border border-border rounded px-2 py-1 text-xs">
-          <option v-for="d in dayList" :key="d.date" :value="d.date">
-            {{ d.date === todayStr ? '今天 ' + d.date : d.date }}
-          </option>
-        </select>
-      </label>
+      <!-- ★ 2026-09-25 用户："底部的系统状态移到顶部的日期的下面，把简要信息展示一行，
+           点击再悬浮展示内容" ⇒ 日期正下方常驻一行摘要；点击就地弹出**浮层**
+           （absolute 定位，不再用底部 `<details>` 撑开页面），点浮层外关闭。 -->
+      <div class="relative flex flex-col gap-1">
+        <label class="flex items-center gap-2">
+          <span class="text-muted text-xs">日期</span>
+          <select v-model="selectedDate"
+                  class="bg-background border border-border rounded px-2 py-1 text-xs">
+            <option v-for="d in dayList" :key="d.date" :value="d.date">
+              {{ d.date === todayStr ? '今天 ' + d.date : d.date }}
+            </option>
+          </select>
+        </label>
+        <button class="flex items-center gap-1.5 text-[10px] text-muted hover:text-gray-300 w-fit"
+                @click.stop="statusOpen = !statusOpen">
+          <span class="inline-block w-2 h-2 rounded-full"
+                :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
+          系统状态
+          <span v-if="statusBrief.summary" class="text-muted">· {{ statusBrief.summary }}</span>
+          <span v-if="statusBrief.dbPct != null" class="text-muted">· 库 {{ statusBrief.dbPct }}%</span>
+          <span v-if="statusBrief.memMb != null" class="text-muted">· 内存 {{ statusBrief.memMb }}MB</span>
+          <span v-if="statusTime" class="text-muted">· 截至 {{ statusTime }}</span>
+          <span class="text-muted">▾</span>
+        </button>
+        <div v-if="statusOpen" class="fixed inset-0 z-40" @click="statusOpen = false"></div>
+        <div v-if="statusOpen"
+             class="absolute left-0 top-full z-50 mt-1 w-[min(92vw,420px)] max-h-[70vh] overflow-auto
+                    bg-card border border-border rounded-lg p-3 shadow-xl text-xs space-y-1"
+             v-html="statusHtml"></div>
+      </div>
 
       <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），居中排开空间足够；
            细分隔线区分 A股与外盘 -->
@@ -81,13 +102,8 @@
           <div class="text-[10px] text-muted">市况</div>
         </div>
       </div>
-      <!-- 数据新鲜度（点开看底部状态区） -->
-        <span class="flex items-center gap-1.5 cursor-pointer text-[10px] text-muted"
-              @click="statusOpen = true">
-        <span class="inline-block w-2 h-2 rounded-full"
-              :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
-          数据新鲜度<template v-if="statusTime"> · 截至 {{ statusTime }}</template>
-      </span>
+      <!-- ★ 2026-09-25：原「数据新鲜度 · 截至 HH:MM」入口已**并入日期下方的系统状态行**
+           （同一点、同一浮层）⇒ 此处删除，避免同一份状态在顶栏出现两次。 -->
     </div>
     </div>
 
@@ -495,6 +511,16 @@
               </div>
             </template>
           </div>
+          <!-- ★★ 2026-09-25 用户："信号×行业是战法扫描出来的吗？如果是，今日决策卡的战法内容
+               也可以摘出来，剩余的部分跟隔夜与今日（财经日历）形成左右卡片。"
+               ⇒ 确认：`signal_industry_cross` 读的就是 `strategy_results`（战法扫描）⇒ 同源。
+               ⇒ 两列起点**上移到决策卡**（原先只从"信号×行业"起 ⇒ 决策卡仍全宽）：
+                  左列＝决策卡（剩余：立场/做多少/错了/负面清单）+ 战法卡（战法内容+信号分布）
+                  右列＝隔夜与今日（财经日历）+ 决策简报（盘前）
+               · 断点 **2xl**：主区已被常驻右栏占 320px，xl 下每列仅 ~460px 太挤。
+               · 两列**各自堆叠**（masonry）而非 grid 行对齐 —— 否则短列会留大片空洞。 -->
+          <div class="grid grid-cols-1 2xl:grid-cols-2 gap-4 items-start">
+          <div class="space-y-4 min-w-0">
           <!-- ★ P1 今日决策卡（规则引擎确定性输出；空状态给生成按钮，不静默） -->
           <div class="bg-card border border-accent/40 rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
@@ -527,81 +553,19 @@
                 </div>
               </template>
               <div v-else class="text-xs text-muted mb-2">暂无立场结论（决策卡缺 stance 字段）</div>
-              <!-- 做什么 / 做多少 / 错了怎么办 -->
+              <!-- 做多少 / 错了怎么办 -->
+              <!-- ★★ 2026-09-25 用户："今日决策卡的战法内容也可以摘出来" ——
+                   「做什么（白名单/候选）」「回避」「战法质量（含绩效表）」已**整体摘到
+                   独立「战法卡」**（与同源的「信号×行业」合并，见下方战法卡）。
+                   本卡只保留纯决策内容：立场 / 做多少 / 错了怎么办 / 负面清单。 -->
               <div class="text-xs space-y-1.5">
-                <div>
-                  <span class="text-muted">做什么：</span>
-                  <b>{{ (dc.do?.whitelist || []).join('、') || '无白名单战法（推送静默）' }}</b>
-                  <template v-if="(dc.do?.candidates || []).length">
-                    · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
-                  </template>
-                </div>
-                <!-- ★ 2026-09-25（用户需求 A）：**「为什么静默」的自解释**。
-                     原先只显示"无白名单战法（推送静默）"⇒ 分不清是【市场不对】/【战法坏了】/
-                     【系统故障】—— 三者处置完全不同（前两者什么都不用做，后者要修）。
-                     数据是 `recommendation` 早已算好并落库的 `whitelist_state` ⇒ 零新增计算。 -->
-                <div v-if="dc.strategy_quality?.available"
-                     class="mt-1.5 pt-1.5 border-t border-border/50">
-                  <div class="flex items-start gap-1.5 flex-wrap">
-                    <span class="text-muted shrink-0">战法质量：</span>
-                    <span class="text-[11px] leading-snug"
-                          :class="dc.strategy_quality.whitelist?.length ? 'text-emerald-400' : 'text-amber-300'">
-                      {{ dc.strategy_quality.why }}
-                    </span>
-                  </div>
-                  <div v-if="dc.strategy_quality.regime" class="text-[10px] text-muted mt-0.5">
-                    市场状态：<span class="text-gray-300">{{ dc.strategy_quality.regime.cn }}</span>
-                    （{{ dc.strategy_quality.regime.date }} · 评分
-                    <span class="font-mono">{{ dc.strategy_quality.regime.score }}</span>
-                    · 均线 {{ dc.strategy_quality.regime.ma_trend }}）
-                  </div>
-                  <table v-if="dc.strategy_quality.rows?.length" class="w-full text-[11px] mt-1.5">
-                    <thead class="text-muted">
-                      <tr class="border-b border-border/50">
-                        <th class="text-left py-0.5 font-normal">战法</th>
-                        <th class="text-right py-0.5 font-normal">样本</th>
-                        <th class="text-right py-0.5 font-normal">胜率</th>
-                        <th class="text-right py-0.5 font-normal">均收益</th>
-                        <th class="text-right py-0.5 font-normal">盈亏比</th>
-                        <th class="text-left py-0.5 pl-2 font-normal">状态</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr v-for="s in dc.strategy_quality.rows" :key="s.key"
-                          class="border-b border-border/30">
-                        <td class="py-0.5">{{ s.cn }}</td>
-                        <td class="py-0.5 text-right font-mono text-muted">{{ s.n }}</td>
-                        <td class="py-0.5 text-right font-mono"
-                            :class="(s.win_rate || 0) >= 50 ? 'text-rise' : 'text-fall'">
-                          {{ s.win_rate }}%</td>
-                        <td class="py-0.5 text-right font-mono"
-                            :class="(s.avg_ret || 0) >= 0 ? 'text-rise' : 'text-fall'">
-                          {{ (s.avg_ret || 0) >= 0 ? '+' : '' }}{{ s.avg_ret }}%</td>
-                        <td class="py-0.5 text-right font-mono">{{ s.profit_factor }}</td>
-                        <td class="py-0.5 pl-2">
-                          <span v-if="s.pass" class="text-emerald-400">达标</span>
-                          <span v-else-if="s.insufficient" class="text-muted">样本不足</span>
-                          <span v-else class="text-amber-300" :title="s.alert || '未达判据'">
-                            未达标<template v-if="s.alert"> ⚠</template></span>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <div class="text-[10px] text-muted mt-1">
-                    判据 {{ dc.strategy_quality.criterion }}（期望值 / 胜率双轨，任一轨跌破即暂停推送）
-                    · 统计于 {{ (dc.strategy_quality.computed_at || '').slice(5, 16).replace('T', ' ') }}
-                    · 口径：T+1 开盘成交、涨停一字剔除、含主力闸门过滤
-                  </div>
-                </div>
-                <div v-if="(dc.do?.avoid || []).length">
-                  <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
-                </div>
                 <div><span class="text-muted">做多少：</span>{{ dc.how_much?.total_cap
                   }}<template v-if="dc.how_much?.single_cap && dc.how_much.single_cap !== '—'"> · {{ dc.how_much.single_cap }}</template></div>
                 <div><span class="text-muted">错了怎么办：</span>{{ dc.if_wrong?.stop_rule
                   }}<template v-if="dc.if_wrong?.retreating"> · <span class="text-amber-400">{{ dc.if_wrong.retreating }}</span></template></div>
-                <div><span class="text-muted">环境：</span>情绪 {{ dc.environment?.emotion_verdict || '—' }}
-                  · {{ dc.environment?.emotion_detail }}</div>
+                <!-- ★ 2026-09-25 用户："环境：情绪 分歧/常态 · 涨停 47/跌停 14 …"与
+                     **情绪预判卡**完全同源（同为 verdict + 涨停/跌停/连板高度/昨涨停今均）
+                     ⇒ 决策卡删掉这一行，避免同一批数字在盘前出现两次。 -->
               </div>
               <!-- ★ 2026-09-25 用户需求："负面清单和主线推荐同等重要" ⇒ 决策卡补「负面清单」。
                    数据来自后端 dc.negatives（持仓主力出货 / 候选信号冲突 / 矛盾敞口
@@ -611,12 +575,18 @@
                    空数组 ⇒ 整块不渲染（不给"假清空"的安心感）。 -->
               <div v-if="(dc.negatives || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
                 <div class="text-muted mb-1">负面清单（今天要避开的）</div>
-                <div v-for="(n, i) in dc.negatives" :key="i" class="py-0.5">
+                <div v-for="(n, i) in negativeList" :key="i" class="py-0.5">
                   <span class="px-1 rounded text-[10px]"
                         :class="n.level === 'high' ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'">{{ n.scope }}</span>
                   <a v-if="n.code" :href="stockHref(n.code)" target="_blank"
                      class="ml-1 font-semibold text-red-400 hover:underline">{{ n.name || n.code }}</a>
                   <span class="ml-1 text-gray-300">{{ n.reason }}</span>
+                </div>
+                <!-- ★ 2026-09-25：矛盾敞口不在此重复（简报「该做」段已逐条列出）⇒ 只报数量 + 指路 -->
+                <div v-if="conflictCount" class="text-[10px] text-muted py-0.5">
+                  矛盾敞口 {{ conflictCount }} 条 —— 已在
+                  <router-link target="_blank" to="/report" class="text-accent hover:underline">盘前简报</router-link>
+                  的「该做」段列明，此处不重复
                 </div>
                 <!-- ★ C1：把"扫过的范围"说出来（否则用户不知道解禁也查过了） -->
                 <div v-if="dc.risk_events?.scanned" class="text-[10px] text-muted mt-1">
@@ -630,16 +600,39 @@
             </template>
           </div>
 
-          <!-- ★ 2026-09-25（P2）用户："决策简报里 ma_convergence_breakout 说『需结合行业分布判断』，
-               但页面没给分布 —— **58 只信号的行业交叉表应该直接画出来**。"
-               且"融捷（锂）和焦作万方（电解铝）笼统归入『有色/化工链条』，**分类口径要标注**"。
-               ⇒ 数据来自后端 `dc.signals_industry`（零新增数据源：strategy_results + stock_industry）。
-               行业名 = 归一化一级；**悬停显示原始细分口径**（如 有色 → 锂/电解铝）。
-               ⚠️ 原始名里新浪 node（new_xxx）已被后端过滤，不会出现乱码。 -->
-          <div v-if="dc && (dc.signals_industry?.rows || []).length"
-               class="bg-card border border-border rounded-lg p-4">
+          <!-- ★★ 战法卡（2026-09-25 用户方案）：收拢所有**战法相关**内容 ——
+               从决策卡摘出的「做什么（白名单/候选）」「回避」「战法质量」＋ 同源的「信号 × 行业」。
+               （已确认 `signal_industry_cross` 读的就是 `strategy_results` 战法扫描结果 ⇒ 同源。）
+               顺序＝结论（能不能做）→ 分布（信号落在哪些行业）→ 依据（绩效与为什么静默）。
+               ⚠️ v-if 从 `dc.signals_industry.rows.length` 放宽为 `dc`：即使某天没有信号，
+               白名单/战法质量仍需显示（原条件会把整卡藏掉）。
+               📌 信号×行业的由来（P2，2026-09-25）：用户"决策简报说『需结合行业分布判断』，
+               但页面没给分布 —— 58 只信号的行业交叉表应该直接画出来"，且"融捷（锂）和焦作万方
+               （电解铝）笼统归入『有色/化工链条』⇒ 分类口径要标注"。数据 = `dc.signals_industry`
+               （零新增数据源：strategy_results + stock_industry）；行业名＝归一化一级，
+               悬停看原始细分；原始名里新浪 node（new_xxx）已在后端过滤。 -->
+          <div v-if="dc" class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">信号 × 行业
+              <div class="text-sm font-semibold">战法
+                <span class="text-[10px] text-muted font-normal">（能不能做 · 为什么 · 信号分布）</span></div>
+            </div>
+            <!-- ① 做什么（白名单 + 候选）+ 回避 —— 从决策卡摘出 -->
+            <div class="text-xs space-y-1">
+              <div>
+                <span class="text-muted">做什么：</span>
+                <b>{{ (dc.do?.whitelist || []).join('、') || '无白名单战法（推送静默）' }}</b>
+                <template v-if="(dc.do?.candidates || []).length">
+                  · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
+                </template>
+              </div>
+              <div v-if="(dc.do?.avoid || []).length">
+                <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
+              </div>
+            </div>
+            <!-- ② 信号 × 行业（战法扫描的信号分布） -->
+            <div v-if="(dc.signals_industry?.rows || []).length" class="mt-3 pt-3 border-t border-border/40">
+            <div class="flex items-center justify-between mb-1.5">
+              <div class="text-xs font-semibold">信号 × 行业
                 <span class="text-[10px] text-muted font-normal">
                   （{{ dc.signals_industry.date }} 扫描 · 共 {{ dc.signals_industry.total_codes }} 只有信号）</span>
               </div>
@@ -660,7 +653,68 @@
                 </span>
               </div>
             </div>
+            </div>
+
+            <!-- ③ 战法质量（为什么静默 / 绩效 / 判据）—— 从决策卡摘出。
+                 ★ 这是「无白名单战法（推送静默）」的**自解释**：分不清是市场不对 / 战法坏了 /
+                 系统故障时，三者处置完全不同（前两者什么都不用做，后者要修）。 -->
+            <div v-if="dc.strategy_quality?.available" class="mt-3 pt-3 border-t border-border/40">
+              <div class="flex items-start gap-1.5 flex-wrap">
+                <span class="text-muted shrink-0">战法质量：</span>
+                <span class="text-[11px] leading-snug"
+                      :class="dc.strategy_quality.whitelist?.length ? 'text-emerald-400' : 'text-amber-300'">
+                  {{ dc.strategy_quality.why }}
+                </span>
+              </div>
+              <div v-if="dc.strategy_quality.regime" class="text-[10px] text-muted mt-0.5">
+                市场状态：<span class="text-gray-300">{{ dc.strategy_quality.regime.cn }}</span>
+                （{{ dc.strategy_quality.regime.date }} · 评分
+                <span class="font-mono">{{ dc.strategy_quality.regime.score }}</span>
+                · 均线 {{ dc.strategy_quality.regime.ma_trend }}）
+              </div>
+              <table v-if="dc.strategy_quality.rows?.length" class="w-full text-[11px] mt-1.5">
+                <thead class="text-muted">
+                  <tr class="border-b border-border/50">
+                    <th class="text-left py-0.5 font-normal">战法</th>
+                    <th class="text-right py-0.5 font-normal">样本</th>
+                    <th class="text-right py-0.5 font-normal">胜率</th>
+                    <th class="text-right py-0.5 font-normal">均收益</th>
+                    <th class="text-right py-0.5 font-normal">盈亏比</th>
+                    <th class="text-left py-0.5 pl-2 font-normal">状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in dc.strategy_quality.rows" :key="s.key"
+                      class="border-b border-border/30">
+                    <td class="py-0.5">{{ s.cn }}</td>
+                    <td class="py-0.5 text-right font-mono text-muted">{{ s.n }}</td>
+                    <td class="py-0.5 text-right font-mono"
+                        :class="(s.win_rate || 0) >= 50 ? 'text-rise' : 'text-fall'">
+                      {{ s.win_rate }}%</td>
+                    <td class="py-0.5 text-right font-mono"
+                        :class="(s.avg_ret || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                      {{ (s.avg_ret || 0) >= 0 ? '+' : '' }}{{ s.avg_ret }}%</td>
+                    <td class="py-0.5 text-right font-mono">{{ s.profit_factor }}</td>
+                    <td class="py-0.5 pl-2">
+                      <span v-if="s.pass" class="text-emerald-400">达标</span>
+                      <span v-else-if="s.insufficient" class="text-muted">样本不足</span>
+                      <span v-else class="text-amber-300" :title="s.alert || '未达判据'">
+                        未达标<template v-if="s.alert"> ⚠</template></span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="text-[10px] text-muted mt-1">
+                判据 {{ dc.strategy_quality.criterion }}（期望值 / 胜率双轨，任一轨跌破即暂停推送）
+                · 统计于 {{ (dc.strategy_quality.computed_at || '').slice(5, 16).replace('T', ' ') }}
+                · 口径：T+1 开盘成交、涨停一字剔除、含主力闸门过滤
+              </div>
+            </div>
           </div>
+
+          </div>
+          <!-- 右列：财经日历 + 盘前简报 -->
+          <div class="space-y-4 min-w-0">
 
           <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
           <div class="bg-card border border-border rounded-lg p-4">
@@ -675,7 +729,6 @@
               {{ e.title || e.event || e.content || e.name || '—' }}
             </div>
           </div>
-
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）<span
@@ -686,8 +739,7 @@
             <div v-else-if="!briefMd" class="text-muted text-xs">加载中…</div>
             <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
           </div>
-          <div class="bg-card border border-border rounded-lg p-4 text-xs text-muted">
-            今日教练卡操作在右栏待办完成（执行/放弃均回写供复盘）；开盘确认 9:35 由系统自动执行。
+          </div>
           </div>
         </template>
 
@@ -1245,12 +1297,8 @@
       </aside>
     </div>
 
-    <!-- 底部折叠：系统状态（运维，默认折叠） -->
-    <details class="bg-card border border-border rounded-lg px-4 py-2 text-xs" :open="statusOpen"
-             @toggle="onStatusToggle">
-      <summary class="cursor-pointer font-semibold text-muted select-none">系统状态（数据新鲜度 / 内存 / 库体积）</summary>
-      <div class="py-2 space-y-2" v-html="statusHtml"></div>
-    </details>
+    <!-- 底部折叠的系统状态已**上移到顶栏日期下方**（2026-09-25 用户要求，改为浮层）
+         ⇒ 此处不再保留 details，避免同一份内容占两处。 -->
   </div>
 </template>
 
@@ -1386,6 +1434,13 @@ const calendarErr = ref('')
 const dc = ref(null)
 const dcLoading = ref(false)
 const dcErr = ref('')
+// ★ 2026-09-25 用户："负面清单…跟…决策简报（盘前）重复" ——
+//   `negatives` 里的「矛盾」类就是 `data["actions"]` 的 R1，而简报的「该做」段
+//   （`actions_md`）已逐条列出 ⇒ 决策卡不再重复刷屏，只报数量 + 指路简报。
+//   （个股级的两类——持仓主力出货 / 候选信号冲突——保留，它们是**可点击个股**，
+//     在简报文本里没有这个交互。）
+const negativeList = computed(() => (dc.value?.negatives || []).filter(n => n.scope !== '矛盾'))
+const conflictCount = computed(() => (dc.value?.negatives || []).filter(n => n.scope === '矛盾').length)
 // ★ 2026-09-25 盘中外盘四件套（A50/离岸/布伦特/纳指期货）——宏面板已在抓，
 //   一次新浪批量请求 60s 缓存，工作台只是读取，零新增请求
 const globals = ref({})
@@ -1602,6 +1657,9 @@ const regimeClass = computed(() => ({
 }[regimeLabel.value] || 'text-muted'))
 const freshnessOk = ref(true)
 const statusTime = ref('')
+// ★ 2026-09-25 用户："底部的系统状态移到顶部的日期的下面，把简要信息展示一行，
+//   点击再悬浮展示内容" ⇒ 顶栏常驻一行摘要（摘要字段在此聚合），点开才渲染完整 HTML。
+const statusBrief = ref({ summary: '', dbPct: null, memMb: null })
 
 // 徽标：盘前=简报降级 ⚠️；盘中/午盘/盘后=未决策教练卡数；复盘=未决策数
 function badge(key) {
@@ -1956,10 +2014,12 @@ async function loadStatus() {
   //   memory 字段为 rss_mb/peak_mb/used_pct，db-usage 为 {total_mb,limit_mb,used_pct}——
   //   此前按 dict 渲染出 "0: ok"、内存 —MB、库体积裸数字。
   let html = ''
+  const brief = { summary: '', dbPct: null, memMb: null }   // 顶栏摘要（见 statusBrief）
   try {
     const { data } = await getSystemStatus()
     freshnessOk.value = !!data
     if (data?.generated_at) statusTime.value = String(data.generated_at).slice(11, 16)
+    brief.summary = data?.summary || ''
     const src = data?.sources
     if (Array.isArray(src)) {
       const rows = src.slice(0, 12).map(v => {
@@ -1982,21 +2042,21 @@ async function loadStatus() {
   try {
     const { data } = await getSystemMemory({ types: 0 })
     if (data && data.rss_mb != null) {
+      brief.memMb = data.rss_mb
       html += `<div class="mt-1">内存: ${data.rss_mb}MB（峰值 ${data.peak_mb ?? '—'}MB）· 占用 ${data.used_pct ?? '—'}%</div>`
     }
   } catch { /* 忽略 */ }
   try {
     const { data } = await getDbUsage()
     if (data && typeof data === 'object' && data.total_mb != null) {
+      brief.dbPct = data.used_pct ?? null
       html += `<div>库体积: ${data.total_mb} / ${data.limit_mb ?? '—'} MB（已用 ${data.used_pct ?? '—'}%）</div>`
     } else if (data != null) {
       html += `<div>库体积: ${data} MB</div>`
     }
   } catch { /* 忽略 */ }
+  statusBrief.value = brief
   statusHtml.value = html || '<div>—</div>'
-}
-function onStatusToggle(e) {
-  if (e.target.open && statusHtml.value.startsWith('点击')) loadStatus()
 }
 
 // ── 阶段切换与懒加载 ──
