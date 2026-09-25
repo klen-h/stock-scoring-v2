@@ -850,6 +850,25 @@
 
         <!-- 实时模式 · ⑤ 复盘（阅读模式） -->
         <template v-else>
+          <!-- ★★ 2026-09-25：**复盘数据就绪度** —— 用户指出「19:30 就能复盘了吗？actions 还没跑完」。
+               实测证据（昨日 09-24 的落库时刻，北京时间）：
+                 日报 22:16 ｜ 矛盾扫描 21:54 ｜ 龙虎榜 22:14 ｜ 评分快照 22:05 ｜ 主力行为 21:45
+               ⇒ **19:30 打开复盘时，日报/矛盾扫描等尚未生成**，页面只会显示"—（暂无数据）"，
+                 用户无从判断"是没生成还是坏了"。
+               ⇒ 按用户要求**不移动时间轴节点**，改为**如实显示每块的就绪状态**；
+                 未就绪时说明原因与预计时间，避免把"日批还没跑完"误读成"功能坏了"。 -->
+          <div class="bg-card border border-border rounded-lg px-4 py-2 text-[11px] flex items-center gap-3 flex-wrap">
+            <span class="text-muted">复盘数据就绪</span>
+            <span :class="reportMd ? 'text-emerald-400' : 'text-amber-400'">
+              日报 {{ reportMd ? '✓' : '未生成' }}</span>
+            <span :class="(emotionReview?.items || []).length ? 'text-emerald-400' : 'text-amber-400'">
+              情绪对账 {{ (emotionReview?.items || []).length ? '✓' : '未生成' }}</span>
+            <span :class="consistency ? 'text-emerald-400' : 'text-amber-400'">
+              执行一致性 {{ consistency ? '✓' : '未生成' }}</span>
+            <span v-if="!reportMd" class="text-amber-400">
+              —— 日批（GitHub Actions）尚未跑完：昨日实际完成于 <b>22:16</b>，完整数据约 <b>22:30</b> 后就绪；
+              届时点上方时间轴「复盘」或刷新本页即可。</span>
+          </div>
           <!-- ★ 2026-09-25 P3（用户："复盘建议做『盘前预判 vs 实际走势』对账 —— 预测『分歧/常态』，
                实际是否退潮？对错了要回溯修正，形成闭环，**否则情绪模型永远校准不了**"）：
                同日两组字段对比 —— 预判（主字段，盘前/盘中**首次**算出）vs 实际（`close_*`，收盘后）。
