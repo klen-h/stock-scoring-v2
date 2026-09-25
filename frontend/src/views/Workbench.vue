@@ -870,7 +870,8 @@ async function loadCalendarToday() {
 async function loadGlobals() {
   try {
     const { data } = await getMacroSnapshot()
-    globals.value = data || {}
+    // ★ /macro/snapshot 的品种在 data.panel 里（外层是 direction/derived/tags）
+    globals.value = (data && data.panel) || {}
   } catch { globals.value = globals.value || {} }
 }
 async function loadEmotion() {
