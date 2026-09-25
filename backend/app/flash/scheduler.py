@@ -7,6 +7,8 @@
   快讯轮询  flash_loop   每 10 分钟全天（无新事件近零成本）
   信号跟踪  track_loop   每 15 分钟，仅 A 股交易时段实际执行
   三段复盘  review_loop  每分钟检查时间窗（09:10/11:32/15:03），每日各一次
+              ★ 2026-09-25：盘前/盘后两段会**顺带落一次情绪快照**（`_snapshot_emotion`）
+                —— 供「盘前预判 vs 当日实际」对账（P3），使该闭环不依赖用户是否在线。
 
 时间窗 + "今日已跑"标记（schedule_state.json）共同保证幂等：
 错过窗口（如服务重启）会在窗口后补跑一次，同一天不会重复跑。
@@ -118,6 +120,46 @@ async def track_loop():
         await asyncio.sleep(TRACK_INTERVAL)
 
 
+_emotion_snap_day = {}           # {phase: "YYYY-MM-DD"} —— 进程内"今天已落快照"标记
+
+
+async def _snapshot_emotion(phase: str) -> None:
+    """顺手落一次「情绪快照」（P3 对账闭环的数据来源）。**失败静默、绝不影响复盘**。
+
+    ★ 为什么挂在这里（2026-09-25，用户批准「加日批定时落库」）：
+      `emotion_review` 对账需要每天的「预判」（盘前）+「实际」（收盘后）两个时点，
+      而原先落库**只靠"有人访问 `/api/market/emotion`"触发**（前端 120s 轮询 / 日批
+      `trader_brief`）⇒ 某天没打开工作台 ⇒ **那天就没有预判**，对账缺一格。
+      挂在**已有的**复盘窗口里（09:10 / 15:03）⇒ 不再依赖用户在线。
+    ★ 为什么不另起一个定时循环：`market._save_emotion_daily` **自身幂等**
+      （盘前已有预判则不写、盘后同一 `as_of` 则不写）⇒ 本循环失败重试时重复调用**无害**，
+      也不必新增 `start()` 注册与 `READ_ONLY` 开关判断（本循环在只读模式下本就保留）。
+    ⚠️ 窗口是**宽的**（premarket 09:10-11:30 / postmarket 15:03-23:59，为支持"错过补跑"）
+      ⇒ `as_of` 可能是 10:30 或 20:00，**不等于窗口起点** ⇒ 对账页已逐条显示时刻，不假装。
+    """
+    if phase not in ("premarket", "postmarket"):
+        return          # 午休那次跳过：中午既不是"预判"也不是"收盘实际"
+    # ⚠️ 用**进程内**标记而不是往 `schedule_state` 写一行：本函数在 `run_review` **之前**调用，
+    #   若那行写失败会抛异常 ⇒ 被 review_loop 的外层 except 兜住 ⇒ **当天复盘被整个跳过**
+    #   （"落个快照"的小事拖垮复盘，代价完全不对等）。进程内标记零 DB 依赖 ⇒ 无此风险。
+    #   重启后窗口内会再落一次 —— 无害，`market._save_emotion_daily` 自身幂等。
+    day = rules.beijing_now().strftime("%Y-%m-%d")
+    if _emotion_snap_day.get(phase) == day:
+        return
+    try:
+        from app.routers.market import market_emotion
+        val = await _run_sync(market_emotion)
+        # ⚠️⚠️ 必须判 `val` 非空才记标记：`_run_sync`（本文件）**自己吞异常并返回 None**
+        #   （"循环不能死"的设计）⇒ 上面那个 `except` 基本不会触发 ⇒ 若不判 val，
+        #   `market_emotion` 真失败时会被当成功**记上标记** ⇒ 当天不再重试 ⇒ **丢失当天快照**。
+        if val:
+            _emotion_snap_day[phase] = day      # 成功才记（失败留给下一轮重试）
+        print(f"[scheduler] emotion snapshot ({phase}): "
+              f"verdict={(val or {}).get('verdict')}, recorded={bool(val)}")   # ASCII
+    except Exception as e:
+        print(f"[scheduler] emotion snapshot failed ({phase}, non-fatal): {e}")
+
+
 async def review_loop():
     """三段复盘循环：交易日 + 到窗口 + 当日未跑 → 执行并标记。"""
     while True:
@@ -133,6 +175,12 @@ async def review_loop():
             for phase, (start, end) in REVIEW_WINDOWS.items():
                 task_key = f"review_{phase}"
                 if start <= t < end and not store.is_schedule_done(task_key):
+                    # ★★ 2026-09-25：**先**落情绪快照（与复盘成败解耦）。
+                    #   放在节流判断**之前**：万一 LLM 复盘持续失败，快照也能先落地
+                    #   （若放在 `run_review` 之后，复盘失败就永远轮不到快照）。
+                    #   自带幂等（进程内标记 + `market._save_emotion_daily` 自身幂等）⇒
+                    #   这里不必再加判断，也不会重复落。
+                    await _snapshot_emotion(phase)
                     # ★ 2026-09-24：失败重试间隔（原为每 60s 重试 ⇒ 几分钟就撞 30 分钟熔断）
                     if now.timestamp() - (_review_last_try.get(phase) or 0.0) < RETRY_INTERVAL_SEC:
                         continue
