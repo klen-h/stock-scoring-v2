@@ -124,6 +124,14 @@ def position_sizing(codes: Optional[List[str]] = None,
                 "position_pct": int(g.get("position_pct") or 0),
                 "position_label": g.get("position_label") or "",
                 "reasons": g.get("reasons") or [],
+                # ★★ 2026-09-25（用户反馈"持仓预案一棍子打死"）：把**结构化的买入三条件**
+                #   一并下传 —— 消费方（`trader_brief._position_plan`）必须能区分
+                #   "档位 0 是因为**市况禁买**（C✗）" 与 "因为**个股自身**不行（A/B✗）"。
+                #   否则只能去解析 reasons 文案（脆弱）或一律判"该清"（错，已实测：
+                #   defensive 下所有持仓被判"择机清"，连浮盈 17% 的逆势票也未能幸免）。
+                #   ⚠️ 纯新增字段，不改任何既有计算 ⇒ 零回归。
+                "conditions": g.get("conditions") or {},
+                "regime": g.get("regime") or "",
             })
 
     # 组合层：每只建议 = min(个股档位, 总上限)。

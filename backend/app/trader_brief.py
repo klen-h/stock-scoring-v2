@@ -483,31 +483,87 @@ def generate_trader_brief(phase: str = None, force: bool = False,
 # ★ 2026-09-25：持仓「预案」动作等级（前端按此配色）。
 #   用户反馈："持仓联动（目前最弱）——持仓 1 只工行、风险 0、机会 0；盘前应对持仓自动扫描…
 #   1 只低波银行在 28.1 分环境下其实是合理的，**这个结论应该由系统说出来**。"
+# 市况中文**短**名（用于「不加仓（市况 防御 禁买）」这类行内文案；
+# 长版 `_REGIME_CN_SHORT` 带括号解释，放这里会把一行撑成两行）
+_REGIME_CN = {"offensive": "进攻", "neutral": "震荡",
+              "neutral_bearish": "震荡偏空", "defensive": "防御"}
+
 PLAN_ACT = "act"          # 有风险提示 ⇒ 今天优先处理
-PLAN_EXIT = "exit"        # 该股档位为 0 ⇒ 不持有/择机清
+PLAN_EXIT = "exit"        # 档位为 0 且**个股自身**不满足 ⇒ 不加仓（不再等于"择机清"，见下）
 PLAN_PROTECT = "protect"  # 浮盈较高 ⇒ 保护利润
-PLAN_HOLD = "hold"        # 其余 ⇒ 按建议仓位持有
+PLAN_HOLD = "hold"        # 其余 ⇒ 持有观察
 
 
-def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None):
-    """把「持仓现状 + 仓位建议 + 环境匹配」合成一句 **今天怎么处理它**。
+def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None,
+                   conditions=None, regime=""):
+    """把「持仓现状 + 买入档位 + 环境匹配」合成一句 **今天怎么处理它**。
 
-    ★ 设计取舍：**确定性规则、无 LLM**，且**只给纪律提醒不给交易指令**
+    ★★ 2026-09-25 语义修正（用户反馈："持仓预案一棍子打死…应该根据市场情况决定"）★
+    【原问题（实测）】旧逻辑 `suggested_pct == 0 ⇒ 不持有/择机清` 把**买入闸门**当成了
+      **持仓处置结论**。而 `trade_gate.evaluate` 的 A/B/C 三条件**全是买入资格**
+      （A 主力根据 / B 不追高 / C 市况允许），其中 **C✗（defensive 等禁买状态）会把档位
+      压成 0** ⇒ 市况一转防御，**所有持仓**都被判"择机清"。实测：工行 +17.15%、
+      中国海油 -0.61% 全部落到这条。更矛盾的是工行的理由 `B✗ 追高（获利盘 97%）`
+      —— 那是"**别再追**"的依据，与"该卖出"正交（浮盈 17% 的票因为"涨太多"被判清仓）。
+      "禁止**买**"与"必须**卖**"是两个方向相反的决策，不能共用一个字段。
+    【修正后的分工】本函数只做**翻译**，不自造结论：
+      · **能不能加仓** = `trade_gate`（A/B/C）⇒ 本函数据此只说"**不加仓**"及其**成因**
+        （缺主力根据 / 筹码拥挤 / 市况禁买），并明确"**不加仓 ≠ 卖出**"。
+      · **要不要减/清** = `portfolio_radar.alerts`（既有阈值：-8%/-12% 止损、冲高回落、
+        主力出货…）⇒ **只有 `level=risk` 的 alert 才输出"处理"类动作**（有阈值依据）。
+    ⚠️ 刻意**不新增**"档位 0 + 浮亏 ⇒ 减仓"这类判据：无回测依据（C1 解禁事件的教训：
+      不造未经检验的闸门），且我们不知道用户成本结构与总资产占比 —— 宁缺勿编。
+    ⚠️ 另外修掉一处**短路**：`浮盈 ≥20% 保护利润` 原排在档位判断**之后** ⇒ 永远轮不到
+      （实测工行 +17.15% 已接近该阈值却被判清仓）。现提到档位判断之前。
+
+    ★ 设计取舍（不变）：**确定性规则、无 LLM**、**只给纪律提醒不给交易指令**
       （沿用 `coach/monitor.py::POSITION_NOTE` 的口径，别写"系统已自动卖出"这类话）。
-    ★ 优先级（高→低）：风险提示 ⇒ 档位为 0 ⇒ 高浮盈保护 ⇒ 环境匹配 ⇒ 持有。
-      ⚠️ 故意**不做**"减仓到 X%"这类推算：我们只知道建议档位，不知道你的总资产占比，
-        硬凑比例就是臆测（宁缺勿编）。
     """
+    # ① 持仓风险 —— 唯一能说"处理"的依据（持仓视角，与买入档位无关）
     risks = [a for a in (alerts or []) if (a or {}).get("level") == "risk"]
     if risks:
         return {"level": PLAN_ACT,
                 "text": f"优先处理：{risks[0].get('text') or '有风险提示'}"}
-    if suggested_pct == 0:
-        return {"level": PLAN_EXIT,
-                "text": f"建议仓位 0%（{position_label or '档位为 0'}）⇒ 不持有/择机清"}
+
+    # ② 高浮盈保护（必须排在③之前，否则被 suggested_pct==0 短路）
     if pnl is not None and pnl >= 20.0:
         return {"level": PLAN_PROTECT,
                 "text": f"浮盈 {pnl:.1f}% ⇒ 考虑保护利润（上移止盈位或减半）"}
+
+    cond = conditions or {}
+    a_ok = bool(cond.get("A_mainforce"))
+    b_ok = bool(cond.get("B_not_crowded"))
+    c_ok = bool(cond.get("C_regime_ok"))
+
+    # ③ 买入档位 0 ⇒ **只说"不加仓"**（本次修正的核心：措辞上彻底切断"⇒ 卖出"的暗示）
+    if suggested_pct == 0:
+        why = []
+        if not a_ok:
+            why.append("暂无主力吸筹根据")
+        if not b_ok:
+            why.append("筹码拥挤（不追高）")
+        if not c_ok:
+            why.append(f"市况 {_REGIME_CN.get(regime, regime or '未知')}禁买")
+        why_txt = "＋".join(why) if why else (position_label or "档位为 0")
+        # 个股自身是否满足（A/B 都满足 ⇒ 0 只可能是市况所致）⇒ 影响尾部提示的分量
+        self_ok = a_ok and b_ok
+        tail = ""
+        if pnl is not None and pnl > 0:
+            tail = (f"；浮盈 {pnl:.1f}%，按纪律上移止盈位"
+                    + ("（个股加仓条件本已满足，只是市况不允许）" if self_ok else ""))
+        elif pnl is not None:
+            tail = "；持有观察（跌到止损线会有风险提示）"
+        # ⚠️ 配色分级只认**明确的负面证据**：
+        #   · `B✗`（筹码拥挤/追高＝已经大涨）是**反证** ⇒ exit（红，提示这只票有不利因素）
+        #   · `A✗`（未识别吸筹区）只是**没有证据**（≠ 有反证）⇒ 中性 hold（灰）
+        #   ★ 实测教训：两只持仓的 A 全为 False —— "吸筹区"本就是**罕见**的强信号；
+        #     若按"A✗ 即负面"着色，绝大多数持仓都会变红 ⇒ **又一版"一棍子打死"**
+        #     （只是文案对了、配色又错）。**"缺证据"与"有反证"必须区别对待**。
+        negative = (not b_ok)
+        return {"level": (PLAN_EXIT if negative else PLAN_HOLD),
+                "text": f"不加仓（{why_txt}）{tail}"}
+
+    # ④ 档位 > 0 ⇒ 持有（原语义保留）
     if fit:
         # 环境匹配的结论由系统说出来（用户明确要求）
         return {"level": PLAN_HOLD,
@@ -881,6 +937,15 @@ def build_decision_card() -> dict:
     positions_scan = []
     try:
         from app.portfolio_radar import build as _radar_build
+        # ★ 2026-09-25「逆势强度」的对照基准：全市场等权平均涨幅（内存缓存推导，**零网络**）。
+        #   用户原话："工商银行和中国海油在昨日的一片绿的行情下是红的" ⇒ 这正是
+        #   "个股 vs 全市场"的相对强度。⚠️ 本处**只客观显示差值、不下结论**：
+        #   阈值需先回测（C1 解禁事件的教训——不造未经检验的闸门）。取不到则为 None。
+        try:
+            from app.coach import rules as _cr
+            mkt_avg = _cr._market_avg_change_pct()
+        except Exception:
+            mkt_avg = None
         for it in (_radar_build().get("items") or []):
             fit = None
             try:
@@ -891,8 +956,11 @@ def build_decision_card() -> dict:
             alerts = it.get("alerts") or []
             _sz = sizing_by_code.get(str(it.get("code"))) or {}
             _sug = _sz.get("suggested_pct")
+            # ★ 传入 conditions/regime ⇒ plan 能区分"市况禁买"与"个股自身差"（见 _position_plan）
             plan = _position_plan(it.get("pnl_pct"), alerts, _sug,
-                                  _sz.get("position_label"), fit)
+                                  _sz.get("position_label"), fit,
+                                  _sz.get("conditions"), _sz.get("regime"))
+            _day = it.get("day_pct")
             positions_scan.append({
                 "code": it.get("code"), "name": it.get("name"),
                 "pnl_pct": it.get("pnl_pct"), "phase_cn": it.get("phase_cn"),
@@ -902,6 +970,18 @@ def build_decision_card() -> dict:
                 "position_label": _sz.get("position_label") or "",
                 "sizing_reasons": (_sz.get("reasons") or [])[:2],
                 "plan": plan.get("text"), "plan_level": plan.get("level"),
+                # ★ 当日涨幅与**相对全市场**差值（逆势强度；只显示不下结论，见上）
+                #   ⚠️ 同源性：`day_pct` 来自 `portfolio_radar._quotes()`，它**优先读同一份**
+                #     tencent 内存行情缓存 ⇒ 与 `mkt_avg` 同源同刻（边界：持仓若不在全市场
+                #     缓存里，radar 会**单只补拉一次**，那时两者会有分钟级时刻差）。
+                #   实测（2026-09-25 快照）：全市场等权 -0.91%、海油 +1.58%（+2.49pp）、
+                #     工行 +0.49%（+1.40pp）—— 正是用户说的"一片绿里它们是红的"。
+                "day_pct": _day,
+                "rel_pct": (round(_day - mkt_avg, 2)
+                            if (_day is not None and mkt_avg is not None) else None),
+                "market_avg_pct": mkt_avg,
+                # 加仓三条件（A 主力根据 / B 不追高 / C 市况允许）—— 前端展示"为什么不能加仓"
+                "conditions": _sz.get("conditions") or {},
             })
     except Exception as e:
         print(f"[decision-card] positions scan failed: {e}")       # ASCII（铁律⑥）

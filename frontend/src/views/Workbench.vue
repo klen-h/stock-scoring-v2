@@ -7,7 +7,7 @@
       <button class="text-xs underline" @click="backToToday">切回今天</button>
     </div>
 
-    <!-- 顶栏：日期 · 上下两列（A股/外盘）· 情绪市况模块 · 数据新鲜度（常驻） -->
+    <!-- 顶栏：日期 · 上下两列（A股/外盘）· 情绪/市况模块（内含下方数据新鲜度，2026-09-25 挪入） -->
     <div class="bg-card border border-border rounded-lg px-4 py-2 flex items-center gap-4 flex-wrap text-sm">
       <label class="flex items-center gap-2">
         <span class="text-muted text-xs">日期</span>
@@ -65,8 +65,11 @@
         </div>
       </div>
 
-      <!-- 情绪/市况模块（归并为一组） -->
-      <div class="flex items-center gap-3 border-l border-border pl-4">
+      <!-- 情绪/市况模块（归并为一组）；★ 2026-09-25 用户反馈：顶栏一行放不下，
+           「数据新鲜度」从独立项挪到本组**下方**（组内竖排）⇒ 顶栏少一个 item，
+           挤换行的概率大幅下降；新鲜度改 10px 与市况副标题同级。 -->
+      <div class="border-l border-border pl-4 flex flex-col gap-1">
+        <div class="flex items-center gap-3">
         <div class="text-center">
           <div class="text-lg font-bold font-mono leading-none"
                :class="levelColor(temperature?.level || '')">{{ temperature?.temperature ?? '—' }}</div>
@@ -78,13 +81,14 @@
           <div class="text-[10px] text-muted">市况</div>
         </div>
       </div>
-
       <!-- 数据新鲜度（点开看底部状态区） -->
-      <span class="flex items-center gap-1.5 cursor-pointer" @click="statusOpen = true">
+        <span class="flex items-center gap-1.5 cursor-pointer text-[10px] text-muted"
+              @click="statusOpen = true">
         <span class="inline-block w-2 h-2 rounded-full"
               :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
-        <span class="text-muted text-xs">数据新鲜度<template v-if="statusTime"> · 截至 {{ statusTime }}</template></span>
+          数据新鲜度<template v-if="statusTime"> · 截至 {{ statusTime }}</template>
       </span>
+    </div>
     </div>
 
     <!-- 横向时间轴：**6 节点等宽、始终一行**（不按真实时间比例）；各时段专属配色——
@@ -258,9 +262,13 @@
         <!-- 实时模式 · ① 盘前（阅读模式） -->
         <template v-else-if="selectedPhase === 'premarket'">
           <!-- ★ 2026-09-25 用户反馈：数据中心(旧首页)的宏观方向/规则标签/市场环境整合进来 -->
-          <!-- ★ A3 情绪预判卡 v0（近似口径，B1 官方数据后替换） -->
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
+          <!-- ★ A3 情绪预判卡 v0（近似口径，B1 官方数据后替换）；
+               ★ 2026-09-25 用户："1200px 还是太长" ⇒ 情绪预判与持仓预案**左右两卡**
+               （lg 以下回退单列）。持仓预案原嵌在今日决策卡内 ⇒ 抽成独立卡
+               （数据仍是 dc.positions_scan，零新接口）。 -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="bg-card border border-border rounded-lg p-4 flex flex-col justify-evenly">
+            <div class="flex items-center justify-between">
               <div class="text-sm font-semibold">情绪预判
                 <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span>
                 <!-- ★ 2026-09-25：原徽标写"显示最近交易日数据"，但休市时行情缓存为空 ⇒
@@ -277,24 +285,77 @@
                 {{ emotion?.verdict || '—' }}</span>
             </div>
             <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else class="grid grid-cols-4 gap-2 text-center text-xs">
-              <!-- ★ 2026-09-25：三个"今日"字段在无行情时后端返回 None ⇒ 显示「—」
-                   （此前后端返回 0，看起来像"今天一只都没涨停"，其实是"今天没开盘"） -->
-              <div><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up ?? '—' }}</div><div class="text-muted text-[10px]">涨停</div></div>
-              <div><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down ?? '—' }}</div><div class="text-muted text-[10px]">跌停</div></div>
-              <div><div class="text-lg font-bold font-mono">{{ emotion.max_streak ?? '—' }}</div><div class="text-muted text-[10px]">连板高度</div></div>
+            <!-- ★ 2026-09-25 用户反馈：原 grid-cols-4 把 4 格**均分整卡宽度**，"47 涨停"与
+                 "14 跌停"之间大片空白 ⇒ "一行宽、信息不集中"；判读又孤行贴底。
+                 改（用户选定方案）：① 4 格从均分改**紧凑左聚**（固定 gap，不再摊满）；
+                 ② 判读移到**右侧同一行**（细竖线分隔、小字、垂直居中）⇒ 整卡矮一行，
+                 视线"左=是什么 / 右=怎么看"。 -->
+            <!-- ★ 2026-09-25 用户：数字行**占满剩余空间** —— 四组 flex-1 均分整卡宽度
+                 （半宽 ~600px 下摊开正合适，不再左聚留白）。 -->
+            <div v-else class="flex items-center text-xs min-w-0 py-3">
+              <div class="text-center flex-1"><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up ?? '—' }}</div><div class="text-muted text-[10px]">涨停</div></div>
+              <div class="text-center flex-1"><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down ?? '—' }}</div><div class="text-muted text-[10px]">跌停</div></div>
+              <div class="text-center flex-1"><div class="text-lg font-bold font-mono">{{ emotion.max_streak ?? '—' }}</div><div class="text-muted text-[10px]">连板高度</div></div>
               <!-- ★ 2026-09-25 用户问「昨日涨停今日 -1.16% 是什么意思」⇒ 原文案缺"平均"二字、
                    也不给股数，容易被读成"今天的涨跌幅是 -1.16%"。
                    口径：**昨日涨幅≥9.5% 的那批股票，今天的平均涨跌幅**（=赚钱效应）；
                    为正 ⇒ 接力意愿强（昨涨停今天还有人买）；为负 ⇒ 追涨者平均亏钱、情绪转弱。
                    列宽有限 ⇒ 只微调文案，完整解释放 title（悬停可见）。 -->
-              <div :title="`昨日涨停的 ${emotion.prev_limit_count ?? '?'} 只股票，今天的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
+              <div class="text-center flex-1" :title="`昨日涨停的 ${emotion.prev_limit_count ?? '?'} 只股票，今天的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
                 <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
                   {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
                 <div class="text-muted text-[10px] cursor-help">昨涨停今均<template v-if="emotion.prev_limit_count">（{{ emotion.prev_limit_count }}只）</template></div>
               </div>
             </div>
-            <div class="text-[10px] text-muted mt-2">判读：情绪决定今天"接力的强更强 / 分歧 / 退潮"，对应降低或提高买入标准。</div>
+            <!-- ★ 2026-09-25 用户：数字组与判读改回**上下布局**（左卡半宽后右侧放不下判读）；
+                 卡是 flex-col justify-evenly ⇒ 标题/数字/判读三行在右卡撑起的等高内均匀分布。 -->
+            <div class="text-[10px] text-muted leading-snug">
+              判读：情绪决定今天"接力的强更强 / 分歧 / 退潮"，对应降低或提高买入标准。
+            </div>
+          </div>
+
+          <!-- ★ 2026-09-25 用户要求：持仓预案从今日决策卡抽出成**独立卡**，与情绪预判
+               左右并排（每张卡 ~600px，替代原来的 1200px 长条）。数据仍是
+               `dc.positions_scan`（今日决策卡接口顺带返回，零新接口）⇒ dc 未生成时
+               本卡显示引导占位（不假装有数据）。是**纪律提醒**，不是交易指令。 -->
+          <div class="bg-card border border-border rounded-lg p-4">
+            <div class="text-sm font-semibold mb-2">持仓预案
+              <span class="text-[10px] text-muted font-normal">（今天怎么处理 · 纪律提醒）</span></div>
+            <div v-if="dcLoading" class="text-muted text-xs">生成中…</div>
+            <div v-else-if="!dc" class="text-muted text-xs">
+              待生成今日决策卡后展示——每只持仓给出今天的处理建议与仓位上限
+              <div class="mt-1"><button @click="loadDecisionCard()" :disabled="dcLoading"
+                    class="px-2 py-0.5 rounded border border-border text-muted">生成今日决策卡</button></div>
+            </div>
+            <div v-else-if="!(dc.positions_scan || []).length" class="text-muted text-xs">—（当前无持仓，或后端未返回预案）</div>
+            <div v-else class="space-y-1.5 text-xs">
+              <div v-for="p in dc.positions_scan" :key="p.code" class="py-0.5">
+                <div class="flex items-start gap-1.5 flex-wrap">
+                  <a :href="stockHref(p.code)" target="_blank"
+                     class="font-semibold hover:underline">{{ p.name }}</a>
+                  <span class="font-mono" :class="pctClass(p.pnl_pct)">{{ fmtPct(p.pnl_pct) }}</span>
+                  <span class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
+                  <span v-if="p.suggested_pct != null"
+                        class="px-1 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
+                        :title="`建议仓位上限 ${p.suggested_pct}%（个股档位 ${p.position_label || '—'}）${(p.sizing_reasons || []).length ? '：' + p.sizing_reasons.join('；') : ''}`">
+                    ≤{{ p.suggested_pct }}%
+                  </span>
+                  <!-- ★ 2026-09-25 用户："工商银行和中国海油在昨日的一片绿的行情下是红的"
+                       ⇒ **逆势强度**：当日涨幅与「相对全市场等权」的差值。
+                       ⚠️ 只显示客观数值、**不下结论**（阈值需先回测）；市况基准值放 title。 -->
+                  <span v-if="p.day_pct != null" class="text-[10px] cursor-help"
+                        :title="`当日涨幅 ${fmtPct(p.day_pct)}；全市场等权 ${fmtPct(p.market_avg_pct)}；相对强度 = 个股 − 全市场（正 = 强于大盘，逆势红盘即此列）`">
+                    当日 <b :class="pctClass(p.day_pct)">{{ fmtPct(p.day_pct) }}</b>
+                    <template v-if="p.rel_pct != null">
+                      · vs全市场 <b :class="pctClass(p.rel_pct)">{{ signNum(p.rel_pct) }}pp</b>
+                    </template>
+                  </span>
+                </div>
+                <div class="mt-0.5" :class="planClass(p.plan_level)">{{ p.plan || '—' }}</div>
+                <div v-for="(a, j) in (p.alerts || [])" :key="j" class="text-[11px] text-muted">· {{ a.text }}</div>
+              </div>
+            </div>
+          </div>
           </div>
 
           <div class="bg-card border border-border rounded-lg p-4">
@@ -565,29 +626,6 @@
               <div v-else-if="dc.risk_events?.scanned"
                    class="border-t border-border/40 mt-2 pt-2 text-xs text-muted">
                 负面清单：无（已扫 {{ dc.risk_events.scanned }} 只持仓/候选的未来 20 天解禁风险，无命中）
-              </div>
-              <!-- ★ 2026-09-25 用户："持仓联动（目前最弱）——盘前应对持仓自动扫描…这个结论
-                   应该由系统说出来" ⇒ 从「持仓扫描」升级为「持仓预案」：每只给出**今天怎么处理**
-                   （plan_level 决定配色）+ 建议仓位上限。数据来自后端 dc.positions_scan
-                   （portfolio_radar 的 alerts × position_sizing 的个股档位，零新增数据源）。
-                   ⚠️ 是**纪律提醒**，不是交易指令（后端文案已沿用 coach 口径）。 -->
-              <div v-if="(dc.positions_scan || []).length" class="border-t border-border/40 mt-2 pt-2 text-xs">
-                <div class="text-muted mb-1">持仓预案（今天怎么处理）</div>
-                <div v-for="p in dc.positions_scan" :key="p.code" class="py-0.5">
-                  <div class="flex items-start gap-1.5 flex-wrap">
-                    <a :href="stockHref(p.code)" target="_blank"
-                       class="font-semibold hover:underline">{{ p.name }}</a>
-                    <span class="font-mono" :class="pctClass(p.pnl_pct)">{{ fmtPct(p.pnl_pct) }}</span>
-                    <span class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
-                    <span v-if="p.suggested_pct != null"
-                          class="px-1 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
-                          :title="`建议仓位上限 ${p.suggested_pct}%（个股档位 ${p.position_label || '—'}）${(p.sizing_reasons || []).length ? '：' + p.sizing_reasons.join('；') : ''}`">
-                      ≤{{ p.suggested_pct }}%
-                    </span>
-                  </div>
-                  <div class="mt-0.5" :class="planClass(p.plan_level)">{{ p.plan || '—' }}</div>
-                  <div v-for="(a, j) in (p.alerts || [])" :key="j" class="text-[11px] text-muted">· {{ a.text }}</div>
-                </div>
               </div>
             </template>
           </div>
