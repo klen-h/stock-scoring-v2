@@ -257,14 +257,31 @@ def _recompute_whitelist() -> dict:
                     f"{WHITELIST_HALF_LIFE_RATIO:.0%}")
         return None
 
-    # 近轨日期集合 = trades 的 signal_date 去重升序后末 N 个交易日（不依赖外部日历）
+    # 近轨日期集合 = trades 的 signal_date 去重升序后末 N 个**有信号的**交易日
+    #   ⚠️ 语义边界（2026-09-26 实测补注）：这是「末 N 个**有信号**的交易日」，
+    #     而**不是**「最近 N 个交易日的日历窗」。当前实测信号覆盖 100% 的交易日 ⇒ 两者等价；
+    #     若将来信号变稀疏，两者会分叉（届时应改成按日期 cutoff 过滤）。
     all_dates = sorted({t.get("signal_date") for t in trades if t.get("signal_date")})
+    rolling_note = None
     if WHITELIST_ROLLING_ENABLED and len(all_dates) > WHITELIST_ROLLING_DAYS:
         recent_dates = set(all_dates[-WHITELIST_ROLLING_DAYS:])
         rolling_active = True
     else:
         recent_dates = set(all_dates)
         rolling_active = False
+        # ★★ 2026-09-26（用户："先修滚动窗口 —— 它现在是坏的"）：
+        #   【原实现的问题】**静默退化** —— 历史不足时近轨 == 全期，而输出与
+        #     "双轨都生效、且两轨结论一致"**完全一样**（`alerts` 为空，`rolling_active`
+        #     只是个没人看的布尔）⇒ 会被读成"两轨都通过了"，实际是**只有一轨在判**。
+        #     实测：`strategy_results` 仅 **26 个信号日**（2026-08-20 起），而
+        #     `WHITELIST_ROLLING_DAYS=250` ⇒ 差 10 倍 ⇒ **永远不生效**，
+        #     并把"历史不足"伪装成了"近期表现与长期一致"。
+        #   【本处修法】不再静默：显式告警 + 外露 `rolling_days/rolling_required`
+        #     （见返回值），让"未生效"与"还差多少个交易日"都可见。
+        if WHITELIST_ROLLING_ENABLED:
+            rolling_note = (f"近轨滚动窗口**未生效**：现有信号日 {len(all_dates)} 个"
+                            f" < WHITELIST_ROLLING_DAYS={WHITELIST_ROLLING_DAYS} "
+                            f"⇒ 近轨 == 全期（双轨实际只有一轨在判）")
 
     by = {}
     for t in trades:
@@ -272,6 +289,11 @@ def _recompute_whitelist() -> dict:
 
     stats = {}
     alerts = []
+    if rolling_note:
+        alerts.append(rolling_note)
+        # ASCII 之外的中文可打印（PYTHONIOENCODING 已设）；仍是纯 str，无格式化风险
+        print(f"[recommendation] rolling: {len(all_dates)} days "
+              f"< required {WHITELIST_ROLLING_DAYS} -> rolling disabled (recent == all)")
     for name, ts in by.items():
         full = _calc(ts)
         if full is None:
@@ -300,7 +322,11 @@ def _recompute_whitelist() -> dict:
     else:
         wl = [k for k, v in stats.items() if v["pass_all_time"]]
     return {"list": wl, "stats": stats, "criterion": WHITELIST_CRITERION,
-            "alerts": alerts, "rolling_active": rolling_active}
+            "alerts": alerts, "rolling_active": rolling_active,
+            # ★ 2026-09-26：外露「现有信号日 / 所需窗口」—— 让"滚动窗口是否真的在工作"
+            #   一眼可判（此前只有一个 `rolling_active` 布尔，且没有任何消费者关注它）
+            "rolling_days": len(all_dates),
+            "rolling_required": WHITELIST_ROLLING_DAYS}
 
 
 def get_push_whitelist() -> list:

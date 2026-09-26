@@ -618,6 +618,46 @@ def _emotion_closes_map():
     return closes
 
 
+# ── ★★ 2026-09-26：「昨涨停」口径的**日期锚**（用户提问推动，见 market_emotion 内注释）──
+def _price_date() -> str:
+    """当前**行情价格所属的交易日** P（YYYY-MM-DD）。
+
+    【为什么需要它】`stocks`（内存行情）与 `closes`（`backtest_prices`，**日批回填**）
+      的时点不同步，而"昨涨停表现"= `price / close(名单日)` ⇒ 必须先知道 `price` 是哪天的。
+    【规则】交易日且已过 **9:15** ⇒ 今天（竞价/盘中/午休/收盘后价格都是今天的）；
+      否则（<9:15 的盘前、周末、节假日）⇒ `latest_completed_trading_day()`
+      —— 此时手里的价格本就是"最近已完成交易日"的收盘。
+    【与 `latest_completed_trading_day()` 的区别】那个是"**已完成**日"（15:00 分界）：
+      盘中它给昨天，而盘中价格是今天 ⇒ **两者不可互换**（详见下方 `d_prev` 注释）。
+    """
+    from app.flash import rules as _rules
+    now = _rules.beijing_now()
+    if _rules.is_trading_day(now) and (now.hour * 100 + now.minute) >= 915:
+        return now.strftime("%Y-%m-%d")
+    return _rules.latest_completed_trading_day(now)
+
+
+def _prev_trading_day(day: str) -> Optional[str]:
+    """`day` 的**前一个交易日**（跳过周末 + `HOLIDAYS`）。无则 None。
+
+    ⚠️ 与 `_shift_days`（自然日近似）**不同** —— 这里是真交易日回退；
+      循环上限 15 天足以跨过春节/国庆连休（与 `latest_completed_trading_day` 同策）。
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from app.flash import rules as _rules
+    try:
+        d = _dt.strptime(str(day)[:10], "%Y-%m-%d") - _td(days=1)
+    except (TypeError, ValueError):
+        return None
+    for _ in range(15):
+        if _rules.is_trading_day(d):
+            return d.strftime("%Y-%m-%d")
+        d -= _td(days=1)
+    return None
+
+
 # ── ★ 2026-09-25：情绪快照每日落库（用户需求「成功返回了就入库」）────────────
 #   目的：① 复盘/回放能看到历史情绪；② 不再只有当日值、历史不可追。
 #   ⚠️ 为什么"每天只写一次"：market_emotion() 自带 120s 判读缓存 ⇒ 若每次算成都写库，
@@ -1304,8 +1344,19 @@ def market_emotion():
 
     closes = _emotion_closes_map()
     dates_all = sorted({d for m in closes.values() for d in m})
-    d_prev = dates_all[-2] if len(dates_all) >= 2 else None
-    d_prev2 = dates_all[-3] if len(dates_all) >= 3 else None
+    # ★★ 2026-09-26（用户提问："9:15 前涨跌幅不都是昨天的吗？昨日涨停表现统计的是昨天和
+    #   前天吗？" → "上个交易日会不会更简单合理"）：
+    #   【原实现的问题】`d_prev = dates_all[-2]`（`dates_all` 来自 `backtest_prices`，**日批回填**）
+    #     **隐含假设"closes 最新日 == 今天"** —— 该假设**只在收盘后成立**：
+    #       · 盘中：closes 最新=昨天 ⇒ d_prev=前天，而 `price` 是今天实时
+    #         ⇒ `price / close(前天)` **跨了两天**（假的"昨涨停今表现"）
+    #       · 盘前/休市：d_prev 数值恰好对（`price` 就是那天的收盘），但**文案写"今日"**会误导
+    #   【改法】名单日锚在「**价格所属日 P** 的前一交易日」——`price` 是哪天的，
+    #     "昨日"就相对哪天算 ⇒ **三个时段同时正确**（P 的定义见 `_price_date()`），
+    #     且**不再依赖日批是否及时回填**（改查交易日历，与全项目"数据所属日期"口径一致）。
+    _p_day = _price_date()
+    d_prev = _prev_trading_day(_p_day)
+    d_prev2 = _prev_trading_day(d_prev) if d_prev else None
 
     # 昨日涨停名单（昨日涨幅 ≥9.5%）与其今日表现（赚钱效应）
     prev_limit, perf = [], []
@@ -1448,6 +1499,11 @@ def market_emotion():
         "has_live": has_live,
         # ★ 价格数据截至哪一天（休市时前端用它解释"—"的含义，而不是让人猜）
         "data_date": (dates_all[-1] if dates_all else None),
+        # ★ 2026-09-26：口径日期**显式外露** —— 前端文案据此写成
+        #   「09-23 涨停 11 只 · 09-24 均 -1.16%」，彻底消除"昨日/今日"歧义。
+        #   `price_date` = 价格所属日 P；`prev_limit_date` = 名单所属日（= P 的前一交易日）
+        "price_date": _p_day,
+        "prev_limit_date": d_prev,
         "up": up, "down": down,
         "limit_up": (len(limit_up_codes) if has_live else None), "limit_down": limit_down,
         "prev_limit_count": len(prev_limit),

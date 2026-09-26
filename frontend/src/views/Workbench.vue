@@ -268,7 +268,7 @@
                   <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
                     {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
                   <div class="text-muted text-[10px] cursor-help"
-                       title="同一批股票的**当前价 vs 昨收** = 真实盈亏（含盘中）。⚠️ 与左边「平均高开」不是同一时刻：高开 +2% 而现值 -1% ⇒ 高开后一路被砸，比单纯低开更弱。">昨涨停今均（现价）</div>
+                       :title="`${prevLimitLabel()} 涨幅≥9.5% 的股票，在${priceDayLabel()}的**平均**涨跌幅 = 真实盈亏（含盘中）。⚠️ 与左边「平均高开」不是同一时刻：高开 +2% 而现值 -1% ⇒ 高开后一路被砸，比单纯低开更弱。`">{{ prevLimitLabel() }}涨停均（现价）</div>
                 </div>
               </div>
               <!-- ★ 2026-09-25（A 档 3）：刻度尺 —— 把「接力溢价」与「全市场平均」放到**同一根尺**
@@ -433,7 +433,11 @@
           <div class="bg-card border border-border rounded-lg p-4 flex flex-col justify-evenly">
             <div class="flex items-center justify-between">
               <div class="text-sm font-semibold">情绪预判
-                <span class="text-[10px] text-muted font-normal">（昨日涨停表现/连板高度，近似口径）</span>
+                <!-- ★ 2026-09-26：副标题由"（昨日涨停表现/连板高度，近似口径）"改为**带口径日期**
+                     —— 原写法在休市/盘前会把用户带偏（"昨日/今日"相对的是**数据口径日**，
+                     不是自然日"今天"）。日期来自后端 `price_date` / `prev_limit_date`。 -->
+                <span class="text-[10px] text-muted font-normal cursor-help"
+                      :title="`数据口径日 = ${emotion?.price_date || '—'}${isTodayPrice() ? '（即今天）' : '（休市/盘前，不是自然日「今天」）'}。涨停/跌停/连板高度均为该日；「昨涨停均」= ${prevLimitLabel()} 涨幅≥9.5% 的股票在${priceDayLabel()}的平均涨跌幅`">{{ isTodayPrice() ? '今日' : '口径 ' + mmdd(emotion?.price_date) }} · 涨停/连板为 ≥9.5% 近似</span>
                 <!-- ★ 2026-09-25：原徽标写"显示最近交易日数据"，但休市时行情缓存为空 ⇒
                      实际输出的是 0（不是最近交易日快照）⇒ **徽标承诺与实际不符**。
                      改为按 `has_live` 如实说明：无实时行情 ⇒ 今日字段均不可用（显示"—"）。
@@ -464,10 +468,10 @@
                    口径：**昨日涨幅≥9.5% 的那批股票，今天的平均涨跌幅**（=赚钱效应）；
                    为正 ⇒ 接力意愿强（昨涨停今天还有人买）；为负 ⇒ 追涨者平均亏钱、情绪转弱。
                    列宽有限 ⇒ 只微调文案，完整解释放 title（悬停可见）。 -->
-              <div class="text-center flex-1" :title="`昨日涨停的 ${emotion.prev_limit_count ?? '?'} 只股票，今天的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
+              <div class="text-center flex-1" :title="`${prevLimitLabel()} 涨幅 ≥9.5% 的 ${emotion.prev_limit_count ?? '?'} 只股票，在${priceDayLabel()}的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
                 <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
                   {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
-                <div class="text-muted text-[10px] cursor-help">昨涨停今均<template v-if="emotion.prev_limit_count">（{{ emotion.prev_limit_count }}只）</template></div>
+                <div class="text-muted text-[10px] cursor-help">{{ prevLimitLabel() }}涨停均<template v-if="emotion.prev_limit_count">（{{ emotion.prev_limit_count }}只）</template></div>
               </div>
             </div>
             <!-- ★ 2026-09-25 用户：数字组与判读改回**上下布局**（左卡半宽后右侧放不下判读）；
@@ -974,7 +978,7 @@
               <div class="text-muted mt-0.5">{{ tailReview.advice }}</div>
             </div>
             <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
-              昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
+              {{ prevLimitLabel() }}涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · {{ priceDayLabel() }}平均表现
               <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
               <!-- ★ 2026-09-25：无行情时后端返回 None ⇒ 显示「—」（原为 0，会被读成"没有连板"） -->
               · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak ?? '—' }}</b>
@@ -1427,7 +1431,7 @@
             </div>
             <!-- 情绪定稿：赚钱效应 + 连板高度（明日预判的输入） -->
             <div v-if="emotion" class="border-t border-border/40 mt-2 pt-2 text-[11px] text-muted">
-              昨日涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · 今日平均表现
+              {{ prevLimitLabel() }}涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · {{ priceDayLabel() }}平均表现
               <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
               · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak ?? '—' }}</b>
               <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
@@ -1953,6 +1957,35 @@ function xqUrl(code) {
   return `https://xueqiu.com/S/${pfx}${c}`
 }
 const stockHref = (code) => `#/stock/${code}`
+
+// ══ ★★ 2026-09-26（用户："9:15 前涨跌幅不都是昨天的吗？"）══
+// 【为什么需要】"昨日/今日"是**相对表述** —— 休市日 / 盘前时，页面的"今日"其实是
+//   **数据口径日**（用户实测：文案说"今日平均表现 -1.16%"，实际是
+//   "前一日(09-23)涨停 → 最近交易日(09-24)的表现"）⇒ 按字面理解会错一天。
+// ⇒ 改为渲染**绝对日期**：`price_date`（价格所属日 = 后端 `_price_date()`）与
+//   `prev_limit_date`（涨停名单所属日 = 它的前一交易日）。任何时段都无歧义。
+const mmdd = (d) => (d ? String(d).slice(5) : '—')
+
+// ★★ 2026-09-26（用户："根据日期对比，采用昨日/今日比较语义化的方式"）：
+//   把上一步的**绝对日期**升级为**条件化语义** —— 相对词只在语义成立时才用，
+//   否则退回绝对日期 MM-DD（宁可啰嗦，也不要一句错的"今日"）。
+//     规则：① 「今日」= `price_date` 恰是自然日今天；② 「昨日」= 名单日与价格日
+//           是**紧邻自然日**（跨周末/长假**不成立** —— 周一的上一交易日是上周五，说"昨日"就错）
+//     实现：② 用**自然日差 1 天**判断即可（前端无交易日历），且天然排除跨周末/长假 ✓
+//     ⚠️ 关键前提：①不成立时（休市日/数据滞后）**一律**显示绝对日期 ——
+//        否则"昨/今"会相对**数据口径日**而非真实今天，又回到本次修掉的那个坑。
+const isTodayPrice = () => String(emotion.value?.price_date || '') === todayStr
+const priceDayLabel = () => (isTodayPrice() ? '今日' : mmdd(emotion.value?.price_date))
+const prevLimitLabel = () => {
+  const a = emotion.value?.prev_limit_date
+  if (!isTodayPrice()) return mmdd(a)          // 数据不是今天 ⇒ 相对词一律不用
+  const b = emotion.value?.price_date
+  const ta = Date.parse(String(a || '').slice(0, 10))
+  const tb = Date.parse(String(b || '').slice(0, 10))
+  const adjacent = Number.isFinite(ta) && Number.isFinite(tb)
+    && Math.round((tb - ta) / 86400000) === 1
+  return adjacent ? '昨日' : mmdd(a)
+}
 
 // ══ ★★ 2026-09-26（用户："竞价看板的高开榜和低开榜双击股票名跳到雪球"）══
 // 【为什么需要这套东西】同一个元素要承载两个动作：
