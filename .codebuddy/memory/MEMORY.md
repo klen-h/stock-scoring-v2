@@ -292,7 +292,18 @@
 
 ## 部署与资源
 - 实际线上 Render `plan: free` = 500MB/0.1CPU（内存锯齿：爬到 80~90% → 被杀重启）。500MB 实测几乎全在模块级缓存（`backtest/strategies._PRICES_CACHE` 曾 234MB/47%）。
-- 缓存三件套：条数上限 + 单条上限 + 取用时物理删除过期项（TTL 只逻辑过期=隐形泄漏）。
+- 缓存**四件套**：条数上限 + 单条上限 + 取用时物理删除过期项（TTL 只逻辑过期=隐形泄漏）
+  + ★ **字节级上限**（2026-09-28 补）。前三条**挡不住"每条都很大"**：实测 `strategies._PRICES_CACHE`
+  的 200 条上限 = **232MB**、`flow._FLOW_MAP_CACHE` 的 6 条上限最坏 = **660MB** ⇒ 500MB 实例必被杀。
+  故一律用「bar 数 / 行数」这类**字节的可靠代理**再兜一层（`_PRICES_BARS_MAX`、
+  `_FLOW_MAP_ROWS_MAX`），超限就**整体清空**（宁可回源重算）。
+- ★ **缓存主动释放 `app/cache_release.py`**（2026-09-28）：`memory_watch` 只观测告警，本模块负责**干预** ——
+  盘后 19:00 后每日一次 + `RSS ≥75%` 自适应（120 分钟频控），`gc.collect()` 后返回前后对比；
+  手动入口 `POST /api/system/cache-release`。**绝不释放**：全市场行情 `tencent._cache`（盘后=收盘定稿快照，
+  多处唯一今日行情来源）、`flash.*`（清掉会重复推送）、`wechat._token_cache`、`signal_bus`、`sync_meta`。
+- ★ **OOM 的真实触发点**（2026-09-28 实证）：不是"自动增长"，而是**特定请求一次性灌入** ——
+  「系统绩效页 / 闸门类」→ `performance._replay_track` 灌满回测价格缓存 + `flow.load_flow_map`
+  整表读（8.8 万行≈110MB）。⇒ 诊断内存只看"谁在涨"不够，要同时问"**哪个请求触发的**"。
 - 生产 Python 3.9，禁 PEP 604；FastAPI 无 await 的路由写 `def`。
 
 ## 战法推送白名单

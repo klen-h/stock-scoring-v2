@@ -187,6 +187,11 @@ _PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存（回测
 _PRICES_TTL = 21600       # 6 小时：每日回填一次，无需短 TTL 反复重拉
 _PRICES_CACHE_MAX = 200   # ★ 2026-09-24：条数上限（对齐 data.py；无上限时实测达 808 条/234MB）
 _PRICES_BAR_MAX = 900     # ★ 2026-09-24：单条超过此根数不缓存（防单条吃几十 MB）
+# ★ 2026-09-28（OOM 治理，实测驱动）：再补**字节级兜底**。上面那个 200 条上限**在字节
+#   意义上等于没上限** —— 实测 200 条 = **232MB**（≈1.2MB/条），正是 2026-09-24 内存告警
+#   的头号元凶（`memory_probe` 该项 232.54MB，全进程 81.8%）。bar 数是字节的可靠代理
+#   （每根 bar = 6 字段 dict，结构固定）⇒ 5 万根 ≈ 65MB 封顶。
+_PRICES_BARS_MAX = 50000
 
 
 def invalidate_prices_cache() -> None:
@@ -207,14 +212,26 @@ def _prices_cache_get(key):
     return bars
 
 
+def _prices_total_bars() -> int:
+    """当前缓存里的 bar 总数（**字节的可靠代理**：每根 bar 结构固定 ≈1.3KB）。"""
+    return sum(len(b) for _, b in _PRICES_CACHE.values())
+
+
 def _prices_cache_put(key, bars) -> None:
-    """写缓存（带上限）。★ 2026-09-24：单条上限 + 条数上限 + 满时淘汰最旧 1/4。"""
+    """写缓存（**三重**上限）。★ 2026-09-24：单条上限 + 条数上限 + 满时淘汰最旧 1/4。
+    ★ 2026-09-28：补**字节级兜底**（`_PRICES_BARS_MAX`）—— 条数上限挡不住"每条都很大"；
+      淘汰 1/4 后仍超限（说明条目普遍很大）⇒ **直接清空**，宁可下次回源重算。
+    """
     if len(bars) > _PRICES_BAR_MAX:      # 超大结果不缓存（内存优先）
         return
-    if len(_PRICES_CACHE) >= _PRICES_CACHE_MAX:
+    if (len(_PRICES_CACHE) >= _PRICES_CACHE_MAX
+            or _prices_total_bars() + len(bars) > _PRICES_BARS_MAX):
         # 简单淘汰：丢最旧插入的 1/4（dict 保序）
         for k in list(_PRICES_CACHE)[: max(1, _PRICES_CACHE_MAX // 4)]:
             _PRICES_CACHE.pop(k, None)
+        if (len(_PRICES_CACHE) >= _PRICES_CACHE_MAX
+                or _prices_total_bars() + len(bars) > _PRICES_BARS_MAX):
+            _PRICES_CACHE.clear()
     _PRICES_CACHE[key] = (time.time(), bars)
 
 

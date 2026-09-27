@@ -710,6 +710,22 @@ def memory_diag(types: int = 1, top: int = 15, history: int = 0,
     }
 
 
+@router.post("/cache-release")
+def cache_release_api(user: dict = Depends(get_current_user)) -> Dict:
+    """手动释放进程内**大缓存**（运维出口；返回释放前后 RSS 与逐项明细）。
+
+    ★ 与自动释放同源（`app/cache_release.py`）：**盘后每日一次** + RSS ≥75% 自适应。
+      本端点用于"想立刻降内存 / 验证释放效果 / 排查前先腾地方"。
+    ★ 只释放"大且便宜重建"的派生缓存；**绝不碰** 全市场行情（盘后=收盘定稿快照）、
+      快讯/推送去重（清掉会重复推送）、元数据类 —— 白名单见该模块 `_RELEASABLE`
+      与头注释的"绝不释放"清单。
+    ★ 容器清空后 `gc.collect()` 才真正回收 ⇒ 返回的 `freed_mb` 是 RSS 前后差
+      （RSS 为采样估算、高水位不一定立刻归还 OS），`caches_*` 更接近真实释放量。
+    """
+    from app import cache_release
+    return cache_release.release("manual")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  数据库体积诊断（GET /api/system/db-usage）—— 2026-09-24 新增
 # ══════════════════════════════════════════════════════════════════════════

@@ -150,6 +150,19 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(memory_watch.periodic_loop())
     except Exception as e:
         print(f"[main] 内存看护启动失败（不影响服务）: {e}")
+
+    # ★ 缓存主动释放（2026-09-28）：`memory_watch` 只**观测**（采样 + 告警），不干预；
+    #   本任务是它的"手"——**盘后释放一次**大缓存，并在 RSS ≥ 75% 时**不等窗口**释放
+    #   （受 120 分钟频控，防"释放→立刻填满→再释放"抖动）。
+    #   定位：两个大缓存（回测价格实测 232MB、资金流整表 map 110MB）是 09-24/09-26
+    #   两次内存告警的元凶；详见 `app/cache_release.py` 头注释。
+    #   ⚠️ **不受 READ_ONLY 约束**：只读模式下进程只服务 API、缓存全靠用户访问触发，
+    #      恰恰最容易"悄悄攒满"（两次告警都发生在只读运行里）。
+    try:
+        from app import cache_release
+        asyncio.create_task(cache_release.periodic_loop())
+    except Exception as e:
+        print(f"[main] 缓存释放任务启动失败（不影响服务）: {e}")
     yield
     scheduler.stop(_scheduler_tasks)
     # 关闭时取消未完成的快照引导任务（如有）

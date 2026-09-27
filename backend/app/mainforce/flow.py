@@ -382,7 +382,12 @@ def get_float_shares(codes: list = None) -> dict:
 _FLOW_MAP_CACHE = {}          # {codes_key: {"ts": float, "ver": str|None, "rows": dict}}
 _FLOW_FAST_TTL = 300          # 5 分钟：零查询直接用
 _FLOW_LONG_TTL = 6 * 3600     # 版本号不可用时的兜底 TTL
-_FLOW_MAP_CACHE_MAX = 6
+# ★ 2026-09-28（OOM 治理，实测驱动）：6 → **2**，并补**行数**上限。
+#   原只有条数上限 6，而**整表读单条实测 ≈110MB**（`mainflow_history` 8.8 万行；
+#   `memory_probe` 该项 110.44MB）⇒ 6 条最坏 660MB，500MB 实例必被杀。
+#   行数是字节的可靠代理（行结构固定 ≈1.25KB）⇒ 用它做真上限：12 万行 ≈ 150MB。
+_FLOW_MAP_CACHE_MAX = 2
+_FLOW_MAP_ROWS_MAX = 120000
 
 
 def _cache_fresh(hit: dict) -> bool:
@@ -486,6 +491,28 @@ def _disk_save(ver, by_code):
         pass
 
 
+def _flow_cache_rows(cache: dict) -> int:
+    """缓存里已存的**行数**合计（每条目是 `{code: [rows]}`）。"""
+    return sum(sum(len(v) for v in (e.get("rows") or {}).values())
+               for e in cache.values())
+
+
+def _flow_cache_put(cache_key: str, ver, rows: dict) -> None:
+    """写 `_FLOW_MAP_CACHE`（**条数 + 行数**双上限；超限直接清空）。
+
+    ★ 2026-09-28（OOM 治理，实测驱动）：原只有条数上限 6，而**整表读单条实测 ≈110MB**
+      （`mainflow_history` 8.8 万行；`memory_probe` 该项 110.44MB）⇒ 6 条最坏 660MB，
+      500MB 实例必被杀。行数是字节的可靠代理（行结构固定）⇒ 用它做真上限。
+    ★ 为什么"超限就整体清空"而非逐条淘汰：整表读一条就顶掉大半配额，逐条淘汰意义不大；
+      清掉后重建走**本机 SQLite 跨进程缓存**（`_disk_load`）⇒ **零 Supabase 流量**。
+    """
+    if (len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX
+            or _flow_cache_rows(_FLOW_MAP_CACHE)
+            + sum(len(v) for v in rows.values()) > _FLOW_MAP_ROWS_MAX):
+        _FLOW_MAP_CACHE.clear()
+    _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": rows}
+
+
 def load_flow_map(codes: list = None) -> dict:
     """读全表 {code: [{date, main_net, ...}]}（升序），供回测脚本用。
 
@@ -502,9 +529,7 @@ def load_flow_map(codes: list = None) -> dict:
     if not codes:
         disk = _disk_load(ver)
         if disk is not None:
-            if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
-                _FLOW_MAP_CACHE.clear()
-            _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": disk}
+            _flow_cache_put(cache_key, ver, disk)
             print(f"[mainflow] 整表读命中本机缓存（{len(disk)} 只）→ 零 Supabase 流量")
             return disk
     sql = ("SELECT code, date, main_net, super_net, big_net, main_pct, super_pct, "
@@ -522,9 +547,7 @@ def load_flow_map(codes: list = None) -> dict:
             "big_net": r["big_net"], "main_pct": r["main_pct"], "super_pct": r["super_pct"],
             "close": r["close"], "pct_chg": r["pct_chg"],
         })
-    if len(_FLOW_MAP_CACHE) >= _FLOW_MAP_CACHE_MAX:
-        _FLOW_MAP_CACHE.clear()          # 简易淘汰：整表缓存体积大，满了就清
-    _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": by_code}
+    _flow_cache_put(cache_key, ver, by_code)   # ★ 2026-09-28：条数 + 行数双上限（见该函数）
     if not codes:
         _disk_save(ver, by_code)         # 落盘 → 下一个新进程零 egress
     return by_code
