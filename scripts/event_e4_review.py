@@ -29,6 +29,7 @@
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime
 
 import numpy as np
@@ -65,6 +66,17 @@ def count_clusters(dates):
         if _days(b) - _days(a) >= CLUSTER_GAP:
             c += 1
     return c
+
+
+def cluster_first_days(dates):
+    """每个独立簇的首日列表（间隔 >= CLUSTER_GAP 自然日算新簇）。"""
+    if not dates:
+        return []
+    firsts = [dates[0]]
+    for a, b in zip(dates, dates[1:]):
+        if _days(b) - _days(a) >= CLUSTER_GAP:
+            firsts.append(b)
+    return firsts
 
 
 def load_idx():
@@ -106,12 +118,40 @@ def main():
     all_dates = [str(r["date"])[:10] for r in events]
     clusters = count_clusters(e4_dates)
 
+    # ★ 防御期占比：读 market_regime_history（与 E4 同日对齐、无前视），
+    #   回答「E4 有多少落在常规路径买不到的防御期」。
+    regime_map = {}
+    try:
+        _rrows = db.fetch(
+            "SELECT date, state FROM market_regime_history ORDER BY date") or []
+        regime_map = {str(r["date"])[:10]: r["state"] for r in _rrows}
+    except Exception as e:
+        print(f"  · market_regime_history 读取失败: {e}")
+
     print(f"\n① 数据覆盖")
     print(f"  · 事件快照：{len(events)} 天（{all_dates[0]} ~ {all_dates[-1]}）")
     print(f"  · E4 涨停家数激增：{len(e4_dates)} 天 / {clusters} 簇"
           + (f"  → {', '.join(e4_dates)}" if e4_dates else ""))
 
-    print(f"\n② 样本门槛（E4 ≥ {MIN_E4_DAYS} 天 且 簇 ≥ {MIN_CLUSTERS}）")
+    print(f"\n② 防御期占比（E4 触发日落在 defensive 的比例 = 「补位」价值）")
+    if not e4_dates or not regime_map:
+        print("  · regime 历史不可用，跳过。")
+    else:
+        _day = Counter(regime_map[d] for d in e4_dates if d in regime_map)
+        _dn = sum(_day.values()) or 1
+        print(f"  · 防御 {_day.get('defensive', 0)}/{_dn} 天 = "
+              f"{_day.get('defensive', 0) / _dn * 100:.0f}%（全期基准 ≈ 32%）")
+        print(f"  · 其他：进攻 {_day.get('offensive', 0)} 天 / 震荡 "
+              f"{_day.get('neutral', 0)} 天 / 偏弱 {_day.get('neutral_bearish', 0)} 天")
+        _firsts = cluster_first_days(e4_dates)
+        _cl = Counter(regime_map[d] for d in _firsts if d in regime_map)
+        _cn = sum(_cl.values())
+        if _cn:
+            print(f"  · 簇首日（{_cn} 簇）落在防御期："
+                  f"{_cl.get('defensive', 0) / _cn * 100:.0f}%")
+        print("  · 说明：防御期常规路径 0% 可买 ⇒ 占比越高，E4 的「补位」价值越大")
+
+    print(f"\n③ 样本门槛（E4 ≥ {MIN_E4_DAYS} 天 且 簇 ≥ {MIN_CLUSTERS}）")
     if len(e4_dates) < MIN_E4_DAYS or clusters < MIN_CLUSTERS:
         print(f"  · 当前 E4 {len(e4_dates)} 天 / {clusters} 簇 ⇒ **insufficient**，不下结论。")
         print(f"  · 按历史（21 年 224 天 @boost=2.0，约每年 10.7 天）推算，"
@@ -135,7 +175,7 @@ def main():
     all_rets = [float(fwd[i]) for i in range(len(dates)) if not np.isnan(fwd[i])]
     base = float(np.mean(all_rets))
     e4_rets = [t20_ret(d) for d in e4_dates if t20_ret(d) is not None]
-    print(f"\n③ 收益（中证1000，T+{HORIZON}）")
+    print(f"\n④ 收益（中证1000，T+{HORIZON}）")
     if len(e4_rets) < 5:
         print(f"  · 可评估 E4 样本 {len(e4_rets)} < 5 ⇒ insufficient，不下结论。")
         return
@@ -147,7 +187,7 @@ def main():
           f"  ⇒ 差 {diff:+.2f}pp")
     print(f"  · 胜率 = {win}/{len(e4_rets)} = {win_rate:.0%}（门槛 ≥ {MIN_WIN_RATE:.0%}）")
 
-    print(f"\n④ 预登记判定")
+    print(f"\n⑤ 预登记判定")
     ok_ret = diff >= MIN_RET_DIFF
     ok_win = win_rate >= MIN_WIN_RATE
     print(f"  (a) 样本门槛：{'✓' if (len(e4_dates) >= MIN_E4_DAYS and clusters >= MIN_CLUSTERS) else '✗'}")
