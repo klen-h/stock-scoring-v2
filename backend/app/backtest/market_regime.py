@@ -739,14 +739,21 @@ def restore_regime_cache_from_db() -> Optional[dict]:
             return None
         # ★ 2026-09-13（审查 P1-6）：恢复前校验新鲜度——停更的历史状态会静默喂给
         #   scoring/coach/daily_report/tracker/trade_gate/confluence 等消费方。
+        # ★ 2026-09-27 修正：原按**自然日差 >= 3** 告警，未排除周末/节假日 ⇒
+        #   任何 >=3 天连休（中秋 3 天、国庆/春节 7 天）都会在假期后段**误报**
+        #   （实测 2026-09-27 中秋：09-24 是节前最后交易日，09-25~27 休市，
+        #   自然日差恰好 3 ⇒ 误报"停更"，但 regime 停在 09-24 本就正确）。
+        #   改为与「最近已完成交易日」比较（项目通用口径，`latest_completed_trading_day`
+        #   已含 2026 全年假期）：只有 regime 日期**落后于**最近交易日才算真停更。
         try:
-            from app.flash.rules import beijing_now
+            from app.flash.rules import beijing_now, latest_completed_trading_day
             _d = str(row.get("date"))[:10]
-            _stale_days = (beijing_now().date()
-                           - datetime.strptime(_d, "%Y-%m-%d").date()).days
-            if _stale_days >= 3:
-                print(f"[market_regime] ⚠️ 恢复的 regime 状态已停更 {_stale_days} 天"
-                      f"（{_d}），评分权重/战法准入/闸门基于旧状态，"
+            _latest_td = latest_completed_trading_day()
+            if _d < _latest_td:      # 字符串比较：YYYY-MM-DD 字典序 == 日期序
+                _stale_days = (beijing_now().date()
+                               - datetime.strptime(_d, "%Y-%m-%d").date()).days
+                print(f"[market_regime] ⚠️ regime 已停更 {_stale_days} 天（{_d}），"
+                      f"最近交易日 {_latest_td}，评分权重/战法准入/闸门基于旧状态，"
                       f"请检查日批 task_market_regime 是否失败")
         except Exception:
             pass
