@@ -15,6 +15,7 @@
 ================================================================================
 """
 
+import contextvars
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -147,6 +148,111 @@ def _expected_latest_trading_day() -> str:
     return d.isoformat()
 
 
+# ── ★★ 2026-09-26 历史重扫：战法检测的「截至 T 日」日期锚 ──
+#   生产扫描永远用"最新 K 线"；历史重扫需"截至某交易日 T"的视角（无前视）。
+#   用 contextvar（而非给 6 个战法的 scan/_check_stock 加参数）⇒ 战法代码零改动。
+RESCAN_AS_OF = contextvars.ContextVar("rescan_as_of", default=None)
+
+ZZSHARE_DB = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "data", "zzshare_daily.db"))
+
+_ZZSHARE_CONN = None
+
+
+def _zzshare_conn():
+    """zzshare_daily.db 复用只读连接（重扫进程内复用，避免每只股票新建连接的开销）。"""
+    global _ZZSHARE_CONN
+    if _ZZSHARE_CONN is None:
+        import sqlite3
+        _ZZSHARE_CONN = sqlite3.connect(ZZSHARE_DB)
+    return _ZZSHARE_CONN
+
+
+_KLINE_CACHE = {}   # (code, as_of) -> 裸 K 线列表；重扫脚本每处理完一个交易日清理
+
+
+def _clear_kline_cache():
+    """清空 K 线缓存（重扫脚本每处理完一个交易日调用，防 5400 天 × 5000 股无限膨胀）。"""
+    _KLINE_CACHE.clear()
+
+
+def _code_with_suffix(code: str) -> str:
+    """6 位 code → zzshare 带后缀 code（'600519' → '600519.SH'）。
+
+    A 股代码规则：6 开头→沪市(.SH)，0/3 开头→深市(.SZ)，4/8/9 开头→北交所(.BJ)。
+    用精确 code 匹配（走 idx_daily_code 索引）替代 LIKE 前缀匹配（实测 180ms → ~1ms）。
+    """
+    if code.startswith("6"):
+        return f"{code}.SH"
+    if code.startswith(("0", "3")):
+        return f"{code}.SZ"
+    return f"{code}.BJ"
+
+
+def _get_klines_asof(code: str, as_of: str, count: int) -> List[Dict]:
+    """历史重扫专用：从 zzshare_daily.db 读 `date <= as_of` 的最后 `count` 根 K 线。
+
+    只读、fail-open（异常返回 []，调用方自然跳过该股）。
+    zzshare 的 code 带后缀（'600871.SH'），用 `_code_with_suffix` 精确匹配（走索引）。
+    返回升序裸 K 线 [{date, open, high, low, close, volume}]（指标由 _add_indicators 加）。
+    ★ 性能：连接复用 + 精确索引 + 进程内缓存（6 战法对同一股票同一天重复读同一段）。
+    ★ 缓存 key 必须含 count：不同战法用不同 count（60/65/80），若只按 (code, as_of)
+      会串数据 —— count=60 的缓存被 count=80 的战法命中，拿到 60 根导致 `idx<60` 恒真
+      → ma_convergence_breakout / advance2retreat1 全程 0 信号（2026-09-27 已踩）。
+    """
+    key = (code, str(as_of), count)
+    hit = _KLINE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        rows = _zzshare_conn().execute(
+            "SELECT date, open, high, low, close, volume FROM daily "
+            "WHERE code = ? AND date <= ? ORDER BY date DESC LIMIT ?",
+            (_code_with_suffix(code), str(as_of), count)).fetchall()
+    except Exception:
+        return []
+    if not rows:
+        _KLINE_CACHE[key] = []
+        return []
+    rows.reverse()          # 降序取回 → 反转为升序（战法按时间正序处理）
+    bars = [{"date": r[0], "open": r[1], "high": r[2], "low": r[3],
+             "close": r[4], "volume": r[5]} for r in rows]
+    _KLINE_CACHE[key] = bars
+    return bars
+
+
+def _add_indicators(klines: List[Dict]) -> List[Dict]:
+    """给裸 K 线加 change_pct/body/影线/is_positive（与实时路径同一套算法）。
+
+    从 get_kline_with_indicators 抽出，供历史重扫复用，保证口径一致。
+    """
+    result = []
+    prev_close = None
+    for k in klines:
+        item = {
+            "date": k.get("date", ""),
+            "open": float(k.get("open", 0)),
+            "close": float(k.get("close", 0)),
+            "high": float(k.get("high", 0)),
+            "low": float(k.get("low", 0)),
+            "volume": float(k.get("volume", 0)),
+        }
+        if prev_close and prev_close > 0:
+            item["change_pct"] = round((item["close"] - prev_close) / prev_close * 100, 2)
+        else:
+            item["change_pct"] = 0
+        body = abs(item["close"] - item["open"])
+        upper_shadow = item["high"] - max(item["close"], item["open"])
+        lower_shadow = min(item["close"], item["open"]) - item["low"]
+        item["body"] = body
+        item["upper_shadow"] = upper_shadow
+        item["lower_shadow"] = lower_shadow
+        item["is_positive"] = item["close"] > item["open"]
+        result.append(item)
+        prev_close = item["close"]
+    return result
+
+
 def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
     """
     获取K线并计算常用指标。
@@ -154,6 +260,10 @@ def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
     返回：
       K线列表，每根包含 {date, open, close, high, low, volume, change_pct, ...}
     """
+    # ★★ 2026-09-26 历史重扫：contextvar 锚定"截至 T 日"→ 直接读 zzshare，跳过实时/缓存路径
+    as_of = RESCAN_AS_OF.get()
+    if as_of is not None:
+        return _add_indicators(_get_klines_asof(code, as_of, count))
     klines = None
     # ★ DB 缓存优先（2026-09-03）：detail 短拉取（count=20/60）此前直连腾讯，
     #   WAF 限流/偶发失败即 404（"未找到K线数据: xxx"）—— 而 kline_cache 里
@@ -196,40 +306,7 @@ def get_kline_with_indicators(code: str, count: int = 60) -> List[Dict]:
             pass
     if not klines or len(klines) < 5:
         return []
-    
-    result = []
-    prev_close = None
-    
-    for k in klines:
-        item = {
-            "date": k.get("date", ""),
-            "open": float(k.get("open", 0)),
-            "close": float(k.get("close", 0)),
-            "high": float(k.get("high", 0)),
-            "low": float(k.get("low", 0)),
-            "volume": float(k.get("volume", 0)),
-        }
-        
-        # 计算涨跌幅
-        if prev_close and prev_close > 0:
-            item["change_pct"] = round((item["close"] - prev_close) / prev_close * 100, 2)
-        else:
-            item["change_pct"] = 0
-        
-        # 计算实体长度、上影线、下影线
-        body = abs(item["close"] - item["open"])
-        upper_shadow = item["high"] - max(item["close"], item["open"])
-        lower_shadow = min(item["close"], item["open"]) - item["low"]
-        
-        item["body"] = body
-        item["upper_shadow"] = upper_shadow
-        item["lower_shadow"] = lower_shadow
-        item["is_positive"] = item["close"] > item["open"]  # 阳线
-        
-        result.append(item)
-        prev_close = item["close"]
-    
-    return result
+    return _add_indicators(klines)
 
 
 def calc_position_in_range(klines: List[Dict], lookback: int = 60) -> float:
