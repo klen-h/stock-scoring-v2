@@ -91,6 +91,22 @@ E2_STATS = {
               "（2026-09-27，P1-b 比例化）",
 }
 
+# ── E2 可执行标的（§8.4 真实指数终验 + 成本口径，2026-09-27）──
+#   口径：事件日 T → **T+1 开盘买 → T+20 收盘卖**，已扣双边 0.3% 成本；
+#   主口径固定 T+20（与全部验证一致）；**不加止损**（实测 -7% 止损为负贡献 -0.22pp）。
+#   ⚠️ 定位：**历史统计参考**，不是投资建议，不进决策链（展示层新增，须保留此声明）。
+EXEC_STATS = {
+    "hold_days": 20,
+    "cost_pct": 0.3,
+    "targets": [
+        {"name": "中证1000", "etf": "512100", "net_edge": 2.46, "p": 0.0012, "n": 143},
+        {"name": "中证500", "etf": "510500", "net_edge": 1.73, "p": 0.0011, "n": 298},
+        {"name": "创业板指", "etf": "159915", "net_edge": 1.23, "p": 0.0273, "n": 182},
+    ],
+    "note": "沪深300 扣成本后转负(-0.18pp)；止损 -7% 为负贡献，未采用",
+    "source": "scripts/event_realindex_check.py + event_hold_cost_check.py（2026-09-27）",
+}
+
 _CACHE = {"ts": 0.0, "data": None}
 _CACHE_TTL = 300          # 5 分钟（盘中事件状态可能变化）
 
@@ -164,6 +180,8 @@ def detect_events(force: bool = False) -> dict:
         "e1_capitulation": e1,
         "e2_policy_surge": e2,
         "e2_stats": E2_STATS if e2 else None,
+        # ★ 可执行标的（仅 E2 触发时给出；历史统计参考，非投资建议）
+        "exec_stats": EXEC_STATS if e2 else None,
         "note": ("盘中口径：涨停用 change_pct>=9.9 近似（20cm 板块会高估家数），"
                  "与回测的精确口径略有差异；本版仅展示，不进决策链"
                  if available else "行情缓存为空，事件不可判定"),
@@ -221,11 +239,18 @@ def event_summary_line() -> str:
     if ev.get("e2_policy_surge"):
         s = E2_STATS
         _def = s["by_regime"]["defensive"]
+        _ex = (ev.get("exec_stats") or {}).get("targets") or []
+        _ex_line = ""
+        if _ex:
+            _top = _ex[0]
+            _ex_line = (f" 历史同态可执行标的（扣 0.3% 成本、持 20 日）："
+                        f"{_top['name']}({_top['etf']}) +{_top['net_edge']}pp"
+                        f"（P={_top['p']}）等 {len(_ex)} 个；沪深300 无效。")
         return (f"⚡ 政策脉冲信号（E2）：涨家数占比 {ur_s}、涨停 {ev['limit_up']} 家 —— "
                 f"历史同态后 20 日等权 +{s['h20_mean']}%（基准 +{s['h20_base']}%，"
                 f"n={s['n']}，胜率 {s['h20_win']}%）；防御期内增量 "
-                f"+{_def['diff']}pp（n={_def['n']}）。"
-                f"⚠️ 展示项，未进决策链")
+                f"+{_def['diff']}pp（n={_def['n']}）。" + _ex_line +
+                f" ⚠️ 展示项（历史统计参考，非投资建议），未进决策链")
     if ev.get("e1_capitulation"):
         return (f"❄️ 冰点信号（E1）：涨家数占比 {ur_s}、跌停 {ev['limit_down']} 家 —— "
                 f"历史上无额外 edge（已归档，仅作背景提示）")

@@ -2489,10 +2489,18 @@ const eventTitle = computed(() => {
   const s = e.e2_stats
   if (e.e2_policy_surge && s) {
     const d = (s.by_regime && s.by_regime.defensive) || {}
+    // ★ 可执行标的（真实指数终验 + 成本口径，见 _report_事件驱动信号源接入 §8.4）
+    const ex = (e.exec_stats && e.exec_stats.targets) || []
+    const exLine = ex.length
+      ? `历史同态可执行标的（T+1 开盘买、持 20 日、已扣 0.3% 成本）：\n`
+        + ex.map(t => `  ${t.name}(${t.etf})  +${t.net_edge}pp  P=${t.p}  n=${t.n}`).join('\n')
+        + `\n（沪深300 扣成本后为负；-7% 止损为负贡献，未采用）\n`
+      : ''
     return `${base}\nE2 政策脉冲（历史 ${s.n} 天 / ${s.n_clusters} 簇）：`
       + `后 20 日全市场等权 +${s.h20_mean}%，基准 +${s.h20_base}%，胜率 ${s.h20_win}%\n`
       + `防御期内增量 +${d.diff}pp（n=${d.n}）\n`
-      + `⚠️ 展示项：不改市况/仓位，不进决策链`
+      + exLine
+      + `⚠️ 展示项：历史统计参考，非投资建议，不改市况/仓位`
   }
   if (e.e1_capitulation) {
     return `${base}\n冰点信号（E1）：历史上无额外 edge（已归档，仅作背景提示）`
