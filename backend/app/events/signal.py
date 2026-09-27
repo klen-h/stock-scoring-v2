@@ -71,6 +71,12 @@ E1_LIMIT_DOWN = 200
 E1_UP_RATIO = 0.10
 E2_UP_RATIO = 0.90
 E2_LIMIT_UP_RATIO = 0.020     # 涨停家数 / (涨家数 + 跌家数) ≥ 2.0%
+# ★ E4 涨停家数激增（2026-09-27 新增，时间切分样本外预登记复核通过）——
+#   判据：当日涨停家数 > 2.0 × 滚动20日均值（自适应阈值，规避绝对家数随池子漂移）。
+#   与 E2 是**同一机制**（涨停潮→中小盘风险偏好回升），但用更简单的"涨停家数"指标，
+#   样本外 edge 更强（中证1000 ETF T+20 +5.82pp，P≈0.0004，见 E4_STATS）。
+E4_LIMIT_UP_BOOST = 2.0       # 涨停家数 > 2.0 × 滚动20日均值
+E4_MA_WINDOW = 20             # 滚动均值窗口（交易日）
 
 # ── E2 历史统计（预登记检验产出，供展示「历史预期」；重跑脚本后同步更新）──
 # ★ 2026-09-27 P1-b：更新为**比例口径** (up_ratio≥0.90 且 lu_ratio≥2.0%) 的统计。
@@ -107,6 +113,23 @@ EXEC_STATS = {
     "source": "scripts/event_realindex_check.py + event_hold_cost_check.py（2026-09-27）",
 }
 
+# ── E4 涨停家数激增的历史统计（★ 时间切分样本外预登记，2026-09-27）──
+# 判据：涨停家数 > 2.0 × 滚动20日均值；标的=中证1000 ETF；T+1 开盘买、持 20 日。
+# 复核：训练段(2005-2015)扫 boost 定参 → boost=2.0 最优(+5.95pp) → 测试段(2016-2026)
+#       样本外 +5.82pp（P=0.0004，30 簇）⇒ 两段几乎一致，非过拟合。
+# 中证500 阈值不稳定（训练段最优 3.0 但测试段样本不足）；创业板全程弱（最优 +0.80pp）。
+# ★ 定位：历史统计参考，非投资建议，不进决策链（与 E2 同 v0 边界）。
+E4_STATS = {
+    "name": "涨停家数激增（涨停家数 > 2.0×滚动20日均值）",
+    "threshold": "limit_up > 2.0 × MA20(limit_up)",
+    "target": "中证1000 ETF (512100)",
+    "hold_days": 20,
+    "train": {"period": "2005-2015", "edge_pp": 5.95},
+    "test": {"period": "2016-2026", "edge_pp": 5.82, "p": 0.0004, "n_clusters": 30},
+    "note": "中证500 阈值不稳（3.0 样本不足）；创业板无效；ETF 有跟踪误差未扣",
+    "source": "scripts/etf_timing_prereg.py + etf_timing_sensitivity.py（2026-09-27）",
+}
+
 _CACHE = {"ts": 0.0, "data": None}
 _CACHE_TTL = 300          # 5 分钟（盘中事件状态可能变化）
 
@@ -123,9 +146,18 @@ def _ensure_table() -> None:
             n_down INTEGER,
             e1_capitulation INTEGER,
             e2_policy_surge INTEGER,
+            e4_limit_surge INTEGER DEFAULT 0,
+            limit_up_ma20 REAL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # ★ E4 加列（兼容已存在的旧表：CREATE IF NOT EXISTS 不会给已有表补列）
+    for _col, _ddl in [("e4_limit_surge", "INTEGER DEFAULT 0"),
+                       ("limit_up_ma20", "REAL")]:
+        try:
+            db.execute(f"ALTER TABLE market_events ADD COLUMN {_col} {_ddl}")
+        except Exception:
+            pass    # 列已存在
     try:
         from app.flash.rules import beijing_now
         _ = beijing_now
@@ -168,6 +200,22 @@ def detect_events(force: bool = False) -> dict:
         today = latest_completed_trading_day()
     except Exception:
         today = datetime.now(_BEIJING_TZ).strftime("%Y-%m-%d")
+
+    # ★ E4：涨停家数 > 2.0 × 滚动20日均值（滚动均值用 market_events 历史 + 当日，
+    #   含当日、无前视；需至少 19 天历史才开始判定，早期自动 insufficient）
+    lu_ma20 = None
+    try:
+        _ensure_table()
+        _hist = db.fetch(
+            "SELECT limit_up FROM market_events WHERE date < %s "
+            "ORDER BY date DESC LIMIT 19", (today,)) or []
+        if len(_hist) >= E4_MA_WINDOW - 1:
+            lu_ma20 = (sum(r["limit_up"] for r in _hist) + limit_up) / float(E4_MA_WINDOW)
+    except Exception as e:
+        print(f"[events] E4 滚动均值读取失败: {e}")       # ASCII（铁律⑥）
+    e4 = bool(available and lu_ma20 is not None
+              and limit_up > E4_LIMIT_UP_BOOST * lu_ma20)
+
     result = {
         "available": available,
         "date": today,
@@ -182,6 +230,10 @@ def detect_events(force: bool = False) -> dict:
         "e2_stats": E2_STATS if e2 else None,
         # ★ 可执行标的（仅 E2 触发时给出；历史统计参考，非投资建议）
         "exec_stats": EXEC_STATS if e2 else None,
+        # ★ E4 涨停家数激增（历史统计参考，非投资建议，不进决策链）
+        "e4_limit_surge": e4,
+        "limit_up_ma20": round(lu_ma20, 2) if lu_ma20 is not None else None,
+        "e4_stats": E4_STATS if e4 else None,
         "note": ("盘中口径：涨停用 change_pct>=9.9 近似（20cm 板块会高估家数），"
                  "与回测的精确口径略有差异；本版仅展示，不进决策链"
                  if available else "行情缓存为空，事件不可判定"),
@@ -211,18 +263,23 @@ def record_event_snapshot(date: str = None) -> int:
         db.execute("""
             INSERT INTO market_events
             (date, up_ratio, limit_up, limit_down, n_up, n_down,
-             e1_capitulation, e2_policy_surge)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+             e1_capitulation, e2_policy_surge, e4_limit_surge, limit_up_ma20)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (date) DO UPDATE
             SET up_ratio = EXCLUDED.up_ratio, limit_up = EXCLUDED.limit_up,
                 limit_down = EXCLUDED.limit_down, n_up = EXCLUDED.n_up,
                 n_down = EXCLUDED.n_down, e1_capitulation = EXCLUDED.e1_capitulation,
-                e2_policy_surge = EXCLUDED.e2_policy_surge
+                e2_policy_surge = EXCLUDED.e2_policy_surge,
+                e4_limit_surge = EXCLUDED.e4_limit_surge,
+                limit_up_ma20 = EXCLUDED.limit_up_ma20
         """, (d, ev["up_ratio"], ev["limit_up"], ev["limit_down"],
               ev["n_up"], ev["n_down"],
               1 if ev["e1_capitulation"] else 0,
-              1 if ev["e2_policy_surge"] else 0))
-        print(f"[events] {d} 事件快照已落库（E2={ev['e2_policy_surge']}）")
+              1 if ev["e2_policy_surge"] else 0,
+              1 if ev["e4_limit_surge"] else 0,
+              ev["limit_up_ma20"]))
+        print(f"[events] {d} 事件快照已落库"
+              f"（E2={ev['e2_policy_surge']}, E4={ev['e4_limit_surge']}）")
         return 1
     except Exception as e:
         print(f"[events] 落库失败: {e}")
@@ -251,6 +308,12 @@ def event_summary_line() -> str:
                 f"n={s['n']}，胜率 {s['h20_win']}%）；防御期内增量 "
                 f"+{_def['diff']}pp（n={_def['n']}）。" + _ex_line +
                 f" ⚠️ 展示项（历史统计参考，非投资建议），未进决策链")
+    if ev.get("e4_limit_surge"):
+        _s = E4_STATS
+        return (f"🔥 涨停家数激增（E4）：涨停 {ev['limit_up']} 家 > 2.0×滚动20日均值"
+                f"（{ev.get('limit_up_ma20')}）—— 历史同态中证1000 ETF 持 20 日 "
+                f"训练段 +{_s['train']['edge_pp']}pp / 样本外 +{_s['test']['edge_pp']}pp"
+                f"（P={_s['test']['p']}）。⚠️ 展示项（历史统计参考，非投资建议），未进决策链")
     if ev.get("e1_capitulation"):
         return (f"❄️ 冰点信号（E1）：涨家数占比 {ur_s}、跌停 {ev['limit_down']} 家 —— "
                 f"历史上无额外 edge（已归档，仅作背景提示）")

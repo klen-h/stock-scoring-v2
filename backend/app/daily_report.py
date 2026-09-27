@@ -677,7 +677,8 @@ def build_data_md(date: str = None) -> str:
         for _cand in (_d, _yesterday_trading_day()):
             row = db.fetch_one(
                 "SELECT date, up_ratio, limit_up, limit_down, "
-                "e1_capitulation, e2_policy_surge FROM market_events WHERE date = %s",
+                "e1_capitulation, e2_policy_surge, e4_limit_surge, limit_up_ma20 "
+                "FROM market_events WHERE date = %s",
                 (_cand,))
             if row:
                 break
@@ -697,6 +698,15 @@ def build_data_md(date: str = None) -> str:
                     f"**{_t.get('name')}({_t.get('etf')}) +{_t.get('net_edge')}pp**"
                     f"（P={_t.get('p')}，n={_t.get('n')}）")
             add("- ⚠️ **历史统计参考，非投资建议**；本信号不进决策链（不改市况/仓位/闸门）")
+        elif row and row.get("e4_limit_surge"):
+            from app.events.signal import E4_STATS as _E4S
+            add("\n### 1.5 事件信号（E4 涨停家数激增）\n")
+            add(f"- 🔥 **触发**：涨停 {row.get('limit_up')} 家 > 2.0×滚动20日均值"
+                f"（{row.get('limit_up_ma20')}）")
+            add(f"- 历史同态（时间切分样本外）：**{_E4S['target']}** 持 {_E4S['hold_days']} 日 "
+                f"训练段 +{_E4S['train']['edge_pp']}pp / 样本外 +{_E4S['test']['edge_pp']}pp"
+                f"（P={_E4S['test']['p']}）")
+            add(f"- ⚠️ **历史统计参考，非投资建议**；本信号不进决策链（不改市况/仓位/闸门）")
         elif row and row.get("e1_capitulation"):
             add("\n### 1.5 事件信号（E1 冰点）\n")
             add(f"- ❄️ 涨家数占比 {row.get('up_ratio', 0):.1%}、"

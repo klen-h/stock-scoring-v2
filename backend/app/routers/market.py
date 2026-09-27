@@ -269,8 +269,9 @@ def market_events():
     T+20 等权 +6.17% vs 基准 +3.15%，防御期内增量 +2.17pp / 30 独立簇）。
     返回当日事件判定 + 历史统计（供前端展示"历史预期"）。
     """
-    from app.events.signal import get_event_signal, E2_STATS
-    return {"ok": True, "event": get_event_signal(), "stats": E2_STATS}
+    from app.events.signal import get_event_signal, E2_STATS, E4_STATS
+    return {"ok": True, "event": get_event_signal(), "stats": E2_STATS,
+            "e4_stats": E4_STATS}
 
 
 @router.get("/overview")
