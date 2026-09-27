@@ -223,6 +223,15 @@ export const getSectorSnapshot = (date, params) => http.get(`/sector/snapshot/${
 export const getSectorHistory = (code, days = 30) => http.get(`/sector/history/${code}`, { params: { days } })
 export const getSectorSnapshotStats = () => http.get('/sector/snapshot-stats')
 export const takeSectorSnapshot = (date) => http.post('/sector/snapshot/take', {}, { params: { date } })
+
+// ★ 2026-09-27：zzshare 板块序列（**独立体系**，东财 push2 不稳时的稳定替代源）。
+//   东财 `sector_daily` 因限流**缺日**（错过即无法回补），而 zzshare 支持历史日期 ⇒ 可回填。
+//   ⚠️ 两套 taxonomy 不兼容（东财 BK/496 vs zzshare 881/104）⇒ 独立表，勿与上面混用。
+export const getZzSectorDispersion = (params) => http.get('/sector/zz/dispersion', { params })
+export const getZzSectorSnapshot = (date, params) => http.get(`/sector/zz/snapshot/${date}`, { params })
+export const getZzSectorHistory = (code, days = 60) => http.get(`/sector/zz/history/${code}`, { params: { days } })
+export const getZzSectorStats = () => http.get('/sector/zz/stats')
+export const takeZzSectorSnapshot = (date) => http.post('/sector/zz/take', {}, { params: { date } })
 // 个股→行业映射（评分引擎板块因子的基础数据）
 export const getStockIndustry = (code) => http.get(`/sector/stock-industry/${code}`)
 export const getIndustryMapStats = () => http.get('/sector/industry-map/stats')

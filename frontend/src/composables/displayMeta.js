@@ -42,6 +42,24 @@ export const PHASE_STYLE = {
   },
 }
 
+// ── 主力阶段中文名（**兜底表**，2026-09-28）──
+// 唯一映射源仍是后端 `mainforce/phases.PHASE_CN`，显示**优先用后端下发的 `phase_cn`**。
+// 但并非所有接口都发它：实测 `/score/batch/top` 的 `mainforce` 只给 `phase`（英文枚举）
+//   + `signal`，**没有 `phase_cn`** ⇒ 前端只能裸显英文。
+// 与 `STRATEGY_SHORT` 同款处理：本地维护一份**展示用**短名，缺 `phase_cn` 时兜底；
+//   未登记则回退英文枚举（**不隐藏** —— 否则后端新增阶段上线后没人发现它没中文名）。
+export const PHASE_CN = {
+  accumulation: '吸筹', shakeout: '洗盘', markup: '拉升',
+  distribution: '出货', decline: '下跌', sideways: '盘整',
+}
+
+/** 主力阶段 → 中文名：优先后端下发 `phase_cn`，缺失回退兜底表 / 英文枚举。 */
+export function phaseCn(phase, cn) {
+  if (cn) return cn
+  if (!phase) return ''
+  return PHASE_CN[phase] || phase
+}
+
 // ── 战法中文名（榜单/工作台卡片展示用，取更短的"展示名"）──
 // 与后端 `strategies/recommendation.STRATEGY_ZH`（推送用全称）**键一一对应**；
 // 这里短一些，便于表格/卡片一行放得下（如"均线粘合突破"→"收敛突破"）。
@@ -76,3 +94,46 @@ export function readyCls(ready) {
   if (ready === 2) return 'text-amber-400'
   return 'text-muted'
 }
+
+/**
+ * 闸门就绪的**标签（chip）配色** —— `readyCls` 的底+字版本（同一三档语义）。
+ * ★ 2026-09-28：工作台「评分榜 Top10」补「买入条件」列时加；榜单页观察池表用的是同一套
+ *   （3 绿 / 2 琥珀 / ≤1 灰）。
+ * ⚠️ 必须写**完整类名**（Tailwind 只扫静态字面量，拼接会被漏扫 ⇒ 样式静默消失）。
+ */
+export function readyChipCls(ready) {
+  if (ready == null) return 'bg-white/5 text-muted'
+  if (ready >= 3) return 'bg-emerald-500/20 text-emerald-400'
+  if (ready === 2) return 'bg-amber-500/20 text-amber-400'
+  return 'bg-white/5 text-muted'
+}
+
+// ── 通用展示 helper（2026-09-28 从 `Workbench.vue` 收拢）──
+// 【为什么收进来】工作台要把「评分榜 Top10 / 观察池」两卡抽成子组件
+//   （`components/workbench/StockListsCards.vue`）并在**盘后 + 盘中**两处复用；
+//   若这几支 helper 在父/子各留一份，必然漂移 —— 与本文件当初诞生的理由**同款**
+//   （"复制一份，两份必然漂移"）⇒ 一律收到这里，两处 import 同一份。
+
+/** 个股 → 本地详情页（hash 路由）。 */
+export const stockHref = (code) => `#/stock/${code}`
+
+/** 个股 → 雪球（自动拼 SH/SZ/BJ 前缀）。与全站口径一致：名称→本地页、代码→雪球。 */
+export function xqUrl(code) {
+  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
+  if (!c) return ''
+  const pfx = c.startsWith('6') || c.startsWith('9') ? 'SH'
+    : (c.startsWith('4') || c.startsWith('8') ? 'BJ' : 'SZ')
+  return `https://xueqiu.com/S/${pfx}${c}`
+}
+
+/** 涨跌幅 → 颜色类（A 股惯例：红涨绿跌）。 */
+export const pctClass = (v) =>
+  (Number(v) > 0 ? 'text-red-400' : Number(v) < 0 ? 'text-emerald-400' : 'text-muted')
+
+/** 带符号数值（2 位小数；null → '—'）。 */
+export const signNum = (v) =>
+  (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}`)
+
+/** 评分 → 颜色类（≥65 红 / ≥45 琥珀 / 其余灰）。 */
+export const scoreClass = (v) =>
+  (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')

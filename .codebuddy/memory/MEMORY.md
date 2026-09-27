@@ -22,6 +22,16 @@
 - 竞价判读/落库（2026-09-25）：`market_emotion_daily` 三组互不覆盖字段（主字段/close_*/auction_*）；竞价数据只在那 10 分钟存在，不落库永久丢；窗口外一律不写；`_emotion_daily_row` 必须组装整行（SQLite 是 INSERT OR REPLACE 缺列清空）。
 - `kline_cache`/`indicator_cache` 服务详情与评分链路；`indicator_cache` 有效期 36h；`kline_count`∈(0,250) 视为截断跳过。
 - 两条包发布链独立（易混）：`kline-data.yml`(18:00)→前端包+realtime-quotes；`backend-pack.yml`(19:00)→`backend-pack.db.gz`（日批唯一依赖）。前端包失败≠日批失败；前端包超时真瓶颈是 K 线阶段（1566 只单只请求），非 240 批行情。
+- ★★ **板块数据源 = zzshare（2026-09-27 接入）**：东财 push2 长期不稳，且 clist **只给"当前快照"**
+  ⇒ 一旦被封错过当天就**永久无法回补**（实测 `sector_daily` 停在 09-23）。
+  改用 zzshare `plates_rank(plate_type=**14 行业/15 概念**, date1, limit)` —— **支持任意历史日期**
+  （⇒ 可回填）；字段 `rate/net_inflow/trade_money/market_cap_cir/score/speed`（比东财更全）。
+  落**独立表 `plate_daily_zz`**。⚠️ **taxonomy 不兼容**：东财 `BK`/496 细分 vs zzshare `881`/104 粗分
+  ⇒ **绝不混表**（混则同一板块两个 key、序列断裂）。
+  · 模块 `app/sector_zz.py`；路由 `/sector/zz/*`；回填 `scripts/backfill_plate_zz.py`；
+    前端「板块分化」`SectorView.vue` 已切源；调度 `sector_snapshot_loop` 内**独立幂等键** `sector_snapshot_zz`。
+  · `eastmoney.get_sectors` 降级链改为 **东财 → zzshare → 新浪**。★ 顺带修「涨0/跌0」误导：
+    新浪无涨跌家数却硬编码 `0` ⇒ 改 `None` + 前端 `s.up_count != null` 才渲染（缺数据不显示假 0）。
 
 ## ⚠️ 路由顺序与「真跑验证」纪律
 - FastAPI 按注册顺序匹配：`routers/scoring.py` 的 `@router.get("/{symbol}")`（单段通配）在 L918 ⇒ 新增单段静态路由必须注册在它**之前**，否则被吞成股票代码、返 `200 {"error":"未找到股票 xxx"}`（非 404）⇒ 前端 catch 抓不到 ⇒ 静默空。
@@ -300,6 +310,23 @@
 - **推送纪律（2026-09-25 用户明确）**：**不要自行 git push**，改完先汇报改动+验证结果，等用户指令再推。改动后"先验证再提交"；未明确要求不自动 commit。
 - gh-pages 有三个写入者（deploy-preview/kline-data/backend-pack），必须保持同一 `concurrency.group` + `cancel-in-progress:false` + `keep_files:true`（数据包 `destination_dir:data`）。已给 deploy-preview 加 `paths:['frontend/**']`。
 - 新增看板/tab 必须自带一行定位（是什么/不是什么/下一步）；榜单真实定位 = 候选池+变化监测，非买点清单。新增 tab 必须接 `startAutoRefresh` 分支。战法"三层禁、扫描不禁"：扫描层防御市放行攒样本，入场/推送层禁止。
+- ★ **前端展示 helper 的唯一共享源 = `composables/displayMeta.js`**（2026-09-28 扩充）：
+  `PHASE_STYLE`(主力阶段配色) / `PHASE_CN`+`phaseCn`(主力阶段中文名兜底) /
+  `STRATEGY_SHORT`+`strategyShort` / `readyCls`+`readyChipCls`(闸门就绪文字/标签配色) /
+  `stockHref`(→本地详情页) / `xqUrl`(→雪球) / `pctClass` / `signNum` / `scoreClass`。
+  **新组件/新页面要用这些一律 import，不要在页面内再定义一份**（复制必然漂移 —— 正是该模块诞生的原因）；
+  已有先例组件 `components/workbench/{TodoCard,StockListsCards}.vue`。
+- ★★ **主力两个字段的覆盖率差一个量级（长期有用，别再把它们当一回事）**：
+  · `signal`（吸筹/出货）= **稀有信号** —— 实测 2026-09-24 全市场 2083 只里**仅 157 只有值**
+    （accum 139 / distribution 18，**None 1926**）⇒ 榜单 10 行常只有 1 个标签。
+  · `phase`（主力阶段）= **全覆盖六档**（盘整/下跌/吸筹/拉升/洗盘/出货，合计 = 全市场只数）。
+  ⇒ **要"每行都有标签"必须用 `phase`，不能用 `signal`**；展示口径全站统一用 phase
+    （观察池/持仓/详情页）。中文名：优先后端 `phase_cn`，**但 `/score/batch/top` 不下发它**
+    ⇒ 用 `phaseCn(phase, cn)` 兜底（唯一映射源仍是后端 `mainforce/phases.PHASE_CN`）。
+- ★ **站内带 tab 的页面跳转统一用 `?tab=<key>` 直达**（2026-09-28，`ScoreRank.vue` 首个实现）：
+  `onMounted` 读 query 先定 tab、**跳过默认 tab 的加载**（本地模式 `loadData()` 是全市场精算，
+  很贵），末尾再 `switchTab()`。⚠️ **默认 tab（`top`）必须显式排除**，否则守卫会跳过加载
+  而末尾又不切 tab ⇒ **页面空白**。
 
 ## 主力节奏跟随框架（项目北极星）
 - **一句话**：跟对主力节奏，但永远慢一步——识别状态、顺应方向、不猜时点。
@@ -315,7 +342,7 @@
 - 稀有标签一致率有基数率 bug（双方都无标签格点主导）⇒ 必须 sensitivity/precision/κ 条件化。
 
 ## ★ 踩坑纪律（按主题分组，每条一行精华）
-**验证：** py_compile 查不出 NameError ⇒ 必须真实 import 冒烟 + 真调用一次（最好真实数据）；打桩≠真实调用；"测试全绿"≠"验到了"（空数据让 0==0 断言绿灯，先校验样本非空）；真实调用要开独立进程（reload 不还原桩）；打桩勿复制被测代码；FAIL 先查自己算式与测试数据。
+**验证：** py_compile 查不出 NameError ⇒ 必须真实 import 冒烟 + 真调用一次（最好真实数据）；打桩≠真实调用；"测试全绿"≠"验到了"（空数据让 0==0 断言绿灯，先校验样本非空）；真实调用要开独立进程（reload 不还原桩）；打桩勿复制被测代码；FAIL 先查自己算式与测试数据。★★ **同一批次不要对同一文件连发多个编辑**（实测 5 条里静默丢 1 条，工具仍报 success）⇒ 分批 + 每批后 `search` 复验关键行（Vue 场景：`<script setup>` 里的新 ref/声明必须复验，缺失会同时报"渲染告警 + 功能失败"）。
 **数据/字段：** 缺数据返回 None 不填 0；`dict.get(k,default)` 对 None 不生效；不确定字段不要依赖宁可反推；跨系统数据按字段名取不按位置；同一指标页面只能一个口径；一个字段不回答两个相反问题；表列 vs 代码常量先 grep 谁在用；面板加品种同步所有消费点。
 **外部源"静默失效"：** 「数据恒为 0」比「报错」更危险 —— 报错会被发现，**恒为 0 会被 docstring 的"属正常现象"合理化成"今天没有流入"** ⇒ 凡引入外部源必自问"它能否在**接口存活**时静默失去数据"；若"零值"是该源的**可能永久状态**（非瞬时），必须用**显式状态字段**（`available: False` + `reason` + `stopped_since`）区分「零」与「无数据」，**并保留 falsy 的旧字段**（`total_net: 0`）以向后兼容既有真值判断。（同款坑：北向净流入自 2024-08-19 起恒 0 —— 2026-09-27 修复；`flash_calendar` 停在 09-04。）
 **日期/时间：** 时间条件 vs 日历条件正交；日期键两派（运行日/交易日）混用会让"按日期判齐没齐"失效 ⇒ 判任务完成看 `created_at`；相对日期要声明锚点；某天没数据先问是不是交易日；历史异常≠现在还有 bug；缓存写入时刻≠数据时刻。

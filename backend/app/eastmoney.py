@@ -289,7 +289,16 @@ def get_sectors(kind: str = "industry", limit: int = 200) -> list:
                 "leader_code": d.get("f140", ""),
             })
         if not out:
-            print(f"[eastmoney] 东财板块列表为空，降级新浪 {kind}")
+            # ★ 2026-09-27 降级链 = 东财 → zzshare → 新浪。把 zzshare 提到新浪之前：
+            #   东财被封时原新浪兜底**无涨跌家数**（见 `_sina_sector_list` 硬编码 0）
+            #   ⇒ 前端显示误导性的「涨0/跌0」；而 zzshare `plates_rank` 有涨跌幅 +
+            #   主力净流入 + 成交额 + 板块评分，信息量远高于新浪。
+            #   ⚠️ zzshare 板块代码是同花顺体系（881xxx）≠ 东财 BK ⇒ 仅作**展示降级**；
+            #      `take_snapshot` 有 BK 前缀校验 ⇒ 不会污染 sector_daily 序列。
+            print(f"[eastmoney] 东财板块列表为空，降级 zzshare {kind}")
+            out = _zzshare_sector_list(kind)
+        if not out:
+            print(f"[eastmoney] zzshare 板块也为空，降级新浪 {kind}")
             return _sina_sector_list(kind)
         return out
 
@@ -529,6 +538,59 @@ def get_lift_stage(start: str, end: str) -> list:
 
 
 # ================================================================
+#  zzshare 降级源（板块列表，优先于新浪）
+# ================================================================
+# ★ 2026-09-27（用户："看看能不能使用 zzshare 的板块分析"）：
+#   东财 push2 长期不稳（封 IP 24~48h），原降级只有新浪 —— 而新浪**没有涨跌家数**
+#   （硬编码 0）、也无成交额/资金流 ⇒ 页面显示误导性的「涨0/跌0」。
+#   zzshare `plates_rank(plate_type, date1, limit)` 是**稳定**的板块排名源：
+#     · plate_type：**14=行业、15=概念、17=?**（传 1/2 会 400）
+#     · 返回 rate(涨跌幅%) / money_leader(主力净流入元) / trade_money(成交额元) /
+#       market_cap_cir(流通市值) / score(板块评分) / speed(涨速) / volume_ration
+#     · **支持任意历史日期**（实测 09-24/09-23/09-16/06-10 均可）
+#   ⚠️ 它**没有** up_count/down_count/leader（东财独有）⇒ 返回 None/空，前端据此不渲染。
+#   ⚠️ 板块代码是同花顺体系（881280）≠ 东财 BK1206 ⇒ **只作展示降级**，不进 sector_daily。
+
+def _zzshare_sector_list(kind: str) -> list:
+    """zzshare 板块列表降级源（统一成 get_sectors 的字段结构）。
+
+    ⚠️ 板块代码/名称是**同花顺体系**，与东财 BK **不是同一套 taxonomy** ——
+    所以本函数只服务「展示」（前端板块卡），**绝不能被 take_snapshot 落库**
+    （`take_snapshot` 用 `code.startswith("BK")` 校验，会自动跳过 zzshare 行）。
+    """
+    try:
+        from app.zzshare_client import get_api
+        from app.flash.rules import latest_completed_trading_day
+        pt = 14 if kind == "industry" else 15
+        rows = get_api().plates_rank(
+            plate_type=pt, date1=latest_completed_trading_day(), limit=200) or []
+    except Exception as e:
+        print(f"[eastmoney] zzshare 板块降级失败 {kind}: {e}")     # ASCII（铁律⑥）
+        return []
+    out = []
+    for d in rows:
+        out.append({
+            "code": str(d.get("plate_code") or ""),
+            "name": d.get("plate_name") or "",
+            "price": None,
+            "change_pct": _to_float(d.get("rate")),
+            "change_amt": None,
+            "turnover_rate": None,
+            "up_count": None,            # zzshare 无涨跌家数（东财独有）
+            "down_count": None,
+            "leader": "",                # zzshare 无领涨股（东财独有）
+            "leader_change_pct": None,
+            "leader_code": "",
+            # ★ zzshare 独有字段（供前端展示"资金/成交额/评分"，比东财更全）
+            "net_inflow": _to_float(d.get("money_leader")),
+            "trade_money": _to_float(d.get("trade_money")),
+            "score": d.get("score"),
+            "source": "zzshare",
+        })
+    return out
+
+
+# ================================================================
 #  新浪降级源（板块数据兜底）
 # ================================================================
 # 东财 push2 偶发限流 / 字段调整（板块数据不稳定的主因）。这里加新浪财经兜底：
@@ -583,8 +645,11 @@ def _sina_sector_list(kind: str) -> list:
             "change_pct": _to_float(p[5]),
             "change_amt": _to_float(p[4]),
             "turnover_rate": 0.0,
-            "up_count": 0,
-            "down_count": 0,
+            # ★ 2026-09-27：由 0 改为 None —— 新浪**不提供**涨跌家数，原来的 0 会让前端
+            #   渲染出误导性的「涨0/跌0」（看起来像"没有涨跌"，实为"没有数据"）。
+            #   前端改用 `s.up_count != null` 判断 ⇒ 缺失时不渲染该段。
+            "up_count": None,
+            "down_count": None,
             "leader": p[12],
             "leader_change_pct": _to_float(p[9]),
             "leader_code": p[8],

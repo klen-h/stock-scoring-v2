@@ -1954,6 +1954,25 @@ async def sector_snapshot_loop():
                 and SECTOR_SNAPSHOT_WINDOW[0] <= t < SECTOR_SNAPSHOT_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发板块每日快照")
+            # ★ 2026-09-27：新增 zzshare 板块快照（**独立体系** + **独立幂等键**）。
+            #   为什么加：东财 push2 长期不稳（封 IP 24~48h），而 clist 只给当前快照
+            #   ⇒ 东财 `sector_daily` 一旦缺日就**永久无法回补**（实测停在 09-23）；
+            #   zzshare `plates_rank` 稳定且**支持历史日期** ⇒ 可持续的板块序列
+            #   （前端「板块分化」已切到它；两套 taxonomy 不兼容 ⇒ 独立表 plate_daily_zz）。
+            #   独立幂等键：东财失败会 10 分钟重试整段，zzshare 只跑一次，避免重复打接口。
+            _zz_key = "sector_snapshot_zz"
+            if not store.is_schedule_done(_zz_key):
+                try:
+                    from app.sector_zz import take_snapshot as _take_zz
+                    rz = await asyncio.to_thread(_take_zz)
+                    if rz.get("written"):
+                        store.mark_schedule_done(_zz_key)
+                        status["last_sector_snapshot_zz"] = rules.beijing_now().isoformat()
+                        print(f"[scheduler] zzshare 板块快照: {rz['written']} 条 {rz.get('kinds')}")
+                    else:
+                        print(f"[scheduler] zzshare 板块快照未写入（{rz.get('skipped')}），稍后重试")
+                except Exception as e:
+                    print(f"[scheduler] zzshare 板块快照失败: {e}")
             try:
                 from app.sector_industry import take_snapshot
                 r = await asyncio.to_thread(take_snapshot)

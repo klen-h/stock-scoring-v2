@@ -7,6 +7,7 @@
           <h1 class="text-lg font-bold text-gray-100">板块分化</h1>
           <p class="text-xs text-muted mt-0.5">
             每个交易日收盘后记录全部板块快照，用涨跌幅离散度衡量「结构性行情」强度。
+            <span class="text-gray-400">（zzshare 口径 · 104 行业 / 200 概念）</span>
             <span v-if="stats.days" class="text-gray-400">已积累 {{ stats.days }} 天 / {{ stats.total_rows }} 行</span>
             <span v-else class="text-gray-400">数据积累中</span>
           </p>
@@ -39,13 +40,12 @@
       </div>
     </div>
 
-    <!-- 空状态：数据还没攒够（东财不可用时会跳过记录） -->
+    <!-- 空状态：数据还没攒够 -->
     <div v-if="!loading && !stats.days" class="bg-card border border-border rounded-lg p-8 text-center">
       <p class="text-sm text-gray-300">板块历史序列尚未开始积累</p>
       <p class="text-xs text-muted mt-2 leading-relaxed">
-        调度器会在每个交易日 15:10 自动记录全部板块快照。<br/>
-        需要东方财富接口可用 —— 若其不可用（降级新浪）会主动跳过，
-        避免两套板块代码体系混进同一张表导致序列断裂。
+        数据来自 <b>zzshare 板块接口</b>（稳定、支持历史回填），写入独立表 <code>plate_daily_zz</code>。<br/>
+        可用 <code>python scripts/backfill_plate_zz.py --days 30</code> 一次性回填历史。
       </p>
       <p class="text-xs text-muted mt-2">
         序列需要积累 20-60 个交易日才能支撑板块动量类因子，越早开始越好。
@@ -115,15 +115,15 @@
           <span class="text-xs text-muted">当日板块快照（按涨跌幅排序，点击查看历史序列）</span>
           <span class="text-xs text-muted">{{ rows.length }} 个</span>
         </div>
-        <div class="grid grid-cols-[1.4fr_0.8fr_1fr_1fr_1.2fr] border-b border-border/50 text-[11px] text-muted">
+        <div class="grid grid-cols-[1.4fr_0.8fr_1.2fr_1fr_0.8fr] border-b border-border/50 text-[11px] text-muted">
           <div class="px-3 py-1.5">板块</div>
           <div class="px-3 py-1.5 text-right">涨跌幅</div>
-          <div class="px-3 py-1.5 text-right">涨跌家数</div>
           <div class="px-3 py-1.5 text-right">主力净流入</div>
-          <div class="px-3 py-1.5">领涨股</div>
+          <div class="px-3 py-1.5 text-right">成交额</div>
+          <div class="px-3 py-1.5 text-right">评分</div>
         </div>
         <div v-for="r in rows" :key="r.code"
-          class="grid grid-cols-[1.4fr_0.8fr_1fr_1fr_1.2fr] border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-white/[0.02] text-xs"
+          class="grid grid-cols-[1.4fr_0.8fr_1.2fr_1fr_0.8fr] border-b border-border/50 last:border-b-0 cursor-pointer hover:bg-white/[0.02] text-xs"
           :class="selected?.code === r.code ? 'bg-accent/10' : ''"
           @click="pick(r)">
           <div class="px-3 py-1.5 text-gray-200 truncate">{{ r.name }}</div>
@@ -131,14 +131,14 @@
             :class="r.change_pct >= 0 ? 'text-rise' : 'text-fall'">
             {{ r.change_pct >= 0 ? '+' : '' }}{{ r.change_pct }}%
           </div>
-          <div class="px-3 py-1.5 text-right font-mono text-muted">
-            <span class="text-rise">{{ r.up_count }}</span>/<span class="text-fall">{{ r.down_count }}</span>
-          </div>
           <div class="px-3 py-1.5 text-right font-mono"
             :class="r.net_inflow >= 0 ? 'text-rise' : 'text-fall'">
             {{ fmtYi(r.net_inflow) }}
           </div>
-          <div class="px-3 py-1.5 text-muted truncate">{{ r.leader || '—' }}</div>
+          <!-- ★ zzshare 无「涨跌家数 / 领涨股」（东财独有）⇒ 换成本源独有、且信息量更高的
+               「成交额 / 板块评分」。 -->
+          <div class="px-3 py-1.5 text-right font-mono text-muted">{{ fmtAmt(r.trade_money) }}</div>
+          <div class="px-3 py-1.5 text-right font-mono text-muted">{{ r.score ?? '—' }}</div>
         </div>
       </div>
 
@@ -163,9 +163,12 @@
 <script setup>
 import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 import * as echarts from 'echarts'
+// ★ 2026-09-27：切到 **zzshare 板块序列** —— 东财 `sector_daily` 因 push2 限流**缺日**
+//   （错过即无法回补，实测停在 09-23），而 zzshare 支持任意历史日期 ⇒ 可回填。
+//   后端字段名已与东财版**逐一对齐** ⇒ 指标卡/解读逻辑零改动；仅表格列与文案调整。
 import {
-  getSectorDispersion, getSectorSnapshot, getSectorHistory,
-  getSectorSnapshotStats, takeSectorSnapshot,
+  getZzSectorDispersion, getZzSectorSnapshot, getZzSectorHistory,
+  getZzSectorStats, takeZzSectorSnapshot,
 } from '../api'
 
 const stats = ref({ latest_dates: [], days: 0, total_rows: 0 })
@@ -220,10 +223,15 @@ function fmtYi(v) {
   const y = v / 1e8
   return (y >= 0 ? '+' : '') + y.toFixed(2) + '亿'
 }
+// 成交额（纯量级，无正负号）
+function fmtAmt(v) {
+  if (!v) return '—'
+  return (v / 1e8).toFixed(2) + '亿'
+}
 
 async function loadMeta() {
   try {
-    const { data } = await getSectorSnapshotStats()
+    const { data } = await getZzSectorStats()
     stats.value = data || { latest_dates: [], days: 0 }
     if (stats.value.latest_dates?.length && !date.value) {
       date.value = stats.value.latest_dates[0]
@@ -239,8 +247,8 @@ async function loadData() {
   error.value = ''
   try {
     const [d, snap] = await Promise.all([
-      getSectorDispersion({ date: date.value, kind: kind.value }),
-      getSectorSnapshot(date.value, { kind: kind.value }),
+      getZzSectorDispersion({ date: date.value, kind: kind.value }),
+      getZzSectorSnapshot(date.value, { kind: kind.value }),
     ])
     disp.value = d.data || {}
     rows.value = snap.data?.data || []
@@ -258,7 +266,7 @@ async function loadData() {
 async function pick(sector) {
   selected.value = sector
   try {
-    const { data } = await getSectorHistory(sector.code, 60)
+    const { data } = await getZzSectorHistory(sector.code, 60)
     history.value = data?.data || []
   } catch {
     history.value = []
@@ -275,7 +283,7 @@ function pickByName(name) {
 async function doTake() {
   taking.value = true
   try {
-    await takeSectorSnapshot()
+    await takeZzSectorSnapshot()
     await loadMeta()
     if (!date.value && stats.value.latest_dates?.length) {
       date.value = stats.value.latest_dates[0]

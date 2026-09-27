@@ -207,3 +207,53 @@ def sector_snapshot_take(date: str = Query(None)):
     """
     from app.sector_industry import take_snapshot
     return take_snapshot(date)
+
+
+# ── zzshare 板块序列（**独立体系**；东财 BK 表的稳定替代源）────────────────────
+# ★ 2026-09-27：东财 push2 长期不稳（封 IP 24~48h），而快照**错过当天即永久缺失**
+#   （clist 只给当前快照，历史无法回补）⇒ 实测 `sector_daily` 停在 2026-09-23。
+#   zzshare `plates_rank` **支持任意历史日期** ⇒ 可每日积累 + **可回填**。
+#   ⚠️ 两套 taxonomy 不兼容（东财 BK/496 个 vs zzshare 881/104 个）⇒ **独立表**，勿混用。
+
+@router.get("/zz/snapshot/{date}")
+def zz_snapshot(date: str, kind: str = Query("industry"),
+                limit: int = Query(500, ge=1, le=1000)):
+    """zzshare 板块快照（某交易日，按涨跌幅降序）。date 格式 YYYY-MM-DD。"""
+    from app.sector_zz import get_snapshot
+    return _wrap(get_snapshot(date, kind, limit))
+
+
+@router.get("/zz/dispersion")
+def zz_dispersion(date: str = Query(None), kind: str = Query("industry")):
+    """zzshare 口径的板块分化度（缺省取表内最新日期）。"""
+    from app.sector_zz import dispersion
+    return dispersion(date, kind)
+
+
+@router.get("/zz/history/{code}")
+def zz_history(code: str, days: int = Query(60, ge=1, le=365)):
+    """zzshare 单板块历史序列（日期正序，最新在后）。"""
+    from app.sector_zz import get_history
+    rows = get_history(code, days)
+    return {"data": rows, "total": len(rows)}
+
+
+@router.get("/zz/stats")
+def zz_stats():
+    """zzshare 板块快照表概况（已积累天数 / 最新日期）。"""
+    from app.sector_zz import stats
+    return stats()
+
+
+@router.get("/zz/rank")
+def zz_rank(kind: str = Query("industry"), date: str = Query(None)):
+    """zzshare 板块实时排名（不落库；可直接用于展示）。"""
+    from app.sector_zz import fetch_rank
+    return _wrap(fetch_rank(kind, date))
+
+
+@router.post("/zz/take")
+def zz_take(date: str = Query(None)):
+    """手动记录一次 zzshare 板块快照（幂等，可回填任意历史日）。"""
+    from app.sector_zz import take_snapshot
+    return take_snapshot(date)

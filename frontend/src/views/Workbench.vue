@@ -349,13 +349,20 @@
                 </div>
                 </div>
               <!-- 接力 Top5（从卡底搬到左列：与上面的"接力溢价"同源，放一起读更顺） -->
+              <!-- ★ 2026-09-27（用户："接力 Top5 的股票代码也展示出来，点击跳雪球"）：
+                   全站口径一致 —— 名称→本地详情页（stockHref）、代码→雪球（xqUrl）。
+                   原外层 <a> 整块跳本地页 ⇒ 改为 <span> 容器 + 两个链接
+                   （HTML 不允许 <a> 嵌套 <a>，故根元素必须换成 span）。 -->
               <div v-if="(emotion.auction?.top || []).length" class="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-border/40">
                 <span class="text-[10px] text-muted w-full mb-0.5">昨日涨停股高开 Top5（接力视角）</span>
-                <a v-for="g in emotion.auction.top" :key="g.code" :href="stockHref(g.code)" target="_blank"
-                   class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-xs hover:border-accent"
+                <span v-for="g in emotion.auction.top" :key="g.code"
+                   class="px-1.5 py-0.5 rounded border border-border/60 font-mono text-xs hover:border-accent inline-flex items-center gap-1"
                    :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'">
-                  {{ g.name }} {{ signNum(g.gap_pct) }}%
-                </a>
+                  <a :href="stockHref(g.code)" target="_blank" class="hover:underline">{{ g.name }}</a>
+                  <a :href="xqUrl(g.code)" target="_blank" rel="noopener"
+                     class="text-muted hover:text-accent" title="雪球">{{ g.code }}</a>
+                  <span>{{ signNum(g.gap_pct) }}%</span>
+                </span>
               </div>
               <div v-else class="text-[11px] text-muted mt-2">
                 —（暂无高开数据。竞价 9:25 定稿后本页有效；休市日无数据属正常）
@@ -1088,11 +1095,17 @@
               <div class="mb-1">竞价看板：昨日涨停 {{ emotion.auction.count }} 只 ·
                 平均高开 <b :class="pctClass(emotion.auction.avg_gap)">{{ signNum(emotion.auction.avg_gap) }}%</b>
                 <span class="text-muted">（高开幅度 Top5）</span></div>
-              <div class="flex flex-wrap gap-1.5">
+              <!-- ★ 2026-09-27（用户："盘中的高开幅度 Top5 的也加上代码"）：
+                   与上面「接力 Top5」及全站口径一致 —— 名称→本地详情页、代码→雪球。
+                   （原为纯文本 <span> 无任何链接；改为 name/code 两个 <a>，涨幅仍纯文本。） -->
+              <div class="flex flex-wrap gap-1.5 mt-2.5">
                 <span v-for="g in (emotion.auction.top || [])" :key="g.code"
-                      class="px-1.5 py-0.5 rounded border border-border/60 font-mono"
+                      class="px-1.5 py-0.5 rounded border border-border/60 font-mono inline-flex items-center gap-1"
                       :class="g.gap_pct >= 0 ? 'text-red-400' : 'text-emerald-400'">
-                  {{ g.name }} {{ signNum(g.gap_pct) }}%
+                  <a :href="stockHref(g.code)" target="_blank" class="hover:underline">{{ g.name }}</a>
+                  <a :href="xqUrl(g.code)" target="_blank" rel="noopener"
+                     class="text-muted hover:text-accent" title="雪球">{{ g.code }}</a>
+                  <span>{{ signNum(g.gap_pct) }}%</span>
                 </span>
               </div>
             </div>
@@ -1104,20 +1117,33 @@
                与竞价看板同一切法逻辑（左"读"右"做"），但**不加竖线**（多张独立卡各有边框）。
                ⚠️ 断点 **xl**(1280)；两列各自 `space-y-4` 堆叠、不做行对齐 ——
                  ⑤ 持仓状态的高度随持仓只数变化，行对齐必在短列留大片空洞。 -->
+          <!-- ★★ 2026-09-28（用户："主线板块 Top5 放在左边，涨停梯队与清单和持仓状态放在右边"）：
+               两列内容**互换** —— 用 **CSS `order`**（`xl:order-*` 仅宽屏生效）实现，
+               而非搬动 ~200 行模板：**同一份 DOM、只改视觉列序** ⇒ 零搬运风险、易于回退。
+               生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态 + ④ 待执行决策**。
+               ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③④ 排。 -->
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
-          <div class="min-w-0 space-y-4">
+          <div class="min-w-0 space-y-4 xl:order-2">
           <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位）
                ★ 2026-09-25：优先读**已落库快照**（`zz_daily_snapshots`）—— 原实现每次直连
                  zzshare ⇒ 匿名受限/盘中易失败，而日批明明已落库一份完整 payload。 -->
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">涨停梯队与清单
-              <!-- ★ 2026-09-25：补**数据时点**。原来只写"读已落库快照"却**不说是哪天的**，
-                   而最常见状态恰恰是"今天日批还没跑 ⇒ 退回昨日快照"
-                   ⇒ 会被当成"今天的涨停数据"读（`stale`=双源都失败后的降级兜底）。 -->
-              <span class="text-[10px] text-muted font-normal">
-                （zzshare 口径 · {{ limitReview.source === 'snapshot' ? '读已落库快照' : '实时直连' }}
-                <template v-if="limitReview.as_of">· 数据 <b class="font-mono">{{ limitReview.as_of }}</b></template>
-                <span v-if="limitReview.stale" class="text-amber-400">· 上一交易日（今日快照未生成）</span>）</span></div>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">涨停梯队与清单
+                <!-- ★ 2026-09-25：补**数据时点**。原来只写"读已落库快照"却**不说是哪天的**，
+                     而最常见状态恰恰是"今天日批还没跑 ⇒ 退回昨日快照"
+                     ⇒ 会被当成"今天的涨停数据"读（`stale`=双源都失败后的降级兜底）。 -->
+                <span class="text-[10px] text-muted font-normal">
+                  （zzshare 口径 · {{ limitReview.source === 'snapshot' ? '读已落库快照' : '实时直连' }}
+                  <template v-if="limitReview.as_of">· 数据 <b class="font-mono">{{ limitReview.as_of }}</b></template>
+                  <span v-if="limitReview.stale" class="text-amber-400">· 上一交易日（今日快照未生成）</span>）</span>
+              </div>
+              <!-- ★ 2026-09-27（用户："涨停梯队与清单的右上角加个详情按钮"）：
+                   外站（quant.zizizaizai.com 复盘页，新开标签）；与「主线板块 Top5」标题行
+                   同款布局（`flex items-center justify-between` + 右侧 `text-xs text-accent`）。 -->
+              <a href="https://quant.zizizaizai.com/review/uplimit" target="_blank" rel="noopener"
+                 class="text-xs text-accent hover:underline shrink-0 ml-2">详情</a>
+            </div>
             <!-- ★★ 连板梯队结构（`uplimit_hot.ban_info`，此前**只落库、从未展示**）
                  —— 价值在**梯队完整性**：某级别为 0 而更高有 ⇒ 断层 ⇒ 高标孤立无承接，
                  短线退潮的常见前兆（实测 09-23 即 5/6 板空档却有 7 板）。 -->
@@ -1281,11 +1307,16 @@
               </div>
             </div>
           </div>
+          <!-- ★ 2026-09-28（用户："待执行决策留在右列"）：④ 从「主线板块 Top5」那列**移来**。
+               本列经 `xl:order-2` 排在**视觉右列** ⇒ 右列 = ② 涨停梯队与清单 + ⑤ 持仓状态 + ④ 待执行决策。 -->
+          <div v-if="todoList.length" class="bg-card border border-amber-500/40 rounded-lg p-4">
+            <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
+            <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
           </div>
-          <!-- 右列：**盘面参考 + 行动**（③ 主线板块 ④ 待执行决策）——
-               ★ 无竖分割线：两边都是**独立卡片**（各带边框），再加一条线是重复装饰
-                 （用户："盘中卡片与卡片之间就不需要用分割线了"）。 -->
-          <div class="min-w-0 space-y-4">
+          </div>
+          <!-- ★ 2026-09-28：本列（③ 主线板块 Top5）经 `xl:order-1` 排到**视觉左列**；
+               ④ 待执行决策已移到另一列（见上）⇒ 本列只剩主线板块一张卡。 -->
+          <div class="min-w-0 space-y-4 xl:order-1">
 
           <!-- ★ A1 主线板块 Top5 + **板块内强势股**（看盘序第 4-5 层）
                ★ 2026-09-25：改用实时行业板块列表（原为昨日 15:10 快照）并补上「领涨股」——
@@ -1302,7 +1333,9 @@
                 <div class="flex items-center gap-2">
                   <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
                   <span class="font-semibold">{{ s.name || s.industry || s.code || '—' }}</span>
-                  <span v-if="s.up_count !== undefined" class="text-[10px] text-muted">
+                  <!-- ★ 2026-09-27：改 `!= null`（原 `!== undefined`）—— 东财降级到
+                       zzshare/新浪时无涨跌家数（返回 None）⇒ 不渲染，避免误导性的「涨0/跌0」。 -->
+                  <span v-if="s.up_count != null" class="text-[10px] text-muted">
                     涨{{ s.up_count }}/跌{{ s.down_count }}</span>
                   <span class="ml-auto font-mono" :class="pctClass(s.change_pct ?? s.pct_change)">
                     {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
@@ -1357,13 +1390,13 @@
             </div>
           </div>
 
-          <!-- ★ Phase 2：教练卡盘中镜像（右栏为主，此处直达） -->
-          <div v-if="todoList.length" class="bg-card border border-amber-500/40 rounded-lg p-4">
-            <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
-            <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
+          <!-- ★ 2026-09-28（用户："待执行决策留在右列"）：④ 已移到「涨停梯队与清单」那列 —— 见其注释。 -->
           </div>
           </div>
-          </div>
+
+          <!-- ★ 2026-09-28（用户："评分榜 Top10 加多一列主力行为，挂在持仓摘要的下方"）：
+               「评分榜 Top10 + 观察池」两卡已移到 **常驻右栏**（`<aside>` 内、持仓摘要下方）
+               ⇒ 此处不再渲染（**避免与右栏同屏重复**；右栏全阶段常驻，覆盖面更广）。 -->
         </template>
 
         <!-- 实时模式 · ④ 盘后（阅读模式） -->
@@ -1613,94 +1646,7 @@
                `items-start` → **`items-stretch`** + 列与卡片都加 `h-full`
                ⇒ 两卡等高（与复盘"执行一致性 | 明日准备"同一做法）。
                ⚠️ 窄屏回退单列时 `h-full` 无害（行高仍由内容决定）。 -->
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-stretch">
-          <div class="min-w-0 h-full">
-          <div class="bg-card border border-border rounded-lg p-4 h-full">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">评分榜 Top10</div>
-              <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
-            </div>
-            <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
-            <div v-else class="space-y-1 text-xs">
-              <div v-for="(r, i) in topItems" :key="r.code"
-                   class="flex items-center gap-2 border-b border-border/40 py-1.5">
-                <span class="w-6 text-muted font-mono">{{ i + 1 }}</span>
-                <a :href="stockHref(r.code)" target="_blank"
-                   class="font-semibold hover:text-accent">{{ r.name || r.code }}</a>
-                <a :href="xqUrl(r.code)" target="_blank"
-                   class="text-muted font-mono hover:text-accent" title="雪球">{{ r.code }}</a>
-                <span v-if="r.change_pct != null" class="font-mono" :class="pctClass(r.change_pct)">
-                  {{ signNum(r.change_pct) }}%
-                </span>
-                <span class="ml-auto font-mono font-bold" :class="scoreClass(r.total_score)">
-                  {{ r.total_score }}
-                </span>
-              </div>
-            </div>
-          </div>
-          </div>
-          <div class="min-w-0">
-          <!-- ★ 2026-09-25（P1 观察池实化）：原实现只渲染**一行**"候选 N 只，前三：A、B、C"，
-               而后端返回的 `{code,name,ready,label,missing,phase_cn,strategies}` 与
-               总览 `{regime,total,ready3,counts,strategy_hits,data_date}` **全都拿到了却没用**
-               ⇒ 一张卡占位、几乎零信息。现在展开成列表 + 就绪度分布。
-               ⚠️ 口径（后端注释）：ready≥2 = "主力有根据 + 不追高，只等市况/时机"的**候池**，
-                  三绿是低频条件 ⇒ 池空属正常，不写成"没有机会"。 -->
-          <div class="bg-card border border-border rounded-lg p-4 h-full">
-            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <div class="text-sm font-semibold">观察池（买入闸门候选）
-                <span class="text-[10px] text-muted font-normal">
-                  （ready≥2 的"等时机"池<template v-if="gwMeta.regime"> · 市况 {{ gwMeta.regime }}</template><template
-                  v-if="gwMeta.data_date"> · 数据 {{ gwMeta.data_date }}</template>）</span></div>
-              <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">详情</router-link>
-            </div>
-            <div v-if="gwErr" class="text-muted text-xs">—（加载失败：{{ gwErr }}）</div>
-            <template v-else-if="gwItems.length">
-              <div class="text-[11px] text-muted mb-1.5">
-                候选 <b class="text-gray-200 font-mono">{{ gwMeta.total || gwItems.length }}</b> 只 ·
-                三绿 <b class="text-emerald-400 font-mono">{{ gwMeta.ready3 || 0 }}</b> 只
-                <span v-if="gwMeta.counts" class="ml-1">
-                  （分布 1绿 {{ gwMeta.counts[1] || 0 }} / 2绿 {{ gwMeta.counts[2] || 0 }} / 3绿 {{ gwMeta.counts[3] || 0 }}）</span>
-                <span v-if="gwMeta.strategy_hits" class="ml-1">· 有战法信号 {{ gwMeta.strategy_hits }} 只</span>
-              </div>
-              <div class="space-y-1 text-xs">
-                <div v-for="g in gwItems.slice(0, 8)" :key="g.code"
-                     class="flex items-center gap-2 border-b border-border/40 py-1"
-                     :title="g.hint || g.missing || ''">
-                  <a :href="stockHref(g.code)" target="_blank"
-                     class="font-semibold hover:text-accent truncate max-w-[88px]">{{ g.name || g.code }}</a>
-                  <!-- ★ 2026-09-25 用户："点击代码跳到雪球" —— 与榜单页/持仓卡同口径
-                       （名称 → 本地详情页，代码 → 雪球）。 -->
-                  <a :href="xqUrl(g.code)" target="_blank" rel="noopener" title="雪球"
-                     class="font-mono text-muted hover:text-accent shrink-0">{{ g.code }}</a>
-                  <span class="px-1 rounded font-mono text-[10px] shrink-0"
-                        :class="g.ready === 3 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-300'">
-                    {{ g.ready }}/3</span>
-                  <span class="text-muted truncate">{{ g.label || g.missing || '' }}</span>
-                  <!-- ★ 2026-09-25 用户："盘整、下跌的…跟现项目观察池的颜色逻辑一致"
-                       ⇒ 主力阶段改用**共享** `PHASE_STYLE`（绿=机会/红=风险：吸筹绿、出货红、
-                          拉升琥珀、洗盘青、下跌灰、盘整淡）—— 与榜单页持仓表逐字同一份。 -->
-                  <span v-if="g.phase" class="px-1 rounded shrink-0 cursor-help"
-                        :class="(MF_PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
-                        :title="(MF_PHASE_STYLE[g.phase] || {}).tip || ''">{{ g.phase_cn || g.phase }}</span>
-                  <!-- ★ 同日：战法名改用**中文**（共享 `strategyShort`）——
-                       未登记的战法回退英文名，不隐藏（否则新增战法没人发现漏登记）。 -->
-                  <span v-for="(s, si) in (g.strategies || [])" :key="si"
-                        class="ml-auto px-1 rounded bg-accent/10 text-accent border border-accent/30 text-[10px] shrink-0">
-                    {{ strategyShort(s) }}</span>
-                </div>
-              </div>
-              <div v-if="gwItems.length > 8" class="text-[10px] text-muted mt-1">
-                仅列前 8 只（共 {{ gwItems.length }} 只，全部见榜单页）
-              </div>
-            </template>
-            <div v-else class="text-muted text-xs">
-              —（当前无 ready≥2 的候选。三绿是**低频**条件，平时池空属正常）
-            </div>
-          </div>
-          </div>
-          </div>
+          <!-- ★ 2026-09-28：本处两卡已移到**常驻右栏**（持仓摘要下方）—— 见 `<aside>` 内注释。 -->
           <!-- ★ 2026-09-26（用户："删除盘后的"）—— 删掉盘后主区这张卡：
                它与右栏「今日系统时间线」**完全同源**（同一个 `pushItems` ← `push_log`），
                而右栏是**全时段常驻**的 ⇒ 盘后照样能看到 ⇒ 留两份只会同屏重复。
@@ -1928,6 +1874,35 @@
 
       <!-- ── 常驻右栏（全天不变，不被时间轴切走） ── -->
       <aside class="space-y-4 min-w-0">
+        <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：由右栏**最下**移到**最上**
+             —— 它是"系统今天说了什么"的全时段入口，置顶后阅读顺序成：先看系统提示 →
+             再看待办/持仓/评分榜。默认收起、折叠控件在标题行（见卡内注释）。
+             ⚠️ 原位置（右栏最下）的注释与卡体已一并删除，不留第二份（同屏重复＝漂移）。 -->
+        <div class="bg-card border border-border rounded-lg p-4">
+          <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                  @click="pushOpen = !pushOpen"
+                  :title="pushOpen ? '点击收起' : '点击展开'">
+            <span class="text-[10px] text-muted">{{ pushOpen ? '▼' : '▶' }}</span>
+            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}
+          </button>
+          <template v-if="pushOpen">
+            <div v-if="pushConnErr" class="text-[10px] text-amber-400 mt-2">连接中断（保留上次数据）</div>
+            <div v-if="!pushItems.length" class="text-muted text-xs mt-2">—</div>
+            <div v-else class="max-h-80 overflow-y-auto pr-1 mt-2">
+              <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
+                  <span class="font-semibold truncate">{{ p.title }}</span>
+                </div>
+                <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
+              </div>
+            </div>
+          </template>
+          <div v-else class="text-[10px] text-muted mt-1">
+            已收起（{{ pushItems.length }} 条）—— 点击标题展开
+          </div>
+        </div>
+
         <!-- 待办：未决策教练卡 -->
         <div class="bg-card border border-border rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
@@ -1966,29 +1941,17 @@
           </template>
         </div>
 
-        <!-- ★ 2026-09-26（用户："将今日雷达摘要改为今日系统时间线，给个最大高度，溢出滚动"）：
-             ① 名称与盘后主区那张**统一** —— 两处本来就是同一数据源（`push_log`，见上一轮问答）
-                ⇒ 叫法一致后，"今日系统时间线"在右栏（全天常驻）与盘后（完整回看）指的是同一份东西；
-                ⚠️ 回放历史日时标题**带日期**（原为「<日期> 推送」⇒ 现统一为「<日期> 系统时间线」），
-                   否则"今日"二字会误导（回放的是历史日推送）。
-             ② 由 `slice(0, 5)` 改为**全部** + `max-h-80 overflow-y-auto`
-                ⇒ 右栏能看到完整时间线，但卡片高度**封顶 320px**（不会把整页撑长）；
-                原先只显示 5 条，压根不会溢出 ⇒ "溢出滚动"的前提就是**放开条数**。 -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <div class="text-sm font-semibold mb-2">
-            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}</div>
-          <div v-if="pushConnErr" class="text-[10px] text-amber-400">连接中断（保留上次数据）</div>
-          <div v-if="!pushItems.length" class="text-muted text-xs">—</div>
-          <div v-else class="max-h-80 overflow-y-auto pr-1">
-            <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
-              <div class="flex items-center gap-2">
-                <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
-                <span class="font-semibold truncate">{{ p.title }}</span>
-              </div>
-              <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
-            </div>
-          </div>
-        </div>
+        <!-- ★ 2026-09-28（用户："评分榜 Top10 加多一列主力行为，挂在持仓摘要的下方"；
+             观察池"也挂右侧，在评分榜下方，但是点击展开，默认收起"）：
+             「评分榜 Top10（含**主力行为**列）+ 观察池」挂到**常驻右栏**（全阶段可见、不被时间轴切走）。
+             ⚠️ 数据仍由父级加载（顶部「就绪状态条」复用同一批 `topItems` / `gwItems`）。 -->
+        <StockListsCards :top-items="topItems" :top-err="topErr" :top-mode="topMode"
+                         :top-countdown="refreshLeft"
+                         :gw-items="gwItems" :gw-meta="gwMeta" :gw-err="gwErr" />
+
+        <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：本卡与
+             「名称统一 / 放开条数 + max-h-80 溢出滚动 / 折叠默认收起」等全部注释
+             **已随卡体一起移到 `<aside>` 开头**（同一份内容不留第二处）。 -->
       </aside>
     </div>
 
@@ -2015,7 +1978,24 @@ import TodoCard from '../components/workbench/TodoCard.vue'
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
 //   ⚠️ 本文件已有一个同名 `PHASE_STYLE` —— 那是**时段**配色（盘前/竞价/盘中…），
 //      语义完全不同 ⇒ 主力阶段配色必须**重命名导入**（`MF_PHASE_STYLE`），避免撞名。
-import { PHASE_STYLE as MF_PHASE_STYLE, strategyShort } from '../composables/displayMeta'
+import {
+  PHASE_STYLE as MF_PHASE_STYLE, strategyShort,
+  stockHref, xqUrl, pctClass, signNum, scoreClass,
+} from '../composables/displayMeta'
+// ★ 2026-09-28：「评分榜 Top10 / 观察池」两卡抽成子组件（盘后 + 盘中/午盘复用同一份）
+import StockListsCards from '../components/workbench/StockListsCards.vue'
+// ★ 2026-09-28：评分榜改「本地优先」—— 复用榜单页（`ScoreRank.vue`）的**同一套前端评分引擎**。
+//   用户："评分榜之前不就是实时的吗?我都是使用本地计算的" ⇒ 工作台原先恒走后端
+//   `/score/batch/top`（盘中通常是昨日快照），与榜单页的**本地实时**结果口径不一致
+//   （榜单页注释原话："避免前后端榜单不一致被误认为 bug"）。
+import { useFrontendScoring, computeRanking } from '../composables/useFrontendScoring'
+const {
+  dbReady: feDbReady,
+  useFrontendMode,
+  scoringResult: feScoringResult,
+  lastScoreTime: feLastScoreTime,
+  initFrontendScoring,
+} = useFrontendScoring()
 // ★ 2026-09-27 数据可信度标注：「该不该买」（闸门，19.5 年核算）与「买什么」
 //   （评分未验证 / 战法已证伪）此前在界面上**一样权威**，用户无从分辨。
 //   本处把验证状态直接标在对应区块上（hover 显示摘要与证据脚本）。
@@ -2050,14 +2030,8 @@ const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
 // ★ 2026-09-25 用户要求：工作台所有跳转一律新开标签页（原页轮询/状态不丢）；
 //   个股"代码"→雪球（自动拼 SH/SZ/BJ 前缀），股票"名称"→本地个股详情页。
 //   本项目为 hash 路由 ⇒ 站内链接直接用 '#/path' + target="_blank" 即可。
-function xqUrl(code) {
-  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
-  if (!c) return ''
-  const pfx = c.startsWith('6') || c.startsWith('9') ? 'SH'
-    : (c.startsWith('4') || c.startsWith('8') ? 'BJ' : 'SZ')
-  return `https://xueqiu.com/S/${pfx}${c}`
-}
-const stockHref = (code) => `#/stock/${code}`
+// ★ 2026-09-28：`xqUrl` / `stockHref` 已上移到 `composables/displayMeta`（唯一共享源），
+//   供本页与 `StockListsCards.vue` 共用 —— 见文件顶部 import，此处不再本地定义。
 
 // ══ ★★ 2026-09-26（用户："9:15 前涨跌幅不都是昨天的吗？"）══
 // 【为什么需要】"昨日/今日"是**相对表述** —— 休市日 / 盘前时，页面的"今日"其实是
@@ -2179,6 +2153,13 @@ const radarAsOf = ref('')
 const radarErr = ref('')
 const topItems = ref([])
 const topErr = ref('')
+// ★ 2026-09-28：评分榜口径标记（'local'=本地实时 / 'backend'=后端批次）—— 卡片标题旁如实标注
+const topMode = ref('')
+// ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道他在实时刷新"）：
+//   距下次刷新的**秒数**。仅**交易时段**走字（非交易时段数据不变，显示倒计时是误导），
+//   0 = 前端隐藏。与 120s 轮询**同起点注册**（都在 `startPolling()` 里）⇒ 读数相差 ≤1 tick。
+const POLL_SEC = 120
+const refreshLeft = ref(0)
 const gwItems = ref([])
 const gwErr = ref('')
 // ★ 2026-09-25（P1 观察池实化）：原实现只取 `items`，**把总览字段全丢了**
@@ -2195,6 +2176,8 @@ const todayExec = ref(null)
 const todayExecErr = ref('')
 const pushItems = ref([])
 const pushConnErr = ref(false)
+// ★ 2026-09-28（用户："今日系统时间线放在顶部展开收起，默认收起"）—— 折叠态，同观察池。
+const pushOpen = ref(false)
 const consistency = ref(null)
 const reportMd = ref('')
 const statusHtml = ref('点击展开后加载…')
@@ -2295,6 +2278,11 @@ function computePhase() {
   if (m >= 900 && m < 1170) return 'postmarket'
   return 'review'
 }
+/** ★ 2026-09-28：是否"数据会变"的时段（竞价/盘中/午盘）—— 轮询倒计时与强制刷新共用判据。 */
+function isLivePhase() {
+  const p = computePhase()
+  return p === 'auction' || p === 'intraday' || p === 'midday'
+}
 const livePhase = ref(computePhase())
 // ★ 盘前是否已结束（9:30 后）：用于盘前视图的"回顾"标注
 const premarketOver = computed(() => {
@@ -2306,8 +2294,7 @@ const renderMd = (md) => mdRenderer.render(String(md || ''))
 const firstLine = (s) => String(s || '').split('\n').find(x => x.trim()) || ''
 const fmtNum = (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }))
 const fmtPct = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
-const signNum = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}`)
-const pctClass = (v) => (Number(v) > 0 ? 'text-red-400' : Number(v) < 0 ? 'text-emerald-400' : 'text-muted')
+// ★ 2026-09-28：`signNum` / `pctClass` 已上移到 `composables/displayMeta`（共享源）。
 // ★ 2026-09-25：持仓预案的动作等级配色（后端 `_position_plan` 输出的 plan_level）：
 //   act=优先处理(红加粗) / exit=档位0该清(红) / protect=保护利润(琥珀) / hold=持有(绿) / 其余(灰)
 const planClass = (lv) => (lv === 'act' ? 'text-red-400 font-semibold'
@@ -2395,7 +2382,7 @@ const tailTitle = computed(() => {
   const idx = (t.indices || []).map(i => `${i.name} ${signNum(i.d_pct)}%`).join('｜')
   return `14:30 → ${t.as_of ? String(t.as_of).slice(11, 16) : '现在'}（含收盘）\n${idx}\n${t.advice || ''}\n${t.note || ''}`
 })
-const scoreClass = (v) => (Number(v) >= 65 ? 'text-red-400' : Number(v) >= 45 ? 'text-amber-300' : 'text-muted')
+// ★ 2026-09-28：`scoreClass` 已上移到 `composables/displayMeta`（共享源）。
 
 const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
 // ★ 2026-09-25 用户需求 1：大小盘风格 / 黄白线背离（框架 C5「9:30-10:00 定方向」）。
@@ -2652,10 +2639,29 @@ async function loadRadar() {
     radarErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
   }
 }
-async function loadTop() {
+async function loadTop(force = false) {
   try {
+    // ★ 2026-09-28（用户："评分榜之前不就是实时的吗?我都是使用本地计算的"）——
+    //   **本地优先**：用户在榜单页选过「本地计算」且 K 线包就绪 ⇒ 走**同一套前端引擎**
+    //   （`computeRanking`：全市场**实时行情** + 本地精算）⇒ 盘中即实时，与榜单页同结果。
+    //   ⚠️ `computeRanking` 很重（拉全市场行情 + 分批财报 + Worker 精算）⇒
+    //      **有 5 分钟内的结果就直接复用**，不无脑重算（工作台会切阶段/轮询）。
+    if (useFrontendMode.value && feDbReady.value) {
+      const _fresh = feLastScoreTime.value
+        && (Date.now() - feLastScoreTime.value.getTime() < 5 * 60 * 1000)
+      let rows = feScoringResult.value || []
+      // ★ 2026-09-28：`force=true`（轮询调用）**跳过 5 分钟复用窗口** —— 否则界面写着
+      //   "120s 后刷新"而数据几分钟不动（复用窗口本是为"切阶段别重算"设的，轮询语义不同）。
+      if (!rows.length || force || !_fresh) rows = await computeRanking({ mode: 'top', limit: 10 })
+      topItems.value = (rows || []).slice(0, 10)
+      topMode.value = 'local'
+      topErr.value = ''
+      return
+    }
+    // 兜底：未启用本地计算（或 K 线包未就绪）→ 原后端批次接口
     const { data } = await getScoreTop({ limit: 10 })
     topItems.value = (data && data.data) || []
+    topMode.value = 'backend'
     topErr.value = ''
   } catch (e) { topErr.value = (e && e.message) || '未知错误' }
 }
@@ -3047,8 +3053,11 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-25（P1）：复盘也拉"待触发计划"（明日准备）—— 复盘正是"把今天结论转成明天待办"的时点
   else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); }
   if (phase === 'intraday' || phase === 'midday') {
+    // ★ 2026-09-28：盘中/午盘也加载「评分榜 + 观察池」（原只在盘后拉 ⇒ 盘中两卡不显示）。
+    //   ⚠️ 二者是**日批/盘后**数据（观察池 = 晚间日批快照）⇒ 盘中显示的是上一交易日；
+    //      与"板块 Top5 走实时东财接口"不同。卡内 `data_date` 已标实际日期，不假装是今天。
     await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals(),
-                       loadAmountShare()])
+                       loadAmountShare(), loadTop(), loadGateWatch()])
   }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
 }
@@ -3104,7 +3113,20 @@ function startPolling() {
     // ★ 2026-09-27：事件状态盘中会变（涨家数占比随行情走）⇒ 纳入 120s 轮询。
     //   ⚠️ 新增的刷新项必须加进本组，否则盘中静默不更新（项目约定）。
     loadEvents()
-  }, 120000))
+    // ★ 2026-09-28（用户："评分榜 Top10 …这样用户才知道他在实时刷新"）：
+    //   让 120s 轮询**真的刷新评分榜卡片** —— 原先 `loadTop()` 只在切阶段时调用
+    //   ⇒ 盘中两卡（评分榜 Top10 / 观察池）静默不更新，卡片上的"实时"名不副实。
+    //   ⚠️ 只在**数据会变**的时段强制（`isLivePhase()`）：非交易时段白跑一次
+    //      全市场精算没意义（本地模式下 `computeRanking` 很重）。
+    loadTop(isLivePhase())
+    refreshLeft.value = isLivePhase() ? POLL_SEC : 0
+  }, POLL_SEC * 1000))
+  // ★ 2026-09-28：倒计时 1s ticker（与上面 120s 轮询同起点注册 ⇒ 读数差 ≤1 tick）。
+  //   非交易时段恒置 0 ⇒ 卡片隐藏倒计时（数据不变时显示倒计时是误导）。
+  timers.push(setInterval(() => {
+    if (!isLivePhase()) { refreshLeft.value = 0; return }
+    refreshLeft.value = refreshLeft.value > 1 ? refreshLeft.value - 1 : POLL_SEC
+  }, 1000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
 
@@ -3128,6 +3150,15 @@ onMounted(async () => {
   await loadDayIndex()
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
   loadVer()      // 数据可信度总表（幂等，失败不影响主流程）
+  // ★ 2026-09-28：初始化前端本地评分引擎（评分榜「本地优先」需要）。
+  //   与榜单页共用**同一个 IndexedDB**（K 线包/指标包）⇒ 用户已在榜单页下过数据则秒就绪；
+  //   未下过 ⇒ `dbReady` 股票数为 0 ⇒ `loadTop()` 自动回退后端接口（不会卡住页面）。
+  //   ⚠️ **不 await**：init 内含"后台静默更新"，await 会拖慢首屏（与榜单页同款）。
+  //   ⚠️ init 完成后若已可用且当前是本地模式，**补刷一次**评分榜 —— 否则首次 loadTop
+  //      可能早于 dbReady 而回了后端（用户会看到"后端批次"而非"本地实时"）。
+  initFrontendScoring().then(() => {
+    if (useFrontendMode.value && feDbReady.value && topMode.value !== 'local') loadTop()
+  }).catch((e) => console.warn('[workbench] 本地评分初始化失败:', e))
   // ★ 外盘四件套已移顶栏常驻（所有阶段可见）——挂载即加载 + 120s 轮询刷新
   loadGlobals()
   await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr)])

@@ -1145,7 +1145,7 @@
 
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
 import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
   // ★ 2026-09-25 修复：`checkMarketAlerts()` 一直在调 `getMarketOverview()` 却**从未 import**
@@ -1163,6 +1163,8 @@ import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontend
 import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVerification'
 
 const router = useRouter()
+// ★ 2026-09-28：`?tab=` 直达（工作台「观察池 → 详情」）需要读 query。
+const route = useRoute()
 
 // 数据可信度（幂等；失败静默不影响主流程）
 const { load: loadVer, statusOf: verStatus } = useVerification()
@@ -2242,6 +2244,14 @@ function stopAutoRefresh() {
 }
 
 onMounted(() => {
+  // ★ 2026-09-28（用户："观察池详情跳转后要选中观察池的 tab"）：支持 `?tab=watch` 直达。
+  //   ① **先定 tab**，并**跳过默认的 Top50 加载** —— 本地模式下 `loadData()` 是一次
+  //      全市场精算（很贵），落到观察池 tab 时白算一遍纯属浪费；
+  //   ② `top` 不按直达处理（默认 tab 本就走原有加载路径）。
+  const _qtab = String((route.query && route.query.tab) || '')
+  const _direct = (_qtab && _qtab !== 'top' && tabs.some(t => t.key === _qtab)) ? _qtab : ''
+  if (_direct) activeTab.value = _direct
+
   loadWatchCodes()
   startMarketAlerts()
   loadVer()   // 数据可信度总表（幂等，失败不影响主流程）
@@ -2253,7 +2263,7 @@ onMounted(() => {
     } else {
       console.log('前端评分系统就绪，股票数:', frontendStockCount.value)
       // 如果用户之前选择了前端模式且数据已就绪，自动使用本地计算
-      if (useFrontendMode.value && frontendDbReady.value && frontendStockCount.value > 0) {
+      if (!_direct && useFrontendMode.value && frontendDbReady.value && frontendStockCount.value > 0) {
         console.log('恢复前端计算模式')
         loadData()
       }
@@ -2264,13 +2274,16 @@ onMounted(() => {
 
   // 如果用户之前选了前端模式，等 init 完成后再加载（上面的 .then 会处理）
   // 否则立即走后端加载
-  if (!useFrontendMode.value) {
+  if (!useFrontendMode.value && !_direct) {
     loadData()
   }
   loadTemp()
   loadSnapshots()
   autoSaveTimer = setInterval(autoSaveCheck, 60000)
   startAutoRefresh()
+  // ★ 直达指定 tab：**必须放最后** —— `switchTab` 会触发该 tab 的首拉（观察池要先拿
+  //   code 列表再拉实时价），提前调用会被后面的初始化打断。
+  if (_direct) switchTab(_direct)
 })
 
 onBeforeUnmount(() => {
