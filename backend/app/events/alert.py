@@ -15,7 +15,8 @@
 
 设计（对齐 `coach/regime_alert.py`）：
   · 判定源：`app.events.signal.get_event_signal()`（实时行情缓存；盘后由收盘快照兜底）
-  · 去重：`event_alert_log`（date 主键）+ **簇窗口** `CLUSTER_GAP_DAYS=25`（自然日）
+  · 去重：`event_alert_log`（date 主键）+ **簇窗口** `CLUSTER_GAP_DAYS=28`
+    （自然日 ＝ 20 交易日，与 `event_edge_check.py:CLUSTER_GAP` 的簇定义对齐）
     —— 距上次推送不足该窗口 ⇒ 视为同一事件簇，跳过。
   · 接入：`scheduler.event_alert_loop`（**仅 Render 常驻**，盘后 16:00-23:59 窗口）。
     ⚠️ **不进日批**：Actions 独立进程无实时行情缓存，`get_event_signal()` 必然
@@ -33,7 +34,14 @@
 from datetime import datetime
 
 _TABLE_READY = False
-CLUSTER_GAP_DAYS = 25     # 同一事件簇的去重窗口（自然日）
+# ★ 2026-09-27 修正（口径对齐）：原值 25 自然日 ≈ **17 交易日**，**短于**簇定义
+#   （`event_edge_check.py:CLUSTER_GAP = 20` **交易日**）⇒ 相邻间隔 18~19 交易日的两次触发
+#   会被「簇定义」判为**同一簇**、却在推送层**重复推送**（违背「簇内只推一次」的设计意图）。
+#   改为 **28 自然日 = 20 交易日（4 周）**，与验证口径一致。
+#   ⚠️ 局限：长假会把**同一簇**的自然日间隔拉长（如 18 交易日 + 春节 ≈ 32 自然日）
+#      ⇒ 仍可能重复推。彻底解法需按**交易日**计数，但 `market_events` 可能落库不全（不可靠）
+#      ⇒ 接受此近似：E2 年均仅 ~3 簇，且 28 天已把误判面从 8 次大幅收窄。
+CLUSTER_GAP_DAYS = 28
 
 
 def ensure_table() -> None:

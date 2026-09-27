@@ -859,68 +859,56 @@ _MERGED_CAP = 10      # 合并买入清单上限
 
 
 def _merged_buy_list(whitelist_cn: list) -> list:
-    """★ 2026-09-27：**合并买入清单** —— 白名单战法命中的个股 × 闸门就绪度。
+    """★ 2026-09-27：**合并买入清单** —— 只收「闸门三条件全就绪（ready==3）」的个股。
 
-    为什么（用户旅程盘点发现）：此前 `do` 段只给「白名单**战法名**」（不给个股）
-    ＋「评分 Top3」，用户想知道"到底买哪只"必须自己在两处之间**脑内合并**。
+    ★★ 数据源修正（同日，重要）：
+      初版以「白名单战法命中」为入口 ⇒ 但战法已证伪（`get_push_whitelist()` 返回 []）
+      ⇒ **清单恒为空**。诊断发现真正的"买入条件"是闸门 `ready == 3`
+      （A 主力吸筹 + B 不追高 + C 市况允许），而它比战法可靠得多：
+        · A 有回测依据（+1.1pt）
+        · C 有 19.5 年四态验证
+        · B 为阈值设定
+      ⇒ 改为**以 ready==3 为唯一入口**；战法命中降级为**附注**（"两个独立体系同时看中"）。
 
-    数据源（全部既有单一事实源，**零新增判据**）：
-      · 战法命中  `routers.scoring._load_signal_map()`（与观察池/持仓雷达同源，10 分钟缓存）
-      · 白名单    `strategies.recommendation.get_push_whitelist()`（动态胜率，6h 缓存）
-      · 就绪度    `mainforce.trade_gate.evaluate + summarize`（**唯一就绪度事实源**）
-    排序：闸门就绪度降序 → 代码。上限 `_MERGED_CAP` 条。
-    ★ **刻意不混入评分** —— 评分目前**未经验证**（P0 数据不足）；把未验证的量塞进
-      "买入清单"会让用户误以为整条清单都可信。清单只由「战法命中 + 闸门」构成。
-    失败静默（返回 []，前端不渲染该块）。
+    数据源（全部既有单一事实源，**零新增判据、零额外网络**）：
+      · 闸门快照  `gate_snapshot_history` 最新一条（日批落库；含 ready/仓位/phase/strategies）
+      · 战法附注  快照内自带的 `strategies` 字段（缺失则留空，不回退慢查询）
+
+    ⚠️ **为什么不是观察池**：观察池门槛是 `ready >= 2`（候选池，含"差一个条件"的票）。
+      `ready == 3` 才等于"确切买入条件"，且它自动蕴含 C 满足（非防御市）⇒ 仓位 > 0。
+    ★ **刻意不混入评分** —— 评分未经验证（P0 数据不足）。
+
+    返回 [{code, name, strategies[], gate_ready, gate_label, position_pct, position_label,
+           phase_cn, flow5_amt}]，空表示**当前没有符合买入条件的个股**（诚实为空）。
     """
-    if not whitelist_cn:
-        return []
     try:
-        from app.routers.scoring import _load_signal_map
-        sig_map, _sig_date = _load_signal_map()
-        if not sig_map:
-            return []
-        wl_set = set(whitelist_cn)
-        hits = {c: [s for s in (v or []) if (s.get("name") or "") in wl_set]
-                for c, v in sig_map.items()}
-        hits = {c: v for c, v in hits.items() if v}
-        if not hits:
-            return []
-
-        from app.mainforce import trade_gate as gate_mod
-        from app.mainforce.state import load_latest
+        import json as _json
         from app.database import db
-        codes = list(hits)[:60]
-        mf_map = {}
-        try:
-            mf_map = load_latest(codes) or {}
-        except Exception:
-            pass
-        name_map = {}
-        try:
-            rows = db.fetch(
-                "SELECT code, name FROM ranking_history WHERE rank_date = "
-                "(SELECT MAX(rank_date) FROM ranking_history)")
-            name_map = {str(r["code"]): r.get("name") for r in (rows or [])}
-        except Exception:
-            pass
-
+        row = db.fetch_one("SELECT date, payload FROM gate_snapshot_history "
+                           "ORDER BY date DESC LIMIT 1")
+        if not row:
+            return []
+        pay = _json.loads(row.get("payload") or "{}")
+        wl_set = set(whitelist_cn or [])
         out = []
-        for code in codes:
-            try:
-                s = gate_mod.summarize(gate_mod.evaluate(code, mf=mf_map.get(code)))
-            except Exception:
+        for x in pay.get("candidates") or []:
+            if int(x.get("ready") or 0) != 3:
                 continue
+            hits = [s.get("name") for s in (x.get("strategies") or [])
+                    if (s.get("name") or "") in wl_set] if wl_set else []
             out.append({
-                "code": code,
-                "name": name_map.get(code) or code,
-                "strategies": [x.get("name") for x in hits[code]][:3],
-                "gate_ready": s.get("ready"),
-                "gate_label": s.get("label") or "",
-                "position_pct": s.get("position_pct"),
-                "position_label": s.get("position_label") or "",
+                "code": x.get("code"),
+                "name": x.get("name") or x.get("code"),
+                "strategies": hits[:3],
+                "gate_ready": 3,
+                "gate_label": x.get("label") or "三条件就绪",
+                "position_pct": x.get("position_pct"),
+                "position_label": x.get("position_label") or "",
+                "phase_cn": x.get("phase_cn") or "",
+                "flow5_amt": x.get("flow5_amt"),
+                "snapshot_date": str(row.get("date"))[:10],
             })
-        out.sort(key=lambda x: (-(x.get("gate_ready") or 0), x.get("code") or ""))
+        out.sort(key=lambda x: (-(x.get("position_pct") or 0), x.get("code") or ""))
         return out[:_MERGED_CAP]
     except Exception as e:
         print(f"[trader_brief] 合并买入清单失败（跳过）: {e}")

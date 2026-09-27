@@ -48,7 +48,10 @@ MIN_CLUSTERS = 5
 MIN_SPEEDUP = 0.20        # 转出比例相对提升门槛
 MIN_RET_DIFF = 1.0        # 收益差门槛（pct）
 HORIZON = 20
-CLUSTER_GAP = 20
+# ★ 2026-09-27 修正（口径对齐）：原值 20 **自然日**（≈ 14 交易日）**短于**簇定义
+#   （`event_edge_check.py:CLUSTER_GAP = 20` **交易日**）⇒ 会把同一事件簇**拆成多簇**、
+#   高估独立簇数（进而高估统计功效）。改为 28 自然日 ＝ 20 交易日。
+CLUSTER_GAP = 28
 
 
 def _ensure_table():
@@ -80,10 +83,10 @@ def load_regimes():
 
 
 def count_clusters(dates):
-    """相邻事件间隔 < CLUSTER_GAP（按索引）归为同一簇。"""
+    """相邻事件间隔 < CLUSTER_GAP（**自然日**）归为同一簇。"""
     if not dates:
         return 0
-    # 用自然间隔近似（实盘日期密集，交易日差 ≈ 自然日差 × 0.7）
+    # 实盘只有日期（无交易日索引）⇒ 用自然日近似；CLUSTER_GAP=28 已对齐「20 交易日」。
     c = 1
     for a, b in zip(dates, dates[1:]):
         from datetime import date as _d
