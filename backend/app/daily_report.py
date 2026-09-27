@@ -527,7 +527,14 @@ def _holdings_radar() -> list:
     return out
 
 
-def build_data_md() -> str:
+def build_data_md(date: str = None) -> str:
+    """组装硬数据 markdown。
+
+    ★ 2026-09-27：新增 `date`（**交易日**，由 `run_daily_report` 传入）——
+      事件信号小节要按同一日期读 `market_events` **落库行**：日报由日批与
+      Render 调度器**双写**（日批会覆盖），而日批环境**无实时行情缓存**
+      ⇒ 只能读表，不能调 `get_event_signal()`（否则日批版本会把该小节抹掉）。
+    """
     lines = []
     add = lines.append
 
@@ -660,6 +667,43 @@ def build_data_md() -> str:
     else:
         add("> ⚠️ **ETF 行情未取到**（可能为休市/数据源暂不可用）。"
             "今日 ETF 相关信号可信度下降，建议以个股层面数据为主。")
+
+    # 1e 事件驱动信号（E2 政策脉冲 / E1 冰点）—— ★ 读 `market_events` 落库行
+    #    ⚠️ 不调 `get_event_signal()`：日报双写者中**日批无行情缓存**，若日批后写
+    #    会把该小节抹掉（详见 build_data_md docstring）。
+    try:
+        _d = date or _today()
+        row = None
+        for _cand in (_d, _yesterday_trading_day()):
+            row = db.fetch_one(
+                "SELECT date, up_ratio, limit_up, limit_down, "
+                "e1_capitulation, e2_policy_surge FROM market_events WHERE date = %s",
+                (_cand,))
+            if row:
+                break
+        if row and row.get("e2_policy_surge"):
+            from app.events.signal import E2_STATS, EXEC_STATS
+            s = E2_STATS
+            _dd = (s.get("by_regime") or {}).get("defensive") or {}
+            add("\n### 1.5 事件信号（E2 政策脉冲）\n")
+            add(f"- ⚡ **触发**：涨家数占比 {row.get('up_ratio', 0):.1%}、"
+                f"涨停 {row.get('limit_up')} 家")
+            add(f"- 历史同态（{s['n']} 天 / {s['n_clusters']} 个独立簇）：后 20 日全市场等权 "
+                f"**+{s['h20_mean']}%**（基准 +{s['h20_base']}%，胜率 {s['h20_win']}%）；"
+                f"防御期内增量 +{_dd.get('diff')}pp（n={_dd.get('n')}）")
+            _t = (EXEC_STATS.get("targets") or [{}])[0]
+            if _t:
+                add(f"- 历史同态可执行参考（T+1 开盘买、持 20 日、已扣 0.3% 成本）："
+                    f"**{_t.get('name')}({_t.get('etf')}) +{_t.get('net_edge')}pp**"
+                    f"（P={_t.get('p')}，n={_t.get('n')}）")
+            add("- ⚠️ **历史统计参考，非投资建议**；本信号不进决策链（不改市况/仓位/闸门）")
+        elif row and row.get("e1_capitulation"):
+            add("\n### 1.5 事件信号（E1 冰点）\n")
+            add(f"- ❄️ 涨家数占比 {row.get('up_ratio', 0):.1%}、"
+                f"跌停 {row.get('limit_down')} 家 —— 历史上无额外 edge"
+                f"（已归档，仅作背景提示）")
+    except Exception as e:
+        print(f"[daily_report] 事件信号小节失败: {e}")
 
     # ── 2 系统状态 ──
     add("\n## 二、系统状态\n")
@@ -983,7 +1027,7 @@ def run_daily_report(push: bool = False, date: str = None) -> dict:
     ensure_table()
     os.makedirs(_REVIEWS_DIR, exist_ok=True)
     date = date or _today()
-    data_md = build_data_md()
+    data_md = build_data_md(date)
     llm_md = _llm_interpret(data_md)
     md = (f"# A股日报 {date}\n> 生成：{_now()}\n\n---\n\n"
           + data_md

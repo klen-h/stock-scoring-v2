@@ -1487,6 +1487,34 @@ async def regime_cache_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 事件驱动信号（E2 政策脉冲）盘后推送 ──────────────────────────────────────
+# ★ 2026-09-27：E2 21 年仅 **60 个独立事件簇**（约每年 3 次），而此前**只在工作台
+#   顶栏显示** ⇒ 用户不开页面的那天触发就永远看不到（验证做完却触达不到）。
+#   窗口排在 REGIME_CACHE_WINDOW（15:40+）之后 ⇒ 保证 regime 判定与行情缓存已就绪。
+#   簇内去重（同一次脉冲只推一次）在 `app/events/alert.py` 内，此处只负责调度与幂等。
+EVENT_ALERT_WINDOW = (960, 1440)   # 北京时间 16:00-23:59
+
+
+async def event_alert_loop():
+    """盘后检查 E2 政策脉冲并推企微（同日幂等；同一事件簇只推一次）。"""
+    from app.events.alert import run_alert
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        if (now.weekday() < 5 and EVENT_ALERT_WINDOW[0] <= t < EVENT_ALERT_WINDOW[1]
+                and not store.is_schedule_done("event_alert")):
+            try:
+                msg = await asyncio.to_thread(run_alert)
+                print(f"[scheduler] {msg}")
+                # 「行情缓存不可用」属未就绪 ⇒ 不 mark_done，窗口内继续重试
+                if "行情缓存不可用" not in msg:
+                    store.mark_schedule_done("event_alert")
+                    status["last_event_alert"] = msg[:80]
+            except Exception as e:
+                print(f"[scheduler] 事件推送失败: {e}")
+        await asyncio.sleep(600)   # 每 10 分钟检查一次
+
+
 # ── 回测预热：盘后自动计算三类策略并写持久缓存，用户访问秒回（冷启动不再 30s+）──
 # ★ 原值 (1605, 2359) 是笔误：窗口用的是「当日分钟数」(0-1439)，1605 永远不满足，
 #   导致这个循环从未触发过。16:05 对应 965。
@@ -2018,6 +2046,8 @@ async def start():
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),
+            # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
+            asyncio.create_task(event_alert_loop()),
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）
              asyncio.create_task(portfolio_radar_warm_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
