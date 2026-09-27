@@ -101,6 +101,19 @@
           <div class="text-xs font-semibold" :class="regimeClass">{{ regimeLabel }}</div>
           <div class="text-[10px] text-muted">市况</div>
         </div>
+        <!-- ★ 2026-09-27 事件驱动信号（v0 展示项）：仅 E1/E2 触发时占位 ——
+             稀有事件（21 年 298 天），平时不出现，避免顶栏常驻噪音。
+             副标题「事件·仅提示」是**定位说明**（项目约定），防止被当买卖信号。 -->
+        <template v-if="eventSignal && eventSignal.available && (eventSignal.e2_policy_surge || eventSignal.e1_capitulation)">
+          <div class="w-px h-8 bg-border"></div>
+          <div class="text-center" :title="eventTitle">
+            <div class="text-xs font-semibold"
+                 :class="eventSignal.e2_policy_surge ? 'text-red-400' : 'text-cyan-400'">
+              {{ eventSignal.e2_policy_surge ? '政策脉冲' : '冰点' }}
+            </div>
+            <div class="text-[10px] text-muted">事件·仅提示</div>
+          </div>
+        </template>
       </div>
       <!-- ★ 2026-09-25：原「数据新鲜度 · 截至 HH:MM」入口已**并入日期下方的系统状态行**
            （同一点、同一浮层）⇒ 此处删除，避免同一份状态在顶栏出现两次。 -->
@@ -1923,7 +1936,7 @@ import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
-  getMarketOverview, getMarketTemperature, getMarketRegime,
+  getMarketOverview, getMarketTemperature, getMarketRegime, getMarketEvents,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
@@ -2063,6 +2076,9 @@ const dayLoading = ref(false)
 const overview = ref({ indices: [], stats: {} })
 const temperature = ref(null)
 const regimeLabel = ref('—')
+// ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。
+//   稀有事件（21 年 298 天触发），触发时顶栏显一项；未触发则不占位。
+const eventSignal = ref(null)
 const briefMd = ref('')
 const briefErr = ref('')
 const briefDegraded = ref(false)
@@ -2454,6 +2470,35 @@ async function loadRegime() {
     regimeLabel.value = ({ offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空（阴跌）', defensive: '防御' })[r.regime] || (r.regime || '—')
   } catch { regimeLabel.value = '—' }
 }
+// ★ 2026-09-27 事件驱动信号（v0 展示项）。定位三行（项目约定）：
+//   **是什么**  极端普涨（涨家数占比≥90%）+ 涨停骤增（≥50 家）的"政策脉冲"实时提示
+//   **不是什么** 不是买卖信号；不进决策链；不改市况/仓位/战法准入
+//   **下一步**  实盘样本积累 1~2 季后复核「能否作为 defensive 先行解除」
+async function loadEvents() {
+  try {
+    const { data } = await getMarketEvents()
+    eventSignal.value = (data && data.event) || null
+  } catch { /* 静默保留上次值：事件极稀有，失败不该打扰用户 */ }
+}
+/** 事件悬浮说明（顶栏 title）：带历史预期，防止被当买卖信号用。 */
+const eventTitle = computed(() => {
+  const e = eventSignal.value
+  if (!e || !e.available) return ''
+  const base = `涨家数占比 ${((Number(e.up_ratio) || 0) * 100).toFixed(1)}%`
+    + ` · 涨停 ${e.limit_up} · 跌停 ${e.limit_down}`
+  const s = e.e2_stats
+  if (e.e2_policy_surge && s) {
+    const d = (s.by_regime && s.by_regime.defensive) || {}
+    return `${base}\nE2 政策脉冲（历史 ${s.n} 天 / ${s.n_clusters} 簇）：`
+      + `后 20 日全市场等权 +${s.h20_mean}%，基准 +${s.h20_base}%，胜率 ${s.h20_win}%\n`
+      + `防御期内增量 +${d.diff}pp（n=${d.n}）\n`
+      + `⚠️ 展示项：不改市况/仓位，不进决策链`
+  }
+  if (e.e1_capitulation) {
+    return `${base}\n冰点信号（E1）：历史上无额外 edge（已归档，仅作背景提示）`
+  }
+  return base
+})
 // ══════════════════════════════════════════════════════════════════════════
 //  当日数据缓存（★ 2026-09-25 用户建议）
 // ══════════════════════════════════════════════════════════════════════════
@@ -2952,6 +2997,9 @@ function startPolling() {
     livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
     loadAmountShare()      // ★ 需求 4：资金在板块间的流动是盘中变量 ⇒ 纳入轮询
+    // ★ 2026-09-27：事件状态盘中会变（涨家数占比随行情走）⇒ 纳入 120s 轮询。
+    //   ⚠️ 新增的刷新项必须加进本组，否则盘中静默不更新（项目约定）。
+    loadEvents()
   }, 120000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
@@ -2974,7 +3022,7 @@ onMounted(async () => {
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
   // ★ 外盘四件套已移顶栏常驻（所有阶段可见）——挂载即加载 + 120s 轮询刷新
   loadGlobals()
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadCoach(), loadRadar(), loadPush(todayStr)])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr)])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

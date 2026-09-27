@@ -69,6 +69,8 @@ export const authCurrent = () => http.get('/auth/current')
 // 市场行情
 export const getMarketOverview = () => http.get('/market/overview')
 export const getMarketTemperature = () => http.get('/market/temperature')
+// ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— v0 展示项，不进决策链
+export const getMarketEvents = () => http.get('/market/events')
 
 // 市场状态识别
 export const getMarketRegime = () => http.get('/strategies/market/regime')

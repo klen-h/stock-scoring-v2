@@ -670,6 +670,24 @@ def refresh_regime_cache(force: bool = False) -> Optional[dict]:
         "ma_trend": latest.ma_trend,
         "volatility_regime": latest.volatility_regime,
     }
+    # ★ 2026-09-27 事件驱动信号（v0：**仅展示，不进决策链**）。
+    #   背景：本引擎在 V 型反转处系统性滞后（2024-09-24/09-30 均判 defensive）。
+    #   E2 政策脉冲经 21 年预登记检验（PASS，防御期内增量 +2.17pp/30 簇）后接入，
+    #   但 v0 只挂 detail 供展示，不改 state / 权重 / 准入 —— 见 app/events/signal.py。
+    try:
+        from app.events.signal import get_event_signal
+        _ev = get_event_signal()
+        if _ev.get("available"):
+            _REGIME_CACHE["detail"]["event"] = {
+                "e2_policy_surge": _ev["e2_policy_surge"],
+                "e1_capitulation": _ev["e1_capitulation"],
+                "up_ratio": _ev["up_ratio"],
+                "limit_up": _ev["limit_up"],
+                "limit_down": _ev["limit_down"],
+                "note": _ev["note"],
+            }
+    except Exception as _e:
+        print(f"[market_regime] 事件信号接入失败（忽略）: {_e}")
     # 极端缩量警示（仅 detail 输出 + 日志，不改打分）：sh000300 当日额 < 20日均额 70%
     shrink = _market_shrink_ratio()
     if shrink is not None:

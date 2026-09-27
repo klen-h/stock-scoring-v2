@@ -1468,6 +1468,15 @@ async def regime_cache_loop():
                     status["last_regime"] = f"{cache['date']} {cache['state']}"
                     print(f"[scheduler] 市场状态缓存完成: {cache['date']} {cache['state']} "
                           f"权重={cache['weights']}")
+                    # ★ 2026-09-27 事件快照落库（v0：只落库供未来实盘复核，不进决策链）。
+                    #   放在此处的原因：① 此时行情缓存持有当日收盘快照（宽度可算）；
+                    #   ② 与 regime 同日同源，便于后续对照「事件 vs 状态切换时点」。
+                    #   异常一律吞掉，绝不阻断 regime 主流程。
+                    try:
+                        from app.events.signal import record_event_snapshot
+                        record_event_snapshot(date=cache["date"])
+                    except Exception as _ee:
+                        print(f"[scheduler] 事件快照落库失败（忽略）: {_ee}")
                 else:
                     print(f"[scheduler] 市场状态未推进到当日"
                           f"（最新 {cache.get('date') if cache else '无'}，今日 {_today}），"

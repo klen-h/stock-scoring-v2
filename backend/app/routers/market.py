@@ -247,6 +247,18 @@ def _size_style(stocks: Dict, index_pct: Optional[float]) -> Dict:
         return {"available": False, "note": "计算失败"}
 
 
+@router.get("/events")
+def market_events():
+    """事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。
+
+    数据来源见 `app/events/signal.py`：E2 经全市场 21 年预登记检验（PASS：
+    T+20 等权 +6.17% vs 基准 +3.15%，防御期内增量 +2.17pp / 30 独立簇）。
+    返回当日事件判定 + 历史统计（供前端展示"历史预期"）。
+    """
+    from app.events.signal import get_event_signal, E2_STATS
+    return {"ok": True, "event": get_event_signal(), "stats": E2_STATS}
+
+
 @router.get("/overview")
 def market_overview(background_tasks: BackgroundTasks):
     """

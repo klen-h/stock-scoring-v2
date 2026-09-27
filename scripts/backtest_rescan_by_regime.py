@@ -195,12 +195,29 @@ def _stat(trades):
             "excess": round(sum(excesses) / len(excesses), 2) if excesses else None}
 
 
+def _max_drawdown(trades):
+    """等权组合净值曲线的最大回撤（%）。复用 engine.build_equity_curve（按日等权、含仓位暴露）。"""
+    from app.backtest.engine import build_equity_curve
+    curve = build_equity_curve(trades)
+    if not curve:
+        return None
+    peak, max_dd = 0.0, 0.0
+    for p in curve:
+        nav = p["nav"]
+        peak = max(peak, nav)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - nav) / peak)
+    return round(max_dd * 100, 2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2016-01-01")
     ap.add_argument("--end", default="2026-09-24")
     ap.add_argument("--gate-phase", action="store_true",
                     help="启用部分闸门（剔除 phase==markup 拉升段信号）")
+    ap.add_argument("--dump", action="store_true",
+                    help="把每笔 trade 明细 dump 到 data/trades.json（供 bootstrap 分析）")
     args = ap.parse_args()
 
     t0 = time.time()
@@ -273,8 +290,18 @@ def main():
         total = sum(len(v) for v in b["by_state"].values())
         print(f"\n[{en}] 成交 {total} 笔")
         for st in ["offensive", "neutral", "neutral_bearish", "defensive"]:
-            r = _stat(b["by_state"].get(st, []))
+            cell = b["by_state"].get(st, [])
+            r = _stat(cell)
+            r["mdd"] = _max_drawdown(cell)
             print(f"    {STATE_LABELS.get(st, st):6s}: {r}")
+
+    if args.dump:
+        dump_path = os.path.join(ROOT, "data", "trades.json")
+        dump_cols = ["strategy_en", "signal_date", "entry_date", "exit_date", "pnl_pct",
+                     "bench_ret", "excess", "regime_state", "regime_vol"]
+        with open(dump_path, "w", encoding="utf-8") as f:
+            json.dump([{k: t.get(k) for k in dump_cols} for t in trades], f, ensure_ascii=False)
+        print(f"✓ trade 明细已 dump 到 {dump_path}（{len(trades)} 笔）")
 
     print(f"\n完成，耗时 {(time.time()-t0)/60:.1f} 分钟")
 
