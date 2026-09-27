@@ -656,7 +656,10 @@ def get_macro_snapshot() -> dict:
     except Exception as e:
         print(f"[macro] 市场温度获取失败: {e}")
 
-    # 北向（盘后数据，盘中常为 0 → 用 None 表示不可用而非当作 0 分）
+    # 北向（★ 2024-08-19 起已**停止披露** ⇒ 恒为 0；用 None 表示"不可用"而非当作 0 分）
+    #   ⚠️ 原文案"北向资金盘中不可用（2024起仅盘后披露）"是**事实错误** —— 交易所是
+    #      **完全停止披露北向净流入**（改为季度披露持股），而非"盘中不给、盘后给"。
+    #      这里仍用真值判断 `nb.get("total_net")` ⇒ 0 被过滤为 None（行为本就正确）。
     northbound_net_yi = None
     try:
         from app.eastmoney import get_northbound
@@ -666,7 +669,7 @@ def get_macro_snapshot() -> dict:
     except Exception:
         pass
     if northbound_net_yi is None:
-        notes.append("北向资金盘中不可用（2024起仅盘后披露），内部状态仅用市场温度")
+        notes.append("北向资金净流入自 2024-08-19 起已停止披露（交易所调整），内部状态仅用市场温度")
 
     triggered, group_scores, score, level = evaluate_rules(
         panel, temperature, northbound_net_yi)

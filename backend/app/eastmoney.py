@@ -374,14 +374,31 @@ def get_northbound() -> dict:
     """
     北向资金实时净流入（沪深港通）。
 
+    ★★ 2026-09-27 重要修正：**该数据自 2024-08-19 起已停止披露**（死数据）。
+      2024-07-26 沪深交所通知调整沪深港通交易信息披露机制（自 2024-08-19 起）：
+      北向资金**盘中实时净流入不再披露**（改为季度披露持股）。
+      实测（2026-09-27）：东财 `kamt.rtmin` 接口 **HTTP 200、结构完好（s2n 241 点），
+      但合计净流入**全部为 `0.00`** ⇒ "**接口存活、数据恒为 0**"的典型死数据。
+
+      ⚠️ 原 docstring 写"非交易时段 / 休市时净流入为 0，属正常现象" —— 这句话
+      **恰好掩盖了"已永久不再披露"这一事实**，使本函数自 2024-08 起一直返回 0
+      而难以被察觉（与 `flash_calendar` 停在 09-04 是同款坑：例外没人看、悄悄烂掉）。
+      现改为**显式标注不可用**，让新老调用方都能区分"零流入"与"没有数据"。
+      （同类修复参考 `daily_report._northbound()`：2026-09-19 已按"总量与序列全 0
+        判为不可用"处理；`contradictions/scanner.py` 也已于 2026-09-06 弃用该扫描器。）
+
     返回：
-      {time, sh_net, sz_net, total_net, series: [{time, total_net}, ...]}
+      · 可用：{available: True, time, sh_net, sz_net, total_net, series}
+      · **已停止披露（当前恒为）**：
+        {available: False, stopped_since: "2024-08-19", reason: "...",
+         time, sh_net: 0, sz_net: 0, total_net: 0, series}
+      ⚠️ 不可用分支**仍保留 `total_net: 0`**（falsy）⇒ 既有真值判断
+        （`if nb and nb.get("total_net"):`，见 `routers/market.py` / `macro.py`）
+        行为完全不变，向后兼容。
       金额单位：元。抓取失败返回 {}。
 
     数据来自 kamt.rtmin 分时接口，原始单位是「万元」（开盘余额 5200000 万 = 520 亿
     每日额度，由此可确认单位），这里统一 ×10000 转成元，和板块/个股资金流保持一致。
-
-    非交易时段 / 休市时净流入为 0，属正常现象（series 仍返回当日分时点位）。
     """
     def loader():
         try:
@@ -411,7 +428,24 @@ def get_northbound() -> dict:
 
         if not latest:
             return {}
+        # ★ 死数据判定（与 daily_report._northbound 同口径）：
+        #   总量为 0 **且**序列全 0 ⇒ 「已停止披露」，而非「今日零流入」。
+        #   这样下游（前端 / 新调用方）能区分二者，不再把"没有数据"读成"零流入"。
+        #   保留 total_net=0 以向后兼容既有的 `if nb.get("total_net"):` 真值判断。
+        if not latest["total_net"] and not any(p["total_net"] for p in series):
+            return {
+                "available": False,
+                "stopped_since": "2024-08-19",
+                "reason": ("北向资金净流入自 2024-08-19 起已停止披露"
+                           "（沪深港通交易信息披露机制调整，改为季度披露持股）"),
+                "time": latest["time"],
+                "sh_net": 0,
+                "sz_net": 0,
+                "total_net": 0,
+                "series": series,
+            }
         return {
+            "available": True,
             "time": latest["time"],
             "sh_net": latest["sh_net"],
             "sz_net": latest["sz_net"],

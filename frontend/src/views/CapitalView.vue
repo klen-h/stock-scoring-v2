@@ -9,18 +9,24 @@
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div class="p-3 bg-bg rounded-lg">
           <div class="text-muted text-xs">沪股通净流入</div>
-          <div class="text-xl font-bold mt-1 font-mono" :class="flowClass(nb.sh_net)">{{ formatYuan(nb.sh_net) }}</div>
+          <div class="text-xl font-bold mt-1 font-mono" :class="nbStopped ? 'text-muted' : flowClass(nb.sh_net)">{{ nbStopped ? '—' : formatYuan(nb.sh_net) }}</div>
         </div>
         <div class="p-3 bg-bg rounded-lg">
           <div class="text-muted text-xs">深股通净流入</div>
-          <div class="text-xl font-bold mt-1 font-mono" :class="flowClass(nb.sz_net)">{{ formatYuan(nb.sz_net) }}</div>
+          <div class="text-xl font-bold mt-1 font-mono" :class="nbStopped ? 'text-muted' : flowClass(nb.sz_net)">{{ nbStopped ? '—' : formatYuan(nb.sz_net) }}</div>
         </div>
         <div class="p-3 bg-bg rounded-lg">
           <div class="text-muted text-xs">北向合计净流入</div>
-          <div class="text-xl font-bold mt-1 font-mono" :class="flowClass(nb.total_net)">{{ formatYuan(nb.total_net) }}</div>
+          <div class="text-xl font-bold mt-1 font-mono" :class="nbStopped ? 'text-muted' : flowClass(nb.total_net)">{{ nbStopped ? '—' : formatYuan(nb.total_net) }}</div>
         </div>
       </div>
-      <div v-if="nb.total_net === 0 && nb.time" class="text-xs text-muted mt-3">
+      <!-- ★ 2026-09-27 修正：原提示「合计净流入为 0，可能是非交易时段或休市」是**错误**的 ——
+           该数据自 2024-08-19 起**已永久停止披露**（交易所披露机制调整，改为季度披露持股）。
+           把"没有数据"说成"可能是休市"，会让用户以为只是暂时没有、以后还会有。 -->
+      <div v-if="nbStopped" class="text-xs text-amber-400 mt-3">
+        {{ nb.reason || '北向资金净流入已停止披露' }}
+      </div>
+      <div v-else-if="nb.total_net === 0 && nb.time" class="text-xs text-muted mt-3">
         * 合计净流入为 0，可能是非交易时段或休市。
       </div>
     </div>
@@ -111,7 +117,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
@@ -131,6 +137,11 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref(false)
 const nb = ref({})   // 北向资金对象
+// ★ 2026-09-27：北向资金净流入**自 2024-08-19 起已停止披露**（沪深港通披露机制调整）。
+//   后端 `eastmoney.get_northbound()` 现返回 `available: false` + `reason` ⇒ 前端据此
+//   显示「已停止披露」，而**不是**把 0 渲染成"净流入 0"（那是把"没有数据"读成"零流入"，
+//   是典型的沉默错误 —— 用户会以为只是今天没流入）。
+const nbStopped = computed(() => nb.value?.available === false)
 
 async function loadNorthbound() {
   try {

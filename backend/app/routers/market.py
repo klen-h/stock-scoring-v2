@@ -61,7 +61,7 @@ MAIN_INDICES = [
 # 组成（均为现有数据，无需新数据源）：
 #   1. 市场宽度（涨跌家数比 + 平均涨幅 + 涨跌停）—— 来自全市场行情缓存
 #   2. 大盘趋势（上证综指 vs MA20/MA60 + 动量）—— 来自指数 K线
-#   3. 北向资金 —— 仅作盘后/次要参考（2024 起盘中不再实时披露，常为 0）
+#   3. 北向资金 —— ★ 2024-08-19 起已**停止披露**（恒为 0）⇒ 实际不参与合成
 _temp_cache = {"data": None, "ts": 0}
 _temp_lock = threading.Lock()
 TEMP_TTL = 60   # 温度缓存 60 秒
@@ -353,7 +353,7 @@ def market_temperature():
     """
     市场环境温度（0~100）：独立的「大盘环境」信号，用于和个股评分并列参考。
 
-    组成：市场宽度(全市场涨跌) + 大盘趋势(上证综指) + 北向资金(次要/盘后)。
+    组成：市场宽度(全市场涨跌) + 大盘趋势(上证综指) + 北向资金(★ 已停止披露，实际不参与)。
     返回：temperature、level(过冷/偏冷/中性/偏热/过热)、advisory(一句话建议)、
           buy_threshold(建议买入线，冷市上调)、breadth、index、northbound。
 
@@ -390,7 +390,8 @@ def market_temperature():
         print(f"[temperature] 大盘趋势计算失败: {e}")
         idx_score, idx_info = 50.0, {}
 
-    # ── 3. 北向资金（次要；2024 起盘中常为 0，仅盘后有意义）──
+    # ── 3. 北向资金（★ 2024-08-19 起已停止披露 ⇒ 恒为 0；
+    #      下面用真值判断 `nb.get("total_net")` ⇒ 0 自动跳过、权重补给宽度/趋势）──
     nb_net = None
     try:
         from app.eastmoney import get_northbound
