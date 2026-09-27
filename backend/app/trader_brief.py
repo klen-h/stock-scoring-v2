@@ -1106,6 +1106,24 @@ def build_decision_card() -> dict:
     except Exception as e:
         print(f"[decision-card] risk events failed: {e}")           # ASCII（铁律⑥）
 
+    # ★★ 2026-09-27（P2-a 落地）：春节「日历例外」—— 防御市里唯一被验证过的可用窗口。
+    #   为什么需要它：`regime` 只看沪深300 均线 ⇒ **V 型反转处系统性滞后**（2026-09-16
+    #     反弹第一天仍是 defensive，三条买入路径全失效）；而 E2 极稀有（2026 年 0 次）。
+    #     春节是**唯一「日期提前可知」**的事件 ⇒ 可提前布局（用户所问的"提前预案"）。
+    #   验证：`scripts/spring_festival_{effect,returns,falsify,entry,robust}.py`
+    #     （判据预登记；22 次春节样本 = 天然独立簇）。
+    #   ★ 设计纪律（重要）：**不修改** `trade_gate.evaluate` 的 `条件C`，
+    #     也**不修改** `REGIME_ALLOWED`/`REGIME_POSITION` —— 那些是"买入资格/仓位档位"的
+    #     **唯一事实源**，被评分榜 50 只与观察池复用，改它们会污染全局口径。
+    #     ⇒ 本例外是**叠加在决策卡上的独立提示通道**（与 E2 的落点一致），
+    #       是否采纳由用户决定。
+    cal_ex = None
+    try:
+        from app.spring_festival import calendar_exception as _sf_ex
+        cal_ex = _sf_ex(regime=reg)
+    except Exception as e:
+        print(f"[decision-card] spring festival failed: {e}")       # ASCII（铁律⑥）
+
     return {
         "date": data.get("date"),
         "regime": reg,
@@ -1125,6 +1143,13 @@ def build_decision_card() -> dict:
         # ★ 2026-09-25（C1）：风险事件扫描结果 —— 含"扫过了但无命中"的状态，
         #   避免用户把"没有条目"误解成"没做这件事"。
         "risk_events": data.get("risk_events") or None,
+        # ★★ 2026-09-27（P2-a）：春节「日历例外」—— 防御档下唯一有实证的可用窗口。
+        #   节后第 1 个交易日收盘买入中证500/1000 ETF、持 3 日
+        #   （中证500 扣 0.10% 双边成本 +1.65%，P=0.0144，17/20 为正；中证1000 +2.46%）。
+        #   节前 21 天进入 pre 阶段预警（可提前布局）⇒ 解决"V 型反转初期无抓手"。
+        #   ⚠️ **不修改**闸门条件 C / 仓位档位，仅为独立提示通道。
+        #   `active=False`（非窗口期）时前端不渲染该块。
+        "calendar_exception": cal_ex,
         "positions_scan": positions_scan,
         # ★ 2026-09-25（P2）：战法信号 × 行业交叉表 —— 回答"58 只信号分布在哪些行业"，
         #   并附**原始细分口径**（用户："融捷(锂)/焦作万方(电解铝)笼统归入有色/化工链条，

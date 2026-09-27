@@ -775,6 +775,48 @@
                    class="border-t border-border/40 mt-2 pt-2 text-xs text-muted">
                 负面清单：无（已扫 {{ dc.risk_events.scanned }} 只持仓/候选的未来 20 天解禁风险，无命中）
               </div>
+              <!-- ★★ 2026-09-27（P2-a 落地）春节「日历例外」—— 防御档下唯一有实证的可用窗口。
+                   为什么单独成块：它**不在**闸门三条件内 —— 后端刻意**不改** `条件C` /
+                   `REGIME_ALLOWED` / `REGIME_POSITION`（那些是"买入资格 / 仓位档位"的唯一
+                   事实源，被评分榜 50 只与观察池复用），而是叠加的独立提示通道。
+                   `active=false`（非窗口期）⇒ 整块不渲染（同负面清单的"不给假清空"约定）。 -->
+              <div v-if="dc.calendar_exception?.active"
+                   class="border-t border-border/40 mt-2 pt-2 text-xs">
+                <div class="flex items-center gap-1.5 flex-wrap mb-1">
+                  <span class="text-muted">春节日历例外</span>
+                  <span class="px-1 rounded text-[10px]"
+                        :class="dc.calendar_exception.action === 'buy'
+                          ? 'bg-emerald-500/15 text-emerald-400'
+                          : (dc.calendar_exception.action === 'watch'
+                            ? 'bg-amber-500/15 text-amber-400' : 'bg-slate-500/15 text-slate-400')">
+                    {{ sfActionCn(dc.calendar_exception.action) }}
+                  </span>
+                  <span v-if="dc.calendar_exception.precision === 'estimate'"
+                        class="text-[10px] text-slate-500">日期为预估</span>
+                  <span v-if="dc.calendar_exception.overrides" class="text-[10px] text-amber-400">
+                    （临时放宽「{{ sfRegimeCn(dc.calendar_exception.overrides) }}」档限制）
+                  </span>
+                </div>
+                <div class="text-[11px] font-semibold mb-0.5">{{ dc.calendar_exception.title }}</div>
+                <div class="text-[11px] text-muted leading-relaxed">{{ dc.calendar_exception.note }}</div>
+                <div v-if="(dc.calendar_exception.targets || []).length" class="mt-1 space-y-0.5">
+                  <div v-for="(t, i) in dc.calendar_exception.targets" :key="i"
+                       class="flex items-baseline gap-1 flex-wrap">
+                    <a :href="stockHref(t.code)" target="_blank"
+                       class="font-semibold text-emerald-400 hover:underline">{{ t.name }}({{ t.code }})</a>
+                    <span class="text-[10px] text-muted">{{ t.note }}</span>
+                  </div>
+                  <div v-if="dc.calendar_exception.position_hint" class="text-[10px] text-muted">
+                    建议仓位 {{ dc.calendar_exception.position_hint.pct }}%（{{
+                      dc.calendar_exception.position_hint.label }}）—— {{
+                      dc.calendar_exception.position_hint.note }}
+                  </div>
+                </div>
+                <div v-if="dc.calendar_exception.caveat"
+                     class="text-[10px] text-amber-400/80 mt-1 leading-relaxed">
+                  {{ dc.calendar_exception.caveat }}
+                </div>
+              </div>
             </template>
           </div>
 
@@ -2188,6 +2230,14 @@ const dcErr = ref('')
 //     在简报文本里没有这个交互。）
 const negativeList = computed(() => (dc.value?.negatives || []).filter(n => n.scope !== '矛盾'))
 const conflictCount = computed(() => (dc.value?.negatives || []).filter(n => n.scope === '矛盾').length)
+// ★★ 2026-09-27（P2-a 落地）：春节「日历例外」展示辅助。
+//   后端 `dc.calendar_exception` 已给出全部数据（阶段/标题/文案/标的/仓位/依据），
+//   前端**只做「枚举 → 中文」映射**，无自由裁量 —— 与 `trade_gate.rules()` 下发参数的
+//   思路一致，避免"前端写死导致口径漂移"（项目前车之鉴：本地 68.8 vs 后端 72.6）。
+const SF_ACTION_CN = { watch: '预警', buy: '可介入', hold: '持有中', exit: '已到期', none: '—' }
+const sfActionCn = (a) => SF_ACTION_CN[a] || (a || '—')
+const SF_REGIME_CN = { offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空', defensive: '防御' }
+const sfRegimeCn = (r) => SF_REGIME_CN[r] || (r || '—')
 // ★ 2026-09-25 盘中外盘四件套（A50/离岸/布伦特/纳指期货）——宏面板已在抓，
 //   一次新浪批量请求 60s 缓存，工作台只是读取，零新增请求
 const globals = ref({})
