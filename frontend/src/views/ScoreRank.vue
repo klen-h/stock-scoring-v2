@@ -97,6 +97,14 @@
       <div class="flex items-center justify-between flex-wrap gap-3">
         <div class="flex items-center gap-3">
           <h2 class="text-lg font-bold">评分排行榜</h2>
+          <!-- ★ 数据可信度：评分用于「买什么」，但 P0 独立性检验因样本不足未完成
+               （信号日 ~26 天，需 ≥120 天）⇒ 标注为「未验证」，避免与已验证的闸门混淆。 -->
+          <span v-if="verStatus('score')"
+                :class="['px-1.5 py-px rounded border text-[10px] font-normal',
+                         STATUS_STYLE[verStatus('score').status].cls]"
+                :title="verifyTip(verStatus('score'))">
+            评分{{ STATUS_STYLE[verStatus('score').status].text }}
+          </span>
           <span class="text-xs" :class="isTradingNow ? 'text-emerald-400' : 'text-muted'"
             :title="isTradingNow ? '交易时段，每60秒自动刷新' : '非交易时段'">
             {{ isTradingNow ? '● 交易中' : '○ 已休市' }}
@@ -203,6 +211,13 @@
       <div class="flex items-center justify-between">
         <span class="text-sm font-semibold text-red-400">持仓撤退提醒</span>
         <span class="text-xs text-muted">{{ exitAlerts.length }} 个提醒</span>
+      </div>
+      <!-- ★ 2026-09-27：出场建议已收敛到「我的持仓」页（后端统一仲裁）。
+           此处仅保留技术面速览（跌破止损/支撑/RSI/放量），完整建议请看专属入口。 -->
+      <div class="text-[10px] text-muted">
+        此处仅为<b>技术面速览</b>（止损/支撑/RSI/放量）；
+        含闸门、主力、移动止盈的<b>完整出场建议</b>请看
+        <router-link to="/portfolio" class="text-accent underline">我的持仓 →</router-link>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
         <div v-for="alert in exitAlerts" :key="alert.code"
@@ -1144,8 +1159,13 @@ import { getXueqiuUrl } from '../composables/stockUtils'
 import { PHASE_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
+// ★ 2026-09-27 数据可信度标注（本页主商品是「评分」，需明确其未验证状态）
+import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVerification'
 
 const router = useRouter()
+
+// 数据可信度（幂等；失败静默不影响主流程）
+const { load: loadVer, statusOf: verStatus } = useVerification()
 
 // bottom / signal 入口暂隐藏（后续优化完再开放）
 const tabs = [
@@ -2224,6 +2244,7 @@ function stopAutoRefresh() {
 onMounted(() => {
   loadWatchCodes()
   startMarketAlerts()
+  loadVer()   // 数据可信度总表（幂等，失败不影响主流程）
   // 初始化前端评分系统（后台进行，不阻塞主流程）
   initFrontendScoring().then(result => {
     frontendInitialized.value = true

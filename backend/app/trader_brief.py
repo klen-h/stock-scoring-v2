@@ -855,6 +855,78 @@ _REGIME_STANCE = {
 }
 
 
+_MERGED_CAP = 10      # 合并买入清单上限
+
+
+def _merged_buy_list(whitelist_cn: list) -> list:
+    """★ 2026-09-27：**合并买入清单** —— 白名单战法命中的个股 × 闸门就绪度。
+
+    为什么（用户旅程盘点发现）：此前 `do` 段只给「白名单**战法名**」（不给个股）
+    ＋「评分 Top3」，用户想知道"到底买哪只"必须自己在两处之间**脑内合并**。
+
+    数据源（全部既有单一事实源，**零新增判据**）：
+      · 战法命中  `routers.scoring._load_signal_map()`（与观察池/持仓雷达同源，10 分钟缓存）
+      · 白名单    `strategies.recommendation.get_push_whitelist()`（动态胜率，6h 缓存）
+      · 就绪度    `mainforce.trade_gate.evaluate + summarize`（**唯一就绪度事实源**）
+    排序：闸门就绪度降序 → 代码。上限 `_MERGED_CAP` 条。
+    ★ **刻意不混入评分** —— 评分目前**未经验证**（P0 数据不足）；把未验证的量塞进
+      "买入清单"会让用户误以为整条清单都可信。清单只由「战法命中 + 闸门」构成。
+    失败静默（返回 []，前端不渲染该块）。
+    """
+    if not whitelist_cn:
+        return []
+    try:
+        from app.routers.scoring import _load_signal_map
+        sig_map, _sig_date = _load_signal_map()
+        if not sig_map:
+            return []
+        wl_set = set(whitelist_cn)
+        hits = {c: [s for s in (v or []) if (s.get("name") or "") in wl_set]
+                for c, v in sig_map.items()}
+        hits = {c: v for c, v in hits.items() if v}
+        if not hits:
+            return []
+
+        from app.mainforce import trade_gate as gate_mod
+        from app.mainforce.state import load_latest
+        from app.database import db
+        codes = list(hits)[:60]
+        mf_map = {}
+        try:
+            mf_map = load_latest(codes) or {}
+        except Exception:
+            pass
+        name_map = {}
+        try:
+            rows = db.fetch(
+                "SELECT code, name FROM ranking_history WHERE rank_date = "
+                "(SELECT MAX(rank_date) FROM ranking_history)")
+            name_map = {str(r["code"]): r.get("name") for r in (rows or [])}
+        except Exception:
+            pass
+
+        out = []
+        for code in codes:
+            try:
+                s = gate_mod.summarize(gate_mod.evaluate(code, mf=mf_map.get(code)))
+            except Exception:
+                continue
+            out.append({
+                "code": code,
+                "name": name_map.get(code) or code,
+                "strategies": [x.get("name") for x in hits[code]][:3],
+                "gate_ready": s.get("ready"),
+                "gate_label": s.get("label") or "",
+                "position_pct": s.get("position_pct"),
+                "position_label": s.get("position_label") or "",
+            })
+        out.sort(key=lambda x: (-(x.get("gate_ready") or 0), x.get("code") or ""))
+        return out[:_MERGED_CAP]
+    except Exception as e:
+        print(f"[trader_brief] 合并买入清单失败（跳过）: {e}")
+        return []
+
+
 def build_decision_card() -> dict:
     """今日决策卡（确定性规则聚合）：做不做/做什么/做多少/错了怎么办 + 持仓扫描。
 
@@ -908,6 +980,8 @@ def build_decision_card() -> dict:
         for c in (data.get("candidates") or [])[:3]
     ]
     avoid = (data.get("macro") or {}).get("tags_bear") or []
+    # ★ 2026-09-27：合并买入清单（解决"买什么"要用户自己脑内合并的问题）。
+    merged = _merged_buy_list(wl)
     avoid = [t for t in avoid][:3]
 
     # 错了怎么办：v2 常量 + 退潮信号（宽度不足且昨涨停溢价为负 → 禁止接力）
@@ -1052,7 +1126,10 @@ def build_decision_card() -> dict:
         "environment": {"temperature": temp,
                         "emotion_verdict": emotion_verdict,
                         "emotion_detail": emotion_detail},
-        "do": {"whitelist": wl, "candidates": candidates, "avoid": avoid},
+        # ★ 2026-09-27：`merged` = 合并买入清单（战法命中个股 × 闸门就绪度）。
+        #   与 `whitelist`（仅战法名）/`candidates`（仅评分 Top3）并存，前端可择优渲染。
+        "do": {"whitelist": wl, "candidates": candidates, "avoid": avoid,
+               "merged": merged},
         "how_much": {"total_cap": stance[1], "single_cap": stance[2]},
         "if_wrong": {"stop_rule": stop_rule, "retreating": retreating},
         # ★ 负面清单（今天要避开的）；空数组 ⇒ 前端不渲染该块

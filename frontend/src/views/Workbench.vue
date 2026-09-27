@@ -695,7 +695,15 @@
           <div class="bg-card border border-accent/40 rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">今日决策卡
-                <span class="text-[10px] text-muted font-normal">（规则引擎 · 无 LLM · 确定性输出）</span></div>
+                <span class="text-[10px] text-muted font-normal">（规则引擎 · 无 LLM · 确定性输出）</span>
+                <!-- ★ 数据可信度：该不该买 = 闸门（19.5 年四态分布 + 尾部风险画像已复核） -->
+                <span v-if="verStatus('regime_gate')"
+                      :class="['ml-1 px-1 py-px rounded border text-[9px] font-normal align-middle',
+                               STATUS_STYLE[verStatus('regime_gate').status].cls]"
+                      :title="verifyTip(verStatus('regime_gate'))">
+                  {{ STATUS_STYLE[verStatus('regime_gate').status].text }}
+                </span>
+              </div>
               <!-- ★ 2026-09-25：按钮**常显**（原先只在 dcErr 时出现）—— 决策卡只按当日缓存一次，
                    用户需要能随时主动重算（如盘前数据更新后）。 -->
               <button @click="loadDecisionCard()" :disabled="dcLoading"
@@ -784,7 +792,16 @@
           <div v-if="dc" class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">战法
-                <span class="text-[10px] text-muted font-normal">（能不能做 · 为什么 · 信号分布）</span></div>
+                <span class="text-[10px] text-muted font-normal">（能不能做 · 为什么 · 信号分布）</span>
+                <!-- ★ 数据可信度：6 战法已于 2026-09-27 经 bootstrap 全市场检验证伪
+                     ⇒ 动态白名单当前为空，本卡「做什么」一栏经常为空属**正常**结果。 -->
+                <span v-if="verStatus('strategies')"
+                      :class="['ml-1 px-1 py-px rounded border text-[9px] font-normal align-middle',
+                               STATUS_STYLE[verStatus('strategies').status].cls]"
+                      :title="verifyTip(verStatus('strategies'))">
+                  {{ STATUS_STYLE[verStatus('strategies').status].text }}
+                </span>
+              </div>
             </div>
             <!-- ① 做什么（白名单 + 候选）+ 回避 —— 从决策卡摘出 -->
             <div class="text-xs space-y-1">
@@ -793,7 +810,32 @@
                 <b>{{ (dc.do?.whitelist || []).join('、') || '无白名单战法（推送静默）' }}</b>
                 <template v-if="(dc.do?.candidates || []).length">
                   · 候选 {{ dc.do.candidates.map(c => `${c.name} ${c.score}分`).join('、') }}
+                  <!-- ★ 数据可信度：候选来自综合评分，P0 独立性检验因样本不足未完成 -->
+                  <span v-if="verStatus('score')"
+                        :class="['ml-1 px-1 py-px rounded border text-[9px] align-middle',
+                                 STATUS_STYLE[verStatus('score').status].cls]"
+                        :title="verifyTip(verStatus('score'))">
+                    {{ STATUS_STYLE[verStatus('score').status].text }}
+                  </span>
                 </template>
+              </div>
+              <!-- ★ 2026-09-27 合并买入清单（战法命中个股 × 闸门就绪度）—— 此前
+                   用户要自己在「白名单战法名」与「评分 Top3」之间脑内合并。
+                   组合只由「战法命中 + 闸门」构成，**刻意不混入未验证的评分**。 -->
+              <div v-if="(dc.do?.merged || []).length" class="mt-1">
+                <span class="text-muted">合并清单：</span>
+                <div v-for="m in dc.do.merged" :key="m.code"
+                     class="ml-2 flex items-center gap-1.5 flex-wrap py-px">
+                  <span class="text-gray-300">{{ m.name }} ({{ m.code }})</span>
+                  <span class="text-muted">战法 {{ (m.strategies || []).join('、') }}</span>
+                  <span :class="(m.gate_ready || 0) >= 3 ? 'text-emerald-400'
+                                : (m.gate_ready || 0) === 2 ? 'text-amber-400' : 'text-muted'">
+                    闸门 {{ m.gate_ready || 0 }}/3{{ m.gate_label ? ' ' + m.gate_label : '' }}
+                  </span>
+                </div>
+              </div>
+              <div v-else class="text-[10px] text-muted">
+                合并清单为空 —— 当前无白名单战法命中（战法已证伪 ⇒ 动态白名单为空属正常）。
               </div>
               <div v-if="(dc.do?.avoid || []).length">
                 <span class="text-muted">回避：</span><span class="text-red-400">{{ dc.do.avoid.join('；') }}</span>
@@ -1932,6 +1974,10 @@ import TodoCard from '../components/workbench/TodoCard.vue'
 //   ⚠️ 本文件已有一个同名 `PHASE_STYLE` —— 那是**时段**配色（盘前/竞价/盘中…），
 //      语义完全不同 ⇒ 主力阶段配色必须**重命名导入**（`MF_PHASE_STYLE`），避免撞名。
 import { PHASE_STYLE as MF_PHASE_STYLE, strategyShort } from '../composables/displayMeta'
+// ★ 2026-09-27 数据可信度标注：「该不该买」（闸门，19.5 年核算）与「买什么」
+//   （评分未验证 / 战法已证伪）此前在界面上**一样权威**，用户无从分辨。
+//   本处把验证状态直接标在对应区块上（hover 显示摘要与证据脚本）。
+import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVerification'
 import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
@@ -3025,9 +3071,13 @@ watch(selectedDate, async (d) => {
   }
 })
 
+// ★ 数据可信度（供模板标注各区块的验证状态；失败静默不影响主流程）
+const { load: loadVer, statusOf: verStatus } = useVerification()
+
 onMounted(async () => {
   await loadDayIndex()
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
+  loadVer()      // 数据可信度总表（幂等，失败不影响主流程）
   // ★ 外盘四件套已移顶栏常驻（所有阶段可见）——挂载即加载 + 120s 轮询刷新
   loadGlobals()
   await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr)])

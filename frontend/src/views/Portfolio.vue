@@ -355,14 +355,34 @@
 
     <!-- 规则说明 -->
     <div class="bg-card border border-border rounded-lg p-4 text-xs text-muted">
-      <div class="font-semibold text-gray-300 mb-2">智能建议规则（趋势健康度 + 盈亏 + 评分综合判断）</div>
+      <div class="font-semibold text-gray-300 mb-2">
+        统一出场建议 · 优先级（后端单一事实源）
+        <span class="ml-2 font-normal text-[10px] text-muted">GET /api/user/exit-advice</span>
+        <!-- ★ 数据可信度：出场阈值（−8%/RSI/放量）与前端/教练口径已对齐，
+             但**未见回测** ⇒ 如实标注「未验证」，不冒充已验证结论。 -->
+        <span v-if="verStatus('exit_alert')"
+              :class="['ml-1 px-1 py-px rounded border text-[10px] font-normal align-middle',
+                       STATUS_STYLE[verStatus('exit_alert').status].cls]"
+              :title="verifyTip(verStatus('exit_alert'))">
+          {{ STATUS_STYLE[verStatus('exit_alert').status].text }}
+        </span>
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
-        <div><span class="text-emerald-400">可加仓</span>：趋势健康（≥4/5）+ 盈利 + 评分≥60</div>
-        <div><span class="text-muted">持有</span>：趋势≥3/5 且 亏损<5%，正常回调</div>
-        <div><span class="text-amber-400">减仓½</span>：趋势≤2/5 且 亏损>3%，或触发移动止盈</div>
-        <div><span class="text-red-400">准备清仓</span>：趋势恶化（≤1/5）或评分≤35</div>
-        <div><span class="text-red-400">清仓</span>：浮亏≤{{ ALERT_CONFIG.stopLossPct }}% 硬止损</div>
-        <div><span class="text-amber-400">减仓½</span>：浮盈≥+{{ ALERT_CONFIG.takeProfitPct }}% 硬止盈</div>
+        <div><span class="text-red-400">① 清仓</span>：闸门禁止持仓（defensive / 主力出货）</div>
+        <div><span class="text-red-400">② 清仓</span>：浮亏 ≤ {{ ALERT_CONFIG.stopLossPct }}% 硬止损</div>
+        <div><span class="text-red-400">③ 清仓</span>：技术面紧急（跌破止损价 / 跌破强支撑）</div>
+        <div><span class="text-amber-400">④ 减仓⅓</span>：自阶段高点回撤 ≥ {{ ALERT_CONFIG.trailingDrawdownPct }}%（移动止盈）</div>
+        <div><span class="text-amber-400">⑤ 减仓½</span>：技术面警告（RSI 超买回落 / 放量下跌）</div>
+        <div><span class="text-amber-400">⑥ 减仓½</span>：浮盈 ≥ +{{ ALERT_CONFIG.takeProfitPct }}% 硬止盈</div>
+        <div><span class="text-amber-400">⑦ 减仓½</span>：主力阶段为『出货』</div>
+        <div><span class="text-amber-400">⑧ 关注减仓</span>：综合评分 ≤ {{ ALERT_CONFIG.scoreSellThreshold }}</div>
+        <div><span class="text-muted">⑨ 持有</span>：以上均未触发</div>
+        <div><span class="text-emerald-400">可加仓</span>：闸门三条件就绪且已有浮盈</div>
+      </div>
+      <div class="mt-2 text-[10px]">
+        ★ 建议列由后端统一仲裁（组合面 portfolio_radar + 技术面 exit_alert + 移动止盈），
+        与工作台「持仓预案」同源，<span class="text-gray-300">不再各处各算一套</span>。
+        后端不可用时回退本地口径，并在理由末尾标注「本地口径·降级」。
       </div>
       <div class="mt-3 pt-3 border-t border-border">
         <div class="font-semibold text-gray-300 mb-1">趋势健康度 5 维度</div>
@@ -399,7 +419,9 @@ import {
   exportJSON, importJSON, usePortfolio, ALERT_CONFIG,
   isTradingTime, getRefreshInterval,
 } from '../composables/usePortfolio'
-import { getMarketTemperature, getUserPositionSizing } from '../api'
+import { getMarketTemperature, getUserPositionSizing, getUserExitAdvice } from '../api'
+// ★ 2026-09-27 数据可信度标注（出场阈值属规则设定，未见回测 ⇒ 如实标「未验证」）
+import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVerification'
 import {
   supported as notifSupported, permission as notifPermission,
   enabled as notifEnabled, requestPermission, disable as disableNotification,
@@ -445,6 +467,13 @@ const predictionLoading = ref({}) // { [code]: true/false }
 const trendHealthMap = ref({})   // { [code]: { score, verdict, details } }（本地计算，复用 technical）
 const marketTemp = ref({})    // 市场温度
 const sizingMap = ref(null)   // 仓位建议（后端数据联动：regime+宏观+情绪+宽度+主力筹码）
+// ★ 2026-09-27 统一出场建议（「什么时候卖」单一事实源，后端 /user/exit-advice）：
+//   { [code]: { action, level, reasons[], sources[], tech, radar_alerts } }
+//   取代此前本页 evaluatePositionAction 的自算口径 —— 消除「同持仓在工作台说持有、
+//   在这里说减仓」的分裂。后端不可用时自动回退本地计算（见 tableRows）。
+const exitAdviceMap = ref({})
+// 数据可信度（供出场规则卡标注；幂等，失败静默）
+const { load: loadVer, statusOf: verStatus } = useVerification()
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
 const tradingNow = ref(isTradingTime())  // 当前是否交易时段（用于 UI 提示）
@@ -465,7 +494,22 @@ const tableRows = computed(() => {
     const alerts = evaluateAlerts(p, realtime, score)
     // ★ W1.5：建议仓位 + 智能建议数据联动（position_sizing 个股层：regime/主力/筹码）
     const sz = sizingMap.value?.positions?.find(s => s.code === p.code)
-    const posAction = evaluatePositionAction(p, score, realtime, sz)
+    // ★ 2026-09-27「什么时候卖」优先用**后端统一口径**（单一事实源）：
+    //   后端 = portfolio_radar（组合面）+ exit_alert（技术面）+ 移动止盈，已做优先级仲裁。
+    //   后端不可用（无持仓数据/接口失败）→ 回退本地 evaluatePositionAction，
+    //   并在 reason 末尾标注来源，避免用户把降级结果当成统一结论。
+    const adv = exitAdviceMap.value[p.code]
+    const posAction = adv
+      ? {
+          action: adv.action,
+          level: adv.level || 'info',
+          reason: (adv.reasons || []).join('；') || adv.action,
+          source: '后端统一口径',
+        }
+      : (() => {
+          const local = evaluatePositionAction(p, score, realtime, sz)
+          return { ...local, reason: `${local.reason}（本地口径·降级）`, source: '本地降级' }
+        })()
     const posSize = sz
       ? { perStock: sz.suggested_pct, totalLimit: sizingMap.value.total_limit_pct, reason: sz.position_label }
       : null
@@ -656,6 +700,15 @@ async function refresh() {
   getUserPositionSizing().then(res => {
     if (res && res.data) sizingMap.value = res.data
   }).catch(() => {})
+  // ★ 统一出场建议（单一事实源）。后端有 10 分钟进程缓存 ⇒ 高频刷新不会造成重复 kline 拉取。
+  //   失败静默：tableRows 会自动回退本地口径（并标注「本地（降级）」）。
+  getUserExitAdvice().then(res => {
+    const d = res && res.data
+    if (!d || !Array.isArray(d.items)) return
+    const m = {}
+    for (const it of d.items) if (it && it.code) m[it.code] = it
+    exitAdviceMap.value = m
+  }).catch(() => {})
 
   Promise.allSettled([...realtimePromises, ...scorePromises, tempPromise]).finally(() => {
     // 行情 + 评分都到位后，检查并发送桌面通知（内部做 diff 去重）
@@ -821,6 +874,7 @@ function goDetail(code) {
 onMounted(() => {
   // 初始刷新一次（显示最新数据）
   refresh()
+  loadVer()   // 数据可信度总表（幂等，失败不影响主流程）
   fastQuotes.start()
   startTimer()  // 交易时段自动轮询，非交易时段不轮询
   // 从数据库同步持仓

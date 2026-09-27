@@ -247,6 +247,20 @@ def _size_style(stocks: Dict, index_pct: Optional[float]) -> Dict:
         return {"available": False, "note": "计算失败"}
 
 
+@router.get("/verification")
+def verification_status():
+    """★ 2026-09-27 数据可信度总表（**单一事实源**）。
+
+    为什么需要：界面上「该不该买」（闸门，19.5 年验证）与「买什么」（评分/战法，
+    未验证甚至已证伪）**看起来同样权威**，用户无从分辨。
+    本接口把各结论的验证状态集中返回，供前端标注：
+      `verified` 已验证 / `partial` 部分成立 / `unverified` 未验证 / `falsified` 已证伪。
+    详见 `app/verification.py`（其中每条都写明证据脚本）。
+    """
+    from app.verification import build as build_verification
+    return build_verification()
+
+
 @router.get("/events")
 def market_events():
     """事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。

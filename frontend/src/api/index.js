@@ -272,6 +272,15 @@ export const deleteUserPlan = (id) => http.delete(`/user/plans/${id}`)
 export const getUserPortfolio = () => http.get('/user/portfolio')
 // 仓位建议（W1.5）：后端数据联动（regime+宏观+情绪+宽度+主力筹码），替代前端写死规则
 export const getUserPositionSizing = () => http.get('/user/position-sizing')
+// ★ 2026-09-27 统一出场建议（「什么时候卖」的单一事实源）：
+//   后端合并 portfolio_radar（组合面）+ exit_alert（技术面）+ 移动止盈，
+//   输出单一 action（清仓/减仓½/减仓⅓/关注减仓/持有/可加仓）。
+//   取代此前「我的持仓页前端自算」那套 —— 消除同持仓在不同页给出相反建议的问题。
+export const getUserExitAdvice = () => http.get('/user/exit-advice')
+// ★ 2026-09-27 数据可信度总表（「已验证 / 未验证 / 已证伪」单一事实源）。
+//   用于在界面标注各结论的实证状态 —— 避免用户把未验证的评分/战法
+//   与已验证的闸门（19.5 年核算）当成同等权威。见 backend/app/verification.py。
+export const getVerification = () => http.get('/market/verification')
 // ★ 2026-09-25：龙虎榜（读库 lhb_history，每日 17:45 同步）。
 //   不传 code ⇒ 某日净买/净卖榜 + 统计；传 code ⇒ 该股上榜历史（含席位明细，如有）。
 export const getDragonTiger = (params) => http.get('/capital/dragon-tiger', { params })

@@ -266,6 +266,24 @@ def get_position_sizing(user: dict = Depends(get_current_user)):
     return position_sizing(codes)
 
 
+@router.get("/exit-advice")
+def get_exit_advice(user: dict = Depends(get_current_user)):
+    """★ 2026-09-27 统一出场建议（「什么时候卖」的**单一事实源**）。
+
+    背景：此前"什么时候卖"有三套互不相通的口径（`strategies/exit_alert`
+    只在**评分榜/战法页**出现；`portfolio_radar` 在工作台；前端 `usePortfolio`
+    自算一套在「我的持仓」）⇒ 同一持仓在不同页面可能给出相反建议。
+
+    本接口把三者收敛为**一个 action**（清仓/减仓½/减仓⅓/关注减仓/持有/可加仓）：
+      · 组合/状态面复用 `portfolio_radar`（**不重算**）；
+      · 技术面复用 `exit_alert`（止损/支撑/RSI/放量，进程内 10 分钟缓存）；
+      · 移动止盈补齐到后端（用 `created_at` 近似买入日取真实阶段高点）。
+    判据全部来自既有模块，本层只做**优先级仲裁**（详见 `app/exit_advice.py`）。
+    """
+    from app.exit_advice import build as build_exit_advice
+    return build_exit_advice()
+
+
 # ================================================================
 #  批量同步（全量覆盖，用于初次迁移或设备间强制同步）
 # ================================================================
