@@ -1557,6 +1557,20 @@ def market_emotion():
         # ★ 2026-09-25：休市时行情缓存可能是"最近交易日的静态数据" ⇒ 前端需知道
         #   "这不是当日实时"以免误读（与下面的 has_live / data_date 一起判断）。
         "trading_day": _is_tday(),
+        # ★★ 2026-09-29：**行情缓存自身的数据时刻** —— 与 `data_date` **口径不同、必须并存**：
+        #   · `data_date`  = **日历推断**（`_price_date()`：盘中=今天 / 否则=最近已完成交易日）
+        #     ⇒ 它说的是"**按日历**，此刻的价格应该属于哪天"，**不代表缓存真有那天的数据**；
+        #   · `quote_as_of` = `tencent._cache["data_ts"]`（实时刷新=抓取时刻 / 快照恢复=快照
+        #     `saved_at`）+ `quote_from_snapshot`。
+        #   【真事故】线上缓存冻结在 09-24 收盘快照时，`data_date` 照样报 09-28
+        #   ⇒ 页面"看起来很新"，而现价/盈亏全是 09-24 的。两者并列后，前端与排查方
+        #   **一眼**就能看出"日历说是 09-28、行情其实停在 09-24"。
+        #   ⚠️ 用 `_t.gmtime(ts+8h)` 而非 `datetime.fromtimestamp`：后者走服务器本地时区
+        #     （生产 UTC / 本地 +08）⇒ 会双加 8 小时。
+        "quote_as_of": (_t.strftime("%Y-%m-%d %H:%M",
+                                    _t.gmtime(float(_cache.get("data_ts")) + 8 * 3600))
+                        if _cache.get("data_ts") else None),
+        "quote_from_snapshot": bool(_cache.get("from_snapshot")),
         # ★ `has_live=False` ⇒ 下面所有"今日"计数为 None（缺失，非 0）——见函数上方注释
         "has_live": has_live,
         # ★ 价格数据截至哪一天（休市时前端用它解释"—"的含义，而不是让人猜）

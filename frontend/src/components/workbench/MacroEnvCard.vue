@@ -10,8 +10,12 @@
     <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
     <template v-else>
       <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行，
-           严格单行不换行：长文本一律 truncate，悬停 title 看全文） -->
-      <div class="flex items-center gap-5 min-w-0">
+           严格单行不换行：长文本一律 truncate，悬停 title 看全文）
+           ★ 2026-09-29：上述是**默认（内联卡）**口径；`full=true`（顶栏浮层）改成
+             "可换行 + 不截断"= **展示全部**（见 `full` prop 注释）。 -->
+      <div :class="full
+              ? 'flex flex-wrap items-center gap-x-5 gap-y-2 min-w-0'
+              : 'flex items-center gap-5 min-w-0'">
         <div class="flex items-center gap-2.5 flex-shrink-0">
           <span class="text-4xl font-bold font-mono leading-none"
                 :class="dirColor(macro.direction?.level)">
@@ -22,7 +26,11 @@
                  :class="dirColor(macro.direction?.level)">
               宏观方向 · {{ macro.direction?.level || '—' }}
             </div>
-            <div class="text-[11px] text-muted truncate max-w-[240px]"
+            <!-- ⚠️ `full` 下仍给一个**宽度上限**（360px）而不是完全放开：这句的父级是
+                 `flex-shrink-0`（不收缩），若让它按 max-content 撑开，整行会再度超出面板
+                 ⇒ 又不是"展示全部"了。给上限 ⇒ 它在 2~3 行内**完整换行显示**（不截断）。 -->
+            <div class="text-[11px] text-muted"
+                 :class="full ? 'max-w-[360px]' : 'truncate max-w-[240px]'"
                  :title="macro.direction?.advisory">{{ macro.direction?.advisory || '' }}</div>
           </div>
         </div>
@@ -37,7 +45,10 @@
           </div>
         </div>
         <div class="w-px h-12 bg-border flex-shrink-0"></div>
-        <div class="flex items-center gap-3 flex-1 min-w-0">
+        <!-- ⚠️ `full` 时给 `min-w-[280px]`：让这一段**够窄就整段换行**（而不是把叙事压成一条），
+             否则 flex 会优先压缩它、truncate 兜底 ⇒ "展示全部"就落空了。 -->
+        <div :class="full ? 'flex items-center gap-3 flex-1 min-w-[280px]'
+                          : 'flex items-center gap-3 flex-1 min-w-0'">
           <div class="flex-shrink-0">
             <div class="text-sm font-bold whitespace-nowrap"
                  :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
@@ -48,11 +59,12 @@
           </div>
           <!-- ★ 2026-09-25 用户要求：文字部分同一 div 上下布局（叙事上 / 仓位·详情下） -->
           <div class="flex-1 min-w-0 text-xs">
-            <div class="text-gray-300 truncate"
+            <div class="text-gray-300"
+                 :class="full ? '' : 'truncate'"
                  :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
               {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
             </div>
-            <div class="text-muted whitespace-nowrap">
+            <div class="text-muted" :class="full ? '' : 'whitespace-nowrap'">
               仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
               <!-- ★ 2026-09-25 用户："仓位建议『轻仓观望』后面补上具体上限数字" ——
                    LLM 那句是**定性**的，这里补上仓位引擎算出的**定量上限**
@@ -172,6 +184,12 @@ const props = defineProps({
   flashDiag: { type: Object, default: null },
   sizing: { type: Object, default: null },
   sentiment: { type: Object, default: null },
+  // ★ 2026-09-29（用户："你改为展示全部吧，宽度自适应"）：`full = true` ⇒ **展示全部**：
+  //   首行允许**换行**、所有长文本**不截断**（顶栏浮层用 —— 浮层里没有"必须单行"的理由，
+  //   而截断会让用户看不到 叙事/仓位建议 的全文）。
+  //   ⚠️ 默认 false 保持不变 = 内联卡（盘前那处）的「严格单行 + truncate + hover 看全文」
+  //      —— 那是 2026-09-25 用户明确要求的，**不能顺手改掉**（两处诉求不同）。
+  full: { type: Boolean, default: false },
 })
 
 // ★ 2026-09-28：原来定义在 `Workbench.vue`，只被本卡用 ⇒ 随卡一起内聚到这里。

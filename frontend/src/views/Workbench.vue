@@ -41,10 +41,19 @@
           <span v-if="statusTime">· {{ statusTime }}</span>
           <span>▾</span>
         </button>
-        <div v-if="statusOpen" class="fixed inset-0 z-40" @click="statusOpen = false"></div>
+        <!-- ★ 2026-09-29：与「宏观」浮层同款处理 —— 遮罩**压暗**（原来完全透明 ⇒ 没有层次线索），
+             但压得轻一些（这是个小组件，不是大对话框）。 -->
+        <div v-if="statusOpen" class="fixed inset-0 z-40 bg-black/45"
+             @click="statusOpen = false"></div>
+        <!-- ★ 2026-09-29（同「宏观」浮层的溢出问题）：高度上限从 `70vh` 改为
+             `calc(100vh - 6rem)` —— `70vh` 没扣掉顶栏（`App.vue` 的 48px sticky 导航）与
+             浮层起点，短屏下底部会顶出屏幕；此值保证「起点 + 高度」恒在视口内。
+             `overscroll-contain` 防滚动穿透。横向本就在左侧、`left-0` 无溢出风险，故仍锚在按钮下。 -->
         <div v-if="statusOpen"
-             class="absolute left-0 top-full z-50 mt-1 w-[min(92vw,420px)] max-h-[70vh] overflow-auto
-                    bg-card border border-border rounded-lg p-3 shadow-xl text-xs space-y-1"
+             class="absolute left-0 top-full z-50 mt-1 w-[min(92vw,420px)]
+                    max-h-[calc(100vh_-_6rem)] overflow-y-auto overscroll-contain
+                    bg-card border border-white/15 rounded-lg p-3 text-xs space-y-1
+                    shadow-[0_16px_48px_-12px_rgba(0,0,0,0.9)]"
              v-html="statusHtml"></div>
       </div>
 
@@ -125,15 +134,57 @@
           <div class="text-[10px] mt-0.5 whitespace-nowrap"
                :class="dirColor(macro?.direction?.level)">宏观·{{ macro?.direction?.level || '—' }}</div>
         </button>
-        <div v-if="macroOpen" class="fixed inset-0 z-40" @click="macroOpen = false"></div>
-        <!-- 浮层宽度取 min(92vw,720px)：宏观卡内部有 `md:grid-cols-2`（断点按**视口**算），
-             太窄会让两列挤在一起 ⇒ 给足宽度。 -->
+        <!-- ★★ 2026-09-29（用户："浮层的背景色跟项目的背景色相同，边框的颜色也不明显，
+             有没有好的办法做个视觉上的区分？"）：
+             原遮罩是**完全透明**的（只为"点外面关闭"而存在），而浮层和页面卡片同用 `--card`、
+             描边用的是 `--border`（#21262d，比底色只亮一点点）⇒ **没有任何"浮在上层"的线索**。
+             三条线索一起给（缺任一条都会显得"糊在一起"）：
+               ① **压暗 + 轻微模糊**页面（遮罩）—— 最有效的一条：有它才有"模态/在上层"的读感
+                  （站内先例：`Strategies.vue` 详情弹窗用 `bg-black/50`）；
+               ② **亮描边** `border-white/15` 取代几乎看不见的 `--border`；
+               ③ **深投影**（自定义，`shadow-2xl` 只有 25% 黑，在深色底上等于没有）。 -->
         <div v-if="macroOpen"
-             class="absolute left-0 top-full z-50 mt-1 w-[min(92vw,720px)] max-h-[70vh] overflow-auto"
-             @click.stop>
-          <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
-                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
-        </div>
+             class="fixed inset-0 z-40 bg-black/60 backdrop-blur-[2px]"
+             @click="macroOpen = false"></div>
+        <!-- ★★ 2026-09-29（用户："顶部的宏观与环境点击显示的弹窗长度都溢出屏幕了，看不完整"）：
+             【原实现的两个硬伤】`absolute left-0 top-full w-[min(92vw,720px)] max-h-[70vh]`
+             ① **水平溢出**：触发按钮在顶栏**右侧**，`left-0`（左边缘对齐按钮）⇒ 720px 宽的面板
+                向右**伸出视口**，右半边看不见（"看不完整"的真因）；
+             ② **垂直没预留顶栏**：`70vh` 是按**视口**算的，但面板起点在顶栏下方
+                （另有 `App.vue` 的 `sticky top-0 z-50` 导航占 48px）⇒ 实际底部 = 起点 + 70vh
+                可能越过屏幕下沿；且浮层挂在可换行的顶栏行内，高度会被行布局牵制。
+             【改法】**Teleport 到 body + fixed 定位**（与全站既有弹窗同款，见 `Strategies.vue`
+             的详情弹窗）：`left-1/2 -translate-x-1/2` 水平居中 ⇒ **两侧都不可能出屏**；
+             `top-[3.25rem]`（正好在 48px 导航 + 余量之下）+ `max-h-[calc(100vh_-_4rem)]`
+             ⇒ 底部恒在屏幕内 12px 处、**结构上不可能超出屏幕**，超出走**内部滚动**
+             （`overscroll-contain` 防滚动穿透到页面）。
+             ⚠️ Teleport 还顺带摆脱了任何祖先 `overflow/sticky` 的裁剪与层叠（`z-50` 与导航同级，
+                靠 body 末尾的 DOM 顺序压住）。宽度仍给足 720px —— 卡内有 `md:grid-cols-2`
+                （断点按**视口**算），太窄会把两栏挤在一起。
+             ★★ 2026-09-29 追加（用户："点击显示之后，滚动到最右边，溢出部分的背景色怎么是透明的"）：
+                **滚动容器自身必须带底色**（`bg-card`）。原因：卡内那一行是
+                `flex` + 多个 `flex-shrink-0` 段（刻意"严格单行不换行"，见 `MacroEnvCard` 注释）
+                ⇒ 面板变窄时内容会比容器宽；而卡片是 `w-full` 块级元素，它的底色**只覆盖自身矩形**
+                ⇒ 横向滚到卡片右边缘之外的那片区域就露出页面（透明）。
+                ⇒ 由**滚动容器**兜底上色（`overflow-x-auto` 显式写出，表明"会横滚、且已兜色"）。
+                ⚠️ 不能用 `overflow-x-hidden` 压制：那会把"事件诊断/叙事"整段裁掉（宁可能滚，不可丢信息）。 -->
+        <Teleport to="body">
+          <div v-if="macroOpen"
+               class="fixed left-1/2 -translate-x-1/2 top-[3.25rem] z-50
+                      w-[min(96vw,1120px)] max-h-[calc(100vh_-_4rem)]
+                      overflow-y-auto overflow-x-auto overscroll-contain
+                      bg-card border border-white/15 rounded-lg
+                      shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]"
+               @click.stop>
+            <!-- ★ 2026-09-29（用户："你改为展示全部吧，宽度自适应"）：
+                 `full` ⇒ 卡片首行**可换行、长文本不截断**（浮层里没有"必须单行"的理由，
+                 反而截断会藏住 叙事/仓位建议 的全文）；
+                 宽度 `min(96vw,1120px)` **自适应屏宽**（原固定 720px 是为了"单行塞得下"，
+                 现在既然可换行，就用足屏幕 —— 两列 grid（支撑/压制、过热/过冷）也更舒展）。 -->
+            <MacroEnvCard full :macro="macro" :macro-err="macroErr" :temperature="temperature"
+                          :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
+          </div>
+        </Teleport>
       </div>
 
       <!-- 情绪/市况模块（归并为一组）；★ 2026-09-25 用户反馈：顶栏一行放不下，
@@ -1187,7 +1238,16 @@
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
                 风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
-              <span v-if="radarAsOf" class="text-[10px] text-muted font-mono">数据时点 {{ radarAsOf.slice(11, 16) }}</span>
+              <!-- ★★ 2026-09-29（用户："昨天 -0.61%，怎么今天还是 -0.61%"）：时点必须显示
+                   **行情自身时刻**，而不是 `as_of`（= 本次计算时刻）—— 后者在行情缓存陈旧时
+                   看着像"刚刷新过"（本页 1354 行早有同条纪律："不用请求时刻顶替数据时刻"）。
+                   实测踩坑：线上行情缓存冻结在 09-24 收盘快照，卡片却写"数据时点 00:21"
+                   ⇒ 用户完全看不出"现价/今日/盈亏"是两天前的。快照态标黄提示非实时。 -->
+              <span v-if="radarQuote" class="text-[10px] font-mono"
+                    :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
+                    :title="radarQuoteTitle">
+                行情 {{ radarQuote.text }}</span>
+              <span v-else-if="radarAsOf" class="text-[10px] text-muted font-mono">计算于 {{ radarAsOf.slice(11, 16) }}</span>
             </div>
             <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
             <div v-else-if="!radarItems.length" class="text-muted text-xs">
@@ -2147,6 +2207,10 @@ const radarItems = ref([])
 const radarSummary = ref({})
 const radarNote = ref('')
 const radarAsOf = ref('')
+// ★ 2026-09-29：行情**数据自身时刻**（后端 `quote_as_of` / `quote_from_snapshot`，来自
+//   `tencent._cache["data_ts"]`）—— 与 `radarAsOf`（= 本次计算时刻）**不是一回事**。
+const radarQuoteAsOf = ref('')
+const radarQuoteSnap = ref(false)
 const radarErr = ref('')
 const topItems = ref([])
 const topErr = ref('')
@@ -2405,6 +2469,26 @@ const styleTitle = computed(() => {
     + `数据 ${s.as_of || '—'}${s.from_snapshot ? '（收盘快照，非实时）' : ''}\n${s.note || ''}`
 })
 const radarSummaryKeyed = computed(() => radarSummary.value || {})
+// ★ 2026-09-29：卡片"时点"文案 —— 快照态显示 `MM-DD HH:MM · 快照`（标黄），实时态只显示 HH:MM。
+const radarQuote = computed(() => {
+  const ts = radarQuoteAsOf.value
+  if (!ts) return null
+  return {
+    text: radarQuoteSnap.value ? `${ts.slice(5, 16)} · 快照` : ts.slice(11, 16),
+    stale: !!radarQuoteSnap.value,
+  }
+})
+// ⚠️ hover 文案放 computed 里而不是模板内联：模板里**跨行**的反引号字符串会被
+//   @vue/compiler 的表达式解析器判成 "Unterminated template"（实测踩到，构建直接失败）。
+const radarQuoteTitle = computed(() => {
+  if (!radarQuote.value) return ''
+  return [
+    `行情数据自身时刻 = ${radarQuoteAsOf.value}` +
+      (radarQuoteSnap.value ? '（收盘快照，非实时）' : ''),
+    `本卡片计算时刻 = ${radarAsOf.value || '—'}（是"什么时候算的"，不是"数据是什么时候的"）`,
+    '现价 / 今日 / 盈亏 都取自这份行情；两者不一致 = 行情源陈旧',
+  ].join('\n')
+})
 // 组合待办：未决策教练卡（当天实时 / 回放日全部）
 const todayCoach = computed(() => {
   if (isReplay.value) return replay.value.coach
@@ -2658,6 +2742,8 @@ async function loadRadar() {
     radarSummary.value = (data && data.summary) || {}
     radarNote.value = (data && data.note) || ''
     radarAsOf.value = (data && data.as_of) || ''
+    radarQuoteAsOf.value = (data && data.quote_as_of) || ''
+    radarQuoteSnap.value = !!(data && data.quote_from_snapshot)
     radarErr.value = ''
   } catch (e) {
     radarErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）

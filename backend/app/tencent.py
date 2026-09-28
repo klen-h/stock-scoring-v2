@@ -454,6 +454,26 @@ def restore_market_snapshot(restore_stocks: bool = True) -> bool:
             _cache["from_snapshot"] = True
         print(f"[snapshot] 已从收盘快照恢复行情: {len(snap['stocks'])} 只 "
               f"(快照时间 {snap.get('saved_at')})")
+        # ★ 2026-09-29：**陈旧快照告警**（真事故）：线上从数据包恢复了 **09-24** 的收盘快照，
+        #   而 09-28 整个交易日的盘中刷新都没成功 ⇒ 行情缓存两天不动，interface/卡片显示的
+        #   "现价/今日/持仓盈亏"全是 09-24 的，而时点用的是"请求时刻"⇒ 用户看不出是旧数据。
+        #   这里把「快照日 vs 期望日」直接打进日志（启动时唯一能自证的地方）。
+        #   期望口径：今天（交易日 9:15 后）或最近已完成交易日 —— 与 `_price_date()` 一致。
+        try:
+            from app.flash.rules import (beijing_now as _bj_now, is_trading_day as _is_td,
+                                         latest_completed_trading_day as _lctd)
+            _raw = str(snap.get("saved_at") or "")
+            _day = _raw[:10] or "?"
+            _now = _bj_now()
+            _expect = (_now.strftime("%Y-%m-%d")
+                       if (_is_td(_now) and (_now.hour, _now.minute) >= (9, 15))
+                       else str(_lctd())[:10])
+            if _day != _expect:
+                print(f"[snapshot] [WARN] 恢复的快照**不是最近交易日**: 快照 {_day} / "
+                      f"期望 {_expect} ⇒ 行情已陈旧，等盘中刷新覆盖；"
+                      f"若长时间不变，查 stock_cache_refresh_loop 的失败日志")
+        except Exception:
+            pass
         return True
     print(f"[snapshot] 已恢复 {len(_valid_codes)} 个有效代码（行情待盘中刷新）")
     return False

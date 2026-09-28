@@ -16,7 +16,57 @@
 - 调度器 `app/flash/scheduler.py` 起 ~30 个 asyncio loop，按日幂等。LLM/轻量推送用 `asyncio.create_task`；重活走 `*_heavy`（`RENDER_READ_ONLY=1` 全关）。
 - 盘后链路：K线 15:30 → 指标 16:40 → 快照 18:00 → 主线/消息分/日报 19:15+；决策简报按 `(date, phase)` 落 `trader_briefs`。
 
+## 前端布局纪律（浮层 / 弹窗）
+- ★★ **顶栏浮层不可"锚点 + 视口比例 max-h"就完事**（2026-09-29 用户报："顶部的宏观与环境
+  点击显示的弹窗长度都溢出屏幕了，看不完整"）。两处硬伤：
+  ① **横向**：触发按钮在顶栏**右侧**时，`absolute left-0 top-full w-[min(92vw,720px)]`
+    会把面板**向右推出视口**（右半看不见）；
+  ② **纵向**：`max-h-[70vh]` 按视口算，却没扣掉起点 —— `App.vue` 的导航是
+    `sticky top-0 z-50` 占 48px，且浮层挂在**可换行的顶栏行内** ⇒ 底部越界。
+  ⇒ **统一做法**：`<Teleport to="body">` + `fixed`（摆脱祖先 `overflow/sticky` 裁剪与层叠）
+  + `max-h-[calc(100vh_-_Nrem)]` + `overflow-y-auto overscroll-contain`；
+  水平居中用 `left-1/2 -translate-x-1/2`（两侧都不可能出屏），或按触发位置选 `left-0`/`right-0`
+  但必须留边距。全站先例：`Strategies.vue` 的详情弹窗（`fixed … max-h-[90vh] overflow-y-auto`）。
+  ⚠️ Tailwind 任意值里 `calc` 的空格必须写 `_`（`calc(100vh_-_4rem)`）；压缩后可能变成
+  `64px`，所以核对生成结果要 grep `max-height:calc` 而不是原字面量。
+  ⚠️ 排查顺序：先确认类**是否生成**（`dist/**/*.css` 里 grep）—— 本次 `max-h-[70vh]` 是**生效的**，
+  真因在"起点 + 高度没一起约束"，别一上来就怀疑 Tailwind 没扫到。
+- ★ **同一组件在"内联"与"浮层"两种场景的诉求可能相反 ⇒ 用 prop 分流，别顺手改掉既有诉求**
+  （2026-09-29 实例：`MacroEnvCard` 内联卡是 2026-09-25 用户明确要求的"严格单行 + truncate"，
+  而浮层里用户要"展示全部 + 宽度自适应" ⇒ 加 `full` prop，浮层传 `true`，内联保持默认）。
+  ⚠️ 放开截断时**仍要给宽度上限**：被 `flex-shrink-0` 包着的文本块会按 max-content 撑开，
+  反而把容器撑破（本次给"宏观建议"留 360px 上限）。
+- ★ **深浅色主题里"浮层要看得出来浮着"靠三件套，不是靠换个底色**（2026-09-29）：
+  ① **遮罩压暗**（`bg-black/60` 起；全透明遮罩 = 没有层次线索，页面没被压下去）；
+  ② **亮描边**（`border-white/15`；本项目的 `--border`=#21262d 只比卡片亮一点，做浮层边界**不够**）；
+  ③ **深投影** —— ⚠️ Tailwind 的 `shadow-2xl` 只有 25% 黑，**深色底上等于没有**，要用
+  `shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]` 这类自定义值。
+  ⚠️ 核对投影**不能** grep `box-shadow:0 24px…`：Tailwind 走 `--tw-shadow` / `--tw-shadow-colored`
+  变量，字面量只出现在变量里（会误判成"没生成"）。
+- ★ **滚动容器必须自带底色**（2026-09-29 同日追问："滚动到最右边，溢出部分的背景色怎么是透明的"）：
+  `overflow-y-auto` 会把**另一轴的 `visible` 计算成 `auto`** ⇒ 容器实际**会横滚**；
+  而里面的卡片是 `w-full` 块级元素、**底色只覆盖自身矩形** ⇒ 横滚出它右边缘的区域无人上色
+  ⇒ 露出页面（"透明"）。⇒ 给滚动容器加 `bg-card` 并**显式写** `overflow-x-auto`。
+  ⚠️ 别用 `overflow-x-hidden` 压制 —— 会把内容整段裁掉（宁可能滚，不可丢信息）。
+
 ## 数据与缓存
+- ★★★ **`tencent._cache` 的 `last_update` ≠ `data_ts`，显示"数据时点"必须用后者**（2026-09-29 重大踩坑）：
+  · `last_update` = **缓存填充时刻**（快照恢复时**故意**设成"现在"，注释原话"标记为新鲜"）；
+  · `data_ts` = **数据自身时刻**（实时刷新=抓取时刻 / 快照恢复=快照 `saved_at`）；`from_snapshot` 配套。
+  ⇒ 任何"数据截至/时点"显示都用 `data_ts`+`from_snapshot`（项目 106-123 行已写明，消费者仍漏用）。
+  实测事故：线上缓存**冻结在 09-24 收盘快照**、09-28 整日刷新未成功 ⇒ 持仓卡"现价/今日/盈亏"
+  全是两天前的，而卡片显示的是**计算时刻**（"数据时点 00:21"）⇒ 用户两天后才发现"盈亏没变"。
+  **暴露字段**：`/api/market/emotion` 与 `portfolio_radar.build()` 都新增 `quote_as_of` /
+  `quote_from_snapshot`；工作台持仓卡显示「行情 MM-DD HH:MM · 快照」（快照标黄）。
+  **主动巡检**：`stock_cache_refresh_loop` 比对 `data_ts` 日 vs 期望日（交易日 9:15 后=今天，
+  否则=最近已完成交易日）⇒ 不符打 WARN；`restore_market_snapshot` 恢复时也查一次。
+  **判定"缓存停在哪天"的标准动作**：取同一批股票 `change_pct`（线上 `/score/batch/top?limit=10`）
+  与库里 `backtest_prices` 各交易日收盘涨幅**逐只比对** ⇒ 全部吻合的那天就是冻结日。
+  ⚠️ `/api/market/emotion` 的 `data_date` 是**日历推断**（`_price_date()`），**不能**用来证明缓存日期。
+- ★ 时点格式化纪律：`datetime.fromtimestamp` 走**服务器本地时区**（生产 UTC / 开发机 +08）⇒
+  会双加 8 小时、且我两次踩到。统一用 `time.gmtime(ts + 8*3600)`（与时区无关）。
+- ★ Vue 模板坑：属性里**跨行**的反引号字符串 ⇒ `Unterminated template`，构建直接失败
+  （2026-09-29 实拍）。多行 hover 文案一律放进 `computed`，或单行用 `\n`。
 - **轮询接口必须"裁列 + 截断正文"**：前端 60s/120s 轮询的列表接口是最大 egress 大户（页面开着就持续消耗）。加 `trunc` 参数用 `SUBSTR(col,1,%s)`（⚠️ SQLite 无 `LEFT()`）；列表显式列并排除大字段。判据：**凡是"前端定时轮询 + 返回表行"都要问"列表真的需要整行吗"**。
 - **本机持久缓存统一模式**（flow/l3/market-emotion-closes/ind-dist-src 4 处）：进程内 → 本机 gzip/json → 回源；指纹用单行查询；⚠️ 指纹取不到 ⇒ 不走缓存直接回源；空结果不写盘。
 - 竞价判读/落库（2026-09-25）：`market_emotion_daily` 三组互不覆盖字段（主字段/close_*/auction_*）；竞价数据只在那 10 分钟存在，不落库永久丢；窗口外一律不写；`_emotion_daily_row` 必须组装整行（SQLite 是 INSERT OR REPLACE 缺列清空）。

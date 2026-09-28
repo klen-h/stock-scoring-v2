@@ -91,6 +91,33 @@ def _holdings() -> List[Dict]:
     return out
 
 
+def _bj_ts_str(ts: float):
+    """Unix 秒 → 北京时间的 `YYYY-MM-DD HH:MM`。
+
+    ⚠️ 必须 `gmtime(ts + 8h)`：`datetime.fromtimestamp` 走**服务器本地时区**
+    （Render/Actions 是 UTC，开发机是 +08）⇒ 直接用会**双加 8 小时**、时点差 8 小时
+    （本项目已被这个坑咬过多次）。`gmtime` 与时区无关，最稳。
+    """
+    import time as _time
+    if not ts:
+        return None
+    return _time.strftime("%Y-%m-%d %H:%M", _time.gmtime(float(ts) + 8 * 3600))
+
+
+def _tq_cache() -> Dict:
+    """腾讯内存行情缓存本体（**只读**）—— 用于暴露"数据自身时刻"（`data_ts`/`from_snapshot`）。
+
+    ★ 2026-09-29：为什么单独开一个函数而不是各处直接 `from app.tencent import _cache` ——
+      `tencent` 的导入较重（会话/常量），这里统一 try 兜底：拿不到就返回 {}（消费方降级，
+      不因为"想标注时点"而把整张持仓卡搞挂）。
+    """
+    try:
+        from app.tencent import _cache
+        return _cache or {}
+    except Exception:
+        return {}
+
+
 def _quotes(codes: List[str]) -> Dict[str, Dict]:
     """现价/日内高低：优先内存行情缓存（零请求）；缺失的批量补一次 HTTP。
 
@@ -492,6 +519,15 @@ def _build_impl() -> Dict:
     from app.flash.rules import beijing_now as _bj_now
     return {
         "as_of": _bj_now().strftime("%Y-%m-%d %H:%M"),
+        # ★★ 2026-09-29：**行情数据自身的时刻**（与上面 `as_of` = 计算时刻严格区分）。
+        #   为什么必须分开（用户实测："中国海油昨天 -0.61%、今天还是 -0.61%"）：
+        #   排查发现线上 `tencent._cache` 冻结在 **09-24 收盘快照**（`from_snapshot=True`、
+        #   `data_ts≈09-24 15:00`），而卡片原来显示的是 **`as_of`（构建时刻 00:21）**
+        #   ⇒ 看起来"刚刷新过"，实际数据是两天前的 —— 用户完全无从察觉。
+        #   `tencent.py` 106-123 行的注释**早就写明**这条纪律（`last_update` = 缓存填充时刻、
+        #   `data_ts` = 数据时刻），消费者要显示"数据截至"必须用后者。此处把它暴露给前端。
+        "quote_as_of": _bj_ts_str(_tq_cache().get("data_ts") or 0),
+        "quote_from_snapshot": bool(_tq_cache().get("from_snapshot")),
         "regime": regime,
         "strategy_date": str(sig_date)[:10] if sig_date else None,
         "watch_date": (list(watch.values())[0].get("date") if watch else None),

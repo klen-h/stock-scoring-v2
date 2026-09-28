@@ -228,14 +228,43 @@ async def stock_cache_refresh_loop():
     这里每 3 分钟触发一次，保证评分排行始终用近实时数据。
     非交易时段不执行（休市数据无意义，且浪费接口配额）。
     """
+    fails = 0
+    last_warn = ""
     while True:
         market = rules.get_china_market_status()
         if market["is_open"]:
             try:
                 from app.tencent import refresh_all_stocks
                 await asyncio.to_thread(refresh_all_stocks)
+                fails = 0
             except Exception as e:
-                print(f"[scheduler] 行情缓存刷新失败: {e}")
+                fails += 1
+                print(f"[scheduler] 行情缓存刷新失败(连续 {fails} 次): {e}")
+        # ★★ 2026-09-29：**行情缓存陈旧巡检**（每次醒来都查，同一天只告警一次）。
+        #   为什么必须加（真实事故）：线上缓存冻结在 **09-24 收盘快照**、09-28 整个交易日
+        #   的刷新都没成功，而失败路径只有一行 print（日志一滚就没了）⇒ 两天后是**用户
+        #   肉眼**发现"中国海油盈亏一直 -0.61% 没变"才暴露。本项目最贵的故障类型就是
+        #   **静默失效** ⇒ 让"停更"主动喊出来。
+        #   期望值口径与 `routers.market._price_date()` 一致：交易日 9:15 后 ⇒ 今天；
+        #   否则 ⇒ 最近已完成交易日（两者不可互换，盘中"已完成日"是昨天）。
+        try:
+            from app.tencent import _cache as _tq
+            from app.flash.rules import (beijing_now as _bj_now, is_trading_day as _is_td,
+                                         latest_completed_trading_day as _lctd)
+            _ts = float(_tq.get("data_ts") or 0)
+            #   时区：+8h 后走 gmtime ⇒ **与服务器时区无关**（Render 上是 UTC，别用 localtime）
+            _day = time.strftime("%Y-%m-%d", time.gmtime(_ts + 8 * 3600)) if _ts else "?"
+            _now = _bj_now()
+            _expect = (_now.strftime("%Y-%m-%d")
+                       if (_is_td(_now) and (_now.hour, _now.minute) >= (9, 15))
+                       else str(_lctd())[:10])
+            if _day != _expect and _day != last_warn:
+                last_warn = _day
+                print(f"[scheduler] [WARN] 行情缓存陈旧: 数据 {_day} / 期望 {_expect}"
+                      f"（快照={_tq.get('from_snapshot')}，本轮前已连续失败 {fails} 次）"
+                      f"—— 现价/涨跌幅/持仓盈亏都会偏旧，检查腾讯源与上面的刷新失败日志")
+        except Exception:
+            pass
         await asyncio.sleep(STOCK_CACHE_INTERVAL)
 
 
