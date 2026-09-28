@@ -126,6 +126,43 @@ export function xqUrl(code) {
   return `https://xueqiu.com/S/${pfx}${c}`
 }
 
+/**
+ * **指数** → 雪球（必须显式给市场前缀，如 `('sh', '000001')`）。
+ *
+ * ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
+ *   **不能复用 `xqUrl`** —— 那个按**首位数字**猜市场（6/9→SH、4/8→BJ、其余 SZ），
+ *   那是**个股**口径；而指数与个股**会撞码**：`000001` 既是上证指数（**SH**000001）
+ *   又是平安银行（**SZ**000001）⇒ 用 `xqUrl` 会把上证指数指到平安银行。
+ *   ⇒ 指数一律用**后端下发的 `prefix`**（唯一源 `routers/market.MAIN_INDICES`）。
+ *   ⚠️ `prefix` 缺失时返回 `''`（调用方退回纯文本）—— **宁可不给链接，也不指错标的**。
+ */
+export function xqIndexUrl(prefix, code) {
+  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
+  const m = String(prefix || '').trim().toLowerCase()
+  if (!c || (m !== 'sh' && m !== 'sz' && m !== 'bj')) return ''
+  return `https://xueqiu.com/S/${m.toUpperCase()}${c}`
+}
+
+/**
+ * 时间戳 → `HH:MM`（只看**时刻**的位置用，如教练卡、回放卡历史、盘后今日清单）。
+ *
+ * ★★ 2026-09-28 修复（用户："2026- 是不是少了什么？"）：此前各处**直接 `.slice(0, 5)`**，
+ *   隐含假设"这已经是个 `HH:MM` 字符串"；而 `coach_alerts.alert_time` 存的是**完整 ISO**
+ *   （`coach/audit._now()` 写的是 `2026-09-28T09:35:12`）⇒ 截前 5 位得到 **`2026-`**，
+ *   于是卡片显示成「**2026-** 防御市外部预警（不期待反弹）」（标签本身没缺字）。
+ *   实测同一字段各处取法还不一样（`.slice(0,5)` ❌ / `.slice(11,16)` ✅ /
+ *   `.replace('T',' ').slice(0,16)` ✅）—— 就是"同一字段多套口径"的典型。
+ *   ⇒ 统一走本函数：**ISO 与 HH:MM 两种形态都吃**，认不出来返回 `''`（不显示半截日期）。
+ */
+export function hhmm(ts) {
+  const s = String(ts || '')
+  if (!s) return ''
+  let m = s.match(/[T ](\d{2}:\d{2})/)      // ISO：2026-09-28T09:35:12 / 2026-09-28 09:35:12
+  if (m) return m[1]
+  m = s.match(/^(\d{2}:\d{2})/)             // 已经是 HH:MM / HH:MM:SS
+  return m ? m[1] : ''
+}
+
 /** 涨跌幅 → 颜色类（A 股惯例：红涨绿跌）。 */
 export const pctClass = (v) =>
   (Number(v) > 0 ? 'text-red-400' : Number(v) < 0 ? 'text-emerald-400' : 'text-muted')
@@ -133,6 +170,21 @@ export const pctClass = (v) =>
 /** 带符号数值（2 位小数；null → '—'）。 */
 export const signNum = (v) =>
   (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}`)
+
+// ── 宏观 / 情绪 等级配色（2026-09-28 从 `Workbench.vue` 收拢）──
+// 【为什么收进来】顶栏「情绪」用它、宏观卡/顶栏宏观摘要也用它，而宏观卡要抽成子组件
+//   （`components/workbench/MacroEnvCard.vue`）⇒ 再在页内留一份必然漂移（本模块诞生的同一理由）。
+// 语义：**多→红（A股红涨）、空→绿蓝**，与数据中心 tab 逐字一致（等级字符串映射）。
+export function dirColor(level) {
+  return { '强多': 'text-red-400', '偏多': 'text-orange-400', '中性': 'text-amber-400',
+           '偏空': 'text-cyan-400', '强空': 'text-blue-400' }[level] || 'text-muted'
+}
+
+/** 情绪温度（0~100）等级配色：过热→红、过冷→蓝（与 `dirColor` 同一套色义）。 */
+export function levelColor(level) {
+  return { '过热': 'text-red-400', '偏热': 'text-orange-400', '中性': 'text-amber-400',
+           '偏冷': 'text-cyan-400', '过冷': 'text-blue-400' }[level] || 'text-muted'
+}
 
 /** 评分 → 颜色类（≥65 红 / ≥45 琥珀 / 其余灰）。 */
 export const scoreClass = (v) =>

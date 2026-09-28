@@ -321,10 +321,44 @@
 - **推送纪律（2026-09-25 用户明确）**：**不要自行 git push**，改完先汇报改动+验证结果，等用户指令再推。改动后"先验证再提交"；未明确要求不自动 commit。
 - gh-pages 有三个写入者（deploy-preview/kline-data/backend-pack），必须保持同一 `concurrency.group` + `cancel-in-progress:false` + `keep_files:true`（数据包 `destination_dir:data`）。已给 deploy-preview 加 `paths:['frontend/**']`。
 - 新增看板/tab 必须自带一行定位（是什么/不是什么/下一步）；榜单真实定位 = 候选池+变化监测，非买点清单。新增 tab 必须接 `startAutoRefresh` 分支。战法"三层禁、扫描不禁"：扫描层防御市放行攒样本，入场/推送层禁止。
+- ★★ **同一份数据在两处渲染 = 必然漂移**（2026-09-28 实证，**结论已修正**）：工作台教练卡曾在
+  **盘中主区**与**常驻右栏**各渲染一遍 ⇒ 一处过滤了 `executed`、另一处没过滤；一处传了 `readonly`、
+  另一处漏传（后者更重：已执行的卡仍显示「执行/放弃」按钮 ⇒ **能重复回写**教练一致性数据）。
+  **最终形态（用户裁定）**：**只留右栏一份**，且**显示今天全部教练卡**（已决策**不消失**，变
+  "已执行/已放弃"结果徽标），标题行可折叠、默认展开；主区那张已删。
+  **两条纪律**：① 两处要显示同一份东西时，**必须共用同一个 computed**；② 同一阶段两处都在屏幕上时
+  **只留一处渲染**（重复即删 —— 用户对"同屏重复"的处置一贯如此）。
+  ★ **结构上消灭 `readonly` 漏传**：`TodoCard` 现自己按 `alert.executed` 判定
+  （`isDone` ⇒ 自动只读 + 状态徽标；`canAct = !readonly && !isDone`），不再依赖外层传参。
+  `executed` 是 `'yes'|'no'|null` 三态**字符串**（不是布尔）。
+- ★★ **`coach_alerts.alert_time` 是完整 ISO**（`coach/audit._now()` 写 `2026-09-28T09:35:12`），
+  **不是** `HH:MM` —— 直接 `.slice(0,5)` 会显示成 **`2026-`**（用户实测："2026- 是不是少了什么？"）。
+  展示时刻一律走共享 **`displayMeta.hhmm()`**（ISO 与 `HH:MM` 都吃、认不出返回 `''`）。
+  ⚠️ 后端**刻意不改**该字段格式（历史行已是 ISO，改了会同列混杂格式）。
+- ★★ **"信息只在某个阶段看得到"通常不是数据问题，是渲染位置问题**（2026-09-28 宏观卡实证）：
+  「宏观与环境」卡原先写在 `selectedPhase==='premarket'` 分支里 ⇒ 盘中/盘后**看不到**，
+  而它的数据（快讯诊断、情绪温度计）一直在、且**全天会变**。⇒ 排查顺序：**先查 `v-if` 在哪个
+  分支**，再谈"要不要常驻加载"。该卡已抽成 `components/workbench/MacroEnvCard.vue`。
+- ★ **顶栏"摘要 + 点击浮层"是本项目的既定模式**（`系统状态` 起、`宏观` 沿用）：
+  顶栏只放**一眼值**（数字/等级），完整解释与长内容进浮层（`fixed inset-0` 遮罩 +
+  `absolute` 面板）。**敢缩写顶栏的前提就是"完整信息有别的可达入口"**。
+  实例：`● 13/13 · 库46.8% · 15:18 ▾`（内存**只在 ≥75% 才亮**；判断用 `used_pct` 百分比，
+  `rss_mb` 是绝对 MB，拿它比阈值必错）。
+- ★ **宏观数据的"变不变"**（别搞混）：`macro.direction` **早盘锁定**（`macro_daily_loop`
+  工作日 08:55–13:00 落库一次，当日固定；未锁定时回退 `/macro/snapshot` 实时算）；
+  `flashDiag`（快讯 LLM）与 `sentiment`（情绪温度计）**全天会变**。
+  `loadGlobals()` 每 120s 拉 `/macro/snapshot`，**未锁定时顺带补** `macro.direction/tags_*`
+  ⇒ 顶栏摘要不额外发请求；**有锁定快照时绝不动它**。
 - ★ **前端展示 helper 的唯一共享源 = `composables/displayMeta.js`**（2026-09-28 扩充）：
   `PHASE_STYLE`(主力阶段配色) / `PHASE_CN`+`phaseCn`(主力阶段中文名兜底) /
   `STRATEGY_SHORT`+`strategyShort` / `readyCls`+`readyChipCls`(闸门就绪文字/标签配色) /
-  `stockHref`(→本地详情页) / `xqUrl`(→雪球) / `pctClass` / `signNum` / `scoreClass`。
+  `stockHref`(→本地详情页) / `xqUrl`(→**个股**雪球) / **`xqIndexUrl`(→指数雪球，必须显式给市场前缀)**
+  / `pctClass` / `signNum` / `scoreClass`。
+  ★★ **`xqUrl` 不能用于指数**（2026-09-28 实测）：它按**首位数字猜市场**（6/9→SH、4/8→BJ、其余 SZ），
+  是**个股**口径；而**指数与个股会撞码** —— `000001` 既是上证指数（**sh**000001）又是平安银行（**sz**000001），
+  `000300/000905/000688` 同理 ⇒ 会把上证指数指到平安银行。市场前缀的**唯一源**是后端
+  `routers/market.MAIN_INDICES`（已在 `/market/overview` 的 `indices[].prefix`/`qt_code` 下发），
+  前端一律用 `xqIndexUrl(prefix, code)`（缺 prefix 时返回 `''` ⇒ 退回纯文本，不指错标的）。
   **新组件/新页面要用这些一律 import，不要在页面内再定义一份**（复制必然漂移 —— 正是该模块诞生的原因）；
   已有先例组件 `components/workbench/{TodoCard,StockListsCards}.vue`。
 - ★★ **主力两个字段的覆盖率差一个量级（长期有用，别再把它们当一回事）**：

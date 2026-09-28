@@ -1,21 +1,28 @@
 <template>
   <div class="border-b border-border/40 py-2 text-xs">
     <div class="flex gap-2 items-center flex-wrap">
-      <span class="font-mono text-muted">{{ (alert.alert_time || '').slice(0, 5) }}</span>
+      <!-- ★ 2026-09-28：改走共享 `hhmm()` —— 原为 `.slice(0, 5)`，而 `alert_time` 是
+           **完整 ISO**（2026-09-28T09:35:12）⇒ 截出来是 `2026-`（用户："2026- 少了什么？"）。 -->
+      <span class="font-mono text-muted">{{ hhmm(alert.alert_time) }}</span>
       <span class="font-semibold">{{ alert.label }}</span>
       <span v-if="alert.code" class="text-muted">
         <a :href="xqUrl(alert.code)" target="_blank" class="hover:text-accent" title="雪球">{{ alert.code }}</a>
         <a :href="'#/stock/' + alert.code" target="_blank" class="hover:text-accent">{{ alert.name }}</a>
       </span>
-      <span v-if="readonly" class="ml-auto"
+      <!-- 状态徽标：**已决策的永远显示结果**（用户："决策的结果展示在那里即可，无需消失"）；
+           未决策 + 回放/只读时显示"未决策"。 -->
+      <span v-if="isDone || readonly" class="ml-auto"
             :class="alert.executed === 'yes' ? 'text-emerald-400' : alert.executed === 'no' ? 'text-amber-400' : 'text-muted'">
         {{ alert.executed === 'yes' ? '已执行' : alert.executed === 'no' ? '已放弃' : '未决策' }}
       </span>
     </div>
     <div class="text-muted mt-1 whitespace-pre-wrap">{{ firstLine(alert.message) }}</div>
 
-    <!-- 操作按钮（未决策 + 可交互时） -->
-    <div v-if="!readonly && !mode" class="mt-1.5 flex gap-2">
+    <!-- 操作按钮：**仅"未决策且可交互"**时出现
+         ★★ 2026-09-28 修复：原条件只有 `!readonly` ⇒ 已执行/已放弃的卡**仍显示按钮**
+         （点上就能重复回写教练一致性数据）。现在由 `alert.executed` 自己把关，
+         不再依赖外层是否传 `readonly`（漏传就是当初那个 bug 的成因）。 -->
+    <div v-if="canAct" class="mt-1.5 flex gap-2">
       <button class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25"
               @click="mode = 'exec'">执行</button>
       <button class="px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25"
@@ -23,7 +30,7 @@
     </div>
 
     <!-- 二次确认：执行（防误触——这是纪律回写数据） -->
-    <div v-if="mode === 'exec'" class="mt-1.5 text-[11px]">
+    <div v-if="canAct && mode === 'exec'" class="mt-1.5 text-[11px]">
       <div class="text-muted">确认已按纪律执行？（二次确认防误触）</div>
       <div class="flex gap-2 mt-1">
         <button class="px-2 py-0.5 rounded bg-emerald-500 text-black font-semibold disabled:opacity-50"
@@ -33,7 +40,7 @@
     </div>
 
     <!-- 二次确认：放弃（理由必填，回写供周报复盘） -->
-    <div v-if="mode === 'abandon'" class="mt-1.5">
+    <div v-if="canAct && mode === 'abandon'" class="mt-1.5">
       <textarea v-model="reason" rows="2"
                 placeholder="放弃理由（必填，回写供周报复盘）"
                 class="w-full bg-background border border-border rounded px-2 py-1 text-[11px]"></textarea>
@@ -52,7 +59,10 @@
 //   - 二次确认：第一次点选动作、第二次确认提交（防误触污染一致性统计）
 //   - 放弃必须填理由（后端 400 校验同款），理由回写供周报复盘
 //   - 教练卡是纪律提醒，不是自动交易指令——按钮语义是"我已执行/我放弃"
-import { ref } from 'vue'
+// ★ 2026-09-28：① 时刻统一走共享 `hhmm()`（原 `.slice(0,5)` 在 ISO 上显示成 `2026-`）；
+//   ② **已决策 ⇒ 自动只读**（显示结果徽标、藏掉按钮）—— 修"已执行的卡还能重复回写"，
+//      并让"决策结果"留在原地不消失（用户要求）。
+import { computed, ref } from 'vue'
 
 // 雪球链接（A股代码前缀 SH/SZ/BJ）——与 Workbench.vue 同口径
 function xqUrl(code) {
@@ -61,12 +71,22 @@ function xqUrl(code) {
   return `https://xueqiu.com/S/${pfx}${c}`
 }
 import { executeCoachAlert } from '../../api'
+import { hhmm } from '../../composables/displayMeta'
 
 const props = defineProps({
   alert: { type: Object, required: true },
   readonly: { type: Boolean, default: false },
 })
 const emit = defineEmits(['done'])
+
+/**
+ * 是否**已决策**。`coach_alerts.executed` 是三态**字符串**（不是布尔）：
+ * `'yes'` 已执行 ｜ `'no'` 已放弃 ｜ 其它（null/''）未决策 ⇒ 不能用 `!!` 之外的花样。
+ */
+const isDone = computed(() => !!(props.alert && props.alert.executed))
+
+/** 可交互 = 非只读/非回放 **且未决策**。 */
+const canAct = computed(() => !props.readonly && !isDone.value)
 
 const mode = ref(null)        // null | 'exec' | 'abandon'
 const reason = ref('')

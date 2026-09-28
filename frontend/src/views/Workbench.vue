@@ -22,16 +22,24 @@
             </option>
           </select>
         </label>
+        <!-- ★ 2026-09-28（用户："缩写系统状态 · 13/13 新鲜 · 库 46.8% 截至 15:18 ▾ 的宽度"）：
+             顶栏要腾地方给「宏观」摘要 ⇒ 本行去标签字与空格：
+               `● 系统状态 · 13/13 新鲜 · 库 46.8% · 内存 350MB · 截至 15:18 ▾`
+             → `● 13/13 · 库46.8% · 15:18 ▾`（省约一半宽度）。
+             ⚠️ 敢缩的前提：**完整解释在点击后的浮层里**（`statusHtml`，信息一点没丢）；
+               内存**只在 ≥75% 时**才亮出来（平时不是关注点，且它最易波动）；
+               全部字段的含义见 `title`。 -->
         <button class="flex items-center gap-1.5 text-[10px] text-muted hover:text-gray-300 w-fit"
+                :title="statusTitle"
                 @click.stop="statusOpen = !statusOpen">
           <span class="inline-block w-2 h-2 rounded-full"
                 :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
-          系统状态
-          <span v-if="statusBrief.summary" class="text-muted">· {{ statusBrief.summary }}</span>
-          <span v-if="statusBrief.dbPct != null" class="text-muted">· 库 {{ statusBrief.dbPct }}%</span>
-          <span v-if="statusBrief.memMb != null" class="text-muted">· 内存 {{ statusBrief.memMb }}MB</span>
-          <span v-if="statusTime" class="text-muted">· 截至 {{ statusTime }}</span>
-          <span class="text-muted">▾</span>
+          <span v-if="statusBrief.summary">{{ statusBrief.summary }}</span>
+          <span v-else>系统状态</span>
+          <span v-if="statusBrief.dbPct != null">· 库{{ statusBrief.dbPct }}%</span>
+          <span v-if="memWarn" class="text-amber-400">· 内存{{ statusBrief.memMb }}MB</span>
+          <span v-if="statusTime">· {{ statusTime }}</span>
+          <span>▾</span>
         </button>
         <div v-if="statusOpen" class="fixed inset-0 z-40" @click="statusOpen = false"></div>
         <div v-if="statusOpen"
@@ -43,13 +51,24 @@
       <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），居中排开空间足够；
            细分隔线区分 A股与外盘 -->
       <div class="flex-1 min-w-[560px] flex items-center justify-center gap-3 flex-wrap">
-        <div v-for="ix in topIndices" :key="ix.name" class="text-center px-1.5">
+        <!-- ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
+             指数整块可点 → **雪球指数页**（新标签，与全站"外链一律新标签"惯例一致）。
+             用 `<component :is>` 而非直接写 `<a>`：拿不到 `prefix` 时（老数据/降级）
+             退回 `<div>` 纯文本 —— 宁可不给链接，也不能指到撞码的个股（`000001`）。 -->
+        <component v-for="ix in topIndices" :key="ix.name"
+                   :is="ix.href ? 'a' : 'div'"
+                   :href="ix.href || undefined"
+                   :target="ix.href ? '_blank' : undefined"
+                   rel="noopener"
+                   class="text-center px-1.5"
+                   :class="ix.href ? 'rounded hover:bg-white/5 transition-colors cursor-pointer' : ''"
+                   :title="ix.href ? `${ix.name} 详情（雪球，新标签）` : ''">
           <div class="text-[10px] text-muted">{{ ix.name }}</div>
           <div class="text-xs font-mono font-semibold leading-snug">{{ fmtNum(ix.price) }}</div>
           <div class="text-xs font-mono font-bold" :class="pctClass(ix.change_pct)">
             {{ signNum(ix.change_pct) }}%
           </div>
-        </div>
+        </component>
         <div class="w-px self-stretch bg-border"></div>
         <div v-for="g in globalsRow" :key="g.key" class="text-center px-1.5">
           <div class="text-[10px] text-muted">{{ g.label }}</div>
@@ -83,6 +102,37 @@
                class="text-[11px] font-mono leading-snug" :class="pctClass(o.pct)">
             {{ o.label }} {{ signNum(o.pct) }}%
           </div>
+        </div>
+      </div>
+
+      <!-- ★★ 2026-09-28（用户："把宏观方向 · 偏空的分数也移到顶部右上角，放在情绪的左边…
+           但是快讯的也很重要，以及支撑因素、压制因素、过热项、过冷项也需要展示" ⇒ 方案 A）：
+           顶栏常驻「宏观」摘要，**放在情绪/市况组左边**，与「系统状态」**同构** ——
+           一行摘要（方向 + 分数）＋ 点击弹**浮层**看全文（浮层里就是那张完整卡
+           `MacroEnvCard`，含快讯诊断 / 支撑因素 / 压制因素 / 过热项 / 过冷项）。
+           ⇒ 顶栏只多占 ~70px，四类信息全都在，不必把长卡塞进顶栏。
+           ⚠️ 这一点很重要：本卡原先**只在盘前渲染**，而它的一半内容（快讯诊断、情绪温度计）
+              其实是**全天会变**的 ⇒ 抽成组件后顶栏浮层让它在**任何阶段**都能看。 -->
+      <div class="relative border-l border-border pl-4 flex flex-col gap-1">
+        <button type="button" class="flex flex-col items-center justify-center hover:opacity-80"
+                :title="macroTip"
+                @click.stop="macroOpen = !macroOpen">
+          <div class="flex items-baseline gap-1">
+            <span class="text-lg font-bold font-mono leading-none"
+                  :class="dirColor(macro?.direction?.level)">{{ macro?.direction?.score ?? '—' }}</span>
+            <span class="text-[10px] text-muted">▼</span>
+          </div>
+          <div class="text-[10px] mt-0.5 whitespace-nowrap"
+               :class="dirColor(macro?.direction?.level)">宏观·{{ macro?.direction?.level || '—' }}</div>
+        </button>
+        <div v-if="macroOpen" class="fixed inset-0 z-40" @click="macroOpen = false"></div>
+        <!-- 浮层宽度取 min(92vw,720px)：宏观卡内部有 `md:grid-cols-2`（断点按**视口**算），
+             太窄会让两列挤在一起 ⇒ 给足宽度。 -->
+        <div v-if="macroOpen"
+             class="absolute left-0 top-full z-50 mt-1 w-[min(92vw,720px)] max-h-[70vh] overflow-auto"
+             @click.stop>
+          <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
+                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
         </div>
       </div>
 
@@ -191,7 +241,8 @@
               <div v-if="!replay.coach.length" class="text-muted text-xs">—</div>
               <div v-for="a in replay.coach" :key="a.id" class="border-b border-border/50 py-2 text-xs">
                 <div class="flex gap-2 items-center">
-                  <span class="font-mono text-muted">{{ (a.alert_time || '').slice(0, 5) }}</span>
+                  <!-- ★ 2026-09-28：原 `.slice(0,5)` 在 ISO 时间上会显示成 `2026-` ⇒ 统一走 hhmm() -->
+                  <span class="font-mono text-muted">{{ hhmm(a.alert_time) }}</span>
                   <span class="font-semibold">{{ a.label }}</span>
                   <span v-if="a.code">{{ a.code }} {{ a.name }}</span>
                   <span class="ml-auto" :class="a.executed === 'yes' ? 'text-emerald-400'
@@ -551,143 +602,14 @@
           </div>
           </div>
 
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">宏观与环境（独立信号，不进个股评分）</div>
-              <span v-if="macro && macro.locked" class="text-[10px] text-accent">
-                今日锁定 · 生成于 {{ (macro.generated_at || '').slice(11, 16) }}
-              </span>
-            </div>
-            <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
-            <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
-            <template v-else>
-              <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行，
-                   严格单行不换行：长文本一律 truncate，悬停 title 看全文） -->
-              <div class="flex items-center gap-5 min-w-0">
-                <div class="flex items-center gap-2.5 flex-shrink-0">
-                  <span class="text-4xl font-bold font-mono leading-none"
-                        :class="dirColor(macro.direction?.level)">
-                    {{ macro.direction?.score ?? '—' }}
-                  </span>
-                  <div class="min-w-0">
-                    <div class="text-xs font-semibold whitespace-nowrap"
-                         :class="dirColor(macro.direction?.level)">
-                      宏观方向 · {{ macro.direction?.level || '—' }}
-                    </div>
-                    <div class="text-[11px] text-muted truncate max-w-[240px]"
-                         :title="macro.direction?.advisory">{{ macro.direction?.advisory || '' }}</div>
-                  </div>
-                </div>
-                <div class="w-px h-12 bg-border flex-shrink-0"></div>
-                <div class="flex items-center gap-2.5 flex-shrink-0">
-                  <span class="text-4xl font-bold font-mono leading-none"
-                        :class="levelColor(temperature?.level || '')">{{ temperature?.temperature ?? '—' }}</span>
-                  <div>
-                    <div class="text-xs font-semibold whitespace-nowrap"
-                         :class="levelColor(temperature?.level || '')">市场环境 · {{ temperature?.level || '—' }}</div>
-                    <div class="text-[11px] text-muted whitespace-nowrap">0~100，越高越亢奋</div>
-                  </div>
-                </div>
-                <div class="w-px h-12 bg-border flex-shrink-0"></div>
-                <div class="flex items-center gap-3 flex-1 min-w-0">
-                  <div class="flex-shrink-0">
-                    <div class="text-sm font-bold whitespace-nowrap"
-                         :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
-                                 ? 'text-amber-400' : 'text-gray-100'">
-                      {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}
-                    </div>
-                    <div class="text-[10px] text-muted whitespace-nowrap">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
-                  </div>
-                  <!-- ★ 2026-09-25 用户要求：文字部分同一 div 上下布局（叙事上 / 仓位·详情下） -->
-                  <div class="flex-1 min-w-0 text-xs">
-                    <div class="text-gray-300 truncate"
-                         :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
-                      {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
-                    </div>
-                    <div class="text-muted whitespace-nowrap">
-                      仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
-                      <!-- ★ 2026-09-25 用户："仓位建议『轻仓观望』后面补上具体上限数字" ——
-                           LLM 那句是**定性**的，这里补上仓位引擎算出的**定量上限**
-                           （`/api/user/position-sizing` 的 total_limit_pct；个股页已在用，只补上）。
-                           ⚠️ 用 `!= null` 而不是 `||`：**0 是合法上限**（空仓），不能被吞掉。 -->
-                      <template v-if="sizing && sizing.total_limit_pct != null">
-                        · 上限 <b class="text-accent font-mono">{{ sizing.total_limit_pct }}%</b>
-                      </template>
-                      <!-- ★ 2026-09-25 用户需求 2（框架 A6「周回撤熔断」）：
-                           组合近 5 个交易日**持仓市值回撤** ≥5%（对齐 G2 阈值）⇒ 后端已自动把
-                           总上限降半仓（见 total_limit_pct），此处只显示状态与数值，让人知道"为什么降了"。
-                           悬停看完整口径/曲线/近似警告（⚠️ 按当前持仓回算，有交易会失真）。 -->
-                      <template v-if="pdd && pdd.available">
-                        · 周回撤 <b class="font-mono cursor-help"
-                                    :class="pdd.triggered ? 'text-red-400' : 'text-gray-300'"
-                                    :title="pddTitle">{{ pdd.drawdown_pct }}%</b>
-                        <span v-if="pdd.triggered" class="text-red-400">（已降仓）</span>
-                      </template>
-                      <template v-else-if="pdd && pdd.note">
-                        · <span class="text-muted cursor-help" :title="pdd.note">周回撤 —</span>
-                      </template>
-                      · <router-link target="_blank" to="/monitor" class="text-accent hover:underline">详情</router-link>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <!-- ★ 2026-09-25 用户："『负相关（弱）』这个标题用户看不懂，改成『压制因素』"
-                   + "巴菲特指标 94（过热）与温度 28.1（偏冷）并存，正是市场分歧明显的体现，
-                   建议做成多空两栏对照，而不是埋在长句里"。
-                   ⚠️ 说明：`correlation_state`（正相关/负相关/D状态）指的是**油金相关性**，
-                   与"对 A 股的压制因素"不是一回事 ⇒ **不改它的语义**（改了会误导）。
-                   改成给多空标签**加标题 + 左右两栏**：左＝支撑因素（利多）／右＝压制因素（利空）
-                   ⇒ 一次同时满足"看得懂"与"两栏对照"。 -->
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 mt-2.5">
-                <div class="flex items-start gap-1.5 min-w-0">
-                  <span class="text-[11px] text-emerald-400 flex-shrink-0 mt-0.5 w-[52px]">支撑因素</span>
-                  <div class="flex flex-wrap gap-1 min-w-0">
-                    <span v-for="t in (macro.tags_bull || [])" :key="'b' + t"
-                          class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">{{ t }}</span>
-                    <span v-if="!(macro.tags_bull || []).length" class="text-[11px] text-muted">—（无）</span>
-                  </div>
-                </div>
-                <div class="flex items-start gap-1.5 min-w-0">
-                  <span class="text-[11px] text-red-400 flex-shrink-0 mt-0.5 w-[52px]">压制因素</span>
-                  <div class="flex flex-wrap gap-1 min-w-0">
-                    <span v-for="t in (macro.tags_bear || [])" :key="'s' + t"
-                          class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20">{{ t }}</span>
-                    <span v-if="!(macro.tags_bear || []).length" class="text-[11px] text-muted">—（无）</span>
-                  </div>
-                </div>
-              </div>
-              <!-- ★ 2026-09-25：情绪温度计子项的**过热 vs 过冷**两栏对照 —— 直接回答
-                   "为什么巴菲特指标过热(94)而市场温度偏冷(28)" = 市场分歧明显的可视化。
-                   数据来自 `/macro/snapshot.sentiment`（金十 12 子项，后端已按得分降序）。
-                   ⚠️ peek 缓存 ⇒ 冷缓存时为 null ⇒ 整块不渲染（不假装有数据）。 -->
-              <div v-if="macroSentiment" class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 mt-2 pt-2 border-t border-border/40">
-                <div class="flex items-start gap-1.5 min-w-0">
-                  <span class="text-[11px] text-red-400 flex-shrink-0 mt-0.5 w-[52px] cursor-help"
-                        title="情绪温度计里得分高的子项（越热越需要警惕追高）">过热项</span>
-                  <div class="flex flex-wrap gap-1 min-w-0">
-                    <span v-for="s in hotSubs" :key="'h' + s.key"
-                          class="px-1.5 py-0.5 rounded text-[11px] bg-red-500/15 text-red-400 border border-red-500/20"
-                          :title="`${s.name}：值 ${s.value ?? '—'}，热度分 ${s.score}`">{{ s.name }} {{ s.value ?? '' }}({{ s.score }})</span>
-                    <span v-if="!hotSubs.length" class="text-[11px] text-muted">—（无）</span>
-                  </div>
-                </div>
-                <div class="flex items-start gap-1.5 min-w-0">
-                  <span class="text-[11px] text-emerald-400 flex-shrink-0 mt-0.5 w-[52px] cursor-help"
-                        title="得分低的子项（越冷越可能是低位机会）">过冷项</span>
-                  <div class="flex flex-wrap gap-1 min-w-0">
-                    <span v-for="s in coldSubs" :key="'c' + s.key"
-                          class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-                          :title="`${s.name}：值 ${s.value ?? '—'}，热度分 ${s.score}`">{{ s.name }} {{ s.value ?? '' }}({{ s.score }})</span>
-                    <span v-if="!coldSubs.length" class="text-[11px] text-muted">—（无）</span>
-                  </div>
-                </div>
-                <div class="md:col-span-2 text-[10px] text-muted">
-                  情绪温度计 {{ macroSentiment.score }}分/{{ macroSentiment.zone }}区（{{ macroSentiment.date }}）·
-                  过热与过冷**同时出现**＝市场分歧明显；两项都在 80/20 之外时说明方向一致
-                </div>
-              </div>
-            </template>
-          </div>
+          <!-- ★★ 2026-09-28（用户选定方案 A：顶栏放摘要 + 点开看全文）：
+               本卡**整块抽成子组件 `MacroEnvCard.vue`** —— 盘前这里内联、顶栏「宏观」浮层
+               复用**同一个组件** ⇒ 一处实现两处用（防"同一份数据两处渲染必然漂移"，
+               同日刚在教练卡上踩过一次）。
+               ⚠️ 原来它只会出现在盘前（数据一直在，只是别处不渲染）⇒ 抽出来后
+                 顶栏浮层让它在**任何阶段**都能看。 -->
+          <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
+                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
           <!-- ★★ 2026-09-25 用户："信号×行业是战法扫描出来的吗？如果是，今日决策卡的战法内容
                也可以摘出来，剩余的部分跟隔夜与今日（财经日历）形成左右卡片。"
                ⇒ 确认：`signal_industry_cross` 读的就是 `strategy_results`（战法扫描）⇒ 同源。
@@ -1113,15 +1035,16 @@
 
           <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
                  · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
-                 · 右列 = **行动**（④ 待执行决策 ⑤ 持仓状态）
+                 · 右列 = **行动**（⑤ 持仓状态；原 ④ 待执行决策 2026-09-28 已删 —— 与右栏教练卡重复）
                与竞价看板同一切法逻辑（左"读"右"做"），但**不加竖线**（多张独立卡各有边框）。
                ⚠️ 断点 **xl**(1280)；两列各自 `space-y-4` 堆叠、不做行对齐 ——
                  ⑤ 持仓状态的高度随持仓只数变化，行对齐必在短列留大片空洞。 -->
           <!-- ★★ 2026-09-28（用户："主线板块 Top5 放在左边，涨停梯队与清单和持仓状态放在右边"）：
                两列内容**互换** —— 用 **CSS `order`**（`xl:order-*` 仅宽屏生效）实现，
                而非搬动 ~200 行模板：**同一份 DOM、只改视觉列序** ⇒ 零搬运风险、易于回退。
-               生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态 + ④ 待执行决策**。
-               ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③④ 排。 -->
+               生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态**。
+               （④ 待执行决策 2026-09-28 已删 —— 教练卡统一只在常驻右栏展示一份。）
+               ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③ 排。 -->
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
           <div class="min-w-0 space-y-4 xl:order-2">
           <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位）
@@ -1242,9 +1165,10 @@
           </div>
 
           <!-- ★ 2026-09-25 用户："持仓状态放在涨停梯队与清单下面，主线板块 Top5 移到右边"
-               ⇒ 左列 = ② 涨停梯队与清单 + ⑤ 持仓状态；右列 = ③ 主线板块 + ④ 待执行决策。
+               ⇒ 左列 = ② 涨停梯队与清单 + ⑤ 持仓状态；右列 = ③ 主线板块（+ 当时的 ④ 待执行决策）。
                ★ 本次**必须搬内容**（顺序变更无法用"选切点"实现）：先在 ② 之后**插入副本**，
-                 再删除 ④ 之后的原块（**先插后删** ⇒ 中途失败也不会丢卡片）。 -->
+                 再删除 ④ 之后的原块（**先插后删** ⇒ 中途失败也不会丢卡片）。
+               ★ 2026-09-28：④ 待执行决策已删 ⇒ 这里的列内容说明以本条后续注释为准。 -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
@@ -1307,15 +1231,13 @@
               </div>
             </div>
           </div>
-          <!-- ★ 2026-09-28（用户："待执行决策留在右列"）：④ 从「主线板块 Top5」那列**移来**。
-               本列经 `xl:order-2` 排在**视觉右列** ⇒ 右列 = ② 涨停梯队与清单 + ⑤ 持仓状态 + ④ 待执行决策。 -->
-          <div v-if="todoList.length" class="bg-card border border-amber-500/40 rounded-lg p-4">
-            <div class="text-sm font-semibold mb-1">待执行决策（{{ todoList.length }}）</div>
-            <TodoCard v-for="a in todoList" :key="a.id" :alert="a" @done="loadCoach" />
-          </div>
+          <!-- ★ 2026-09-28（用户："只留一份在右栏即可"）：原「待执行决策（N）」卡**已删除** ——
+               它与常驻右栏那张教练卡是**同一份数据**，留两份必然同屏重复（且两处口径曾不一致
+               ⇒ 用户看到"右栏不跟着变"）。教练卡现在的**唯一**展示位 = 右栏（`<aside>`，
+               全天常驻、默认展开可折叠）：未决策可交互，已决策显示结果徽标。 -->
           </div>
           <!-- ★ 2026-09-28：本列（③ 主线板块 Top5）经 `xl:order-1` 排到**视觉左列**；
-               ④ 待执行决策已移到另一列（见上）⇒ 本列只剩主线板块一张卡。 -->
+               原 ④ 待执行决策卡已删（教练卡只在右栏留一份）⇒ 本列只剩主线板块一张卡。 -->
           <div class="min-w-0 space-y-4 xl:order-1">
 
           <!-- ★ A1 主线板块 Top5 + **板块内强势股**（看盘序第 4-5 层）
@@ -1390,7 +1312,9 @@
             </div>
           </div>
 
-          <!-- ★ 2026-09-28（用户："待执行决策留在右列"）：④ 已移到「涨停梯队与清单」那列 —— 见其注释。 -->
+          <!-- ★ 2026-09-28：原 ④ 待执行决策卡**已删除**（用户："只留一份在右栏即可"）——
+               教练卡唯一展示位 = 常驻右栏 `<aside>`：未决策可交互、已决策显示结果徽标、
+               标题行可折叠（默认展开）。此处不再有卡片。 -->
           </div>
           </div>
 
@@ -1623,7 +1547,9 @@
                 <!-- 今日清单（与上方数字同口径：只列已推送的） -->
                 <div v-if="todayPushedCards.length" class="mt-2 pt-2 border-t border-border/40 space-y-1 text-xs">
                   <div v-for="a in todayPushedCards" :key="a.id" class="flex items-center gap-2 flex-wrap">
-                    <span class="text-muted font-mono">{{ (a.alert_time || '').slice(11, 16) }}</span>
+                    <!-- ★ 2026-09-28：这处原本用 `.slice(11,16)`（依赖 ISO 格式才碰巧对）⇒
+                         统一走 hhmm()，与教练卡/回放卡历史同口径。 -->
+                    <span class="text-muted font-mono">{{ hhmm(a.alert_time) }}</span>
                     <span class="font-semibold text-gray-200">{{ a.label || a.rule_id }}</span>
                     <a :href="stockHref(a.code)" target="_blank"
                        class="hover:text-accent">{{ a.name || a.code }}</a>
@@ -1903,21 +1829,70 @@
           </div>
         </div>
 
-        <!-- 待办：未决策教练卡 -->
+        <!-- ★ 2026-09-28（方案 C，用户："A+C，快讯诊断单独在右栏常驻一行"）：
+             「快讯诊断」（LLM 最新一条）是**高速变量**（随快讯更新），而它原先只出现在
+             「宏观与环境」卡里（且那卡只在盘前渲染）⇒ 单独提到右栏常驻，扫一眼即得：
+             状态（D状态 / 正相关 / 负相关）+ 主导叙事 + 仓位建议与上限。
+             ⚠️ 与顶栏「宏观」浮层**同源**（同一个 `flashDiag` / `sizing`）⇒ 两处不会不一致；
+               完整口径（油金相关性说明、周回撤曲线等）仍在浮层那张卡里。
+             ⚠️ 数据未产出时**整块不渲染** —— 不占位、不假装有结论。 -->
+        <div v-if="flashDiag" class="bg-card border border-border rounded-lg px-4 py-2.5 text-xs">
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="text-sm font-bold whitespace-nowrap"
+                  :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
+                          ? 'text-amber-400' : 'text-gray-100'">
+              {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}</span>
+            <span class="text-[10px] text-muted whitespace-nowrap">
+              事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</span>
+            <span class="ml-auto text-[10px] text-muted whitespace-nowrap">
+              仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
+              <template v-if="sizing && sizing.total_limit_pct != null">
+                · 上限 <b class="text-accent font-mono">{{ sizing.total_limit_pct }}%</b></template>
+            </span>
+          </div>
+          <div class="text-gray-300 mt-1 truncate"
+               :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
+            {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
+          </div>
+        </div>
+
+        <!-- 教练卡（今日）—— **全站唯一一份**
+             ★★ 2026-09-28 最终形态（用户："只留一份在右栏即可，只是决策的结果展示在那里即可，
+                无需消失，加上收起展开功能，默认展开"）：
+                ① **唯一一份**：盘中/午盘主区那张「待执行决策」已**删除** —— 两者本是同一份数据，
+                   留两份必然同屏重复（且两处口径曾不一致 ⇒ 用户看到"右栏不跟着变"）。
+                ② **显示今天的全部教练卡**（含已决策）：已执行的**不消失**，而是变成
+                   "已执行/已放弃"**结果徽标**（决策留痕）；**只有未决策的**才给执行/放弃按钮
+                   —— 该判定由 `TodoCard` 按 `alert.executed` 自行完成，不再依赖外层 `readonly`
+                   （漏传 `readonly` 正是上一版"已执行的卡还能重复回写"的成因）。
+                ③ 标题行折叠、**默认展开**（同观察池 / 系统时间线）。
+                ④ 标题由「待办 · 未决策教练卡」改为「**教练卡**」：它现在同时承载
+                   "未决策待办"与"已决策结果"，旧名只说一半（徽标仍标未决策条数）。
+                ⚠️ 回放（isReplay）时 `readonly=true` ⇒ 全部只读 + 状态徽标（历史不可改）。 -->
         <div class="bg-card border border-border rounded-lg p-4">
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-sm font-semibold">
-              待办 · 未决策教练卡
-              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]">{{ todoCount }}</span>
-            </div>
+          <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="todoOpen = !todoOpen"
+                    :title="todoOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>
+              教练卡
+              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
+                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
+            </button>
             <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
           </div>
-          <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-          <div v-else-if="!todayCoach.length" class="text-muted text-xs">
-            {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+          <template v-if="todoOpen">
+            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
+            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+            </div>
+            <!-- ★ 未决策可交互（执行/放弃回写）；已决策自动变只读结果徽标；回放全只读 -->
+            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
+          </template>
+          <div v-else class="text-[10px] text-muted">
+            已收起（{{ todayCoach.length }} 条<template
+              v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
           </div>
-          <!-- ★ Phase 2：当天卡可交互（执行/放弃回写），回放只读带状态徽标 -->
-          <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
         </div>
 
         <!-- 持仓摘要 -->
@@ -1980,10 +1955,15 @@ import TodoCard from '../components/workbench/TodoCard.vue'
 //      语义完全不同 ⇒ 主力阶段配色必须**重命名导入**（`MF_PHASE_STYLE`），避免撞名。
 import {
   PHASE_STYLE as MF_PHASE_STYLE, strategyShort,
-  stockHref, xqUrl, pctClass, signNum, scoreClass,
+  stockHref, xqUrl, xqIndexUrl, hhmm, pctClass, signNum, scoreClass,
+  dirColor, levelColor,
 } from '../composables/displayMeta'
 // ★ 2026-09-28：「评分榜 Top10 / 观察池」两卡抽成子组件（盘后 + 盘中/午盘复用同一份）
 import StockListsCards from '../components/workbench/StockListsCards.vue'
+// ★ 2026-09-28（方案 A，用户："把宏观方向 · 偏空的分数也移到顶部右上角，放在情绪的左边"）：
+//   「宏观与环境」卡抽成子组件 —— 盘前内联 + 顶栏「宏观」浮层**共用同一份**
+//   （防"同一份数据两处渲染必然漂移"；同理 `dirColor`/`levelColor` 也上移到 displayMeta）。
+import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
 // ★ 2026-09-28：评分榜改「本地优先」—— 复用榜单页（`ScoreRank.vue`）的**同一套前端评分引擎**。
 //   用户："评分榜之前不就是实时的吗?我都是使用本地计算的" ⇒ 工作台原先恒走后端
 //   `/score/batch/top`（盘中通常是昨日快照），与榜单页的**本地实时**结果口径不一致
@@ -2237,17 +2217,8 @@ const macroSentiment = ref(null)
 // ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
 //   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
 const sizing = ref(null)
-// ★ 2026-09-25 用户需求 2：组合**周回撤熔断**（同接口的 `portfolio_drawdown`）——
-//   组合近 5 个交易日持仓市值回撤 ≥5%（对齐 G2）⇒ 后端已把总上限降半仓，这里显示状态。
-const pdd = computed(() => sizing.value?.portfolio_drawdown || null)
-const pddTitle = computed(() => {
-  const p = pdd.value
-  if (!p) return ''
-  if (!p.available) return p.note || '暂无数据'
-  const cur = (p.curve || []).map(c => `${String(c.date).slice(5)} ${Number(c.nav).toLocaleString('zh-CN')}`).join(' → ')
-  return `组合持仓市值路径：${cur}\n峰值 ${Number(p.nav_peak).toLocaleString('zh-CN')}（${p.peak_date}）`
-    + ` → 最新 ${Number(p.nav_latest).toLocaleString('zh-CN')}\n${p.advice || ''}\n${p.note || ''}`
-})
+// ★ 2026-09-28：组合**周回撤熔断**（`sizing.portfolio_drawdown`）的 `pdd` / `pddTitle`
+//   **已随「宏观与环境」卡搬进 `MacroEnvCard.vue`**（只被那张卡消费 ⇒ 内聚到组件里）。
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 用户："对错了要回溯修正，形成闭环，
 //   否则情绪模型永远校准不了"。数据来自 `/api/market/emotion-review`（读同日两组字段）。
 const emotionReview = ref(null)
@@ -2384,7 +2355,15 @@ const tailTitle = computed(() => {
 })
 // ★ 2026-09-28：`scoreClass` 已上移到 `composables/displayMeta`（共享源）。
 
-const topIndices = computed(() => (overview.value.indices || []).slice(0, 3))
+// ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
+//   把雪球链接**预先算好**放进项里（模板不再重复调用/判断）。
+//   ⚠️ 只做**雪球**，不做本地详情页 —— 本地详情页是**个股**页（`/api/score/{symbol}`），
+//     指数没有评分；且它按 `_CODE_TO_PREFIX` 反查代码，指数不在股票池里 ⇒ 落到
+//     "0 开头=sz" 的兜底 ⇒ `000001` 会被当成**平安银行**（错的标的）。
+//   ⚠️ 前缀由后端 `indices[].prefix` 下发（唯一源 `routers/market.MAIN_INDICES`）；
+//     老数据/降级无该字段 ⇒ `href=''` ⇒ 模板退回纯文本（宁可不给链接也不指错）。
+const topIndices = computed(() => (overview.value.indices || []).slice(0, 3)
+  .map(ix => ({ ...ix, href: xqIndexUrl(ix.prefix, ix.code) })))
 // ★ 2026-09-25 用户需求 1：大小盘风格 / 黄白线背离（框架 C5「9:30-10:00 定方向」）。
 //   `overview.style` 由后端在同一份内存行情缓存上算出 ⇒ **零新增请求**。
 const ovStyle = computed(() => overview.value?.style || null)
@@ -2416,6 +2395,10 @@ const todayCoach = computed(() => {
 })
 const todoList = computed(() => todayCoach.value.filter(a => !a.executed))
 const todoCount = computed(() => todoList.value.length)
+// ★ 2026-09-28（用户："只留一份在右栏即可…加上收起展开功能，默认展开"）：
+//   教练卡的**唯一**展示位 = 常驻右栏（盘中/午盘主区那张已删）⇒ 不需要"何时隐藏"的判断；
+//   只留一个折叠态，**默认展开**（同观察池 / 系统时间线）。
+const todoOpen = ref(true)
 // 外盘四件套行：从宏面板取 price/prev_close，pct 现算
 const globalsRow = computed(() => {
   const defs = [
@@ -2478,10 +2461,8 @@ const overnightTitle = computed(() => {
   // ⚠️ 明说是"解释/风控"用途 —— 纳指隔夜对 A 股次日的预测力在可交易口径下已实测塌陷
   return `${head}\n${body}\n（仅用于解释开盘与风控；其预测力已被实证否定，不作为交易信号）`
 })
-// ★ 2026-09-25：情绪温度计"过热 / 过冷"子项（后端已按得分降序，这里按阈值切分）。
-//   阈值沿用 `margin_sentiment.sentiment_line()` 的口径（≥80 过热 / ≤20 过冷），保持单一来源。
-const hotSubs = computed(() => ((macroSentiment.value?.subs) || []).filter(s => s.score >= 80).slice(0, 4))
-const coldSubs = computed(() => ((macroSentiment.value?.subs) || []).filter(s => s.score <= 20).slice(0, 4))
+// ★ 2026-09-28：情绪温度计的「过热 / 过冷」子项切分（`hotSubs` / `coldSubs`）
+//   **已随「宏观与环境」卡搬进 `MacroEnvCard.vue`**（阈值口径注释也在那边）。
 
 const worstHolding = computed(() => {
   const arr = (radarItems.value || []).filter(x => x.pnl_pct != null)
@@ -2495,7 +2476,33 @@ const freshnessOk = ref(true)
 const statusTime = ref('')
 // ★ 2026-09-25 用户："底部的系统状态移到顶部的日期的下面，把简要信息展示一行，
 //   点击再悬浮展示内容" ⇒ 顶栏常驻一行摘要（摘要字段在此聚合），点开才渲染完整 HTML。
-const statusBrief = ref({ summary: '', dbPct: null, memMb: null })
+// ★ 2026-09-28：补 `memPct` —— 缩写后"内存"**只在高压时才亮**（见 `memWarn`），
+//   而判断要看**百分比**（`rss_mb` 是绝对 MB，拿它比阈值必错）。
+const statusBrief = ref({ summary: '', dbPct: null, memMb: null, memPct: null })
+// ★ 2026-09-28（用户："缩写系统状态 · 13/13 新鲜 · 库 46.8% 截至 15:18 ▾ 的宽度"）：
+//   内存**只在 ≥75% 时**才亮出来 —— 平时它不是关注点，而它最易波动
+//   （看护告警线 80%，见后端 `memory_watch.ALERT_PCT`）。
+const memWarn = computed(() => (statusBrief.value.memPct || 0) >= 75)
+/** 缩写后的字段含义靠 hover 补全（`13/13`=数据源新鲜数；`库`=Supabase 库体积占用）。 */
+const statusTitle = computed(() => {
+  const b = statusBrief.value || {}
+  const parts = []
+  if (b.summary) parts.push(`数据源新鲜：${b.summary}`)
+  if (b.dbPct != null) parts.push(`库体积占用 ${b.dbPct}%`)
+  if (b.memMb != null) parts.push(`进程内存 ${b.memMb}MB（${b.memPct ?? '—'}%）`)
+  if (statusTime.value) parts.push(`状态截至 ${statusTime.value}`)
+  return (parts.length ? parts.join('\n') : '系统状态') + '\n（点击看完整明细）'
+})
+// ★ 2026-09-28（方案 A）：顶栏「宏观」浮层开关 + hover 说明（放情绪左边那个入口用）。
+const macroOpen = ref(false)
+const macroTip = computed(() => {
+  const d = macro.value?.direction
+  if (!d) return '宏观方向（未加载）—— 点击展开完整「宏观与环境」卡'
+  const lock = macro.value?.locked
+    ? `（今日锁定 · ${hhmm(macro.value.generated_at)}）` : '（实时口径）'
+  return `宏观方向 · ${d.level || '—'} ${d.score ?? '—'}${lock}\n${d.advisory || ''}`
+    + '\n（点击展开：快讯诊断 / 支撑因素 / 压制因素 / 过热项 / 过冷项）'
+})
 
 // 徽标：盘前=简报降级 ⚠️；盘中/午盘/盘后=未决策教练卡数；复盘=未决策数
 function badge(key) {
@@ -2873,6 +2880,19 @@ async function loadGlobals() {
     macroClock.value = (data && data.clock) || null   // ★ 时段的唯一来源（见 macroClock 定义）
     macroOvernight.value = (data && data.overnight) || null   // ★ P1：隔夜累计变化
     macroSentiment.value = (data && data.sentiment) || null   // ★ 情绪温度计（供两栏对照）
+    // ★ 2026-09-28（方案 A）：**当天没有"早盘锁定快照"时**，顺手用这一份 `/macro/snapshot`
+    //   补 `direction` / `tags_*` —— 顶栏「宏观」摘要要用。这样就不必为摘要再单独发一次
+    //   一模一样的外部请求（该接口对 A 股是**外部源**，能省则省）。
+    //   ⚠️ 有锁定快照时**绝不动它**（锁定口径更权威，见 `loadMacro`）。
+    if (!macro.value || !macro.value.locked) {
+      macro.value = {
+        direction: (data && data.direction) || null,
+        tags_bull: (data && data.tags_bull) || [],
+        tags_bear: (data && data.tags_bear) || [],
+        generated_at: (data && (data.data_time || data.generated_at)) || null,
+        locked: false,
+      }
+    }
   } catch { globals.value = globals.value || {} }
 }
 // ★ 2026-09-25：仓位建议定量上限（失败静默 ⇒ 宏观卡只显示定性词，不显示空括号）
@@ -2953,17 +2973,9 @@ async function loadMacro() {
     }
   }
 }
-// 宏观方向配色：多→红（A股红涨）、空→绿，与数据中心一致
-// ★ 2026-09-25 用户要求：宏观方向/温度配色与数据中心 tab 逐字一致（等级字符串映射）
-function dirColor(level) {
-  return { '强多': 'text-red-400', '偏多': 'text-orange-400', '中性': 'text-amber-400',
-           '偏空': 'text-cyan-400', '强空': 'text-blue-400' }[level] || 'text-muted'
-}
-
-function levelColor(level) {
-  return { '过热': 'text-red-400', '偏热': 'text-orange-400', '中性': 'text-amber-400',
-           '偏冷': 'text-cyan-400', '过冷': 'text-blue-400' }[level] || 'text-muted'
-}
+// ★ 2026-09-28：`dirColor` / `levelColor` **已上移到 `composables/displayMeta`** ——
+//   顶栏「宏观」摘要与 `MacroEnvCard`（子组件）都要用，留在页内就得复制一份 ⇒ 必然漂移。
+//   本文件改为顶部 import（见 import 区），此处不再本地定义。
 async function loadDayIndex() {
   try {
     const { data } = await getWorkbenchDayIndex(30)
@@ -3019,6 +3031,8 @@ async function loadStatus() {
     const { data } = await getSystemMemory({ types: 0 })
     if (data && data.rss_mb != null) {
       brief.memMb = data.rss_mb
+      // ★ 2026-09-28：摘要里"内存只在 ≥75% 才亮"需要百分比 ⇒ 一并存下。
+      brief.memPct = data.used_pct ?? null
       html += `<div class="mt-1">内存: ${data.rss_mb}MB（峰值 ${data.peak_mb ?? '—'}MB）· 占用 ${data.used_pct ?? '—'}%</div>`
     }
   } catch { /* 忽略 */ }
@@ -3109,6 +3123,10 @@ function startPolling() {
     //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
+    // ★ 2026-09-28（方案 C）：快讯诊断（LLM 最新一条）是**高速变量** ⇒ 纳入轮询，
+    //   否则右栏那行常驻内容会停在"打开页面那一刻"。`loadGlobals()` 已顺带刷新
+    //   `macro`（未锁定时）/`sentiment`，故顶栏宏观摘要不必再单独拉。
+    loadFlashDiag()
     loadAmountShare()      // ★ 需求 4：资金在板块间的流动是盘中变量 ⇒ 纳入轮询
     // ★ 2026-09-27：事件状态盘中会变（涨家数占比随行情走）⇒ 纳入 120s 轮询。
     //   ⚠️ 新增的刷新项必须加进本组，否则盘中静默不更新（项目约定）。
@@ -3161,6 +3179,10 @@ onMounted(async () => {
   }).catch((e) => console.warn('[workbench] 本地评分初始化失败:', e))
   // ★ 外盘四件套已移顶栏常驻（所有阶段可见）——挂载即加载 + 120s 轮询刷新
   loadGlobals()
+  // ★ 2026-09-28（方案 A/C）：顶栏「宏观」摘要与右栏「快讯诊断」要**全天常驻** ⇒
+  //   挂载即拉一次（原先只在 `loadPhaseData('premarket')` 里拉 ⇒ 当天没进过盘前就永远是空的）。
+  //   `loadMacro` 有"今日锁定"当日缓存（拿到锁定快照后不再重拉）；`loadSizing` 是仓位建议。
+  loadMacro(); loadFlashDiag(); loadSizing()
   await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr)])
   loadPhaseData(selectedPhase.value)
   startPolling()

@@ -298,6 +298,13 @@ def market_overview(background_tasks: BackgroundTasks):
                 result["indices"].append({
                     "name": name,
                     "code": code,
+                    # ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
+                    #   **必须下发市场前缀** —— 前端要拼指数详情页链接，而**指数与个股会撞码**：
+                    #   `000001` 既是上证指数（**sh**000001）又是平安银行（**sz**000001）。
+                    #   前端若按"首位数字猜市场"（个股口径）会把上证指数指到平安银行。
+                    #   `MAIN_INDICES` 是唯一源 ⇒ 前缀只能在这里给，前端不得自行推断。
+                    "prefix": prefix,
+                    "qt_code": qt_code,      # 带前缀全码（如 sh000001），调试/其它消费方直接用
                     "price": info["price"],
                     "change_pct": info["change_pct"],   # 涨跌幅
                     "change_amt": info["change_amt"],   # 涨跌点数
