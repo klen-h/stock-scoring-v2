@@ -274,9 +274,13 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
     except Exception:
         pass
 
+    # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：原 `datetime.now()` 是**服务器本地时间**，
+    #   生产上是 **UTC** ⇒ 顶栏「系统状态 · 截至 HH:MM」会少 8 小时（`hhmm(statusTime)`）。
+    #   本项目全链路北京时间 ⇒ 改用 `flash.rules.beijing_now`（本文件其它函数已是同样做法）。
+    from app.flash.rules import beijing_now
     return {
         "latest_trading_day": latest,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": beijing_now().isoformat(timespec="seconds"),
         "summary": f"{ok_count}/{len(sources)} 新鲜",
         "sources": sources,
         "scheduler": sched,

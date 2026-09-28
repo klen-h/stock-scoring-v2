@@ -237,8 +237,11 @@ def _size_style(stocks: Dict, index_pct: Optional[float]) -> Dict:
             "big_minus_small": diff,             # 风格差（大市值 − 小市值）
             "index_pct": index_pct,              # 真实指数涨幅（对照用）
             "note": "；".join(notes),
-            "as_of": (datetime.fromtimestamp(data_ts).strftime("%m-%d %H:%M")
-                      if data_ts else None),
+            # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：`fromtimestamp` **不带 tz**
+            #   ⇒ 按**服务器本地时区**解释 —— 生产是 UTC ⇒ 比北京时间少 8 小时。
+            #   `data_ts` 本身是真实 epoch（实时=`time.time()`；快照=`saved_at` 解析），故显式 +08:00。
+            "as_of": (datetime.fromtimestamp(data_ts, tz=timezone(timedelta(hours=8)))
+                      .strftime("%m-%d %H:%M") if data_ts else None),
             # True = 数据来自收盘快照（盘后/周末）⇒ 前端应标注"上一交易日"，别当成实时
             "from_snapshot": bool(_cache.get("from_snapshot")),
         }
@@ -1433,7 +1436,19 @@ def market_emotion():
 
     # ★ A4 竞价看板：昨日涨停股今日高开幅度（9:25 竞价定稿后有效）
     gaps = []
-    for code in limit_up_codes:
+    # ★★ 2026-09-29（用户追问："盘中的竞价看板「一会一个、一会三个」也是正常的吗？"）：
+    #   **不正常 —— 名单来源写错了。** 原实现遍历 `limit_up_codes`，而它是用
+    #   **行情缓存里的当日涨幅**（`stocks[...]["change_pct"] >= 9.5`）筛出来的：
+    #     · 开盘**前**：行情缓存还是上一交易日的快照 ⇒ 筛出的是「昨日涨停」（与文案相符）；
+    #     · 开盘**后**：`change_pct` 变成当日 ⇒ 筛出的是「**今**日涨停」！
+    #   ⇒ 同一份代码在开盘前后筛出**完全不同的名单**，且盘中名单**随涨停家数一路变**
+    #     ⇒ 面板上 `count / avg_gap / Top5` 必然乱跳（用户看到的"一会一个、一会三个"）。
+    #   ★ 旁证：`avg_gap = -7.44%`（"昨日涨停股今日平均高开 -7.44%"）在正常市场极罕见 ——
+    #     它实际算的是「**当日涨停股**的开盘涨幅」（当日涨停多为低开后拉板 ⇒ 开盘普遍很负）。
+    #   ★ 正解就在上面几行：`prev_limit` 是**由历史收盘算出的真正「昨日涨停名单」**
+    #     （`d_prev` 相对 `d_prev2` 涨幅 ≥9.5%，已用于 `money` 赚钱效应），它**当天恒定**
+    #     ⇒ 改用它：语义与文案一致、盘中不再跳（唯一正常的小波动只剩"开盘价逐步到位"）。
+    for code in prev_limit:
         q = stocks.get(code) or {}
         o = _num_or_none(q.get("open"))
         # ★★ 2026-09-25（用户贴出 traceback，line 532）：`yc` 取自 `closes`，而 `closes` 只覆盖
@@ -1497,6 +1512,18 @@ def market_emotion():
                             "sig": _c in sig_codes, "held": _c in held_codes})
     market_gaps.sort(key=lambda x: -x["gap_pct"])
     auction = {"count": len(gaps),
+               # ★★ 2026-09-28（用户："竞价看板…这个怎么一会一个，一会又三个"）：
+               #   `count` 只是"**已算出高开**的昨日涨停股数"，它会随竞价窗口（9:15-9:25）
+               #   内行情缓存的逐分钟刷新而**从少到多**（`open` 值分批到位）⇒ 面板上
+               #   「昨日涨停 N 只 / Top5 条目数」跟着跳，**这不是 bug，是数据到位过程**。
+               #   ⇒ 补一个分母（昨日涨停总数），前端就能显示 `11/40 只` 让"少"变得可解释。
+               # ★ 2026-09-29：分母同步改用 `prev_limit`（与 `gaps` 同源）—— 否则"11/40"里的
+               #   分母是「当日涨停家数」、分子是「昨日涨停股」，**不同日** ⇒ 又是一个对不上的数。
+               "limit_up_total": len(prev_limit),
+               # ★ 2026-09-29：日线覆盖率（`closes` 里 `d_prev` 有值的股票数）。实测库内
+               #   `backtest_prices` 只覆盖 **839 只**（不是全市场）⇒ 名单必然**少于**真实涨停家数。
+               #   给前端一个可解释"数字偏少"的抓手（诚实标注，不假装是全市场口径）。
+               "covered": (sum(1 for m in closes.values() if m.get(d_prev)) if d_prev else 0),
                "avg_gap": round(sum(g["gap_pct"] for g in gaps) / len(gaps), 2) if gaps else None,
                "top": gaps[:5],
                # ── 全市场视角（2026-09-25 新增）──

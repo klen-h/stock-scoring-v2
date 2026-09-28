@@ -485,8 +485,13 @@ def _build_impl() -> Dict:
     n_risk = sum(1 for x in items for a in (x.get("alerts") or []) if a["level"] == "risk")
     n_opp = sum(1 for x in items for a in (x.get("alerts") or []) if a["level"] == "opportunity")
 
+    # ★★ 2026-09-28（用户："持仓状态…数据时点 15:52" + "好几处的时间差 8 小时"）：
+    #   原为 `time.strftime(...)` = **服务器本地时间** —— 生产（Render / Actions）上是 **UTC**
+    #   ⇒ 前端显示的"数据时点"**少 8 小时**。本项目全链路北京时间（`flash.rules.beijing_now`）
+    #   ⇒ 此处补齐（局部导入，避免与 flash 包产生模块级循环依赖）。
+    from app.flash.rules import beijing_now as _bj_now
     return {
-        "as_of": time.strftime("%Y-%m-%d %H:%M"),
+        "as_of": _bj_now().strftime("%Y-%m-%d %H:%M"),
         "regime": regime,
         "strategy_date": str(sig_date)[:10] if sig_date else None,
         "watch_date": (list(watch.values())[0].get("date") if watch else None),

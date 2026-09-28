@@ -335,6 +335,14 @@
   **不是** `HH:MM` —— 直接 `.slice(0,5)` 会显示成 **`2026-`**（用户实测："2026- 是不是少了什么？"）。
   展示时刻一律走共享 **`displayMeta.hhmm()`**（ISO 与 `HH:MM` 都吃、认不出返回 `''`）。
   ⚠️ 后端**刻意不改**该字段格式（历史行已是 ISO，改了会同列混杂格式）。
+- ★★ **行情缓存里的 `change_pct` 是"当日"口径，不能当历史用**（2026-09-29 竞价看板 bug）：
+  它**开盘前 = 上一交易日涨幅**、**开盘后 = 当日涨幅** ⇒ 同一份代码在开盘前后会筛出**完全不同的名单**。
+  踩坑实例：竞价看板的「昨日涨停」原用 `stocks[].change_pct >= 9.5` 筛名单 ⇒ 开盘后变成「**今**日涨停」
+  ⇒ `count/avg_gap/Top5` 盘中乱跳（用户："一会一个、一会三个"）。**正解：用历史收盘自算的
+  `prev_limit`**（`d_prev` vs `d_prev2` 涨幅≥9.5%，当天恒定）。旁证：−7.44% 这种"昨日涨停股平均高开"
+  异常值往往说明**名单不是昨日涨停**。
+  相关事实：`backtest_prices` 仅覆盖 **839 只**（非全市场）⇒ 由日线自算的涨停名单必然偏少；
+  `_prev_trading_day` 走**交易日历**（2026-09-25 中秋休市，缺数据≠缺口）。
 - ★★ **"信息只在某个阶段看得到"通常不是数据问题，是渲染位置问题**（2026-09-28 宏观卡实证）：
   「宏观与环境」卡原先写在 `selectedPhase==='premarket'` 分支里 ⇒ 盘中/盘后**看不到**，
   而它的数据（快讯诊断、情绪温度计）一直在、且**全天会变**。⇒ 排查顺序：**先查 `v-if` 在哪个
@@ -349,6 +357,19 @@
   `flashDiag`（快讯 LLM）与 `sentiment`（情绪温度计）**全天会变**。
   `loadGlobals()` 每 120s 拉 `/macro/snapshot`，**未锁定时顺带补** `macro.direction/tags_*`
   ⇒ 顶栏摘要不额外发请求；**有锁定快照时绝不动它**。
+- ★★ **`接口实时` ≠ `页面实时`**（2026-09-28 实证）：判断工作台某块会不会动，要看它**在不在
+  `startPolling()` 的 120s 轮询组里** —— 项目约定"新增的刷新项必须加进本组，否则盘中静默不更新"。
+  本轮实例：**主线板块 Top5** 接口是实时东财（`TTL_SECTOR=60s`）但**只在切阶段时调一次** ⇒
+  用户看到"不是实时"（已纳入轮询）；而**行业成交额占比**一直在轮询里却因 `as_of` 差 8 小时被误判。
+  另：**涨停梯队与清单**是 zzshare **日批快照** ⇒ 盘中物理上只有上一交易日（数据源限制，非缺陷）。
+- ★★ **时间字段的两种"差 8 小时"错法**（生产服务器 = UTC，项目约定全链路北京时间）：
+  ① `datetime.now()` / `time.strftime()` = **服务器本地时间**（`portfolio_radar.as_of`、
+  `routers/system.system_status` 的 `generated_at` 都曾如此）；
+  ② `datetime.fromtimestamp(ts)` **不带 tz** ⇒ 按本地时区解释（`market._size_style`、
+  `sector_industry.industry_amount_share` 的 `as_of` 都曾如此）。
+  **正解**：`flash.rules.beijing_now()`，或 `fromtimestamp(ts, tz=timezone(timedelta(hours=8)))`。
+  前端展示时刻统一走 `displayMeta.hhmm()`。⚠️ 审计时注意：不是所有 `datetime.now()` 都要改 ——
+  `strategies/*.py` 的 `"timestamp"` 字段前端**零引用**（纯内部），不必动。
 - ★ **前端展示 helper 的唯一共享源 = `composables/displayMeta.js`**（2026-09-28 扩充）：
   `PHASE_STYLE`(主力阶段配色) / `PHASE_CN`+`phaseCn`(主力阶段中文名兜底) /
   `STRATEGY_SHORT`+`strategyShort` / `readyCls`+`readyChipCls`(闸门就绪文字/标签配色) /

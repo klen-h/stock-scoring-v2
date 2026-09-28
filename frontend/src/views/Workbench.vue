@@ -1014,7 +1014,21 @@
             <!-- ★ P1 竞价看板：昨日涨停股今日高开（9:25 竞价定稿后有效；休市日显示最近交易日） -->
             <div v-if="emotion && emotion.auction && emotion.auction.count"
                  class="border-t border-border/40 mt-2 pt-2 text-xs">
-              <div class="mb-1">竞价看板：昨日涨停 {{ emotion.auction.count }} 只 ·
+              <!-- ★ 2026-09-28（用户："这个怎么一会一个，一会又三个"）：补**数据到位度**
+                   —— 竞价窗口内行情缓存逐分钟刷新 ⇒ 能算出高开的股票数从少到多，
+                   `count/limit_up_total` 一眼看出"是数据还没到齐，不是真的只有这几只"。 -->
+              <!-- ★ 2026-09-29（用户追问："盘中的竞价看板「一会一个、一会三个」也是正常的吗？"
+                   ⇒ 不正常，已修：名单来源由「行情缓存的**当日**涨幅」（开盘后=今日涨停）
+                   改为「按历史收盘自算的**昨日**涨停」）—— 顺带把**口径与边界**放 hover：
+                   ① 名单按**已回填日线**自算（库内仅覆盖 ~839 只）⇒ 可能少于真实涨停家数；
+                   ② 开盘价 9:15 前尚未产生，此时用的是上一交易日值。 -->
+              <div class="mb-1"
+                   :title="`名单口径：按已回填日线自算的「昨日涨停」——当日仅 ${emotion.auction.covered ?? '—'} 只股票有日线数据，故通常少于真实涨停家数（已结算昨日涨停家数 ~47 只）\n开盘价：9:15 前尚未产生，此时取上一交易日值`">竞价看板：昨日涨停
+                <b class="font-mono">{{ emotion.auction.count }}<template
+                  v-if="emotion.auction.limit_up_total">/{{ emotion.auction.limit_up_total }}</template></b> 只<template
+                  v-if="emotion.auction.limit_up_total && emotion.auction.count < emotion.auction.limit_up_total">
+                  <span class="text-[10px] text-amber-400/80 ml-0.5"
+                        :title="`昨日涨停共 ${emotion.auction.limit_up_total} 只，其中 ${emotion.auction.count} 只的开盘价已到（竞价窗口内逐步刷新）`">·开盘价已到</span></template> ·
                 平均高开 <b :class="pctClass(emotion.auction.avg_gap)">{{ signNum(emotion.auction.avg_gap) }}%</b>
                 <span class="text-muted">（高开幅度 Top5）</span></div>
               <!-- ★ 2026-09-27（用户："盘中的高开幅度 Top5 的也加上代码"）：
@@ -1895,8 +1909,11 @@
           </div>
         </div>
 
-        <!-- 持仓摘要 -->
-        <div class="bg-card border border-border rounded-lg p-4">
+        <!-- 持仓摘要
+             ★ 2026-09-28（用户："持仓摘要右栏卡片先隐藏吧"）：**暂时隐藏**。
+             ⚠️ 卡体**原样保留**、只加 `v-if="false"` —— 要恢复**删掉这个 v-if 即可**
+               （用户说的是"**先**隐藏"，预期会回来；且它的数据与主区「持仓状态」同源，留着便于对照）。 -->
+        <div v-if="false" class="bg-card border border-border rounded-lg p-4">
           <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold">持仓摘要</div>
             <router-link target="_blank" to="/paper" class="text-xs text-accent hover:underline">模拟盘</router-link>
@@ -3127,6 +3144,12 @@ function startPolling() {
     //   否则右栏那行常驻内容会停在"打开页面那一刻"。`loadGlobals()` 已顺带刷新
     //   `macro`（未锁定时）/`sentiment`，故顶栏宏观摘要不必再单独拉。
     loadFlashDiag()
+    // ★★ 2026-09-28（用户："主线板块 Top5 也不是实时的" —— 真因就在这里）：
+    //   `loadSectorTop` 原先**只在切阶段时调一次**，切进盘中后就不再刷新
+    //   ⇒ 页面上的板块排名停在"进入该阶段那一刻"（尽管接口本身是实时的）。
+    //   纳入 120s 轮询即可实时；⚠️ 不会打爆东财：`eastmoney` 的板块列表有 **60s TTL 缓存**
+    //   （`TTL_SECTOR=60`）⇒ 最多每 2 分钟一次真实请求，与原来切阶段的用法同量级。
+    loadSectorTop()
     loadAmountShare()      // ★ 需求 4：资金在板块间的流动是盘中变量 ⇒ 纳入轮询
     // ★ 2026-09-27：事件状态盘中会变（涨家数占比随行情走）⇒ 纳入 120s 轮询。
     //   ⚠️ 新增的刷新项必须加进本组，否则盘中静默不更新（项目约定）。

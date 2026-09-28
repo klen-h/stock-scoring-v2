@@ -648,7 +648,9 @@ def industry_amount_share(top: int = 15) -> dict:
            "top5_share_pct": None, "unmapped_share_pct": None, "industry_n": None,
            "as_of": None, "from_snapshot": False, "note": None}
     try:
-        from datetime import datetime
+        # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：补 `timezone, timedelta` ——
+        #   下方 `fromtimestamp(data_ts)` 需显式 +08:00（见该行注释）。
+        from datetime import datetime, timezone, timedelta
         from app.tencent import _cache
         stocks = _cache.get("stocks") or {}
         if not stocks:
@@ -699,8 +701,11 @@ def industry_amount_share(top: int = 15) -> dict:
             "total_amount_yi": round(total / 1e8, 0),
             "top5_share_pct": round(sum(r["share_pct"] for r in rows[:5]), 2),
             "unmapped_share_pct": round(unmapped / total * 100, 2),
-            "as_of": (datetime.fromtimestamp(data_ts).strftime("%m-%d %H:%M")
-                      if data_ts else None),
+            # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：`fromtimestamp` **不带 tz** ⇒
+            #   按服务器本地时区（生产 = UTC）解释 ⇒ 比北京时间**少 8 小时**。
+            #   `data_ts` 本身是真实 epoch（实时=`time.time()`；快照=`saved_at` 解析）⇒ 显式 +08:00。
+            "as_of": (datetime.fromtimestamp(data_ts, tz=timezone(timedelta(hours=8)))
+                      .strftime("%m-%d %H:%M") if data_ts else None),
             "from_snapshot": bool(_cache.get("from_snapshot")),
         })
         # ⚠️ 前端插值文案：**不能含 Markdown 标记**
