@@ -429,6 +429,38 @@ def _ev_gate_no_add(pos, params, ctx):
     }
 
 
+_reduce_limit_cache = {"ts": 0.0, "val": (None, "")}
+
+
+def _reduce_limit_note() -> tuple:
+    """减仓触发器的**定量上限**（position_sizing 引擎口径，fail-open + 10min 缓存）。
+
+    ★ 2026-09-29（P0）：此前 gate_reduce 只说"砍到最低仓位"（定性），用户仍需自己
+      折算；引擎 `total_limit_pct` 已含 regime 基准 + 10Y/两融下调系数 + 周回撤熔断
+      （9/29 实测 = 0%，reasons 见下），是**唯一事实源**，直接引用避免第二套口径。
+    ★ egress：`position_sizing_for_portfolio` 内含组合回撤（读 K 线）⇒ 若 30s 轮询
+      每轮调用会放大网络（命中期间整个交易日），故结果缓存 10min（同 `_macro` 思路）；
+      失败不写缓存，便于下轮重试。
+    返回 (limit_pct | None, 依据文本)。
+    """
+    now = _time.time()
+    cached = _reduce_limit_cache["val"]
+    if cached[0] is not None and now - _reduce_limit_cache["ts"] < 600:
+        return cached
+    try:
+        from app.coach.position_sizing import position_sizing_for_portfolio
+        ps = position_sizing_for_portfolio() or {}
+        limit = ps.get("total_limit_pct")
+        reasons = [str(r) for r in (ps.get("market_reasons") or [])][:3]
+        val = (limit, "；".join(reasons))
+        if limit is not None:
+            _reduce_limit_cache.update(ts=now, val=val)
+        return val
+    except Exception as e:
+        print(f"[coach] 减仓上限取值失败（fail-open）: {str(e)[:80]}")
+        return cached
+
+
 def _ev_gate_reduce(pos, params, ctx):
     hits = []
     m, mc = ctx.get("macro") or {}, ctx.get("margin") or {}
@@ -443,10 +475,18 @@ def _ev_gate_reduce(pos, params, ctx):
         hits.append(f"两融 5 日净减 {abs(chg5):.0f} 亿 + 情绪温度计 {score:.0f} 分（寒冷区）")
     if not hits:
         return None
+    # ★ 2026-09-29（P0）：补定量上限（此前只有定性"砍到最低仓位"）。
+    limit, basis = _reduce_limit_note()
+    limit_txt = (f"引擎仓位上限 **{limit}%**（该砍到多少的定量口径，需人工确认执行）"
+                 if limit is not None else "引擎上限暂不可得，按 regime 档位执行")
+    msg = (f"【减仓条件命中】{'；'.join(hits)}。\n"
+           f"→ {limit_txt}。")
+    if basis:
+        msg += f"\n依据：{basis}"
     return {
-        "message": "【减仓条件命中】" + "；".join(hits) + "。按纪律砍到最低仓位。",
+        "message": msg,
         "numbers": {"us10y": u10, "dxy": m.get("dxy"), "margin_chg5": chg5,
-                    "sentiment": score},
+                    "sentiment": score, "limit_pct": limit},
     }
 
 

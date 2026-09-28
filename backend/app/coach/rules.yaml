@@ -71,7 +71,13 @@ rules:
   - id: gate_reduce
     label: 减仓条件命中
     enabled: true
-    push: false
+    # ★ 2026-09-29（P0 放开推送）：此前 push=false ⇒ 本卡 2.5 周已命中 4 次
+    #   （9/24 10Y 5.11% + DXY 101.1；9/28 10Y 5.20% + DXY 101.1）却**从未主动提醒**，
+    #   用户自述「触发器命中但仓位没降」⇒ 「只落库」对风控类卡不成立（人不会主动去查）。
+    #   放开依据：① 风控类与战法买入信号同级（wechat 侧 force 穿透业务开关）；
+    #   ② 频率极低（2.5 周 4 次）不会造成警报疲劳；③ 文案已补**定量上限**
+    #   （position_sizing 引擎的 total_limit_pct，9/29 实测 = 0%）。
+    push: true
     severity: warn
     params:
       us10y_pct: 5.0           # 简报 §2.3 减仓①
