@@ -325,9 +325,10 @@ def market_overview(background_tasks: BackgroundTasks):
         up = sum(1 for s in stocks.values() if s["change_pct"] > 0)     # 上涨家数
         down = sum(1 for s in stocks.values() if s["change_pct"] < 0)   # 下跌家数
         flat = total - up - down                                        # 平盘家数
-        # 涨停（涨幅≥9.9%）/ 跌停（跌幅≤-9.9%）。注：科创板/创业板涨跌幅限制是 20%，这里用 9.9 是近似
-        limit_up = sum(1 for s in stocks.values() if s["change_pct"] >= 9.9)
-        limit_down = sum(1 for s in stocks.values() if s["change_pct"] <= -9.9)
+        # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
+        #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
+        #   创业板/科创板（20cm）⇒ 会系统性误判（涨 10% 的 20cm 票不算涨停）。
+        limit_up, limit_down = _limit_counts(stocks)
         # 所有股票的涨跌幅列表，用于算平均/中位数
         changes = [s["change_pct"] for s in stocks.values()]
         result["stats"] = {
@@ -387,8 +388,9 @@ def market_temperature():
     total = len(stocks)
     up = sum(1 for s in stocks.values() if s.get("change_pct", 0) > 0)
     down = sum(1 for s in stocks.values() if s.get("change_pct", 0) < 0)
-    limit_up = sum(1 for s in stocks.values() if s.get("change_pct", 0) >= 9.9)
-    limit_down = sum(1 for s in stocks.values() if s.get("change_pct", 0) <= -9.9)
+    # ★ 2026-09-29：与 `market_overview` **同口径**（按板幅，见 `_limit_counts` 注释）——
+    #   两处此前各写一遍 `>=9.9`，解屏蔽后会同时错，且"页面两个涨跌停家数不一致"的风险重现。
+    limit_up, limit_down = _limit_counts(stocks)
     chgs = [s.get("change_pct", 0) for s in stocks.values()]
     avg_chg = sum(chgs) / len(chgs) if chgs else 0
     breadth = _breadth_score(up, down, limit_up, limit_down, total, avg_chg)
@@ -1724,6 +1726,30 @@ def _bucket_of(code: str, name: str) -> str:
     if abs(lp - 0.30) < 1e-9:
         return "30cm"
     return "主板"
+
+
+def _limit_counts(stocks: dict) -> tuple:
+    """按**板幅**统计涨停/跌停家数 → (limit_up, limit_down)。
+
+    ★★ 2026-09-29（解屏蔽 A1 的配套修正）：此前两处（`market_overview` /
+      `market_temperature`）都用 `change_pct >= 9.9` 一刀切近似。在"池子只有主板"时
+      它**碰巧接近正确**；而 A1 解屏蔽后池子含创业板/科创板（20cm）⇒ 该近似会
+      **系统性误判**：20cm 票涨 10% 不是涨停、ST 5% 涨 5% 才是（会被漏判）。
+      判据统一复用 `backtest.engine._limit_pct`（项目唯一板幅实现：主板10/双创20/
+      北交30/ST5），留 **0.3pt 容差**（涨停价按分四舍五入 ⇒ 实际涨幅可能略低于板幅）。
+    """
+    from app.backtest.engine import _limit_pct
+    lu = ld = 0
+    for code, s in (stocks or {}).items():
+        chg = s.get("change_pct")
+        if chg is None:
+            continue
+        lp = _limit_pct(str(code), str(s.get("name") or "")) * 100
+        if chg >= lp - 0.3:
+            lu += 1
+        elif chg <= -(lp - 0.3):
+            ld += 1
+    return lu, ld
 
 
 def _limit_stats(day: str) -> Optional[Dict]:
