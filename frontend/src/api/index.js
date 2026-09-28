@@ -338,6 +338,9 @@ export const getMarketLimitReview = (date) => http.get('/market/limit-review', {
 //   与 limit-review 的「收盘定稿」口径**互补而非替代**：本接口盘前/休市时返回上一交易日
 //   收盘快照（`is_intraday=false` + `data_date`），盘中返回此刻动态值。
 export const getRealtimeUplimit = () => http.get('/market/uplimit-realtime', { timeout: 20000 })
+// ★ 2026-09-29 P1：财经日历**前瞻**（未来 N 天核心事件：PCE/CPI/非农/FOMC…）。
+//   与 /flash/calendar（全量、含官员讲话）互补；筛选口径与盘前企微推送同源（后端统一）。
+export const getCalendarAhead = (days = 3) => http.get('/flash/calendar-ahead', { params: { days } })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！

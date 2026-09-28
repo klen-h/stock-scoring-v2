@@ -2083,6 +2083,36 @@ async def finance_loop():
         await asyncio.sleep(600)
 
 
+# ── 日历前瞻（盘前窗口推一次；仅核心事件才推，见 flash/calendar_ahead.py）──
+CALENDAR_AHEAD_WINDOW = (850, 930)      # 北京时间 08:50~09:30（开盘前）
+
+
+async def calendar_ahead_loop():
+    """盘前「财经日历前瞻」：未来 3 天核心事件（PCE/CPI/非农/FOMC…）主动推企微。
+
+    ★ 为什么需要（2026-09-29）：既有 `contradictions.scan_today_calendar_focus` 只扫
+      **当天**、且只进矛盾扫描（不推送）⇒ 用户必须当天自己去翻日历页；而真实需求是
+      "**提前 1~3 天知道哪天是数据敏感期**"（用户上轮亲自点名 9/30 PCE、10/2 非农）。
+    ★ 窗口 08:50~09:30；**失败不标记**（窗口内下轮重试，与 review_loop 同款语义）。
+    ★ 推送有门槛：仅"5星 / 核心指标词"才推（4星非讲话类只进结构化输出），
+      且同事件只推一次（`calendar_alert_log` 去重）⇒ 不会刷屏。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            if (CALENDAR_AHEAD_WINDOW[0] <= t < CALENDAR_AHEAD_WINDOW[1]
+                    and rules.is_trading_day(now)
+                    and not store.is_schedule_done("calendar_ahead")):
+                from app.flash.calendar_ahead import run_alert
+                msg = await asyncio.to_thread(run_alert)
+                print(f"[scheduler] {msg}")
+                store.mark_schedule_done("calendar_ahead")
+        except Exception as e:
+            print(f"[scheduler] 日历前瞻失败（窗口内下轮重试）: {e}")     # ASCII（铁律⑥）
+        await asyncio.sleep(600)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -2116,6 +2146,9 @@ async def start():
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),
+             # ★ 2026-09-29：盘前日历前瞻（未来 3 天核心事件 PCE/CPI/非农/FOMC 主动提醒）
+             #   —— 通知类、极轻量（读已落库日历 + 一条企微）⇒ 只读模式保留。
+             asyncio.create_task(calendar_ahead_loop()),
             # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
             asyncio.create_task(event_alert_loop()),
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）

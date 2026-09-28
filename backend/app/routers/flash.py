@@ -59,6 +59,20 @@ def flash_calendar(days: int = Query(7, ge=1, le=60),
             "items": items}
 
 
+@router.get("/calendar-ahead")
+def flash_calendar_ahead(days: int = Query(3, ge=1, le=7)):
+    """日历**前瞻**：未来 days 天的**核心事件**（PCE/CPI/非农/FOMC…）。
+
+    ★ 2026-09-29：与 `/calendar`（全量、含官员讲话）**互补** —— 本接口只回答
+      "哪天是数据敏感期"，筛选用 `flash/calendar_ahead.py` 的**同一套口径**
+      （国家白名单 + 核心指标词 + 5星通道 + 同指标合并），**前端不再复制一套筛选**
+      （避免两处口径漂移）；盘前企微推送用的也是它 ⇒ 页面与推送必然一致。
+    """
+    from app.flash import calendar_ahead
+    up = calendar_ahead.upcoming(days=days)
+    return {"days": days, **up}
+
+
 @router.post("/calendar/refresh")
 def flash_calendar_refresh(days_ahead: int = Query(14, ge=7, le=60)):
     """手动刷新财经日历缓存（测试/应急用；日常由调度器每日 07:00 自动刷新）。"""

@@ -956,6 +956,30 @@
               <div class="text-sm font-semibold">隔夜与今日（财经日历）</div>
               <router-link target="_blank" to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
             </div>
+            <!-- ★★ 2026-09-29（P1）：未来 3 天**关键事件**（PCE/CPI/非农/FOMC…）。
+                 与下方"今日全部事件"互补：本块回答"**哪天是数据敏感期**"——已滤官员讲话、
+                 只留美国/中国、同指标多口径（年率/月率）已合并 ⇒ 高信噪比。
+                 筛选**全在后端** `flash/calendar_ahead`（与盘前企微推送同一套口径，
+                 前端不复制，避免页面与推送两套筛选漂移）。
+                 `by_date` 是对象 ⇒ v-for 第二参数取日期键（后端已按日期升序插入）。 -->
+            <div v-if="calendarAhead?.items?.length" class="mb-2 pb-2 border-b border-border/40">
+              <div class="text-[11px] text-muted mb-0.5">未来 3 天关键事件
+                <span class="text-[10px]">（核心指标 · 已滤官员讲话）</span></div>
+              <div v-for="(rows, d) in calendarAhead.by_date" :key="d"
+                   class="text-xs py-0.5 flex gap-1.5 items-start">
+                <span class="font-mono text-muted shrink-0">{{ mmdd(d) }}</span>
+                <span class="min-w-0">
+                  <template v-for="(x, i) in rows" :key="x.id">
+                    <span class="cursor-help"
+                          :class="x.channel === '5star' ? 'text-amber-300 font-semibold' : 'text-gray-300'"
+                          :title="`${x.country || ''}${x.title}${x.star ? '（' + '★'.repeat(x.star) + '）' : ''}${x.impact ? ' — ' + x.impact : ''}`"
+                    >{{ x.country }}{{ x.title }}<span v-if="x.star"
+                      class="text-[9px] align-super">{{ '★'.repeat(x.star) }}</span></span><span
+                      v-if="i < rows.length - 1" class="text-muted"> · </span>
+                  </template>
+                </span>
+              </div>
+            </div>
             <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
             <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
             <div v-for="(e, i) in calendarToday" :key="i" class="text-xs border-b border-border/40 py-1">
@@ -2087,7 +2111,7 @@ import {
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
-  getMarketEmotion, getMarketLimitReview, getRealtimeUplimit,
+  getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getUserPositionSizing,
   getEmotionReview,
   getMarketTailReview,
@@ -2288,6 +2312,10 @@ const barWShare = (pct) => {
 }
 const calendarToday = ref([])
 const calendarErr = ref('')
+// ★ 2026-09-29（P1）：日历**前瞻**（未来 3 天核心事件）—— 与盘前企微推送**同口径**
+//   （筛选全在后端 `flash/calendar_ahead`：国家白名单 + 核心指标词 + 5星通道 + 同指标合并）。
+//   与下方 `calendarToday`（全量今日事件、含官员讲话）互补：它回答"**哪天是数据敏感期**"。
+const calendarAhead = ref(null)
 // ★ P1 决策卡（规则引擎确定性输出；空状态由后端 error 兜底）
 const dc = ref(null)
 const dcLoading = ref(false)
@@ -2998,6 +3026,17 @@ async function loadCalendarToday() {
     }
   }
 }
+// ★ 2026-09-29（P1）：日历前瞻（未来 3 天核心事件）——复用 `_dayCached` 日缓存
+//   （日历每天更新一次，同日内重复拉无意义）。
+async function loadCalendarAhead() {
+  const cday = selectedDate.value
+  if (_dayCached('cal_ahead', cday)) return
+  try {
+    const { data } = await getCalendarAhead(3)
+    calendarAhead.value = (data && data.items && data.items.length) ? data : null
+    if (calendarAhead.value) _dayMark('cal_ahead', cday)
+  } catch { calendarAhead.value = null }
+}
 // 情绪快照 v0（涨停/跌停/赚钱效应/连板高度/判读——近似口径，B1 官方数据后替换）
 // 外盘四件套（A50 期货覆盖 SGX T+夜盘时段，CN 休市日常仍有报价——已实测中秋在报价）
 async function loadGlobals() {
@@ -3188,7 +3227,7 @@ async function loadStatus() {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
-  if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadSizing()]) }
+  if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadCalendarAhead(), loadSizing()]) }
   // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
   else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
   // ★ 2026-09-25（盘后补强 · 缺口1）：盘后补拉**情绪快照 + 板块** —— 「今日盘面定稿」卡要用。
@@ -3331,7 +3370,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })
