@@ -16,6 +16,7 @@
 ================================================================================
 """
 
+import os
 import threading
 from collections import deque
 from datetime import datetime
@@ -51,6 +52,19 @@ _FAIL_THRESHOLD = 3          # 连续失败 N 次告警
 #     （企微提醒）"为由把它排除，而其实它一直就在豁免名单里（历史演进未同步注释）。
 #   注意：`_alerts`（页面通知铃铛 + 前端状态条）**不受影响**，照样可见。
 _NO_WECHAT_SOURCES = {"eastmoney", "eastmoney_main"}
+
+# ★ 2026-09-29：**数据源告警总开关** —— `WECHAT_SOURCE_ALERTS=0` ⇒ 所有「数据源告警/恢复」
+#   一律不推企微（仍进页面通知铃铛）。
+#   动机：用户在 09-22 要求静默东财后**仍持续收到**该噪音。本轮排查结论（已实测）：
+#     代码里东财**早已豁免**（本地实测：东财 3 连败 + 恢复 ⇒ 企微 **0 次**；
+#     金十同场景 ⇒ **2 次**）⇒ "还在推"的根因是**线上跑的是旧构建**。
+#     ⇒ 核对办法：`curl /api/health` 看 `build`（= Render 注入的 RENDER_GIT_COMMIT）
+#       是否等于 `git rev-parse HEAD` 前 7 位；不等 = 部署没跟上，不是代码问题。
+#   ⇒ 同时给一个**无需改代码**的逃生阀：控制台把本变量设 0，任何源都不再打扰。
+#   ⚠️ 默认 1（保持现状）—— 金十 Cookie 过期这类"事件流会悄悄死掉"的告警仍要能送达，
+#      那正是本模块存在的理由（见文件头）。东财的静默**不依赖**本开关。
+_WECHAT_SOURCE_ALERTS = (os.environ.get("WECHAT_SOURCE_ALERTS", "1") or "1").strip() != "0"
+
 _ALERTS_PATH = store.PATHS.get("health") or store.DATA_DIR + "/source_health.json"
 
 _lock = threading.Lock()
@@ -131,7 +145,19 @@ def record(source: str, ok: bool, error: str = "") -> None:
                 print(f"[health] [WARN] {name} 连续失败 {st['consec_fail']} 次，已告警")
 
     # 东财主站等噪音源仍进页面通知铃铛，但不推企微
-    if pending_wechat and source not in _NO_WECHAT_SOURCES:
+    # ★ 2026-09-29：**留痕** —— 原先静默是"无声"的，导致用户两次追问"为什么还在推"时
+    #   只能靠反推线上版本。现在每次抑制都打一行日志：
+    #     · 日志里有这行 ⇒ 抑制生效，企微确实没收到；
+    #     · 用户仍收到推送而日志**没有**这行 ⇒ 推的**不是这份代码**（旧构建/另一实例）
+    #       —— 一次就能分清，不必再取证一轮。
+    if pending_wechat and (source in _NO_WECHAT_SOURCES or not _WECHAT_SOURCE_ALERTS):
+        _why = "静默源" if source in _NO_WECHAT_SOURCES else "WECHAT_SOURCE_ALERTS=0"
+        # print 包 try：日志绝不能改变业务结果（标题可能含 emoji，中文控制台是 GBK）
+        try:
+            print(f"[health] 已抑制企微推送（{name}，原因：{_why}）—— 页面通知照常")
+        except Exception:
+            pass
+    elif pending_wechat:
         _push_wechat_safely(pending_wechat)
 
 

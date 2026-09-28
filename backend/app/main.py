@@ -249,7 +249,14 @@ def health():
         sw_ok, sw_bad = sw["ok"], sw["mismatches"]
     except Exception:
         sw_ok, sw_bad = None, []
+    # ★ 2026-09-29：带上**部署提交号**，让"线上到底跑的是哪一版"一次 curl 就能确认。
+    #   起因：排查"东财告警还在推企微"时，只能靠"某端点存不存在"反推线上版本（很费劲），
+    #   而结论恰恰是"线上是旧构建"。Render 自动注入 RENDER_GIT_COMMIT ⇒ 直接暴露；
+    #   本地/其他平台回退 GIT_COMMIT，都没有则为空串（不假装有值）。
+    _build = (os.environ.get("RENDER_GIT_COMMIT")
+              or os.environ.get("GIT_COMMIT") or "").strip()
     return {"status": "ok", "service": "stock-scoring-backend",
+            "build": _build[:7],
             "switches_ok": sw_ok, "switches_mismatch": sw_bad}
 
 
