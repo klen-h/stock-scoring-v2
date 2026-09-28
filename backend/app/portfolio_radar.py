@@ -389,6 +389,139 @@ def build() -> Dict:
         _build_state["computing"] = False
 
 
+# ==============================================================================
+#  组合层风控三件（2026-09-29）
+# ==============================================================================
+# 【为什么需要】`_alerts_for` 是**逐只**视角（止损/浮亏/板块被点名），专业风控还要看
+#   **组合层**（工作台评价里指出的缺口）：
+#     ① 风格暴露 —— 持仓大小盘 vs 当前 regime（defensive 期满仓小盘 = 顶风，
+#        且 E2 已证明小盘 edge 是**条件性**的）；
+#     ② 板块集中度 —— N 只同行业 = 隐性 β 集中（表面分散、实则一个板块）；
+#     ③ 海外敏感链 —— 隔夜纳指/油价/汇率异动 → 点出受影响持仓。
+#   三者数据**全部已有**（`quotes.float_cap` / `industry_map` / `macro` 面板）⇒ **零新增请求**。
+# 【内存纪律】不加常驻缓存（每次 build 现算；持仓通常个位数）—— 见 scheduler
+#   `portfolio_radar_warm_loop` 注释：Render 512MB 下常驻缓存是净负担。
+
+# 流通市值分档（阈值用**亿元**；口径参照项目既有"市值 20-50 亿为最佳区间"的讨论）
+_CAP_BANDS = ((50e8, "小盘"), (200e8, "中盘"), (float("inf"), "大盘"))
+
+# 海外敏感链：行业关键词 → (隔夜指标, 阈值%, 链名, 市场名)
+#   ★ 静态知识映射（不是预测），只回答"隔夜这件事可能影响哪些持仓"；阈值 = 经验初值。
+#   ★★ 2026-09-29 词表校准（踩坑驱动）：首版用"石油/化工"等**想当然的词**，实测匹配不到——
+#     同花顺细分行业名是「油气开采Ⅱ / 油服工程 / 炼化及贸易」，不是"石油"；
+#     中国海油因此一条链都没命中。现按 `SELECT DISTINCT main_industry_code` 的**实际清单**
+#     重写（实测清单见 memory）。
+#     ⚠️ 刻意**不含**"能源"：会把「能源金属」（锂/钴，新能源链）误并进油气链。
+_OVERSEAS_CHAINS = (
+    (("电子", "半导体", "光学光电", "计算机", "通信", "软件", "元件", "消费电子"), "nasdaq", 1.5,
+     "科技/果链", "纳指"),
+    (("油气开采", "油服工程", "炼化", "煤炭开采", "焦炭", "燃气"), "brent", 3.0,
+     "油气链", "布伦特"),
+    (("家电", "纺织", "服装", "机械", "汽车", "航运", "港口", "造纸"), "usdcnh", 0.3,
+     "出口链", "离岸人民币"),
+)
+
+
+def _cap_band(cap_wan: float) -> Optional[str]:
+    """流通市值（万元）→ 分档。"""
+    try:
+        cap = float(cap_wan) * 1e4            # 万元 → 元
+    except (TypeError, ValueError):
+        return None
+    if cap <= 0:
+        return None
+    for thr, name in _CAP_BANDS:
+        if cap < thr:
+            return name
+    return "大盘"
+
+
+def _portfolio_risk(items: List[Dict], quotes: Dict[str, Dict],
+                    industry_map: Dict[str, str], regime: str = "") -> Dict:
+    """组合层风控三件。fail-open（任一段失败只跳过该段，不拖垮持仓卡）。"""
+    out: Dict = {"available": False, "style": None, "concentration": [],
+                 "overseas": [], "notes": []}
+    try:
+        # ── ① 风格暴露（流通市值中位数）──
+        caps = []
+        for it in items:
+            fc = (quotes.get(it.get("code")) or {}).get("float_cap")
+            if fc:
+                caps.append(float(fc))
+        if caps:
+            caps.sort()
+            med = caps[len(caps) // 2]
+            band = _cap_band(med)
+            style = {"median_float_cap_yi": round(med * 1e4 / 1e8, 1),
+                     "band": band, "n": len(caps)}
+            # 与 regime 的配合提示（评价里的原话：defensive 期满仓小盘 = 与 regime 顶风）
+            if band == "小盘" and regime in ("defensive", "neutral_bearish"):
+                style["warn"] = f"当前 {regime} 档 + 持仓以小盘为主 ⇒ 与市况顶风（小盘 edge 是条件性的）"
+            out["style"] = style
+        # ── ② 板块集中度（同行业 ≥2 只）──
+        by_ind: Dict[str, List[str]] = {}
+        for it in items:
+            ind = it.get("industry")
+            if ind:
+                by_ind.setdefault(str(ind), []).append(it.get("name") or str(it.get("code")))
+        conc = [{"industry": k, "n": len(v), "names": v[:6]} for k, v in by_ind.items()
+                if len(v) >= 2]
+        conc.sort(key=lambda x: -x["n"])
+        out["concentration"] = conc
+        if conc:
+            out["notes"].append(
+                "多只持仓同属一个行业 = 隐性 β 集中（表面分散、实际同涨同跌）："
+                + "；".join(f"{c['industry']}×{c['n']}" for c in conc[:3]))
+        # ── ③ 海外敏感链（隔夜异动 → 受影响持仓）──
+        #   ★ 2026-09-29 踩坑修正：一级行业太粗（中国海油 = "其它行业"）⇒ 关键词匹配不到
+        #     "石油"。改用 `stock_industry.main_industry_code`（细分名，如"油服工程"），
+        #     一次批量查（持仓个位数，egress 可忽略）；失败回退一级行业（fail-open）。
+        detail: Dict[str, str] = {}
+        try:
+            from app.database import db as _db
+            _codes = [it.get("code") for it in items if it.get("code")]
+            if _codes:
+                _ph = ",".join(["%s"] * len(_codes))
+                for r in _db.fetch(
+                        f"SELECT code, main_industry, main_industry_code FROM stock_industry "
+                        f"WHERE code IN ({_ph})", tuple(_codes)) or []:
+                    detail[str(r.get("code"))] = str(
+                        r.get("main_industry_code") or r.get("main_industry") or "")
+        except Exception as e:
+            print(f"[portfolio_radar] 细分行业读取失败（回退一级）: {e}")
+        try:
+            from app.macro import get_macro_panel
+            panel = get_macro_panel() or {}
+            for kws, src, thr, chain, label in _OVERSEAS_CHAINS:
+                chg = (panel.get(src) or {}).get("change_pct")
+                if chg is None:
+                    continue
+                try:
+                    chg = float(chg)
+                except (TypeError, ValueError):
+                    continue
+                if abs(chg) < thr:
+                    continue
+                hits = []
+                for it in items:
+                    c = str(it.get("code"))
+                    ind = f"{it.get('industry') or ''}{detail.get(c, '')}"
+                    if any(k in ind for k in kws):
+                        hits.append(it.get("name") or c)
+                if not hits:
+                    continue
+                out["overseas"].append({
+                    "chain": chain, "market": label, "change_pct": round(chg, 2),
+                    "threshold": thr, "holdings": hits[:6],
+                    "note": f"{label} {chg:+.2f}%（阈值 ±{thr}%）⇒ 关注：{'、'.join(hits[:6])}"})
+        except Exception as e:
+            print(f"[portfolio_radar] 海外敏感链计算失败（跳过）: {e}")
+        out["available"] = bool(out["style"] or conc or out["overseas"])
+    except Exception as e:
+        print(f"[portfolio_radar] 组合风控计算失败（跳过）: {e}")     # ASCII（铁律⑥）
+    return out
+
+
 def _build_impl() -> Dict:
     """真正的聚合逻辑。⚠️ 勿直接调用 —— 走 `build()` 才有 single-flight 与缓存复用。"""
     t0 = time.time()
@@ -535,5 +668,7 @@ def _build_impl() -> Dict:
                     "in_watch": sum(1 for x in items if x.get("in_watch")),
                     "elapsed_ms": int((time.time() - t0) * 1000)},
         "market": {"contradictions": ctx.get("items") or []},
+        # ★ 2026-09-29：组合层风控三件（逐只 alerts 之外的**组合视角**）
+        "portfolio_risk": _portfolio_risk(items, quotes, industry_map, regime),
         "items": items,
     }

@@ -1322,6 +1322,26 @@
               —（当前无持仓记录；新增后由写入方主动失效缓存，立即可见）
             </div>
             <div v-else class="space-y-2">
+              <!-- ★★ 2026-09-29：**组合层**风控三件（风格暴露/板块集中度/海外敏感链）——
+                   逐只 alerts 之外的整体视角（工作台评价指出的缺口：只有单票风控）。
+                   数据零新增请求（行情缓存 float_cap + 行业映射 + 宏观面板）。
+                   为什么放逐只列表**之前**：风控读法应当"先看整体、再看个股"。 -->
+              <div v-if="radarRisk?.available"
+                   class="rounded border border-border/50 px-2.5 py-1.5 space-y-0.5 text-[11px] mb-1">
+                <div v-if="radarRisk.style" class="flex items-center gap-2 flex-wrap">
+                  <span class="text-muted">风格暴露</span>
+                  <b class="font-mono text-gray-200">{{ radarRisk.style.band }}</b>
+                  <span class="text-muted">流通市值中位
+                    <b class="font-mono">{{ radarRisk.style.median_float_cap_yi }}</b> 亿</span>
+                  <span v-if="radarRisk.style.warn" class="text-amber-400 cursor-help"
+                        :title="radarRisk.style.warn">⚠ 与市况顶风</span>
+                </div>
+                <div v-for="c in radarRisk.concentration" :key="c.industry" class="text-amber-300">
+                  ⚠ 板块集中：<b>{{ c.industry }}</b> ×{{ c.n }}（{{ (c.names || []).join('、') }}）
+                </div>
+                <div v-for="o in radarRisk.overseas" :key="o.chain" class="text-sky-300"
+                     :title="`阈值 ±${o.threshold}%（经验初值）；只做提示、不进决策链`">◈ {{ o.note }}</div>
+              </div>
               <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
                    写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
               <div v-for="it in radarItems" :key="it.code"
@@ -2302,6 +2322,9 @@ const radarAsOf = ref('')
 //   `tencent._cache["data_ts"]`）—— 与 `radarAsOf`（= 本次计算时刻）**不是一回事**。
 const radarQuoteAsOf = ref('')
 const radarQuoteSnap = ref(false)
+// ★ 2026-09-29：**组合层**风控三件（风格暴露 / 板块集中度 / 海外敏感链）——
+//   逐只 alerts 之外的整体视角，数据零新增请求（后端 `portfolio_risk`）。
+const radarRisk = ref(null)
 const radarErr = ref('')
 const topItems = ref([])
 const topErr = ref('')
@@ -2852,6 +2875,7 @@ async function loadRadar() {
     radarAsOf.value = (data && data.as_of) || ''
     radarQuoteAsOf.value = (data && data.quote_as_of) || ''
     radarQuoteSnap.value = !!(data && data.quote_from_snapshot)
+    radarRisk.value = (data && data.portfolio_risk) || null
     radarErr.value = ''
   } catch (e) {
     radarErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
