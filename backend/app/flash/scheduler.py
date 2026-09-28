@@ -268,6 +268,28 @@ async def stock_cache_refresh_loop():
         await asyncio.sleep(STOCK_CACHE_INTERVAL)
 
 
+REALTIME_UPLIMIT_INTERVAL = 120   # 盘中实时涨停/炸板统计预热（与行情缓存同频）
+
+
+async def realtime_uplimit_loop():
+    """盘中实时涨停/炸板统计预热循环（2026-09-29）。
+
+    ★ 为什么必须后台预热、不能在接口里现拉：全市场 3 批 `rt_k` 实测 **14s**
+      ⇒ 接口内同步拉会阻塞事件循环（铁律④）且首访必超时。
+      预热后 `/api/market/uplimit-realtime` 只读进程缓存（60s TTL）⇒ 秒回。
+    ★ 仅交易时段执行（休市无意义且浪费 token 配额）；与 `stock_cache_refresh_loop`
+      同为「用户交互路径依赖」⇒ 不受 READ_ONLY 约束（纯只读外部行情 + 内存缓存）。
+    """
+    while True:
+        try:
+            if (rules.get_china_market_status() or {}).get("is_open"):
+                from app import realtime_uplimit
+                await asyncio.to_thread(realtime_uplimit.refresh)
+        except Exception as e:
+            print(f"[scheduler] 实时涨停预热失败: {e}")      # ASCII（铁律⑥）
+        await asyncio.sleep(REALTIME_UPLIMIT_INTERVAL)
+
+
 async def health_loop():
     """
     健康探针循环：定期调用各数据源（内部自带埋点），保证健康状态持续刷新——
@@ -2099,6 +2121,9 @@ async def start():
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）
              asyncio.create_task(portfolio_radar_warm_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
+             # ★ 2026-09-29：盘中实时涨停/炸板统计预热（rt_k，全市场精确口径）——
+             #   与 stock_cache 同为「用户交互路径依赖」，只读模式保留。
+             asyncio.create_task(realtime_uplimit_loop()),
              asyncio.create_task(open_confirmation_loop()),
              asyncio.create_task(paper_fill_loop()),
              asyncio.create_task(paper_track_loop()),

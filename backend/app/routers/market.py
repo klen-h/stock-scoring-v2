@@ -1823,6 +1823,30 @@ def _limit_stats(day: str) -> Optional[Dict]:
         return None
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  盘中实时涨停/炸板（GET /api/market/uplimit-realtime，2026-09-29）
+#  ★ 与「涨停复盘 limit_review」的分工（勿混为一个口径）：
+#    · limit_review  = **收盘后权威口径**（日批 ban_info + 涨停清单 + 题材归因）
+#    · 本接口        = **盘中动态口径**（zzshare rt_k 全市场快照，覆盖率 100%）
+#  为什么需要它：盘中涨跌停此前只能用 `change_pct>=9.9` 近似（20cm 票涨 10% 误判涨停、
+#    ST 5% 漏判）；`_limit_stats` 的炸板率只覆盖 `backtest_prices`（~839 只，其 meta
+#    自陈"家数不可直接对比"）。本接口用数据源给的 `high_limit` 精确判定 + 全市场覆盖。
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/uplimit-realtime")
+def uplimit_realtime(refresh: int = 0):
+    """盘中实时涨停/跌停/炸板统计（60s 缓存；refresh=1 强制刷新，供手动按钮）。
+
+    fail-open：行情源不可用返回 `{available: False}`，前端显示占位而非报错。
+    """
+    try:
+        from app import realtime_uplimit
+        return realtime_uplimit.snapshot(force=bool(refresh))
+    except Exception as e:
+        print(f"[market] uplimit-realtime failed: {e}")          # ASCII（铁律⑥）
+        return {"available": False, "reason": "计算失败"}
+
+
 def _shift_days(day: str, delta: int) -> str:
     """日期加减（自然日，仅用于"上市满 N 个交易日"的宽松近似）。"""
     try:

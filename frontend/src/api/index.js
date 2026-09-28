@@ -334,6 +334,10 @@ export const getMarketTailReview = (date) => http.get('/market/tail-review', { p
 //   不受东财封禁影响；东财板块接口本身也不带成交额字段）
 export const getSectorAmountShare = (top = 15) => http.get('/sector/amount-share', { params: { top } })
 export const getMarketLimitReview = (date) => http.get('/market/limit-review', { params: { date }, timeout: 30000 })
+// ★ 2026-09-29 P1：盘中实时涨停/炸板（zzshare rt_k 全市场精确口径，判据用 high_limit 字段）。
+//   与 limit-review 的「收盘定稿」口径**互补而非替代**：本接口盘前/休市时返回上一交易日
+//   收盘快照（`is_intraday=false` + `data_date`），盘中返回此刻动态值。
+export const getRealtimeUplimit = () => http.get('/market/uplimit-realtime', { timeout: 20000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！

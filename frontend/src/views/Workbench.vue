@@ -1132,6 +1132,28 @@
               <a href="https://quant.zizizaizai.com/review/uplimit" target="_blank" rel="noopener"
                  class="text-xs text-accent hover:underline shrink-0 ml-2">详情</a>
             </div>
+            <!-- ★★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场精确口径）。
+                 与下面「连板梯队 / 炸板率」是**两个时点、两个覆盖**，刻意并列、各自标注：
+                   · 本块 = 此刻快照（全市场 5569 只；判据用数据源的 `high_limit` 字段
+                     ⇒ 20cm/ST/北交所板幅不会像 `change_pct>=9.9` 那样误判）
+                   · 下面 = 日批快照 + `backtest_prices`（**收盘定稿** & ~839 只覆盖）
+                 ⚠️ 盘前/休市时后端 `is_intraday=false` ⇒ 本块显示的是**上一交易日收盘定稿**
+                 （`data_date`），与下面同源，不是"过期数据"。 -->
+            <div v-if="realtimeUplimit?.available" class="mb-2 pb-2 border-b border-border/40"
+                 :title="realtimeUplimit.note">
+              <div class="flex items-center gap-3 flex-wrap text-[11px]">
+                <span class="text-muted">实时
+                  <b class="font-mono text-gray-300">{{ realtimeUplimit.is_intraday
+                    ? (realtimeUplimit.updated_at || '').slice(11) : realtimeUplimit.data_date }}</b>
+                  <span class="text-[10px]">{{ realtimeUplimit.is_intraday ? '' : '（收盘定稿）' }}</span></span>
+                <span class="text-muted">涨停 <b class="font-mono text-red-400">{{ realtimeUplimit.limit_up }}</b></span>
+                <span class="text-muted">跌停 <b class="font-mono text-emerald-400">{{ realtimeUplimit.limit_down }}</b></span>
+                <span class="text-muted">炸板 <b class="font-mono text-amber-300">{{ realtimeUplimit.broken }}</b><span
+                  class="text-[10px]">（{{ realtimeUplimit.broken_rate ?? '—' }}%）</span></span>
+                <span class="text-muted">一字 <b class="font-mono text-gray-300">{{ realtimeUplimit.yizi }}</b></span>
+                <span class="text-[10px] text-muted">全市场 {{ realtimeUplimit.trading }} 只 · 精确口径</span>
+              </div>
+            </div>
             <!-- ★★ 连板梯队结构（`uplimit_hot.ban_info`，此前**只落库、从未展示**）
                  —— 价值在**梯队完整性**：某级别为 0 而更高有 ⇒ 断层 ⇒ 高标孤立无承接，
                  短线退潮的常见前兆（实测 09-23 即 5/6 板空档却有 7 板）。 -->
@@ -2065,7 +2087,7 @@ import {
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
-  getMarketEmotion, getMarketLimitReview,
+  getMarketEmotion, getMarketLimitReview, getRealtimeUplimit,
   getUserPositionSizing,
   getEmotionReview,
   getMarketTailReview,
@@ -2250,6 +2272,9 @@ const macroErr = ref('')
 const emotion = ref(null)
 // 初始即给完整结构：模板首帧（接口返回前）会读取 steps/stocks，null 会崩
 const limitReview = ref({ steps: [], stocks: [] })
+// ★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场精确口径）—— 与 limitReview 的
+//   「收盘定稿」口径互补：盘前/休市时后端返回 is_intraday=false（上一交易日收盘定稿）。
+const realtimeUplimit = ref(null)
 const sectorTop = ref([])
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
@@ -3018,6 +3043,14 @@ async function loadLimitReview() {
     limitReview.value = data || { steps: [], stocks: [] }
   } catch { limitReview.value = { steps: [], stocks: [] } }
 }
+// ★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场 5569 只精确口径）。
+//   失败静默（该块是补充信息，不能拖垮整卡）；60s 轮询、仅交易时段真正发请求。
+async function loadRealtimeUplimit() {
+  try {
+    const { data } = await getRealtimeUplimit()
+    realtimeUplimit.value = data?.available ? data : null
+  } catch { realtimeUplimit.value = null }
+}
 // 主线板块 Top5（★ A1 看盘序第 4-5 层：板块 → **板块内强势股**）
 //   ★ 2026-09-25 改动：**主用实时行业板块列表**（`/sector/industry`），快照仅作回退。
 //   为什么必须改（两个真问题）：
@@ -3173,7 +3206,8 @@ async function loadPhaseData(phase) {
     // ★ 2026-09-28：盘中/午盘也加载「评分榜 + 观察池」（原只在盘后拉 ⇒ 盘中两卡不显示）。
     //   ⚠️ 二者是**日批/盘后**数据（观察池 = 晚间日批快照）⇒ 盘中显示的是上一交易日；
     //      与"板块 Top5 走实时东财接口"不同。卡内 `data_date` 已标实际日期，不假装是今天。
-    await Promise.all([loadEmotion(), loadLimitReview(), loadSectorTop(), loadGlobals(),
+    await Promise.all([loadEmotion(), loadLimitReview(), loadRealtimeUplimit(),
+                       loadSectorTop(), loadGlobals(),
                        loadAmountShare(), loadTop(), loadGateWatch()])
   }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
@@ -3208,6 +3242,9 @@ function startPolling() {
   //   ⚠️ 此处**刻意不加**自动重试定时器 —— 保留本注释是防止日后有人"好心补回来"
   //     （那会重新制造"开着页面等"的体验，且用户已明确否决）。
   timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
+  // ★ 2026-09-29（P1）：盘中实时涨停/炸板 60s 轮询（与后端 rt_k 预热 120s 错频，
+  //   一半会命中同一份后端缓存，无额外外部请求）——⚠️ 仅交易时段真发请求。
+  timers.push(setInterval(() => { if (isLivePhase()) loadRealtimeUplimit() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
   //   ⇒ 最多刷 5 次，**9:24→9:25 的定稿瞬间可能滞后 ≤2 分钟**（那是最关键的几十秒）。
@@ -3292,7 +3329,9 @@ onMounted(async () => {
   //   挂载即拉一次（原先只在 `loadPhaseData('premarket')` 里拉 ⇒ 当天没进过盘前就永远是空的）。
   //   `loadMacro` 有"今日锁定"当日缓存（拿到锁定快照后不再重拉）；`loadSizing` 是仓位建议。
   loadMacro(); loadFlashDiag(); loadSizing()
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr)])
+  // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
+  //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })
