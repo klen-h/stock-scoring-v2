@@ -1847,6 +1847,27 @@ def uplimit_realtime(refresh: int = 0):
         return {"available": False, "reason": "计算失败"}
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  两市成交额环比（GET /api/market/amount-realtime，2026-09-29）
+#  口径：U 型曲线法（`app/market_amount.py`）——`预估全天 = 当前累计 / 曲线(时刻)`。
+#  ★ 硬边界：曲线留出验证显示 **14:00 前中位误差 16%**（早盘形状假设不成立）
+#    ⇒ `reliable=false` 时前端**只显示累计**，不得给"缩量/放量"结论。
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/amount-realtime")
+def amount_realtime(refresh: int = 0):
+    """两市成交额：实时累计 / 预估全天 / 环比昨日 / 缩量·放量定性。
+
+    refresh=1 强制刷新（绕过 60s 缓存）。fail-open：失败返回 `{available: False}`。
+    """
+    try:
+        from app import market_amount
+        return market_amount.estimate(force=bool(refresh))
+    except Exception as e:
+        print(f"[market] amount-realtime failed: {e}")           # ASCII（铁律⑥）
+        return {"available": False, "reason": "计算失败"}
+
+
 def _shift_days(day: str, delta: int) -> str:
     """日期加减（自然日，仅用于"上市满 N 个交易日"的宽松近似）。"""
     try:

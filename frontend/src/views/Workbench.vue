@@ -1023,9 +1023,31 @@
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">跌停</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">两市成交额</div>
+              <div><div class="text-[10px] text-muted">两市成交额
+                  <span v-if="amountRt?.show_ratio" class="cursor-help"
+                        :title="amountRt.note">ⓘ</span></div>
                 <div class="text-base font-bold font-mono text-gray-200">
-                  {{ overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—' }}</div></div>
+                  {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
+                     : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
+                <!-- ★ 2026-09-29：环比/定性只在**可靠**时给（盘中 14:00 后或已收盘定稿）；
+                     14:00 前只显示累计 —— 早盘曲线预估中位误差 16%（见 market_amount.py）。 -->
+                <div v-if="amountRt?.available" class="text-[10px] leading-tight">
+                  <template v-if="amountRt.show_ratio">
+                    <b :class="amountRt.verdict === '放量' ? 'text-red-400'
+                             : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
+                    {{ signNum(amountRt.ratio_pct) }}%
+                    <span v-if="amountRt.is_intraday" class="text-muted">· 预估{{ fmtYi(amountRt.full_day_est_yi) }}</span>
+                    <span v-else class="text-muted">· vs 昨日</span>
+                  </template>
+                  <template v-else-if="amountRt.is_intraday">
+                    截至 {{ (amountRt.as_of || '').slice(0,2) }}:{{ (amountRt.as_of || '').slice(2) }}
+                    <span class="text-muted">（14:00 前不做定性）</span>
+                  </template>
+                  <template v-else>
+                    {{ amountRt.data_date === todayStr ? '今日收盘定稿' : '上一交易日定稿' }}
+                  </template>
+                </div>
+              </div>
               <div><div class="text-[10px] text-muted">情绪判读</div>
                 <div class="text-base font-bold"
                      :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
@@ -1581,9 +1603,31 @@
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">跌停</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">两市成交额</div>
+              <div><div class="text-[10px] text-muted">两市成交额
+                  <span v-if="amountRt?.show_ratio" class="cursor-help"
+                        :title="amountRt.note">ⓘ</span></div>
                 <div class="text-base font-bold font-mono text-gray-200">
-                  {{ overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—' }}</div></div>
+                  {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
+                     : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
+                <!-- ★ 2026-09-29：环比/定性只在**可靠**时给（盘中 14:00 后或已收盘定稿）；
+                     14:00 前只显示累计 —— 早盘曲线预估中位误差 16%（见 market_amount.py）。 -->
+                <div v-if="amountRt?.available" class="text-[10px] leading-tight">
+                  <template v-if="amountRt.show_ratio">
+                    <b :class="amountRt.verdict === '放量' ? 'text-red-400'
+                             : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
+                    {{ signNum(amountRt.ratio_pct) }}%
+                    <span v-if="amountRt.is_intraday" class="text-muted">· 预估{{ fmtYi(amountRt.full_day_est_yi) }}</span>
+                    <span v-else class="text-muted">· vs 昨日</span>
+                  </template>
+                  <template v-else-if="amountRt.is_intraday">
+                    截至 {{ (amountRt.as_of || '').slice(0,2) }}:{{ (amountRt.as_of || '').slice(2) }}
+                    <span class="text-muted">（14:00 前不做定性）</span>
+                  </template>
+                  <template v-else>
+                    {{ amountRt.data_date === todayStr ? '今日收盘定稿' : '上一交易日定稿' }}
+                  </template>
+                </div>
+              </div>
               <div><div class="text-[10px] text-muted">情绪判读</div>
                 <div class="text-base font-bold"
                      :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
@@ -2112,6 +2156,7 @@ import {
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
+  getAmountRealtime,
   getUserPositionSizing,
   getEmotionReview,
   getMarketTailReview,
@@ -2299,6 +2344,16 @@ const limitReview = ref({ steps: [], stocks: [] })
 // ★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场精确口径）—— 与 limitReview 的
 //   「收盘定稿」口径互补：盘前/休市时后端返回 is_intraday=false（上一交易日收盘定稿）。
 const realtimeUplimit = ref(null)
+// ★ 2026-09-29：两市成交额环比（U 型曲线法）。⚠️ `reliable=false`（14:00 前）时
+//   只展示累计值 —— 早盘预估中位误差 16%（曲线留出验证），不得给缩量/放量结论。
+const amountRt = ref(null)
+// 成交额格式化：后端单位是**亿** ⇒ ≥1 万亿时换算显示（看盘序格子窄，字数越少越好）
+const fmtYi = (yi) => {
+  if (yi == null || yi === '') return '—'
+  const n = Number(yi)
+  if (!Number.isFinite(n)) return '—'
+  return Math.abs(n) >= 10000 ? (n / 10000).toFixed(2) + '万亿' : Math.round(n) + '亿'
+}
 const sectorTop = ref([])
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
@@ -3090,6 +3145,13 @@ async function loadRealtimeUplimit() {
     realtimeUplimit.value = data?.available ? data : null
   } catch { realtimeUplimit.value = null }
 }
+// ★ 2026-09-29：两市成交额环比（U 型曲线法）——失败静默；60s 轮询、仅交易时段发请求。
+async function loadAmountRt() {
+  try {
+    const { data } = await getAmountRealtime()
+    amountRt.value = data?.available ? data : null
+  } catch { amountRt.value = null }
+}
 // 主线板块 Top5（★ A1 看盘序第 4-5 层：板块 → **板块内强势股**）
 //   ★ 2026-09-25 改动：**主用实时行业板块列表**（`/sector/industry`），快照仅作回退。
 //   为什么必须改（两个真问题）：
@@ -3284,6 +3346,8 @@ function startPolling() {
   // ★ 2026-09-29（P1）：盘中实时涨停/炸板 60s 轮询（与后端 rt_k 预热 120s 错频，
   //   一半会命中同一份后端缓存，无额外外部请求）——⚠️ 仅交易时段真发请求。
   timers.push(setInterval(() => { if (isLivePhase()) loadRealtimeUplimit() }, 60000))
+  // ★ 2026-09-29：成交额环比 60s 轮询（后端 60s 缓存 + 腾讯分时轻量）——同样只在交易时段发。
+  timers.push(setInterval(() => { if (isLivePhase()) loadAmountRt() }, 60000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
   //   ⇒ 最多刷 5 次，**9:24→9:25 的定稿瞬间可能滞后 ≤2 分钟**（那是最关键的几十秒）。
@@ -3370,7 +3434,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

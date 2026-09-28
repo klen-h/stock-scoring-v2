@@ -2113,6 +2113,38 @@ async def calendar_ahead_loop():
         await asyncio.sleep(600)
 
 
+# ── 两市成交额日额落库（收盘后一次；次日供"环比昨日"做精确基准）──
+AMOUNT_SAVE_WINDOW = (1555, 1800)       # 北京时间 15:55~18:00（收盘定稿后）
+
+
+async def amount_save_loop():
+    """收盘落库「两市全天成交额」（`market_amount.save_daily`，2026-09-29）。
+
+    ★ 为什么必须落库：腾讯分时接口**只有当日**（无历史）⇒ 不落库 = 明天永远只能靠曲线
+      "估算"昨日；且经口径仲裁（zzshare 日线 16,691 亿 / 腾讯分时 17,028 亿）确认
+      `market_tail_snapshot.amount` 口径存疑不可用 ⇒ 自建落库是唯一可靠路径。
+    ★ 失败不标记（窗口内重试）；仅交易日执行。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            if (AMOUNT_SAVE_WINDOW[0] <= t < AMOUNT_SAVE_WINDOW[1]
+                    and rules.is_trading_day(now)
+                    and not store.is_schedule_done("amount_daily")):
+                from app import market_amount
+                r = await asyncio.to_thread(market_amount.save_daily)
+                if r.get("ok"):
+                    print(f"[scheduler] 成交额落库完成: {r.get('date')} "
+                          f"{r.get('amount_yi')} 亿（{r.get('points_n')} 点）")
+                    store.mark_schedule_done("amount_daily")
+                else:
+                    print(f"[scheduler] 成交额落库失败（窗口内重试）: {r.get('error')}")
+        except Exception as e:
+            print(f"[scheduler] 成交额落库异常: {e}")        # ASCII（铁律⑥）
+        await asyncio.sleep(600)
+
+
 async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
@@ -2149,6 +2181,8 @@ async def start():
              # ★ 2026-09-29：盘前日历前瞻（未来 3 天核心事件 PCE/CPI/非农/FOMC 主动提醒）
              #   —— 通知类、极轻量（读已落库日历 + 一条企微）⇒ 只读模式保留。
              asyncio.create_task(calendar_ahead_loop()),
+             # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
+             asyncio.create_task(amount_save_loop()),
             # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
             asyncio.create_task(event_alert_loop()),
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）

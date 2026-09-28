@@ -341,6 +341,9 @@ export const getRealtimeUplimit = () => http.get('/market/uplimit-realtime', { t
 // ★ 2026-09-29 P1：财经日历**前瞻**（未来 N 天核心事件：PCE/CPI/非农/FOMC…）。
 //   与 /flash/calendar（全量、含官员讲话）互补；筛选口径与盘前企微推送同源（后端统一）。
 export const getCalendarAhead = (days = 3) => http.get('/flash/calendar-ahead', { params: { days } })
+// ★ 2026-09-29：两市成交额环比（U 型曲线法）。⚠️ `reliable=false`（14:00 前）时
+//   前端只显示累计，**不得**给缩量/放量结论（早盘预估中位误差 16%）。
+export const getAmountRealtime = () => http.get('/market/amount-realtime', { timeout: 20000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！
