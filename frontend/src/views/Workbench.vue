@@ -182,7 +182,8 @@
                  宽度 `min(96vw,1120px)` **自适应屏宽**（原固定 720px 是为了"单行塞得下"，
                  现在既然可换行，就用足屏幕 —— 两列 grid（支撑/压制、过热/过冷）也更舒展）。 -->
             <MacroEnvCard full :macro="macro" :macro-err="macroErr" :temperature="temperature"
-                          :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
+                          :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
+                          :futures-basis="macroFuturesBasis" />
           </div>
         </Teleport>
       </div>
@@ -431,6 +432,19 @@
                   <span class="text-[10px] cursor-help"
                         title="高开/低开不含「平开」（开盘价恰好等于昨收）⇒ 高开+低开 略小于全市场家数，下面的分布条总数才是全量。">ⓘ</span>
                 </div>
+                <!-- ★★ 2026-09-29（P1）：A50 隔夜 vs 竞价整体高开 = **期现背离（内外资态度差）**。
+                     北向实时额 2024-08 停披后，这是现存**唯一**可观测的"外资定价 vs 内资集合竞价
+                     结果"之差：A50 走夜盘（外资定价）、竞价高开均值是 9:25 内资的结论。
+                     ⚠️ 纯展示层（A50 对次日的预测力在可交易口径已实测塌陷），
+                        阈值 ±0.5pt 为经验初值、未回测；口径与边界全放 `title`。 -->
+                <div v-if="a50Divergence" class="text-[11px] mb-2" :title="a50Divergence.title">
+                  <span class="text-muted">期现背离</span>
+                  A50 <b class="font-mono" :class="pctClass(a50Divergence.a50)">{{ signNum(a50Divergence.a50) }}%</b>
+                  <span class="text-muted">vs 竞价</span>
+                  <b class="font-mono" :class="pctClass(a50Divergence.gap)">{{ signNum(a50Divergence.gap) }}%</b>
+                  <span class="text-[10px] text-muted font-mono">（差 {{ signNum(a50Divergence.spread) }}pt）</span>
+                  <b v-if="a50Divergence.label" class="ml-1 text-amber-300">{{ a50Divergence.label }}</b>
+                </div>
                 <!-- ★★ 2026-09-25（A 档 1）：全市场涨幅**分布条** —— 用户反馈"不够直观"的根因
                      是：两个总数（643:1915）读不出"跌得多深"。同样 1915 家低开，
                      "全在 -0.5% 内"（阴跌）与"一半跌超 3%"（恐慌）是完全不同的盘面。
@@ -660,7 +674,8 @@
                ⚠️ 原来它只会出现在盘前（数据一直在，只是别处不渲染）⇒ 抽出来后
                  顶栏浮层让它在**任何阶段**都能看。 -->
           <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
-                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment" />
+                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
+                        :futures-basis="macroFuturesBasis" />
           <!-- ★★ 2026-09-25 用户："信号×行业是战法扫描出来的吗？如果是，今日决策卡的战法内容
                也可以摘出来，剩余的部分跟隔夜与今日（财经日历）形成左右卡片。"
                ⇒ 确认：`signal_industry_cross` 读的就是 `strategy_results`（战法扫描）⇒ 同源。
@@ -2426,6 +2441,12 @@ const macroOvernight = ref(null)
 //   12 子项，用于"过热 vs 过冷"两栏对照（回答"为什么巴菲特指标过热而市场温度偏冷"）。
 //   ⚠️ 后端是 peek（只读缓存不拉网）⇒ 冷缓存为 null ⇒ 整块不渲染。
 const macroSentiment = ref(null)
+// ★★ 2026-09-29（P2）：股指期货基差（`/macro/snapshot.futures_basis`）—— 北向实时额停披后
+//   现存少数的「内资情绪 / 对冲需求」温度计（IF/IH/IC/IM 当月+次月，含年化）。
+//   ⚠️ 独立 ref 而非挂在 `macro` 上：`macro` 可能是 `macro_daily` 的**当日锁定快照**
+//     （不含该字段）⇒ 挂上去会"时有时无"（与 `macroSentiment` 同款理由）。
+//   纯展示层、不进决策链（口径与三条边界见后端 `macro.get_index_futures_basis`）。
+const macroFuturesBasis = ref(null)
 // ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
 //   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
 const sizing = ref(null)
@@ -2692,6 +2713,40 @@ const overnightTitle = computed(() => {
     : (macroOvernight.value?.note || '暂无数据')
   // ⚠️ 明说是"解释/风控"用途 —— 纳指隔夜对 A 股次日的预测力在可交易口径下已实测塌陷
   return `${head}\n${body}\n（仅用于解释开盘与风控；其预测力已被实证否定，不作为交易信号）`
+})
+// ★★ 2026-09-29（P1）：**A50 隔夜 vs 竞价整体高开 = 期现背离**（内外资态度差）。
+//   为什么这个指标现在特别有意义：北向实时额 2024-08 停披后，**这是现存唯一可观测的
+//   「外资对 A 股的定价 vs 内资集合竞价结果」之差**——
+//     · A50 期货走夜盘、连续交易 ⇒ 它涨 = **外资**愿为 A 股付更高价；
+//     · 竞价整体高开均值 = 9:25 全市场集合竞价的**内资**结论。
+//   ⇒ 两者背离（A50 高而竞价平）说明外资看多、内资不跟，反之亦然。
+//   ⚠️⚠️ 纪律：**纯展示层，绝不进决策链**（与 `macro.py` 头注释、`_OVERNIGHT_KEYS`
+//     同一条）：A50/纳指对 A 股次日的预测力在**可交易口径**下已实测塌陷至 |IC|≤0.04，
+//     这里只做"态度差温度计"。±0.5pt 阈值为**经验初值、未回测**（与竞价看板其它阈值同款标注）。
+const A50_DIVERGE_PT = 0.5
+const a50Divergence = computed(() => {
+  const a50 = (overnightItems.value || []).find(x => x.key === 'a50')
+  const gap = emotion.value?.auction?.avg_gap_all
+  if (!a50 || a50.pct == null || gap == null) return null
+  const a50p = Number(a50.pct)
+  const g = Number(gap)
+  if (!Number.isFinite(a50p) || !Number.isFinite(g)) return null
+  const spread = g - a50p                       // 负 = 内资比外资保守
+  let label = ''
+  if (spread <= -A50_DIVERGE_PT) label = '外资偏多 · 内资不跟'
+  else if (spread >= A50_DIVERGE_PT) label = '内资偏多 · 外资不跟'
+  const base = String(macroOvernight.value?.base_time || '').slice(5, 16).replace('T', ' ')
+  return {
+    a50: a50p, gap: g, spread, label,
+    title: [
+      `A50 期货 ${signNum(a50p)}%（自上次 A 股收盘${base ? ' ' + base : ''}以来；`
+        + `夜盘连续交易 ⇒ 代表**外资**对 A 股的定价）`,
+      `竞价整体高开 ${signNum(g)}%（9:25 全市场集合竞价结果 ⇒ 代表**内资**态度）`,
+      `背离 ${signNum(spread)}pt（负 = 内资比外资更保守）`,
+      '阈值 ±0.5pt 为经验初值、未回测；本项**只作态度差温度计**，不进决策链'
+        + '（A50/纳指对次日的预测力在可交易口径已实测塌陷）',
+    ].join('\n'),
+  }
 })
 // ★ 2026-09-28：情绪温度计的「过热 / 过冷」子项切分（`hotSubs` / `coldSubs`）
 //   **已随「宏观与环境」卡搬进 `MacroEnvCard.vue`**（阈值口径注释也在那边）。
@@ -3126,6 +3181,7 @@ async function loadGlobals() {
     macroClock.value = (data && data.clock) || null   // ★ 时段的唯一来源（见 macroClock 定义）
     macroOvernight.value = (data && data.overnight) || null   // ★ P1：隔夜累计变化
     macroSentiment.value = (data && data.sentiment) || null   // ★ 情绪温度计（供两栏对照）
+    macroFuturesBasis.value = (data && data.futures_basis) || null   // ★ 股指期货基差（P2）
     // ★ 2026-09-28（方案 A）：**当天没有"早盘锁定快照"时**，顺手用这一份 `/macro/snapshot`
     //   补 `direction` / `tags_*` —— 顶栏「宏观」摘要要用。这样就不必为摘要再单独发一次
     //   一模一样的外部请求（该接口对 A 股是**外部源**，能省则省）。

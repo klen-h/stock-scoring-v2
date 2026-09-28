@@ -146,6 +146,32 @@
           过热与过冷**同时出现**＝市场分歧明显；两项都在 80/20 之外时说明方向一致
         </div>
       </div>
+      <!-- ★★ 2026-09-29（P2 用户："继续做 IM 基差"）：**股指期货基差**（IF/IH/IC/IM
+           × 当月合约）—— 北向实时额停披后现存少数的「内资情绪 / 对冲需求」温度计：
+           贴水加深 = 对冲盘或看空力量占优。当月合约 = 标准口径（次月与三条边界放 hover）。
+           ⚠️ **中性色**：贴水深浅不直接等于涨/跌（用红绿会被误读成行情涨跌）；
+           ⚠️ **不设阈值**：须先积累历史基线，当前只做展示 + 四品种横向对照；
+           ⚠️ 纯展示层、不进决策链；失败静默（null ⇒ 整块不渲染）。 -->
+      <div v-if="basisRows.length" class="mt-2 pt-2 border-t border-border/40">
+        <div class="flex items-baseline gap-2 text-[11px] text-muted mb-1">
+          <span>股指期货基差</span>
+          <span class="text-[10px] text-muted/70">{{ basisNote }}</span>
+          <span class="text-[10px] text-muted/70"
+                title="IM 贴水含雪球/DMA 对冲盘的结构性需求，不能干净解读为「市场情绪」">ⓘ</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-0.5">
+          <div v-for="r in basisRows" :key="'fb' + r.product"
+               class="text-[11px] min-w-0 cursor-help" :title="r.title">
+            <span class="font-mono text-gray-300">{{ r.product }}</span>
+            <span class="text-muted text-[10px]"> {{ r.spot_name }}</span>
+            <span class="ml-1 font-mono text-gray-200">
+              {{ r.label }} {{ Math.abs(r.rate).toFixed(3) }}%</span>
+            <span class="ml-1 text-[10px] text-muted font-mono">
+              年化 {{ r.ann == null ? '—' : (r.ann >= 0 ? '+' : '') + r.ann.toFixed(1) + '%' }}</span>
+            <span class="ml-1 text-[10px] text-muted/70 font-mono">剩{{ r.days }}天</span>
+          </div>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -184,6 +210,11 @@ const props = defineProps({
   flashDiag: { type: Object, default: null },
   sizing: { type: Object, default: null },
   sentiment: { type: Object, default: null },
+  // ★★ 2026-09-29（P2 用户："继续做 IM 基差"）：股指期货基差（`/macro/snapshot.futures_basis`）
+  //   —— 北向实时额停披后现存少数的「内资情绪 / 对冲需求」温度计。
+  //   ⚠️ 独立 prop 而非从 `macro` 取：`macro` 可能是 `macro_daily` 的**当日锁定快照**
+  //     （不含该字段）⇒ 挂上去会时有时无（与 `sentiment` 同款处理）。
+  futuresBasis: { type: Object, default: null },
   // ★ 2026-09-29（用户："你改为展示全部吧，宽度自适应"）：`full = true` ⇒ **展示全部**：
   //   首行允许**换行**、所有长文本**不截断**（顶栏浮层用 —— 浮层里没有"必须单行"的理由，
   //   而截断会让用户看不到 叙事/仓位建议 的全文）。
@@ -208,4 +239,42 @@ const pddTitle = computed(() => {
 //   阈值沿用 `margin_sentiment.sentiment_line()` 的口径（≥80 过热 / ≤20 过冷），保持单一来源。
 const hotSubs = computed(() => ((props.sentiment?.subs) || []).filter(s => s.score >= 80).slice(0, 4))
 const coldSubs = computed(() => ((props.sentiment?.subs) || []).filter(s => s.score <= 20).slice(0, 4))
+
+// ★★ 2026-09-29（P2）：股指期货基差 —— 每品种取**当月合约**（标准口径），次月放 hover 对照。
+//   【配色纪律】**一律中性色，不用红绿** —— 贴水深浅**不直接等于**"涨/跌"（对现货是
+//   对冲成本、对情绪是需求强度），用红绿会被误读成行情涨跌。同项目前一例：
+//   `Workbench.vue` 的「背离（加权−等权）」就是因为这个原因改用中性色。
+//   【阈值纪律】暂**不设**绝对阈值（`参数表校准来源不空`）—— 贴水深度须与**自身历史**
+//   比才有意义，而本项首次上线无历史基线 ⇒ 先积累，只做展示 + 四品种横向对照。
+const basisRows = computed(() => {
+  const items = props.futuresBasis?.items || []
+  return items.map(r => {
+    const ts = r.tenors || []
+    const cur = ts.find(x => x.label === '当月') || ts[0]
+    if (!cur) return null
+    const nxt = ts.find(x => x.label === '次月')
+    const fmtT = (t, tag) => `${tag} ${t.code}：期货 ${t.fut}，基差 ${t.basis}（${t.basis_rate}%），`
+      + `年化 ${t.annualized == null ? '—（临近到期不年化）' : t.annualized + '%'}，剩 ${t.days_left} 天`
+      + `，成交 ${Math.round(t.volume || 0).toLocaleString('zh-CN')} 手`
+    const title = [
+      `${r.product}（${r.spot_name}）：现货收盘 ${r.spot}`,
+      fmtT(cur, '当月'),
+      nxt ? fmtT(nxt, '次月') : '',
+      '口径：基差 = 现货收盘 − 期货收盘（正 = 期货贴水）；年化 = 基差率 × 365 / 剩余自然日',
+      '⚠️ 当月合约临近到期时年化对天数极敏感（9/28 剩 17 天 ⇒ 放大 21 倍），别当趋势读',
+      '⚠️ IM 贴水含雪球/DMA 对冲盘的结构性需求，不能干净解读为「市场情绪」',
+      '⚠️ 纯展示层，不进决策链；且**暂不设阈值**（需先积累历史基线才有意义）',
+      props.futuresBasis?.note || '',
+    ].filter(Boolean).join('\n')
+    return {
+      product: r.product, spot_name: r.spot_name,
+      rate: cur.basis_rate, ann: cur.annualized, days: cur.days_left,
+      label: cur.basis_rate >= 0 ? '贴水' : '升水', title,
+    }
+  }).filter(Boolean)
+})
+const basisNote = computed(() => {
+  const a = props.futuresBasis?.as_of
+  return `当月合约（正=贴水）${a ? ' · ' + a.slice(5, 16) : ''}`
+})
 </script>

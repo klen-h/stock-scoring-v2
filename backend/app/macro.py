@@ -34,7 +34,7 @@ import time
 #   语法不查名字，**发现不了** ⇒ 必须靠真实 import 的测试兜住。
 from typing import Optional
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 _session = requests.Session()
 # 新浪 2022 起强制校验 Referer，不带会被拒
@@ -133,13 +133,19 @@ def _s(fields, idx):
         return ""
 
 
-def _fetch_sina() -> dict:
+def _fetch_sina(extra: Optional[list] = None) -> dict:
     """
     一次性抓取全部新浪代码，返回 {代码: 字段列表}。
     注意编码：新浪返回 GBK，必须用 r.content.decode('gbk')。
+    ★ 2026-09-29（IM 基差）：`extra` 供**动态代码**使用 —— 股指期货合约码随月份变化，
+      写不进模块级常量 `_SINA_SYMBOLS`；合并进同一次请求 ⇒ **零额外网络开销**。
     """
     try:
-        r = _session.get(_SINA_URL + ",".join(_SINA_SYMBOLS), timeout=10)
+        codes = list(_SINA_SYMBOLS)
+        for c in (extra or []):
+            if c not in codes:
+                codes.append(c)
+        r = _session.get(_SINA_URL + ",".join(codes), timeout=10)
         text = r.content.decode("gbk", errors="replace")
         out = {}
         for line in text.strip().split("\n"):
@@ -179,11 +185,165 @@ def _parse(family: str, f: list) -> dict:
     elif family == "gb":
         price, prev, hi, lo = _f(f, 1), _f(f, 26), _f(f, 6), _f(f, 7)
         t = _s(f, 25)
+    elif family == "nff":
+        # ★★ 2026-09-29（IM 基差验证）：**中金所股指期货的字段布局与商品 `nf` 族完全不同**！
+        #   nf （商品）：f[2]开 f[3]高 f[4]低 f[8]最新 f[10]昨结
+        #   nff（股指）：f[0]开 f[1]高 f[2]低 f[3]最新 f[13]昨收 f[14]昨结 f[9]涨停 f[10]跌停
+        #   ⇒ 验证方式（实测）：`f[14]×1.1 == f[9]` 且 `f[14]×0.9 == f[10]`，
+        #     在 nf_IM0 / nf_IM2610 / nf_IF0 三个合约上**精确成立**（6 个关系全中）。
+        #   ⚠️ 用 `nf` 族解析股指会得到 **price = 0**（股指的 f[8] 恒为 0，不在同一位置）
+        #      —— 这是实测踩到的坑，别再"复用"。
+        price, prev, hi, lo = _f(f, 3), _f(f, 13), _f(f, 1), _f(f, 2)
+        t = f"{_s(f, 36)} {_s(f, 37)}"
+    elif family == "sidx":
+        # 新浪 A 股指数（sh000300/sh000016/sh000905/sh000852）。
+        # ⚠️ 与腾讯 `get_index` 同口径但**不同源**：实测 `sh000852 f[3]` = 7294.1735
+        #    与 `get_index('000852')` = 7294.17 一致 ⇒ 双源互证通过（现货侧可信）。
+        # ⚠️ **时间字段不采用**：实测 f[30]/f[31] 给出 16:19:40（沪深300）与 15:30:36
+        #    （中证1000）——A 股 15:00 收盘，两个数对不上且晚于收盘 ⇒ 不可信。
+        #    时间以**期货侧** f[36]/f[37] 为准（已验证 = 2026-09-28 15:00:00）。
+        price, prev, hi, lo = _f(f, 3), _f(f, 2), _f(f, 4), _f(f, 5)
+        t = ""
     else:
         return {}
     chg = round((price - prev) / prev * 100, 2) if prev > 0 else 0.0
     return {"price": price, "prev_close": prev, "change_pct": chg,
             "high": hi, "low": lo, "time": t.strip()}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  股指期货基差（IF / IH / IC / IM）—— 2026-09-29（P2，用户："继续做 IM 基差"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么做】北向实时额 2024-08 停披后，股指期货升贴水是**现存少数的「内资情绪 /
+#   对冲需求」温度计**：贴水加深 = 对冲盘或看空力量占优；升水 = 看多力量占优。
+#
+# 【口径（★ 三条必须与展示一起披露）】
+#   ① 基差 = 现货收盘 − 期货收盘（**正 = 期货贴水**）；用**当月合约**（标准口径，
+#      临近到期自然收敛）；年化 = 基差率 × 365 / 剩余自然日。
+#      ⚠️ 剩余天数越少年化越敏感（9/28 仅 17 天 ⇒ 放大 21 倍）⇒ **别把当月年化当趋势读**。
+#   ② 2024~2025 的 IM 贴水里混有**雪球 / DMA 对冲盘的结构性需求** ⇒ **不能干净地解读为
+#      "市场情绪"**，须与成交量/持仓量一起看。
+#   ③ **纯展示层，不进决策链**（与 `_OVERNIGHT_KEYS` 纪律②、E2 v0 同一口径）。
+#
+# 【数据源与验证（2026-09-29 实测，全部通过）】
+#   · 新浪单次批量：`nf_IF{码}` 等（中金所，用 **`nff` 族**解析）+ `sh000300` /
+#     `sh000016` / `sh000905` / `sh000852`（现货，用 **`sidx` 族**）⇒ **零额外请求**
+#     （并入 `get_macro_panel()` 的既有批量）。
+#   · 布局正确性：`f[14]昨结 ×1.1 == f[9]涨停`、`×0.9 == f[10]跌停`，在 nf_IM0 /
+#     nf_IM2610 / nf_IF0 **精确成立**；现货 `sh000852 f[3]` = 7294.1735 与腾讯
+#     `get_index('000852')` = 7294.17 **双源一致**；`CFF_RE_IM2610` 与 `nf_IM2610`
+#     逐字段相同（第二族互证）。期限结构单调（IM：17天 2.1% / 52天 7.3% / 80天 8.6%
+#     / 171天 9.4%）⇒ 数量级符合 IM 常识。
+#   · ⚠️ **已知坑 1**：`nf_IM2612` 在新浪是**主连别名**（除名称 f[49] 外 48 个字段与
+#     `nf_IM0` 全同）⇒ **不可用**；`nf_IM2611` / `nf_IM2703` 是真实合约。
+#     ⇒ 只用**动态推导**的当月/次月码，不用硬编码季月码。
+#   · ⚠️ **已知坑 2**：东财 push2（多 market 码试探）连接被拒、腾讯 `qt.gtimg.cn`
+#     无中金所期货 ⇒ 目前是**单一数据源**（新浪），上线后建议再找第二源互证。
+# ══════════════════════════════════════════════════════════════════════════
+_FUT_BASIS_SPECS = (
+    # (品种, 期货代码前缀, 现货新浪代码, 现货名)
+    ("IF", "nf_IF", "sh000300", "沪深300"),
+    ("IH", "nf_IH", "sh000016", "上证50"),
+    ("IC", "nf_IC", "sh000905", "中证500"),
+    ("IM", "nf_IM", "sh000852", "中证1000"),
+)
+_FUT_ANNUALIZE_MIN_DAYS = 5      # 剩余自然日 < 此值不年化（分母太小 ⇒ 数字无意义）
+
+
+def _third_friday(year: int, month: int) -> Optional[date]:
+    """当月第三个周五 = 中金所股指期货最后交易日。"""
+    for day in range(15, 22):
+        d = date(year, month, day)
+        if d.weekday() == 4:
+            return d
+    return None
+
+
+def _front_month_codes(today: Optional[date] = None) -> list:
+    """CFFEX 合约月份 = 当月 / 下月 / 当季 / 下季 ⇒ 本处取 **当月 + 次月**。
+
+    返回 [(码 'YYMM', 到期日, 标签), ...]。
+    ⚠️ **到期日当天仍可交易**（15:00 交割）⇒ 用 `exp >= today`（不是 `>`）。
+    """
+    today = today or date.today()
+    out, y, m = [], today.year, today.month
+    while len(out) < 2:
+        exp = _third_friday(y, m)
+        if exp and exp >= today:
+            out.append((f"{y % 100:02d}{m:02d}", exp))
+        m += 1
+        if m > 12:
+            y, m = y + 1, 1
+    return [(c, e, ("当月", "次月")[i]) for i, (c, e) in enumerate(out)]
+
+
+def _basis_codes() -> list:
+    """需动态抓取的新浪代码：期货（当月×4 品种 + 次月×4 品种）+ 4 个现货指数。"""
+    months = [c for c, _e, _l in _front_month_codes()]
+    codes: list = []
+    for _n, prefix, spot_code, _sn in _FUT_BASIS_SPECS:
+        codes += [f"{prefix}{mc}" for mc in months]
+        codes.append(spot_code)
+    return codes
+
+
+def get_index_futures_basis(raw: dict) -> Optional[dict]:
+    """股指期货基差（当月 + 次月 + 对冲盘背景标注）。
+
+    `raw` = `_fetch_sina()` 的结果（须已含 `_basis_codes()`）。
+    **失败静默**：单品种缺数据就跳过（**绝不填 0**，与 `_OVERNIGHT_KEYS` 纪律①同）。
+    """
+    try:
+        months, today, items = _front_month_codes(), date.today(), []
+        for name, prefix, spot_code, spot_name in _FUT_BASIS_SPECS:
+            sf = raw.get(spot_code)
+            if not sf:
+                continue
+            spot = _parse("sidx", sf)
+            sp = spot.get("price")
+            if not sp:
+                continue
+            row = {"product": name, "spot_name": spot_name,
+                   "spot": round(sp, 2), "tenors": []}
+            for mc, exp, label in months:
+                ff = raw.get(f"{prefix}{mc}")
+                if not ff:
+                    continue
+                fut = _parse("nff", ff)
+                fp = fut.get("price")
+                if not fp:
+                    continue
+                basis = sp - fp
+                rate = basis / sp * 100
+                days = (exp - today).days
+                settle_prev = _f(ff, 14)
+                row["tenors"].append({
+                    "label": label, "code": f"{prefix}{mc}", "expiry": exp.isoformat(),
+                    "days_left": days, "fut": round(fp, 1),
+                    "basis": round(basis, 2), "basis_rate": round(rate, 3),
+                    "annualized": (round(rate * 365 / days, 2)
+                                   if days >= _FUT_ANNUALIZE_MIN_DAYS else None),
+                    # ⚠️ 期货涨跌按**昨结算**口径（期货惯例；`_parse` 的 change_pct 是昨收口径）
+                    "fut_chg_pct": (round((fp / settle_prev - 1) * 100, 2)
+                                    if settle_prev > 0 else None),
+                    "volume": _f(ff, 4), "oi": _f(ff, 6),
+                    "time": fut.get("time") or "",
+                })
+            if row["tenors"]:
+                items.append(row)
+        if not items:
+            return None
+        return {
+            "items": items,
+            "as_of": next((t.get("time") for r in items for t in r["tenors"] if t.get("time")), ""),
+            "note": ("基差 = 现货收盘 − 期货收盘（正=期货贴水）；年化 = 基差率×365/剩余自然日。"
+                     "⚠️ 当月合约临近到期时年化对天数极敏感，别当趋势读；"
+                     "IM 贴水含雪球/DMA 对冲盘结构性需求，不能干净解读为「市场情绪」；"
+                     "纯展示层（北向停披后的内资情绪/对冲需求温度计），不进决策链。"),
+        }
+    except Exception as e:
+        print(f"[macro] futures basis failed: {e}")        # ASCII（铁律⑥）
+        return None
 
 
 def get_macro_panel() -> dict:
@@ -197,7 +357,7 @@ def get_macro_panel() -> dict:
         if c and now - c["ts"] < TTL_QUOTES:
             return c["data"]
 
-    raw = _fetch_sina()
+    raw = _fetch_sina(_basis_codes())
     panel = {}
     for key, (symbol, family) in _PANEL_MAP.items():
         f = raw.get(symbol)
@@ -255,6 +415,9 @@ def get_macro_panel() -> dict:
         derived["black_change_pct"] = round((rb["change_pct"] + ir["change_pct"]) / 2, 2)
 
     panel["_derived"] = derived
+    # ★ 2026-09-29（P2）：股指期货基差 —— 与 `_derived` 同款「下划线私有键」约定
+    #   （`get_macro_snapshot` 输出 `panel` 时会过滤 `_` 前缀 ⇒ 不污染面板本体）。
+    panel["_futures_basis"] = get_index_futures_basis(raw)
     with _cache_lock:
         _cache["panel"] = {"data": panel, "ts": now}
     return panel
@@ -708,6 +871,11 @@ def get_macro_snapshot() -> dict:
         # ★ 2026-09-25（用户需求 P1）：自上次 A 股收盘以来的外盘累计变化 —— 回答
         #   "A 股开盘前若不知道外盘在这段时间走了多少，就会漏东西"。纯展示、失败静默。
         "overnight": _safe_overnight(panel),
+        # ★★ 2026-09-29（P2 用户："继续做 IM 基差"）：股指期货基差（IF/IH/IC/IM 当月+次月）
+        #   —— 北向实时额停披后的「内资情绪 / 对冲需求」温度计。
+        #   ⚠️ **纯展示层，不进决策链**；口径与三条边界见 `get_index_futures_basis` 注释。
+        #   失败静默（None ⇒ 前端整块不渲染），绝不拖垮宏观快照。
+        "futures_basis": panel.get("_futures_basis"),
         # ★ 2026-09-25：情绪温度计（含巴菲特指标/日成交额等）—— 供工作台做"过热 vs 过冷"
         #   两栏对照。⚠️ peek（只读缓存不拉网），冷缓存返回 None。
         "sentiment": _safe_sentiment(),
