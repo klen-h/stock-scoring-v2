@@ -757,6 +757,31 @@ def build_data_md(date: str = None) -> str:
             f"{f['name']}({f['change_pct']:+.1f}%)" if f.get('change_pct') is not None else str(f['name'])
             for f in weak))
 
+    # 2.x 板块动量与异动（★ 2026-09-30 P1）
+    #   【为什么加】用户 09-30 问「前几天的地产、今天的金属拉升，项目似乎察觉不到？」
+    #     排查结论：**不是没数据，是没有规则** —— 板块序列（`plate_daily_zz`）早在库，
+    #     却只被用来算「分化度」；而「行业主线」走的是**评分 Top50 扎堆**（另一套口径）。
+    #   ★ **数据源独立于上面的东财资金流**：本块走 zzshare（日批每晚落库 + `task_data_gap`
+    #     自愈）⇒ 东财被封时上面的"行业主力净流入"会空，而本块照常出。
+    #   ⚠️ 口径限制：zzshare 104 粗分 与 新浪 49 类 实测**仅 4 个同名** ⇒ 只出板块价格/资金
+    #     事实，**不做"板块内个股/上榜数"关联**（强行模糊匹配会给出误导性的 0；缺失 ≠ 0）。
+    #     详见 `app/sector_momentum.py` 模块头。
+    try:
+        from app import sector_momentum
+        _sm = sector_momentum.snapshot()
+        _lines = sector_momentum.format_lines(_sm)
+        if _lines:
+            add("")
+            add(f"**板块动量与异动**（zzshare {_sm.get('sectors')} 个粗分板块，"
+                f"截至 {_sm.get('as_of')}）：")
+            for _ln in _lines:
+                add(f"- {_ln}")
+            if _sm.get("weak"):
+                add("- 3 日弱势 Top5：" + "、".join(
+                    f"{r['industry']}({r['ret3']:+.1f}%)" for r in _sm["weak"]))
+    except Exception as e:
+        print(f"[daily_report] 板块动量小节失败: {e}")
+
     # 2.x 主力行为（筹码×资金流组合信号；全池截面回测 10,744 样本验证）
     mf = _mainforce_summary()
     if mf:

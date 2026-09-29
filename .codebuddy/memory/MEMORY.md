@@ -13,6 +13,7 @@
 - DB 默认 SQLite，`DATABASE_URL` 走 PG（Supabase 东京）；`app/database.py` 自动转 `%s` 兼容双库。
 - 调度器 `flash/scheduler.py` ~30 asyncio loop 按日幂等；LLM/轻推送 `create_task`，重走 `*_heavy`（`RENDER_READ_ONLY=1` 全关）。
 - 盘后链路：K线 15:30 → 指标 16:40 → 快照 18:00 → 主线/消息分/日报 19:15+；简报按 `(date,phase)` 落 `trader_briefs`。
+- ★★ **反复模式：Render 循环停摆 ⇒ 数据静默断档 ⇒ 迁入日批**（已发生：`mainforce_state` 09-09、`weekly_report`/`news_snapshot`/`lhb` 09-11、`zz_finance` 09-19、**`sector_snapshot_zz` 09-24（09-30 修）**）。**兜底闸（2026-09-30 起）**：`app/data_gaps.py` + 日批 `data_gap` 任务（排在所有数据写入之后）每晚自愈板块缺口（最近 5 交易日，无缺口零请求）并做 7 张关键表断档告警；判据口径是**交易日**（自然日会在休市期误报），**落后 ≥2 个交易日即告警**（容差 1 —— 设 2 会漏掉 09-24→09-29 这种夹着中秋休市的断档）。手动补历史：`python scripts/backfill_plate_daily.py --apply`（zzshare 支持历史日期；东财 clist 只给当前快照**不可回补**）。
 
 ## 前端布局纪律（浮层/弹窗）
 - ★★ 顶栏浮层统一做法：`<Teleport to="body">` + `fixed` + `max-h-[calc(100vh_-_Nrem)]` + `overflow-y-auto overscroll-contain`；水平居中 `left-1/2 -translate-x-1/2`。锚点+视口比例 max-h 必然横向出屏/纵向不扣顶栏（09-29 实证）。Tailwind calc 空格写 `_`；核对 grep `max-height:calc` 而非字面量。
@@ -50,6 +51,7 @@
 - 宏观面板 `macro.py` 已抓：A50/纳指期货/恒生科技/美债/VIX/美元/离岸在岸人民币/金龙指数(gb_$hxc)/原油/黑色系；顶栏外盘四件套 = A50/离岸/布伦特/纳指期货 + 隔夜累计变化（自上次 A 股收盘以来）+ 外盘开市指示；「隔夜与今日（财经日历）」卡。
 - coach 外部领先预警：纳指隔夜+美元 5 日，**仅 defensive 市有增量价值**；⚠️ 纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115（已如实标注"解释/风控用途"）。
 - 涨停梯队（zzshare 日批）+ 炸板率/大面率（按板幅分桶、剔一字板）+ 连板梯队断层判读 + 昨日涨停赚钱效应。
+- 板块四层（**提"板块察觉不到"类需求前必读**）：① `mainline`/`industry_mainline` = **评分 Top50 的行业扎堆**（≠ 板块涨跌幅，大盘股板块天然低配：房地产日均仅 1.5 只）② 板块快照双源 —— 东财 `sector_daily`（日批写，常缺行、09-29 与真值矛盾不可信）+ zzshare `plate_daily_zz`（前端「板块分化」用，可回填）③ `industry_amount_share`（腾讯内存聚合，需行情缓存就绪）④ **`app/sector_momentum.py`（09-30 P1）= 板块动量/异动侦测**：异动=3日≥+5%/5日≥+8% **或** 当日前5且≥+2%（双口径），连续命中只报首日，同日≥8 项判为系统性普涨/普跌；**只进日报/复盘、不推送不进决策链**（因子验证 `scripts/sector_momentum_edge_check.py` 预登记，当前 INSUFFICIENT）。⚠️ zzshare 104 粗分 与 新浪 49 类**仅 4 个同名** ⇒ **不可关联个股**（强行匹配会给误导性 0）；⚠️ 「金属」类感知要个股级（104 粗分下 09-29 金属仅 +1.4~2.0%，不算异动）。
 
 ## Supabase egress（详见 EGRESS.md）
 - 账号级 5GB/月（本地+Render 共用）；实测 ~273MB/天；头号放大器=进程内缓存×低频数据+`--reload` 重启整份重读。排障：`pg_stat_statements` 按 rows + 必查 `stats_reset`（否则 14 天累计当一天）。

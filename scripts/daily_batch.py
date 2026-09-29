@@ -297,8 +297,19 @@ def task_sector_snapshot():
       ⚠️ 两者**数据源完全独立**（板块快照走东财接口；成交占比走腾讯内存行情 + 落库映射）
       ⇒ 必须**分别 try**：东财被封时板块快照会 skip，而成交占比照常落库
       （这正是它比板块快照更稳的原因，别让一个失败拖垮另一个）。
+    ★★ 2026-09-30（P0 断档修复）：**并入 zzshare 板块快照**（`plate_daily_zz`）。
+      事故：该表原先**只挂在 Render 的 `sector_snapshot_loop`（15:10-16:40）**上，
+      循环一停摆就**静默断档 5 个交易日**（09-25 起；东财版照常写 ⇒ 无人发现），
+      而前端「板块分化」用的正是它 ⇒ 用户看到的是 **09-24 的普跌画面**。
+      ⇒ 处置与 `mainforce_state`(09-09) / `weekly_report`(09-11) / `zz_finance`(09-19)
+        完全相同：**迁入日批**（日批是唯一有实际保障的执行通道）。
+      ⚠️ 用 `_batch_trading_day()` **显式传日期**，不用 `latest_completed_trading_day()`：
+         跨午夜补跑时后者会算成"上一交易日"，而日批语义是"**本轮**交易日"。
+      ⚠️ zzshare 侧 **fail-open**（只记结果不抛）：源异常不能拖垮日批；
+         真断档由同日批 `data_gap` 任务（**自愈 + 告警**）兜底。
     """
     from app.sector_industry import take_snapshot
+    day = _batch_trading_day().isoformat()
     snap = take_snapshot()
     try:
         from app.sector_industry import save_amount_share
@@ -306,7 +317,33 @@ def task_sector_snapshot():
     except Exception as e:
         amt = f"失败（不影响板块快照）: {str(e)[:80]}"
         print(f"[sector] amount share save failed: {e}")
-    return f"板块快照: {snap} ｜ 成交占比: {amt}"
+    try:
+        from app.sector_zz import take_snapshot as take_snapshot_zz
+        zz = take_snapshot_zz(day)
+    except Exception as e:
+        zz = f"失败: {str(e)[:80]}"
+        print(f"[sector] zzshare snapshot failed: {e}")            # ASCII（铁律⑥）
+    return f"板块快照: {snap} ｜ 成交占比: {amt} ｜ zzshare({day}): {zz}"
+
+
+def task_data_gap():
+    """数据底座断档自检 + 板块快照自愈（2026-09-30 P0）。
+
+    ★ 为什么必须进日批：本次断档的根因是"**Render 循环停摆 ⇒ 数据静默缺日**"，
+      而日批是**唯一有实际保障的执行通道**（同 `sector_snapshot` / `mainforce_state` /
+      `zz_finance` 的处置）。更要紧的是：**检查本身也得挂在确定会跑的地方** ——
+      挂在循环上的检查会跟着循环一起静默。
+    ★ 顺序：排在**所有数据写入任务之后**（本处紧邻 `subfactor_ic`、在 LLM 类日报之前）
+      —— 这样它看到的是本轮全部写入的最终状态，又不被日报/简报的慢与失败拖累。
+    ★ 行为（`app.data_gaps`）：
+      ① 先 `backfill_plate()` 自愈最近 5 个交易日板块缺口（幂等；无缺口时**零请求**）
+      ② 再 `check_gaps()`：关键表"最新日期 vs 本轮应处理交易日"落后 >2 交易日 ⇒ 断档
+      ③ 告警走 `push_markdown_batched(force=True)`（关键通知）+ 按日去重
+         （`data_gap_alert_log`）⇒ 日批补跑不会重复推。
+    ★ fail-open：本任务异常不让日批失败（返回值即摘要）；告警失败只打日志。
+    """
+    from app.data_gaps import run_gap_check
+    return run_gap_check()
 
 
 def task_strategy_scan():
@@ -796,6 +833,10 @@ TASKS = {
     # ★ 2026-09-20 新增：子指标因子体检周期化（体检报告 §建议5）。
     #   任务内部判定「本月是否已体检」，其余交易日秒过；排在周期报告之后。
     "subfactor_ic": (task_subfactor_ic, "子指标因子体检（仅每月首个交易日）"),
+    # ★ 2026-09-30（P0）：数据底座断档自检 + 板块快照自愈。排在所有**数据写入**任务
+    #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
+    #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
+    "data_gap": (task_data_gap, "数据底座断档自检 + 板块快照自愈"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
@@ -810,7 +851,8 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
-                 "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic", "daily_report",
+                 "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic",
+                 "data_gap", "daily_report",
                  "trader_brief", "retention"]
 
 

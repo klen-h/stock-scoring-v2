@@ -44,6 +44,9 @@ ALLOWED_TASKS = {
     "calendar",
     # ★ 2026-09-12：决策简报进日批（盘后 + 企微推送），补上手动补跑入口
     "trader_brief",
+    # ★ 2026-09-30（P0）：数据底座断档自检 + 板块快照自愈（plate_daily_zz 断档 5 天
+    #   无人发现的兜底闸）—— 与 `daily_batch.DEFAULT_ORDER` 同名任务。
+    "data_gap",
 }
 
 

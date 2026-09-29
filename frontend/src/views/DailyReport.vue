@@ -95,6 +95,46 @@
           </div>
         </div>
 
+        <!-- ★★ 2026-09-30（P1）：**本周板块** —— 复盘本该回答"这一周市场发生了什么"，
+             此前只有 regime 与执行一致性，整块"哪些板块在动"是缺的。
+             数据 = `app.sector_momentum`（zzshare 104 粗分，**与日报同模块同口径**）；
+             口径限制：**不关联个股/评分**（zzshare 104 粗分 与 新浪 49 类 实测仅 4 个同名，
+             强行按名匹配会给出误导性的"板块内 0 只上榜"，缺失 ≠ 0）；
+             与日报的分工：日报看当日/3 日（今天谁在动），本块看 **5 日**（本周谁在动）。 -->
+        <div v-if="sec.sectors?.available" class="bg-card border border-border rounded-lg p-4">
+          <h2 class="text-sm font-bold text-gray-100 mb-2">本周板块
+            <span class="text-[10px] text-muted font-normal">
+              （zzshare {{ sec.sectors.sectors }} 个粗分板块 · 近 5 交易日 · 截至
+              {{ sec.sectors.as_of }}）</span></h2>
+          <p class="text-xs text-gray-300 leading-relaxed">{{ sec.sectors.sentence }}</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+            <div>
+              <div class="text-[10px] text-muted mb-1">5 日最强</div>
+              <div v-for="r in (sec.sectors.top || []).slice(0, 5)" :key="'t' + r.industry"
+                   class="flex items-center justify-between text-[11px] border-b border-border/30 py-0.5">
+                <span class="truncate">{{ r.industry }}</span>
+                <span class="font-mono text-red-400">{{ fmtPct(r.ret5) }}</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-[10px] text-muted mb-1">5 日最弱</div>
+              <div v-for="r in (sec.sectors.bottom || []).slice(0, 5)" :key="'b' + r.industry"
+                   class="flex items-center justify-between text-[11px] border-b border-border/30 py-0.5">
+                <span class="truncate">{{ r.industry }}</span>
+                <span class="font-mono text-emerald-400">{{ fmtPct(r.ret5) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="(sec.sectors.moves || []).length"
+               class="mt-2 text-[10px] text-amber-400/90 leading-relaxed">
+            新进入异动（连续命中只报首日）：
+            {{ (sec.sectors.moves || []).map(m => m.industry + '（' + m.reason + '）').join('、') }}
+          </div>
+          <div class="text-[10px] text-muted mt-2 leading-relaxed" :title="sec.sectors.note">
+            {{ sec.sectors.note }}
+          </div>
+        </div>
+
         <!-- ① 状态轨迹 -->
         <div class="bg-card border border-border rounded-lg p-4">
           <h2 class="text-sm font-bold text-gray-100 mb-2">① 本周市场状态轨迹</h2>

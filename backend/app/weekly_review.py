@@ -278,7 +278,52 @@ def _performance_block(window: int = 10) -> dict:
     }
 
 
-# ── 五、组装 ──────────────────────────────────────────────────────────────
+# ── 五、板块（本周：5 日动量 + 新进入异动）─────────────────────────────────
+
+def _sector_block() -> dict:
+    """本周板块：5 日动量榜（最强/最弱）+ 本周**新进入**的异动。
+
+    ★ 为什么（2026-09-30，P1）：用户问「前几天的地产、今天的金属拉升，项目似乎察觉不到？」
+      —— 复盘本该回答"这一周市场发生了什么"，此前却**只有 regime 与执行一致性**，
+      没有"哪些板块在动"（板块序列早在库，只被用来算分化度）。
+    ★ 数据：复用 `app.sector_momentum`（zzshare 104 粗分板块序列；日批每晚落库 +
+      `task_data_gap` 自愈）—— **与日报同一模块、同一口径**，不另写一套。
+    ⚠️ **不关联个股/评分**：zzshare 104 粗分 与 新浪 49 类 实测仅 **4 个同名** ⇒ 强行按名
+      匹配会产出误导性的"板块内 0 只上榜"（缺失 ≠ 0）。"板块价格"与「行业主线（评分扎堆）」
+      是**两套 taxonomy**，本块只出前者。
+    ⚠️ 与日报的分工：日报看 **当日/3 日**（今天谁在动），本块看 **5 日**（本周谁在动）。
+    """
+    try:
+        from app import sector_momentum
+        res = sector_momentum.snapshot()
+    except Exception as e:
+        print(f"[weekly] sector momentum failed: {str(e)[:80]}")      # ASCII（铁律⑥）
+        return {"available": False, "reason": "板块序列不可用"}
+    if not res.get("available"):
+        return {"available": False, "reason": res.get("note") or "无板块数据"}
+    top = res.get("strong5") or []
+    bottom = res.get("weak5") or []
+    mv = [m for m in (res.get("moves") or []) if m.get("kind") == "strong"]
+    parts = []
+    if top:
+        parts.append("本周最强：" + "、".join(f"{r['industry']} {r['ret5']:+.1f}%"
+                                           for r in top[:4]))
+    if bottom:
+        parts.append("最弱：" + "、".join(f"{r['industry']} {r['ret5']:+.1f}%"
+                                       for r in bottom[:3]))
+    if mv:
+        parts.append("新进入异动：" + "、".join(f"{m['industry']}（{m['reason']}）"
+                                            for m in mv[:4]))
+    return {
+        "available": True, "as_of": res.get("as_of"), "days": res.get("days"),
+        "sectors": res.get("sectors"),
+        "top": top, "bottom": bottom, "moves": mv,
+        "sentence": ("；".join(parts) + "。") if parts else "本周无板块级异动。",
+        "note": res.get("note"),
+    }
+
+
+# ── 六、组装 ──────────────────────────────────────────────────────────────
 
 def build_weekly_review(days: int = 7, end: Optional[str] = None) -> dict:
     """周复盘聚合（只读）。`days` 已由调用方钳位。"""
@@ -311,6 +356,8 @@ def build_weekly_review(days: int = 7, end: Optional[str] = None) -> dict:
                 "track": tr,
                 "sentence": _regime_sentence(tr),
             },
+            # ★ 2026-09-30（P1）：本周板块（5 日动量 + 新进入异动）—— 与日报同模块同口径
+            "sectors": _sector_block(),
             "execution": {
                 "kpi": ex,
                 "sentence": _exec_sentence(ex),
