@@ -335,6 +335,18 @@
             </div>
             <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
             <template v-else>
+              <!-- ★★ 2026-09-29（#2 修复：盘前 open 文案偏差，**显式提示**）：
+                   盘前（9:15 前）**今晨的 open 还没产生** ⇒ 行情缓存里的 `open` 是
+                   **最近已完成交易日**的 ⇒ 本块（高开家数 / 平均缺口 / 判读）描述的是
+                   那一天，不是"此刻"。此前只在 hover 里注一句，而"竞价看板"这个视图名
+                   本身就在暗示"讲今天" ⇒ 改为一律**挂在顶上**（宁可啰嗦，不要一句错的"今日"）。
+                   ⚠️ 复用既有 `isTodayPrice()`（与 `priceDayLabel()` 同规则，2026-09-26 引入）。 -->
+              <div v-if="!isTodayPrice()"
+                   class="mb-3 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-300 leading-relaxed">
+                ⚠️ <b>非当日口径</b>：以下竞价数据属于
+                <b class="font-mono">{{ mmdd(emotion.price_date) }}</b>
+                （今晨开盘价尚未产生）⇒ 是**那一天已完成**的接力/开局，<b>别按"今天"读</b>。
+              </div>
               <!-- ★★ 2026-09-25（用户："改完之后页面长度变长了，有些可以改成左右布局"）：
                    竞价看板内部**左右分栏**，按"信息性质"切（不按先后）：
                      · 左列 = 判读 + 三个数字 + 刻度尺 + 全市场家数/分布 + 接力 Top5（**整体冷热**）
@@ -378,7 +390,7 @@
                   <div class="text-lg font-bold font-mono" :class="pctClass(emotion.auction?.avg_gap)">
                     {{ signNum(emotion.auction?.avg_gap) }}%</div>
                   <div class="text-muted text-[10px] cursor-help"
-                       title="昨日涨停股今日**开盘缺口**的平均值 =（开盘价 / 昨收 − 1）。只反映竞价那一刻的接力意愿，不含盘中变化。">平均高开（缺口）</div>
+                       :title="`${prevLimitLabel()}涨停股${priceDayLabel()}**开盘缺口**的平均值 =（开盘价 / 昨收 − 1）。只反映竞价那一刻的接力意愿，不含盘中变化。`">平均高开（{{ priceDayLabel() }}缺口）</div>
                 </div>
                 <div>
                   <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">

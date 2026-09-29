@@ -1308,14 +1308,21 @@ def _auction_read(a: Dict, has_live: bool) -> Optional[Dict]:
         return None
 
     # ① 接力意愿
+    # ★★ 2026-09-29（#2 修复）：**日期感知措辞** —— 盘前/休市时"今"**不成立**
+    #   （`gap_is_today=False`，描述的是最近已完成交易日）⇒ 相对词只在成立时用，
+    #   否则退回**绝对日期**。与前端 `priceDayLabel()`/`prevLimitLabel()` **同一规则**
+    #   （用户实测踩过："文案说今日 -1.16%，实际是 09-23 涨停 → 09-24 的表现"）。
+    _head = ("昨涨停股今" if a.get("gap_is_today")
+             else f"{str(a.get('prev_limit_date') or '')[-5:]}涨停股在"
+                  f"{str(a.get('gap_date') or '')[-5:]}")
     if gap is None:
         relay, relay_cn = None, None
     elif gap >= _AUCTION_GAP_STRONG:
-        relay, relay_cn = "strong", f"接力意愿强（昨涨停股今均高开 {gap:+.2f}%，仍有人接）"
+        relay, relay_cn = "strong", f"接力意愿强（{_head}均高开 {gap:+.2f}%，仍有人接）"
     elif gap <= _AUCTION_GAP_WEAK:
-        relay, relay_cn = "weak", f"接力转弱（昨涨停股今均 {gap:+.2f}%，追涨者平均亏钱）"
+        relay, relay_cn = "weak", f"接力转弱（{_head}均 {gap:+.2f}%，追涨者平均亏钱）"
     else:
-        relay, relay_cn = "neutral", f"接力中性（昨涨停股今均 {gap:+.2f}%）"
+        relay, relay_cn = "neutral", f"接力中性（{_head}均 {gap:+.2f}%）"
 
     # ② 全市场开局
     ratio = (up / max(down or 0, 1)) if (up is not None and down is not None) else None
@@ -1514,6 +1521,17 @@ def market_emotion():
                             "sig": _c in sig_codes, "held": _c in held_codes})
     market_gaps.sort(key=lambda x: -x["gap_pct"])
     auction = {"count": len(gaps),
+               # ★★ 2026-09-29（#2 修复：盘前 open 文案偏差）：**这个"高开"属于哪一天**。
+               #   盘前（9:15 前，今晨 `open` 尚未产生）与休市时，行情缓存里的 `open` 是
+               #   **最近已完成交易日**的开盘价 ⇒ 文案里的"今/今日"会**指错一天**。
+               #   `gap_is_today=False` ⇒ 本块描述的是 `gap_date` 那天（**已完成**），
+               #   不是"此刻/今天" —— 前端据此换绝对日期并挂非当日提示。
+               #  ⚠️ `gap_date` 与 `val.price_date` 同源（都来自 `_price_date()`）；
+               #     这里**再放进 auction** 是为了让它**自描述**（`_auction_read` 与前端
+               #     只拿 auction 这一块，不必再去外层找日期）。
+               "gap_date": _p_day,
+               "prev_limit_date": d_prev,
+               "gap_is_today": _p_day == _bj_now().strftime("%Y-%m-%d"),
                # ★★ 2026-09-28（用户："竞价看板…这个怎么一会一个，一会又三个"）：
                #   `count` 只是"**已算出高开**的昨日涨停股数"，它会随竞价窗口（9:15-9:25）
                #   内行情缓存的逐分钟刷新而**从少到多**（`open` 值分批到位）⇒ 面板上

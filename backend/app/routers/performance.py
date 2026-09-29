@@ -17,6 +17,7 @@ from typing import Dict, Optional
 
 from fastapi import APIRouter, Depends
 
+from app import benchmarks
 from app.auth import get_current_user
 from app.database import db
 
@@ -30,28 +31,15 @@ def _to_date(v) -> Optional[str]:
 
 
 def _bench_pair(d0: str, d1: Optional[str] = None) -> Dict:
-    """同一窗口的**双基准**（P0 缺口 1 口径）：沪深300 + 中证1000。
+    """同一窗口的**双基准**（P0 缺口 1 口径）—— 见 `app.benchmarks.dual_bench`（唯一事实源）。
 
-    【为什么两个都要】持仓/信号偏 20–50 亿中小盘 ⇒ 只对沪深300 会「**跑赢大盘仍绝对
-      亏损**」且超额被**风格暴露污染** ⇒ 必须与中小盘基准并列（2026-09-20 审视 B4）。
-      口径与日报 `_bench5`、周复盘 `_performance_block`、归因模块**同一套**：
-      `backtest_prices` 首末收盘、同起止日。
-    ⚠️ 中证1000 由 `backfill_daily` 指数段回填（2026-09-29 起）；回填前返回 None
-      （**缺失 ≠ 0**，前端显示"—"）。
-    ⚠️ 本函数**保留原 `benchmark_hs300` 字段不动** ⇒ 新字段是**纯增量**，不破坏任何既有读取点。
+    ★ 2026-09-29（口径收敛，用户："做 #1"）：本函数原先自带一份"首末收盘算收益"实现，
+      与日报/周复盘/归因共 **4 处**重复 ⇒ 已抽到 `app.benchmarks`。保留本名做**薄包装**：
+      三轨道的调用点继续用它（少改一处调用、语义更贴近本文件的语境），
+      **口径与取数全部由 `benchmarks` 决定**（改那里 = 全项目同步改）。
+    ⚠️ 中证1000 回填前为 None（**缺失 ≠ 0**，前端显示"—"）。
     """
-    out = {"hs300": None, "zz1000": None}
-    cond = "code=%s AND date >= %s" + (" AND date <= %s" if d1 else "")
-    for key, code in (("hs300", "sh000300"), ("zz1000", "sh000852")):
-        try:
-            bars = db.fetch("SELECT date, close FROM backtest_prices WHERE " + cond
-                            + " ORDER BY date ASC",
-                            (code, d0, d1) if d1 else (code, d0))
-            if len(bars) >= 2 and float(bars[0]["close"]) > 0:
-                out[key] = round((float(bars[-1]["close"]) / float(bars[0]["close"]) - 1) * 100, 2)
-        except Exception:
-            pass
-    return out
+    return benchmarks.dual_bench(d0, d1)
 
 
 # ── 轨道一：模拟盘（前瞻真实记录） ──────────────────────────────────

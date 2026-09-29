@@ -31,6 +31,7 @@ URL：GET /api/report/weekly?days=7&end=YYYY-MM-DD
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+from app import benchmarks
 from app.database import db
 
 _BJ = timedelta(hours=8)
@@ -209,19 +210,6 @@ def _next_week(days: int = 7) -> dict:
 
 # ── 四、组合绩效（净值 + 三口径）──────────────────────────────────────────
 
-def _idx_ret(code: str, d0: str, d1: str) -> Optional[float]:
-    """指数在 [d0, d1] 的收益 %（首末收盘）；无数据/不足 2 根 ⇒ None（缺失 ≠ 0）。"""
-    try:
-        rows = db.fetch("SELECT date, close FROM backtest_prices WHERE code=%s "
-                        "AND date >= %s AND date <= %s ORDER BY date ASC",
-                        (code, d0, d1))
-        if len(rows) >= 2 and float(rows[0]["close"]) > 0:
-            return round((float(rows[-1]["close"]) / float(rows[0]["close"]) - 1) * 100, 2)
-    except Exception:
-        pass
-    return None
-
-
 def _perf_sentence(abs_ret, r300, r1000, days=None):
     """规则判读（不用 LLM）—— 与日报双基准同一「跑赢≠赚钱」防误读口径。"""
     if abs_ret is None:
@@ -271,7 +259,9 @@ def _performance_block(window: int = 10) -> dict:
     d0, d1 = str(start["date"])[:10], str(end["date"])[:10]
     abs_ret = (round((end["nav"] / start["nav"] - 1) * 100, 2)
                if start.get("nav") and start["nav"] > 0 else None)
-    r300, r1000 = _idx_ret("sh000300", d0, d1), _idx_ret("sh000852", d0, d1)
+    # ★ 2026-09-29（口径收敛）：改走 `app.benchmarks` 唯一事实源（原 `_idx_ret` 已删）
+    _bench = benchmarks.dual_bench(d0, d1)
+    r300, r1000 = _bench.get("hs300"), _bench.get("zz1000")
     return {
         "available": True,
         "window": {"start": d0, "end": d1, "days": days, "degraded": degraded},

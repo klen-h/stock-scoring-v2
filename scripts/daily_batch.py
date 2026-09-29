@@ -202,6 +202,21 @@ def task_gate_snapshot():
     return snapshot(d.isoformat(), overwrite=_force_requested())
 
 
+def task_entry_log():
+    """买入入口（闸门 `ready==3`）**当日留痕**（2026-09-29，P1/P2 根因修复）。
+
+    ★ 为什么：P2 归因实测发现 `coach_alerts` 里**买入/市场类建议无 `code`**
+      ⇒「入场理由」的个股收益**永远无法评估**；而唯一买入入口
+      `trader_brief._merged_buy_list` 此前**只实时展示、不留痕** ⇒ 一旦 regime 转好、
+      `ready==3` 开始出现，**"买没买"将永久丢失**（时钟属性 ⇒ 越早留痕越好）。
+      落库即自动进入：教练页「建议历史」执行回写（**零新增前端**）+ P2 归因 + T+5 回填。
+    ★ 时序：**必须在 `gate_snapshot` 之后**（`_merged_buy_list` 读最新闸门快照）。
+    ★ 纪律：**只落库、不推送**（《专业度缺口》P1：达标后才谈是否推送）；空清单不写占位。
+    """
+    from app.coach.audit import log_entry_candidates
+    return log_entry_candidates(day=_batch_trading_day().isoformat())
+
+
 def _batch_trading_day():
     """本轮日批**所属交易日**（date）—— 星期判定/交易日判定都必须以它为准。
 
@@ -750,6 +765,9 @@ TASKS = {
     # ★ 2026-09-22 新增：闸门就绪度落库（**必须在 mainforce_state 之后**——
     #   gate 的 A/B 条件读它的 chip/flow5 快照）。时钟属性：晚一天少一天样本。
     "gate_snapshot": (task_gate_snapshot, "买入闸门就绪度落库（攒样本验证预测力）"),
+    # ★ 2026-09-29（P1/P2 根因修复）：买入入口留痕 —— 必须在 gate_snapshot **之后**
+    #   （`_merged_buy_list` 读最新快照）；只落库不推送；空清单不写行。
+    "entry_log": (task_entry_log, "买入入口留痕（ready==3，只落库不推送）"),
     "sector_snapshot": (task_sector_snapshot, "板块快照"),
     "strategy_scan": (task_strategy_scan, "战法全量扫描"),
     "contradiction_scan": (task_contradiction_scan, "矛盾扫描"),
@@ -788,7 +806,7 @@ TASKS = {
     "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
-                 "calendar", "mainforce_state", "gate_snapshot",
+                 "calendar", "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",

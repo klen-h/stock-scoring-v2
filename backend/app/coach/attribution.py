@@ -54,14 +54,14 @@ from collections import Counter
 from datetime import timedelta
 from typing import Dict, List, Optional
 
+from app import benchmarks
 from app.database import db
 
 # ── 口径常量 ──────────────────────────────────────────────────────────────
 HOLDS = (5, 20)                 # 评估持有期（交易日）
 MIN_N = 5                       # 组内最小样本（低于此 ⇒ 标注不足、不参与排行）
 SMALL_N = 30                    # "统计上有意义"的门槛（低于此 ⇒ 整体降级为方向参考）
-BENCH_PRIMARY = "sh000852"      # 中证1000（缺口 1 口径）
-BENCH_FALLBACK = "sh000300"     # 沪深300（缺中证1000 时的**退路**，必须标注）
+# ⚠️ 基准代码/退路选择**不在此定义** —— 见 `app.benchmarks`（唯一事实源，2026-09-29 收敛）
 OUTCOME_TOL = 0.5               # 与库内 outcome_pct 的一致性容差（pt）
 _CACHE = {"ts": 0.0, "key": "", "val": None}
 _CACHE_TTL = 300.0              # 5 分钟（数据日频，同其它教练模块惯例）
@@ -131,14 +131,12 @@ def _load_bars(codes: List[str], d0: str) -> Dict[str, List[Dict]]:
 
 
 def _pick_bench() -> tuple:
-    """选基准：优先中证1000；无数据退回沪深300（返回 (code, 中文名, 是否退路)）。"""
-    for code, label, fb in ((BENCH_PRIMARY, "中证1000", False),
-                            (BENCH_FALLBACK, "沪深300", True)):
-        n = (db.fetch_one("SELECT COUNT(*) AS n FROM backtest_prices WHERE code=%s",
-                          (code,)) or {}).get("n") or 0
-        if n:
-            return code, label, fb
-    return BENCH_FALLBACK, "沪深300", True
+    """选基准：优先中证1000；无数据退回沪深300（返回 `(code, 中文名, 是否退路)`）。
+
+    ★ 2026-09-29（口径收敛）：实现已移到 `app.benchmarks.pick_bench`（唯一事实源）；
+      保留本名做**薄包装**，调用点不变、口径统一。
+    """
+    return benchmarks.pick_bench()
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -159,11 +157,13 @@ def _fwd(seq: List[Dict], alert_date: str, n: int) -> Optional[tuple]:
 
 
 def _bench_ret(bench_bars: Dict[str, Dict], d0: str, d1: str) -> Optional[float]:
-    """基准在 [d0, d1] 的收益 %（用**个股的首末日**去基准里查 ⇒ 真同期对齐）。"""
-    a, b = bench_bars.get(d0), bench_bars.get(d1)
-    if not a or not b or a <= 0:
-        return None
-    return (b / a - 1) * 100
+    """基准在 `[d0, d1]` 的收益 %。
+
+    ★ 2026-09-29（口径收敛）：实现在 `app.benchmarks.ret_in_window`（唯一事实源）——
+      用**已加载**的 `{date: close}` 取同期首末，**零额外查询**（本模块批量拉过 K 线）。
+      ⚠️ 统一 `round(2)` 后，`exc` 与早前版本可能有 **≤0.01pt** 的差（预期内的精度统一）。
+    """
+    return benchmarks.ret_in_window(bench_bars, d0, d1)
 
 
 # ══════════════════════════════════════════════════════════════════════════

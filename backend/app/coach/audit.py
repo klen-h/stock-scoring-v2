@@ -257,14 +257,19 @@ def abandon_plan(plan_id: int, reason: str) -> bool:
 #  建议落库
 # ==============================================================================
 
-def record_advices(advices: List[dict], push: bool = False) -> List[dict]:
+def record_advices(advices: List[dict], push: bool = False,
+                   day: Optional[str] = None) -> List[dict]:
     """把求值结果落库（按 dedupe_key 去重），返回**本次新增**的记录（供推送）。
 
     同日同规则同标的重复触发（30s 轮询的常态）不会产生新行，也就不会重复推送。
+    ★ 2026-09-29：加可选 `day`（YYYY-MM-DD）—— **日批侧写入**用（`log_entry_candidates`）。
+      不传 = 原行为（`_today()`，供盘中 30s 轮询）。传了则**同时用于 dedupe_key**，
+      保证"同一交易日重跑/跨午夜补跑"仍幂等（与 `daily_batch._batch_trading_day`
+      的跨午夜纪律同源）。
     """
     ensure_tables()
     now = _now()
-    today = _today()
+    today = (str(day).strip()[:10] if day else "") or _today()
     fresh = []
     for a in advices:
         key = f"{today}|{a['rule_id']}|{a.get('code') or '-'}"
@@ -289,6 +294,69 @@ def record_advices(advices: List[dict], push: bool = False) -> List[dict]:
     if fresh:
         print(f"[coach] 新增建议 {len(fresh)} 条（推送={push}）")
     return fresh
+
+
+_ENTRY_RULE_ID = "gate_entry"
+_ENTRY_LABEL = "买入入口（闸门三条件就绪）"
+
+
+def log_entry_candidates(day: Optional[str] = None) -> str:
+    """把当日**买入入口**（闸门 `ready==3` 清单）落库为 `coach_alerts` 记录（**不推送**）。
+
+    【为什么（2026-09-29 实测驱动，P1/P2 的共同根因）】
+      ① P2 归因首跑实测：`coach_alerts` 里**只有风控/持仓类规则带 `code`**
+         （loss_over_7pct/stop_loss_hit/hold_3d_review = 50 行），而 `gate_add` 等
+         **买入/市场类建议无 `code`** ⇒ **「入场理由」的个股收益永远无法评估**。
+      ② 唯一买入入口 `trader_brief._merged_buy_list`（`ready==3`）此前**只实时展示、
+         不留痕** ⇒ 一旦 regime 转好、`ready==3` 开始出现，**"买没买"将永久丢失**
+         ⇒ **时钟属性**：留痕越早越好（同 P1「先落库、后验证」的纪律）。
+
+    【为什么复用 `coach_alerts` 而不新建表】
+      ① 现成的 `executed`/`abandon_reason` **回写通道**可直接用 ⇒ 教练页「建议历史」
+         **零新增前端**即可回写（"执行错"维度立即可测）；
+      ② 自动进入 P2 归因（`by_rule` / `by_executed`）与 `backfill_outcome` 的 T+5 回填；
+      ③ `dedupe_key = 交易日|规则|标的` ⇒ 日批重跑天然幂等（`day` 显式传入，
+         跨午夜补跑也不会写成次日）。
+
+    【纪律】`push=False` —— **只落库、不推送**（《专业度缺口》P1：达标后才谈是否推送）。
+      空清单**不写任何行**（诚实为空，不造占位记录）。
+    """
+    try:
+        from app.strategies.recommendation import get_push_whitelist
+        from app.trader_brief import _merged_buy_list
+        try:
+            wl = get_push_whitelist() or []
+        except Exception:
+            wl = []                      # 白名单读失败不阻断（买入入口与战法无关，战法仅附注）
+        items = _merged_buy_list(wl) or []
+        if not items:
+            return "买入入口留痕: 0 只（闸门 ready==3 为空 ⇒ 不写占位行）"
+        advices = []
+        for x in items:
+            pct = x.get("position_pct")
+            flow = x.get("flow5_amt")
+            hits = x.get("strategies") or []
+            msg = ("买入入口就绪：闸门三条件全满足（A 主力吸筹 + B 不追高 + C 市况允许）"
+                   f" · 档位 {x.get('position_label') or '—'}"
+                   f"(建议 {pct if pct is not None else '—'}%)"
+                   f" · 主力阶段 {x.get('phase_cn') or '—'}"
+                   + (f" · 5日主力净额 {float(flow):+.1f}%" if flow is not None else "")
+                   + (" · 战法附注 " + "、".join(str(h) for h in hits) if hits else "")
+                   + f" · 闸门快照 {x.get('snapshot_date') or '—'}")
+            advices.append({
+                "rule_id": _ENTRY_RULE_ID, "label": _ENTRY_LABEL, "severity": "info",
+                "code": x.get("code"), "name": x.get("name"), "message": msg,
+                "numbers": {"gate_ready": x.get("gate_ready"),
+                            "position_pct": pct, "flow5_amt": flow,
+                            "snapshot_date": x.get("snapshot_date"),
+                            "strategy_hits": hits},
+            })
+        fresh = record_advices(advices, push=False, day=day)
+        return (f"买入入口留痕: 闸门 ready==3 共 {len(items)} 只，"
+                f"本次新增 {len(fresh)}（同日重跑其余自动去重）")
+    except Exception as e:
+        print(f"[coach] 买入入口留痕失败: {str(e)[:80]}")          # ASCII（铁律⑥）
+        return f"买入入口留痕: 失败（{str(e)[:60]}）"
 
 
 def write_back_execution(alert_id: int, executed: str, reason: str = "") -> bool:

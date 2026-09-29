@@ -29,6 +29,7 @@ import json
 import os
 from datetime import datetime
 
+from app import benchmarks
 from app.database import db
 from app.flash import rules, store
 
@@ -255,23 +256,14 @@ def _push_status_md() -> str:
             pass
         # ★★ 2026-09-29（P0 基准错配修复）：空仓对照**双基准** —— 只对照沪深300 会
         #   「跑赢大盘仍绝对亏损」（阴跌市里中小盘跌更多）+ 超额被风格暴露污染；
-        #   中证1000（sh000852）更贴近中小盘持仓风格 ⇒ 两个都报，并加防误读。
-        #   数据：sh000905/sh000852 由 backfill_daily 的指数段回填（2026-09-29 起）；
-        #   回填完成前 b1000 为 None ⇒ 该项静默跳过（缺失 ≠ 0，与全项目纪律一致）。
-        def _bench5(code):
-            try:
-                rows = db.fetch(
-                    "SELECT close FROM backtest_prices WHERE code=%s "
-                    "ORDER BY date DESC LIMIT 6", (code,))
-                closes = [float(r["close"]) for r in (rows or []) if r.get("close")]
-                if len(closes) >= 2 and closes[-1] > 0:
-                    # rows 按日期倒序 → closes[0]=最新、closes[-1]=5 个交易日前
-                    return (closes[0] / closes[-1] - 1) * 100
-            except Exception:
-                pass
-            return None
-
-        b300, b1000 = _bench5("sh000300"), _bench5("sh000852")
+        #   中证1000 更贴近中小盘持仓风格 ⇒ 两个都报，并加防误读。
+        #   ★ 口径收敛（同日，用户："做 #1"）：**改走 `app.benchmarks` 唯一事实源** ——
+        #     同一"首末收盘算收益"公式原先在日报/周复盘/性能页/归因共 **4 处**各写一份
+        #     （当天新造的债）⇒ 抽出统一；本处原为倒序 LIMIT 实现，已由
+        #     `benchmarks.recent_dual` 原样保留该取数方式。
+        #   ⚠️ 回填完成前 `zz1000` 为 None ⇒ 静默跳过（**缺失 ≠ 0**）。
+        _bench = benchmarks.recent_dual(5)
+        b300, b1000 = _bench.get("hs300"), _bench.get("zz1000")
         bench_txt = ""
         if b300 is not None or b1000 is not None:
             parts = []
