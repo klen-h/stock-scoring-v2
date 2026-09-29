@@ -24,6 +24,16 @@ TRADING_DAYS = 244            # 年化交易日
 RISK_FREE = 0.02              # 无风险利率（年化）
 DEFAULT_POSITION_RATIO = 0.2  # 无仓位字段时的默认单笔仓位
 
+# ── 板块前缀（★ 全项目唯一来源，2026-09-29 抽出）──────────────────────────────
+# 【为什么抽出来】`strategies/base.py::filter_stock_pool` 的「排除科创板/创业板」原先
+#   各写一份 `startswith("688")` / `startswith("300")`，**漏了 301/302/689 段**
+#   ⇒ 301 段（创业板注册制新股）**从未被排除、一直待在战法池里**（实测 240 只，
+#   其中仅 8 只有 K 线 = 纯空转），且与"排除创业板"的意图不符。
+#   ⇒ 前缀集合只在这里定义一次，两边都引用（同一概念只能有一个定义）。
+STAR_PREFIXES = ("688", "689")            # 科创板（689 = CDR）
+CHINEXT_PREFIXES = ("300", "301", "302")  # 创业板（301/302 = 注册制新股段）
+BROAD_PREFIXES = STAR_PREFIXES + CHINEXT_PREFIXES   # 双创（= 20cm 板幅）
+
 DEFAULT_COSTS = {
     "etf":   {"commission": 0.00025, "slippage": 0.0005, "stamp": 0.0},
     "stock": {"commission": 0.0005,  "slippage": 0.0005, "stamp": 0.001},
@@ -41,7 +51,7 @@ def _limit_pct(code: str, name: str = "", is_etf: bool = False) -> float:
         return 0.10
     c = (code or "").lower()
     bare = c.lstrip("shzbj") if len(c) > 6 else c
-    if bare.startswith(("688", "689", "300", "301", "302")):
+    if bare.startswith(BROAD_PREFIXES):      # 双创 = 20cm（★ 前缀唯一来源见文件头）
         return 0.20
     if bare.startswith(("82", "83", "87", "88", "43", "92", "920")):
         return 0.30

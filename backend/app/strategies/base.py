@@ -76,7 +76,13 @@ def filter_stock_pool(
     result = []
     today = datetime.now()
     cutoff_date = today - timedelta(days=min_listing_days)
-    
+
+    # ★★ 2026-09-29 修正：前缀集合改引 `backtest.engine` 的**全项目唯一来源**。
+    #   原先各写 `startswith("688")` / `startswith("300")` ⇒ **漏 301/302/689 段**
+    #   ⇒ 301 段（创业板注册制新股）**从未被排除、一直待在战法池里**
+    #     （实测 240 只中仅 8 只有 K 线 = 纯空转，且与"排除创业板"的意图不符）。
+    from app.backtest.engine import CHINEXT_PREFIXES, STAR_PREFIXES
+
     for code, info in stocks.items():
         # 基本过滤
         name = info.get("name", "")
@@ -88,12 +94,12 @@ def filter_stock_pool(
         if exclude_st and ("ST" in name or "st" in name):
             continue
         
-        # 科创板过滤（688开头）
-        if exclude_star and code.startswith("688"):
+        # 科创板过滤（688/689 —— 前缀集合见上方 import 的唯一来源）
+        if exclude_star and code.startswith(STAR_PREFIXES):
             continue
-        
-        # 创业板过滤（300开头）
-        if exclude_chinext and code.startswith("300"):
+
+        # 创业板过滤（300/301/302 —— ★ 2026-09-29 起含注册制新股段，此前只有 "300"）
+        if exclude_chinext and code.startswith(CHINEXT_PREFIXES):
             continue
         
         # 市值过滤
