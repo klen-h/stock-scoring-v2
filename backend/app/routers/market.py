@@ -328,7 +328,9 @@ def market_overview(background_tasks: BackgroundTasks):
         # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
         #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
         #   创业板/科创板（20cm）⇒ 会系统性误判（涨 10% 的 20cm 票不算涨停）。
-        limit_up, limit_down = _limit_counts(stocks)
+        # ★★ 2026-09-30（#3 轻量切换）：**优先 rt_k 精确口径**（全市场含北交所/ST、
+        #   用 `high_limit` 精确判定），失败自动回退上面的内存近似 —— 见 `_limit_counts_best`。
+        limit_up, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
         # 所有股票的涨跌幅列表，用于算平均/中位数
         changes = [s["change_pct"] for s in stocks.values()]
         result["stats"] = {
@@ -338,6 +340,14 @@ def market_overview(background_tasks: BackgroundTasks):
             "flat_count": flat,
             "limit_up": limit_up,       # 涨停家数
             "limit_down": limit_down,   # 跌停家数
+            # ★ 2026-09-30（#3 切换）：**口径披露**（前端 hover 展示）——
+            #   "rt_k" = 精确（数据源 `high_limit`，全市场含北交所/ST）；
+            #   "board_approx" = 内存池按板幅近似（⚠️ 不含北交所、ST 被排除）。
+            #   披露它是**必要**的：同日实测两口径的跌停曾差近一倍（123 vs 65），
+            #   不标口径用户会把两个数当同一个。
+            "limit_src": limit_src,
+            "limit_data_date": limit_meta.get("data_date"),
+            "limit_age_sec": limit_meta.get("age_sec"),
             "avg_change_pct": round(sum(changes) / len(changes), 2) if changes else 0,         # 平均涨跌幅
             "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
             "total_amount": round(sum(s["amount"] for s in stocks.values()), 2),   # 总成交额
@@ -390,7 +400,9 @@ def market_temperature():
     down = sum(1 for s in stocks.values() if s.get("change_pct", 0) < 0)
     # ★ 2026-09-29：与 `market_overview` **同口径**（按板幅，见 `_limit_counts` 注释）——
     #   两处此前各写一遍 `>=9.9`，解屏蔽后会同时错，且"页面两个涨跌停家数不一致"的风险重现。
-    limit_up, limit_down = _limit_counts(stocks)
+    # ★★ 2026-09-30（#3 轻量切换）：两处**必须一起**切到「rt_k 精确优先」——
+    #   只切一处会**重新制造**"同一页两个涨跌停家数"的问题（正是上一行注释要防的事）。
+    limit_up, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
     chgs = [s.get("change_pct", 0) for s in stocks.values()]
     avg_chg = sum(chgs) / len(chgs) if chgs else 0
     breadth = _breadth_score(up, down, limit_up, limit_down, total, avg_chg)
@@ -436,6 +448,8 @@ def market_temperature():
             "limit_up": limit_up, "limit_down": limit_down,
             "ratio": round(up / max(down, 1), 2),
             "avg_change_pct": round(avg_chg, 2),
+            # ★ 2026-09-30（#3）：与 `overview.stats.limit_src` 同源同口径（两处一起切）
+            "limit_src": limit_src,
         },
         "index": idx_info,
         "northbound_net": nb_net,
@@ -1768,6 +1782,72 @@ def _limit_counts(stocks: dict) -> tuple:
         elif chg <= -(lp - 0.3):
             ld += 1
     return lu, ld
+
+
+# ── ★★ 2026-09-30（#3 轻量切换）：涨跌停「**rt_k 精确优先**」────────────────
+_SHADOW = {"ts": 0.0}
+_SHADOW_INTERVAL = 1800.0     # 影子对比日志间隔 30 分钟（低频是刻意的，见 `_shadow_log`）
+
+
+def _shadow_log(mem_up: int, mem_dn: int, ex_up: int, ex_dn: int,
+                data_date, age, intraday) -> None:
+    """**影子对比**：把"内存近似"与"rt_k 精确"两个值**并列**落日志（低频）。
+
+    【为什么（项目纪律：**不裸切**）】换口径必然让用户看到的数字变化 ⇒ 先并行观测旧/新值，
+      看清**残留差**属于"结构性差异（北交所 / ST / 判据精度）"还是"真异常"，
+      再决定是否摘掉旧值（同 `A1 解屏蔽` 的"先影子对比"要求）。
+    【为什么低频】本函数在 `market_overview`（**首页接口**、全天轮询）的路径上
+      ⇒ 每次请求都打会把日志刷满。30 分钟一条足够观察。
+    ⚠️ 日志一律 ASCII（铁律⑥：本地 Windows GBK 控制台）。
+    """
+    now = time.time()
+    if now - _SHADOW["ts"] < _SHADOW_INTERVAL:
+        return
+    _SHADOW["ts"] = now
+    print(f"[market][shadow] limit counts: approx(mem) up={mem_up} down={mem_dn}"
+          f" | rt_k(exact) up={ex_up} down={ex_dn}"
+          f" | delta up={ex_up - mem_up:+d} down={ex_dn - mem_dn:+d}"
+          f" | data_date={data_date} intraday={intraday} age={age}s")
+
+
+def _limit_counts_best(stocks: dict) -> tuple:
+    """涨跌停家数（**rt_k 精确优先，失败回退内存近似**）→ `(up, down, src, meta)`。
+
+    ★★ 2026-09-30（#3「`overview.stats` 口径切换」的**轻量**实现）：
+      在 `_limit_counts`（内存池 + 按板幅近似）之上**优先取 rt_k 精确口径**，因为后者
+      一次解决前者的三条结构性局限（均已实测/核实）：
+        ① 内存池**不含北交所**（347 只，`tencent._build_stock_pool` 未生成其号段）⇒ 30cm 漏计；
+        ② `EXCLUDE_ST=True` ⇒ **ST 股不进池子** ⇒ 5% 的涨跌停**永远不计**；
+        ③ 判据是 `涨幅 ≥ 板幅 − 0.3pt` **近似**（涨停价按分四舍五入 ⇒ 边界票可差几只）；
+           而 rt_k 用数据源给的 `high_limit` **精确判定**，覆盖率 100%（≈5569）。
+      收益：**"涨停家数"在整个系统里只剩一个数**（此前同页可能出现两个：
+      梯队卡 rt_k vs 6 格 overview），且**零新增请求**（rt_k 自带 60s 缓存 + 后台 120s 预热）。
+    【★ 为什么走 `peek` 而不是 `snapshot`】`snapshot()` 缓存冷时会**阻塞抓取 3 批 rt_k
+      （~14s）** ⇒ 本函数在**首页接口**路径上，冷缓存会把它拖成超时（同 `_gate_watch_live`
+      39.8s 的教训）。⇒ 纪律：**主路径只允许读缓存**；`peek` 拿不到就回退近似（fail-open）。
+    【口径披露】rt_k 是**盘中动态口径**（炸板可能回封、涨停可能打开）；盘前/休市它返回
+      **上一交易日收盘定稿**（`is_intraday=False`）。故把 `src`/`data_date`/`age_sec`
+      一并回传，供前端 hover 与影子日志披露 —— **不假装它永远是"此刻"**。
+    ⚠️ 依赖影响已核实：`_breadth_score` 里涨跌停只占 `±8 封顶的微调`
+      （`(33−65)/5250×100 ≈ −0.6`）⇒ 切精确后温度计变化 **<1pt**；
+      前端**无任何位置**显示 `breadth.limit_up/down` ⇒ 不产生"两个数并行展示"。
+    """
+    mem_up, mem_dn = _limit_counts(stocks)
+    pk = None
+    try:
+        from app import realtime_uplimit
+        pk = realtime_uplimit.peek()
+    except Exception as e:
+        print(f"[market] rt_k limit peek failed: {str(e)[:80]}")     # ASCII（铁律⑥）
+    if pk and pk.get("limit_up") is not None and pk.get("limit_down") is not None:
+        ex_up, ex_dn = int(pk["limit_up"]), int(pk["limit_down"])
+        _shadow_log(mem_up, mem_dn, ex_up, ex_dn, pk.get("data_date"),
+                    pk.get("age"), pk.get("is_intraday"))
+        return ex_up, ex_dn, "rt_k", {"age_sec": pk.get("age"),
+                                      "data_date": pk.get("data_date"),
+                                      "is_intraday": pk.get("is_intraday")}
+    return mem_up, mem_dn, "board_approx", {"age_sec": None, "data_date": None,
+                                            "is_intraday": None}
 
 
 def _limit_stats(day: str) -> Optional[Dict]:

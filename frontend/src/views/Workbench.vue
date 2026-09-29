@@ -1046,9 +1046,9 @@
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">下跌</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">涨停</div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">跌停</div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">两市成交额
                   <span v-if="amountRt?.show_ratio" class="cursor-help"
@@ -1662,9 +1662,9 @@
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">下跌</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">涨停</div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
                 <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">跌停</div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
                 <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
               <div><div class="text-[10px] text-muted">两市成交额
                   <span v-if="amountRt?.show_ratio" class="cursor-help"
@@ -2347,6 +2347,22 @@ const dayLoading = ref(false)
 
 // 模块数据（各自独立，失败互不影响）
 const overview = ref({ indices: [], stats: {} })
+// ★★ 2026-09-30（#3 轻量切换）：涨跌停两格的**口径披露**。
+//   后端已改为「**rt_k 精确优先**（`close == high_limit`，全市场含北交所/ST），
+//   失败回退内存池按板幅近似」—— 两个口径含义差很大（近似**不含北交所**、`EXCLUDE_ST`
+//   把 **ST 股排除**、且判据有 0.3pt 容差；同日实测跌停曾差近一倍 123 vs 65）
+//   ⇒ 必须把**当前用的哪个口径**告诉用户，否则用户会把两个数当成同一个。
+function limitTip() {
+  const s = overview.value?.stats || {}
+  const src = s.limit_src === 'rt_k'
+    ? 'rt_k 精确口径：close == 涨停价（数据源给出），全市场覆盖（含北交所/ST）'
+    : '内存池近似：按板幅判定（⚠️ 不含北交所，ST 股被排除，0.3pt 容差）'
+  const extra = []
+  if (s.limit_data_date) extra.push(`数据日 ${s.limit_data_date}`)
+  if (s.limit_age_sec != null) extra.push(`快照龄 ${s.limit_age_sec}s`)
+  if (s.limit_src && s.limit_src !== 'rt_k') extra.push('⚠️ 已回退到近似（rt_k 缓存不可用）')
+  return `口径：${src}${extra.length ? ' · ' + extra.join(' · ') : ''}`
+}
 const temperature = ref(null)
 const regimeLabel = ref('—')
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。

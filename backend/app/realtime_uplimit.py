@@ -43,6 +43,34 @@ _BATCHES = ("60*.SH,68*.SH", "00*.SZ,30*.SZ", "8*.BJ,4*.BJ,92*.BJ")
 _CACHE = {"ts": 0.0, "val": None}
 _LOCK = threading.Lock()
 TTL = 60                      # 秒：一轮 3 次请求 ⇒ ≤3 次/分（token 上限 20 次/分）
+# ★ 2026-09-30（#3 轻量切换）：`peek()` 的默认新鲜度阈值 —— 见 `peek` 的注释。
+#   取值依据：后台预热循环 120s/轮 + 抓取 ~14s ⇒ 缓存龄在 0~134s 间循环；
+#   阈值 180s ⇒ 预热正常时**必命中**（不来回切口径），预热停摆时**稳定回退**近似。
+_PEEK_MAX_AGE = 180.0
+
+
+def peek(max_age: Optional[float] = _PEEK_MAX_AGE) -> Optional[Dict]:
+    """**只读缓存、绝不抓取** —— 供"请求主路径上"的消费方用（拿不到返回 None）。
+
+    ★★ 2026-09-30（#3）：为什么必须单独开这个入口，而不是让调用方直接用 `snapshot()`：
+      `snapshot()` 在缓存冷时会**阻塞抓取 3 批 rt_k（~14s）**。而本模块的第一个主路径
+      消费方 `routers/market.market_overview` 是**首页接口**（要求秒开）⇒ 冷缓存时直接
+      调 `snapshot()` 会把首页拖成超时（同 `_gate_watch_live` 39.8s 的教训）。
+      ⇒ 纪律：**主路径只允许读缓存**，抓取一律交给后台预热循环
+        （`flash/scheduler.realtime_uplimit_loop`，盘中 120s/轮）。
+
+    返回 `dict(val + {"age": 缓存秒龄})`；缓存不存在或超出 `max_age` ⇒ None。
+    `max_age=None` 表示不限龄（不推荐：会拿到很旧的数据，且失去"稳定回退"的语义）。
+    """
+    v = _CACHE.get("val")
+    if not v:
+        return None
+    age = time.time() - float(_CACHE.get("ts") or 0.0)
+    if max_age is not None and age > max_age:
+        return None
+    out = dict(v)
+    out["age"] = round(age, 1)
+    return out
 
 
 def _bj_now() -> datetime:
