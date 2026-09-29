@@ -1863,6 +1863,10 @@ def _limit_stats(day: str) -> Optional[Dict]:
 def uplimit_realtime(refresh: int = 0):
     """盘中实时涨停/跌停/炸板统计（60s 缓存；refresh=1 强制刷新，供手动按钮）。
 
+    ★ 2026-09-29（P3）：同一 payload 内含 `promotion`（**晋级率**：昨日涨停股今日
+      封住/炸板/未触板）—— 与今日统计**同一次 rt_k 抓取、同一份逐票分类**
+      （`realtime_uplimit.classify` 是判据唯一实现），故零新增外部请求。见 `app/promotion.py`。
+
     fail-open：行情源不可用返回 `{available: False}`，前端显示占位而非报错。
     """
     try:

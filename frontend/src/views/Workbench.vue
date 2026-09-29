@@ -1214,6 +1214,22 @@
                 <span class="text-muted">一字 <b class="font-mono text-gray-300">{{ realtimeUplimit.yizi }}</b></span>
                 <span class="text-[10px] text-muted">全市场 {{ realtimeUplimit.trading }} 只 · 精确口径</span>
               </div>
+              <!-- ★★ 2026-09-29（P3）：**晋级率** —— 昨日的涨停股今天还活着吗。
+                   与上一行「炸板」是**两个分母**：上面 = 全市场曾触板；这里 = **昨日涨停股**。
+                   后者才是"接力资金撤没撤"的直接读数（筛掉全市场噪声），也是「退潮禁接力」
+                   判据的量化依据。数据 = 日批快照的昨日名单 × 上面同一份 rt_k 分类
+                   （同一次抓取 ⇒ 零新增请求）；`promotion` 缺失时整行不渲染。 -->
+              <div v-if="promotion?.available" class="flex items-center gap-3 flex-wrap text-[11px] mt-1"
+                   :title="promotionTip">
+                <span class="text-muted">晋级率
+                  <b class="font-mono text-red-400">{{ promotion.promote_rate ?? '—' }}%</b>
+                  <span class="text-[10px]">{{ promotion.promoted }}/{{ promotion.den }}</span></span>
+                <span class="text-muted">昨涨停炸板
+                  <b class="font-mono text-amber-300">{{ promotion.promote_break_rate ?? '—' }}%</b></span>
+                <span class="text-[10px] text-muted">昨涨停 {{ promotion.universe_count }} 只
+                  <template v-if="promotion.missing">（停牌/无数据 {{ promotion.missing }} 单列）</template></span>
+                <span class="text-[10px]" :class="promotionColor">{{ promotion.verdict }}</span>
+              </div>
             </div>
             <!-- ★★ 连板梯队结构（`uplimit_hot.ban_info`，此前**只落库、从未展示**）
                  —— 价值在**梯队完整性**：某级别为 0 而更高有 ⇒ 断层 ⇒ 高标孤立无承接，
@@ -2382,6 +2398,38 @@ const limitReview = ref({ steps: [], stocks: [] })
 // ★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场精确口径）—— 与 limitReview 的
 //   「收盘定稿」口径互补：盘前/休市时后端返回 is_intraday=false（上一交易日收盘定稿）。
 const realtimeUplimit = ref(null)
+// ★★ 2026-09-29（P3）：**晋级率**（昨日的涨停股今天还活着吗）—— 后端 `promotion` 块，
+//   与上面的今日统计**同一次 rt_k 抓取**（零新增请求），见 `app/promotion.py`。
+//   ⚠️ 它是 `realtimeUplimit` 的**子字段** ⇒ 不另开 ref/请求，否则两份数据会各自刷新而漂移。
+const promotion = computed(() => realtimeUplimit.value?.promotion || null)
+// 承接强 = 红（与卡片既有「涨停 red / 跌停 emerald」同一套涨跌色）；仅用于配色，不改口径。
+const promotionColor = computed(() => {
+  const r = promotion.value?.promote_rate
+  if (r == null) return 'text-muted'
+  if (r >= 50) return 'text-red-400'
+  if (r < 25) return 'text-emerald-400'
+  return 'text-gray-300'
+})
+const promotionTip = computed(() => {
+  const p = promotion.value
+  if (!p?.available) return ''
+  const gs = Object.entries(p.groups || {})
+    .map(([k, v]) => `${k} ${v.promoted}/${v.n} = ${v.rate == null ? '—' : v.rate + '%'}`)
+    .join('\n')
+  const sm = (arr) => (arr || []).map(x => x.name || x.code).join('、') || '—'
+  return [
+    `昨日涨停名单 ${p.universe_date}（${p.universe_count} 只，对权威家数覆盖 ${p.coverage_pct}%）`,
+    `分母 ${p.den} = 昨日涨停且有今日数据的只数（停牌/无数据 ${p.missing} 只单列，不进分母）`,
+    `晋级 ${p.promoted} / 炸板 ${p.broken} / 未触板 ${p.no_touch}`,
+    '晋级率 = 昨日涨停股今日封住 / 分母；昨涨停炸板率 = 昨日涨停股今日曾触板未封 / 分母',
+    `按板幅：\n${gs || '—'}`,
+    `晋级样本：${sm(p.samples?.promoted)}`,
+    `炸板样本：${sm(p.samples?.broken)}`,
+    p.note || '',
+    '⚠️ 昨日名单来自盘中抓取的日批快照（实测 14:52，非收盘后），收盘前几分钟的炸板/回封会偏差',
+    '⚠️ 盘中动态口径、炸板可能回封；收盘后权威家数以日批 ban_info 为准；不进决策链',
+  ].filter(Boolean).join('\n')
+})
 // ★ 2026-09-29：两市成交额环比（U 型曲线法）。⚠️ `reliable=false`（14:00 前）时
 //   只展示累计值 —— 早盘预估中位误差 16%（曲线留出验证），不得给缩量/放量结论。
 const amountRt = ref(null)
