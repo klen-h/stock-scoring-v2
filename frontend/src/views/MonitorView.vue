@@ -158,7 +158,21 @@
               class="px-2 py-1 rounded text-xs transition-colors">{{ p.label }}</button>
           </div>
         </div>
-        <span v-if="currentReview?.time" class="text-xs text-muted">{{ fmtBjTime(currentReview.time) }}</span>
+        <div class="flex items-center gap-2 flex-wrap">
+          <span v-if="runMsg" class="text-[11px]"
+                :class="runMsg.includes('失败') ? 'text-fall' : 'text-emerald-400'">{{ runMsg }}</span>
+          <span v-if="currentReview?.time" class="text-xs text-muted">{{ fmtBjTime(currentReview.time) }}</span>
+          <!-- ★★ 2026-09-30（用户："盘前午盘盘后的 llm 分析失败，可以加一个手动重试"）：
+               **三段复盘失败的唯一补救入口** —— 复盘的自动触发是"窗口内跑一次"，失败或错过
+               窗口就只能等下一个交易日（空状态只显示"暂无记录"，看不出是失败还是没到点）。
+               调后端**已有**的 `POST /flash/review/{phase}/run`（它成功后 mark_schedule_done
+               ⇒ 调度器不会二次触发 ⇒ 不会 LLM 双烧）。 -->
+          <button @click="runReview" :disabled="!!runningReview"
+                  class="px-2 py-1 rounded text-xs border border-border text-accent hover:border-accent/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  :title="`重新生成「${phases.find(p => p.key === reviewPhase)?.label || ''}」复盘。⚠️ 这是**完整一轮**：消耗 1 次 LLM、覆盖当日该阶段记录、可能新增信号、并**推送企微**（点击后有二次确认）。正常由调度器在窗口内自动跑，此按钮用于失败或错过窗口时补跑。`">
+            {{ runningReview ? '重跑中…' : '重跑本阶段' }}
+          </button>
+        </div>
       </div>
       <div v-if="currentReview?.markdown" class="bg-card border border-border rounded-lg p-4">
         <div class="md-body max-h-[70vh] overflow-y-auto" v-html="renderMd(currentReview.markdown)"></div>
@@ -170,6 +184,9 @@
         {{ reviewDates.length
           ? '该日期暂无' + (phases.find(p => p.key === reviewPhase)?.label || '') + '复盘记录'
           : '暂无复盘记录——盘前/午盘/盘后复盘生成后，可按日期回溯对比 LLM 输出与实际走势' }}
+        <div class="text-[11px] text-muted/70 mt-2">
+          若**今天**的复盘缺失或失败 ⇒ 点右上「重跑本阶段」补跑（消耗 1 次 LLM）
+        </div>
       </div>
     </div>
 
@@ -420,7 +437,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import MarkdownIt from 'markdown-it'
-import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReviewHistory, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
+import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReviewHistory, runFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
 // 【2026-09-12】原状态条上的「浏览器镜像」显示已随镜像退役移除
 
 
@@ -458,6 +475,9 @@ const currentReview = computed(() => {
     .find(e => String(e.time).slice(0, 10) === selectedDate.value) || null
 })
 const ingesting = ref(false)
+// ★ 2026-09-30：复盘**手动重跑**状态（`runningReview` 兼作防连点锁）
+const runningReview = ref('')
+const runMsg = ref('')
 
 // 平仓历史（排除过期信号）+ 过期信号列表
 const closedHistory = computed(() => (signals.value.history || []).filter(h => h.status === 'closed'))
@@ -581,6 +601,51 @@ async function ingest() {
     await triggerFlashIngest()
     await Promise.all([loadEvents(), loadDiagnosis()])
   } catch (e) { console.error(e) } finally { ingesting.value = false }
+}
+
+// ★★ 2026-09-30（用户："盘前午盘盘后的 llm 分析失败，可以加一个手动重试"）：
+//   补跑当前选中阶段的复盘。后端 `POST /flash/review/{phase}/run` 一直存在
+//   （其 docstring 自陈"测试/补跑用"）—— 失败后的补救此前**没有任何前端入口**，
+//   界面上只显示"该日期暂无 X 复盘记录"，用户分不清是"失败"还是"没到点"。
+// ⚠️ 三条工程约束（均来自本项目既有教训）：
+//   ① **同步 LLM 调用**（十几秒~1 分钟）⇒ 必须 loading + 防连点（`runningReview` 兼作锁）；
+//   ② 成功后后端会 `mark_schedule_done` ⇒ 调度器**不会**二次触发 ⇒ 不会 LLM 双烧
+//      （若不自标，手动跑完调度循环恢复时会再跑一遍 —— 该注释在后端已写明）；
+//   ③ 成功后**重拉历史**而不是本地拼接 —— 展示口径始终来自后端同一条链路。
+async function runReview() {
+  if (runningReview.value) return
+  const label = phases.find(p => p.key === reviewPhase.value)?.label || reviewPhase.value
+  // ⚠️ **必须有二次确认**：`run_review` 不是"只重算 markdown"，它的副作用远超预期
+  //   （后端 `flash/service.run_review` 实读）：
+  //     · 覆盖 `save_review` 当日该阶段记录；
+  //     · `add_signal_with_validation` **可能新增信号**（经门槛进信号跟踪 ⇒ 影响其绩效统计）；
+  //     · `update_signals` 推进状态机；
+  //     · **推企微**（复盘正文「category=brief」+ 🎯 交易员报告；有入场/出场再推一条）。
+  //   ⇒ 用户以为"重试一下"却收到推送/多了信号，属典型"意外副作用"⇒ 事前说清（同
+  //     `PaperTrading.doUnfreeze` / `Watchlist.confirmRemove` 的既有惯例）。
+  if (!confirm(
+    `重跑「${label}」复盘？\n\n` +
+    `注意：这不是"只重新分析"，后端会做完整一轮——\n` +
+    `· 重新调用 LLM（约十几秒 ~ 1 分钟）\n` +
+    `· **覆盖**当日该阶段已保存的复盘记录\n` +
+    `· 可能**新增信号**（通过风控门槛后进入「信号跟踪」，影响其绩效统计）\n` +
+    `· **推送企微**（复盘正文 + 🎯 交易员报告；有入场/出场会再推一条）\n\n` +
+    `继续？`)) return
+  runningReview.value = reviewPhase.value
+  runMsg.value = ''
+  try {
+    const { data } = await runFlashReview(reviewPhase.value)
+    if (data && data.error) {
+      runMsg.value = '重跑失败：' + data.error
+    } else {
+      runMsg.value = '重跑完成' + (data?.signals_added ? `（新增信号 ${data.signals_added} 条）` : '')
+      await loadReviewHistory()          // 重拉（含刚生成那条）；loadReviewHistory 会选最新日期
+    }
+  } catch (e) {
+    runMsg.value = '重跑失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    runningReview.value = ''
+  }
 }
 
 function switchTab(key) {

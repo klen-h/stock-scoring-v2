@@ -1018,10 +1018,26 @@
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">决策简报（盘前）<span
                 v-if="premarketOver" class="ml-2 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[10px]">盘前已结束 · 以下为盘前回顾（09:10 生成），勿据此做盘中决策</span></div>
-              <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
+              <div class="flex items-center gap-2">
+                <span v-if="briefDegraded" class="text-[10px] text-amber-400 cursor-help"
+                      title="当前是**规则降级版**（LLM 调用失败时的兜底输出）—— 数字可靠，但少了 LLM 的综合判断。可点右侧「重新生成」重试。">降级版</span>
+                <!-- ★ 2026-09-30（用户："llm 分析失败，可以加一个手动重试"）：
+                     后端 refresh=true 一直支持重新生成，此前**无前端入口** ⇒ 失败只能干等。
+                     ⚠️ 明示"消耗 1 次 LLM"并禁用连点（briefLoading）。 -->
+                <button @click="loadBrief('premarket', true)" :disabled="briefLoading"
+                        class="px-2 py-0.5 rounded text-[11px] border border-border text-accent hover:border-accent/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="重新生成盘前简报。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒）。">
+                  {{ briefLoading ? '生成中…' : (briefPhase === 'premarket' && briefMd ? '重新生成' : '生成') }}
+                </button>
+                <router-link target="_blank" to="/report" class="text-xs text-accent hover:underline">完整简报</router-link>
+              </div>
             </div>
-            <div v-if="briefErr" class="text-muted text-xs">—（加载失败：{{ briefErr }}）</div>
-            <div v-else-if="!briefMd" class="text-muted text-xs">加载中…</div>
+            <div v-if="briefLoading" class="text-muted text-xs">生成中…（LLM 同步调用，约需十几秒）</div>
+            <div v-else-if="briefErr" class="text-xs text-fall">—（加载失败：{{ briefErr }}）
+              <button @click="loadBrief('premarket', true)"
+                      class="ml-2 px-2 py-0.5 rounded border border-border text-accent hover:border-accent/50 transition-colors">重试</button>
+            </div>
+            <div v-else-if="briefPhase !== 'premarket' || !briefMd" class="text-muted text-xs">—（尚未生成）</div>
             <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
           </div>
           </div>
@@ -2010,8 +2026,29 @@
           </div>
           <!-- 长文卡（保持在最后：先看结论与行动，再看长文） -->
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">决策简报（盘后）</div>
-            <div v-if="!briefMd" class="text-muted text-xs">—（未生成）</div>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-sm font-semibold">决策简报（盘后）</div>
+              <div class="flex items-center gap-2">
+                <span v-if="briefDegraded && briefPhase === 'postmarket'"
+                      class="text-[10px] text-amber-400 cursor-help"
+                      title="当前是**规则降级版**（LLM 调用失败时的兜底输出）—— 数字可靠，但少了 LLM 的综合判断。可点右侧重试。">降级版</span>
+                <!-- ★ 2026-09-30：盘后简报此前**只能等日批（19:xx）/切到复盘段**才生成；
+                     现补「生成/重新生成」入口（后端 refresh=true 早已支持）。 -->
+                <button @click="loadBrief('postmarket', true)" :disabled="briefLoading"
+                        class="px-2 py-0.5 rounded text-[11px] border border-border text-accent hover:border-accent/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="生成盘后决策简报。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒）。">
+                  {{ briefLoading ? '生成中…' : (briefPhase === 'postmarket' && briefMd ? '重新生成' : '生成') }}
+                </button>
+              </div>
+            </div>
+            <div v-if="briefLoading" class="text-muted text-xs">生成中…（LLM 同步调用，约需十几秒）</div>
+            <div v-else-if="briefErr" class="text-xs text-fall">—（生成失败：{{ briefErr }}）
+              <button @click="loadBrief('postmarket', true)"
+                      class="ml-2 px-2 py-0.5 rounded border border-border text-accent hover:border-accent/50 transition-colors">重试</button>
+            </div>
+            <div v-else-if="briefPhase !== 'postmarket' || !briefMd" class="text-muted text-xs">
+              —（未生成。正常由日批 19:xx 自动生成，也可点右上「生成」马上出一份）
+            </div>
             <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
@@ -2053,6 +2090,44 @@
           </template>
           <div v-else class="text-[10px] text-muted mt-1">
             已收起（{{ pushItems.length }} 条）—— 点击标题展开
+          </div>
+
+          <!-- ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）：
+               与上方时间线**同源**（都基于今日系统提示集合）⇒ 放进**同一张卡**，不新开
+               "今日雷达"卡（9/28 刚因"同源两张卡"删过一份，注释原文：留两份只会同屏重复）。
+               ⚠️ **默认折叠 ⇒ 不请求**；展开时 `toggleRadar` 先走 `refresh=false` ——
+                  当日已分析过 ⇒ 直接读后端缓存（免费）；**当日未分析过 ⇒ 仍会真调一次 LLM**。
+               ⚠️ 位置：**必须排在上面 `v-if/v-else` 对之后** —— 插到中间会破坏
+                  `<template v-if="pushOpen">` 与"已收起"`v-else` 的邻接关系。 -->
+          <div class="mt-2 pt-2 border-t border-border/40">
+            <button type="button" class="text-xs font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="toggleRadar"
+                    :title="radarOpen ? '点击收起' : '点击展开。⚠️ 当日已分析过 ⇒ 直接读缓存（免费）；当日尚未分析 ⇒ 会调用一次 LLM（约十几秒）'">
+              <span class="text-[10px] text-muted">{{ radarOpen ? '▼' : '▶' }}</span>
+              系统自洽性审查（LLM）
+            </button>
+            <template v-if="radarOpen">
+              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">当日已分析 · 读缓存</span>
+                <span v-if="radarAnalysis.items_used" class="text-[10px] text-muted">
+                  基于 {{ radarAnalysis.items_used }} 条系统提示</span>
+                <button class="px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        :class="radarAnalysis.loading ? 'text-muted' : 'text-accent hover:border-accent/50'"
+                        :disabled="radarAnalysis.loading"
+                        title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒~1 分钟）。同日正常只需读缓存。"
+                        @click="loadRadarAnalysis(true)">
+                  {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
+                </button>
+              </div>
+              <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
+              <div v-else-if="radarAnalysis.markdown"
+                   class="mt-1.5 text-xs text-gray-300 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1">{{ radarAnalysis.markdown }}</div>
+              <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
+              <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
+                检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
+                早盘判断被午后自己推翻）。<span class="text-muted/70">与「矛盾扫描」分工不同：后者扫的是**市场数据**层面的矛盾。</span>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -2214,6 +2289,9 @@ import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
+  // ★ 2026-09-30：**系统自洽性审查（LLM）** —— 与 `getPushLog` **同源**（都基于今日提示集合），
+  //   接口早就在（`ScoreRank.vue` 一直在用），本轮接进工作台右栏**同一张**时间线卡内。
+  getRadarAnalysis,
   getMarketOverview, getMarketTemperature, getMarketRegime, getMarketEvents,
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
@@ -2371,6 +2449,12 @@ const eventSignal = ref(null)
 const briefMd = ref('')
 const briefErr = ref('')
 const briefDegraded = ref(false)
+// ★★ 2026-09-30（用户："盘前午盘盘后的 llm 分析失败，可以加一个手动重试"）：
+//   `briefMd` 是**多阶段共用**的单个 ref ⇒ 必须记「当前内容属于哪个 phase」，
+//   否则会把盘前简报渲染进「决策简报（盘后）」卡（盘后段原先**根本不加载**简报，
+//   只有切到「复盘」段才拉 ⇒ 该卡要么空着、要么显示盘前内容，属既有缺陷）。
+const briefPhase = ref('')
+const briefLoading = ref(false)
 const coachList = ref([])
 const coachErr = ref('')
 const radarItems = ref([])
@@ -2979,19 +3063,28 @@ const _dayCache = {}          // { key: 'YYYY-MM-DD' }
 const _dayCached = (key, day) => _dayCache[key] === day
 const _dayMark = (key, day) => { _dayCache[key] = day }
 
-async function loadBrief(phase) {
+async function loadBrief(phase, force = false) {
   const day = selectedDate.value
   const ck = `brief:${phase}`
-  if (_dayCached(ck, day)) return
+  if (!force && _dayCached(ck, day)) return
+  // ★★ 2026-09-30（用户："llm 分析失败，可以加一个手动重试"）：`force=true` 时
+  //   ① 先清掉"当日已取到"标记 —— 否则重试后切回本段仍被缓存挡住（用户以为没生效）；
+  //   ② 传 `refresh=true` 让后端**重新生成**（消耗 1 次 LLM，api 层已给 180s 超时）。
+  if (force) delete _dayCache[ck]
   briefErr.value = ''
+  briefLoading.value = true
+  briefPhase.value = phase
   try {
-    const { data } = await getTraderBrief(false, phase)
+    const { data } = await getTraderBrief(!!force, phase)
     briefMd.value = data?.markdown || ''
     briefDegraded.value = !!data?.degraded
     // ★ 纪律③：降级版不缓存（后端窗口内还会重试出 LLM 版）
     if (briefMd.value && !briefDegraded.value) _dayMark(ck, day)
   } catch (e) {
-    briefErr.value = (e && e.message) || '未知错误'
+    briefMd.value = ''
+    briefErr.value = (e?.response?.data?.detail || e?.message) || '未知错误'
+  } finally {
+    briefLoading.value = false
   }
 }
 async function loadCoach() {
@@ -3136,6 +3229,59 @@ async function loadPush(date) {
     pushConnErr.value = false
   } catch {
     pushConnErr.value = true        // 静默保留上次数据
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）
+//  定位：`ScoreRank.vue` 的「今日雷达」= ①系统提示时间线 ②LLM 自洽性审查。其中 ①
+//    工作台**早就有**（`pushItems` ← `loadPush` ← `/flash/push-log`，右栏顶部「今日系统
+//    时间线」卡）⇒ 本轮只补 ②，且**接进同一张卡内**：二者同源（都基于今日提示集合），
+//    9/28 刚因"同源两张卡"删过一份（`留两份只会同屏重复`），不再新开"今日雷达"卡。
+//  【为什么默认不请求 · 三条约束】
+//    ① **展开才请求**：它是**同步 LLM 调用**。后端 **按日落库缓存** ⇒
+//       `refresh=false` 时：**同日已分析过 ⇒ 直接返回缓存（零成本）**；
+//       **当日尚未分析过 ⇒ 仍会真调一次 LLM**（约十几秒）。
+//       ⇒ 折叠默认 + 展开才请求，避免"每次开页面都烧一次"；点「重新分析」= 强制重算。
+//    ② **明示输入规模**：`items_used` = 喂给 LLM 的提示条数 —— 结论可信度取决于喂了什么。
+//    ③ **失败只占一行**：不拖垮时间线本体（与 `pushConnErr` 同一条纪律）。
+//  ⚠️ 清空时机：**换日/回放切日时清**（见 `resetRadar`）—— 结果按日缓存，留着会显示
+//     **另一天**的结论；**刻意不放在 `loadPush` 里**，因为 `loadPush` 在 120s 轮询里，
+//     放那儿会每 2 分钟把用户正在看的分析清空。
+// ══════════════════════════════════════════════════════════════════════════
+const radarAnalysis = ref({ loading: false, markdown: '', error: '', cached: false, items_used: 0 })
+const radarOpen = ref(false)
+
+function resetRadar() {
+  radarAnalysis.value = { loading: false, markdown: '', error: '', cached: false, items_used: 0 }
+}
+
+async function toggleRadar() {
+  radarOpen.value = !radarOpen.value
+  // 展开时走 `refresh=false`：**当日已分析过 ⇒ 直接读后端缓存（免费）**；
+  //   **当日尚未分析过 ⇒ 后端仍会真调一次 LLM**（约十几秒）—— 必须对用户说清，
+  //   不能说成"展开一定免费"（首版文案就是这么写的，已自查修正）。
+  if (radarOpen.value && !radarAnalysis.value.markdown && !radarAnalysis.value.loading) {
+    await loadRadarAnalysis(false)
+  }
+}
+
+async function loadRadarAnalysis(refresh = false) {
+  if (radarAnalysis.value.loading) return
+  radarAnalysis.value = { ...radarAnalysis.value, loading: true, error: '' }
+  // 回放时按所选日期取（后端按日缓存）；实时传 null ⇒ 后端用"今天"
+  const day = selectedDate.value !== todayStr ? selectedDate.value : null
+  try {
+    const { data } = await getRadarAnalysis(day, refresh)
+    radarAnalysis.value = {
+      loading: false, markdown: data?.markdown || '', error: data?.error || '',
+      cached: !!data?.cached, items_used: data?.items_used || 0,
+    }
+  } catch (e) {
+    radarAnalysis.value = {
+      loading: false, markdown: '', cached: false, items_used: 0,
+      error: '分析失败：' + (e?.response?.data?.detail || e?.message || e),
+    }
   }
 }
 async function loadConsistency() {
@@ -3453,7 +3599,10 @@ async function loadPhaseData(phase) {
   //   （日报要 22:16 才生成，zzshare 快照此刻还是**昨天的** ⇒ 都不能用）。
   //   ⚠️ `emotion` 走**内存行情**（收盘后不再变化 ⇒ 即收盘定稿），这是 15:00 唯一可用的今日口径。
   // ★ 同日（缺口2）：再补「今日执行」（按日精确的执行一致性）。
-  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadTodayExec(); }
+  // ★ 2026-09-30：**补 `loadBrief('postmarket')`** —— 「决策简报（盘后）」卡原先在本段
+  //   **从不加载**（只有切到「复盘」段才拉）⇒ 该卡要么空着、要么显示盘前内容
+  //   （`briefMd` 是多阶段共用的单个 ref）。这是顺带修掉的既有缺陷。
+  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadTodayExec(); await loadBrief('postmarket') }
   // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
   //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
@@ -3556,6 +3705,10 @@ function stopPolling() { timers.forEach(clearInterval); timers = [] }
 // ── 日期切换（回放入口）──
 watch(selectedDate, async (d) => {
   syncQuery()
+  // ★ 2026-09-30：换日（含回放切日）时清掉自洽性审查 —— 结果按日缓存，留着会显示
+  //   **另一天**的结论；若当前是展开态则顺手按新日期重读（走缓存，不消耗 LLM）。
+  resetRadar()
+  if (radarOpen.value) loadRadarAnalysis(false)
   if (d && d !== todayStr) {
     stopPolling()
     await Promise.all([loadReplayDay(d), loadPush(d)])   // 回放右栏也切当日推送

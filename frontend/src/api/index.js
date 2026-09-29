@@ -90,6 +90,14 @@ export const getFlashEvents = (params) => http.get('/flash/events', { params })
 export const getFlashDiagnosis = (params) => http.get('/flash/diagnosis', { params })
 export const getFlashReview = (phase) => http.get(`/flash/review/${phase}`)
 export const getFlashReviewHistory = (phase, limit = 20) => http.get(`/flash/review/${phase}/history`, { params: { limit } })
+// ★★ 2026-09-30（用户："盘前午盘盘后的 llm 分析失败，可以加一个手动重试"）：
+//   三段复盘（盘前 premarket / 午盘 lunchbreak / 盘后 postmarket）的**手动重跑**。
+//   后端 `POST /flash/review/{phase}/run` **一直就有**（注释自陈"测试/补跑用"，且成功后
+//   `mark_schedule_done` ⇒ 调度器不会再跑一遍 ⇒ **不会 LLM 双烧**）；此前**缺的只是前端入口**
+//   ⇒ 复盘一旦失败/错过窗口，用户只能干等下一个交易日。
+//   ⚠️ 这是一次**同步 LLM 调用**（十几秒~1 分钟）⇒ 超时给足 120s，调用方必须 loading + 防连点。
+export const runFlashReview = (phase) =>
+  http.post(`/flash/review/${phase}/run`, {}, { timeout: 120000 })
 export const getFlashSignals = () => http.get('/flash/signals')
 export const triggerFlashIngest = () => http.post('/flash/ingest')
 export const getFlashStatus = () => http.get('/flash/status')
@@ -116,8 +124,11 @@ export const getDailyReport = (date) => http.get('/report/daily', { params: date
 export const getWeeklyReview = (days = 7, end = null) =>
   http.get('/report/weekly', { params: { days, ...(end ? { end } : {}) }, timeout: 30000 })
 // ★ 2026-09-25 工作台：加可选 phase（premarket/intraday/postmarket），原调用兼容
+// ★ 2026-09-30：`refresh=true` 是**同步重新生成（消耗 1 次 LLM）** ⇒ 超时给足 180s，
+//   否则慢响应会被前端默认超时砍掉、看起来像"永远失败"。
 export const getTraderBrief = (refresh, phase) => http.get('/system/trader-brief',
-  { params: { ...(refresh ? { refresh: true } : {}), ...(phase ? { phase } : {}) } })
+  { params: { ...(refresh ? { refresh: true } : {}), ...(phase ? { phase } : {}) },
+    ...(refresh ? { timeout: 180000 } : {}) })
 
 // 矛盾扫描引擎
 export const getContradictions = (params = {}) => http.get('/contradictions', { params })
