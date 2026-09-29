@@ -253,21 +253,35 @@ def _push_status_md() -> str:
             regime = (row or {}).get("state") or ""
         except Exception:
             pass
+        # ★★ 2026-09-29（P0 基准错配修复）：空仓对照**双基准** —— 只对照沪深300 会
+        #   「跑赢大盘仍绝对亏损」（阴跌市里中小盘跌更多）+ 超额被风格暴露污染；
+        #   中证1000（sh000852）更贴近中小盘持仓风格 ⇒ 两个都报，并加防误读。
+        #   数据：sh000905/sh000852 由 backfill_daily 的指数段回填（2026-09-29 起）；
+        #   回填完成前 b1000 为 None ⇒ 该项静默跳过（缺失 ≠ 0，与全项目纪律一致）。
+        def _bench5(code):
+            try:
+                rows = db.fetch(
+                    "SELECT close FROM backtest_prices WHERE code=%s "
+                    "ORDER BY date DESC LIMIT 6", (code,))
+                closes = [float(r["close"]) for r in (rows or []) if r.get("close")]
+                if len(closes) >= 2 and closes[-1] > 0:
+                    # rows 按日期倒序 → closes[0]=最新、closes[-1]=5 个交易日前
+                    return (closes[0] / closes[-1] - 1) * 100
+            except Exception:
+                pass
+            return None
+
+        b300, b1000 = _bench5("sh000300"), _bench5("sh000852")
         bench_txt = ""
-        try:
-            rows = db.fetch(
-                "SELECT close FROM backtest_prices WHERE code='sh000300' "
-                "ORDER BY date DESC LIMIT 6")
-            closes = [float(r["close"]) for r in (rows or []) if r.get("close")]
-            if len(closes) >= 2 and closes[-1] > 0:
-                # rows 按日期倒序 → closes[0]=最新、closes[-1]=5 个交易日前
-                bench = (closes[0] / closes[-1] - 1) * 100
-                edge = -bench
-                bench_txt = (f" · 空仓对照：沪深300 近 5 交易日 {bench:+.2f}%"
-                             f" → 空仓超额 {edge:+.2f}%"
-                             f"（{'跑赢' if edge > 0 else '跑输'}）")
-        except Exception:
-            pass
+        if b300 is not None or b1000 is not None:
+            parts = []
+            if b300 is not None:
+                parts.append(f"沪深300 {b300:+.2f}%（空仓超额 {-b300:+.2f}）")
+            if b1000 is not None:
+                parts.append(f"中证1000 {b1000:+.2f}%（空仓超额 {-b1000:+.2f}）")
+            bench_txt = (f" · 空仓对照（近 5 交易日）：{' ｜ '.join(parts)}"
+                         f" —— ⚠️ 跑赢≠赚钱（可能仍绝对亏损）；"
+                         f"中证1000 更贴近中小盘持仓风格")
         regime_txt = f" · regime={regime}" if regime else ""
         return (f"- **战法推送：静默**（动态白名单空集 · 判据={crit}{regime_txt}）"
                 f"{bench_txt}{alert_txt}")

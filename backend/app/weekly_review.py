@@ -20,7 +20,9 @@ URL：GET /api/report/weekly?days=7&end=YYYY-MM-DD
     **不在本模块重算** —— 避免"同一个执行率出现两个数"（项目前车之鉴：本地 68.8 vs 后端 72.6）。
   · 日报只给**索引**（日期/字数/生成时间），正文仍走 `/api/report/daily`（免得周接口变重）。
   · `push_log` 记录的是"**系统判断要说这件事**"，**不代表企微已送达**（与前端时间线同一标注）。
-  · **纯只读聚合、零外部网络请求**（全部读库）；结论文案由**规则**生成，不用 LLM。
+  · **纯只读聚合**（全部读库）；结论文案由**规则**生成，不用 LLM。
+    ⚠️ 唯一例外：§四「组合绩效」块复用 `portfolio_drawdown()`，内部按需拉持仓票 K 线
+    （持仓 2 只 + KLINE_CACHE ⇒ 可控；失败静默、不影响其它块）。
 
 【定位】展示层 / 复盘工具。**不改任何闸门、权重、准入**（E2 v0 纪律）。
 ================================================================================
@@ -205,7 +207,88 @@ def _next_week(days: int = 7) -> dict:
         return {"items": [], "core_count": 0, "days": days, "error": str(e)[:80]}
 
 
-# ── 四、组装 ──────────────────────────────────────────────────────────────
+# ── 四、组合绩效（净值 + 三口径）──────────────────────────────────────────
+
+def _idx_ret(code: str, d0: str, d1: str) -> Optional[float]:
+    """指数在 [d0, d1] 的收益 %（首末收盘）；无数据/不足 2 根 ⇒ None（缺失 ≠ 0）。"""
+    try:
+        rows = db.fetch("SELECT date, close FROM backtest_prices WHERE code=%s "
+                        "AND date >= %s AND date <= %s ORDER BY date ASC",
+                        (code, d0, d1))
+        if len(rows) >= 2 and float(rows[0]["close"]) > 0:
+            return round((float(rows[-1]["close"]) / float(rows[0]["close"]) - 1) * 100, 2)
+    except Exception:
+        pass
+    return None
+
+
+def _perf_sentence(abs_ret, r300, r1000, days=None):
+    """规则判读（不用 LLM）—— 与日报双基准同一「跑赢≠赚钱」防误读口径。"""
+    if abs_ret is None:
+        return "组合净值窗口不足，本期绩效不可评估。"
+    span = f"近 {days} 个交易日" if days else "本期"
+    s = f"{span}组合 {abs_ret:+.2f}%"
+    if r300 is not None:
+        s += f"；沪深300 {r300:+.2f}%（超额 {abs_ret - r300:+.2f}pt）"
+    if r1000 is not None:
+        s += f"；中证1000 {r1000:+.2f}%（超额 {abs_ret - r1000:+.2f}pt）"
+    if abs_ret < 0 and (r1000 if r1000 is not None else r300 or 0) < 0:
+        s += " ⚠️ 绝对收益为负 —— 「跑赢」≠「赚钱」"
+    return s + "。"
+
+
+def _performance_block(window: int = 10) -> dict:
+    """组合绩效块：近 5 个交易日净值变化 + 三口径（绝对 / 对沪深300 / 对中证1000 超额）。
+
+    ★ 为什么（P0 基准错配修复）：此前复盘只有「执行一致性」，没有「我这周赚亏多少、
+      相对基准如何」——而复盘最该回答的就是这个；且全项目基准只有沪深300（大盘股），
+      持仓/信号偏 20–50 亿中小盘 ⇒ 必须双基准（9/20 审视 B4）。
+    ★ 数据：**复用 `coach.position_sizing.portfolio_drawdown()`（净值/回撤的唯一实现，
+      自带「按当前持仓回算、未考虑窗口内加减仓」的口径警告）**，不另写净值计算。
+      window=10（> 组合回撤默认 5）——「近 5 个交易日」需首末 6 个交易日 ✓。
+    ⚠️ 本块是周复盘**唯一可能产生外部请求**的部分（`portfolio_drawdown` 内部按需拉
+      持仓票 K 线；持仓仅 2 只 + `KLINE_CACHE` 90s ⇒ 可控）；失败静默、不影响其它块。
+    """
+    try:
+        from app.coach import position_sizing
+        pdd = position_sizing.portfolio_drawdown(window=window)
+    except Exception as e:
+        print(f"[weekly] portfolio pnl failed: {str(e)[:80]}")           # ASCII（铁律⑥）
+        return {"available": False, "reason": "组合净值计算失败"}
+    if not pdd.get("available"):
+        return {"available": False, "reason": pdd.get("note") or "无持仓或净值不可用"}
+    curve = pdd.get("curve") or []
+    if len(curve) < 2:
+        return {"available": False,
+                "reason": f"净值窗口不足（{len(curve)} < 2 个交易日）"}
+    # ★ 窗口自适应：优先"近 5 个交易日"（首末 6 个点）；持仓较新/刚调仓导致窗口不足时
+    #   退化为"建仓以来"（首末 2 个点）—— 少也是信息，但**必须标注实际天数**（口径诚实），
+    #   且 `degraded=True` 供前端区分展示。
+    degraded = len(curve) < 6
+    pts = curve[-6:] if not degraded else list(curve)
+    start, end = pts[0], pts[-1]
+    days = len(pts) - 1
+    d0, d1 = str(start["date"])[:10], str(end["date"])[:10]
+    abs_ret = (round((end["nav"] / start["nav"] - 1) * 100, 2)
+               if start.get("nav") and start["nav"] > 0 else None)
+    r300, r1000 = _idx_ret("sh000300", d0, d1), _idx_ret("sh000852", d0, d1)
+    return {
+        "available": True,
+        "window": {"start": d0, "end": d1, "days": days, "degraded": degraded},
+        "portfolio_ret": abs_ret, "hs300_ret": r300, "zz1000_ret": r1000,
+        "excess_hs300": (round(abs_ret - r300, 2)
+                         if abs_ret is not None and r300 is not None else None),
+        "excess_zz1000": (round(abs_ret - r1000, 2)
+                          if abs_ret is not None and r1000 is not None else None),
+        "dd_note": pdd.get("note"),     # 口径警告：按当前持仓回算、未考虑窗口内加减仓
+        "sentence": _perf_sentence(abs_ret, r300, r1000, days),
+        "note": ("口径：近 5 个交易日组合持仓市值变化（不含现金）、按当前持仓回算；"
+                 "基准 = 沪深300 / 中证1000 同期收益（中证1000 更贴近中小盘持仓风格）；"
+                 "「跑赢基准」≠「赚钱」（绝对收益为负时仍可能跑赢大盘股指数）。"),
+    }
+
+
+# ── 五、组装 ──────────────────────────────────────────────────────────────
 
 def build_weekly_review(days: int = 7, end: Optional[str] = None) -> dict:
     """周复盘聚合（只读）。`days` 已由调用方钳位。"""
@@ -232,6 +315,8 @@ def build_weekly_review(days: int = 7, end: Optional[str] = None) -> dict:
     return {
         "window": {"start": start, "end": end_iso, "days": days},
         "section": {
+            # ★ 2026-09-29（P0）：绩效块放最前 —— 复盘最该先看的数；失败静默不拖垮其它块
+            "performance": _performance_block(),
             "regime": {
                 "track": tr,
                 "sentence": _regime_sentence(tr),

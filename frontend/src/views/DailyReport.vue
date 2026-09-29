@@ -60,6 +60,41 @@
           </div>
         </div>
 
+        <!-- ★★ 2026-09-29（P0 基准双口径）：**组合绩效** —— 复盘最该先看的数（此前整块缺失）。
+             近 5 个交易日净值变化 + 三口径（绝对 / 对沪深300 / 对中证1000 超额）。
+             口径：按当前持仓回算（未考虑窗口内加减仓）；中证1000 更贴近中小盘持仓风格；
+             「跑赢基准」≠「赚钱」。数据 = `portfolio_drawdown`（唯一实现），失败静默不渲染。 -->
+        <div v-if="perf?.available" class="bg-card border border-border rounded-lg p-4">
+          <h2 class="text-sm font-bold text-gray-100 mb-2">本周绩效
+            <span class="text-[10px] text-muted font-normal">
+              （{{ perf.window?.start }} ~ {{ perf.window?.end }}<template
+                v-if="perf.window?.degraded"> · 建仓以来仅 {{ perf.window?.days }} 个交易日</template>）</span></h2>
+          <p class="text-xs text-gray-300 leading-relaxed">{{ perf.sentence }}</p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3">
+            <div class="border border-border/60 rounded px-2 py-1.5">
+              <div class="text-[10px] text-muted">组合（{{ perf.window?.degraded
+                ? '建仓以来' : '近 ' + (perf.window?.days ?? 5) + ' 交易日' }}）</div>
+              <div class="text-base font-mono font-semibold"
+                   :class="pctCls(perf.portfolio_ret)">{{ fmtPct(perf.portfolio_ret) }}</div>
+            </div>
+            <div class="border border-border/60 rounded px-2 py-1.5">
+              <div class="text-[10px] text-muted">对沪深300 超额</div>
+              <div class="text-base font-mono font-semibold"
+                   :class="pctCls(perf.excess_hs300)">{{ fmtPct(perf.excess_hs300) }}</div>
+            </div>
+            <div class="border border-border/60 rounded px-2 py-1.5">
+              <div class="text-[10px] text-muted">对中证1000 超额
+                <span class="text-[9px] text-muted/70">（风格参照）</span></div>
+              <div class="text-base font-mono font-semibold"
+                   :class="pctCls(perf.excess_zz1000)">{{ fmtPct(perf.excess_zz1000) }}</div>
+            </div>
+          </div>
+          <div class="text-[10px] text-muted mt-2 leading-relaxed"
+               :title="[perf.note, perf.dd_note].filter(Boolean).join('\n')">
+            {{ perf.dd_note }}
+          </div>
+        </div>
+
         <!-- ① 状态轨迹 -->
         <div class="bg-card border border-border rounded-lg p-4">
           <h2 class="text-sm font-bold text-gray-100 mb-2">① 本周市场状态轨迹</h2>
@@ -255,6 +290,11 @@ const week = ref(null)
 const weekLoading = ref(false)
 const weekErr = ref('')
 const sec = computed(() => week.value?.section || {})
+// ★ 2026-09-29（P0 基准双口径）：组合绩效块（近 5 交易日净值 + 对 300/1000 超额）
+const perf = computed(() => sec.value.performance || null)
+// 绩效数字格式化：+x.xx%（null → —）；配色按 A 股惯例（涨红 / 跌绿）
+const fmtPct = (v) => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%')
+const pctCls = (v) => (v == null ? 'text-muted' : v >= 0 ? 'text-red-400' : 'text-emerald-400')
 const regimePts = computed(() => sec.value.regime?.track?.points || [])
 const alerts = computed(() => sec.value.execution?.alerts || [])
 const drops = computed(() => sec.value.execution?.abandon_reasons || [])

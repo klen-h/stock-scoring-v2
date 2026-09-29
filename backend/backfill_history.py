@@ -26,6 +26,24 @@ from app.signals.tracker import HOLDINGS_MAP
 RATE_LIMIT = 1.0   # 每请求间隔（秒），东财对连续请求会断连，放慢更稳
 DAILY_STOCK_QUOTA = 150  # 每晚个股回填上限：数据源限流下长任务易被打断，分批推进更稳
 
+# ══════════════════════════════════════════════════════════════════════════
+# 基准指数池（★ 2026-09-29 P0：基准错配修复的数据底座）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么】全项目对比基准只有沪深300（大盘股），但持仓/信号偏 20–50 亿中小盘 ⇒
+#   阴跌市里"跑赢沪深300"仍可能绝对亏损、且超额被风格暴露污染（9/20 审视 B4）。
+#   ⇒ 补中证500 / 中证1000，让报表能报「绝对 ｜ 对300 ｜ 对1000」三口径。
+# 【约束】① sh000300 保持**主基准**地位（`benchmark` 字段与个股/ETF 滞后检测仍取它，
+#   不改变任何既有逻辑）；② 只新增 2 只指数（各 ~750 行 ≈ 0.2MB），且在**配额逻辑之前**
+#   回填 ⇒ 不占每晚 150 只个股配额；③ 中证1000 与真实持仓风格最接近 ⇒ 列最后（主展示位）。
+# 【可行性（已核）】`data.fetch_history` 东财+腾讯双源均支持指数；腾讯 fqkline 对指数
+#   返回 `day`（非 qfqday），`fetch_history_tencent` 已兼容；sh000300 在用即同族证据。
+# ══════════════════════════════════════════════════════════════════════════
+INDEX_BENCHMARKS = (
+    ("sh000300", "沪深300指数"),   # 主基准（大盘股 · 不可删，benchmark 依赖它）
+    ("sh000905", "中证500指数"),   # 中盘
+    ("sh000852", "中证1000指数"),  # 小盘（与持仓/信号风格最接近）
+)
+
 _EM_FAIL_STREAK = 0   # 东财连续失败计数，>=3 后全局切换腾讯源（东财可能被临时封 IP）
 
 
@@ -133,10 +151,13 @@ def backfill_etf() -> int:
 
 
 def backfill_index() -> int:
-    print("── 沪深300 基准 ──")
-    n = backfill("sh000300", "沪深300指数")
+    """基准指数池回填（CLI `--index` 分支；★ P0：从 1 只扩到 3 只）。"""
+    print("── 基准指数池 ──")
+    total = 0
+    for code, name in INDEX_BENCHMARKS:
+        total += backfill(code, name)
     print("")
-    return n
+    return total
 
 
 def _collect_strategy_codes(days: int = 30) -> list:
@@ -208,7 +229,7 @@ def _latest_date_map(codes: list) -> dict:
 
 
 def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
-    """每日增量回填（供调度器调用）：ETF 池 + 沪深300 + 战法新个股。
+    """每日增量回填（供调度器调用）：基准指数池 + ETF 池 + 战法新个股。
     已回填标的只补最新日期之后，新出现的个股全量。返回统计 dict。
 
     额外输出 stock_missing：战法个股最新行情日期落后于沪深300基准的清单——
@@ -226,11 +247,14 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     """
     stats = {"codes": 0, "rows": 0}
 
-    # ① 先回填基准（沪深300），据此判断"应同步到哪天"
-    stats["codes"] += 1
-    stats["rows"] += backfill("sh000300", "沪深300指数")
+    # ① 先回填基准指数池（★ 2026-09-29 P0：沪深300 → +中证500/中证1000，
+    #    基准错配修复的数据底座；主基准仍是 sh000300），据此判断"应同步到哪天"。
+    #    指数各 ~750 行、共 3 次请求，且在个股**配额逻辑之前** ⇒ 不占 DAILY_STOCK_QUOTA。
+    for _code, _name in INDEX_BENCHMARKS:
+        stats["codes"] += 1
+        stats["rows"] += backfill(_code, _name)
 
-    # 基准日期：个股/ETF 应同步到该日期
+    # 基准日期：个股/ETF 应同步到该日期（★ 仍取 sh000300：主基准地位不变）
     benchmark = (db.fetch_one(
         "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
     stats["benchmark"] = benchmark
