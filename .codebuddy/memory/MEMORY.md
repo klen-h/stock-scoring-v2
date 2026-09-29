@@ -48,6 +48,7 @@
 - 持仓聚合 `portfolio_radar.py` + `/score/batch/portfolio-radar`。
 - 运维五件套：`/api/system/{status,runtime-files,memory(52探针),db-usage}` + `memory_watch.py` + `db_retention.py`（Supabase 500MB 超限=只读）。
 - 评分榜双模式：前端本地引擎 `useFrontendScoring`（K线包入 IndexedDB+实时行情+本地精算）；工作台 `loadTop` 本地优先（5 分钟复用窗口，force 跳过），`topMode` 标记「本地实时/后端批次」。
+- **观察池涨跌幅**：`gate_watch` 接口**不含 `change_pct`**（避免全池重算被拖到 >30s）⇒ 实时涨跌幅一律由前端 `getBatchPrices` 批量补（榜单页 09-22 起、工作台 09-30 起，同一做法；盘中随轮询只刷价格）。两处的「等状态/还差什么」文字走 **hover 提示**而非常显（右栏仅 320px）。
 - 宏观面板 `macro.py` 已抓：A50/纳指期货/恒生科技/美债/VIX/美元/离岸在岸人民币/金龙指数(gb_$hxc)/原油/黑色系；顶栏外盘四件套 = A50/离岸/布伦特/纳指期货 + 隔夜累计变化（自上次 A 股收盘以来）+ 外盘开市指示；「隔夜与今日（财经日历）」卡。
 - coach 外部领先预警：纳指隔夜+美元 5 日，**仅 defensive 市有增量价值**；⚠️ 纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115（已如实标注"解释/风控用途"）。
 - 涨停梯队（zzshare 日批）+ 炸板率/大面率（按板幅分桶、剔一字板）+ 连板梯队断层判读 + 昨日涨停赚钱效应。

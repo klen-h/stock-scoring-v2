@@ -2232,7 +2232,8 @@
              ⚠️ 数据仍由父级加载（顶部「就绪状态条」复用同一批 `topItems` / `gwItems`）。 -->
         <StockListsCards :top-items="topItems" :top-err="topErr" :top-mode="topMode"
                          :top-countdown="refreshLeft"
-                         :gw-items="gwItems" :gw-meta="gwMeta" :gw-err="gwErr" />
+                         :gw-items="gwItems" :gw-meta="gwMeta" :gw-err="gwErr"
+                         :gw-prices="gwPrices" />
 
         <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：本卡与
              「名称统一 / 放开条数 + max-h-80 溢出滚动 / 折叠默认收起」等全部注释
@@ -2294,6 +2295,9 @@ import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
+  // ★ 2026-09-30（用户："观察池需要展示个股的涨跌幅"）：**复用项目既有批量报价接口**
+  //   （榜单页观察池 2026-09-22 起就在用 `getBatchPrices` 做同一件事）。
+  getBatchPrices,
   // ★ 2026-09-30：**系统自洽性审查（LLM）** —— 与 `getPushLog` **同源**（都基于今日提示集合），
   //   接口早就在（`ScoreRank.vue` 一直在用），本轮接进工作台右栏**同一张**时间线卡内。
   getRadarAnalysis,
@@ -2492,6 +2496,12 @@ const gwErr = ref('')
 //   （regime / total / ready3 / counts / data_date / strategy_hits 后端都返回了）
 //   ⇒ 卡里只能写"候选 N 只"。现在一并存下来，卡上就能回答"池子多大、几个快出手了、哪天的数据"。
 const gwMeta = ref({})
+// ★ 2026-09-30（用户："工作台的观察池需要展示个股的涨跌幅，等状态文字可去掉"）：
+//   观察池的 `ready/phase` 是**日频**（`mainforce_state` 日更），而涨跌幅要**实时** ⇒
+//   照搬榜单页（`ScoreRank.vue` 2026-09-22 的 `watchPriceMap` + `getBatchPrices`），
+//   理由同那边注释：① 闸门是**全池重算**（>30s，会撞前端超时）⇒ 不能拿它做轮询；
+//   ② 涨跌幅是高频变量 ⇒ 60s 只刷**价格**、闸门数据不重算。
+const gwPrices = ref({})      // {code: {price, change_pct}}
 // ★ 2026-09-25（P1「明日准备」）：待触发交易计划（status=waiting）
 const plans = ref([])
 const plansErr = ref('')
@@ -3158,7 +3168,27 @@ async function loadGateWatch() {
       data_date: (data && data.data_date) || '',
     }
     gwErr.value = ''
+    // ★ 2026-09-30：拿到 code 清单后**顺带拉一次实时涨跌幅**（不阻塞上面的渲染 ——
+    //   价格到达前那格显示「—」，见观察池卡内注释）。
+    loadGwPrices()
   } catch (e) { gwErr.value = (e && e.message) || '未知错误' }
+}
+
+// ★ 2026-09-30：观察池实时涨跌幅（复用榜单页同款做法）。
+//   ⚠️ 失败**保留上次的值**（不清空 ⇒ 页面不闪「—」）：交易时段外多为休市/网络抖动。
+async function loadGwPrices() {
+  const codes = (gwItems.value || []).map(g => g.code).filter(Boolean)
+  if (!codes.length) return
+  try {
+    const { data } = await getBatchPrices(codes)
+    const m = {}
+    for (const s of data || []) {
+      if (s && s.code) m[s.code] = { price: s.price, change_pct: s.change_pct }
+    }
+    if (Object.keys(m).length) gwPrices.value = m
+  } catch (e) {
+    console.warn('[gw] 实时价刷新失败（保留上次）', e?.message || e)
+  }
 }
 
 // ★ 2026-09-25（P1「明日准备」）：待触发的交易计划 —— 复盘 → 次日的**交接棒**。
@@ -3730,6 +3760,9 @@ function startPolling() {
     //   ⚠️ 只在**数据会变**的时段强制（`isLivePhase()`）：非交易时段白跑一次
     //      全市场精算没意义（本地模式下 `computeRanking` 很重）。
     loadTop(isLivePhase())
+    // ★ 2026-09-30：观察池**涨跌幅**是高速变量 ⇒ 纳入 120s 轮询（闸门数据本身是日频、
+    //   且全池重算太慢，**不重算**）—— 项目约定：新增刷新项必须加进本组，否则盘中静默不更新。
+    loadGwPrices()
     refreshLeft.value = isLivePhase() ? POLL_SEC : 0
   }, POLL_SEC * 1000))
   // ★ 2026-09-28：倒计时 1s ticker（与上面 120s 轮询同起点注册 ⇒ 读数差 ≤1 tick）。

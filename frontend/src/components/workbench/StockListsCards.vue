@@ -96,15 +96,24 @@
           <div class="space-y-1 text-xs">
             <div v-for="g in gwItems.slice(0, 8)" :key="g.code"
                  class="flex items-center gap-1.5 border-b border-border/40 py-1"
-                 :title="g.hint || g.missing || ''">
+                 :title="gwTip(g)">
               <a :href="stockHref(g.code)" target="_blank"
                  class="font-semibold hover:text-accent truncate max-w-[80px]">{{ g.name || g.code }}</a>
               <a :href="xqUrl(g.code)" target="_blank" rel="noopener" title="雪球"
                  class="font-mono text-muted hover:text-accent shrink-0">{{ g.code }}</a>
+              <!-- ★★ 2026-09-30（用户："工作台的观察池需要展示个股的涨跌幅，**等状态文字可去掉**"）：
+                   ① **加涨跌幅**（红涨绿跌，与评分榜行/榜单页观察池同口径）；
+                      数据 = 父级 `gwPrices`（`getBatchPrices` 批量拉，盘中随轮询刷新）；
+                      未拉到 ⇒ 「—」（**缺失 ≠ 0**，不假装 0.00%）。
+                   ② **去掉常显的状态文字**（原 `g.label`，如"等状态"）—— 右栏仅 320px，
+                      它挤掉了更有用的一列；**信息不丢**：label + hint + 还差什么
+                      全部并入**行 hover 提示** `gwTip()`（比原来那一行更全）。 -->
+              <span v-if="gwPct(g) != null" class="shrink-0 font-mono" :class="pctClass(gwPct(g))">
+                {{ signNum(gwPct(g)) }}%</span>
+              <span v-else class="shrink-0 font-mono text-muted">—</span>
               <span class="px-1 rounded font-mono text-[10px] shrink-0"
                     :class="g.ready === 3 ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-300'">
                 {{ g.ready }}/3</span>
-              <span class="text-muted truncate">{{ g.label || g.missing || '' }}</span>
               <span v-if="g.phase" class="px-1 rounded shrink-0 cursor-help"
                     :class="(MF_PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
                     :title="(MF_PHASE_STYLE[g.phase] || {}).tip || ''">{{ g.phase_cn || g.phase }}</span>
@@ -146,7 +155,7 @@ import {
   stockHref, xqUrl, pctClass, signNum, scoreClass,
 } from '../../composables/displayMeta'
 
-defineProps({
+const props = defineProps({
   topItems: { type: Array, default: () => [] },
   topErr: { type: String, default: '' },
   topMode: { type: String, default: '' },
@@ -155,6 +164,9 @@ defineProps({
   gwItems: { type: Array, default: () => [] },
   gwMeta: { type: Object, default: () => ({}) },
   gwErr: { type: String, default: '' },
+  // ★ 2026-09-30：观察池**实时涨跌幅** `{code: {price, change_pct}}`（父级用
+  //   `getBatchPrices` 拉，60s/120s 刷新）；未到达的 code ⇒ 显示「—」。
+  gwPrices: { type: Object, default: () => ({}) },
 })
 
 // 观察池默认**收起**（用户要求）
@@ -172,5 +184,27 @@ function mfPhase(r) {
 /** 主力阶段中文名：优先后端 `phase_cn`，缺失用共享兜底表（后端 batch/top 不发 phase_cn）。 */
 function mfPhaseCn(r) {
   return (r.mainforce && r.mainforce.phase_cn) || r.mainforce_phase_cn || ''
+}
+
+/**
+ * 观察池该票的**实时涨跌幅**（%）；未拉到/无值 ⇒ `null`（模板显示「—」，**缺失 ≠ 0**）。
+ * ⚠️ 行情偶发返回 null（停牌/休市/未订阅）⇒ 必须判 `Number.isFinite`，
+ *    不能直接 `.toFixed(2)`（会抛异常、整卡白屏）。
+ */
+function gwPct(g) {
+  const p = props.gwPrices ? props.gwPrices[g.code] : null
+  const v = p && p.change_pct != null ? Number(p.change_pct) : null
+  return v == null || !Number.isFinite(v) ? null : v
+}
+
+/**
+ * 观察池行 hover 提示 —— **去掉常显状态文字后的信息出口**（2026-09-30）。
+ * 合并三项：`label`（就绪度定性，如"等状态"）+ `hint`（为什么等）+ 「还差什么」（missing）。
+ * ⚠️ `missing` 后端是**数组**（`[i["label"] for i in items if not ok]`）⇒ 需 join；
+ *    老结构快照里也可能是字符串 ⇒ 两种都兼容（别只写 `.join` 否则字符串会崩）。
+ */
+function gwTip(g) {
+  const missing = Array.isArray(g.missing) ? g.missing.join('、') : (g.missing || '')
+  return [g.label, g.hint, missing ? `还差：${missing}` : ''].filter(Boolean).join('；')
 }
 </script>
