@@ -110,6 +110,11 @@ export const getBacktestReportContent = (name) => http.get('/backtest/reports/co
 // A股大盘日报（scheduler 每日 16:20 生成，落库 daily_reports）
 export const getDailyReportList = (limit = 30) => http.get('/report/list', { params: { limit } })
 export const getDailyReport = (date) => http.get('/report/daily', { params: date ? { date } : {} })
+// ★★ 2026-09-29（P2）：**周复盘**（regime 轨迹 + 执行一致性/放弃理由 + 日报与系统提示索引 +
+//   下周日历）。口径/边界见后端 `app/weekly_review.py`（纯只读聚合、零外部网络请求）。
+//   `end` 可选（YYYY-MM-DD）用于回看历史某周。
+export const getWeeklyReview = (days = 7, end = null) =>
+  http.get('/report/weekly', { params: { days, ...(end ? { end } : {}) }, timeout: 30000 })
 // ★ 2026-09-25 工作台：加可选 phase（premarket/intraday/postmarket），原调用兼容
 export const getTraderBrief = (refresh, phase) => http.get('/system/trader-brief',
   { params: { ...(refresh ? { refresh: true } : {}), ...(phase ? { phase } : {}) } })
