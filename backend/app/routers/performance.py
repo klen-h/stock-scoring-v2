@@ -29,6 +29,31 @@ def _to_date(v) -> Optional[str]:
     return str(v)[:10] if v is not None else None
 
 
+def _bench_pair(d0: str, d1: Optional[str] = None) -> Dict:
+    """同一窗口的**双基准**（P0 缺口 1 口径）：沪深300 + 中证1000。
+
+    【为什么两个都要】持仓/信号偏 20–50 亿中小盘 ⇒ 只对沪深300 会「**跑赢大盘仍绝对
+      亏损**」且超额被**风格暴露污染** ⇒ 必须与中小盘基准并列（2026-09-20 审视 B4）。
+      口径与日报 `_bench5`、周复盘 `_performance_block`、归因模块**同一套**：
+      `backtest_prices` 首末收盘、同起止日。
+    ⚠️ 中证1000 由 `backfill_daily` 指数段回填（2026-09-29 起）；回填前返回 None
+      （**缺失 ≠ 0**，前端显示"—"）。
+    ⚠️ 本函数**保留原 `benchmark_hs300` 字段不动** ⇒ 新字段是**纯增量**，不破坏任何既有读取点。
+    """
+    out = {"hs300": None, "zz1000": None}
+    cond = "code=%s AND date >= %s" + (" AND date <= %s" if d1 else "")
+    for key, code in (("hs300", "sh000300"), ("zz1000", "sh000852")):
+        try:
+            bars = db.fetch("SELECT date, close FROM backtest_prices WHERE " + cond
+                            + " ORDER BY date ASC",
+                            (code, d0, d1) if d1 else (code, d0))
+            if len(bars) >= 2 and float(bars[0]["close"]) > 0:
+                out[key] = round((float(bars[-1]["close"]) / float(bars[0]["close"]) - 1) * 100, 2)
+        except Exception:
+            pass
+    return out
+
+
 # ── 轨道一：模拟盘（前瞻真实记录） ──────────────────────────────────
 
 def _paper_track() -> Dict:
@@ -47,14 +72,8 @@ def _paper_track() -> Dict:
     realized = float((acc or {}).get("realized_pnl") or 0)
     initial = float((acc or {}).get("initial_capital") or 0) or None
 
-    bench = None
-    try:
-        bars = db.fetch("SELECT date, close FROM backtest_prices WHERE code='sh000300' "
-                        "AND date >= %s ORDER BY date ASC", (first,))
-        if len(bars) >= 2:
-            bench = round((float(bars[-1]["close"]) / float(bars[0]["close"]) - 1) * 100, 2)
-    except Exception:
-        pass
+    # ★ 2026-09-29（P0 续）：单基准 → 双基准（沪深300 + 中证1000，同起止日）
+    bp = _bench_pair(first)
 
     n = len(closed)
     return {
@@ -67,7 +86,11 @@ def _paper_track() -> Dict:
         "avg_pnl": round(sum(float(r["pnl_pct"]) for r in closed) / n, 3) if n else None,
         "realized": round(realized, 0),
         "initial_capital": initial,
-        "benchmark_hs300": bench,
+        "benchmark_hs300": bp["hs300"],
+        # ★ P0 续（缺口 1）：中小盘基准与 hs300 **并列** —— 只对沪深300 会
+        #   「跑赢大盘仍绝对亏损」且超额被风格暴露污染（持仓偏 20–50 亿）。
+        #   缺失（回填前）为 None ⇒ 前端显示"—"，**不填 0**。
+        "benchmark_zz1000": bp["zz1000"],
         "note": ("样本极小（已平仓 %d 笔 < 30），统计上无意义——这是记录起点，"
                  "满 30 笔平仓后才有参考价值" % n) if n < 30 else None,
     }
@@ -120,15 +143,8 @@ def _ranking_track(fwd: int = 5) -> Dict:
         return {"label": "评分排行榜 Top10（半前瞻）", "available": False,
                 "note": "前瞻窗口未满，等快照积累"}
 
-    bench = None
-    try:
-        bars = db.fetch("SELECT date, close FROM backtest_prices WHERE code='sh000300' "
-                        "AND date > %s AND date <= %s ORDER BY date ASC",
-                        (per_day[0]["date"], per_day[-1]["date"]))
-        if len(bars) >= 2:
-            bench = round((float(bars[-1]["close"]) / float(bars[0]["close"]) - 1) * 100, 2)
-    except Exception:
-        pass
+    # ★ 2026-09-29（P0 续）：双基准（窗口 = 首个快照日 → 最后一个快照日）
+    bp = _bench_pair(str(per_day[0]["date"])[:10], str(per_day[-1]["date"])[:10])
 
     all_rets = [d["mean"] for d in per_day]
     cum = 1.0
@@ -142,7 +158,8 @@ def _ranking_track(fwd: int = 5) -> Dict:
         "win_rate_days": round(sum(1 for m in all_rets if m > 0) / len(all_rets) * 100, 1),
         "avg_daily": round(sum(all_rets) / len(all_rets), 3),
         "cum_return": round((cum - 1) * 100, 2),
-        "benchmark_hs300": bench,
+        "benchmark_hs300": bp["hs300"],
+        "benchmark_zz1000": bp["zz1000"],      # ★ P0 续：中小盘基准（缺口 1 口径）
         "per_day": [{"date": d["date"], "mean": round(d["mean"], 3),
                      "win": round(d["win"], 1), "n": d["n"]} for d in per_day],
         "note": ("每日 Top10 等权、持有 5 日的重叠窗口近似；评分权重用同期数据校准，"
@@ -176,17 +193,12 @@ def _replay_metrics(signals, prices_map) -> Optional[Dict]:
     gw = sum(t["pnl_pct"] for t in wins)
     gl = abs(sum(t["pnl_pct"] for t in trades if t["pnl_pct"] <= 0))
     d0, d1 = trades[0]["entry_date"], trades[-1]["exit_date"]
-    bench = None
-    try:
-        bars = db.fetch("SELECT date, close FROM backtest_prices WHERE code='sh000300' "
-                        "AND date >= %s AND date <= %s ORDER BY date ASC", (d0, d1))
-        if len(bars) >= 2:
-            bench = round((float(bars[-1]["close"]) / float(bars[0]["close"]) - 1) * 100, 2)
-    except Exception:
-        pass
+    # ★ 2026-09-29（P0 续）：双基准（窗口 = 首笔入场日 → 末笔离场日）
+    bp = _bench_pair(str(d0)[:10], str(d1)[:10])
     return {"n": n, "win": round(len(wins) / n * 100, 1),
             "avg": round(sum(t["pnl_pct"] for t in trades) / n, 3),
-            "pf": round(gw / gl, 2) if gl > 0 else 999.0, "bench": bench}
+            "pf": round(gw / gl, 2) if gl > 0 else 999.0,
+            "bench": bp["hs300"], "bench_zz1000": bp["zz1000"]}
 
 
 def _replay_track() -> Dict:

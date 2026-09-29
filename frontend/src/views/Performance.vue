@@ -57,7 +57,7 @@ onMounted(async () => {
           <h2 class="text-sm font-bold text-gray-100">① 模拟盘（前瞻真实记录）</h2>
           <span class="text-xs text-muted">运行 {{ perf.paper.days }} 天 · 起 {{ perf.paper.start }}</span>
         </div>
-        <div v-if="perf.paper.available" class="grid grid-cols-2 md:grid-cols-6 gap-3 text-center">
+        <div v-if="perf.paper.available" class="grid grid-cols-2 md:grid-cols-7 gap-3 text-center">
           <div class="bg-white/5 rounded-lg p-3">
             <div class="text-[10px] text-muted">已平仓</div>
             <div class="text-lg font-bold text-gray-100">{{ perf.paper.closed }}</div>
@@ -82,6 +82,13 @@ onMounted(async () => {
             <div class="text-[10px] text-muted">同期沪深300</div>
             <div class="text-lg font-bold" :class="pnlColor(perf.paper.benchmark_hs300)">{{ deltaText(perf.paper.benchmark_hs300) }}</div>
           </div>
+          <!-- ★ 2026-09-29（P0 续）：**双基准** —— 持仓偏中小盘，只对沪深300 会
+               「跑赢大盘仍绝对亏损」且超额被风格暴露污染（缺口 1 口径）。 -->
+          <div class="bg-white/5 rounded-lg p-3">
+            <div class="text-[10px] text-muted">同期中证1000
+              <span class="text-[9px] text-muted/70">（风格参照）</span></div>
+            <div class="text-lg font-bold" :class="pnlColor(perf.paper.benchmark_zz1000)">{{ deltaText(perf.paper.benchmark_zz1000) }}</div>
+          </div>
         </div>
         <p v-if="perf.paper.note" class="mt-3 text-xs text-amber-400">⚠️ {{ perf.paper.note }}</p>
       </div>
@@ -94,7 +101,7 @@ onMounted(async () => {
             {{ perf.ranking.start }} ~ {{ perf.ranking.end }} · {{ perf.ranking.days }} 个快照日
           </span>
         </div>
-        <div v-if="perf.ranking.available" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-center mb-3">
+        <div v-if="perf.ranking.available" class="grid grid-cols-2 md:grid-cols-5 gap-3 text-center mb-3">
           <div class="bg-white/5 rounded-lg p-3">
             <div class="text-[10px] text-muted">日均收益（重叠近似）</div>
             <div class="text-lg font-bold" :class="pnlColor(perf.ranking.avg_daily)">{{ deltaText(perf.ranking.avg_daily) }}%</div>
@@ -110,6 +117,12 @@ onMounted(async () => {
           <div class="bg-white/5 rounded-lg p-3">
             <div class="text-[10px] text-muted">同期沪深300</div>
             <div class="text-lg font-bold" :class="pnlColor(perf.ranking.benchmark_hs300)">{{ deltaText(perf.ranking.benchmark_hs300) }}</div>
+          </div>
+          <!-- ★ 2026-09-29（P0 续）：双基准（评分榜小盘倾向更强，中证1000 更贴身） -->
+          <div class="bg-white/5 rounded-lg p-3">
+            <div class="text-[10px] text-muted">同期中证1000
+              <span class="text-[9px] text-muted/70">（风格参照）</span></div>
+            <div class="text-lg font-bold" :class="pnlColor(perf.ranking.benchmark_zz1000)">{{ deltaText(perf.ranking.benchmark_zz1000) }}</div>
           </div>
         </div>
         <div v-if="perf.ranking.available && perf.ranking.per_day?.length" class="overflow-x-auto">
@@ -148,6 +161,7 @@ onMounted(async () => {
               <div>样本 {{ perf.replay.baseline?.n }} 笔</div>
               <div>胜率 {{ perf.replay.baseline?.win }}% ｜ 均收益 {{ deltaText(perf.replay.baseline?.avg) }}%</div>
               <div>盈亏比 {{ perf.replay.baseline?.pf }} ｜ 同期沪深300 {{ deltaText(perf.replay.baseline?.bench) }}</div>
+              <div>同期中证1000 {{ deltaText(perf.replay.baseline?.bench_zz1000) }} <span class="text-muted/70">（风格参照）</span></div>
             </div>
           </div>
           <div class="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
@@ -156,6 +170,7 @@ onMounted(async () => {
               <div>样本 {{ perf.replay.deployed?.n }} 笔</div>
               <div>胜率 {{ perf.replay.deployed?.win }}% ｜ 均收益 {{ deltaText(perf.replay.deployed?.avg) }}%</div>
               <div>盈亏比 {{ perf.replay.deployed?.pf }} ｜ 同期沪深300 {{ deltaText(perf.replay.deployed?.bench) }}</div>
+              <div>同期中证1000 {{ deltaText(perf.replay.deployed?.bench_zz1000) }} <span class="text-muted/70">（风格参照）</span></div>
             </div>
           </div>
         </div>
