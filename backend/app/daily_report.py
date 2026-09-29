@@ -782,6 +782,26 @@ def build_data_md(date: str = None) -> str:
     except Exception as e:
         print(f"[daily_report] 板块动量小节失败: {e}")
 
+    # 2.x 个股级「放量拉升」（★ 2026-09-30，P1 续）
+    #   【为什么加】上面板块层用 zzshare 104 **粗分**口径，会**掩盖个股**：实测 09-29
+    #     工业金属板块仅 +2.02%，而云铝 +4.34%、赣锋 +3.53% —— 用户感知到的"金属拉升"
+    #     在**个股层**。涨停股另有结构出口（工作台「涨停复盘」=连板梯队 + 题材归因），
+    #     但该卡实测去重后常只剩个位数 ⇒ **不能替代"完整名录"**，故本块含涨停并标明。
+    #   ⚠️ 放量双路径（换手 / 成交额）：大盘股换手天然低（实测大票均值仅 3.5%），
+    #     单用换手率会系统性误杀云铝这类票（换手 1.97%、成交额却 17.7 亿）。
+    try:
+        from app import stock_moves
+        _mv = stock_moves.snapshot()
+        _mlines = stock_moves.format_lines(_mv)
+        if _mlines:
+            add("")
+            add(f"**个股异动**（扫描 {_mv.get('scanned')} 只 ⇒ 入选 {_mv.get('n')} 只"
+                f"（含涨停 {_mv.get('limit_up_n')}），截至 {_mv.get('as_of')}）：")
+            for _ln in _mlines:
+                add(f"- {_ln}")
+    except Exception as e:
+        print(f"[daily_report] 个股异动小节失败: {e}")
+
     # 2.x 主力行为（筹码×资金流组合信号；全池截面回测 10,744 样本验证）
     mf = _mainforce_summary()
     if mf:

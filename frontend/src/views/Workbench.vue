@@ -1467,7 +1467,10 @@
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="text-sm font-semibold">主线板块 Top5
-                <span class="text-[10px] text-muted font-normal">（实时 · 含板块内领涨股）</span></div>
+                <span class="text-[10px] text-muted font-normal">
+                  {{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
+                     : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
+                     : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span></div>
               <router-link target="_blank" to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
             </div>
             <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
@@ -1737,7 +1740,9 @@
             <!-- 板块主线（收盘时刻的东财实时接口） -->
             <div v-if="sectorTop.length" class="border-t border-border/40 mt-2 pt-2">
               <div class="text-[11px] text-muted mb-1">板块主线 Top5
-                <span class="text-[10px]">（含板块内领涨股）</span>
+                <span class="text-[10px]">{{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
+                  : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
+                  : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span>
                 <router-link target="_blank" to="/sector" class="text-accent hover:underline ml-1">板块详情</router-link></div>
               <div class="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
                 <span v-for="(s, i) in sectorTop.slice(0, 5)" :key="i" class="font-mono">
@@ -2308,6 +2313,9 @@ import {
   //   A1 收尾时改用实时 `/sector/industry`（含领涨股）才发现 ⇒ 两个都补上。
   getSectorIndustry, getSectorSnapshot,
   getSectorAmountShare,
+  // ★ 2026-09-30（P2 续）：盘后/复盘的板块 Top5 改走 **zzshare 当日快照**（完整 104 板块，
+  //   与「板块分化」页同源）—— 东财盘后常被风控、其快照行数残缺且与个股真值矛盾。
+  getZzSectorSnapshot,
   // ★ 2026-09-25（P1「明日准备」）：待触发交易计划 —— 接口**早已存在**
   //   （`/user/plans`，含 status / plan_type / trigger_high_open / trigger_volume_break），
   //   此前工作台从未用过 ⇒ 复盘的结论没有被转成"明日待办"，一天的首尾没接上。
@@ -2553,6 +2561,10 @@ const fmtYi = (yi) => {
   return Math.abs(n) >= 10000 ? (n / 10000).toFixed(2) + '万亿' : Math.round(n) + '亿'
 }
 const sectorTop = ref([])
+// ★ 2026-09-30（P2 续）：**板块 Top5 的数据来源要标注** —— 盘中走东财实时（含领涨股），
+//   盘后/复盘走 zzshare 当日快照（**无领涨股**）。不标注会让用户以为"盘后也有领涨股"，
+//   也分不清"这张榜是实时的还是收盘定稿的"。取值：'east' | 'zz' | 'snap' | ''
+const sectorTopSrc = ref('')
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
 //   ⚠️ 数据源独立于上面的东财接口 ⇒ 东财被封时上面可能空白、而这块照常显示。
@@ -3465,18 +3477,40 @@ async function loadAmountRt() {
 //   ⇒ 一次调用同时解决"实时"与"领涨股"，**零新增接口**。
 //   ⚠️ 失败/空数据回退快照：休市或接口异常时仍有内容（只是没有领涨股）。
 async function loadSectorTop() {
+  const live = selectedPhase.value === 'intraday' || selectedPhase.value === 'midday'
+  // ★★ 2026-09-30（P2 续）：**盘后/复盘优先 zzshare 当日快照**，不再先问东财。
+  //   【为什么】① 东财 push2 盘后常被风控 ⇒ 实时接口失败；② 其回退源 `sector_daily`
+  //     （东财快照）行数残缺且**与个股真值矛盾**（实测 09-29 只有 300/996 行，
+  //     且称"房地产 -0.72%"而当日万科 **+9.97% 涨停**）；
+  //   ③ zzshare 侧 P0 已修（日批每晚落库 + `task_data_gap` 自愈）⇒ 当日快照**完整
+  //     104 板块**，且与「板块分化」页**同源同口径**。
+  //   ⚠️ 代价：zzshare 快照**不含领涨股** ⇒ 盘后卡内不显示领涨股（如实标注来源）。
+  if (!live) {
+    try {
+      const { data } = await getZzSectorSnapshot(selectedDate.value || todayStr,
+                                                 { kind: 'industry' })
+      const rows = ((data && data.data) || []).slice(0, 5)
+      if (rows.length) {
+        sectorTop.value = rows
+        sectorTopSrc.value = 'zz'
+        return
+      }
+    } catch { /* 落到东财实时 */ }
+  }
   try {
     const { data } = await getSectorIndustry({ limit: 5 })
     const rows = (data && data.data) || []
     if (rows.length) {
       sectorTop.value = rows.slice(0, 5)
+      sectorTopSrc.value = 'east'
       return
     }
   } catch { /* 落到快照回退 */ }
   try {
     const { data } = await getSectorSnapshot(todayStr, { limit: 5 })
     sectorTop.value = ((data && data.data) || []).slice(0, 5)
-  } catch { sectorTop.value = [] }
+    sectorTopSrc.value = 'snap'
+  } catch { sectorTop.value = []; sectorTopSrc.value = '' }
 }
 // ★ 2026-09-25 需求 4：行业成交额占比（失败静默 ⇒ 整块不渲染，不影响板块卡其余部分）。
 //   ⚠️ **刻意不用当日缓存**：资金在板块间的流动是盘中变量（120s 轮询刷新才有意义）。
@@ -3602,12 +3636,17 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-30：**补 `loadBrief('postmarket')`** —— 「决策简报（盘后）」卡原先在本段
   //   **从不加载**（只有切到「复盘」段才拉）⇒ 该卡要么空着、要么显示盘前内容
   //   （`briefMd` 是多阶段共用的单个 ref）。这是顺带修掉的既有缺陷。
-  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadTodayExec(); await loadBrief('postmarket') }
+  // ★ 2026-09-30（P2 续）：补 `loadAmountShare()` —— 「行业成交额占比」原先**只在盘中/午盘**
+  //   加载（见本函数末段）⇒ 盘后这张卡缺一半（成交占比块整块不渲染，而它正是"资金此刻
+  //   集中在哪"的答案）。盘后该接口走 `tencent._cache` 的**收盘快照** ⇒ 数据是定稿口径。
+  else if (phase === 'postmarket') { await loadTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadAmountShare(); await loadTodayExec(); await loadBrief('postmarket') }
   // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
   //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
   // ★ 2026-09-25（P1）：复盘也拉"待触发计划"（明日准备）—— 复盘正是"把今天结论转成明天待办"的时点
-  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); }
+  // ★ 2026-09-30（P2 续）：复盘补「板块 Top5 + 成交占比」—— 复盘要看"今天什么行情、
+  //   资金在哪个板块"，而这两块此前**只挂盘中** ⇒ 复盘时段整个板块卡是空的（切过来才残留旧值）。
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); await loadSectorTop(); await loadAmountShare(); }
   if (phase === 'intraday' || phase === 'midday') {
     // ★ 2026-09-28：盘中/午盘也加载「评分榜 + 观察池」（原只在盘后拉 ⇒ 盘中两卡不显示）。
     //   ⚠️ 二者是**日批/盘后**数据（观察池 = 晚间日批快照）⇒ 盘中显示的是上一交易日；
