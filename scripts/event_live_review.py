@@ -27,6 +27,8 @@
 用法：python scripts/event_live_review.py
 ================================================================================
 """
+import argparse
+import json
 import os
 import sys
 from collections import defaultdict
@@ -100,7 +102,9 @@ def count_clusters(dates):
     return c
 
 
-def main():
+def _body() -> dict:
+    """原 `main()` 主体 —— ★ 2026-09-30 改为返回**结构化结论**（不再是裸 `return`），
+    由新 `main()` 统一负责 `--json` 输出。判据/文案一律不动（改动仅限出口）。"""
     _ensure_table()
     events = load_events()
     regimes = load_regimes()
@@ -114,7 +118,8 @@ def main():
         print("说明：该表由 `scheduler.regime_cache_loop` 在**工作日盘后**（15:40+）自动落库，"
               "\n      依赖当日实时行情缓存。若服务未在该窗口运行，当日不会落库。")
         print("\n⇒ 状态：insufficient（尚未积累任何实盘样本），不下结论。")
-        return
+        return {"verdict": "INSUFFICIENT", "n": 0,
+                "detail": "market_events 无数据（该表由 scheduler 盘后落库，服务未运行则不写）"}
 
     e2_dates = [str(r["date"])[:10] for r in events if r.get("e2_policy_surge")]
     e1_dates = [str(r["date"])[:10] for r in events if r.get("e1_capitulation")]
@@ -142,7 +147,9 @@ def main():
         print(f"  · 当前 E2 {len(e2_dates)} 天 / {clusters} 簇 ⇒ **insufficient**，不下结论。")
         print(f"  · 按 21 年 298 天推算，E2 约每 26 个交易日 1 次；"
               f"达到门槛预计还需 ~{max(0, MIN_E2_DAYS - len(e2_dates)) * 26} 个交易日。")
-        return
+        return {"verdict": "INSUFFICIENT", "n": len(e2_dates),
+                "detail": (f"E2 {len(e2_dates)} 天 / {clusters} 簇（门槛 {MIN_E2_DAYS} 天"
+                           f"且 {MIN_CLUSTERS} 簇）")}
 
     # ③ 走出速度（E2 后 20 日内 defensive 转出比例 vs 基准）
     state_map = {str(r["date"])[:10]: r["state"] for r in regimes}
@@ -164,7 +171,8 @@ def main():
     print(f"\n③ 走出防御速度（E2 触发日在 defensive 内：{len(e2_def)} 天）")
     if not e2_def:
         print("  · 实盘 E2 发生在 defensive 内的样本为 0 ⇒ 无法评估（insufficient）。")
-        return
+        return {"verdict": "INSUFFICIENT", "n": len(e2_dates),
+                "detail": "E2 全部发生在非 defensive 期 ⇒ 无法评估『先行解除』"}
     e2_exits = [days_to_exit(d) for d in e2_def]
     e2_ok = [x for x in e2_exits if x is not None]
     e2_rate = len(e2_ok) / len(e2_def)
@@ -192,7 +200,35 @@ def main():
         print("\n  ★ 暂不支持升级 ⇒ 维持 v0（只展示，不进决策链）。")
     print("\n  注：实盘样本仍在积累，本结论随样本增长而更新；"
           "每次复核请对照 `_report_事件驱动信号源接入_20260927.md`。")
+    # ⚠️ 判据 (c)（T+20 收益差）**本脚本尚未接入实盘价格口径** ⇒ 即便 (a)(b) 达标也
+    #   只能给 **PARTIAL**（"部分达标"），不能报 PASS —— 缺失 ≠ 通过。
+    return {
+        "verdict": "PARTIAL" if pass_speed else "FAIL",
+        "n": len(e2_dates),
+        "detail": (f"样本 {len(e2_dates)} 天/{clusters} 簇；"
+                   f"走出速度相对提升 "
+                   f"{('—' if speedup is None else f'{speedup:+.0%}')}"
+                   f"（门槛 +{MIN_SPEEDUP:.0%}）；判据 (c) 收益差未接入 ⇒ "
+                   + ("(a)(b) 达标但 (c) 未评估 ⇒ 只能说部分达标"
+                      if pass_speed else "维持 v0（只展示）")),
+    }
+
+
+def main():
+    """CLI 包装（★ 2026-09-30 新增）：`--json` 时在正文末尾追加一行结构化结论，
+    供月度日批复核（`app/edge_verify.py`）消费；默认行为与旧版一致。"""
+    ap = argparse.ArgumentParser(description="E2 实盘样本复核（预登记）")
+    ap.add_argument("--json", action="store_true",
+                    help="输出末尾追加一行结构化结论（供日批消费）")
+    args = ap.parse_args()
+    res = _body() or {}
+    res.setdefault("script", "event_live_review")
+    res.setdefault("need", MIN_E2_DAYS)
+    res.setdefault("unit", "E2 触发日")
+    if args.json:
+        print(json.dumps(res, ensure_ascii=False))
+    return 0 if (res.get("verdict") or "") != "ERROR" else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

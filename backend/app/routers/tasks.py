@@ -47,6 +47,9 @@ ALLOWED_TASKS = {
     # ★ 2026-09-30（P0）：数据底座断档自检 + 板块快照自愈（plate_daily_zz 断档 5 天
     #   无人发现的兜底闸）—— 与 `daily_batch.DEFAULT_ORDER` 同名任务。
     "data_gap",
+    # ★ 2026-09-30：预登记验证脚本的月度复核（三个脚本原先全项目无调用方 ⇒
+    #   "样本够了没人跑"）；同样与 DEFAULT_ORDER 同名。
+    "verify_monthly",
 }
 
 

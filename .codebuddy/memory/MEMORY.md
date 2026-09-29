@@ -39,7 +39,7 @@
 
 ## 告警与信号纪律
 - 口径：『跌多少』（绝对涨跌幅）vs『从高点回撤』（路径）是两条规则；双条件缺一不可；高波动标的门槛按倍数加严；一次拉取喂多条规则。
-- 新信号上线先做预测力检验（①会不会过吵 ②响了有没有用）；模板 `scripts/reversal_edge_check.py`；**判定标准预登记**写死脚本头。
+- 新信号上线先做预测力检验（①会不会过吵 ②响了有没有用）；模板 `scripts/reversal_edge_check.py`；**判定标准预登记**写死脚本头。★ **预登记脚本必须接进周期日批**（样板 `subfactor_ic`，每月首个交易日）—— 否则"样本是时钟"意味着样本够了也没人跑（2026-09-30 实测 `event_live_review`/`gate_ready_backtest`/`sector_momentum_edge_check` 三个脚本**全项目无调用方**）。
 - **策略上线三重检验铁律**（bootstrap 证伪后沉淀）：① block bootstrap 显著性（按信号日分块，B≥10000）② 复利净值 ③ 分年分解。`均收益为正`≠`赚钱`（算术均值被"大赚笔+复利损耗"双重欺骗）。
 - 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`）新增前防重复。
 

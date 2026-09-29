@@ -77,6 +77,7 @@
 """
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -352,14 +353,27 @@ def main():
                     help="持有交易日数；(a)(b)(c) 判据只用第一个")
     ap.add_argument("--bench", default=BENCH_DEFAULT,
                     help=f"对照基准（预登记 {BENCH_DEFAULT}；改它即为非预登记口径）")
+    # ★ 2026-09-30：`--json` —— 末尾追加一行结构化结论（供月度日批 `app/edge_verify.py`
+    #   解析）。默认不输出、正文不变。为什么要有：本项目"样本是时钟"，脚本没人跑=白等。
+    ap.add_argument("--json", action="store_true",
+                    help="输出末尾追加一行结构化结论（供日批消费）")
     args = ap.parse_args()
     hold = args.hold[0]
     prereg = (args.bench == BENCH_DEFAULT)
 
+    def _done(verdict: str, n=None, detail: str = "", code: int = 0) -> int:
+        """打结构化结论（`--json` 时）并返回退出码。判据一律留在本文件头。"""
+        if args.json:
+            print(json.dumps({"script": "gate_ready_backtest", "verdict": verdict,
+                              "n": n, "need": MIN_CLUSTERS, "unit": "快照日",
+                              "bench": args.bench, "prereg": prereg,
+                              "detail": detail}, ensure_ascii=False))
+        return code
+
     snaps = load_snapshots()
     snapshot_health(snaps)
     if not snaps:
-        return
+        return _done("ERROR", None, "无快照数据（gate_snapshot_history 为空）")
     cal = [s["date"] for s in snaps]
     d0, d1 = cal[0], cal[-1]
     end = (_date.fromisoformat(d1) + timedelta(days=40)).isoformat()
@@ -379,7 +393,11 @@ def main():
         print(f"  ⚠️ 基准 {args.bench} 无数据 —— 中证1000/中证500 由 `backfill_daily` "
               f"指数段写入，等 P0 回填后重跑；临时参考可加 `--bench sh000300`"
               f"（**非预登记口径**）。")
-        return
+        # ⚠️ 判 **INSUFFICIENT 而非 ERROR**：基准指数（中证1000/500）回填前本来就是空的，
+        #   属**已知的等数据**状态、不是异常 ⇒ 若报 ERROR，月度复核会把它当"有结论"推企微
+        #   （误报警）。**缺失 ≠ 异常 ≠ 反证**，三者口径必须分开。
+        return _done("INSUFFICIENT", None,
+                     f"基准 {args.bench} 无数据（等 `backfill_daily` 回填）")
     print(f"  基准 {args.bench}：可用交易日 {len(bench_cal)} 根"
           f"（{bench_cal[0]} ~ {bench_cal[-1]}）"
           + (f" ⚠️ 不足 T+{hold} 窗口的事件会被跳过（等日批推进，属正常）"
@@ -436,7 +454,9 @@ def main():
               f"（该表**不受保留期清理**，可长期累积），建议每月重跑本脚本。")
         print(f"  ⚠️ 注意：{ENTRY_READY}/3 需 regime 非 defensive 才可能成立；"
               f"当前 6 个快照全为 defensive ⇒ 零样本属**机制预期**，不是故障。")
-        return
+        return _done("INSUFFICIENT", n_cl,
+                     f"ready=={ENTRY_READY} 独立簇 {n_cl}/{MIN_CLUSTERS}"
+                     f"（还差 {MIN_CLUSTERS - n_cl} 个快照日）")
     exc = s3.get("exc")
     p = s3.get("p")
     years = s3.get("years") or []
@@ -452,18 +472,24 @@ def main():
     if a_ok and b_ok and c_ok:
         print(f"  ⇒ **PASS**：ready=={ENTRY_READY} 有联合期望值 ⇒ 进入下一轮"
               f"（样本外复核 / 是否给该档位加权或推送 —— 那是**另一次预登记**的事）。")
+        verdict, label = "PASS", "PASS"
     elif exc is not None and abs(exc) < COST_BAND:
         print(f"  ⇒ **NO EDGE**：超额在 ±{COST_BAND}pp（交易成本量级）内 ⇒ "
               f"入口相对基准无增量 ⇒ 应重新考虑「以 ready==3 为唯一入口」的设计。")
+        verdict, label = "FAIL", "NO EDGE（超额在成本带内）"
     else:
         print("  ⇒ **WEAK / 归档**：不满足三条且超出 NO EDGE 带 ⇒ 记录归档，"
               "**不调权重、不推送**。")
+        verdict, label = "FAIL", "WEAK/归档（三条未同时满足）"
     if s2.get("clusters"):
         inc = (s3.get("exc") or 0) - (s2.get("exc") or 0)
         print(f"  [附加] 相对 ready=={CTRL_READY} 增量 {_fmt(inc, 'pp')}"
               f"（门槛 +{MIN_VS_CTRL}pp）⇒ {'有增量' if inc >= MIN_VS_CTRL else '**无增量价值**'}")
     print("  ⚠️ 阈值 +0.80pp / ±0.30pp 为**预注册经验初值、未回测校准**（同项目其它预登记脚本）。")
     print("=" * 118)
+    return _done(verdict, n_cl,
+                 f"{label}：超额 {_fmt(exc, 'pp')}，P={('—' if p is None else round(p, 4))}，"
+                 f"正超额年份 {len(s3.get('pos_years') or [])}/{len(years)}")
 
 
 if __name__ == "__main__":

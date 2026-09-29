@@ -660,6 +660,30 @@ def _push_ic_summary(res) -> str:
         return f"推送失败（不影响体检）: {str(e)[:80]}"
 
 
+def task_verify_monthly():
+    """预登记验证脚本的**月度自动复核**（2026-09-30）。
+
+    ★ 为什么必须做（本轮查出来的真缺口）：三个**预登记**验证脚本 ——
+      `scripts/gate_ready_backtest.py`（闸门 ready==3 联合期望值）、
+      `scripts/sector_momentum_edge_check.py`（板块动量延续性）、
+      `scripts/event_live_review.py`（E2 实盘复核）—— 全项目**没有任何调用方**
+      ⇒ 只能人工想起来跑。而它们的结论**只取决于样本**（"样本是时钟，开发加速不了"）
+      ⇒ **样本够了却没人跑 = 白等**。接进日批即到点自动出结论 + 自动推送。
+    ★ 幂等：由 `app.edge_verify` 把结果落 `report_store`（tag=`verify_monthly`，
+      名字带月份）⇒ 复用 `_monthly_due()` 判"本月是否已复核"（且跨月漏跑会自愈）。
+    ★ 推送分级：有结论（含运行异常）⇒ `force=True` 推企微；全 INSUFFICIENT ⇒
+      **只落库不推**（月月推"还没样本"是噪音，同 `data_gap` 的口径）。
+    ★ 时序：纯只读分析（三个脚本都不改生产表）⇒ 位置不敏感；与 `subfactor_ic`
+      同放"周期性复核"区。
+    """
+    d = _batch_trading_day()
+    if not _monthly_due("verify_monthly", d) and not _explicitly_requested("verify_monthly"):
+        return (f"预登记复核: 本轮交易日 {d:%Y-%m-%d} 所在月份已复核，跳过"
+                f"（每月例行 / --tasks verify_monthly 可强制）")
+    from app.edge_verify import run_monthly
+    return run_monthly()
+
+
 def task_subfactor_ic():
     """子指标因子体检（**每月一次**）：逐子项 IC + 滚动复核上轮结论 + 落库。
 
@@ -833,6 +857,9 @@ TASKS = {
     # ★ 2026-09-20 新增：子指标因子体检周期化（体检报告 §建议5）。
     #   任务内部判定「本月是否已体检」，其余交易日秒过；排在周期报告之后。
     "subfactor_ic": (task_subfactor_ic, "子指标因子体检（仅每月首个交易日）"),
+    # ★ 2026-09-30：预登记验证脚本的月度自动复核 —— 此前三个脚本**全项目无调用方**，
+    #   "样本是时钟"意味着"样本够了没人跑 = 白等"。结果落 report_store 复用 _monthly_due 幂等。
+    "verify_monthly": (task_verify_monthly, "预登记验证月度复核（闸门/板块动量/E2）"),
     # ★ 2026-09-30（P0）：数据底座断档自检 + 板块快照自愈。排在所有**数据写入**任务
     #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
     #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
@@ -852,7 +879,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
                  "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic",
-                 "data_gap", "daily_report",
+                 "verify_monthly", "data_gap", "daily_report",
                  "trader_brief", "retention"]
 
 

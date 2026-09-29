@@ -41,6 +41,8 @@
 ================================================================================
 """
 
+import argparse
+import json
 import os
 import random
 import sys
@@ -133,11 +135,26 @@ def _fmt(v, unit="pp", nd=2):
 
 
 def main():
+    # ★ 2026-09-30：加 `--json` —— 在人类可读输出的**末尾追加一行结构化结论**，
+    #   供月度日批复核（`app/edge_verify.py`）解析；默认不输出 JSON、正文不受影响。
+    #   【为什么要有它】本项目"样本是时钟"，脚本没人跑就等于白等 ⇒ 已接进月度日批。
+    ap = argparse.ArgumentParser(description="板块动量延续性检验（预登记）")
+    ap.add_argument("--json", action="store_true",
+                    help="输出末尾追加一行结构化结论（供日批消费）")
+    args = ap.parse_args()
+
+    def _done(verdict: str, n=None, detail: str = "", code: int = 0) -> int:
+        if args.json:
+            print(json.dumps({"script": "sector_momentum_edge_check", "verdict": verdict,
+                              "n": n, "need": MIN_DAYS, "unit": "交易日",
+                              "detail": detail}, ensure_ascii=False))
+        return code
+
     from app import sector_momentum as sm
     by = _series()
     if not by:
         print("板块序列为空（plate_daily_zz 无数据）—— 等日批积累")
-        return 2
+        return _done("ERROR", None, "板块序列为空（等日批积累）", 2)
     dates = sorted({x["date"] for s in by.values() for x in s})
     idx = {n: {x["date"]: i for i, x in enumerate(s)} for n, s in by.items()}
     closes = _bench_closes(BENCH)
@@ -233,6 +250,9 @@ def main():
         print("  · **不下结论**：缺证据 ≠ 反证据。本检验不影响任何线上行为"
               "（板块侦测只进日报/复盘，不推送、不进决策链）")
         print("  · 建议每月首个交易日随日批重跑（同 subfactor_ic 的周期化做法）")
+        verdict = "INSUFFICIENT"
+        detail = (f"只有 {n_days} 个独立交易日，需 ≥ {MIN_DAYS}"
+                  f"（还差 {MIN_DAYS - n_days}）")
     else:
         ok_b = (mean_b is not None and mean_b >= MIN_EDGE)
         ok = (mean_exc >= MIN_EDGE and p is not None and p < 0.05 and h1 * h2 > 0)
@@ -245,8 +265,12 @@ def main():
         print(f"  (d) 前后半同号 ？{(h1 * h2 > 0)}")
         print("  ⚠️ 即便通过也只说明「板块动量有延续性」—— **板块指数不可交易**，"
               "落地须另开预登记（ETF 映射 + 成本/滑点）")
+        verdict = "PASS" if ok else "FAIL"
+        detail = (f"n={n_days}；主判据 {_fmt(mean_exc)}（门槛 ≥+{MIN_EDGE:.2f}pp）；"
+                  f"相对基准 {_fmt(mean_b)}；P={p if p is None else round(p, 4)}；"
+                  f"(d) 前后半 {_fmt(h1)}/{_fmt(h2)}")
     print("=" * 96)
-    return 0
+    return _done(verdict, n_days, detail, 0)
 
 
 if __name__ == "__main__":
