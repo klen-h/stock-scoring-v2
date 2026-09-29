@@ -24,7 +24,7 @@ URL 前缀 /api/coach（JWT 保护，按用户登录态）：
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app.auth import get_current_user
-from app.coach import audit
+from app.coach import attribution, audit
 from app.database import db
 
 router = APIRouter()
@@ -97,3 +97,15 @@ def abandon_plan(plan_id: int, payload: dict = Body(...),
 def get_abandon_reasons(limit: int = 20, user: dict = Depends(get_current_user)):
     """放弃理由清单（高频理由 = 用户最易失守的纪律点，周报复盘用）。"""
     return {"data": audit.abandon_reasons(limit=min(max(limit, 1), 100))}
+
+
+@router.get("/attribution")
+def get_attribution(days: int = 60, user: dict = Depends(get_current_user)):
+    """教练建议**事后归因**（P2 / 缺口 3）—— 补「5 日结果只回填不评估」那一半。
+
+    按 **建议类型 / 主力阶段 / 执行结果 / 放弃理由** 分组，算 T+5/T+20 对基准超额
+    ⇒ 分别对应「**逻辑错 / 时机错 / 执行错**」（执行率只覆盖最后一种）。
+    ⚠️ 口径与三条已知限制（含「买入类建议无 `code` ⇒ 入场理由不可评估」）见
+      `app/coach/attribution.py` 模块头，前端须把 `note` 一并展示。
+    """
+    return attribution.advice_attribution(days=min(max(days, 7), 365))

@@ -327,6 +327,10 @@ export const getCoachPlanExecutionRate = (days = 30) => http.get('/coach/plans/e
 export const getCoachPlans = (positionIds) => http.get('/coach/plans', { params: { position_ids: (positionIds || []).join(',') } })
 export const abandonCoachPlan = (id, reason) => http.post(`/coach/plans/${id}/abandon`, { reason })
 export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-reasons', { params: { limit } })
+// ★★ 2026-09-29（P2 / 缺口 3）：教练建议**事后归因** —— 补「5 日结果只回填不评估」那一半。
+//   按 建议类型/主力阶段/执行结果/放弃理由 分组算 T+5/T+20 对基准超额 ⇒ 分别对应
+//   「逻辑错 / 时机错 / 执行错」（执行率只覆盖最后一种）。口径与已知限制见后端模块头。
+export const getCoachAttribution = (days = 60) => http.get('/coach/attribution', { params: { days } })
 
 // ── 工作台（2026-09-25）：回放按日期取数（后端 system.py 只读端点）──
 // ── 工作台·盘中看盘序（2026-09-25 交易方法论 A1/A3/B2）──

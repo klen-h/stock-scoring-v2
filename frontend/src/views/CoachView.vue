@@ -11,7 +11,7 @@
           </p>
         </div>
         <div class="flex gap-2">
-          <select v-model.number="days" @change="Promise.all([loadConsistency(), loadPlanRate()])"
+          <select v-model.number="days" @change="Promise.all([loadConsistency(), loadPlanRate(), loadAttribution()])"
             class="bg-bg border border-border rounded px-2 py-1 text-xs text-gray-200 focus:outline-none focus:border-accent/50">
             <option :value="7">近 7 天</option>
             <option :value="30">近 30 天</option>
@@ -94,6 +94,68 @@
     <div class="text-[11px] text-muted bg-card border border-border rounded-lg px-3 py-2 mb-4 leading-relaxed">
       模拟盘闭环口径：{{ planRate?.note || '按剧本离场 = 止损触发 或 持有到期（强制评估）' }}
       <span class="text-muted/70">· manual / take_profit / 主动放弃 视为未严格按剧本（followed=0）。</span>
+    </div>
+
+    <!-- ★★ 2026-09-29（P2 / 缺口 3）：**事后归因** —— 补 `audit.py` 自陈的
+         「5 日结果只回填不评估」那一半。回答执行率答不出的问题：
+         哪种建议期望最差（逻辑错）/ 放弃是躲过还是错过（执行错）/ 同一逻辑在不同
+         主力阶段差多少（时机错）。⚠️ 口径与三条已知限制见下方 note（必须一并展示）；
+         ⚠️ 组内 n<5 置灰不参与排行；小样本只作方向参考。 -->
+    <div v-if="attr?.available" class="bg-card border border-border rounded-lg p-4 mb-4">
+      <div class="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
+        <h2 class="text-sm font-bold text-gray-100">事后归因
+          <span class="text-[10px] text-muted font-normal">
+            近 {{ attr.window?.days }} 天 · 带标的 {{ attr.coverage?.with_code }} 条 ·
+            可评 {{ attr.coverage?.with_exc5 }}（{{ attr.coverage?.evaluable_pct }}%）·
+            基准 {{ attr.bench?.label }}{{ attr.bench?.fallback ? '（退路）' : '' }}</span></h2>
+        <span class="text-[10px] text-muted cursor-help"
+              :title="attr.note">口径与限制 ⓘ</span>
+      </div>
+
+      <!-- 规则生成的结论（不用 LLM） -->
+      <p class="text-xs text-gray-300 leading-relaxed mb-3">{{ attr.sentence }}</p>
+
+      <!-- 四张维度表 -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div v-for="dim in DIMS" :key="dim.key">
+          <div class="text-[11px] text-muted mb-1">{{ dim.title }}
+            <span class="text-[10px] text-muted/70">{{ dim.hint }}</span></div>
+          <table class="w-full text-[11px]">
+            <thead>
+              <tr class="text-[10px] text-muted border-b border-border/60">
+                <th class="text-left font-normal py-0.5">分组</th>
+                <th class="text-right font-normal w-10">n</th>
+                <th class="text-right font-normal w-16">T+5 超额</th>
+                <th class="text-right font-normal w-14">胜率</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="g in (groups[dim.key] || [])" :key="dim.key + g.key"
+                  class="border-b border-border/30" :class="{ 'opacity-45': g.insufficient }">
+                <td class="py-0.5 truncate max-w-[11rem]" :title="g.key + (g.insufficient ? '（样本不足）' : '')">
+                  {{ g.label || g.key }}</td>
+                <td class="text-right font-mono text-muted">{{ g.n }}</td>
+                <td class="text-right font-mono" :class="excCls(g.exc5)">{{ excText(g.exc5) }}</td>
+                <td class="text-right font-mono text-muted">
+                  {{ g.win5 == null ? '—' : g.win5 + '%' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 口径与限制（三条必须可见，别只藏在 hover 里） -->
+      <div class="text-[10px] text-muted mt-3 leading-relaxed border-t border-border/40 pt-2">
+        {{ attr.note }}
+      </div>
+      <div class="text-[10px] text-muted mt-1">
+        口径自检：T+5 重算 vs 库内 `outcome_pct` —— 比对 {{ attr.consistency?.checked }} 条，
+        <span class="text-rise">一致 {{ attr.consistency?.match }}</span>
+        <span v-if="attr.consistency?.mismatch" class="text-fall"> / 不一致 {{ attr.consistency?.mismatch }}</span>
+        · 维度分组和自检
+        <span :class="attr.selftest?.ok ? 'text-rise' : 'text-fall'">
+          {{ attr.selftest?.ok ? '通过（和 = 总数）' : '异常' }}</span>
+      </div>
     </div>
 
     <div class="flex gap-4 items-start">
@@ -222,13 +284,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import {
   getCoachAlerts,
   executeCoachAlert,
   getCoachConsistency,
   getCoachPlanExecutionRate,
   getCoachAbandonReasons,
+  getCoachAttribution,
 } from '../api'
 
 const loading = ref(false)
@@ -241,6 +304,30 @@ const days = ref(30)
 const writing = ref(null)          // 正在回写的 alert id
 const reasonOpen = reactive({})    // { [id]: true } 展开理由输入
 const reasonDraft = reactive({})   // { [id]: '理由文本' }
+
+// ★ 2026-09-29（P2）：事后归因（四个维度 = 逻辑错 / 执行错 / 时机错 / 成因）
+const attr = ref(null)
+const groups = computed(() => attr.value?.groups || {})
+const DIMS = [
+  { key: 'by_rule', title: '① 按建议类型', hint: '「逻辑错」：哪条期望最差' },
+  { key: 'by_executed', title: '② 按执行结果', hint: '「执行错」：放弃的后果' },
+  { key: 'by_phase', title: '③ 按主力阶段', hint: '「时机错」：同逻辑的阶段差异' },
+  { key: 'by_abandon', title: '④ 按放弃理由', hint: '仅放弃的建议（成因）' },
+]
+// 超额配色：正=红（跑赢基准）、负=绿（A 股惯例；与页面其它处一致）
+const excText = (v) => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'pt')
+const excCls = (v) => (v == null ? 'text-muted' : v >= 0 ? 'text-rise' : 'text-fall')
+
+async function loadAttribution() {
+  try {
+    // ⚠️ 归因窗口**不低于 60 天**：它靠累积样本（组内 n<5 置灰），"近 7 天"会近乎全灰。
+    //   标题会显示实际窗口，避免与上方 KPI 的"近 N 天"混淆。
+    const { data } = await getCoachAttribution(Math.max(days.value, 60))
+    attr.value = data
+  } catch (e) {
+    console.error('loadAttribution error', e)
+  }
+}
 
 // 严重度映射（与后端 rules.yaml 的 severity: alert/warn/info 同口径）
 const severityMap = {
@@ -311,7 +398,7 @@ async function load() {
   try {
     const { data } = await getCoachAlerts(50)
     alerts.value = data?.data || []
-    await Promise.all([loadConsistency(), loadPlanRate(), loadReasons()])
+    await Promise.all([loadConsistency(), loadPlanRate(), loadReasons(), loadAttribution()])
   } catch (e) {
     error.value = '加载失败：' + (e.response?.data?.detail || e.message)
   } finally {

@@ -695,7 +695,9 @@ _OVERNIGHT_KEYS = [
     ("us_dji", "us_dji", "道指现货"),
     ("us_ixic", "us_ixic", "纳指现货"),
     ("us_spx", "us_spx", "标普500"),
-    ("cn_hxc", "cn_hxc", "中国金龙(中概)"),
+    # ★ 2026-09-29（用户）：label 里 "(中概)" 去掉 —— 隔夜块行宽紧张，"中国金龙"本身
+    #   已是纳斯达克中国金龙指数的通行简称（与顶栏 `globalsRow` 的 label 一致）。
+    ("cn_hxc", "cn_hxc", "中国金龙"),
 ]
 
 
