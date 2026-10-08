@@ -271,6 +271,102 @@
           </div>
         </div>
       </div>
+
+      <!-- ★★ 2026-10-08（P3）：单股异动 LLM 分析 —— 判读 拉高出货 / 诱多上套 / 真实突破
+           交互纪律（与工作台「系统自洽性审查」同一套，且有前车之鉴）：
+             · **默认折叠 ⇒ 不请求**（避免开页面就烧 LLM）
+             · 展开时才请求：后端 30 分钟复用窗口内免费；「重新分析」才真消耗 1 次
+             · 折叠标题上**主动标出异动标签**（来自轻量闸门接口，不烧 LLM）——
+               这是用户原话"项目察觉不到"的正解：页面先察觉，再由人决定要不要深看
+             · ⚠️ 成本提示必须**如实**：命中缓存才免费，否则会调一次 LLM（不能写成"一定免费"） -->
+      <div class="mt-4 pt-4 border-t border-border">
+        <button type="button" class="text-sm font-semibold flex items-center gap-1.5 flex-wrap hover:text-accent"
+                @click="toggleAnomaly"
+                :title="anomalyOpen ? '点击收起' : '点击展开。30 分钟内已分析过 ⇒ 读缓存（免费）；否则会调用一次 LLM（约十几秒）'">
+          <span class="text-[10px] text-muted">{{ anomalyOpen ? '▼' : '▶' }}</span>
+          异动分析（LLM）
+          <span v-for="t in anomalyTags" :key="t"
+                class="px-1.5 py-0.5 rounded text-[10px] font-normal"
+                :class="t.includes('涨') ? 'bg-red-500/20 text-red-400' :
+                       t.includes('跌') ? 'bg-emerald-500/20 text-emerald-400' :
+                       'bg-amber-500/20 text-amber-400'">{{ t }}</span>
+        </button>
+
+        <template v-if="anomalyOpen">
+          <div class="flex items-center gap-2 mt-2 flex-wrap">
+            <span class="text-[10px] text-muted">
+              {{ anomalyTags.length ? '此刻命中系统异动规则' : '此刻未命中异动规则（仍可手动分析）' }}
+            </span>
+            <button class="ml-auto px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    :class="anomalyLoading ? 'text-muted' : 'text-accent hover:border-accent/50'"
+                    :disabled="anomalyLoading"
+                    title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约十几秒）。30 分钟内正常只需读缓存。"
+                    @click="loadAnomaly(true)">
+              {{ anomalyLoading ? '分析中…' : (anomaly.conclusion ? '重新分析' : '开始分析') }}
+            </button>
+          </div>
+
+          <div v-if="anomaly.error" class="mt-2 text-xs text-amber-400 leading-relaxed">{{ anomaly.error }}</div>
+
+          <template v-else-if="anomaly.conclusion">
+            <div class="mt-2 flex items-center gap-2 flex-wrap">
+              <span class="px-2 py-0.5 rounded text-xs font-bold" :class="conclusionCls">{{ anomaly.conclusion }}</span>
+              <span class="px-2 py-0.5 rounded text-[11px]" :class="confidenceCls">置信度 {{ anomaly.confidence }}</span>
+              <span class="text-[10px] text-muted">
+                分析于 {{ (anomaly.as_of || '').slice(5, 16).replace('T', ' ') }}
+                <template v-if="anomaly.cached"> · 复用缓存{{ anomaly.cached_age_min != null ? '（' + anomaly.cached_age_min + ' 分钟前）' : '' }}</template>
+                <template v-if="anomaly.items_used"> · 基于 {{ anomaly.items_used }} 项数据</template>
+                <template v-if="anomaly.from_snapshot"> · 数据为收盘快照</template>
+              </span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+              <div class="px-3 py-2 rounded-lg bg-white/5">
+                <div class="text-[11px] text-muted mb-1">支持证据</div>
+                <ul class="space-y-0.5">
+                  <li v-for="(x, i) in (anomaly.support || [])" :key="'s' + i" class="text-[11px] leading-snug">· {{ x }}</li>
+                  <li v-if="!(anomaly.support || []).length" class="text-[11px] text-muted">-</li>
+                </ul>
+              </div>
+              <div class="px-3 py-2 rounded-lg bg-white/5">
+                <div class="text-[11px] text-muted mb-1">反对证据</div>
+                <ul class="space-y-0.5">
+                  <li v-for="(x, i) in (anomaly.against || [])" :key="'a' + i" class="text-[11px] leading-snug">· {{ x }}</li>
+                  <li v-if="!(anomaly.against || []).length" class="text-[11px] text-muted">-</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
+              <span v-if="anomaly.watch_levels?.resistance" class="text-muted">上方观察位
+                <span class="font-mono text-gray-200">{{ anomaly.watch_levels.resistance }}</span></span>
+              <span v-if="anomaly.watch_levels?.support" class="text-muted">下方观察位
+                <span class="font-mono text-gray-200">{{ anomaly.watch_levels.support }}</span></span>
+            </div>
+            <div v-if="anomaly.risk" class="mt-1 text-[11px] text-amber-400/90 leading-relaxed">
+              风险提示：{{ anomaly.risk }}
+            </div>
+
+            <!-- 护栏可见化：结论与证据矛盾 / 缺失维度（后端算的，不是 LLM 自述） -->
+            <div v-for="(w, i) in (anomaly.consistency_warnings || [])" :key="'w' + i"
+                 class="mt-1 text-[11px] text-red-400/90 leading-relaxed">⚠ {{ w }}</div>
+            <div v-if="(anomaly.missing || []).length" class="mt-1 text-[11px] text-muted leading-relaxed">
+              数据缺失：{{ anomaly.missing.join('、') }}
+            </div>
+            <div class="mt-2 text-[10px] text-muted leading-relaxed">
+              {{ anomaly.disclaimer }}（结论不进决策链；「拉高出货 / 诱多上套」只描述形态与资金，
+              不构成操作建议）
+            </div>
+          </template>
+
+          <div v-else class="mt-2 text-[11px] text-muted leading-relaxed">
+            把此刻的盘口（价 / 量比 / 涨速 / 均价）、主力行为（阶段 / 资金 / 筹码）与近 5 日位置
+            一并交给 LLM，判读这次异动更像
+            <span class="text-gray-300">拉高出货 / 诱多上套 / 真实突破 / 暂无定论</span>。
+            <span class="text-muted/70">证据不足时它会直接说「暂无定论」——这比硬给一个结论更有用。</span>
+          </div>
+        </template>
+      </div>
       </div>
 
       <!-- 右列（1/3）：消息面情绪 -->
@@ -416,7 +512,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
 
 const route = useRoute()
@@ -893,7 +989,60 @@ async function tryLoadLocalAll() {
   return out.score || out.klines ? out : { score: null, klines: null, technical: null }
 }
 
+// ── 异动分析（LLM，按需触发）★ 2026-10-08 P3 ──
+// 交互纪律：折叠默认 ⇒ 不请求；展开时才请求（后端 30 分钟内复用 ⇒ 免费）。
+// `anomalyTags` 走**轻量闸门接口**（不烧 LLM），用于在折叠标题上**主动标出**
+// "这只票此刻有异动" —— 用户原话是"项目察觉不到"，所以察觉必须是页面主动做的。
+const anomalyOpen = ref(false)
+const anomalyLoading = ref(false)
+const anomalyTags = ref([])
+const anomaly = ref({})
+
+const conclusionCls = computed(() => ({
+  '拉高出货': 'bg-red-500/20 text-red-400',
+  '诱多上套': 'bg-amber-500/20 text-amber-400',
+  '真实突破': 'bg-emerald-500/20 text-emerald-400',
+}[anomaly.value.conclusion] || 'bg-white/5 text-muted'))
+
+const confidenceCls = computed(() => ({
+  '高': 'bg-emerald-500/10 text-emerald-400',
+  '低': 'bg-amber-500/10 text-amber-400',
+}[anomaly.value.confidence] || 'bg-white/5 text-muted'))
+
+async function loadAnomalySignals() {
+  // 闸门失败静默（不影响页面其它部分），失败时不显示标签而不是显示"无异动"
+  try {
+    const { data } = await getStockAnomalySignals(code)
+    anomalyTags.value = (data && data.tags) || []
+  } catch { /* 静默 */ }
+}
+
+async function loadAnomaly(force = false) {
+  if (anomalyLoading.value) return
+  anomalyLoading.value = true
+  anomaly.value = { ...anomaly.value, error: '' }
+  try {
+    const { data } = await getStockAnomalyAnalysis(code, force)
+    anomaly.value = data || {}
+    if (data && data.tags) anomalyTags.value = data.tags
+  } catch (e) {
+    anomaly.value = { ...anomaly.value, error: '分析失败：' + (e?.response?.data?.detail || e?.message || e) }
+  } finally {
+    anomalyLoading.value = false
+  }
+}
+
+async function toggleAnomaly() {
+  anomalyOpen.value = !anomalyOpen.value
+  // 展开时才请求：已有结论就不重复请求（要重算点「重新分析」）
+  if (anomalyOpen.value && !anomaly.value.conclusion && !anomalyLoading.value) {
+    await loadAnomaly(false)
+  }
+}
+
 onMounted(async () => {
+  // 异动闸门（轻量、不烧 LLM）：页面**主动察觉**异动，而不是等人点开才发现
+  loadAnomalySignals()
   // 消息面独立加载（首次需拉东财快讯，不阻塞主数据渲染）
   getStockNews(code).then(({ data }) => { newsData.value = data }).catch(() => {})
   getStockNewsHistory(code, 30).then(({ data }) => { newsHistory.value = data.history || [] }).catch(() => {})

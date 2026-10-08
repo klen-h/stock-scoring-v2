@@ -162,6 +162,12 @@ export const getStockNewsHistory = (symbol, days = 30) => http.get(`/stock/news/
 export const getStockTechnical = (symbol, period = 'day') => http.get(`/stock/technical/${symbol}`, { params: { period } })
 export const getStockFinance = (symbol, params) => http.get(`/stock/finance/${symbol}`, { params })
 export const getStockFinanceHistory = (symbol, limit = 12) => http.get(`/stock/finance/${symbol}/history`, { params: { limit } })
+// ★ 2026-10-08：单股异动「闸门」（**轻量、不调 LLM**）—— 页面加载即可调用，
+//   用于主动标出"这只票此刻有异动"（用户诉求原话是"项目察觉不到"）。
+export const getStockAnomalySignals = (symbol) => http.get(`/stock/anomaly-signals/${symbol}`)
+// ★ 2026-10-08：单股异动 LLM 分析（**按需触发**）—— 每次最多 1 次 LLM 调用，
+//   后端 30 分钟内复用缓存（命中则零调用）。同步 LLM ⇒ timeout 给足（同 getRadarAnalysis）。
+export const getStockAnomalyAnalysis = (symbol, refresh = false) => http.get(`/stock/anomaly-analysis/${symbol}`, { params: { refresh }, timeout: 120000 })
 // 批量财报（前端本地评分引擎算 top50 时用：1 次取回候选池财报，传给 scoreStock 算成长/质量维度）
 // ★ 响应拦截器返回的是 AxiosResponse，这里统一解包成 .data，避免调用方拿到整个 response 对象
 export const getFinanceBatch = (codes) => http.post('/stock/finance/batch', codes).then(r => r.data)
