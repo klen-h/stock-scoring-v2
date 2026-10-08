@@ -337,6 +337,25 @@ def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
                 # 内部统一存为万元（×10000），下游 ÷10000 转亿的逻辑无需改动。
                 "market_cap": float(data[45]) * 10000 if data[45] else 0,  # 总市值（万元）
                 "float_cap": float(data[44]) * 10000 if data[44] else 0,   # 流通市值（万元）
+                # ★★ 2026-10-08（P0 字段扩展：为「单股实时异动分析」补数据底座）
+                #   下标**全部经真值实测核对**（本项目踩过 44/45/46 含义与单位错的坑，
+                #   绝不按文档下标抄）。实测样本 万科A：昨收 4.26 / 收 4.06 / 跌 4.69%：
+                #     [47] 4.69 = 昨收×1.10  ⇒ 涨停价 ✓
+                #     [48] 3.83 = 昨收×0.90  ⇒ 跌停价 ✓
+                #     [49] 0.86              ⇒ 量比（当日缩量，与"跌 4.69% 无放量"自洽）✓
+                #     [50] 53275             ⇒ 委差(手)：买五档 7647+10644+34641+17564+16272
+                #                                = 86768，卖五档 7927+4854+10057+6074+4581
+                #                                = 33493，差 = 53275 **完全吻合** ✓
+                #     [51] 4.14 = 成交额元/成交量股 = 3048906401/735739400 = 4.144 ⇒ 均价 ✓
+                #   ⚠️ `limit_up/limit_down` 是**顺带发现的真值**：现有 `stock_anomalies`
+                #      用 `9.8 <= change_pct <= 10.1` 判涨停 —— ST(±5%) 与创业板/科创板
+                #      (±20%) 会**误判/漏判**；有真值价后可直接比价（消费者按需改，
+                #      本次只加字段不动任何判定，保持 P0 提交"零行为变化"）。
+                "limit_up": float(data[47]) if data[47] else 0,       # 涨停价
+                "limit_down": float(data[48]) if data[48] else 0,     # 跌停价
+                "volume_ratio": float(data[49]) if data[49] else 0,   # 量比（1=与近5日同期均量持平）
+                "bid_diff": float(data[50]) if data[50] else 0,       # 委差（手，买五档−卖五档）
+                "avg_price": float(data[51]) if data[51] else 0,      # 当日成交均价（现价 vs 均价=强弱）
             }
         except (IndexError, ValueError, TypeError):
             # 任何解析异常都跳过这一行（不影响其他股票）
@@ -407,8 +426,79 @@ def refresh_all_stocks(force: bool = False):
         # ★ 实时抓取 ⇒ 数据时刻 = 抓取时刻；且不再是快照数据（见 _cache 结构注释）
         _cache["data_ts"] = _cache["last_update"]
         _cache["from_snapshot"] = False
+        # ★★ 2026-10-08（P0）：搭车记录"涨速采样点"（腾讯快照无涨速字段，只能自算）
+        _record_speed(stocks)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {mode}刷新完成: {len(stocks)} 只股票")
         return stocks
+
+
+# ================================================================
+#  涨速自算（P0 新增，2026-10-08）—— 腾讯快照**没有涨速字段**，只能自己采样算
+# ================================================================
+# 【为什么搭车而不是再拉一个分时接口】
+#   分时接口要新增外部依赖 + 缓存 + 回源治理（WAF/egress 风险，本项目吃过教训）。
+#   而 `refresh_all_stocks` **本来就每 ~2 分钟把全市场刷一遍**（调度器
+#   `stock_cache_refresh_loop` 每 120s 触发，函数内另有 60s 冷却）⇒ 搭车采样
+#   **零额外请求**。
+# 【采样落点为什么必须在 `refresh_all_stocks`、不能在 `_fetch_tencent`】
+#   `restore_market_snapshot()` 会把**收盘快照**灌进 `_cache["stocks"]`，而时间戳是
+#   "现在"（注释：故意标记为新鲜）⇒ 若在解析层采样，**快照会被当成"当前真实价格"
+#   记进序列** ⇒ 涨速立刻失真（这正是本项目"缓存冻结"类事故的同款形态）。
+#   放在刷新函数里 ⇒ 快照恢复路径天然不经过 ⇒ 安全。
+# 【采样密度与容差】实际约 2 分钟一个点 ⇒ `speed_5min` 可算（3 个点），
+#   `speed_1min` 基本恒为 None —— **算不出就返回 None，绝不拿 0 冒充"平盘"**
+#   （本项目铁律：缺数据 None 不填 0；0 会被下游读成"无涨速"）。
+_SPEED_CACHE = {}          # {code: [[ts, price], ...]}，每只最多 32 点（列表够用，免 import）
+_SPEED_KEEP_SEC = 6 * 60   # 序列保留 6 分钟（够算 5 分钟涨速）
+_SPEED_MIN_GAP_SEC = 20    # 两次采样最小间隔（防单票被高频轮询刷成密集噪声）
+_SPEED_MIN_COVER = 0.6     # 窗口覆盖度下限：历史不足 60% 就判"算不出"
+
+
+def _record_speed(stocks: dict) -> None:
+    """把本轮刷新的全市场价格记进涨速序列（**仅盘中**；非交易时段不采样）。"""
+    try:
+        from app.flash import rules as _rules          # 局部 import：避免与 flash 循环依赖
+        if not _rules.get_china_market_status().get("is_open"):
+            return                                     # 收盘/午休：不采样，避免隔夜跳变
+    except Exception:
+        return                                         # 判不出是否盘中 ⇒ 宁可不采样
+    now = time.time()
+    for code, s in (stocks or {}).items():
+        price = float(s.get("price") or 0)
+        if price <= 0:
+            continue
+        dq = _SPEED_CACHE.get(code)
+        if dq is None:
+            dq = _SPEED_CACHE[code] = []
+        if dq and now - dq[-1][0] < _SPEED_MIN_GAP_SEC:
+            continue                                   # 采样过密（同一分钟内被多次调用）
+        dq.append([now, price])
+        if len(dq) > 32:
+            del dq[:-32]
+        while dq and now - dq[0][0] > _SPEED_KEEP_SEC:
+            dq.pop(0)
+
+
+def speed_pct(code: str, minutes: int = 5):
+    """近 `minutes` 分钟涨速（%）。**数据不足返回 None**（不返回 0 冒充"平盘"）。"""
+    dq = _SPEED_CACHE.get(code)
+    if not dq or len(dq) < 2:
+        return None
+    now = time.time()
+    span = minutes * 60
+    if now - dq[0][0] < span * _SPEED_MIN_COVER:
+        return None                                    # 序列还没覆盖够一个窗口
+    target = now - span
+    base = None
+    for ts, p in dq:
+        if ts <= target + 30:                          # 容差 30s（采样间隔 ~120s）
+            base = p                                   # 取"最接近窗口起点"的采样（越近越准）
+    if not base or base <= 0:
+        return None
+    try:
+        return round((dq[-1][1] / base - 1) * 100, 2)
+    except ZeroDivisionError:
+        return None
 
 
 # ================================================================

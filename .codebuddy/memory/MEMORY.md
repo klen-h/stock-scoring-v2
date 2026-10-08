@@ -32,6 +32,8 @@
 - 竞价落库：`market_emotion_daily` 三组互不覆盖字段（主/close_*/auction_*）；竞价数据只在 10 分钟窗口存在，窗外不写；`_emotion_daily_row` 必须组装整行（SQLite `INSERT OR REPLACE` 缺列清空）。
 - `kline_cache`/`indicator_cache`：indicator 36h；`kline_count`∈(0,250) 视为截断跳过。
 - 两条包发布链独立：`kline-data.yml`(18:00)→前端包+realtime-quotes；`backend-pack.yml`(19:00)→`backend-pack.db.gz`（日批唯一依赖）。前端包失败≠日批失败；瓶颈=K线阶段 1566 只单只请求。
+- ★★ **腾讯 qt 快照字段下标实测地图**（2026-10-08 真值核对，勿再按文档抄——本项目踩过 44/45/46 的坑）：`[3]现价 [4]昨收 [6]成交量(手) [7]外盘 [8]内盘 [9..28]五档(买一价/量…卖五价/量) [31]涨跌额 [32]涨跌幅% [37]成交额(万) [38]换手% [39]PE [41]最高 [42]最低 [43]振幅 [44]流通市值(亿) [45]总市值(亿) [46]PB [47]涨停价 [48]跌停价 [49]量比 [50]委差(手，=买五档量−卖五档量) [51]均价 [57]成交额(万,重复)`。验证法：涨停价必须 = 昨收×1.10（万科A 4.26→4.69 ✓）、均价 = 成交额元/成交量股（✓）、委差 = 五档差（✓）。**已落库的解析字段**：`tencent._fetch_tencent` 现含上述 18+5 个（新增 `limit_up/limit_down/volume_ratio/bid_diff/avg_price`）。
+- **涨速自算**（腾讯无该字段）：`tencent._SPEED_CACHE` + `_record_speed()`（**钩在 `refresh_all_stocks` 尾部，绝不能在 `_fetch_tencent`** —— 否则 `restore_market_snapshot` 会把**收盘快照**当实时价记进序列）＋ `speed_pct(code, minutes=5)`。仅 `get_china_market_status().is_open` 时采样；保留 6min/最小间隔 20s/≤32 点。**数据不足返回 None，不返回 0**。实际采样间隔 ≈2min（调度器 120s + 函数内 60s 冷却）⇒ `speed_5min` 可用、`speed_1min` 基本恒 None。
 - ★★ 板块源 = zzshare（`plates_rank` plate_type=14行业/15概念，**支持历史日期可回填**），落独立表 `plate_daily_zz`；与东财 taxonomy 不兼容**绝不混表**。`app/sector_zz.py` / `/sector/zz/*` / `scripts/backfill_plate_zz.py`；`eastmoney.get_sectors` 降级链 东财→zzshare→新浪；新浪无涨跌家数给 `None`（前端判 null 才渲染，不显假 0）。
 
 ## 路由与验证纪律
