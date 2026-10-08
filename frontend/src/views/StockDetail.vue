@@ -1041,6 +1041,10 @@ async function toggleAnomaly() {
 }
 
 onMounted(async () => {
+  // ★ 从观察池「异动」入口进来（`?anomaly=1`）⇒ 直接把分析块**展开**
+  //   但**不自动请求** —— 展开只是把「开始分析」按钮呈现出来，成本仍由人点（按需纪律）。
+  const q = route.query.anomaly
+  if (q === '1' || q === 1 || q === true) anomalyOpen.value = true
   // 异动闸门（轻量、不烧 LLM）：页面**主动察觉**异动，而不是等人点开才发现
   loadAnomalySignals()
   // 消息面独立加载（首次需拉东财快讯，不阻塞主数据渲染）

@@ -548,6 +548,8 @@
             <th class="text-right py-2.5 px-3">筹码位置</th>
             <th class="text-right py-2.5 px-3">获利盘</th>
             <th class="text-center py-2.5 px-3">建议仓位</th>
+            <!-- ★ 2026-10-08 P3：异动分析入口（共享组件 `AnomalyEntry`，与工作台观察池同一份） -->
+            <th class="text-center py-2.5 px-3">异动</th>
           </tr>
         </thead>
         <tbody>
@@ -610,6 +612,10 @@
             <td class="py-2 px-3 text-right font-mono text-xs">{{ g.winner_ratio != null ? (g.winner_ratio * 100).toFixed(0) + '%' : '-' }}</td>
             <td class="py-2 px-3 text-center text-xs">
               {{ g.position_label || '-' }}<span v-if="g.position_pct != null" class="text-muted ml-1">({{ g.position_pct }}%)</span>
+            </td>
+            <td class="py-2 px-3 text-center">
+              <!-- 入口只做「跳转 + 展开」，不自动调 LLM（见组件注释） -->
+              <AnomalyEntry :code="g.code" />
             </td>
           </tr>
         </tbody>
@@ -1156,6 +1162,8 @@ import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, ge
   //   （同一类问题在 Workbench.vue 的 getSectorSnapshot 上也存在过，已一并修。）
   getMarketOverview } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
+// ★ 2026-10-08 P3：异动分析入口（共享组件；工作台观察池 import 同一份，防两处漂移）
+import AnomalyEntry from '../components/AnomalyEntry.vue'
 // ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——
 //   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
 import { PHASE_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'

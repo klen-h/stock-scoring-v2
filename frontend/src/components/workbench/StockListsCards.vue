@@ -95,7 +95,7 @@
           </div>
           <div class="space-y-1 text-xs">
             <div v-for="g in gwItems.slice(0, 8)" :key="g.code"
-                 class="flex items-center gap-1.5 border-b border-border/40 py-1"
+                 class="flex items-center gap-1.5 flex-wrap border-b border-border/40 py-1"
                  :title="gwTip(g)">
               <a :href="stockHref(g.code)" target="_blank"
                  class="font-semibold hover:text-accent truncate max-w-[80px]">{{ g.name || g.code }}</a>
@@ -117,6 +117,9 @@
               <span v-if="g.phase" class="px-1 rounded shrink-0 cursor-help"
                     :class="(MF_PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
                     :title="(MF_PHASE_STYLE[g.phase] || {}).tip || ''">{{ g.phase_cn || g.phase }}</span>
+              <!-- ★ 2026-10-08 P3：异动分析入口（**共享组件**，与榜单页观察池是同一份）。
+                   ⚠️ 右栏仅 320px ⇒ 本行已加 `flex-wrap`，窄屏优雅换行而不是被裁掉。 -->
+              <AnomalyEntry :code="g.code" />
               <span v-for="(s, si) in (g.strategies || [])" :key="si"
                     class="ml-auto px-1 rounded bg-accent/10 text-accent border border-accent/30 text-[10px] shrink-0">
                 {{ strategyShort(s) }}</span>
@@ -154,6 +157,8 @@ import {
   PHASE_STYLE as MF_PHASE_STYLE, strategyShort, phaseCn, readyChipCls,
   stockHref, xqUrl, pctClass, signNum, scoreClass,
 } from '../../composables/displayMeta'
+// ★ 2026-10-08 P3：异动分析入口（共享组件；榜单页观察池 import 同一份）
+import AnomalyEntry from '../AnomalyEntry.vue'
 
 const props = defineProps({
   topItems: { type: Array, default: () => [] },
