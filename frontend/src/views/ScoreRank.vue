@@ -1041,7 +1041,9 @@
         <div class="flex items-center justify-between flex-wrap gap-3 mb-3">
           <div>
             <h2 class="text-lg font-bold">全市场异动监控</h2>
-            <p class="text-xs text-muted mt-1">检测急涨≥5%/急跌≤-5%/涨停/跌停/高换手>10%/大振幅>8%</p>
+            <!-- ★ 2026-10-08：与后端 `_detect_anomaly` 同步（新增 放量/急拉升/急跳水，
+                 涨跌停改为**真值限价**比对 ⇒ ST(±5%)/创业板科创板(±20%) 也能判出） -->
+            <p class="text-xs text-muted mt-1">检测 急涨≥5% · 急跌≤-5% · 涨停/跌停（真值限价，含ST/创业板） · 高换手&gt;10% · 大振幅&gt;8% · 放量（量比≥3且有方向） · 急拉升/急跳水（5分钟涨速≥3%）</p>
           </div>
           <div class="flex items-center gap-2">
             <span class="text-xs text-muted">共 {{ anomalyTotal }} 条异动</span>

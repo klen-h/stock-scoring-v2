@@ -48,7 +48,10 @@
 - 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`）新增前防重复。
 
 ## 项目已有能力清单（提需求前先查）
-- 盘中警示 `intraday_alerts.py`；矛盾扫描 `contradictions/`；LLM 素材 `flash/llm.py`；事件信号 `events/signal.py`。
+- 盘中警示 `intraday_alerts.py`（**指数级**：指数急跌/冲高回落/涨跌比/跌停家数）；矛盾扫描 `contradictions/`；LLM 素材 `flash/llm.py`；事件信号 `events/signal.py`。
+- ★ **个股异动判定唯一口径 = `routers/stock.py::_detect_anomaly()`**（2026-10-08 P1 抽出，全市场 `/api/stock/anomalies` 与单票 `detect_single_anomaly()` **共用**，防两处漂移）。8 条规则：急涨≥5% / 急跌≤-5% / 涨停 / 跌停（**用真值限价 `tencent.limit_up|limit_down` 比价** ⇒ ST±5%、创业板科创板±20% 不再漏判；旧口径 `9.8≤涨跌幅≤10.1` 判不出 19.9% 的真涨停） / 高换手>10% / 大振幅>8% / **放量（量比≥3 **且** \|涨跌幅\|≥2，severity=1 防过吵）** / **急拉升·急跳水（5分钟涨速≥3%）**。单票闸门 `detect_single_anomaly(code)` 返回 `should_analyze/tags/speed_5min/data_ts/from_snapshot`，**不调 LLM**。
+- ★★ **静默失效又一例（已修）**：前端 `ScoreRank.vue` 异动标签一直是 `v-for="tag in a.tags"`，而后端只返回 `signals`（结构体）⇒ **`tags` 恒 undefined ⇒ 标签从来没渲染出来过**（`v-for` over undefined 静默，构建/日志无痕）。后端现已同时返回 `tags`（= signames 的 type 数组）。**纪律：前端消费的字段名必须与后端逐一对照**——本项目此类问题已第 3 次（`getMarketOverview` 未 import、`getSectorSnapshot` 未 import、本次 `tags`）。
+- ★ **单股异动 LLM 分析（P2，2026-10-08）**：`GET /api/stock/anomaly-analysis/{symbol}?refresh=` —— 判读「拉高出货/诱多上套/真实突破/**暂无定论**」。数据四层：L1 盘口快照（复用 `detect_single_anomaly`）＋L2 主力（`_mainforce_for`，口径**照抄详情页**：优先 `mainforce_state` 但**日期须与最新K线一致**才算新鲜，否则现算 `float_shares=float_cap×1e4÷现价`）＋L3 大盘（`llm.format_a_share_context`）＋L4 历史（`backtest_prices` **只取价格**，绝不跨源算量比）。表 `stock_anomaly_analysis(code,date,result_json,created_at)`，**复用窗口仅 30 分钟**（盘中结论会过时）。护栏：`daily_report._ORDER_WORDS` 剔指令式措辞（计 `filtered_fields`）＋结论与主力资金标签矛盾则**代码层强制降置信度**（`_consistency_warnings`）＋**失败不写缓存**（否则窗口内一直返回失败）。**结论不进决策链**；成本=最多 1 次 LLM/次、`tier="fast"`、受日熔断与 6s 节流约束。⚠️ `_stock_history` 两条诚实前提：`backtest_prices` 仅 ~800 只（池外返回 None）、日线 **15:40 后**才回填（盘中最后一根是**昨日** ⇒ 文案须标注"截至上一交易日"）。
 - 持仓聚合 `portfolio_radar.py` + `/score/batch/portfolio-radar`。
 - 运维五件套：`/api/system/{status,runtime-files,memory(52探针),db-usage}` + `memory_watch.py` + `db_retention.py`（Supabase 500MB 超限=只读）。
 - 评分榜双模式：前端本地引擎 `useFrontendScoring`（K线包入 IndexedDB+实时行情+本地精算）；工作台 `loadTop` 本地优先（5 分钟复用窗口，force 跳过），`topMode` 标记「本地实时/后端批次」。
