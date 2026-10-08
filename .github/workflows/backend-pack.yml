@@ -69,6 +69,22 @@ jobs:
   #     （否则兜底 cron 会每天固定双跑一次 1h43m 的计算 + 重烧 LLM + 覆盖 Pages）
   #   · workflow_dispatch（手动/第三方）：直接放行
   guard:
+    # ★★ 2026-10-08 修「兜底守卫从未生效（每天固定双跑）」—— 用户报"假期日批照跑"时挖出：
+    #   实测上游每天两条：`Manually run by klen-h` 19:00（cron-job.org 的 dispatch，准时 ✓）
+    #   + `Scheduled` ~03:xx 北京（GitHub 兜底 cron，名义 14:00 UTC=北京 22:00，**实际晚 ~5h**）。
+    #   而兜底**本该被本 guard 判 skip**（"最近 12h 已有成功 run"）—— 实测时长仍是
+    #   1h12m~1h31m（整包跑满；skip 的话只有几秒）⇒ **judge 恒为 0**。
+    # 【根因（已从代码钉死，非猜测）】原命令靠 `gh run list` 查历史，但：
+    #   ① 本 job **没有 `actions/checkout`** ⇒ 工作区无 `.git`；
+    #   ② **`gh` 不读 `GITHUB_REPOSITORY`**，它从**当前目录的 git remote** 推断仓库
+    #      （或 `GH_REPO` / `--repo`）⇒ 在空工作区里 `gh run list` 直接报
+    #      "not a git repository"；
+    #   ③ 该错误被 **`2>/dev/null` 吞掉**、再由 `|| echo 0` 补成 0 ⇒ 判据恒 0 ⇒
+    #      **永不 skip** ⇒ 每天白跑一次完整链（包 ~1h20m + 日批 ~55m ≈ 2h15m/天）。
+    #   ⇒ 修法：显式给 `GH_REPO`（等价于 `--repo`，无需 checkout 更轻）；
+    #     并**不再吞错** —— 失败时打 warning 且按"不跳过"处理（**宁多跑一次，不误跳**）。
+    permissions:
+      actions: read          # gh run list 读运行历史所需（仓库若限制了默认权限，缺它即 403）
     runs-on: ubuntu-latest
     outputs:
       skip: ${{ steps.check.outputs.skip }}
@@ -76,16 +92,23 @@ jobs:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
+          # ★ 必须显式指定：本 job 未 checkout，gh 无法从目录推断仓库
+          GH_REPO: ${{ github.repository }}
         run: |
           EVENT="${{ github.event_name }}"
-          echo "event=$EVENT"
+          echo "event=$EVENT repo=$GH_REPO"
           SKIP=false
           if [ "$EVENT" = "schedule" ]; then
             # 兜底守卫：最近 12 小时内已有成功的 backend-pack ⇒ 今天正常路径已跑过
-            OK=$(gh run list --workflow=backend-pack.yml --status=success \
-                   --created=">=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M)" \
-                   --json databaseId --jq 'length' 2>/dev/null || echo 0)
-            echo "recent_success_runs=$OK"
+            if OK=$(gh run list --workflow=backend-pack.yml --status=success \
+                      --created=">=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M)" \
+                      --limit 20 --json databaseId --jq 'length'); then
+              echo "recent_success_runs=$OK"
+            else
+              # 查询失败 ⇒ 无法判定 ⇒ 按"不跳过"处理（宁多跑一次，不误跳一天）
+              echo "::warning::gh run list 查询失败，无法判定今天是否已跑 ⇒ 本兜底照常执行"
+              OK=0
+            fi
             if [ "$OK" -gt 0 ]; then
               echo "⏭ 最近 12h 已有成功的 backend-pack（正常路径已完成）⇒ 兜底跳过"
               SKIP=true

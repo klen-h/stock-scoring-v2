@@ -456,15 +456,37 @@ DAILY_REPORT_WINDOW = (1170, 1440)   # 北京时间 19:30-23:59
 
 
 async def daily_report_loop():
-    """盘后自动生成 A 股大盘日报（硬数据直填 + LLM 解读，见 app/daily_report.py）。"""
+    """盘后自动生成 A 股大盘日报（硬数据直填 + LLM 解读，见 app/daily_report.py）。
+
+    ★★ 2026-10-08 修「**休市日写出假日键日报**」（实测事故，用户报"假期日批照跑"时挖出）：
+      【现象】`daily_reports` 里躺着 6 个休市日的行 —— `09-25`（中秋）、
+        `10-01/02/05/06/07`（国庆）；实测 `date=2026-10-01` 那行**标题写 10-01、
+        正文却是 09-30 的行情**（"市场状态…判定日期 2026-09-30"）⇒ 键与内容不符，
+        用户按日期翻日报会看到**错的**那一天。
+      【两处根因（缺一不可）】
+        ① 守卫只有 `now.weekday() < 5`（**只看星期，不认 A 股节假日**）——
+           本项目**自己有** `rules.is_trading_day()`（含全年 `HOLIDAYS`），这条循环没用它；
+        ② `run_daily_report()` **不传 `date`** ⇒ 内部 `date = _today()`（**运行日**）。
+      【为什么以前以为修过了】2026-09-26 给"日批调用点"补了 `date=` 参数
+        （`scripts/daily_batch.py::task_daily_report`），**漏掉这条 Render 路径**
+        —— `run_daily_report` 的 docstring 还写着"默认 None ⇒ 手动/前端重算不受影响"。
+      【口径】现在与本项目唯一口径对齐：`rules.is_trading_day()` + `latest_completed_trading_day()`
+        （窗口在 15:00 后且已过交易日守卫 ⇒ 二者都等于"今天"）。
+      ⚠️ 仍存的重复：本循环 19:32 先写、日批 20:43 再覆盖（**键相同**故只看得到一行，
+         但**日报 LLM 每天烧两次**）。要根治得把本循环挪到日批之后当兜底，或加
+         "日批已写则跳过"判据 —— 属独立议题，未在本轮处理（已记入记忆）。
+    """
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and DAILY_REPORT_WINDOW[0] <= t < DAILY_REPORT_WINDOW[1]
+        if (rules.is_trading_day(now) and DAILY_REPORT_WINDOW[0] <= t < DAILY_REPORT_WINDOW[1]
                 and not store.is_schedule_done("daily_report")):
             try:
                 from app.daily_report import run_daily_report
-                res = await asyncio.to_thread(run_daily_report)
+                # ★ 必须显式传「交易日」：休市日/跨午夜时它 ≠ `_today()`
+                #   （本项目反复踩过的"日期键两派"，见 routers/system.py 顶部注释）
+                res = await asyncio.to_thread(
+                    run_daily_report, date=rules.latest_completed_trading_day())
                 if res and res.get("date"):
                     store.mark_schedule_done("daily_report")
                     status["last_daily_report"] = rules.beijing_now().isoformat()
