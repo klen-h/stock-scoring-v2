@@ -32,6 +32,16 @@ from app.mainforce.phases import PHASE_CN
 # ret60 / phase ≥70 —— 260 根留足余量；再深对结果无增益，纯烧 Supabase egress。
 BARS_WINDOW = 260
 
+# ★★ 2026-10-10（egress：Actions 冷启根治）：**资金流窗口**（交易日数）。
+#   本模块只需要**近 5 日**资金流（`overlay` 里就是 `flow_rows[-5:]` ⇒ flow5_amt /
+#   flow5_amt_yuan），但原来调 `load_flow_map()` **整表读 146 个交易日/只**
+#   （pg_stat_statements 实测 12.9MB / 120,850 行 / 次，是全库单条语句第一名）。
+#   而 **Actions 每次都是全新 runner ⇒ `backend/data/flow-map.db` 本机缓存天然不存在**
+#   ⇒ 日批每个交易日白付 12.9MB。20 = 5 的 4 倍余量；
+#   语义边界见 `flow.load_flow_map` docstring（flow5_* 逐值不变；
+#   flow_consec 上限=窗口天数，且全库无任何消费方）。
+FLOW_WINDOW_DAYS = 20
+
 
 def ensure_table() -> None:
     if db._use_postgres:
@@ -194,7 +204,12 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
     if codes:
         bars_map = {c: bars_map[c] for c in codes if c in bars_map}
     fs_map = get_float_shares_from_snapshot()
-    flow_map = load_flow_map()
+    # ★★ 2026-10-10（egress）：只读**最近 FLOW_WINDOW_DAYS 个交易日**的资金流窗口
+    #   —— 下面只用得到近 5 日（`mainforce_overlay` 内是 `flow_rows[-5:]`），
+    #   原来整表读 146 个交易日/只（12.9MB / 120,850 行 / 次），而 Actions 每次是
+    #   全新 runner、本机缓存不存在 ⇒ 每个交易日白付一次。详见本文件顶部
+    #   `FLOW_WINDOW_DAYS` 与 `flow.load_flow_map` 的语义边界说明。
+    flow_map = load_flow_map(days=FLOW_WINDOW_DAYS)
 
     # ── 断点续传：先确定本轮交易日（各只取自己末根），再查已写入的 code ──
     no_today = None

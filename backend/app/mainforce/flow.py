@@ -513,33 +513,127 @@ def _flow_cache_put(cache_key: str, ver, rows: dict) -> None:
     _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": rows}
 
 
-def load_flow_map(codes: list = None) -> dict:
-    """读全表 {code: [{date, main_net, ...}]}（升序），供回测脚本用。
+# ── 窗口化读（2026-10-10，egress：Actions 冷启根治）─────────────────────────
+_FLOW_WIN_TOL = 1.7      # 交易日 → 日历日 的余量系数（含周末 + 少量假期）
+_FLOW_WIN_PAD = 10       # 再加 10 个自然日兜底
+
+
+def _flow_window_cutoff(days: int) -> str:
+    """`days` 个交易日窗口的起算日期（YYYY-MM-DD）。**取不到最新日期返回 ''**。
+
+    只多一条**单行**查询（`MAX(date)`，几十字节）—— 比按自然日瞎猜安全，
+    也比给 PG/SQLite 各写一套日期函数简单（双库兼容铁律：不写方言函数）。
+    """
+    try:
+        r = db.fetch_one("SELECT MAX(date) AS d FROM mainflow_history") or {}
+        d = str(r.get("d") or "")[:10]
+        if not d:
+            return ""
+        from datetime import datetime, timedelta
+        latest = datetime.strptime(d, "%Y-%m-%d")
+        return (latest - timedelta(days=int(days * _FLOW_WIN_TOL) + _FLOW_WIN_PAD)
+                ).strftime("%Y-%m-%d")
+    except Exception as e:
+        print(f"[mainflow] 窗口起算日计算失败（退回整表读）: {type(e).__name__}: {e}")
+        return ""
+
+
+def _stale_flow_codes(cutoff: str):
+    """最后一行仍早于 `cutoff` 的代码清单。**判不出返回 None**（调用方退回整表读）。
+
+    ★★ 为什么必须有这道判据（2026-10-10 实测驱动，先量后加）：
+      窗口化读对**数据陈旧**的代码返回空集，而全表读会拿它的**旧行**喂 overlay
+      ⇒ 这些票会从「`flow5_amt` 有值」变成「`flow5_amt=None` ⇒ 走弱口径降级」
+      —— 那是**静默改变决策链输入**（flow5 是评分因子），不能靠"现在恰好没有"。
+      实测（2026-10-10）：954/954 只最后一行都在最新交易日（日批每天全量刷新）⇒
+      陈旧人群为空、窗口化完全等价；但**判据留在代码里**，一旦出现断更的票就
+      自动退回整表读（宁多读一次，也不改口径）。
+      代价：只读聚合结果（≈954 行 / 30KB）。
+    """
+    try:
+        rows = db.fetch("SELECT code, MAX(date) AS d FROM mainflow_history GROUP BY code")
+        out = []
+        for r in rows or []:
+            d = str(r.get("d") or "")[:10]
+            if d and d < cutoff:
+                out.append(str(r["code"]))
+        return out
+    except Exception as e:
+        print(f"[mainflow] 陈旧代码判定失败: {type(e).__name__}: {e}")
+        return None
+
+
+def load_flow_map(codes: list = None, days: int = None) -> dict:
+    """读 {code: [{date, main_net, ...}]}（升序），供回测脚本用。
 
     ★ 2026-09-17：整表读（8.7MB/次）走三层缓存 —— 进程内存 → **本机 SQLite（跨进程）**
       → 才回源。见上方 `_FLOW_DISK_*` 注释（这是"流量偷跑"的根治点）。
+
+    ★★ 2026-10-10（egress：Actions 冷启根治）：新增 `days=` **窗口化读**。
+      起因：`mainforce/state.refresh_all` 每个交易日都要读这张表，但它**只需要最后 5 行**
+      —— overlay 里就是 `flow_rows[-5:]`（`flow5_amt` / `flow5_amt_yuan`，见
+      `mainforce/overlay.py`），却整表读 146 个交易日/只（实测 **12.9MB / 120,850 行 / 次**）。
+      而 **Actions 每次都是全新 runner ⇒ 本机磁盘缓存天然不存在** ⇒ 日批每天白付 12.9MB
+      （pg_stat_statements：14 天 483 万行、单条语句第一名）。
+      语义边界（消费方逐个核过）：
+        · `flow5_amt` / `flow5_amt_yuan`：只取最后 5 行 ⇒ 窗口只要 ≥5 就**逐值不变** ✓
+        · `flow_consec`（连续净流入天数）：**从末尾往回数到第一个非正值 ⇒ 窗口无限长**
+          ⇒ 窗口化后**上限 = 窗口天数**。已 grep 全库：**该字段没有任何消费方**
+          （既没落 `mainforce_state`、也没进任何 API/前端；唯一同名变量在研究脚本
+          `mainforce_factor_backtest.py` 里自算）⇒ 实务零影响；
+          **将来若要用它，必须改回整表读（或按 code 单独查）**。
+      ⚠️ 窗口化**不读也不写**本机磁盘缓存（那是**整表口径**，混用会串味）。
+      ⚠️ 若存在**陈旧代码**（最后一行早于窗口）或**判不出** ⇒ **自动退回整表读**
+        （见 `_stale_flow_codes`：宁可多读一次，也不静默改变这些票的降级口径）。
     """
     ensure_table()
+    win = int(days) if days and int(days) > 0 else None
+    cutoff = _flow_window_cutoff(win) if win else ""
+    if win and not cutoff:
+        win = None                 # 取不到最新日期 ⇒ 退回整表读（宁多读，不给错窗口）
+    if win:
+        stale = _stale_flow_codes(cutoff)
+        if stale is None:
+            print("[mainflow] 陈旧判据不可用 ⇒ 退回整表读（宁多读，不静默改口径）")
+            win = None
+        elif stale:
+            print(f"[mainflow] {len(stale)} 只代码资金流最后一行早于 {cutoff}"
+                  f" ⇒ 退回整表读（窗口化会把这些票从「有旧数据」变成「无数据」，"
+                  f"改变 overlay 的降级口径；例: {stale[:3]}）")
+            win = None
     cache_key = "all" if not codes else ",".join(sorted(str(c) for c in codes))
+    if win:
+        cache_key = f"last{win}:{cache_key}"
     hit = _FLOW_MAP_CACHE.get(cache_key)
     if hit and _cache_fresh(hit):
         return hit["rows"]
     ver = _ver_now()
-    # ★ 跨进程持久缓存：只在「全表读」时启用（带 codes 的查询行数少、组合无穷）
-    if not codes:
+    # ★ 跨进程持久缓存：只在「全表读」时启用（带 codes 的查询行数少、组合无穷；
+    #   窗口读同理 —— 它与整表口径不同，落盘会串味）
+    if not codes and not win:
         disk = _disk_load(ver)
         if disk is not None:
             _flow_cache_put(cache_key, ver, disk)
             print(f"[mainflow] 整表读命中本机缓存（{len(disk)} 只）→ 零 Supabase 流量")
             return disk
+    where, params = [], []
+    if codes:
+        where.append("code = ANY(%s)")
+        params.append(codes)
+    if win:
+        where.append("date >= %s")
+        params.append(cutoff)
     sql = ("SELECT code, date, main_net, super_net, big_net, main_pct, super_pct, "
            "close, pct_chg FROM mainflow_history")
-    params = None
-    if codes:
-        sql += " WHERE code = ANY(%s)"
-        params = (codes,)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY code, date ASC"
-    rows = db.fetch(sql, params) if db._use_postgres else db.fetch(sql)
+    if db._use_postgres:
+        rows = db.fetch(sql, tuple(params)) if params else db.fetch(sql)
+    else:
+        # SQLite（本地测试）：`code = ANY(%s)` 不受支持（原实现同样只在 PG 下走 codes 分支）；
+        # 窗口条件 `date >= %s` 是通用 SQL ⇒ SQLite 下照常传参。
+        rows = db.fetch(sql, tuple(params)) if (params and not codes) else db.fetch(sql)
     by_code = {}
     for r in rows:
         by_code.setdefault(r["code"], []).append({
@@ -548,7 +642,7 @@ def load_flow_map(codes: list = None) -> dict:
             "close": r["close"], "pct_chg": r["pct_chg"],
         })
     _flow_cache_put(cache_key, ver, by_code)   # ★ 2026-09-28：条数 + 行数双上限（见该函数）
-    if not codes:
+    if not codes and not win:
         _disk_save(ver, by_code)         # 落盘 → 下一个新进程零 egress
     return by_code
 

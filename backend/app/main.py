@@ -125,6 +125,25 @@ async def lifespan(app: FastAPI):
             if getattr(_sched, "READ_ONLY", False):
                 print("[main] READ_ONLY 模式跳过系统绩效预热（省 egress）")
                 return
+            # ★★ 2026-10-10（egress，用户报"页面不打开也烧 Supabase"时补）：
+            #   本块上方注释写的是"**db 模式**且非只读才预热"，但代码此前**只判了
+            #   READ_ONLY** —— 注释与实现不符（审查 P1-19 落地时漏了这一半）。
+            #   为什么 pack/local 模式下**必须**跳过（两条都是可复现的 egress 路径）：
+            #     ① **包未就绪 ⇒ 读侧静默回退 DB**：本函数 sleep 30s 后执行，而
+            #        `_pack_bootstrap` 正在下载 60MB+ 的包 ⇒ 此刻 pack_source 的查询
+            #        返回空 ⇒ 回退 DB ⇒ `_load_prices_map` 无 start 会拉**全历史日线**
+            #        （本块注释自认 db 模式 20-40MB/次）—— 正好落在"包还没下完"的窗口；
+            #     ② **包判陈旧**时 `get_*` 一律返回 None（"宁缺毋旧"）⇒ 同样整份回退 DB。
+            #   ⇒ 数据源不是 db 时预热既无收益（包=本机 SQLite，首访也只慢几秒）
+            #     又有明确 egress 风险 ⇒ 直接跳过。
+            try:
+                from app import pack_source
+                if pack_source.enabled():
+                    print(f"[main] 数据源={pack_source.source_name()} 跳过系统绩效预热"
+                          f"（避免包未就绪/判陈旧时回退 DB 白读全历史）")
+                    return
+            except Exception as e:
+                print(f"[main] 数据源判据读取失败（按 db 模式继续预热）: {e}")
             from app.routers.performance import system_performance
             await asyncio.to_thread(system_performance, {"user_id": 0})
             print("[main] 系统绩效预热完成（缓存 1h）")
