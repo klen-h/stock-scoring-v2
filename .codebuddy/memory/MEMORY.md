@@ -72,6 +72,10 @@
 - ★★ **`load_flow_map(codes=None, days=N)` 窗口化**（2026-10-10）：`mainforce/state.refresh_all` 只用**近 5 日**资金流（overlay 里是 `flow_rows[-5:]`），却整表读 146 日/只（12.9MB / 120,850 行 / 次）⇒ 传 `days=FLOW_WINDOW_DAYS(20)`（实得 27 交易日）后 **25,732 / 128,535 行 = 20%**。**语义边界**：`flow5_amt`/`flow5_amt_yuan` 逐值不变；`flow_consec` 上限=窗口天数但**全库无消费方**；**陈旧票（最后一行早于窗口）或判不出 ⇒ 自动退回整表读**（否则这些票会从"有旧数据"变"无数据"，静默改 overlay 降级口径）。窗口读**不读不写** `flow-map.db`（整表口径）。
 - ★★ **`local` 模式包陈旧 ⇒ 整份静默回退 DB**（`pack_source._maybe_refresh` 开头就 `if _DATA_SOURCE != "pack": return`）⇒ 只 `print` 一次警告，极易漏看。**纪律：`DATA_SOURCE=local` 前必须先 `python scripts/sync_local.py --force`**。
 - ★ `main.py` 的 `_performance_warmup`（2026-10-10 修）：原先**只判 `READ_ONLY`**（注释却写"db 模式且非只读才预热"）⇒ 已补 `pack_source.enabled() ⇒ 跳过`。理由：它在启动 30s 后跑，而此刻包可能**还没下完**（读侧静默回退 DB）⇒ `_load_prices_map` 无 start 会拉全历史（db 模式 20-40MB/次）。
+- ★★ **`pack_source` 的读侧语义 = 「命中包→用包；**未命中→回退 DB**」** ⇒ **包的覆盖口径必须 ⊇ 所有消费方池**，否则那批代码天天回源（这是"配了 pack 也照样烧"的第二种形态）。**2026-10-10 实测并修复**：`backtest_prices` 954 只里 **129 只（13.5%）不在包内**（被产包的**质量过滤**——ST/科创板/市值<50亿——剔掉，而它们仍是回测/绩效/周报的既有池）＋基准 `sh000852`(中证1000)/`sh000905`/`sh512100`(E2 标的) 从未入池 ⇒ 对应 pg_stat_statements 里 **43MB/天、46K 行/次** 的 `backtest_prices` 大 IN（单语句第二名）。修法见 `generate_backend_pack.py::_backtest_pool_codes` + `_EXTRA_INDEX_CODES`（**消费方池豁免质量过滤**，并打印"回测池覆盖 0 缺口"自证）。⚠️ 教训：**质量过滤只应筛"新增候选"，绝不能筛掉既有消费方代码**；同类 bug 2026-09-09 修过战法池、**漏了 backtest_prices 池**。
+- ★ **线上数据源/包新鲜度的可观测端点**（排障第一站，公开）：
+  `GET /api/score/kline-cache/status` ⇒ pack/local 模式直接给 `{total_cached, newest_update(包日期), source}`。
+  2026-10-10 用它证实 Render 运行期 `source=pack` ✓，并发现 **Render 的包滞后 ~10h**（根因：`_pack_outdated()/_is_stale()` 调 `_latest_available_pack_day()` **不传时区** ⇒ Render(UTC) 的 22:00 闸门落在 BJ 06:00-08:00 ⇒ 当晚新包次日早上才下）。**不影响 egress**（UTC 只会算出更早的 latest ⇒ 保守），只影响新鲜度；建议修法：**只给 `_pack_outdated()` 传 `beijing_now()`**（`_is_stale()` 保持宽松，避免"包延迟→全量回退 DB"）。
 
 ## 回测数据质量
 - 体检 `scripts/audit_backtest_data.py`；源异常日已标 `price_anomalies`（集中 2024，源里存在不可修复）。

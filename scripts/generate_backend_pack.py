@@ -305,6 +305,44 @@ def snapshot_market_pool() -> dict:
     return out
 
 
+# ── 消费方池补齐（2026-10-10，egress 实测驱动）─────────────────────────────────
+# 为什么需要：`pack_source` 的读侧分支是「命中包就用包，未命中就回退 DB」
+#   （`strategies._load_prices_map` / `backtest.data.load_prices` / `benchmarks`…）。
+#   而本脚本的池要过**质量过滤**（剔 ST / 科创板 / 市值<50亿）⇒ 与**历史沉淀的**
+#   消费方口径不一致 ⇒ 那批代码天天回源 Supabase。
+#   实测（2026-10-10：产物包 vs 库）：
+#     · `backtest_prices` 954 只里 **129 只（13.5%）不在包内** —— 正是被质量过滤掉的
+#       （000151/000532/000715…）⇒ `_load_prices_map` 的 `code IN (...)` 大查询每次
+#       都要为它们回源；pg_stat_statements 实测该语句 ≈**43MB/天、46K 行/次**，
+#       是仅次于 mainflow_history 的第二名。
+#     · 基准指数缺 `sh000852`（中证1000，`benchmarks.pick_bench()` 首选）/`sh000905`
+#       （中证500），E2 标的 ETF `sh512100` 也缺 ⇒ 基准/双口径超额**每次调用都回源**。
+#   ⇒ 修法：把「消费方真正会要的代码」显式并入池，且**豁免质量过滤** ——
+#     它们不是"今天该不该看"的问题，而是既有回测/绩效口径**已经固化**的输入。
+_EXTRA_INDEX_CODES = ["sh000300", "sh000852", "sh000905", "sh512100"]
+
+
+def _backtest_pool_codes() -> list:
+    """`backtest_prices` 的全部代码（回测/绩效/周报的既有池）。读不到返回 []。"""
+    url = (os.environ.get("DATABASE_URL") or "").strip()
+    if not url:
+        print("  未配置 DATABASE_URL，跳过 backtest_prices 池补齐")
+        return []
+    try:
+        import psycopg2
+        conn = psycopg2.connect(url, connect_timeout=10)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT code FROM backtest_prices")
+        out = [r[0] for r in cur.fetchall() if r[0]]
+        conn.close()
+        print(f"  Supabase backtest_prices 代码清单: {len(out)} 只"
+              f"（并入池并豁免质量过滤）")
+        return list(dict.fromkeys(out))
+    except Exception as e:
+        print(f"  ⚠️ 读取 backtest_prices 代码清单失败（忽略，仅用原池）: {e}")
+        return []
+
+
 def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict,
                  ind_out: dict) -> None:
     """K 线 + 指标 + 代码清单写 SQLite（PK 自带索引）。"""
@@ -436,8 +474,13 @@ def main():
         print(f"  行情快照池: {len(snap_pool)} 只（其中 {added} 只不在前端行情文件里，"
               f"正是原口径的缺口）")
     sb_codes = [c for c in supabase_kline_codes() if c in quotes]
+    # ★ 2026-10-10：回测/绩效既有池并入（见 `_backtest_pool_codes` 说明）——
+    #   并**豁免质量过滤**，否则这 ~129 只会天天回源（实测 43MB/天，单语句第二名）。
+    bt_codes = _backtest_pool_codes()
+    bt_set = set(bt_codes)
     pool_all = list(dict.fromkeys(
-        sb_codes + cap_codes + list(snap_pool.keys()) + ["sh000300"] + etf_codes))
+        sb_codes + cap_codes + list(snap_pool.keys()) + _EXTRA_INDEX_CODES
+        + etf_codes + bt_codes))
 
     # ★ 质量过滤（2026-09-09 对齐战法池 filter_stock_pool 口径）：
     #   剔 ST/*ST/SST、科创板（688）、总市值<50亿（与战法扫描 50亿门槛对齐）。
@@ -446,6 +489,8 @@ def main():
     #     2081 的 ~640 只缺口 → 战法扫描每天回源撞 WAF + Supabase 流量暴涨，
     #     正是 egress 超额的主因之一）。指数/ETF（非 6 位码）不受过滤。
     def _pack_quality(code: str, q: dict) -> bool:
+        if code in bt_set:
+            return True                      # ★ 回测既有池豁免（见 _backtest_pool_codes）
         if len(code) != 6 or not code.isdigit():
             return True                      # 指数/ETF 保留
         name = (q.get("name") or "").replace(" ", "").upper()
@@ -463,10 +508,19 @@ def main():
     # 市值降序拉取：即使超时中断，质量池（大市值优先）已完整落包
     kept_stocks.sort(key=lambda c: (quotes.get(c) or {}).get("market_cap") or 0,
                      reverse=True)
-    pool = ["sh000300"] + [c for c in etf_codes] + kept_stocks
+    pool = list(_EXTRA_INDEX_CODES) \
+        + [c for c in etf_codes if c not in _EXTRA_INDEX_CODES] + kept_stocks
     dropped = len(pool_all) - len(pool)
     print(f"\n[2/4] 股票池: 全量 {len(pool_all)} → 质量过滤后 {len(pool)} 只"
           f"（剔除科创板/ST/<50亿 共 {dropped} 只），市值降序拉取")
+    # ★ 2026-10-10：把"消费方池覆盖度"打进日志 ⇒ **下次产包自己验证本修复**（缺口应为 0）
+    if bt_codes:
+        _bt_miss = [c for c in bt_codes if c not in set(pool)]
+        if _bt_miss:
+            print(f"  ::warning::回测池仍有 {len(_bt_miss)} 只不在池内"
+                  f"（这些代码会回源 DB）: {_bt_miss[:8]}")
+        else:
+            print(f"  回测池覆盖: {len(bt_codes)}/{len(bt_codes)}（缺口 0 = 不再回源）")
     if snap_pool:
         covered = len([c for c in pool if c in snap_pool])
         print(f"  战法池口径覆盖: {covered}/{len(snap_pool)}"
