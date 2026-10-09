@@ -113,14 +113,16 @@ def _breadth() -> Optional[dict]:
     up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0)
     down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0)
 
-    def _ld_thr(code: str) -> float:
-        # ★ 审查 P2-14：创业板(30)/科创板(68) 为 20cm 涨跌幅——-9.9% 未封死
-        #   跌停的票不应计入跌停家数（北交所 30cm 未单独处理，样本极少）
-        return -19.9 if str(code).startswith(("30", "68")) else -9.9
-
-    ld = sum(1 for c, s in stocks.items()
-             if (s.get("change_pct") or 0) <= _ld_thr(c))
+    # ★★ 2026-10-10：跌停判定改**唯一口径** `app.limit_stats`（rt_k 精确优先 → 真值限价
+    #   → 项目唯一板幅实现 `backtest.engine._limit_pct`）。
+    #   旧实现是 `-19.9 / -9.9` 两档固定阈值：**漏北交所 30cm**、**漏 ST 5%**。
+    #   ⚠️ 本函数的 `limit_down` 会**进决策链**（`_ev_gate_add` 加仓条件 `ld < 10`、
+    #      `position_sizing` `ld ≥ 100 ⇒ 仓位 ×0.7`）⇒ 口径错会直接改动作。
+    #   ⚠️ 同源事故：2026-10-09 盘中 `intraday_alerts` 用 `<= -9.7` 误推「跌停 123 只」。
+    from app import limit_stats
+    _lu, ld, limit_src, _meta = limit_stats.counts_best(stocks)
     return {"total": len(stocks), "up": up, "down": down, "limit_down": ld,
+            "limit_src": limit_src,          # 口径披露（rt_k / board_approx）
             "up_down_ratio": round(up / max(1, up + down), 3)}
 
 

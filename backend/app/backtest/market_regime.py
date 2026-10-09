@@ -341,10 +341,16 @@ def _market_breadth_now() -> Optional[dict]:
             return None
         up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0)
         down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0)
-        limit_up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) >= 9.9)
-        limit_down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.9)
+        # ★★ 2026-10-10：涨跌停改**唯一口径** `app.limit_stats`（rt_k 精确优先 → 真值限价
+        #   → 板幅容差）。旧实现 `>=9.9 / <=-9.9` 一刀切会把 20cm 涨 10% 当涨停（**高估家数**），
+        #   而本函数供 **E2 事件信号**（涨停比例 ≥2% 判据）与 regime 宽度读数 ⇒ 口径错会改触发。
+        #   ★ 这次迁移还**顺带把生产口径与回测对齐**：`events/signal` 原文自陈
+        #     "生产用 9.9 近似、与回测的精确口径有差异" ⇒ 该差异现在消失。
+        from app import limit_stats
+        limit_up, limit_down, limit_src, _meta = limit_stats.counts_best(stocks)
         return {"up": up, "down": down, "limit_up": limit_up,
-                "limit_down": limit_down, "up_ratio": up / max(1, up + down)}
+                "limit_down": limit_down, "limit_src": limit_src,
+                "up_ratio": up / max(1, up + down)}
     except Exception:
         return None
 

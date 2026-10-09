@@ -4,8 +4,12 @@
 ================================================================================
 背景（为什么需要它）：
   现有涨停口径有三处已知局限，都写在各处注释里，本模块正是为补掉它们而生：
-  1. `routers/market.overview` 的涨跌停家数用 **`change_pct >= 9.9` 近似**
-     （其注释自陈"科创板/创业板 20% 用 9.9 是近似"）⇒ 20cm 票涨 10% 被误判涨停。
+  1. ~~`routers/market.overview` 的涨跌停家数用 `change_pct >= 9.9` 近似~~
+     **【已于 2026-09-30 修掉】** —— `overview`/`market_temperature` 已切
+     「rt_k 精确优先 + 按板幅回退 + `limit_src` 口径披露」（`routers/market._limit_counts_best`）；
+     **2026-10-10 起该判据进一步收拢为共享模块 `app/limit_stats.py`**
+     （`market_regime` / `coach/rules` / `flash/intraday_alerts` 一并接入，
+      `routers/market` 两函数改为委托它）⇒ "涨跌停家数"在系统里只剩一个定义。
   2. 工作台「涨停梯队」读 `zz_daily_snapshots`（**日批**，收盘后才有）⇒ 盘中看到的是
      上一交易日快照；`_limit_stats` 的炸板率来自 `backtest_prices`（**仅 ~839 只覆盖**）。
   3. 竞价看板注释自陈"仅 839 只股票有日线数据，可能少于真实涨停家数"。

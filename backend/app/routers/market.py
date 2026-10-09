@@ -1769,19 +1769,15 @@ def _limit_counts(stocks: dict) -> tuple:
       **系统性误判**：20cm 票涨 10% 不是涨停、ST 5% 涨 5% 才是（会被漏判）。
       判据统一复用 `backtest.engine._limit_pct`（项目唯一板幅实现：主板10/双创20/
       北交30/ST5），留 **0.3pt 容差**（涨停价按分四舍五入 ⇒ 实际涨幅可能略低于板幅）。
+    ★★ 2026-10-10：判据**收拢到共享模块 `app.limit_stats`** —— 2026-10-09 的
+      「跌停 123 只/黑天鹅熔断」事故，根因正是"涨跌停家数"在系统里有三套实现、
+      三套阈值（`intraday_alerts` / `coach/rules` / `market_regime` 各一份）。
+      本函数**返回形状保持不变**（调用方零改动），只是把实现搬走。
+      额外收益：内存 dict 现在带真值限价（`tencent` 的 `limit_up/limit_down`）
+      ⇒ 有真值价时按价判，比"涨幅 ≥ 板幅−0.3pt"更准。
     """
-    from app.backtest.engine import _limit_pct
-    lu = ld = 0
-    for code, s in (stocks or {}).items():
-        chg = s.get("change_pct")
-        if chg is None:
-            continue
-        lp = _limit_pct(str(code), str(s.get("name") or "")) * 100
-        if chg >= lp - 0.3:
-            lu += 1
-        elif chg <= -(lp - 0.3):
-            ld += 1
-    return lu, ld
+    from app import limit_stats
+    return limit_stats.counts_from_quotes(stocks)
 
 
 # ── ★★ 2026-09-30（#3 轻量切换）：涨跌停「**rt_k 精确优先**」────────────────
@@ -1832,22 +1828,18 @@ def _limit_counts_best(stocks: dict) -> tuple:
       （`(33−65)/5250×100 ≈ −0.6`）⇒ 切精确后温度计变化 **<1pt**；
       前端**无任何位置**显示 `breadth.limit_up/down` ⇒ 不产生"两个数并行展示"。
     """
-    mem_up, mem_dn = _limit_counts(stocks)
-    pk = None
-    try:
-        from app import realtime_uplimit
-        pk = realtime_uplimit.peek()
-    except Exception as e:
-        print(f"[market] rt_k limit peek failed: {str(e)[:80]}")     # ASCII（铁律⑥）
-    if pk and pk.get("limit_up") is not None and pk.get("limit_down") is not None:
-        ex_up, ex_dn = int(pk["limit_up"]), int(pk["limit_down"])
-        _shadow_log(mem_up, mem_dn, ex_up, ex_dn, pk.get("data_date"),
-                    pk.get("age"), pk.get("is_intraday"))
-        return ex_up, ex_dn, "rt_k", {"age_sec": pk.get("age"),
-                                      "data_date": pk.get("data_date"),
-                                      "is_intraday": pk.get("is_intraday")}
-    return mem_up, mem_dn, "board_approx", {"age_sec": None, "data_date": None,
-                                            "is_intraday": None}
+    # ★★ 2026-10-10：实现**收拢到 `app.limit_stats`**（"涨跌停家数"全系统唯一口径）。
+    #   本函数只保留两件它特有的东西，行为与调用方零改动：
+    #     ① **影子对比日志**（"不裸切"纪律：旧近似 vs 新精确并列观察，见 `_shadow_log`）；
+    #     ② 原有返回形状与 `src` 字符串（`"rt_k"` / `"board_approx"`）—— 前端 `limit_src`
+    #        口径披露依赖它，**不可改字面量**。
+    from app import limit_stats
+    mem_up, mem_dn = limit_stats.counts_from_quotes(stocks)
+    up, dn, src, meta = limit_stats.counts_best(stocks)
+    if src == "rt_k":
+        _shadow_log(mem_up, mem_dn, up, dn, meta.get("data_date"),
+                    meta.get("age_sec"), meta.get("is_intraday"))
+    return up, dn, src, meta
 
 
 def _limit_stats(day: str) -> Optional[Dict]:

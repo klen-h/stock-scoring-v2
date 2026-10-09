@@ -271,16 +271,59 @@ def _index_reversal_alert(quotes) -> List[Dict]:
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  跌停家数（唯一口径）—— 2026-10-10 修「跌停 123 只」误报事故
+# ══════════════════════════════════════════════════════════════════════════
+# 【事故（用户报）】10-09 盘中依次推了 32 → 66 → **123 只/黑天鹅熔断**（11:10），
+#   而当日**收盘真值仅 11~13 只**（`market_emotion_daily.close_limit_down=13`；
+#   用 zzshare `low_limit` 精确口径复算收盘 = 11）—— 且收盘是 96 涨停/13 跌停的
+#   **上涨日**（verdict=亢奋）。即：**把一次弱势早盘报成了黑天鹅**。
+# 【根因】旧实现 `change_pct <= -9.7` 是**固定阈值近似**：
+#   · 创业板/科创板限价 ±20% ⇒ 跌 10%~13% **离跌停还差一半**却被计入
+#     （早盘普跌 826涨/4044跌 时，20cm 板大量落在该区间 ⇒ 计数被放大到 123）；
+#   · ST(±5%) 的真跌停反而**漏计**（且 `refresh_all_stocks` 本就剔除 ST）。
+# 【为什么系统里会有两个口径】精确实现**早就有** —— `realtime_uplimit`
+#   （zzshare rt_k + `low_limit` 逐票判定、覆盖率 100%，2026-09-29 上线，
+#   其文件头明写"为补掉 change_pct 近似"而生），但本模块**从没迁过来**
+#   —— 典型的"同一指标两处口径"漂移（本项目铁律，见 MEMORY）。
+# 【修法】优先读 `realtime_uplimit.peek()`：**只读缓存、绝不抓取**
+#   （后台 `realtime_uplimit_loop` 盘中 120s/轮预热 + 180s 新鲜度阈值
+#    ⇒ 盘中必命中、**零新增请求**，也不会阻塞 3 分钟一轮的告警检查）。
+#   拿不到时回退**真值限价**（`tencent` 的 `limit_down`，2026-10-08 新增字段）；
+#   再拿不到才按**板块保守阈值**兜底（⚠️ 20cm 板必须 -19.5%，否则就是本次事故）。
+# ══════════════════════════════════════════════════════════════════════════
+def _is_limit_down(s: dict) -> bool:
+    """单票是否跌停 —— 委托**唯一口径** `app.limit_stats`（真值限价 → 项目唯一板幅表）。
+
+    ★ 2026-10-10：修事故时我最初在本文件自带了一张"20cm=-19.5 / ST=-4.5 / 其他=-9.7"
+      的板块表 —— 那本身就是**自造第二份板幅实现**（漏北交所 30cm，ST 还得靠名字匹配），
+      正是本项目"同一指标多处实现必然漂移"的老毛病。现统一委托 `limit_stats`，
+      板幅取自唯一实现 `backtest.engine._limit_pct`（主板10/双创20/北交30/ST5）。
+    """
+    from app import limit_stats
+    return limit_stats.is_limit_down(s)
+
+
 def limit_down_count() -> int:
-    """当前全市场跌停家数（跌幅 ≤-9.7% 近似，内存行情缓存）。"""
+    """当前全市场跌停家数（**精确口径**，唯一来源 `app.limit_stats`；事故见上方注释）。
+
+    与其它消费方的差别只在**按用途收紧** rt_k 的采用条件：
+      · `require_intraday=True` —— 告警必须发生在**盘中**（盘前/休市 rt_k 给的是
+        上一交易日收盘定稿口径，拿来当"此刻"就是下一次误报）；
+      · `min_trading=3500`     —— 防 `snapshot()` fail-open 缺批导致的**静默漏计**；
+      · 回退到内存行情时仍要求样本 ≥500（数据不足宁可不报，不拿半个市场当全市场）。
+    """
     try:
+        from app import limit_stats
         from app.tencent import _cache
         stocks = _cache.get("stocks", {}) or {}
-        if len(stocks) < 500:
+        _, ld, src, _meta = limit_stats.counts_best(
+            stocks, require_intraday=True, min_trading=3500)
+        if src != "rt_k" and len(stocks) < 500:
             return 0
-        return sum(1 for s in stocks.values()
-                   if (s.get("change_pct") or 0) <= -9.7 and (s.get("price") or 0) > 0)
-    except Exception:
+        return int(ld)
+    except Exception as e:
+        print(f"[intraday_alert] limit_down_count failed: {e}")     # ASCII（铁律⑥）
         return 0
 
 
@@ -305,9 +348,14 @@ def _breadth_alerts() -> List[Dict]:
         down = sum(1 for s in valid if s["change_pct"] < 0)
         limit_down = limit_down_count()
         if down > 0 and up / down < 0.25:
+            # ★ 2026-10-10：原文案写「**跌停潮**式结构恶化」—— 但涨跌比极值 ≠ 跌停潮。
+            #   10-09 实测：涨跌比 0.20（826/4044）时被写成"跌停潮"，而当日**收盘仅 13 只跌停**
+            #   ⇒ 两条口径互相暗示，会把误判放大成"崩盘"的观感。
+            #   跌停家数有**独立且精确**的口径（下一条 `limitdown`，见 `limit_down_count`），
+            #   本条只描述宽度，不替它下结论。
             out.append({"key": "breadth", "sev": "🔴",
                         "text": f"涨跌比 **{up}/{down}**（{up/max(1,down):.2f}）——"
-                                f"跌停潮式结构恶化，普跌行情个股信号可信度下降"})
+                                f"**普跌式**结构恶化，普跌行情个股信号可信度下降"})
         if limit_down >= 30:
             out.append({"key": "limitdown", "sev": "🔴" if limit_down >= 60 else "🟡",
                         "text": f"跌停家数 **{limit_down}** 只——恐慌蔓延，不抄底、不补仓"})
