@@ -84,6 +84,8 @@ export const getRSISignals = (code, period = 14) => http.get(`/strategies/${code
 // 宏观数据（全球+国内面板 + 规则方向分）
 export const getMacroSnapshot = () => http.get('/macro/snapshot')
 export const getMacroDaily = (date) => http.get('/macro/daily', { params: { date } })
+// 央行储备月度面板（外储/黄金储备/黄金占比）——月频慢变量，非交易信号（见 PLAN_RESERVE_SIGNALS.md）
+export const getMacroReserves = (months = 24) => http.get('/macro/reserves', { params: { months } })
 
 // 快讯监控（事件流 / LLM诊断 / 三段复盘 / 信号跟踪）
 export const getFlashEvents = (params) => http.get('/flash/events', { params })

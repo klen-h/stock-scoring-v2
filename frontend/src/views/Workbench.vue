@@ -688,6 +688,9 @@
           <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
                         :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
                         :futures-basis="macroFuturesBasis" />
+          <!-- ★ 2026-10-10（P0-2）：央行储备月度面板（月频慢变量，非信号）。紧跟宏观卡，
+               与「宏观与环境」构成"环境 → 慢变量背景"的阅读顺序；自取数据、不参与轮询。 -->
+          <ReserveCard />
           <!-- ★★ 2026-09-25 用户："信号×行业是战法扫描出来的吗？如果是，今日决策卡的战法内容
                也可以摘出来，剩余的部分跟隔夜与今日（财经日历）形成左右卡片。"
                ⇒ 确认：`signal_industry_cross` 读的就是 `strategy_results`（战法扫描）⇒ 同源。
@@ -2275,6 +2278,9 @@ import StockListsCards from '../components/workbench/StockListsCards.vue'
 //   「宏观与环境」卡抽成子组件 —— 盘前内联 + 顶栏「宏观」浮层**共用同一份**
 //   （防"同一份数据两处渲染必然漂移"；同理 `dirColor`/`levelColor` 也上移到 displayMeta）。
 import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
+// ★ 2026-10-10（P0-2，见 PLAN_RESERVE_SIGNALS.md §6.2）：央行储备月度面板卡
+//   （月频慢变量、自取数据、非交易信号）。只挂**一处**，避免同一数据两处渲染漂移。
+import ReserveCard from '../components/workbench/ReserveCard.vue'
 // ★ 2026-09-28：评分榜改「本地优先」—— 复用榜单页（`ScoreRank.vue`）的**同一套前端评分引擎**。
 //   用户："评分榜之前不就是实时的吗?我都是使用本地计算的" ⇒ 工作台原先恒走后端
 //   `/score/batch/top`（盘中通常是昨日快照），与榜单页的**本地实时**结果口径不一致
