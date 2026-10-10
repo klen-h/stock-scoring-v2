@@ -55,7 +55,8 @@ def _fut(symbol: str, code: str, start: str) -> None:
 def _bond(start: str) -> None:
     df = ak.bond_zh_us_rate()
     date_col = "日期" if "日期" in df.columns else df.columns[0]
-    cols = {"us2y": "美国国债收益率2年", "us10y": "美国国债收益率10年"}
+    cols = {"us2y": "美国国债收益率2年", "us10y": "美国国债收益率10年",
+            "us30y": "美国国债收益率30年"}
     for code, cn in cols.items():
         if cn not in df.columns:
             print(f"[backfill] {code:10s}: 缺列 {cn}，跳过")
@@ -81,7 +82,7 @@ def main() -> None:
     start = f"{2026 - args.years}-01-01"
     print(f"回填起点 {start} ...")
     for sym, code in [("GC", "gold_com"), ("XAU", "gold_spot"),
-                      ("CL", "wti"), ("OIL", "brent")]:
+                      ("CL", "wti"), ("OIL", "brent"), ("SI", "silver")]:
         try:
             _fut(sym, code, start)
         except Exception as e:

@@ -26,6 +26,10 @@ SYMBOLS = {
     "wti": "WTI原油",
     "us10y": "美债10Y",
     "us2y": "美债2Y",
+    # ★ 2026-10-10（P0-1 重标定 macro 阈值，见 PLAN_RESERVE_SIGNALS.md §6.1）：
+    #   `us30y_high` 与 `goldsilver_ratio` 两条规则要重标定 ⇒ 必须有 30Y 与银的日频历史。
+    "us30y": "美债30Y",
+    "silver": "COMEX银",
     "dxy": "美元指数",
     "gld": "GLD ETF",
 }
@@ -39,6 +43,8 @@ _PANEL_KEY_MAP = {
     "wti": "wti",
     "us10y": "us10y",
     "us2y": "us2y",
+    "us30y": "us30y",      # ★ P0-1：面板本就有 us30y（见 macro._PANEL_MAP）
+    "silver": "silver",    # ★ P0-1：面板本就有 silver（金银比规则要用）
     "dxy": "dxy",
     "gld": "gld",
 }

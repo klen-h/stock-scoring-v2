@@ -155,8 +155,11 @@
 
 ## 9. 里程碑
 
-- [ ] P0-1 阈值重标定脚本 + 规则表更新（半天）
-- [ ] P0-2 储备月度面板卡（1 天）
+- [x] P0-1 阈值重标定脚本 + 规则表更新（半天）—— 2026-10-10 完成：
+      `scripts/recalibrate_macro_thresholds.py`（分位数体检 + 触发频率）＋ `macro-rules-v4`
+      （`us10y_high` 4.6→**4.7**、`us30y_high` 5.0→**5.1**，均 P95 口径；依据 5.5 年实测分位）
+- [x] P0-2 储备月度面板卡（1 天）—— 2026-10-10 完成：`reserve_monthly` 表（1978-12 起 420 行）
+      ＋ `GET /api/macro/reserves` ＋ `ReserveCard.vue`（自取数据、不进轮询）
 - [ ] P1-1 reversal 预登记 + 接日批（1 天）
 - [ ] P1-2 flow_consec 消费方 + 龙虎榜信号化预登记（1 天）
 - [ ] P2-1 日内归档（2 天）
