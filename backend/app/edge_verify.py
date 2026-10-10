@@ -3,11 +3,12 @@
 【文件作用】预登记验证脚本的**月度自动复核**（2026-09-30，P1 收尾）
 ================================================================================
 【为什么需要（本轮查出来的真缺口）】
-  项目有三个**预登记**验证脚本，判定标准都写死在各自脚本头：
+  项目有若干**预登记**验证脚本，判定标准都写死在各自脚本头：
     · `scripts/gate_ready_backtest.py`      —— 闸门 `ready==3`（**唯一买入入口**）联合期望值
     · `scripts/sector_momentum_edge_check.py` —— 板块动量延续性（因子层）
     · `scripts/event_live_review.py`        —— E2 实盘样本复核（能否先行解除 defensive）
-  2026-09-30 全仓 grep 发现：**这三个脚本没有任何调用方** ⇒ 只能人工想起来跑。
+    · `scripts/reversal_composite_edge_check.py` —— 反弹 vs 反转组合（★ 2026-10-10 P1-1 新增）
+  2026-09-30 全仓 grep 发现：**这些脚本当时没有任何调用方** ⇒ 只能人工想起来跑。
   而它们的结论**完全取决于样本**（"样本是时钟，开发加速不了"）——
   **样本够了却没人跑 = 白等**。本模块把它们接进**月度日批**，到点自动出结论。
   样板：`task_subfactor_ic`（每月首个交易日随日批跑 + 分级推送 + 落库留痕）。
@@ -43,6 +44,11 @@ SCRIPTS = (
     ("gate_ready_backtest", "闸门 ready==3 联合期望值（唯一买入入口）", 30, "快照日"),
     ("sector_momentum_edge_check", "板块动量延续性（是否可当因子）", 30, "交易日"),
     ("event_live_review", "E2 实盘复核（能否先行解除 defensive）", 10, "E2 触发日"),
+    # ★ 2026-10-10 新增（P1-1，PLAN_RESERVE_SIGNALS §6.3）：「反弹 vs 反转」组合信号
+    #   （跌过一波 + 金银比 risk-on 确认）。判据预登记在该脚本头（GO/DOWNGRADE/KILL +
+    #   block bootstrap B=10000 + 复利净值 + 分年分解）；接进来即"到点自动出结论"，
+    #   避免重蹈"脚本写了但没人跑 = 白等"的覆辙（本模块存在的原因）。
+    ("reversal_composite_edge_check", "反弹vs反转组合（金银比 risk-on 确认）", 30, "信号日"),
 )
 # 视为"有结论"的 verdict（除 INSUFFICIENT 外都值得让用户知道；ERROR 属运维信号也要推）
 _NO_VERDICT = {"", "INSUFFICIENT", None}
@@ -114,7 +120,7 @@ def _progress(r: Dict) -> str:
 def format_markdown(results: List[Dict]) -> str:
     """汇总 markdown（落库 + 企微共用同一份，避免两套文案漂移）。"""
     lines = ["### 预登记验证 · 月度复核", "",
-             "> 口径：三个脚本的判据都**预登记在各自脚本头**（改判据须在那里新开一节并注明日期）；",
+             "> 口径：各脚本的判据都**预登记在各自脚本头**（改判据须在那里新开一节并注明日期）；",
              "> 本表只汇总它们自己的结论，**不重算、不改判据**。" , ""]
     for r in results:
         name = r.get("script") or "?"
