@@ -470,6 +470,26 @@ def task_lhb():
     return f"龙虎榜: {backfill_days(10, 3)}"
 
 
+def task_intraday_path():
+    """指数日内分时路径归档（P2-1，PLAN_RESERVE_SIGNALS §6.5）。
+
+    ★ **时钟属性**：腾讯分时**只有当日** ⇒ 晚一天接入就永远少一天历史
+      （见 `app/intraday_path.py` 文件头）。这是"午盘前跌>1% → 午后拉升"这类
+      **日内命题的唯一数据底座** —— 日线看不到"早盘杀跌 → 午后收回"的 V 型，
+      这正是 P1-1 结论里最缺的拼图。
+    ★ 幂等：UNIQUE(date, code) + upsert（重跑只覆盖同日）；
+      **窗口保护**：非收盘窗口/周末 `_auto_day()` 直接返回 None ⇒ 拒绝自动落库
+      （防把"上一交易日序列"写到今天名下，`market_amount` 吃过这个亏）。
+    ★ 不抛异常：5 个标的各自记账，单个失败不拖累其余（失败清单体现在返回串）。
+    """
+    from app.intraday_path import save_day
+    r = save_day()
+    if r.get("error"):
+        return f"分时归档: 跳过（{r['error']}）"
+    tail = f" 失败 {r['fail']}" if r.get("fail") else ""
+    return f"分时归档: {r['date']} 成功 {r['ok']}/{r['codes']}{tail}"
+
+
 def task_contradiction_report():
     """矛盾 LLM 报告（依赖上面的扫描结果）。"""
     from app.contradictions.report import run_report
@@ -845,6 +865,9 @@ TASKS = {
     # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
     "lhb": (task_lhb, "龙虎榜同步"),
+    # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
+    #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
+    "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
@@ -878,7 +901,8 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
-                 "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic",
+                 "lhb", "intraday_path", "zz_finance", "zz_daily",
+                 "weekly_report", "subfactor_ic",
                  "verify_monthly", "data_gap", "daily_report",
                  "trader_brief", "retention"]
 
