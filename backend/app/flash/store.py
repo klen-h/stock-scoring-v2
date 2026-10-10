@@ -386,6 +386,19 @@ def append_macro_history(panel: dict) -> None:
         "copperGoldRatio": d.get("copper_gold_ratio"),
     }
 
+    # ★ 2026-10-10（黄金/商品联动研究）：盘后快照顺手转存「外盘日频收盘表」
+    #   `macro_daily_history`（见 app/macro_daily.py）。背景：macro_history 只有 ~1.5 个月
+    #   且非纯日频（09:10 盘前 + 15:03 盘后），做不了多年领先滞后/相关性 ⇒ 这里把
+    #   **15:00 之后的盘后快照**转存成日频收盘（历史回填由 scripts/backfill_macro_daily.py 一次性做）。
+    #   用 entry["time"]（北京本地 ISO 字符串，如 2026-10-09T15:03:59…）的 [11:13] 取小时，
+    #   与服务器时区（Render=UTC）无关。失败静默：绝不拖垮宏观快照主流程。
+    try:
+        if len(entry.get("time", "")) > 13 and int(entry["time"][11:13]) >= 15:
+            from app import macro_daily
+            macro_daily.upsert_from_panel(panel, entry["time"][:10])
+    except Exception as e:
+        print(f"[store] macro_daily 转存失败: {e}")
+
     try:
         # 检查 3 分钟内是否已有记录（覆盖）
         _MACRO_CACHE["ts"] = 0.0        # ★ 写入即失效读缓存（下面两处写路径共用）
