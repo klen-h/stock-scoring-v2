@@ -185,3 +185,32 @@
 - **北向资金已评估否决**（断供+自有资金流无预测力双重否定）；事件域聚焦三件：E2+春节+解禁避险。
 - 评分权重/衰减冻结，等 shadow_rank ≥10 快照日+defensive 截面日（约 2026-10-08 触发 `compare_shadow_rank.py`）。
 - 待用户配置：`BATCH_CALLBACK_TOKEN`（Render env + GitHub secret 同值）。
+
+## PLAN_RESERVE_SIGNALS 进展（2026-10-11 更新）
+- **P0-1 / P0-2 / P1-1 / P1-2 / P2-1 / P2-2 全部落地**（详见 `PLAN_RESERVE_SIGNALS.md` 各节 ✅）：
+  macro 水平阈值改分位口径（`macro-rules-v4`）／储备月度面板（`reserve_monthly`）／
+  reversal 组合预登记／`flow_consec` 标签 + 龙虎榜候选信号／**日内分时归档**（`intraday_path`）／
+  **盈利承压监测**（`earnings_pressure`，含质量闸）。首跑结论：`flow_consec` 无预测力（FAIL）、
+  龙虎榜 +3.84pct/P=0.0000 但覆盖率 46.6% 触发覆盖率门（PARTIAL）、盈利承压 1335 只/宏观 high。
+- ★ **预登记脚本统一接法**：注册进 `app.edge_verify.SCRIPTS`（`(名, 说明, need, 单位)`），
+  由日批 `task_verify_monthly` 月度复核（幂等 + 分级推送 + 落 `verify_monthly` 报告）。
+  脚本须支持 `--json` ⇒ 末尾追加一行 `{"script","verdict","n","need","unit","detail"}`。
+  现有 **7 个**（gate/sector/event + reversal_composite + flow_consec + lhb + intraday）。
+- ★★ **`report_store` 不能被"顺手写"**：`daily_batch._weekly_due()` 的自愈判据是
+  `report_store.list_reports(limit=1)` =「**最新一份报告（不看 tag）**的日期」⇒ 任何新落库的
+  报告都会把"最新报告日期"顶成当天，**破坏周报的漏跑自愈**（2026-09-19 修过的"整周漏报"）。
+  ⇒ 新任务要么复用既有 tag 的闸门，要么**只推企微/只出日志**（P2-2 `earnings_pressure` 即如此，
+  清单对外走 `GET /api/macro/earnings-pressure`）。
+- ★ **周度闸门别自己写 `weekday()==4`**：用 `_batch_trading_day()` + `_week_last_trading_day(d)`
+  （跨午夜补跑、长假前最后交易日不是周五 —— 两个坑 2026-09-19 都修过；实测周日跑批按"本轮
+  交易日=上周五"正确判定）。
+- ★ **Supabase 长查询会 SSL 断连**（`SSL connection has been closed unexpectedly`）⇒ 大表读
+  一律**按 code 分块（120/块）+ 重试 + `db._reset_pg_conn()`**（`mainflow_history` 一次性
+  12 万行读实测踩到；项目既有范式见 `state._load_bars_all`）。
+- ★ **本地数据包 = 被低估的零 egress 历史库**：`backend/data/pack/backend-pack.db` 有
+  `klines`（~200 万行 / 2736 只 / ~3 年）+ `indicators` + `codes`；**宽度/未来收益都能本地算**
+  （已用于 LHB 检验）。⚠️ 只覆盖沪深主板+创业板，**无科创板/北交所**（且股票池是"当前"的 ⇒
+  含幸存者偏差）。另 `research-cache.db` / `flow-map.db` / `market-snapshot-cache.db` 同理可用。
+- ★ **判据自省（留作 v2）**：`flow_consec` 的 KILL 曾写成「差≤0 **或** P≥0.20」= 单条件过松
+  （纯噪声下约一半概率误杀）⇒ **KILL 用双条件**（差≤0 **且** P≥0.20）或「95%CI 上界 <0」；
+  正向判定用「差≥阈值 **且** CI 下界 >0」。

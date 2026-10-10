@@ -470,6 +470,72 @@ def task_lhb():
     return f"龙虎榜: {backfill_days(10, 3)}"
 
 
+def task_intraday_path():
+    """指数日内分时路径归档（P2-1，PLAN_RESERVE_SIGNALS §6.5）。
+
+    ★ **时钟属性**：腾讯分时**只有当日** ⇒ 晚一天接入就永远少一天历史
+      （见 `app/intraday_path.py` 文件头）。这是"午盘前跌>1% → 午后拉升"这类
+      **日内命题的唯一数据底座** —— 日线看不到"早盘杀跌 → 午后收回"的 V 型，
+      这正是 P1-1 结论里最缺的拼图。
+    ★ 幂等：UNIQUE(date, code) + upsert（重跑只覆盖同日）；
+      **窗口保护**：非收盘窗口/周末 `_auto_day()` 直接返回 None ⇒ 拒绝自动落库
+      （防把"上一交易日序列"写到今天名下，`market_amount` 吃过这个亏）。
+    ★ 不抛异常：5 个标的各自记账，单个失败不拖累其余（失败清单体现在返回串）。
+    """
+    from app.intraday_path import save_day
+    r = save_day()
+    if r.get("error"):
+        return f"分时归档: 跳过（{r['error']}）"
+    tail = f" 失败 {r['fail']}" if r.get("fail") else ""
+    return f"分时归档: {r['date']} 成功 {r['ok']}/{r['codes']}{tail}"
+
+
+def task_earnings_pressure():
+    """盈利承压监测（P2-2，PLAN_RESERVE_SIGNALS §6.6）—— 周度出摘要 + 企微推送。
+
+    ★ 定位：**监测清单，不是信号**。只输出「毛利率同比下滑 + 业绩恶化」的清单与行业分布，
+      不改评分/不排序/不进闸门（升级为信号须走预登记 + 预测力检验）。
+      清单本身由 **`GET /api/macro/earnings-pressure`** 对外提供（随时可查，无需落库）。
+
+    ★ 触发条件（**复用 `task_weekly_report` 同一套判据，不自己发明第二套**）：
+      ① **本轮交易日 = 本周期最后一个交易日**（`_week_last_trading_day`）——
+         兼容"长假前最后一个交易日不是周五"，且用 `_batch_trading_day()` 而非
+         `datetime.now()` ⇒ **跨午夜补跑不误判**（这两条都是 2026-09-19 修过的坑）；
+      ② 被 `--tasks earnings_pressure` 点名（人工补跑）。
+      ⚠️ 刻意**不做"漏跑自愈"**：本模块数据是**季度**财报（报告期 4 个月才变一次），
+         漏一周无实际损失；而自愈要读 report_store —— 见下一条，得不偿失。
+
+    ★★ **为什么不写 report_store（重要，别改回去）**：`_weekly_due()` 的自愈判据是
+      `report_store.list_reports(limit=1)`，即「**最新一份报告（不看 tag）**的日期」。
+      本任务若落一份新报告，就会把"最新报告日期"顶成当天 ⇒ 让 `weekly_report` 的
+      **漏跑自愈失效**（那正是 2026-09-19 修过的"整周漏报"）。⇒ 本任务**只推企微、不落库**。
+
+    ★ 成本：`stock_finance` 窄列 ~1.9 万行（≈1MB）+ 行业映射 ~5900 行，进程内 6h 缓存 ⇒
+      一周一次真读（且本任务本来就只在周度窗口跑）。
+    """
+    d = _batch_trading_day()
+    if (d != _week_last_trading_day(d)
+            and not _explicitly_requested("earnings_pressure")):
+        return (f"盈利承压: 本轮交易日 {d:%Y-%m-%d} 非本周期最后交易日，跳过"
+                f"（周度例行 / --tasks earnings_pressure 可强制）")
+    from app.earnings_pressure import markdown, scan
+    data = scan(limit=40, refresh=True)
+    md = markdown(limit=40)
+    lvl = (data.get("macro") or {}).get("level")
+    head = (f"盈利承压: 报告期 {data.get('as_of')} 承压 {data.get('n_pressed')} 只"
+            f"（扫描 {data.get('n_scanned')}，宏观 {lvl}）")
+    if lvl != "high":
+        return head + "，宏观未达高压 ⇒ 只出日志、不推企微"
+    try:
+        from app.flash import wechat
+        if not wechat.WECHAT_WEBHOOK:
+            return head + "（无 webhook，未推）"
+        wechat.push_markdown_batched("⚠️ 盈利承压监测（高油+高利率）", md, force=False)
+        return head + "，已推企微"
+    except Exception as e:
+        return head + f"，推送失败: {str(e)[:60]}"
+
+
 def task_contradiction_report():
     """矛盾 LLM 报告（依赖上面的扫描结果）。"""
     from app.contradictions.report import run_report
@@ -845,6 +911,12 @@ TASKS = {
     # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
     "lhb": (task_lhb, "龙虎榜同步"),
+    # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
+    #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
+    "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
+    # ★ 2026-10-10（P2-2）：盈利承压监测清单（滞胀 → 盈利端）—— 纯只读分析，
+    #   排进"周期性复核"区（在 data_gap 之前）；每日跑但**只在周五推企微**（周度摘要）。
+    "earnings_pressure": (task_earnings_pressure, "盈利承压监测清单（监测口径，非信号）"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
@@ -878,8 +950,9 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank",
-                 "lhb", "zz_finance", "zz_daily", "weekly_report", "subfactor_ic",
-                 "verify_monthly", "data_gap", "daily_report",
+                 "lhb", "intraday_path", "zz_finance", "zz_daily",
+                 "weekly_report", "subfactor_ic",
+                 "verify_monthly", "earnings_pressure", "data_gap", "daily_report",
                  "trader_brief", "retention"]
 
 

@@ -55,6 +55,12 @@ SCRIPTS = (
     #   进决策链须看这里每月跑出的结论（判据预登记在各自脚本头）。
     ("flow_consec_edge_check", "连续主力净流入分档（孤儿字段信号化）", 5000, "观测"),
     ("lhb_edge_check", "龙虎榜净买强度（候选信号，含覆盖率门）", 300, "上榜事件"),
+    # ★ 2026-10-10 新增（P2-1，PLAN_RESERVE_SIGNALS §6.5）：`intraday_path`（自建分时归档）
+    #   的**第一个消费方** ——「午盘前跌>1% → 午后拉升/次日」。补上 P1-1 结论里最缺的
+    #   **日内拼图**（日线看不到 V 型）。
+    #   ⚠️ **时钟属性**：`intraday_path` 自 2026-10-09 起累积（腾讯分时只有当日）⇒ 初期必然
+    #   INSUFFICIENT；接进来后到点自动出结论并推送（本模块存在的原因就是"别让脚本白等"）。
+    ("intraday_midday_reversal_check", "午盘跌>1%的午后/次日（日内反转）", 30, "交易日"),
 )
 # 视为"有结论"的 verdict（除 INSUFFICIENT 外都值得让用户知道；ERROR 属运维信号也要推）
 _NO_VERDICT = {"", "INSUFFICIENT", None}

@@ -51,6 +51,22 @@ def macro_rules():
     return {"version": RULES_VERSION, "rules": RULES}
 
 
+@router.get("/earnings-pressure")
+def earnings_pressure(limit: int = Query(30, ge=5, le=200), refresh: bool = False):
+    """盈利承压监测清单（P2-2，滞胀 → 盈利端）。
+
+    ★ **这是监测清单，不是卖出信号**：不改评分、不参与排序、不进闸门。
+      判据 = 毛利率**同比下滑**（必备）+ 总分 ≥60（低毛利/净利营收同比为负加权），
+      只报"**正在边际恶化**"的票；宏观用**分位口径**定级（油/10Y）。
+    ★ 数据：`stock_finance`（多报告期，可做同期同比）+ `stock_industry`（行业中位）
+      + `macro_daily_history`（油/10Y 分位）。6h 进程内缓存。
+    ★ 不做方向断言：高油高利率同时是上游资源/油服的**受益**环境 —— 清单附行业分布，
+      由读者自行判断（`note` 字段里也写明了这一点）。
+    """
+    from app.earnings_pressure import scan
+    return scan(limit=limit, refresh=refresh)
+
+
 @router.get("/reserves")
 def macro_reserves(months: int = Query(24, ge=6, le=120)):
     """央行储备月度面板（外储 / 黄金储备 / 黄金占储备比重）——**慢变量，非交易信号**。
