@@ -513,6 +513,48 @@ def _flow_cache_put(cache_key: str, ver, rows: dict) -> None:
     _FLOW_MAP_CACHE[cache_key] = {"ts": time.time(), "ver": ver, "rows": rows}
 
 
+# ── 连续净流入分档（2026-10-10，P1-2：把孤儿字段 flow_consec 接成标签）─────────
+#   ★ 为什么**只分档、不报精确值**：`flow_consec` 由 `overlay` 从"读取窗口内的 flow_rows"
+#     往回数得到（`overlay.py:98-107`），而日批的读取窗口由 `state.FLOW_WINDOW_DAYS=20`
+#     （P0-1 为省 egress 设的）决定 ⇒ 回看长度约 31 个交易日 ⇒ **极端连续流入会被封顶**。
+#     分档边界取 10（远离窗口下限）⇒ **任何档位判定都不受封顶影响**；
+#     预登记检验（`scripts/flow_consec_edge_check.py`）用**同一分档**（min(consec,10)）
+#     ⇒ 生产标签与研究口径**同源**（项目铁律）。
+#   ★ 分档语义（不是买卖信号，先只做"展示 + 攒样本"）：
+#     weak 2~4 天 / mid 5~9 天 / strong ≥10 天
+_FLOW_CONSEC_STRONG = 10
+_FLOW_CONSEC_MID = 5
+_FLOW_CONSEC_WEAK = 2
+
+
+def consec_tier(consec) -> str:
+    """连续净流入分档：''（<2） / 'weak'(2~4) / 'mid'(5~9) / 'strong'(≥10)。"""
+    try:
+        n = int(consec or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n >= _FLOW_CONSEC_STRONG:
+        return "strong"
+    if n >= _FLOW_CONSEC_MID:
+        return "mid"
+    if n >= _FLOW_CONSEC_WEAK:
+        return "weak"
+    return ""
+
+
+def consec_label(consec) -> str:
+    """中文标签（前端直接渲染）。触顶档用 ≥ 表述，避免报被窗口截断的精确值。"""
+    tier = consec_tier(consec)
+    if not tier:
+        return ""
+    if tier == "strong":
+        return f"连续净流入 ≥{_FLOW_CONSEC_STRONG} 天"
+    try:
+        return f"连续净流入 {int(consec)} 天"
+    except (TypeError, ValueError):
+        return ""
+
+
 # ── 窗口化读（2026-10-10，egress：Actions 冷启根治）─────────────────────────
 _FLOW_WIN_TOL = 1.7      # 交易日 → 日历日 的余量系数（含周末 + 少量假期）
 _FLOW_WIN_PAD = 10       # 再加 10 个自然日兜底

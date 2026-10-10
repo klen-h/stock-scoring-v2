@@ -1065,6 +1065,18 @@ def score_single(symbol: str):
         except Exception as e:
             print(f"[trade_gate] 详情页就绪摘要失败 {symbol}: {e}")
 
+    # ★ 2026-10-10（P1-2）：龙虎榜「候选信号」标签（**纯展示，不进决策链**）。
+    #   只查近 10 个自然日的 date/net_buy 两列（小字段，见 lhb.recent_summary 注释）；
+    #   无上榜记录 ⇒ None（前端不渲染，不留空壳）。
+    lhb = None
+    try:
+        from app.mainforce.lhb import recent_summary as _lhb_sum
+        lhb = _lhb_sum(symbol, days=10) or None
+        if lhb and not lhb.get("n"):
+            lhb = None
+    except Exception as e:
+        print(f"[lhb] 详情页上榜汇总失败 {symbol}: {e}")
+
     return {
         "code": result.code,
         "name": result.name,
@@ -1079,6 +1091,7 @@ def score_single(symbol: str):
         "trend_health": result.trend_health,
         "mainforce": mainforce,
         "gate": gate,
+        "lhb": lhb,
     }
 
 
@@ -2039,6 +2052,12 @@ def _gate_watch_live(limit: int = 500):
                 # `phases.PHASE_CN` 补好；2026-09-22 修「显示英文 sideways」时统一到那一层）
                 "phase_cn": m.get("phase_cn") or "",
                 "flow5_amt": m.get("flow5_amt"),
+                # ★ 2026-10-10（P1-2）：连续净流入分档标签（此前 flow_consec 是孤儿字段，
+                #   只有详情页"现场算 overlay"路径才有、且前端不渲染）。
+                #   ⚠️ 只传分档与中文标签，**不传精确天数**——精确值受日批读取窗口封顶，
+                #   详见 `mainforce/state.py` 的 `flow_consec` 列注释。
+                "flow_consec_tier": m.get("flow_consec_tier") or "",
+                "flow_consec_cn": m.get("flow_consec_cn") or "",
                 # ★ 极端流入警示（2026-09-22）：阈值取自倒U曲线（`engine._score_flow5`）——
                 #   >5 过峰值开始降分、>20 进打 0 分区（"散户陷阱"假设）。
                 #   动机：闸门 A 条件（吸筹区）看"筹码结构 × 流入方向"，与倒U看"流入强度"

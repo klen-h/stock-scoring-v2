@@ -49,6 +49,12 @@ SCRIPTS = (
     #   block bootstrap B=10000 + 复利净值 + 分年分解）；接进来即"到点自动出结论"，
     #   避免重蹈"脚本写了但没人跑 = 白等"的覆辙（本模块存在的原因）。
     ("reversal_composite_edge_check", "反弹vs反转组合（金银比 risk-on 确认）", 30, "信号日"),
+    # ★ 2026-10-10 新增（P1-2，PLAN_RESERVE_SIGNALS §6.4）：把两个**孤儿/纯归档**数据源
+    #   接成候选信号并预登记 —— `flow_consec`（连续主力净流入，原先算了没消费方）与
+    #   龙虎榜净买强度（`lhb.py` 原先只归档不信号化）。两者都**只做展示/观察**，
+    #   进决策链须看这里每月跑出的结论（判据预登记在各自脚本头）。
+    ("flow_consec_edge_check", "连续主力净流入分档（孤儿字段信号化）", 5000, "观测"),
+    ("lhb_edge_check", "龙虎榜净买强度（候选信号，含覆盖率门）", 300, "上榜事件"),
 )
 # 视为"有结论"的 verdict（除 INSUFFICIENT 外都值得让用户知道；ERROR 属运维信号也要推）
 _NO_VERDICT = {"", "INSUFFICIENT", None}

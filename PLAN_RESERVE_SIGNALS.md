@@ -132,6 +132,34 @@
 - **龙虎榜**：`mainforce/lhb.py` 已迁日批但未信号化 → 接成候选信号 + 预登记。
 - **验收**：标签上线；两个预登记脚本存在并接进日批。
 
+**✅ 落地（2026-10-10）**
+
+1. **`flow_consec` 消费方上线**（此前是孤儿字段：算了不落表、落表也无人读）：
+   `mainforce/flow.py` 增**唯一映射源** `consec_tier/consec_label`（分档 weak 2~4 / mid 5~9 /
+   strong ≥10；**只分档、不报精确天数**——精确值受日批读取窗口 `FLOW_WINDOW_DAYS` 封顶）；
+   `state.py` 建表 + 幂等 ALTER + `_save` + `load_latest` 全链落库透出（沿用 `phase_cn`
+   那套"在唯一数据入口补齐"的思路）；`overlay` 现算路径同口径补齐；观察池 API 透出；
+   前端 `displayMeta.CONSEC_STYLE`（**共享源**）+ **详情页 / 榜单页观察池 / 工作台观察池卡**
+   三处渲染。
+   ⚠️ 存量行 `flow_consec=NULL` ⇒ **需等下一次日批（周一）才会出标签**。
+2. **龙虎榜接成候选信号**：`lhb.py` 增 `recent_summary()`（**只读 `date`/`net_buy` 两列**，
+   不碰 `seats_json` 大字段）+ `code` 索引；详情页 API 增 `lhb` 字段（近 10 日上榜汇总）
+   + 前端标签（**纯展示，不进决策链**：不改分/不排序/不进闸门）。
+3. **两个预登记脚本 + 接进日批**：`scripts/flow_consec_edge_check.py`、
+   `scripts/lhb_edge_check.py` —— 均注册进 `app.edge_verify.SCRIPTS`（复用月度闸门：
+   幂等 + 分级推送 + `report_store` + `--json` 契约）⇒ **到点自动出结论，无需人工跑**。
+4. **首跑结论（均已写入各自脚本头）**：
+   · **`flow_consec`：FAIL(KILL)** —— `strong − none` 的 T+5 超额 **−0.55pct**（按日聚类
+     bootstrap P=0.89，T+10 同向 −0.80pct，单调性不成立）⇒ 该字段**无正向预测力**。
+     标签**保留为事实描述**，并把结论写进 tooltip 防误用（**有意偏离本文书「KILL⇒摘标签」
+     的字面后果**，理由与"严格执行时怎么摘"都写在脚本头）。
+   · **龙虎榜：PARTIAL(降级)** —— `big_buy − big_sell` 的 T+5 差 **+3.84pct**、按上榜日聚类
+     bootstrap P=**0.0000**（95%CI [+1.96,+5.67]，101 个上榜日）—— 但**覆盖率仅 46.6%**
+     ⇒ **覆盖率门按设计生效**（<70% 禁止 PASS；也禁止在低覆盖下 KILL）。要坐实需补被排除
+     票（小票/科创）的行情，属另一件事、有 egress 成本。
+5. **自省（如实记录）**：`flow_consec` 的 KILL 判据写成「差 ≤ 0 **或** P ≥ 0.20」——
+   **单条件过松**（纯噪声下约一半概率被判 KILL）。v2 建议见脚本头；本轮**不动判据**。
+
 ### 6.5 P2-1：日内分时归档（使"午盘 V 型"可检验）
 
 - **目标**：补上"反转识别"最缺的日内拼图。
@@ -183,7 +211,10 @@
       判据预登记在脚本头：GO/DOWNGRADE/KILL + block bootstrap B=10000 + 复利净值 + 分年分解）
       ＋ 注册进 `app.edge_verify.SCRIPTS`（**经日批 `task_verify_monthly` 月度自动复核**，零人工）。
       首跑 n=29（<30）⇒ INSUFFICIENT；A−B(T+5) = **−0.35pct**（首跑读数，未达门槛不作结论）
-- [ ] P1-2 flow_consec 消费方 + 龙虎榜信号化预登记（1 天）
+- [x] P1-2 flow_consec 消费方 + 龙虎榜信号化预登记（1 天）—— 2026-10-10 完成：
+      标签上线（`flow_consec` 三处前端 + 龙虎榜详情页）＋ 两个预登记脚本注册进 `edge_verify`
+      （日批月度自动复核）。首跑：`flow_consec` **FAIL(无预测力，标签降级为事实描述)**；
+      龙虎榜 **PARTIAL(+3.84pct/P=0.0000，但覆盖率 46.6% 触发覆盖率门)**
 - [ ] P2-1 日内归档（2 天）
 - [ ] P2-2 盈利下修预警（2 天）
 

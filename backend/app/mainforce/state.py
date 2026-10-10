@@ -57,6 +57,7 @@ def ensure_table() -> None:
                 chip_json JSONB,
                 flow5_amt DOUBLE PRECISION,
                 flow5_amt_yuan DOUBLE PRECISION,
+                flow_consec INTEGER,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 CONSTRAINT uq_mainforce_state UNIQUE (code, date)
             )
@@ -67,6 +68,7 @@ def ensure_table() -> None:
                 code TEXT NOT NULL, name TEXT, date TEXT NOT NULL,
                 phase TEXT, signal TEXT, mult REAL DEFAULT 1.0,
                 chip_json TEXT, flow5_amt REAL, flow5_amt_yuan REAL,
+                flow_consec INTEGER,
                 UNIQUE (code, date)
             )
         """)
@@ -79,6 +81,28 @@ def ensure_table() -> None:
     except Exception:
         try:
             db.execute("ALTER TABLE mainforce_state ADD COLUMN flow5_amt_yuan REAL")
+        except Exception:
+            pass
+    # ★★ 2026-10-10（P1-2）：增列 `flow_consec`（连续主力净流入天数）。
+    #   此前它是**孤儿字段**——`overlay.mainforce_overlay` 算出来了（`overlay.py:98-107`），
+    #   但日批只落 6 个字段 ⇒ 详情页/观察池走"表命中"路径时**拿不到**（只有表被判定
+    #   不新鲜、现场算 overlay 时才有），前端更无任何消费方 ⇒ 白算。
+    #
+    #   ⚠️ **口径上限（必读，写进文档与标签语义）**：本列的值受 `refresh_all` 读取窗口
+    #   `FLOW_WINDOW_DAYS`（=20 交易日，P0-1 为省 egress 设的窗口）**隐式封顶**
+    #   —— 资金流回看窗口 ~31 个交易日（`_flow_window_cutoff` 的 1.7 倍余量），
+    #   所以极端连续流入（>31 天）会被截断在窗口长度上。
+    #   ⇒ 因此**对外标签只分档、不报精确值**：2~4 / 5~9 / ≥10 天（10 < 窗口下限，
+    #     任何档位判定都不受封顶影响）；预登记检验（`scripts/flow_consec_edge_check.py`）
+    #     用**同一分档**（`min(consec,10)`）⇒ 口径与生产同源。
+    #   ⇒ 若将来要用**精确值**，必须放宽 `FLOW_WINDOW_DAYS`（直接加 egress）或按 code
+    #     单独查（见 `flow.load_flow_map` docstring 的语义边界）。
+    try:
+        db.execute("ALTER TABLE mainforce_state ADD COLUMN IF NOT EXISTS "
+                   "flow_consec INTEGER")
+    except Exception:
+        try:
+            db.execute("ALTER TABLE mainforce_state ADD COLUMN flow_consec INTEGER")
         except Exception:
             pass
 
@@ -267,25 +291,27 @@ def _save(code: str, name: str, date: str, ov: dict) -> None:
     if db._use_postgres:
         db.execute("""
             INSERT INTO mainforce_state (code, name, date, phase, signal, mult,
-                                         chip_json, flow5_amt, flow5_amt_yuan)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                         chip_json, flow5_amt, flow5_amt_yuan,
+                                         flow_consec)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (code, date) DO UPDATE SET
                 name=EXCLUDED.name, phase=EXCLUDED.phase, signal=EXCLUDED.signal,
                 mult=EXCLUDED.mult, chip_json=EXCLUDED.chip_json,
                 flow5_amt=EXCLUDED.flow5_amt,
-                flow5_amt_yuan=EXCLUDED.flow5_amt_yuan
+                flow5_amt_yuan=EXCLUDED.flow5_amt_yuan,
+                flow_consec=EXCLUDED.flow_consec
         """, (code, name, date, ov.get("phase"), ov.get("signal"),
               ov.get("mult", 1.0), chip_json, ov.get("flow5_amt"),
-              ov.get("flow5_amt_yuan")))
+              ov.get("flow5_amt_yuan"), ov.get("flow_consec")))
     else:
         db.execute("""
             INSERT OR REPLACE INTO mainforce_state (code, name, date, phase, signal,
                                                     mult, chip_json, flow5_amt,
-                                                    flow5_amt_yuan)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                    flow5_amt_yuan, flow_consec)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (code, name, date, ov.get("phase"), ov.get("signal"),
               ov.get("mult", 1.0), chip_json, ov.get("flow5_amt"),
-              ov.get("flow5_amt_yuan")))
+              ov.get("flow5_amt_yuan"), ov.get("flow_consec")))
     _latest_cache["data"].pop(code, None)   # 写入即失效（读缓存）
 
 
@@ -293,6 +319,10 @@ def load_latest(codes: list) -> dict:
     """{code: state_dict}——每只取最新日期的一条（30min 进程缓存，见模块注释）。"""
     if not codes:
         return {}
+    # ★ 2026-10-10（P1-2）：连续净流入分档的**唯一映射源**在 `flow`（与本模块的
+    #   `PHASE_CN` 同思路——在"唯一数据入口"统一补齐，避免各消费方各写一套）。
+    from app.mainforce.flow import consec_label as _consec_label
+    from app.mainforce.flow import consec_tier as _consec_tier
     now = time.time()
     if _latest_cache["ts"] and now - _latest_cache["ts"] > _LATEST_TTL_SEC:
         _latest_cache.update({"ts": 0.0, "data": {}})
@@ -301,7 +331,7 @@ def load_latest(codes: list) -> dict:
     if missing:
         rows = db.fetch("""
             SELECT DISTINCT ON (code) code, name, date, phase, signal, mult,
-                   chip_json, flow5_amt, flow5_amt_yuan
+                   chip_json, flow5_amt, flow5_amt_yuan, flow_consec
             FROM mainforce_state WHERE code = ANY(%s)
             ORDER BY code, date DESC
         """, (missing,))
@@ -321,6 +351,11 @@ def load_latest(codes: list) -> dict:
                 "phase_cn": PHASE_CN.get(r["phase"] or "", ""),
                 "mult": r["mult"] or 1.0, "chip": chip, "flow5_amt": r["flow5_amt"],
                 "flow5_amt_yuan": r.get("flow5_amt_yuan"),
+                # ★ 2026-10-10（P1-2）：连续净流入（原孤儿字段）。`flow_consec` 原始值
+                #   一并带上（研究/审计用），但**对外标签只认 tier/cn 两个键**（封顶语义）。
+                "flow_consec": r.get("flow_consec"),
+                "flow_consec_tier": _consec_tier(r.get("flow_consec")),
+                "flow_consec_cn": _consec_label(r.get("flow_consec")),
             }
         _latest_cache["ts"] = now
     return {c: cached[c] for c in codes if c in cached}

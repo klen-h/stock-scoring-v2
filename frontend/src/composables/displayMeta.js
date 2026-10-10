@@ -42,6 +42,41 @@ export const PHASE_STYLE = {
   },
 }
 
+// ── 连续主力净流入分档配色（2026-10-10，P1-2）──
+// 键 = 后端 `mainforce/flow.consec_tier`（'' / weak / mid / strong）；
+// **显示文案用后端下发的 `flow_consec_cn`**（唯一映射源在后端，见 flow.consec_label）。
+// ⚠️ 后端**只分档、不报精确天数**：该值受日批读取窗口（`state.FLOW_WINDOW_DAYS`）隐式封顶，
+//   顶档文案就是「连续净流入 ≥10 天」的字面语义 ⇒ **前端不要自己拼天数**，否则会报出被截断的值。
+// 配色口径：与全站资金流一致（**红=净流入**，A 股习惯；见详情页「5日主力净流入」同款）。
+// ★★ 预登记检验结论（2026-10-10 首跑，`scripts/flow_consec_edge_check.py`）：
+//   **无正向预测力** —— T+5 超额（已剔除当日全市场等权）strong − none = **−0.55pct**
+//   （按日聚类 bootstrap P=0.89，95%CI [−1.42, +0.34]），T+10 同向（−0.80pct），
+//   单调性不成立 ⇒ 判 KILL。
+//   ⇒ 因此本标签定位是**事实描述**（"主力连续几天净流入"），**不是买入信号**：
+//      不改总分、不参与排序、不进闸门；**结论直接写进 tooltip 防误用**
+//      （同 `reversal_edge_check` 把「无预测力」写进盘中提醒 LLM prompt 的先例）。
+const CONSEC_VERDICT = '⚠️ 预登记检验（2026-10-10）：该档 T+5 超额 −0.55pct、P=0.89 ⇒ 无正向预测力'
+export const CONSEC_STYLE = {
+  weak: {
+    cls: 'bg-red-500/10 text-red-300/80',
+    tip: '连续 2~4 个交易日主力净流入 —— 事实描述，' + CONSEC_VERDICT,
+  },
+  mid: {
+    cls: 'bg-red-500/20 text-red-400',
+    tip: '连续 5~9 个交易日主力净流入 —— 事实描述，' + CONSEC_VERDICT,
+  },
+  strong: {
+    cls: 'bg-red-500/30 text-red-300 font-bold',
+    tip: '连续 ≥10 个交易日主力净流入（「≥」是字面意思：精确天数受日批读取窗口封顶）。'
+      + CONSEC_VERDICT,
+  },
+}
+
+/** 连续净流入 → 中文标签：**一律用后端下发**（前端不拼天数）；缺失返回 ''。 */
+export function consecCn(cn) {
+  return cn || ''
+}
+
 // ── 主力阶段中文名（**兜底表**，2026-09-28）──
 // 唯一映射源仍是后端 `mainforce/phases.PHASE_CN`，显示**优先用后端下发的 `phase_cn`**。
 // 但并非所有接口都发它：实测 `/score/batch/top` 的 `mainforce` 只给 `phase`（英文枚举）

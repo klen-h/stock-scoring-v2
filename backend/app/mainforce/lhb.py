@@ -52,6 +52,9 @@ def ensure_table() -> None:
             )
         """)
         db.execute("CREATE INDEX IF NOT EXISTS idx_lhb_date ON lhb_history (date)")
+        # ★ 2026-10-10（P1-2）：个股维度也要按 code 查（详情页标签）⇒ 补 code 索引，
+        #   否则每次详情页都要全表扫（含 seats_json 大字段所在的页）。
+        db.execute("CREATE INDEX IF NOT EXISTS idx_lhb_code ON lhb_history (code)")
     else:
         db.execute("""
             CREATE TABLE IF NOT EXISTS lhb_history (
@@ -231,6 +234,40 @@ def load_lhb(code: str = None, start: str = None, end: str = None) -> list:
         out.append({**{k: v for k, v in r.items() if k != "seats_json"},
                     "date": str(r["date"]), "seats": seats})
     return out
+
+
+def recent_summary(code: str, days: int = 10) -> dict:
+    """近 `days` 个自然日的上榜汇总（供个股详情页的「候选信号」标签）。
+
+    ★ 2026-10-10（P1-2，把纯归档的龙虎榜**接成候选信号**的第一步）：
+      · **只取 `date`/`net_buy` 两列** —— 详情页每次打开都会调它，`SELECT *`（`load_lhb`
+        的做法）会把 `seats_json` 这类大字段整份拖回来，纯烧 egress（本项目的老账）。
+      · 只做**展示口径**：**不进决策链**（不改分、不参与排序、不拦闸门）——
+        项目红线：信号未经预测力检验背书不得进决策链；检验见 `scripts/lhb_edge_check.py`
+        （预登记 + 接月度日批）。
+    返回 {"n": 上榜次数, "net": 净买合计(元), "last": 最近上榜日,
+          "recent": [{date, net_buy}] 最多 5 条}
+    """
+    ensure_table()
+    from datetime import datetime, timedelta
+    start = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    try:
+        rows = db.fetch("SELECT date, net_buy FROM lhb_history "
+                        "WHERE code = %s AND date >= %s ORDER BY date DESC",
+                        (code, start)) or []
+    except Exception as e:
+        print(f"[lhb] recent_summary 读取失败 {code}: {e}")
+        return {"n": 0, "net": 0.0, "last": "", "recent": []}
+    net = 0.0
+    recent = []
+    for r in rows:
+        v = float(r.get("net_buy") or 0)
+        net += v
+        if len(recent) < 5:
+            recent.append({"date": str(r.get("date"))[:10], "net_buy": v})
+    return {"n": len(rows), "net": net,
+            "last": (str(rows[0].get("date"))[:10] if rows else ""),
+            "recent": recent}
 
 
 if __name__ == "__main__":

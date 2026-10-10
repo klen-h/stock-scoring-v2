@@ -117,6 +117,11 @@
               <span v-if="g.phase" class="px-1 rounded shrink-0 cursor-help"
                     :class="(MF_PHASE_STYLE[g.phase] || {}).cls || 'bg-white/5 text-muted'"
                     :title="(MF_PHASE_STYLE[g.phase] || {}).tip || ''">{{ g.phase_cn || g.phase }}</span>
+              <!-- ★ 2026-10-10（P1-2）：连续净流入分档（与榜单页观察池**同一份**共享配色/文案，
+                   避免两处漂移）。文案用后端 `flow_consec_cn`。 -->
+              <span v-if="g.flow_consec_cn" class="px-1 rounded shrink-0 cursor-help"
+                    :class="(CONSEC_STYLE[g.flow_consec_tier] || {}).cls || 'bg-red-500/20 text-red-400'"
+                    :title="(CONSEC_STYLE[g.flow_consec_tier] || {}).tip || ''">{{ g.flow_consec_cn }}</span>
               <!-- ★ 2026-10-08 P3：异动分析入口（**共享组件**，与榜单页观察池是同一份）。
                    ⚠️ 右栏仅 320px ⇒ 本行已加 `flex-wrap`，窄屏优雅换行而不是被裁掉。 -->
               <AnomalyEntry :code="g.code" />
@@ -154,7 +159,7 @@
 // ==============================================================================
 import { ref } from 'vue'
 import {
-  PHASE_STYLE as MF_PHASE_STYLE, strategyShort, phaseCn, readyChipCls,
+  PHASE_STYLE as MF_PHASE_STYLE, CONSEC_STYLE, strategyShort, phaseCn, readyChipCls,
   stockHref, xqUrl, pctClass, signNum, scoreClass,
 } from '../../composables/displayMeta'
 // ★ 2026-10-08 P3：异动分析入口（共享组件；榜单页观察池 import 同一份）

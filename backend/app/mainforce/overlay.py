@@ -138,6 +138,19 @@ def mainforce_overlay(bars: list, flow_rows: list = None,
     active = (_mode() == "auto" and (regime or "") in GATE_REGIMES)
     mult = DISTRIBUTION_MULT if (active and distribution) else 1.0
 
+    # ★ 2026-10-10（P1-2）：连续净流入**分档**（唯一映射源 `flow.consec_tier/consec_label`）。
+    #   为什么要带 tier/cn：现算路径（详情页/观察池现场算 overlay）也要给出与"日批表"
+    #   完全一致的标签口径 —— 否则同一天同一只票，走表/走现算会显示不同文案。
+    #   ⚠️ 精确 `flow_consec` 受调用方传入的 `flow_rows` 长度封顶（日批窗口
+    #   `state.FLOW_WINDOW_DAYS`），故对外只报分档（详见 state.py 的列注释）。
+    #   局部 import（函数内）：避免 `flow ←→ overlay` 的模块级循环风险。
+    try:
+        from app.mainforce.flow import consec_label as _c_label
+        from app.mainforce.flow import consec_tier as _c_tier
+        _tier, _cn = _c_tier(consec), _c_label(consec)
+    except Exception:
+        _tier, _cn = "", ""
+
     return {
         "phase": (phase or {}).get("phase"),
         "phase_cn": (phase or {}).get("phase_cn"),
@@ -145,6 +158,8 @@ def mainforce_overlay(bars: list, flow_rows: list = None,
         "flow5_amt": flow5_amt,
         "flow5_amt_yuan": flow5_amt_yuan,
         "flow_consec": consec,
+        "flow_consec_tier": _tier,
+        "flow_consec_cn": _cn,
         "signal": signal,
         "signal_cn": signal_cn,
         "reason": reason,

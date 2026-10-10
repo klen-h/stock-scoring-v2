@@ -597,7 +597,14 @@
                 :title="(PHASE_STYLE[g.phase] || {}).tip || ''">
                 {{ g.phase_cn || g.phase }}
               </span>
-              <span v-else class="text-muted">-</span>
+              <!-- ★ 2026-10-10（P1-2）：连续净流入分档（原孤儿字段 flow_consec）。
+                   文案一律用后端 `flow_consec_cn`（后端只分档、不报被窗口封顶的精确天数）。 -->
+              <span v-if="g.flow_consec_cn" class="ml-1 px-1.5 py-0.5 rounded cursor-help"
+                :class="(CONSEC_STYLE[g.flow_consec_tier] || {}).cls || 'bg-red-500/20 text-red-400'"
+                :title="(CONSEC_STYLE[g.flow_consec_tier] || {}).tip || ''">
+                {{ g.flow_consec_cn }}
+              </span>
+              <span v-if="!g.phase && !g.flow_consec_cn" class="text-muted">-</span>
             </td>
             <td class="py-2 px-3 text-right font-mono text-xs">
               <span :class="g.flow5_level === 'extreme' ? 'text-red-400 font-bold'
@@ -1166,7 +1173,8 @@ import { getXueqiuUrl } from '../composables/stockUtils'
 import AnomalyEntry from '../components/AnomalyEntry.vue'
 // ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——
 //   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
-import { PHASE_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
+// ★ 2026-10-10（P1-2）：加 `CONSEC_STYLE`（连续净流入分档配色）——与详情页/工作台同一份共享源。
+import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
 // ★ 2026-09-27 数据可信度标注（本页主商品是「评分」，需明确其未验证状态）

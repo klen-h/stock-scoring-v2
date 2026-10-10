@@ -205,6 +205,25 @@
               :class="scoreData.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'">
               {{ scoreData.mainforce.signal_cn }}
             </span>
+            <!-- ★ 2026-10-10（P1-2）：连续主力净流入分档（原孤儿字段 `flow_consec`——
+                 后端算了但既不落表也无消费方）。文案**一律用后端 `flow_consec_cn`**
+                 （后端只分档不报精确天数：该值受日批读取窗口封顶，见 mainforce/state.py 注释）。
+                 配色语义与「5日主力净流入」一致（红=净流入）。 -->
+            <span v-if="scoreData.mainforce.flow_consec_cn"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold cursor-help"
+              :class="(CONSEC_STYLE[scoreData.mainforce.flow_consec_tier] || {}).cls || 'bg-red-500/20 text-red-400'"
+              :title="(CONSEC_STYLE[scoreData.mainforce.flow_consec_tier] || {}).tip || ''">
+              {{ scoreData.mainforce.flow_consec_cn }}
+            </span>
+            <!-- ★ 2026-10-10（P1-2）：龙虎榜「候选信号」（后端 `lhb` = 近 10 个自然日上榜汇总
+                 {n, net, last}）。**纯展示，不进决策链**（不改分/不排序/不进闸门）；
+                 悬停写明预登记结论，防把"上榜"当买点用（同 consec 标签的做法）。 -->
+            <span v-if="scoreData.lhb && scoreData.lhb.n"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold cursor-help"
+              :class="(scoreData.lhb.net || 0) >= 0 ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'"
+              :title="`近 10 个自然日上榜 ${scoreData.lhb.n} 次（最近 ${scoreData.lhb.last}），榜单口径净买合计 ${formatSignedAmt(scoreData.lhb.net || 0)}。⚠️ 展示口径，不进评分/排序/闸门。预登记检验（2026-10-10）：净买−净卖 T+5 差 +3.84pct、P=0.0000，但本地包覆盖率仅 46.6% ⇒ 降级（证据受限、不判通过）`">
+              龙虎榜 {{ scoreData.lhb.n }} 次 · {{ (scoreData.lhb.net || 0) >= 0 ? '净买' : '净卖' }} {{ formatSignedAmt(scoreData.lhb.net || 0) }}
+            </span>
           </div>
         </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
@@ -514,6 +533,9 @@ import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
 import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
+// ★ 2026-10-10（P1-2）：连续主力净流入分档配色（**共享源**，与榜单页/工作台观察池同一份；
+//   文案用后端下发的 `flow_consec_cn`，前端不拼天数——见 displayMeta 注释）。
+import { CONSEC_STYLE } from '../composables/displayMeta'
 
 const route = useRoute()
 const code = route.params.code
