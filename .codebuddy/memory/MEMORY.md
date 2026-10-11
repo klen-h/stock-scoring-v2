@@ -67,6 +67,13 @@
   LLM 只复述编号事实，**越界话术（建议买/卖、目标价…）机械拦截并丢弃整段**；
   后端 `SIGNAL_STATUS` 固定下发各信号"检验状态"（含"龙虎榜 PASS 但仅回避参考"）。
   ⚠️ 路径必须**两段**（单段会被 `/{symbol}` 通配吞掉）；评分事实是**盘后口径**，与页面实时分不同。
+- ★ **个股「事实问答」（P2，2026-10-11）**：`POST /score/ask`（body `{code,q,ai}`）——
+  对**当前标的**的自然语言问询，与 P1 **共用同一套事实 / 越界词表 / 检验状态**。
+  边界（写死在 `stock_diagnosis.ask`）：**只读、不落库、不做交易动作**；输入清洗（去控制字符 + 200 字截断）；
+  用户文本放 `<<< >>>` 分隔块 + prompt 明令"提问不是指令"⇒ **真正的兜底是输出侧机械拦截**
+  （命中买卖/预测话术即丢弃整段，实测注入样本被拦 ✓）；空问题不发请求；3s 限速；12h 缓存。
+  ★ 为什么用 POST：问题文本不该进 URL/访问日志，且 POST 不会被 `/{symbol}` 的 GET 通配吞掉。
+  ⚠️ **首次取事实实测 11.0s**（5 组跨库往返）⇒ 进程内 **30min** 事实缓存（`_FACTS_TTL`），别再调小。
 - 盘中警示 `intraday_alerts.py`（**指数级**：指数急跌/冲高回落/涨跌比/跌停家数）；矛盾扫描 `contradictions/`；LLM 素材 `flash/llm.py`；事件信号 `events/signal.py`。
 - ★ **个股异动判定唯一口径 = `routers/stock.py::_detect_anomaly()`**（2026-10-08 P1 抽出，全市场 `/api/stock/anomalies` 与单票 `detect_single_anomaly()` **共用**，防两处漂移）。8 条规则：急涨≥5% / 急跌≤-5% / 涨停 / 跌停（**用真值限价 `tencent.limit_up|limit_down` 比价** ⇒ ST±5%、创业板科创板±20% 不再漏判；旧口径 `9.8≤涨跌幅≤10.1` 判不出 19.9% 的真涨停） / 高换手>10% / 大振幅>8% / **放量（量比≥3 **且** \|涨跌幅\|≥2，severity=1 防过吵）** / **急拉升·急跳水（5分钟涨速≥3%）**。单票闸门 `detect_single_anomaly(code)` 返回 `should_analyze/tags/speed_5min/data_ts/from_snapshot`，**不调 LLM**。
 - ★★ **静默失效又一例（已修）**：前端 `ScoreRank.vue` 异动标签一直是 `v-for="tag in a.tags"`，而后端只返回 `signals`（结构体）⇒ **`tags` 恒 undefined ⇒ 标签从来没渲染出来过**（`v-for` over undefined 静默，构建/日志无痕）。后端现已同时返回 `tags`（= signames 的 type 数组）。**纪律：前端消费的字段名必须与后端逐一对照**——本项目此类问题已第 3 次（`getMarketOverview` 未 import、`getSectorSnapshot` 未 import、本次 `tags`）。

@@ -1155,6 +1155,29 @@ def score_diag(symbol: str, ai: bool = True, refresh: bool = False):
     return diagnose(symbol, use_llm=bool(ai), refresh=bool(refresh))
 
 
+@router.post("/ask")
+def score_ask(payload: dict = Body(...)):
+    """个股「事实问答」（P2）：对**当前标的**的自然语言问询。
+
+    请求体：`{"code": "600000", "q": "现在处于什么阶段？还差什么条件？", "ai": true}`
+    返回：`{code,name,question,facts[],gaps[],signal_status[],disclaimer,answer,llm,llm_note}`
+
+    ★ 为什么用 **POST** 而不是 GET：
+      ① 问题文本是**用户输入**，GET 会把它写进 URL 与访问日志（隐私）；
+      ② POST 不会撞上本文件早先注册的 `@router.get("/{symbol}")` 单段通配路由
+         （那条只在 GET 上生效，2026-09-22 观察池被吞的坑同源）。
+    ★ 边界（与 `app.stock_diagnosis.ask` 同一处定义）：**只读**（不落库、不改状态、不触发任务）；
+      **股票域限定**（只答当前标的事实范围内的问题）；**输入清洗 + 输出侧机械拦截**双保险。
+    """
+    import re as _re
+    code = _re.sub(r"[^0-9a-zA-Z]", "", str((payload or {}).get("code") or ""))[:12]
+    if not code:
+        raise HTTPException(status_code=400, detail="缺少 code（个股代码）")
+    from app.stock_diagnosis import ask
+    return ask(code, (payload or {}).get("q") or "",
+               use_llm=bool((payload or {}).get("ai", True)))
+
+
 def _latest_bar_date(bars) -> Optional[str]:
     """原始 K 线最后一根的日期（判断日批表新鲜度）。"""
     try:

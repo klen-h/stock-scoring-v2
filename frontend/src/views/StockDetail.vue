@@ -212,6 +212,23 @@
         <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
           {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}
         </div>
+        <!-- ★ 2026-10-11（P2）：事实问答 = 对**当前标的**提问（只答既有事实范围内的问题）。
+             边界与后端同源：只读、不落库、不做交易动作；问别的票/要求预测 ⇒ 模型会明说
+             "事实中没有这项"，且**输出侧机械拦截**买卖话术（越界即丢弃整段）。 -->
+        <div class="mt-3 flex gap-2 items-start">
+          <textarea v-model="diagQ" rows="1" :maxlength="200" :disabled="diag.asking"
+            placeholder="问一句这只票（如：现在处于什么阶段？还差什么条件？上榜情况如何？）"
+            class="flex-1 text-xs bg-white/5 rounded px-2 py-1.5 resize-none outline-none focus:bg-white/10"></textarea>
+          <button @click="askDiag" :disabled="diag.asking || !diagQ.trim()"
+            class="px-2 py-1 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-40 shrink-0">
+            {{ diag.asking ? '思考中…' : '提问' }}
+          </button>
+        </div>
+        <div v-if="diag.answer"
+          class="mt-2 text-xs leading-relaxed whitespace-pre-wrap bg-white/5 rounded-lg p-3">
+          <div class="text-muted mb-1">问：{{ diag.question }}</div>{{ diag.answer }}
+        </div>
+        <div v-else-if="diag.ask_note" class="mt-2 text-xs text-muted">{{ diag.ask_note }}</div>
         <div v-if="diag.facts && diag.facts.length" class="mt-3 space-y-1">
           <div class="text-xs text-muted">依据（可追溯）</div>
           <div v-for="(f, i) in diag.facts" :key="i" class="text-xs flex items-baseline gap-2 flex-wrap">
@@ -587,7 +604,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag, askStock } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
 // ★ 2026-10-10（P1-2）：连续主力净流入分档配色（**共享源**，与榜单页/工作台观察池同一份；
 //   文案用后端下发的 `flow_consec_cn`，前端不拼天数——见 displayMeta 注释）。
@@ -605,7 +622,8 @@ const scoreData = ref({})
 // ★ 2026-10-11（P1）一页纸诊断：**事实先到**（ai=false，零 LLM 成本），AI 解读按需点按钮
 //   （LLM 调用有频次/配额成本 ⇒ 绝不进自动轮询）；失败只影响本卡，不影响页面其它部分。
 const diag = ref({ facts: [], gaps: [], signal_status: [], narrative: null,
-                   llm_note: '', disclaimer: '', loading: false, loaded: false })
+                   llm_note: '', disclaimer: '', loading: false, loaded: false,
+                   asking: false, answer: null, question: '', ask_note: '' })
 async function loadDiag(withAi = false) {
   diag.value = { ...diag.value, loading: true }
   try {
@@ -617,6 +635,25 @@ async function loadDiag(withAi = false) {
   }
 }
 onMounted(() => loadDiag(false))
+
+// ★ 2026-10-11（P2）事实问答：**空问题不发请求**（不白烧 LLM 配额）；回答与事实/检验状态
+//   一起渲染（后端同源下发）。失败只影响本卡（不阻塞页面其它部分）。
+const diagQ = ref('')
+async function askDiag() {
+  const q = diagQ.value.trim()
+  if (!q || diag.value.asking) return
+  diag.value = { ...diag.value, asking: true, answer: null, ask_note: '' }
+  try {
+    const r = await askStock(code, q)
+    const d = r.data || r
+    diag.value = { ...diag.value, asking: false, answer: d.answer,
+                   question: d.question, ask_note: d.llm_note || '',
+                   facts: (d.facts && d.facts.length) ? d.facts : diag.value.facts }
+  } catch (e) {
+    diag.value = { ...diag.value, asking: false,
+                   ask_note: '提问失败：' + (e?.response?.data?.detail || e?.message || e) }
+  }
+}
 const loaded = ref(false)
 const period = ref('day')
 const activeIndicators = ref(['ma', 'macd', 'vol'])
