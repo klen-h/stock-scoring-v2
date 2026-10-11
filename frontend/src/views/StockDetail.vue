@@ -212,6 +212,7 @@
              （**真正的依据另有下方带 source 的事实列表**，所以收起不会藏掉数据）。 -->
         <InsightBody v-if="diag.narrative || diag.conclusion" :text="diag.narrative"
                      :conclusion="diag.conclusion" :reasons="diag.reasons"
+                     feedback-source="diag" :feedback-ref="'diag:' + code"
                      collapsible class="text-xs bg-white/5 rounded-lg p-3" />
         <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
           {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}

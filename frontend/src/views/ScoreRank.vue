@@ -162,6 +162,12 @@
         <span class="text-gray-300">高分档尤其需过滤</span>——技术面 5-10 日负 IC 属「尾部驱动」（最高分位/超买档贡献绝大部分，中段无害）。
         ⇒ 所以榜单的正确用法是：<span class="text-gray-300">当候选池 + 看变化</span>（升级/降级、连续上榜），再交给观察池等状态。
       </div>
+      <div class="mt-1.5 text-[11px] leading-relaxed">
+        <span class="text-amber-400">⚠️ 预登记检验（2026-10-11）</span>：防御/禁买市窗口内，本榜 Top50 此后
+        5/10 日<span class="text-gray-300 font-semibold">跑输可取价池等权 −1.43 / −2.21pt</span>（P&lt;0.0001）⇒
+        评分当前<span class="text-gray-300 font-semibold">不构成买入依据</span>；「高分=回避」反向验证中
+        （≈11 月，见 PLAN_SCORE_EDGE.md §11）。
+      </div>
     </div>
 
     <!-- 盘中警示条（12s 轮询市场总览：指数急跌/涨跌比/跌停，秒级滞后） -->

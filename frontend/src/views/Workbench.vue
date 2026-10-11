@@ -2136,6 +2136,8 @@
               <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
                            :text="radarAnalysis.markdown"
                            :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
+                           feedback-source="radar"
+                           :feedback-ref="'radar:' + (selectedDate || todayStr)"
                            collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
               <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
               <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">

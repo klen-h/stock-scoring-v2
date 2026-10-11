@@ -20,6 +20,10 @@
               v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template>）</span></div>
         <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
       </div>
+      <!-- ★ 2026-10-11（B1 拍板）：FAIL 披露（PLAN_SCORE_EDGE.md §9）—— 一行成本防误读 -->
+      <div class="mb-1.5 text-[10px] text-amber-400/90 leading-relaxed">
+        ⚠️ 评分选股方向预登记 FAIL（防御市 T+5 −1.43pt，2026-10-11）⇒ 本榜不构成买入依据（验证中）
+      </div>
       <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
       <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
       <div v-else class="space-y-1 text-xs">

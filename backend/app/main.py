@@ -251,6 +251,9 @@ app.include_router(coach_router, prefix="/api/coach", tags=["交易员教练"]) 
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
 # 重任务触发：转发给 GitHub Actions，本进程零计算（512MB 实例生存关键）
 app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触发"])
+# 输出消费闭环（C2，2026-10-11，PLAN_NEXT 附 B）：「这条输出对我有没有影响」的标记
+from app.output_feedback import router as feedback_router
+app.include_router(feedback_router, prefix="/api/feedback", tags=["输出反馈"])
 
 
 # 路由路径装饰器：把下面的函数绑定到 GET /api/health 这个 URL

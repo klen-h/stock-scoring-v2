@@ -19,12 +19,33 @@
       <div v-show="open" v-html="bodyHtml"></div>
     </template>
     <div v-else-if="bodyHtml" v-html="bodyHtml"></div>
+    <!-- ★★ 2026-10-11（C2）输出消费标记（PLAN_NEXT 【附 B】v0）：**仅在使用方显式传
+         feedback-source 的卡出现**（v0 = 雷达卡/简报卡/一页纸诊断卡，共 3 处；整页长文不收）。
+         只记 source/ref/date，**不存内容**；二选一（有影响/没影响），可改选。
+         ⚠️ 已选状态是**本页内存态**（刷新即消失）—— 这是刻意的：标记表才是事实源，
+         前端不为其维护状态同步（v0 最小化）。 -->
+    <div v-if="feedbackSource" class="mt-1.5 flex items-center gap-1.5">
+      <template v-if="!marked">
+        <span class="text-[10px] text-muted shrink-0">这条输出对你：</span>
+        <button type="button" :disabled="sending"
+                class="px-1.5 py-0.5 rounded text-[10px] bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-40"
+                @click="mark('acted')">👍 有影响</button>
+        <button type="button" :disabled="sending"
+                class="px-1.5 py-0.5 rounded text-[10px] bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-40"
+                @click="mark('dismissed')">👎 没影响</button>
+      </template>
+      <span v-else class="text-[10px] text-muted">
+        已记：{{ marked === 'acted' ? '有影响' : '没影响' }}
+        <button type="button" class="underline hover:text-accent" @click="marked = ''">改</button>
+      </span>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
 import { renderMd, reasonsMarkdown, splitInsight } from '../composables/markdown'
+import { postFeedback } from '../api'
 
 const props = defineProps({
   // 文本通道（L2/L1）：整段 markdown。结构化字段缺失时才会被解析。
@@ -36,6 +57,10 @@ const props = defineProps({
   // 整页长文（日报/简报/周报/复盘）**不要**开：那类场景用户就是要通读，折叠反而添堵。
   collapsible: { type: Boolean, default: false },
   label: { type: String, default: '依据' },
+  // ★ C2 输出消费标记：传了才出现 👍/👎 行（source ∈ {radar, brief, diag}；ref = 输出自然键）。
+  //   不传 ⇒ 完全不渲染（整页长文/其它调用点零影响）。
+  feedbackSource: { type: String, default: '' },
+  feedbackRef: { type: String, default: '' },
 })
 
 // 有结构化依据 ⇒ 文本通道整体让位（`text` 是后端按同一份数据组装的，重复渲染没有意义）
@@ -50,4 +75,17 @@ const bodyHtml = computed(() => renderMd(structured.value
   : parts.value.body))
 const reasonCount = computed(() => (structured.value ? props.reasons.length : 0))
 const open = ref(false)
+
+// ── C2 输出消费标记 ──
+const marked = ref('')
+const sending = ref(false)
+function mark(action) {
+  if (sending.value || marked.value) return
+  sending.value = true
+  // 尽力而为：失败静默（标记不该打断阅读；失败重试交给用户再点一次）
+  postFeedback({ source: props.feedbackSource, ref: props.feedbackRef, action })
+    .then(() => { marked.value = action })
+    .catch(() => {})
+    .finally(() => { sending.value = false })
+}
 </script>

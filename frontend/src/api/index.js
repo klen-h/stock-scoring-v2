@@ -194,6 +194,10 @@ export const getStockDiag = (symbol, ai = false) =>
 //   ⚠️ 用 **POST**：问题文本不进 URL/访问日志（隐私）；且 POST 不会被后端 `/{symbol}` 单段通配吞掉。
 export const askStock = (code, q, ai = true) =>
   http.post('/score/ask', { code, q, ai }, { timeout: 60000 })
+// ★ 2026-10-11（C2，PLAN_NEXT 附 B）输出消费标记：这条输出对我有没有影响。
+//   只记 source/ref/date（**不存内容**）；同一 (source, ref) 幂等覆盖（可改选）。
+export const postFeedback = (payload) =>
+  http.post('/feedback', null, { params: payload, timeout: 10000 })
 // ★ 持仓雷达（2026-09-23）：以**用户持仓为主轴**的状态聚合 —— 评分/主力阶段/闸门就绪/
 //   战法命中/是否在观察池/所属板块被矛盾点名，一次回答「我手里那几只怎么样」。
 //   ⚠️ 路径两段 `/score/batch/*`：后端 `/{symbol}` 单段通配路由会吞掉单段静态路径（9-22 实锤）。

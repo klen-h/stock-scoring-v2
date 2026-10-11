@@ -295,7 +295,9 @@
           </div>
           <!-- ★ 2026-10-11：简报 prompt 已约定首行 `**结论**：…` ⇒ 结论条置顶；「依据」**不折叠**
                （简报是给人通读的，折叠只添堵 —— 与雷达/诊断那类"卡片内嵌观点"不同）。 -->
-          <InsightBody :text="briefMd" class="text-xs" />
+          <InsightBody :text="briefMd" class="text-xs"
+                       feedback-source="brief"
+                       :feedback-ref="'brief:' + (briefDate || currentDate) + ':' + phaseLabel" />
         </div>
         <div v-if="loading" class="bg-card border border-border rounded-lg p-8 text-center">
           <div class="loading-spinner mx-auto mb-3"></div>
