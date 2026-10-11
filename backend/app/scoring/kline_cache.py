@@ -163,6 +163,44 @@ def _append_today_bar(klines: List[Dict], code: str, expect_date: str) -> List[D
         return klines
 
 
+def append_intraday_bar(klines: Optional[List[Dict]], code: str) -> Optional[List[Dict]]:
+    """**盘中**专用：把「当日**半根** bar」（由实时内存行情合成）追加到 klines。
+
+    ★★ 2026-10-11（用户："`score_single` vs `batch/top` 盘中不同分"）—— 本函数是
+      那个 bug 的**修复支点**，别再删/别再加守卫把它关掉：
+      · 详情页 `routers/scoring.score_single` 盘中走的是 **实时 K 线（含当日半根）**；
+      · 而批量精算 `_precise_score_sync` 优先用数据包的**预计算指标**（截止**上一交易日**
+        收盘，没有当日 bar）⇒ 同一只票「榜单分 ≠ 详情分」（即既有认知里的
+        "盘中技术面昨收"）。
+      ⇒ 批量侧改用「缓存 K 线 + 本函数合成的当日 bar」即可**与详情页同口径**。
+      ★ **零额外网络请求**：合成只读 `app.tencent._cache`（全市场行情每 2 分钟刷新一次，
+        本就为评分排行预热的），不发任何请求 —— 故不触发 WAF，也不增加 egress。
+    ★ 为什么不能直接放宽 `expected_kline_date()`：那个函数是**写侧/缓存新鲜度**的判据
+      （盘后必须校验"缓存是否到达当日"），盘中放宽会让 36h 缓存把"半根 bar"当真 bar
+      采信 —— 语义完全不同，故此处**单开显式入口**，只在评分计算时用。
+    ★ 边界：非盘中 / 行情缓存无该股 / 缓存序列停在更早（缺多日，`_append_today_bar`
+      会拒绝合成）⇒ 原样返回，调用方按原逻辑降级。
+    """
+    try:
+        from app.tencent import _is_trading_hours
+        if not _is_trading_hours():
+            return klines
+        if not klines:
+            return klines
+        from app.flash import rules
+        today = rules.beijing_now().strftime("%Y-%m-%d")
+        if (klines[-1].get("date") or "")[:10] >= today:
+            return klines          # 已经是当日（或少见的前瞻数据）⇒ 无需合成
+        # ★ 兼容两种 code 形态：行情缓存键恒为 `sh600000/sz000001/bj920xxx`
+        #   （`_tencent_cache_key` 只接受**裸 6 位码**），而评分侧 code 常带前缀
+        #   （数据包/前端榜用 `sh600000`）。不归一化 ⇒ 取不到行情 ⇒ **静默不合成**
+        #   ⇒ 又变回"榜单分 ≠ 详情分"（本函数存在的意义就是消灭这种静默分叉）。
+        bare = code[2:] if (code[:2] in ("sh", "sz", "bj")) else code
+        return _append_today_bar(klines, bare, today)
+    except Exception:
+        return klines
+
+
 def get_cached_klines(code: str) -> Optional[List[Dict]]:
     ensure_kline_cache_table()
     """

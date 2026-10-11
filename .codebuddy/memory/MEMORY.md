@@ -79,7 +79,17 @@
 
 ## 回测数据质量
 - 体检 `scripts/audit_backtest_data.py`；源异常日已标 `price_anomalies`（集中 2024，源里存在不可修复）。
-- 已知待修：盘中技术面昨收；`score_single` vs `batch/top` 盘中不同分；gate-watch 全池>20s 建议读日批快照。
+- 已知待修：gate-watch 全池>20s 建议读日批快照。
+- ✅ **盘中口径：「`score_single` vs `batch/top` 盘中不同分」与「盘中技术面昨收」= 同一根因**（2026-10-11 修完）——
+  详情页盘中用**实时 K 线（含当日半根）**；批量精算 `_precise_score_sync` 优先用**数据包预计算指标**
+  （截止上一交易日；`expected_kline_date()` **盘中返回 None** ⇒ 不合成当日 bar）⇒ 同一只票两个分。
+  修法：新增 `kline_cache.append_intraday_bar()` 显式入口（**零网络请求**：只读内存行情，
+  复用 `_append_today_bar`），盘中精算改走「缓存 K 线 + 合成当日 bar」；**合成序列绝不写回缓存**
+  （否则 36h 缓存盘后把半根当真 bar 采信 ⇒ 静默污染）；详情页盘中降级走缓存时同样补半根。
+  ★ 另：两套指标实现 `_calc_technical`(慢，图表端点用) / `_calc_technical_fast`(快，包·批量·日批用)
+  实测末根指标有 **≤0.012 的系统性小差** ⇒ 评分路径已统一用 fast。
+  ★ **code 形态坑**：`_tencent_cache_key` **只认裸 6 位码**，传 `sh600000` 会取不到行情 ⇒ **静默不合成**
+  （已在本函数内归一化；凡"按 code 取行情"的新代码都要注意）。
 - ✅ **`score_snapshot` 时序**（2026-10-11 修完；原记"`score_snapshot_loop` 15:15 早于数据刷新"）——
   真相是**修过两次、两次都没修在线上跑的路径上**：
   ① 15:15→18:00 那次把判据押在 **DB `indicator_cache`**（Actions 16:40/17:40 刷新）上，而

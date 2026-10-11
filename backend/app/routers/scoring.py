@@ -202,11 +202,26 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None,
     """
     code = stock_info.get("code", "")
     name = stock_info.get("name", "")
-    
+
+    # ★★ 2026-10-11（用户："score_single vs batch/top 盘中不同分"）——
+    #   **盘中一律不用"预计算指标"**（`preloaded` / `get_cached_technical`）：
+    #   它们来自数据包，只到**上一交易日**收盘（无当日 bar），而详情页 `score_single`
+    #   盘中用**实时 K 线（含当日半根）** ⇒ 同一只票「榜单分 ≠ 详情分」
+    #   （这就是既有认知里的"盘中技术面昨收"，两个待修项实为同一根因）。
+    #   盘中改走「缓存 K 线 + 实时行情合成当日 bar」(`kline_cache.append_intraday_bar`)
+    #   ⇒ 与详情页**同口径**，且合成本身**零额外网络请求**（只读内存行情，不触发 WAF）。
+    #   盘后行为**完全不变**（`preloaded` 照旧，日批/精算榜路径不受影响）。
+    _intraday = False
+    try:
+        from app.tencent import _is_trading_hours
+        _intraday = bool(_is_trading_hours())
+    except Exception:
+        _intraday = False
+
     # ★★★ 终极快速路径：优先用预加载的指标数组（批量读入，零 DB 往返）
-    technical_data = preloaded
-    
-    if technical_data is None:
+    technical_data = None if _intraday else preloaded
+
+    if technical_data is None and not _intraday:
         # 回退：逐只读预计算指标缓存
         from app.scoring.indicator_cache import get_cached_technical
         technical_data = get_cached_technical(code)
@@ -216,6 +231,14 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None,
         from app.scoring.kline_cache import (
             MIN_SCORING_KLINE_COUNT, get_cached_klines)
         klines = get_cached_klines(code)
+        _synth = False
+        if _intraday and klines:
+            # 盘中：补当日半根 bar，让技术面与详情页同基准（零网络请求）
+            from app.scoring.kline_cache import append_intraday_bar
+            _n0 = len(klines)
+            klines = append_intraday_bar(klines, code)
+            _synth = bool(klines) and len(klines) > _n0
+
         # ★ 截断缓存门槛：战法扫描/撤退提醒的短拉取曾把缓存覆盖成 30 根，
         #   截断数据算出的指标严重失真（KDJ 未收敛/MA60 缺失，000833 实测
         #   技术面 57.3 vs 真值 60.3）→ 不足最小可信根数就回退实时拉全量
@@ -227,17 +250,22 @@ def _precise_score_sync(stock_info: dict, preloaded: Optional[list] = None,
             technical_data = _calc_technical_fast(klines)
             # ★ 拉取成功的 K 线/指标顺手写回缓存：下次精算直接命中，
             #   避免同一只股票反复实时拉腾讯 K 线（触发 WAF → 技术面0分掉榜）
-            try:
-                from app.scoring.kline_cache import save_kline_cache
-                from app.scoring.indicator_cache import (
-                    save_indicator_cache, compute_latest_indicators)
-                market_cap = stock_info.get("market_cap", 0) or 0
-                save_kline_cache(code, name, klines, market_cap)
-                _ind = compute_latest_indicators(klines)
-                if _ind:
-                    save_indicator_cache(code, name, _ind, len(klines), market_cap)
-            except Exception:
-                pass
+            # ★★ 2026-10-11（盘中口径对齐的**安全边界**）：含"当日半根"的**合成序列
+            #   绝不写回缓存** —— 否则 36h 的 kline_cache 会在盘后把半根 bar 当**真 bar**
+            #   采信（`expected_kline_date()` 只看最后一根日期 ⇒ 误判"缓存已到当日"）
+            #   ⇒ 静默污染当日/次日所有读取方（战法扫描、日批快照、撤退提醒…）。
+            if not _synth:
+                try:
+                    from app.scoring.kline_cache import save_kline_cache
+                    from app.scoring.indicator_cache import (
+                        save_indicator_cache, compute_latest_indicators)
+                    market_cap = stock_info.get("market_cap", 0) or 0
+                    save_kline_cache(code, name, klines, market_cap)
+                    _ind = compute_latest_indicators(klines)
+                    if _ind:
+                        save_indicator_cache(code, name, _ind, len(klines), market_cap)
+                except Exception:
+                    pass
         else:
             # ★ 数据不足（如腾讯 WAF 冷却导致 K 线拉取失败）：回退简化分兜底。
             #   此前实现用空技术面硬算，技术面 0 分 → 假低分 → 股票被挤出榜单
@@ -978,15 +1006,25 @@ def score_single(symbol: str):
         technical_data = get_kline(symbol, period="day", count=500)
     if (not technical_data or len(technical_data) < 30) and _trading_now:
         try:
-            from app.scoring.kline_cache import get_cached_klines
+            from app.scoring.kline_cache import append_intraday_bar, get_cached_klines
             technical_data = get_cached_klines(symbol)
+            # ★ 2026-10-11：盘中**降级**走缓存时同样补"当日半根"，与榜单/批量精算
+            #   口径一致（否则实时拉取恰好失败的那几只票又会与榜单分叉）。
+            technical_data = append_intraday_bar(technical_data, symbol)
         except Exception:
             pass
     # 数据足够时，复用技术指标计算逻辑（_calc_technical 在本文件底部）
     # ★ 保留原始 K 线：主力行为叠加（筹码分布）需要 OHLCV，_calc_technical 后只剩指标行
     raw_bars = technical_data if technical_data and len(technical_data) >= 120 else None
     if technical_data and len(technical_data) >= 30:
-        technical_data = _calc_technical(technical_data)
+        # ★ 2026-10-11（同一项修复的第二半）：改用 numpy 版 `_calc_technical_fast`
+        #   —— 与**数据包预计算 / 批量精算 `_precise_score_sync` / 日批**同一套实现。
+        #   实测两套实现的末根指标有 **≤0.012 的系统性小差**（ma20/ma60/rsi/k/d/j/
+        #   boll 都略有不同；8 只 × 746 根样本）⇒ 那是"详情页分 ≠ 榜单分"的**残余来源**：
+        #   远小于口径差（那是分数量级），但既然目标是"同一只票同一个分"，就该一致到底。
+        #   `_calc_technical`（纯 Python 版）保留给 `stock.py` 的 /technical 图表端点，
+        #   那里口径不变、也不参与评分排序。
+        technical_data = _calc_technical_fast(technical_data)
 
     # 3. 基本面（从实时数据提取估值指标）
     fundamental = {
