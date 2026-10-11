@@ -742,11 +742,17 @@ async def portfolio_radar_warm_loop():
 
 
 async def midday_radar_loop():
-    """工作日午休触发一次午间雷达（盘中时效：下午开盘前给出预警）。"""
+    """工作日午休触发一次午间雷达（盘中时效：下午开盘前给出预警）。
+
+    ★ 2026-10-11：守卫由 `weekday() < 5` 改为 `rules.is_trading_day()`（只认星期不认节假日
+      ⇒ 中秋/国庆期间的"工作日"会照跑，产出假日键 `radar_analysis` 行，实测残留 10-07，
+      已由 `scripts/cleanup_holiday_keys.py` 清理）。
+    """
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and MIDDAY_RADAR_WINDOW[0] <= t < MIDDAY_RADAR_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and MIDDAY_RADAR_WINDOW[0] <= t < MIDDAY_RADAR_WINDOW[1]
                 and not store.is_schedule_done("midday_radar")):
             try:
                 stats = await asyncio.to_thread(_run_midday_scan)
@@ -763,16 +769,27 @@ async def midday_radar_loop():
 
 
 async def contradiction_scan_loop():
-    """每日收盘后自动运行 L2 行为背离扫描。"""
+    """每日收盘后自动运行 L2 行为背离扫描。
+
+    ★★ 2026-10-11 修「**休市日写出假日键矛盾**」（与 `daily_report_loop` 同型，两处根因缺一不可）：
+      ① 守卫原为 `now.weekday() < 5` —— **只看星期、不认 A 股节假日**（中秋 **09-25 是周五
+         但是休市日**，就是被这条漏掉的）；
+      ② `target = _today()` = **运行日** ⇒ 假日跑就写出「键=假日、正文=上一交易日」的错位行。
+      实测残留：`contradictions` 的 09-06 / 09-19 / 09-25（已由
+      `scripts/cleanup_holiday_keys.py` 清理，2026-10-11）。口径改本文件既有唯一口径：
+      `rules.is_trading_day()` + `rules.latest_completed_trading_day()`。
+    """
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and CONTRADICTION_SCAN_WINDOW[0] <= t < CONTRADICTION_SCAN_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and CONTRADICTION_SCAN_WINDOW[0] <= t < CONTRADICTION_SCAN_WINDOW[1]
                 and not store.is_schedule_done("contradiction_scan")):
             try:
                 from app.contradictions.scanner import scan_all
-                from app.contradictions.store import save_contradictions, _today
-                target = _today()
+                from app.contradictions.store import save_contradictions
+                # ★ 必须显式传「交易日」：休市日/跨午夜时它 ≠ `_today()`（"日期键两派"坑）
+                target = rules.latest_completed_trading_day()
                 items = await asyncio.to_thread(scan_all, date=target)
                 saved = await asyncio.to_thread(save_contradictions, target, items)
                 store.mark_schedule_done("contradiction_scan")
@@ -794,15 +811,24 @@ async def contradiction_scan_loop():
 
 
 async def contradiction_report_loop():
-    """每日收盘后自动生成矛盾扫描解读报告。"""
+    """每日收盘后自动生成矛盾扫描解读报告。
+
+    ★★ 2026-10-11 修「假日键报告」（同 `daily_report_loop` / `contradiction_scan_loop`）：
+      守卫补 `rules.is_trading_day()`（原 `weekday() < 5` 会把中秋 09-25 这种周五假日当工作日），
+      并**显式传 `date=rules.latest_completed_trading_day()`**（`run_report()` 不传 date 时
+      内部会用运行日 `_today()` ⇒ 写出错位键）。实测残留 09-19/09-25/09-26/10-01~10-07/10-10
+      （已由 `scripts/cleanup_holiday_keys.py` 清理）。
+    """
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and CONTRADICTION_REPORT_WINDOW[0] <= t < CONTRADICTION_REPORT_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and CONTRADICTION_REPORT_WINDOW[0] <= t < CONTRADICTION_REPORT_WINDOW[1]
                 and not store.is_schedule_done("contradiction_report")):
             try:
                 from app.contradictions.report import run_report
-                res = await asyncio.to_thread(run_report)
+                res = await asyncio.to_thread(
+                    run_report, date=rules.latest_completed_trading_day())
                 if res and res.get("date"):
                     store.mark_schedule_done("contradiction_report")
                     status["last_contradiction_report"] = rules.beijing_now().isoformat()

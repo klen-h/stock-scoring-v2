@@ -536,6 +536,39 @@ def task_earnings_pressure():
         return head + f"，推送失败: {str(e)[:60]}"
 
 
+def task_data_hygiene():
+    """日期键卫生兜底闸（2026-10-11；用户："数据卫生"）。
+
+    ★ 背景（"日期键两派"）：若干写入路径用**运行日**当键，而语义应是**交易日** ⇒ 日批/循环在
+      周末·假日跑就写出「键 = 假日、正文 = 上一交易日」的**错位重复行**。2026-10-08 首次发现，
+      10-11 系统盘点：**7 张分析表共 36 个假日键**（其中 `sector_daily` 单键就 996 行，
+      `macro_daily_history` 48 行、`trader_briefs`/`contradiction_reports` 各 8~10 个键），
+      且**根因仍在产**（10-10/10-11 周末还在写）。
+    ★ 为什么用"兜底闸"而不是把 20+ 处守卫逐个改：`flash/scheduler.py` 里
+      **20 多处用 `now.weekday() < 5`**（只看星期、不认 A 股节假日 —— 中秋 09-25 是周五却是
+      休市日就是反例），逐个改风险大且必漏；本项目对这类"写入侧容易被绕过"的问题，
+      既定范式是**兜底闸自愈**（同 `data_gap` 自愈板块缺口、`retention` 兜底清理）。
+      已单独修掉最明确的 3 处（矛盾扫描/矛盾报告/午间雷达，见各自 docstring）。
+    ★ 安全边界（`scripts/cleanup_holiday_keys.py` 内置，**别在这里放宽**）：
+      · **只删「上一交易日键已存在」的重复行**（内容必有另一份）；
+      · 孤儿行（可能是那天唯一记录）**只报告、不删**；
+      · 运营计数表（`llm_usage_daily` / `llm_usage_by_provider` / `push_log`）按**自然日**
+        统计**属设计** ⇒ 脚本显式跳过（删了反而错）。
+    ★ 时序：纯清理 + 只读判定，排 `data_gap` 之后（看得到本轮全部写入的结果）。
+    """
+    import subprocess
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "cleanup_holiday_keys.py")
+    try:
+        r = subprocess.run([sys.executable, script, "--apply"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=600)
+    except Exception as e:
+        return f"日期键卫生: 执行失败 {str(e)[:80]}"
+    out = r.stdout or ""
+    tail = [l for l in out.splitlines() if l.startswith("汇总")]
+    return "日期键卫生: " + (tail[0] if tail else f"（无汇总输出 rc={r.returncode}）")
+
+
 def task_contradiction_report():
     """矛盾 LLM 报告（依赖上面的扫描结果）。"""
     from app.contradictions.report import run_report
@@ -917,6 +950,9 @@ TASKS = {
     # ★ 2026-10-10（P2-2）：盈利承压监测清单（滞胀 → 盈利端）—— 纯只读分析，
     #   排进"周期性复核"区（在 data_gap 之前）；每日跑但**只在周五推企微**（周度摘要）。
     "earnings_pressure": (task_earnings_pressure, "盈利承压监测清单（监测口径，非信号）"),
+    # ★ 2026-10-11：日期键卫生兜底闸 —— 清理"假日键错位行"（运行日/交易日两派问题）。
+    #   排 data_gap 之后（看得到本轮全部写入的最终状态）；只删重复、孤儿只报告。
+    "data_hygiene": (task_data_hygiene, "日期键卫生兜底（清假日键错位行）"),
     # ★ 2026-09-09 迁入：原 Render 周一 04:30 循环被只读模式关闭；任务内部
     #   判定仅周一执行，其余交易日秒过
     "zz_finance": (task_zz_finance, "财报扩展周同步（仅周一）"),
@@ -952,7 +988,8 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "news_snapshot", "rank_live", "shadow_rank",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
-                 "verify_monthly", "earnings_pressure", "data_gap", "daily_report",
+                 "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
+                 "daily_report",
                  "trader_brief", "retention"]
 
 
