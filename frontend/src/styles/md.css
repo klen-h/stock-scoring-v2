@@ -1,0 +1,118 @@
+/* ==============================================================================
+ * `md-body` —— **全站唯一的"观点输出"渲染样式**（2026-10-11，L1）
+ *
+ * 【为什么改成全局唯一实现】此前它被**抄了 5 份**（`Workbench` / `MonitorView` /
+ *   `DailyReport` / `ContradictionsView` / `BacktestView` 各一份 `<style scoped>`），
+ *   而且**已经漂移**：MonitorView 缺表格/代码样式、各处 `h1` 字号不一致。
+ *   ⇒ 正是本项目的老毛病"复制一份，两份必然漂移"
+ *     （同 `composables/displayMeta.js` / `composables/markdown.js` 的诞生理由）。
+ *
+ * 【本轮同时修"一眼看不到重点"】诊断（改前）：`strong` 仅 `#f3f4f6`（正文 `#d1d5db`，
+ *   几乎同权重）、`h2` 只比正文大 0.03rem、`blockquote` 反而**更灰**（`#9ca3af`）
+ *   ⇒ 结论句与正文没有权重差。现在：`h2`/`h3` 加左侧色条（分段一眼可见）、
+ *   `strong` 提亮加粗、`blockquote` 升级为「**结论条**」（琥珀左条 + 浅底 + **正常字色**）。
+ *   ★ LLM 的常规写法是 `**结论**：…` 与 `> 提示：…` ⇒ 这两处正是"重点"的落点。
+ *
+ * 【★ 用色纪律（请勿改成红/绿）】本项目颜色语义已被占满：`rise/fall`（A股红涨绿跌）
+ *   + `displayMeta.js` 的"绿=机会/红=风险"（主力阶段）与"红=净流入"（资金流）
+ *   ⇒ 拿红/绿当"重点色"会和涨跌语义打架、越强调越难读。
+ *   故本文件只用**未被占用的位**：琥珀（= 全站"注意/等待"语义，同 `readyChipCls` 的 2/3 档）
+ *   + 蓝（`accent`，用于分段）+ 白/灰阶（用于重点句）。
+ *
+ * 【为什么基础块用 `:where()`】`:where(.md-body)` = **零特异性** ⇒ 页面上的 Tailwind
+ *   工具类仍可覆盖它（如 `DailyReport` 的 `md-body text-xs` 本意就是更小字号）；
+ *   而内部元素规则 `.md-body h2`（特异性 0,1,1）> Tailwind preflight 的 `h2`（0,0,1）
+ *   ⇒ 稳定生效，不受引入顺序影响。
+ * ⚠️ 新增"观点输出"时，**一律加 `class="md-body"` + `v-html="renderMd(text)"`**，
+ *   不要再写 `whitespace-pre-wrap` 裸文本（否则 `**加粗**`/`##` 会原样显示星号 —— 
+ *   2026-10-11 修掉的正是 4 处这类）。
+ * ============================================================================== */
+
+/* ── 基础排版（零特异性，允许工具类覆盖字号/颜色）── */
+:where(.md-body) {
+  color: #d1d5db;
+  font-size: 0.8rem;
+  line-height: 1.75;
+  word-break: break-word;
+}
+
+/* ── 标题：左侧色条 = 分段锚点（比加大字号更省空间、更容易扫）── */
+.md-body h1,
+.md-body h2,
+.md-body h3 {
+  color: #f0f6fc;
+  font-weight: 600;
+  margin: 0.9rem 0 0.4rem;
+}
+.md-body h1 {
+  font-size: 1.05rem;
+  border-bottom: 1px solid #374151;
+  padding-bottom: 0.4rem;
+}
+.md-body h2 {
+  font-size: 0.96rem;
+  border-left: 3px solid #58a6ff;
+  padding-left: 0.5rem;
+}
+.md-body h3 {
+  font-size: 0.89rem;
+  color: #e5e7eb;
+  padding-left: 0.5rem;
+}
+.md-body > :first-child { margin-top: 0; }
+
+/* ── 重点：`**加粗**` 的常规写法（结论句多在此）── */
+.md-body strong {
+  color: #ffffff;
+  font-weight: 700;
+}
+.md-body em { color: #9ca3af; }
+
+/* ── 「结论条」：`> 引用块` 的升级（LLM 用 `> 结论：…` / `> 提示：…`）──
+ * 改前是 `#9ca3af` 灰字（比正文**更弱**，等于把结论藏起来）；现在琥珀左条 + 浅底 +
+ * 正常字色 ⇒ **同一屏内一眼定位**。★ 琥珀不参与涨跌/机会语义，可安全用于"注意"。 */
+.md-body blockquote {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.07);
+  border-radius: 0 0.25rem 0.25rem 0;
+  padding: 0.45rem 0.75rem;
+  margin: 0.5rem 0;
+  color: #e5e7eb;
+}
+.md-body blockquote p { margin: 0.15rem 0; }
+.md-body blockquote strong { color: #fbbf24; }
+
+/* ── 正文与列表 ── */
+.md-body p { margin: 0.35rem 0; }
+.md-body ul,
+.md-body ol { margin: 0.35rem 0; padding-left: 1.25rem; }
+.md-body ul { list-style: disc; }
+.md-body ol { list-style: decimal; }
+.md-body li { margin: 0.15rem 0; }
+
+/* ── 行内代码（LLM 常把字段名/公式放反引号）── */
+.md-body code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  color: #e5e7eb;
+}
+.md-body hr { border-color: #374151; margin: 0.75rem 0; }
+.md-body a { color: #60a5fa; text-decoration: underline; text-underline-offset: 2px; }
+
+/* ── 表格（日报/周报大量使用）── */
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.78rem;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid #374151;
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+}
+.md-body th { background: rgba(255, 255, 255, 0.05); color: #e5e7eb; }
+.md-body tr:nth-child(even) { background: rgba(255, 255, 255, 0.02); }

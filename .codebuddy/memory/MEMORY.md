@@ -31,6 +31,21 @@
 - ★ 浮层层次三件套：遮罩压暗 `bg-black/60` + 亮描边 `border-white/15` + 深投影 `shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]`（`shadow-2xl` 深色底无效）；核对投影 grep `--tw-shadow` 变量。
 - ★ 滚动容器必须自带底色（`bg-card`）+ **显式** `overflow-x-auto`（`overflow-y-auto` 会把另一轴算成 auto；别用 `overflow-x-hidden` 裁信息）。
 
+## 前端呈现纪律（观点输出排版，2026-10-11「L1」起）
+- ★★ 凡**观点输出**（LLM 日报/简报/复盘/矛盾报告/雷达分析/一页纸诊断/事实问答）一律：容器加
+  `class="md-body"` + `v-html="renderMd(text)"` —— 渲染器 `composables/markdown.js`、样式
+  `styles/md.css`，**全站各只有一份**（`main.js` 引入）。**绝不再写 `whitespace-pre-wrap` 裸文本**：
+  那会把 `**加粗**`/`##` **原样显示成星号**（2026-10-11 一次修掉 4 处）。
+  背景：此前 `.md-body` 被抄 **5 份**、`new MarkdownIt` **5 份**且选项已漂移（`linkify` 1 false /
+  4 true，MonitorView 那份还缺表格样式）⇒ 同一段 LLM 文本在不同页面渲染不同。
+- ★ 重点层级（已内置，改前先读 `styles/md.css` 头部注释）：`h2/h3` 加左侧色条、`strong` 提亮到纯白、
+  **`> 引用块` = 琥珀「结论条」**（改前是 `#9ca3af` 灰字，比正文**更弱** ⇒ 结论被藏起来）。
+- ★★ **用色纪律**：`rise/fall`（红涨绿跌）＋ `displayMeta` 的"绿=机会 / 红=风险""红=净流入"已把红绿占满
+  ⇒ **强调不得用红/绿**（会与涨跌语义打架、越强调越难读），只用琥珀/蓝/白灰阶 + 结构。
+- ★ "重点"必须有**稀缺性**（单条结论最多 1~2 处强调），否则等于没强调（同"第一屏全是运维信息"教训）。
+- **刻意不合并**：`ScoreRank` 推送时间线的正文用 `contentSegs()` 做「名称(代码)→详情页」的**自定义分词**，
+  与 markdown 渲染互斥 ⇒ 保持裸文本；**不要为它开 `html: true`**（LLM/推送文本不可信，`html:false` 是安全底线）。
+
 ## 数据与缓存
 - ★★★ `tencent._cache`：显示"数据时点"必须用 `data_ts`+`from_snapshot`，**绝不用 `last_update`**（=填充时刻，快照恢复故意设"现在"）。事故：线上缓存冻结 09-24 两天才被用户肉眼发现。已暴露 `quote_as_of/quote_from_snapshot`（`/api/market/emotion` + `portfolio_radar.build()`）；`stock_cache_refresh_loop` 巡检 data_ts vs 期望交易日。**判定缓存冻结日**：`/score/batch/top` 的 change_pct 与 `backtest_prices` 逐日逐只比对。`/api/market/emotion` 的 `data_date` 是日历推断，不能证明缓存日期。
 - ★ 时点：`datetime.fromtimestamp` 走服务器本地时区（生产 UTC）差 8h ⇒ `time.gmtime(ts+8*3600)` 或 `fromtimestamp(ts, tz=timezone(timedelta(hours=8)))`；`datetime.now()` 一律 `flash.rules.beijing_now()`。

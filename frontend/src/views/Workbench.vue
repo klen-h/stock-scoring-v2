@@ -2128,8 +2128,10 @@
                 </button>
               </div>
               <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
+              <!-- ★ 2026-10-11（L1）：原为裸文本（`**加粗**`/`##` 原样显示星号）⇒ 统一 md 渲染 -->
               <div v-else-if="radarAnalysis.markdown"
-                   class="mt-1.5 text-xs text-gray-300 whitespace-pre-wrap leading-relaxed max-h-72 overflow-y-auto pr-1">{{ radarAnalysis.markdown }}</div>
+                   class="md-body mt-1.5 text-xs max-h-72 overflow-y-auto pr-1"
+                   v-html="renderMd(radarAnalysis.markdown)"></div>
               <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
               <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
                 检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
@@ -2261,7 +2263,9 @@
 // ==============================================================================
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import MarkdownIt from 'markdown-it'
+// ★ 2026-10-11（L1）：markdown 渲染器收拢为**全站唯一实例**（`composables/markdown`）——
+//   原先 5 个页面各自 `new MarkdownIt` 且选项已漂移（本文件是唯一的 `linkify: false`）。
+import { renderMd } from '../composables/markdown'
 import TodoCard from '../components/workbench/TodoCard.vue'
 // ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
@@ -2332,7 +2336,7 @@ import {
   getUserPlans,
 } from '../api'
 
-const mdRenderer = new MarkdownIt({ html: false, linkify: false, breaks: true })
+// （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
 
 // ★ 2026-09-25 用户要求：工作台所有跳转一律新开标签页（原页轮询/状态不丢）；
 //   个股"代码"→雪球（自动拼 SH/SZ/BJ 前缀），股票"名称"→本地个股详情页。
@@ -2682,7 +2686,7 @@ const premarketOver = computed(() => {
   const m = d.getHours() * 60 + d.getMinutes()
   return m >= 570
 })
-const renderMd = (md) => mdRenderer.render(String(md || ''))
+// （`renderMd` 已于 2026-10-11 收拢：现为 `import { renderMd } from '../composables/markdown'`）
 const firstLine = (s) => String(s || '').split('\n').find(x => x.trim()) || ''
 const fmtNum = (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }))
 const fmtPct = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
@@ -3828,56 +3832,6 @@ onMounted(async () => {
 onUnmounted(stopPolling)
 </script>
 
-<style scoped>
-/* 日报同款 markdown 渲染样式（markdown-it 输出） */
-.md-body {
-  color: #d1d5db;
-  font-size: 0.8rem;
-  line-height: 1.75;
-  word-break: break-word;
-}
-.md-body :deep(h1),
-.md-body :deep(h2),
-.md-body :deep(h3) {
-  color: #e5e7eb;
-  font-weight: 600;
-  margin: 0.75rem 0 0.4rem;
-}
-.md-body :deep(h1) { font-size: 1.05rem; border-bottom: 1px solid #374151; padding-bottom: 0.4rem; }
-.md-body :deep(h2) { font-size: 0.95rem; }
-.md-body :deep(h3) { font-size: 0.88rem; }
-.md-body :deep(p) { margin: 0.35rem 0; }
-.md-body :deep(ul),
-.md-body :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.md-body :deep(ul) { list-style: disc; }
-.md-body :deep(li) { margin: 0.15rem 0; }
-.md-body :deep(strong) { color: #f3f4f6; font-weight: 600; }
-.md-body :deep(blockquote) {
-  border-left: 3px solid #4b5563;
-  padding-left: 0.75rem;
-  margin: 0.4rem 0;
-  color: #9ca3af;
-}
-.md-body :deep(code) {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-size: 0.75rem;
-}
-.md-body :deep(hr) { border-color: #374151; margin: 0.75rem 0; }
-.md-body :deep(a) { color: #60a5fa; }
-.md-body :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0.5rem 0;
-  font-size: 0.78rem;
-}
-.md-body :deep(th),
-.md-body :deep(td) {
-  border: 1px solid #374151;
-  padding: 0.35rem 0.55rem;
-  text-align: left;
-}
-.md-body :deep(th) { background: rgba(255, 255, 255, 0.05); color: #e5e7eb; }
-.md-body :deep(tr:nth-child(even)) { background: rgba(255, 255, 255, 0.02); }
-</style>
+<!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先本文件有一份副本，
+     与另外 4 个页面各自漂移）。新增"观点输出"请直接加 `md-body` 类 + `v-html="renderMd(...)"`。 -->
+

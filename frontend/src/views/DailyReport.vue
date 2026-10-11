@@ -315,7 +315,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import MarkdownIt from 'markdown-it'
+// ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（`composables/markdown`）
+import { renderMd } from '../composables/markdown'
 import { getDailyReportList, getDailyReport, getWeeklyReview } from '../api'
 import { getTraderBrief } from '../api'
 
@@ -398,7 +399,7 @@ async function loadBrief(refresh = false) {
     if (data?.ok) {
       briefDate.value = data.date || ''
       phaseLabel.value = PHASE_LABELS[data.phase] || data.phase || ''
-      briefHtml.value = mdRenderer.render(data.markdown || '')
+      briefHtml.value = renderMd(data.markdown || '')
     }
   } catch (e) { /* 简报失败不影响日报 */ }
   finally { briefLoading.value = false }
@@ -410,7 +411,7 @@ const html = ref('')
 const loading = ref(false)
 const error = ref('')
 
-const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true })
+// （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
 
 function fmtTime(iso) {
   if (!iso) return ''
@@ -444,7 +445,7 @@ async function load(date) {
   try {
     const { data } = await getDailyReport(date)
     if (data?.markdown) {
-      html.value = mdRenderer.render(data.markdown)
+      html.value = renderMd(data.markdown)
     } else {
       error.value = '该日期暂无日报'
     }
@@ -464,58 +465,6 @@ onMounted(loadList)
 loadBrief()
 </script>
 
-<style scoped>
-/* 日报 markdown 渲染样式（含表格，markdown-it 输出） */
-.md-body {
-  color: #d1d5db;
-  font-size: 0.8rem;
-  line-height: 1.75;
-  word-break: break-word;
-}
-.md-body :deep(h1),
-.md-body :deep(h2),
-.md-body :deep(h3) {
-  color: #e5e7eb;
-  font-weight: 600;
-  margin: 0.75rem 0 0.4rem;
-}
-.md-body :deep(h1) { font-size: 1.05rem; border-bottom: 1px solid #374151; padding-bottom: 0.4rem; }
-.md-body :deep(h2) { font-size: 0.95rem; }
-.md-body :deep(h3) { font-size: 0.88rem; }
-.md-body :deep(p) { margin: 0.35rem 0; }
-.md-body :deep(ul),
-.md-body :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.md-body :deep(ul) { list-style: disc; }
-.md-body :deep(ol) { list-style: decimal; }
-.md-body :deep(li) { margin: 0.15rem 0; }
-.md-body :deep(strong) { color: #f3f4f6; font-weight: 600; }
-.md-body :deep(em) { color: #9ca3af; }
-.md-body :deep(blockquote) {
-  border-left: 3px solid #4b5563;
-  padding-left: 0.75rem;
-  margin: 0.4rem 0;
-  color: #9ca3af;
-}
-.md-body :deep(code) {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-size: 0.75rem;
-}
-.md-body :deep(hr) { border-color: #374151; margin: 0.75rem 0; }
-.md-body :deep(a) { color: #60a5fa; }
-.md-body :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0.5rem 0;
-  font-size: 0.78rem;
-}
-.md-body :deep(th),
-.md-body :deep(td) {
-  border: 1px solid #374151;
-  padding: 0.35rem 0.55rem;
-  text-align: left;
-}
-.md-body :deep(th) { background: rgba(255, 255, 255, 0.05); color: #e5e7eb; }
-.md-body :deep(tr:nth-child(even)) { background: rgba(255, 255, 255, 0.02); }
-</style>
+<!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先此处有一份副本，
+     与其他 4 个页面各自漂移）。新增观点输出请直接加 `md-body` 类。 -->
+

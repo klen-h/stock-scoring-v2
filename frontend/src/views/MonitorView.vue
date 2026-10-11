@@ -436,7 +436,8 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import MarkdownIt from 'markdown-it'
+// ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（本文件另有"剥离信号 JSON"包装）
+import { renderMd as renderMdRaw } from '../composables/markdown'
 import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReviewHistory, runFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
 // 【2026-09-12】原状态条上的「浏览器镜像」显示已随镜像退役移除
 
@@ -503,12 +504,12 @@ function fmtTime(t) {
   return `${bj.getUTCMonth() + 1}-${pad(bj.getUTCDate())} ${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}`
 }
 
-// 复盘 markdown 渲染（markdown-it；剥离 LLM 信号 JSON 块，兼容剥离逻辑上线前落盘的旧记录）
-const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true })
+// 复盘 markdown 渲染：先**剥离 LLM 信号 JSON 块**（兼容剥离逻辑上线前落盘的旧记录），
+// 再交给共享渲染器（`composables/markdown`，全站唯一实例 —— 2026-10-11 L1）。
 const LLM_JSON_BLOCK_RE = /```json[\s\S]*?```/g
 function renderMd(text) {
   if (!text) return ''
-  return mdRenderer.render(text.replace(LLM_JSON_BLOCK_RE, ''))
+  return renderMdRaw(text.replace(LLM_JSON_BLOCK_RE, ''))
 }
 
 function fmtTokens(n) {
@@ -680,44 +681,6 @@ export default {
 }
 </script>
 
-<style scoped>
-/* 复盘 markdown 渲染样式（markdown-it 输出） */
-.md-body {
-  color: #d1d5db;
-  font-size: 0.8rem;
-  line-height: 1.75;
-  word-break: break-word;
-}
-.md-body :deep(h1),
-.md-body :deep(h2),
-.md-body :deep(h3) {
-  color: #e5e7eb;
-  font-weight: 600;
-  margin: 0.75rem 0 0.4rem;
-}
-.md-body :deep(h1) { font-size: 1rem; }
-.md-body :deep(h2) { font-size: 0.95rem; }
-.md-body :deep(h3) { font-size: 0.88rem; }
-.md-body :deep(p) { margin: 0.35rem 0; }
-.md-body :deep(ul),
-.md-body :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.md-body :deep(ul) { list-style: disc; }
-.md-body :deep(ol) { list-style: decimal; }
-.md-body :deep(li) { margin: 0.15rem 0; }
-.md-body :deep(strong) { color: #f3f4f6; font-weight: 600; }
-.md-body :deep(em) { color: #9ca3af; }
-.md-body :deep(blockquote) {
-  border-left: 3px solid #4b5563;
-  padding-left: 0.75rem;
-  margin: 0.4rem 0;
-  color: #9ca3af;
-}
-.md-body :deep(code) {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 0.1rem 0.3rem;
-  border-radius: 0.25rem;
-  font-size: 0.75rem;
-}
-.md-body :deep(hr) { border-color: #374151; margin: 0.75rem 0; }
-.md-body :deep(a) { color: #60a5fa; }
-</style>
+<!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先此处有一份副本，
+     与其他 4 个页面各自漂移 —— 例如这份缺表格/代码样式）。新增观点输出请直接加 `md-body` 类。 -->
+

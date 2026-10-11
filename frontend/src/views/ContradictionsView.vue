@@ -154,7 +154,8 @@
 
 <script setup>
 import { ref, computed, watch, onMounted } from 'vue'
-import MarkdownIt from 'markdown-it'
+// ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（`composables/markdown`）
+import { renderMd } from '../composables/markdown'
 import {
   getContradictions,
   getContradictionsSummary,
@@ -162,7 +163,7 @@ import {
   triggerDailyBatch,
 } from '../api'
 
-const mdRenderer = new MarkdownIt({ html: false, linkify: true, breaks: true })
+// （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
 
 const currentDate = ref('')
 const loading = ref(false)
@@ -244,7 +245,7 @@ async function loadReport() {
   try {
     const { data } = await getContradictionsReport(currentDate.value || undefined)
     if (data?.markdown) {
-      reportHtml.value = mdRenderer.render(data.markdown)
+      reportHtml.value = renderMd(data.markdown)
     } else {
       reportHtml.value = ''
     }
@@ -290,50 +291,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.md-body {
-  color: #d1d5db;
-  font-size: 0.8rem;
-  line-height: 1.75;
-  word-break: break-word;
-}
-.md-body :deep(h1),
-.md-body :deep(h2),
-.md-body :deep(h3) {
-  color: #e5e7eb;
-  font-weight: 600;
-  margin: 0.75rem 0 0.4rem;
-}
-.md-body :deep(h1) { font-size: 1.05rem; border-bottom: 1px solid #374151; padding-bottom: 0.4rem; }
-.md-body :deep(h2) { font-size: 0.95rem; }
-.md-body :deep(h3) { font-size: 0.88rem; }
-.md-body :deep(p) { margin: 0.35rem 0; }
-.md-body :deep(ul),
-.md-body :deep(ol) { margin: 0.35rem 0; padding-left: 1.25rem; }
-.md-body :deep(ul) { list-style: disc; }
-.md-body :deep(ol) { list-style: decimal; }
-.md-body :deep(li) { margin: 0.15rem 0; }
-.md-body :deep(strong) { color: #f3f4f6; font-weight: 600; }
-.md-body :deep(em) { color: #9ca3af; }
-.md-body :deep(blockquote) {
-  border-left: 3px solid #4b5563;
-  padding-left: 0.75rem;
-  margin: 0.4rem 0;
-  color: #9ca3af;
-}
-.md-body :deep(table) {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0.5rem 0;
-  font-size: 0.78rem;
-}
-.md-body :deep(th),
-.md-body :deep(td) {
-  border: 1px solid #374151;
-  padding: 0.35rem 0.55rem;
-  text-align: left;
-}
-.md-body :deep(th) { background: rgba(255, 255, 255, 0.05); color: #e5e7eb; }
-.md-body :deep(tr:nth-child(even)) { background: rgba(255, 255, 255, 0.02); }
+/* ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先此处有一份副本）。 */
 .line-clamp-2 {
   display: -webkit-box;
   -webkit-line-clamp: 2;
