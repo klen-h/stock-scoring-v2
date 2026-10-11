@@ -283,7 +283,7 @@
       <!-- 右侧正文 -->
       <div class="flex-1 min-w-0">
         <!-- 决策简报（PLAN_TRADER_WORKFLOW Phase 1） -->
-        <div v-if="briefHtml" class="bg-card border border-accent/30 rounded-lg p-4 mb-3">
+        <div v-if="briefMd" class="bg-card border border-accent/30 rounded-lg p-4 mb-3">
           <div class="flex items-center justify-between mb-2">
             <h2 class="text-sm font-bold text-accent">🎯 交易员决策简报
               <span class="text-[10px] text-muted font-normal">{{ phaseLabel }} · {{ briefDate }}</span>
@@ -293,7 +293,9 @@
               {{ briefLoading ? '生成中…' : '↻ 重新生成' }}
             </button>
           </div>
-          <div class="md-body text-xs" v-html="briefHtml"></div>
+          <!-- ★ 2026-10-11：简报 prompt 已约定首行 `**结论**：…` ⇒ 结论条置顶；「依据」**不折叠**
+               （简报是给人通读的，折叠只添堵 —— 与雷达/诊断那类"卡片内嵌观点"不同）。 -->
+          <InsightBody :text="briefMd" class="text-xs" />
         </div>
         <div v-if="loading" class="bg-card border border-border rounded-lg p-8 text-center">
           <div class="loading-spinner mx-auto mb-3"></div>
@@ -303,6 +305,10 @@
           {{ error }}
         </div>
         <div v-else-if="html" class="bg-card border border-border rounded-lg p-6">
+          <!-- ★ 2026-10-11：日报页把「今日主线」抽成结论条置顶（口径见后端 `report_daily`）。
+               正文仍渲染**完整报告**（含"今日主线"小节，**刻意不删** —— 删了正文就不完整）；
+               不传 `reasons` ⇒ 无折叠（整页长文按 L2 定的边界不折叠）。 -->
+          <InsightBody v-if="reportConclusion" :conclusion="reportConclusion" class="mb-3" />
           <div class="md-body" v-html="html"></div>
         </div>
         <div v-else class="bg-card border border-border rounded-lg p-8 text-center text-sm text-muted">
@@ -317,6 +323,9 @@
 import { ref, computed, onMounted } from 'vue'
 // ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（`composables/markdown`）
 import { renderMd } from '../composables/markdown'
+// ★ 2026-10-11（约定推到日报/简报）：简报走「观点卡」（首行 `**结论**：` → 结论条置顶）；
+//   日报页顶部的结论条也用它（只传 `conclusion`、不传 `text` ⇒ 只渲染那一条）。
+import InsightBody from '../components/InsightBody.vue'
 import { getDailyReportList, getDailyReport, getWeeklyReview } from '../api'
 import { getTraderBrief } from '../api'
 
@@ -387,7 +396,10 @@ function openReport(date) { mode.value = 'daily'; select(date) }
 
 const reportList = ref([])
 // 决策简报（Phase 1）
-const briefHtml = ref('')
+// ★ 2026-10-11（把"结论"约定推到简报）：这里存**文本**而不是渲染好的 HTML —— 简报 prompt
+//   已约定首行 `**结论**：…`，交给「观点卡」抽出结论条置顶（原 `briefHtml` 存 HTML ⇒
+//   只能整段渲染，"重点"出不来）。
+const briefMd = ref('')
 const briefLoading = ref(false)
 const briefDate = ref('')
 const phaseLabel = ref('')
@@ -399,7 +411,7 @@ async function loadBrief(refresh = false) {
     if (data?.ok) {
       briefDate.value = data.date || ''
       phaseLabel.value = PHASE_LABELS[data.phase] || data.phase || ''
-      briefHtml.value = renderMd(data.markdown || '')
+      briefMd.value = data.markdown || ''
     }
   } catch (e) { /* 简报失败不影响日报 */ }
   finally { briefLoading.value = false }
@@ -408,6 +420,9 @@ const listLoading = ref(false)
 const listError = ref('')
 const currentDate = ref('')
 const html = ref('')
+// ★ 2026-10-11：日报**顶部结论条**的内容 = 后端读侧抽取的 `## 今日主线` 首段
+//   （口径见 `routers/daily_report.py::report_daily`）。为空 ⇒ 不显示结论条（旧日报/抽取不到）。
+const reportConclusion = ref('')
 const loading = ref(false)
 const error = ref('')
 
@@ -442,10 +457,14 @@ async function load(date) {
   loading.value = true
   error.value = ''
   html.value = ''
+  reportConclusion.value = ''
   try {
     const { data } = await getDailyReport(date)
     if (data?.markdown) {
       html.value = renderMd(data.markdown)
+      // ★ 2026-10-11：后端读侧抽取的「一句话定性」（= `## 今日主线` 首段）⇒ 日报页顶部结论条。
+      //   取不到就是 ''（旧日报）⇒ 不显示结论条，正文照旧。
+      reportConclusion.value = data.conclusion || ''
     } else {
       error.value = '该日期暂无日报'
     }

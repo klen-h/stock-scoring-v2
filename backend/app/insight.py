@@ -110,6 +110,39 @@ def compose_markdown(conclusion: str, reasons: List[str]) -> str:
     return "\n".join(out).strip()
 
 
+def section_first_paragraph(md: str, title: str, max_len: int = CONC_MAX) -> str:
+    """从 markdown 里取 `## <title>` 小节的**第一段**（到空行为止）→ 当「结论」用。
+
+    ★ 只用于**我们自己代码写死的标题**（如日报的 `## 今日主线` —— 见
+      `daily_report._render_llm_markdown` 的 `add("## 今日主线")`）。
+      **这不是"猜模型把结论放哪"**：标题是我们机械生成的，内容才是模型写的；
+      若将来标题文案改动，这里会**取不到 ⇒ 返回 `''`**（前端只是不显示结论条，不报错）。
+
+    纪律（与 `parse_insight` 一致）：只有标题没内容 ⇒ `''`；首段超 `max_len` ⇒ `''`
+    （**丢弃而不是截断** —— 宁可没有结论条，也不替模型裁句子）。
+    """
+    text = str(md or "")
+    if not text or not title:
+        return ""
+    pat = re.compile(r"^#{1,6}\s*" + re.escape(title.strip()) + r"\s*$", re.M)
+    m = pat.search(text)
+    if not m:
+        return ""
+    rest = text[m.end():].split("\n")
+    buf: List[str] = []
+    for ln in rest:
+        s = ln.strip()
+        if not s:
+            if buf:
+                break                    # 第一段结束
+            continue                     # 跳过标题后的空行
+        if s.startswith("#"):
+            break                        # 撞到下一节标题
+        buf.append(s)
+    para = " ".join(buf).strip()
+    return para if 0 < len(para) <= max_len else ""
+
+
 def reasons_from_json(v) -> List[str]:
     """落库的 `reasons`（JSON 数组字符串）→ `list`；坏数据返回 `[]`（**读侧绝不抛**）。
 

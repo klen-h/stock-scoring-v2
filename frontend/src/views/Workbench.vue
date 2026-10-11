@@ -1041,7 +1041,9 @@
                       class="ml-2 px-2 py-0.5 rounded border border-border text-accent hover:border-accent/50 transition-colors">重试</button>
             </div>
             <div v-else-if="briefPhase !== 'premarket' || !briefMd" class="text-muted text-xs">—（尚未生成）</div>
-            <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
+            <!-- ★ 2026-10-11：简报 prompt 已约定首行 `**结论**：…` ⇒ 走「观点卡」抽出结论条置顶；
+                 「依据」= 该做/该防等原文，**不折叠**（简报本身是给人通读的，折叠只添堵）。 -->
+            <InsightBody v-else :text="briefMd" class="text-xs" />
           </div>
           </div>
           </div>
@@ -2057,7 +2059,8 @@
             <div v-else-if="briefPhase !== 'postmarket' || !briefMd" class="text-muted text-xs">
               —（未生成。正常由日批 19:xx 自动生成，也可点右上「生成」马上出一份）
             </div>
-            <div v-else class="md-body" v-html="renderMd(briefMd)"></div>
+            <!-- ★ 2026-10-11：与盘前同一份「观点卡」（首行 `**结论**：…` → 结论条置顶） -->
+            <InsightBody v-else :text="briefMd" class="text-xs" />
           </div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">

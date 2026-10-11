@@ -53,8 +53,17 @@
     解析 = `composables/markdown.js::splitInsight`：**只认显式标记，绝不靠"第一段就是结论"猜**
     （日报首段是"市场脉冲"，猜错会把普通段落放大成结论）；**无标记 ⇒ 完全按普通 md 渲染**，
     所以旧数据/未改的生成器行为零变化（这是它能安全上线的唯一理由）。
-    已约定 prompt：雷达（`routers/flash.py`）、一页纸诊断（`stock_diagnosis.py`）；
-    **未约定**：日报/简报/复盘/周报/矛盾报告（改前先看企微推送形态）。
+    已约定 prompt：雷达（`routers/flash.py`）、一页纸诊断（`stock_diagnosis.py`）、
+    **简报**（`trader_brief._SYSTEM_PROMPT` —— 简报的 `narrative` 本来就在最前面，
+    首行标记天然生效，无需后端结构）；**日报**改走**读侧抽取**：`insight.section_first_paragraph`
+    取**机械标题** `## 今日主线` 的首段，由 `routers/daily_report.py::report_daily` 作为
+    `conclusion` 下发（日报的 LLM 段在**文末**，首行标记够不到；而标题是我们**自己代码写死**的
+    `add("## 今日主线")` ⇒ 确定性抽取，**不是猜模型把结论放哪**）。
+    **仍未约定**：复盘 / 周报 / 矛盾报告。
+- ★ 日报/简报到前端的落点（2026-10-11）：**简报**在日报页 + 工作台盘前/盘后卡走 `InsightBody`
+  （结论条置顶、**依据不折叠** —— 简报是给人通读的）；**日报页**在正文上方加一条"只传 `conclusion`"的
+  结论条（正文仍渲染**完整报告**，含"今日主线"小节，**刻意不删**）。日报的 `markdown` **一字未动**
+  ⇒ 企微推送（推的就是这份 markdown）不受影响；+ 简报 prompt 改动会让推送顶部多一行加粗结论（无害）。
 - ★★ **结构化结论（L3，2026-10-11）—— 三级降级：结构化 → L2 标记 → 纯文本**
   · 后端 **`app/insight.py::parse_insight`**（唯一入口）：LLM 的 JSON → 逐字段校验 →
     `{conclusion, reasons[]}`，**并同时组装 markdown**（首行仍是 `**结论**：` 标记）⇒
