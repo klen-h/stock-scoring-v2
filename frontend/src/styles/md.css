@@ -82,6 +82,21 @@
 .md-body blockquote p { margin: 0.15rem 0; }
 .md-body blockquote strong { color: #fbbf24; }
 
+/* ── 「结论条」（L2：一句话结论置顶）──────────────────────────────────────────
+ * 由 `components/InsightBody.vue` 使用：生成侧首行写 `**结论**：…` ⇒ 抽出来放这里。
+ * 用色仍是**琥珀**（= 全站"注意"语义；不是涨跌色 —— 见文件头用色纪律）。
+ * 字号比正文大一档（0.86 vs 0.8）：它是"一眼要看的那一句"。 */
+.insight-conclusion {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.09);
+  border-radius: 0 0.25rem 0.25rem 0;
+  padding: 0.4rem 0.7rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.86rem;
+  color: #f3f4f6;
+}
+.insight-conclusion p { margin: 0; }
+
 /* ── 正文与列表 ── */
 .md-body p { margin: 0.35rem 0; }
 .md-body ul,

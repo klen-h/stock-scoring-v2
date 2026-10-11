@@ -2128,10 +2128,10 @@
                 </button>
               </div>
               <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
-              <!-- ★ 2026-10-11（L1）：原为裸文本（`**加粗**`/`##` 原样显示星号）⇒ 统一 md 渲染 -->
-              <div v-else-if="radarAnalysis.markdown"
-                   class="md-body mt-1.5 text-xs max-h-72 overflow-y-auto pr-1"
-                   v-html="renderMd(radarAnalysis.markdown)"></div>
+              <!-- ★ 2026-10-11（L2）：改走「观点卡」—— 首行 `**结论**：…` 抽成琥珀结论条置顶，
+                   「依据」默认收起（卡片内嵌观点：先给结论，细节点开看）。 -->
+              <InsightBody v-else-if="radarAnalysis.markdown" :text="radarAnalysis.markdown"
+                           collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
               <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
               <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
                 检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
@@ -2266,6 +2266,8 @@ import { useRoute, useRouter } from 'vue-router'
 // ★ 2026-10-11（L1）：markdown 渲染器收拢为**全站唯一实例**（`composables/markdown`）——
 //   原先 5 个页面各自 `new MarkdownIt` 且选项已漂移（本文件是唯一的 `linkify: false`）。
 import { renderMd } from '../composables/markdown'
+// ★ 2026-10-11（L2）：卡片内嵌的 LLM 观点用「观点卡」（结论置顶 + 依据可折叠）
+import InsightBody from '../components/InsightBody.vue'
 import TodoCard from '../components/workbench/TodoCard.vue'
 // ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。

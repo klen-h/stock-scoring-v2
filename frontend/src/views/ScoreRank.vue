@@ -469,10 +469,10 @@
               </button>
             </div>
           </div>
-          <!-- ★ 2026-10-11（L1）：原为裸文本（`**加粗**`/`##` 会原样显示星号、重点看不出来）
-               ⇒ 改走统一 md 渲染（`class="md-body"` + 共享渲染器）。 -->
-          <div v-if="radarAnalysis.markdown" class="md-body mt-2 text-xs max-h-96 overflow-y-auto pr-1"
-               v-html="renderMd(radarAnalysis.markdown)"></div>
+          <!-- ★ 2026-10-11（L2）：与工作台**同一份**「观点卡」（结论置顶 + 依据可折叠）——
+               同一段 LLM 输出在两处渲染必须一致（此前一处裸文本、一处 md，是本轮之前的坑）。 -->
+          <InsightBody v-if="radarAnalysis.markdown" :text="radarAnalysis.markdown"
+                       collapsible class="mt-2 text-xs max-h-96 overflow-y-auto pr-1" />
           <div v-else-if="radarAnalysis.error" class="mt-2 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
           <div v-else-if="!radarAnalysis.loading" class="mt-1 text-[11px] text-muted leading-relaxed">
             检查系统今天的多条提示是否互相打架（如「盘中警示说回避」vs「午间雷达说机会」、早盘判断被午后自己推翻）。
@@ -1178,9 +1178,9 @@ import AnomalyEntry from '../components/AnomalyEntry.vue'
 //   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
 // ★ 2026-10-10（P1-2）：加 `CONSEC_STYLE`（连续净流入分档配色）——与详情页/工作台同一份共享源。
 import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
-// ★ 2026-10-11（L1）：markdown 渲染器（全站唯一实例）。本页原先**没有渲染器** ⇒
-//   「系统自洽性审查」的 LLM 输出是裸文本（`**加粗**` 会原样显示星号），本轮接上。
-import { renderMd } from '../composables/markdown'
+// ★ 2026-10-11（L1/L2）：本页原先**没有渲染器**（「系统自洽性审查」的 LLM 输出是裸文本 ⇒
+//   星号外露、看不出重点）；现统一交给「观点卡」（内含全站唯一渲染器 `composables/markdown`）。
+import InsightBody from '../components/InsightBody.vue'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
 import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
 // ★ 2026-09-27 数据可信度标注（本页主商品是「评分」，需明确其未验证状态）

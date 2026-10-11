@@ -45,6 +45,16 @@
 - ★ "重点"必须有**稀缺性**（单条结论最多 1~2 处强调），否则等于没强调（同"第一屏全是运维信息"教训）。
 - **刻意不合并**：`ScoreRank` 推送时间线的正文用 `contentSegs()` 做「名称(代码)→详情页」的**自定义分词**，
   与 markdown 渲染互斥 ⇒ 保持裸文本；**不要为它开 `html: true`**（LLM/推送文本不可信，`html:false` 是安全底线）。
+- ★★ **「观点卡」+「一句话结论」契约（L2，2026-10-11）**：
+  · **卡片内嵌**的 LLM 观点用 `components/InsightBody.vue`（结论置顶为琥珀「结论条」+ 依据可折叠）；
+    **整页长文**（日报/简报/周报/复盘/矛盾报告）仍用 `md-body` + `renderMd`（长文折叠只添堵，
+    且日报/简报的同一份文本还要进企微推送）。已用：雷达 ×2（工作台/榜单）、一页纸诊断、事实问答。
+  · **契约**：生成侧若想让结论被置顶，就**首行**输出 `**结论**：<一句话>`（或 `## 结论` + 下一行）。
+    解析 = `composables/markdown.js::splitInsight`：**只认显式标记，绝不靠"第一段就是结论"猜**
+    （日报首段是"市场脉冲"，猜错会把普通段落放大成结论）；**无标记 ⇒ 完全按普通 md 渲染**，
+    所以旧数据/未改的生成器行为零变化（这是它能安全上线的唯一理由）。
+    已约定 prompt：雷达（`routers/flash.py`）、一页纸诊断（`stock_diagnosis.py`）；
+    **未约定**：日报/简报/复盘/周报/矛盾报告（改前先看企微推送形态）。
 
 ## 数据与缓存
 - ★★★ `tencent._cache`：显示"数据时点"必须用 `data_ts`+`from_snapshot`，**绝不用 `last_update`**（=填充时刻，快照恢复故意设"现在"）。事故：线上缓存冻结 09-24 两天才被用户肉眼发现。已暴露 `quote_as_of/quote_from_snapshot`（`/api/market/emotion` + `portfolio_radar.build()`）；`stock_cache_refresh_loop` 巡检 data_ts vs 期望交易日。**判定缓存冻结日**：`/score/batch/top` 的 change_pct 与 `backtest_prices` 逐日逐只比对。`/api/market/emotion` 的 `data_date` 是日历推断，不能证明缓存日期。

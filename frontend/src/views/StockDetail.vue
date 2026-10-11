@@ -207,11 +207,11 @@
             生成 AI 解读
           </button>
         </div>
-        <!-- ★ 2026-10-11（L1）：原为 `whitespace-pre-wrap` 裸文本 ⇒ prompt 里要求的
-             `**现状**` / `##` 标记会**原样显示星号**、重点看不出来；现改走统一 md 渲染
-             （`class="md-body"`：`**加粗**` 提亮、`> 结论` 变成琥珀「结论条」）。 -->
-        <div v-if="diag.narrative" class="md-body text-xs bg-white/5 rounded-lg p-3"
-          v-html="renderMd(diag.narrative)"></div>
+        <!-- ★ 2026-10-11（L2）：改走「观点卡」—— prompt 已约定首行 `**结论**：…` ⇒ 抽成琥珀
+             结论条置顶；「现状 / 风险 / 还差什么」三段作为「依据」默认收起
+             （**真正的依据另有下方带 source 的事实列表**，所以收起不会藏掉数据）。 -->
+        <InsightBody v-if="diag.narrative" :text="diag.narrative"
+                     collapsible class="text-xs bg-white/5 rounded-lg p-3" />
         <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
           {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}
         </div>
@@ -229,8 +229,9 @@
         </div>
         <div v-if="diag.answer" class="mt-2 bg-white/5 rounded-lg p-3">
           <div class="text-xs text-muted mb-1">问：{{ diag.question }}</div>
-          <!-- ★ 2026-10-11（L1）：回答同样走 md 渲染（原裸文本会露出星号） -->
-          <div class="md-body text-xs" v-html="renderMd(diag.answer)"></div>
+          <!-- ★ 2026-10-11（L1/L2）：与诊断同一套渲染。问答回答是自由文本（prompt 未约定结论行）
+               ⇒ 通常没有结论标记，行为与普通 md 渲染一致；一旦模型自发写了 `**结论**：` 也会被置顶。 -->
+          <InsightBody :text="diag.answer" class="text-xs" />
         </div>
         <div v-else-if="diag.ask_note" class="mt-2 text-xs text-muted">{{ diag.ask_note }}</div>
         <div v-if="diag.facts && diag.facts.length" class="mt-3 space-y-1">
@@ -613,9 +614,9 @@ import { loadLocalKline, computeLocalScore } from '../composables/useFrontendSco
 // ★ 2026-10-10（P1-2）：连续主力净流入分档配色（**共享源**，与榜单页/工作台观察池同一份；
 //   文案用后端下发的 `flow_consec_cn`，前端不拼天数——见 displayMeta 注释）。
 import { CONSEC_STYLE } from '../composables/displayMeta'
-// ★ 2026-10-11（L1）：一页纸诊断 / 事实问答的正文此前是 `whitespace-pre-wrap` 裸文本 ⇒
-//   LLM 按 prompt 写的 `**现状**`/`##` 会**原样显示星号**；现改走统一 md 渲染。
-import { renderMd } from '../composables/markdown'
+// ★ 2026-10-11（L1/L2）：一页纸诊断 / 事实问答的正文此前是 `whitespace-pre-wrap` 裸文本
+//   （`**现状**` 会原样显示星号）；现统一交给「观点卡」（内含全站唯一渲染器）。
+import InsightBody from '../components/InsightBody.vue'
 
 const route = useRoute()
 const code = route.params.code
