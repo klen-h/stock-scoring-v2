@@ -152,6 +152,23 @@ export function readyChipCls(ready) {
 /** 个股 → 本地详情页（hash 路由）。 */
 export const stockHref = (code) => `#/stock/${code}`
 
+/**
+ * 板块标注（科创/创业）⇒ 主板返回 null（**不标注** —— "重点"必须有稀缺性，
+ * 满屏 chip 等于没有 chip）。2026-10-11 起创业板/科创板进入各榜单
+ * （K 线包扩容 + 后端榜全市场口径），用户要求一眼能认出板块归属。
+ * 用色避开红绿（涨跌）与琥珀（注意/结论条）：科创=紫、创业=天蓝。
+ */
+export function boardChip(code) {
+  const c = String(code || '')
+  if (c.startsWith('688') || c.startsWith('689')) {
+    return { label: '科创', cls: 'bg-purple-500/15 text-purple-300 border border-purple-500/30' }
+  }
+  if (c.startsWith('300') || c.startsWith('301') || c.startsWith('302')) {
+    return { label: '创业', cls: 'bg-sky-500/15 text-sky-300 border border-sky-500/30' }
+  }
+  return null
+}
+
 /** 个股 → 雪球（自动拼 SH/SZ/BJ 前缀）。与全站口径一致：名称→本地页、代码→雪球。 */
 export function xqUrl(code) {
   const c = String(code || '').replace(/\D/g, '').slice(0, 6)

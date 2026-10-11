@@ -483,11 +483,17 @@ def main():
         + etf_codes + bt_codes))
 
     # ★ 质量过滤（2026-09-09 对齐战法池 filter_stock_pool 口径）：
-    #   剔 ST/*ST/SST、科创板（688）、总市值<50亿（与战法扫描 50亿门槛对齐）。
+    #   剔 ST/*ST/SST、总市值<50亿（与战法扫描 50亿门槛对齐）。
     #   ★ 保留创业板（300/301/302）与亏损股（PE<=0）——战法池 filter_stock_pool
     #     不剔这两类（2026-09-06 的旧口径多剔了它们，导致 pack 1442 vs 战法池
     #     2081 的 ~640 只缺口 → 战法扫描每天回源撞 WAF + Supabase 流量暴涨，
     #     正是 egress 超额的主因之一）。指数/ETF（非 6 位码）不受过滤。
+    #   ★★ 2026-10-11（用户拍板）：**科创板(688)纳入** —— 此前剔除导致前端本地榜/
+    #     精算榜永远没有 688，与全市场口径的快照（决策简报靠它产出"科创板软件/数据类
+    #     密集上榜"有效信号）差 12/50。成本实测：市值≥50亿的 688 共 405 只、单股
+    #     ≈50KB ⇒ 包 +20MB raw / gz +2.6MB（+8%）；Supabase/Render ≈零增量（包的
+    #     K 线来自腾讯，Actions 拉；Render/浏览器从 Pages 下载）。战法池在自身
+    #     filter_stock_pool 层仍剔 688 ⇒ 包里多出的 688 对战法无害（池覆盖是超集）。
     def _pack_quality(code: str, q: dict) -> bool:
         if code in bt_set:
             return True                      # ★ 回测既有池豁免（见 _backtest_pool_codes）
@@ -495,8 +501,6 @@ def main():
             return True                      # 指数/ETF 保留
         name = (q.get("name") or "").replace(" ", "").upper()
         if name.startswith(("ST", "*ST", "SST")):
-            return False
-        if code.startswith("688"):           # 只剔科创板（对齐战法池）
             return False
         if (q.get("market_cap") or 0) < 50:  # 亿元（gkp 实时行情口径）
             return False
@@ -512,7 +516,7 @@ def main():
         + [c for c in etf_codes if c not in _EXTRA_INDEX_CODES] + kept_stocks
     dropped = len(pool_all) - len(pool)
     print(f"\n[2/4] 股票池: 全量 {len(pool_all)} → 质量过滤后 {len(pool)} 只"
-          f"（剔除科创板/ST/<50亿 共 {dropped} 只），市值降序拉取")
+          f"（剔除 ST/<50亿 共 {dropped} 只；科创板 2026-10-11 起纳入），市值降序拉取")
     # ★ 2026-10-10：把"消费方池覆盖度"打进日志 ⇒ **下次产包自己验证本修复**（缺口应为 0）
     if bt_codes:
         _bt_miss = [c for c in bt_codes if c not in set(pool)]

@@ -147,22 +147,21 @@ MIN_PRICE = 3.0              # 单位：元
 
 
 def _pool_quality_filter(stock: dict) -> bool:
-    """批量池统一过滤：板块/ST + 流通市值/股价。
+    """批量池统一过滤：ST + 流通市值/股价。
 
-    ★★ 2026-10-11（用户："评分快照 Top50 和前端本地计算的 Top50 差异过大"）——
-      根因 = **同一个股票池三处口径各自为政**：前端 `useFrontendScoring.isValidStock`
-      刻意过滤 ST + 科创板(688) + 创业板(300/301)；而本函数（score_top / live_ranking
-      共用）只看市值/价 ⇒ 快照在 ranking_live 就绪前走"在线两阶段"回退时把科创板
-      高分票（传音 81.9 等 6 只）写进了 Top6，前端本地榜一只都没有（实测差异 12/50）。
-      修复 = **把前端 isValidStock 的板块/ST 规则并进本共享过滤**（一处改、三路对齐：
-      /batch/top 在线榜、live_ranking 精算榜、18:00 快照——后者就是调 score_top 写的）。
-      ⚠️ 只用于**批量池**：详情页 score_single 不经过此处，688 单票照常可看可评。
+    ★★ 2026-10-11（**两次裁决，同日**）—— 上午版曾把"前端 isValidStock"的板块规则
+      （剔 688/300/301）并进来，**已撤销**，理由（用户："如果过滤了，是不是不太好"）：
+      ① **创业板**：项目主流口径是**保留** —— 战法池 filter_stock_pool 2026-09-06 专门
+         裁决"保留创业板与亏损股"、generate_backend_pack 同口径（保留 300/301/302）、
+         精算榜实有 185 只 ⇒ 剔掉与三处既有口径相抵（pack 里创业板指标白算）。
+      ② **科创板**：快照是"全市场机会发现"口径，**决策简报靠它产出有效信号**
+         （"科创板软件/数据类密集上榜——与电子信息主线呼应"，用户实测确认有价值）
+         ⇒ 保留。前端本地榜原先因**数据包不覆盖 688** 而天然没有 —— 用户随后拍板
+         **K 线包扩容**（generate_backend_pack / generate-kline-pack 均已放开）⇒
+         前后端口径就此**完全对齐**；板块归属用 `boardChip` 行内标注。
+      ST 过滤保留（全口径一致）；市值/价门槛不变。
+      ⚠️ 只用于**批量池**：详情页 score_single 不经过此处。
     """
-    code = stock.get("code") or ""
-    # 板块过滤（与前端 isValidStock 同规则、同理由）：科创板 688（50万开户门槛+20cm）、
-    # 创业板 300/301（20cm）—— 与其余榜单的既有认知口径一致
-    if code.startswith(("688", "300", "301")):
-        return False
     name = (stock.get("name") or "").replace(" ", "").upper()
     if name.startswith(("ST", "*ST", "SST")):
         return False
@@ -171,6 +170,20 @@ def _pool_quality_filter(stock: dict) -> bool:
     if (stock.get("price", 0) or 0) < MIN_PRICE:
         return False
     return True
+
+
+def _is_stock_code(code: str) -> bool:
+    """个股判定：6 位纯数字 + 沪深 A 股号段（0/3/6 开头）。
+
+    ★ 2026-10-11（用户报"观察池出现 sh588000"）—— `mainforce_state` 的宇宙继承自
+      `backtest_prices`，而后者含**基准/持仓 ETF**（sh588000 科创50ETF、sh510300 等
+      31 个带 sh/sz 前缀的符号）⇒ 主力日批为它们算状态、观察池又按码捞取 ⇒ ETF 混进
+      买入闸门（主力阶段/筹码/闸门对 ETF **语义不成立**）。本判定同时排除：
+      ① 带前缀符号（shXXXXXX，7 位）；② 基金号段（5/1 开头，588000/159915 等）。
+      消费方：观察池 live 重算 + 快照读取（旧快照已含 ETF ⇒ 读取处兜底）。
+    """
+    return (bool(code) and len(code) == 6 and code.isdigit()
+            and code[0] in ("0", "3", "6"))
 
 
 def _compute_top5_extras(code: str) -> dict:
@@ -2108,7 +2121,9 @@ def _gate_watch_live(limit: int = 500):
         # ⚠️ `load_latest` 返回的键是 `chip`（已解析 dict）且**不含 name**
         #   ⇒ 名字单独取一次（code→name 映射，MAX 兼容 PG/SQLite）。
         rows = db.fetch("SELECT code, MAX(name) AS name FROM mainforce_state GROUP BY code")
-        codes = [r["code"] for r in (rows or [])]
+        # ★ 2026-10-11：只留个股 —— mainforce_state 继承 backtest_prices 的宇宙，
+        #   含 31 个 ETF/指数（sh588000 等）⇒ 闸门语义不成立，绝不能进观察池
+        codes = [r["code"] for r in (rows or []) if _is_stock_code(r["code"])]
         names = {r["code"]: r.get("name") for r in (rows or [])}
         mf = load_latest(codes) or {}
         # ★ 双信号交叉（2026-09-22，用户决策「接受静默 + 用双信号交叉」）：
@@ -2245,6 +2260,9 @@ def _gate_watch_from_snapshot():
         for x in pay.get("candidates") or []:
             code = x.get("code")
             if not code:
+                continue
+            # ★ 2026-10-11：旧快照（修复前落库）可能已含 ETF（sh588000 等）⇒ 读取兜底
+            if not _is_stock_code(code):
                 continue
             flow5 = x.get("flow5_amt")
             phase = x.get("phase")

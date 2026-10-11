@@ -14,8 +14,8 @@
           <span v-if="topMode" class="text-[10px] font-normal"
                 :class="topMode === 'local' ? 'text-emerald-400' : 'text-muted'"
                 :title="topMode === 'local'
-                  ? '本地计算：前端 K 线包 + 实时行情、本地精算 ⇒ 盘中为实时（与榜单页同源）'
-                  : '后端批次：/score/batch/top（盘中通常是上一交易日快照）'">
+                  ? '本地计算：前端 K 线包 + 实时行情、本地精算 ⇒ 盘中为实时（与榜单页同源）。K 线包 2026-10-11 起扩容纳入科创板；包未覆盖的票自动缺席'
+                  : '后端批次：/score/batch/top（盘中通常是上一交易日快照）。全市场口径（含创业板/科创板）；科创/创业已用行内标签标注'">
             （{{ topMode === 'local' ? '本地实时' : '后端批次' }}<template
               v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template>）</span></div>
         <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
@@ -34,6 +34,10 @@
              class="font-semibold hover:text-accent truncate">{{ r.name || r.code }}</a>
           <a :href="xqUrl(r.code)" target="_blank"
              class="shrink-0 text-muted font-mono hover:text-accent" title="雪球">{{ r.code }}</a>
+          <!-- ★ 2026-10-11：板块标注（科创/创业；主板不标注保持稀缺性）——
+               K 线包扩容后两板块进入各榜单，需一眼认出归属 -->
+          <span v-if="boardChip(r.code)"
+                class="shrink-0 px-1 rounded text-[10px]" :class="boardChip(r.code).cls">{{ boardChip(r.code).label }}</span>
           <span v-if="r.change_pct != null" class="shrink-0 font-mono" :class="pctClass(r.change_pct)">
             {{ signNum(r.change_pct) }}%</span>
           <!-- ★ 2026-09-28 改版（用户："主力行为怎么只有一个吸筹标签，而且位置有点靠右了，
@@ -126,9 +130,9 @@
               <span v-if="g.flow_consec_cn" class="px-1 rounded shrink-0 cursor-help"
                     :class="(CONSEC_STYLE[g.flow_consec_tier] || {}).cls || 'bg-red-500/20 text-red-400'"
                     :title="(CONSEC_STYLE[g.flow_consec_tier] || {}).tip || ''">{{ g.flow_consec_cn }}</span>
-              <!-- ★ 2026-10-08 P3：异动分析入口（**共享组件**，与榜单页观察池是同一份）。
-                   ⚠️ 右栏仅 320px ⇒ 本行已加 `flex-wrap`，窄屏优雅换行而不是被裁掉。 -->
-              <AnomalyEntry :code="g.code" />
+              <!-- ★ 2026-10-11（用户："观察池卡片的异动标签隐藏，位置放不下了"）：
+                   移除异动分析入口（原 2026-10-08 P3 加的共享组件）—— 右栏仅 320px，
+                   行内元素已超载；信息不丢：榜单页观察池表仍保留该入口 -->
               <span v-for="(s, si) in (g.strategies || [])" :key="si"
                     class="ml-auto px-1 rounded bg-accent/10 text-accent border border-accent/30 text-[10px] shrink-0">
                 {{ strategyShort(s) }}</span>
@@ -164,10 +168,8 @@
 import { ref } from 'vue'
 import {
   PHASE_STYLE as MF_PHASE_STYLE, CONSEC_STYLE, strategyShort, phaseCn, readyChipCls,
-  stockHref, xqUrl, pctClass, signNum, scoreClass,
+  stockHref, xqUrl, pctClass, signNum, scoreClass, boardChip,
 } from '../../composables/displayMeta'
-// ★ 2026-10-08 P3：异动分析入口（共享组件；榜单页观察池 import 同一份）
-import AnomalyEntry from '../AnomalyEntry.vue'
 
 const props = defineProps({
   topItems: { type: Array, default: () => [] },

@@ -676,6 +676,8 @@
                  @click.stop
                  class="hover:underline"
                  title="在雪球查看">{{ item.code }}</a>
+              <span v-if="boardChip(item.code)"
+                    class="ml-1 px-1 rounded text-[10px] align-middle" :class="boardChip(item.code).cls">{{ boardChip(item.code).label }}</span>
             </td>
             <td class="py-2 px-3">{{ item.name }}</td>
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-xs truncate max-w-[90px]">
@@ -894,7 +896,10 @@
             </thead>
             <tbody>
               <tr v-for="s in snap.stocks" :key="s.code" class="border-b border-border/50 text-xs">
-                <td class="py-1.5 px-3 font-mono text-accent">{{ s.code }}</td>
+                <td class="py-1.5 px-3 font-mono text-accent">
+                  {{ s.code }}<span v-if="boardChip(s.code)"
+                    class="ml-1 px-1 rounded text-[10px] align-middle" :class="boardChip(s.code).cls">{{ boardChip(s.code).label }}</span>
+                </td>
                 <td class="py-1.5 px-3">{{ s.name }}</td>
                 <td class="py-1.5 px-3 text-right">{{ s.score }}</td>
                 <td class="py-1.5 px-3 text-center">
@@ -1185,7 +1190,7 @@ import AnomalyEntry from '../components/AnomalyEntry.vue'
 // ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——
 //   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
 // ★ 2026-10-10（P1-2）：加 `CONSEC_STYLE`（连续净流入分档配色）——与详情页/工作台同一份共享源。
-import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls } from '../composables/displayMeta'
+import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls, boardChip } from '../composables/displayMeta'
 // ★ 2026-10-11（L1/L2）：本页原先**没有渲染器**（「系统自洽性审查」的 LLM 输出是裸文本 ⇒
 //   星号外露、看不出重点）；现统一交给「观点卡」（内含全站唯一渲染器 `composables/markdown`）。
 import InsightBody from '../components/InsightBody.vue'

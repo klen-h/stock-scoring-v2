@@ -83,7 +83,11 @@ KLINE_COUNT_CAP = _env_int("PACK_KLINE_COUNT_CAP", 800)
 MIDWAY_FAIL_FAST = _env_int("PACK_MIDWAY_FAIL_FAST", 80)
 
 # A 股代码池（与 backend/app/tencent.py 保持一致）
-DISABLED_PREFIXES = {"688", "300", "301"}
+# ★★ 2026-10-11：清空屏蔽集合 —— 前端包此前连创业板(300/301)都屏蔽（用户本地榜
+#   实际全主板），科创板(688)亦未覆盖 ⇒ 与后端全市场口径榜差 12/50。现全部放开
+#   （用户拍板包扩容）：成本实测包 gz +8%（405 只 688 + 创业板增量）；
+#   未下载到新包前，isValidStock 放开的板块因无 K 线自动缺席（优雅降级 ✓）。
+DISABLED_PREFIXES = set()
 
 # ── 股票池质量门槛（与后端/前端一致）──
 MIN_FLOAT_CAP_YI = 50     # 流通市值 > 50 亿（腾讯 fields[44]，单位亿元）

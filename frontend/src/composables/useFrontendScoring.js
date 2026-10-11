@@ -24,18 +24,19 @@ import { scoreStock, roughScore, setRegimeState, setGateRules, buildGate, decayT
 import { isTradingDay } from './usePortfolio'
 
 /**
- * 过滤无效股票（ST、亏损、科创板、创业板）
+ * 过滤无效股票（ST、亏损）
+ * ★★ 2026-10-11（三次演进，最终口径）：创业板(300/301)与科创板(688)**全部放开**
+ *   —— 用户拍板 **K 线包扩容**纳入科创板（generate-kline-pack 的 DISABLED_PREFIXES
+ *   同步清空）⇒ 前端本地榜与后端全市场口径榜**完全对齐**。
+ *   ⚠️ 包未更新前（旧包无 688/创业板数据），放开的板块因 `getKlines` 返回空被
+ *   **自动跳过**（优雅降级，不会出错也不会出空分行）；行内板块标注见 displayMeta.boardChip。
  */
 function isValidStock(stock) {
   const name = (stock.name || '').replace(/\s/g, '').toUpperCase()
   const code = stock.code || ''
-  
+
   // 过滤 ST/*ST
   if (name.startsWith('ST') || name.startsWith('*ST') || name.startsWith('SST')) {
-    return false
-  }
-  // 过滤科创板 (688) 和创业板 (300/301)
-  if (code.startsWith('688') || code.startsWith('300') || code.startsWith('301')) {
     return false
   }
   // 过滤亏损股（PE <= 0）
