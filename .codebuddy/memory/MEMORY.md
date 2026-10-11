@@ -55,6 +55,17 @@
     所以旧数据/未改的生成器行为零变化（这是它能安全上线的唯一理由）。
     已约定 prompt：雷达（`routers/flash.py`）、一页纸诊断（`stock_diagnosis.py`）；
     **未约定**：日报/简报/复盘/周报/矛盾报告（改前先看企微推送形态）。
+- ★★ **结构化结论（L3，2026-10-11）—— 三级降级：结构化 → L2 标记 → 纯文本**
+  · 后端 **`app/insight.py::parse_insight`**（唯一入口）：LLM 的 JSON → 逐字段校验 →
+    `{conclusion, reasons[]}`，**并同时组装 markdown**（首行仍是 `**结论**：` 标记）⇒
+    新老两条通道内容**同源**，不会一处改了另一处没改。
+  · **解析失败 = 原文照旧渲染**（`structured=False`）⇒ 任何一级都不猜、**不会比改造前差**；
+    这也是它敢上线的唯一理由。前端 `InsightBody` 优先用结构化字段，否则走文本通道。
+  · 已接入：雷达（`routers/flash.py`，表幂等加列 `conclusion`/`reasons`）、一页纸诊断
+    （`stock_diagnosis.py`）。★ **诊断的"缓存命中分支"也必须带这两个字段** ——
+    2026-10-11 就是这里漏改，被验证脚本抓出来（d2 KeyError）。
+  · 纪律：结论超长（>120 字）⇒ **丢弃而不是截断**（不替模型改原话）；越界词 ⇒ 仍整段判失败；
+    LLM 没给 JSON ⇒ `print` 一行"退化为纯 markdown"（可观测，便于发现 prompt 失效）。
 
 ## 数据与缓存
 - ★★★ `tencent._cache`：显示"数据时点"必须用 `data_ts`+`from_snapshot`，**绝不用 `last_update`**（=填充时刻，快照恢复故意设"现在"）。事故：线上缓存冻结 09-24 两天才被用户肉眼发现。已暴露 `quote_as_of/quote_from_snapshot`（`/api/market/emotion` + `portfolio_radar.build()`）；`stock_cache_refresh_loop` 巡检 data_ts vs 期望交易日。**判定缓存冻结日**：`/score/batch/top` 的 change_pct 与 `backtest_prices` 逐日逐只比对。`/api/market/emotion` 的 `data_date` 是日历推断，不能证明缓存日期。

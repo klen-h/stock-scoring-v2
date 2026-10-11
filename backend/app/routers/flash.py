@@ -190,6 +190,19 @@ def _analysis_ensure():
             created_at TEXT
         )
     """)
+    # ★★ 2026-10-11（L3：结构化结论）：新增两列 —— 结论与依据**分开存**，前端按角色渲染
+    #   （结论条 + 依据列表）。`markdown` 继续保留，且**由同一份数据组装**
+    #   （`app.insight.compose_markdown`，首行仍是 L2 的 `**结论**：` 标记）⇒
+    #   旧前端 / 直接读 markdown 的消费方**行为不变**（加列不加义）。
+    #   幂等加列：PG 用 IF NOT EXISTS，SQLite 退回裸 ADD COLUMN（列已存在则报错忽略）。
+    for _col in ("conclusion TEXT", "reasons TEXT"):
+        try:
+            db.execute(f"ALTER TABLE {_ANALYSIS_TABLE} ADD COLUMN IF NOT EXISTS {_col}")
+        except Exception:
+            try:
+                db.execute(f"ALTER TABLE {_ANALYSIS_TABLE} ADD COLUMN {_col}")
+            except Exception:
+                pass
     _ANALYSIS_READY = True
 
 
@@ -211,11 +224,17 @@ def flash_radar_analysis(date: str = None, refresh: bool = False):
 
     if not refresh:
         try:
+            from app.insight import reasons_from_json
             _analysis_ensure()
-            row = db.fetch_one(f"SELECT markdown, items_used, created_at FROM {_ANALYSIS_TABLE} "
-                              f"WHERE date = %s", (day,))
+            row = db.fetch_one(f"SELECT markdown, conclusion, reasons, items_used, created_at "
+                              f"FROM {_ANALYSIS_TABLE} WHERE date = %s", (day,))
             if row and row.get("markdown"):
                 return {"date": day, "markdown": row["markdown"], "cached": True,
+                        # ★ L3：结构化字段。**加列之前写入的旧行**该两列为 NULL
+                        #   ⇒ 空结论 + 空依据 ⇒ 前端退回"只有正文"的渲染（不报错、不瞎猜）。
+                        "conclusion": row.get("conclusion") or "",
+                        "reasons": reasons_from_json(row.get("reasons")),
+                        "structured": bool(row.get("conclusion")),
                         "items_used": row.get("items_used"), "created_at": row.get("created_at")}
         except Exception as e:
             print(f"[radar] 读缓存失败（改为现算）: {e}")
@@ -235,21 +254,22 @@ def flash_radar_analysis(date: str = None, refresh: bool = False):
     system = ("你是 A 股量化系统的『自洽性审查员』。任务**不是**分析市场，而是审查"
               "**系统自己今天发出的多条提示之间**是否矛盾/张力/前后反复。"
               "结论先行、指名具体条目（用标题），不编造、不硬凑。\n"
-              "★ **输出格式硬要求（前端按此渲染：首行会被抽成「结论条」置顶，缺了就不会置顶）**："
-              "**第一行必须且只能是** `**结论**：<一句话，≤40 字>`，直接回答"
-              "「此刻该优先信哪一条 / 有无实质矛盾」；**其后另起**再写依据。"
-              "不要输出 `#` 级标题、不要写「以下是我的结论」这类引导语。")
+              "★ **输出格式硬要求（前端按字段分角色渲染；字段缺失就只剩正文）**："
+              "**只输出一个 JSON 对象**（不要 markdown、不要代码围栏、不要解释），字段固定为："
+              '{"conclusion": "<一句话，≤40 字，直接回答「此刻该优先信哪一条 / 有无实质矛盾」>", '
+              '"reasons": ["<依据，最多 6 条，每条一句>"]}')
     user = (f"## 今日系统提示（时间线，共 {len(items)} 条）\n{digest}\n\n"
-            "## 请输出（markdown）\n"
-            "第一行 = `**结论**：…`（一句话，≤40 字）\n"
-            "其后 ≤6 句依据：\n"
+            "## 请按 system 里的 schema 输出 JSON\n"
+            "reasons 写这些（最多 6 条）：\n"
             "1. 最值得注意的**矛盾或张力**（最多 3 条）：涉及哪几条提示、矛盾点是什么、"
             "更该相信哪一条（说明理由）\n"
-            "2. **时间上的反复**：早盘说 A、午后说非 A 的情况（没有就说没有）\n"
-            "3. 若整体自洽，结论就写「未发现实质矛盾」—— **不要为了凑数编造**")
+            "2. **时间上的反复**：早盘说 A、午后说非 A 的情况（没有就不写这条）\n"
+            "3. 若整体自洽，`conclusion` 就写「未发现实质矛盾」—— **不要为了凑数编造**")
     try:
         from app.flash.llm import call_llm
-        txt = (call_llm(system, user, temperature=0.3, tier="fast") or "").strip()
+        from app.insight import parse_insight
+        txt = (call_llm(system, user, temperature=0.3, tier="fast",
+                        json_mode=True) or "").strip()
     except Exception as e:
         return {"date": day, "markdown": "", "cached": False, "items_used": len(items),
                 "error": f"LLM 调用失败: {str(e)[:160]}"}
@@ -257,15 +277,27 @@ def flash_radar_analysis(date: str = None, refresh: bool = False):
         return {"date": day, "markdown": "", "cached": False, "items_used": len(items),
                 "error": "LLM 返回空（可稍后重试）"}
 
+    # ★★ 2026-10-11（L3）：JSON → 逐字段校验 → 由代码组装 markdown（三级降级见 `app.insight`）。
+    #   `json_mode=True` 也可能返回裸文本 ⇒ parsed 失败时 structured=False、markdown=原文，
+    #   前端 L2 的 `splitInsight` 还会再试一次 `**结论**：` 首行 ⇒ **任何情况都不比改造前差**。
+    ins = parse_insight(txt)
+    if not ins["structured"]:
+        print("[radar] LLM 未按 JSON 输出 ⇒ 退化为纯 markdown 通道")
+
     try:
+        import json as _json
         _analysis_ensure()
         db.upsert(_ANALYSIS_TABLE,
-                  {"date": day, "markdown": txt, "items_used": str(len(items)),
+                  {"date": day, "markdown": ins["markdown"], "items_used": str(len(items)),
+                   "conclusion": ins["conclusion"],
+                   "reasons": _json.dumps(ins["reasons"], ensure_ascii=False),
                    "created_at": rules.beijing_now().isoformat(timespec="seconds")},
                   conflict_columns=["date"])
     except Exception as e:
         print(f"[radar] 分析落库失败（本次仍返回）: {e}")
-    return {"date": day, "markdown": txt, "cached": False, "items_used": len(items)}
+    return {"date": day, "markdown": ins["markdown"], "cached": False,
+            "conclusion": ins["conclusion"], "reasons": ins["reasons"],
+            "structured": ins["structured"], "items_used": len(items)}
 
 
 @router.get("/audit")

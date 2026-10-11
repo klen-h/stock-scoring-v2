@@ -234,7 +234,10 @@ def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
            "disclaimer": "本卡为**既有结构化事实的聚合表述**，不是投资建议；"
                          "每条结论的出处见「依据」；未通过预测力检验的信号只作参考，不进决策链。",
            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-           "narrative": None, "llm": "off", "llm_note": ""}
+           # ★ 2026-10-11（L3）：`conclusion`/`reasons` = **结构化通道**（前端按角色渲染）；
+           #   `narrative` 保留为兼容字段（= 由同一份数据组装的 markdown）。无 LLM 时均空。
+           "narrative": None, "conclusion": "", "reasons": [], "structured": False,
+           "llm": "off", "llm_note": ""}
 
     if not use_llm:
         out["llm_note"] = "未请求 AI 解读（use_llm=false）"
@@ -243,6 +246,10 @@ def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
     cache = _CACHE.get(key)
     if cache and not refresh and time.time() - cache["ts"] < _CACHE_TTL:
         out.update({"narrative": cache["narrative"], "llm": cache["llm"],
+                    # `.get` 而非 `[]`：兼容本次改动**之前**写入的缓存项（结构里没有这两个键）
+                    "conclusion": cache.get("conclusion", ""),
+                    "reasons": cache.get("reasons", []),
+                    "structured": cache.get("structured", False),
                     "llm_note": cache["llm_note"] + "（缓存）"})
         return out
 
@@ -256,10 +263,12 @@ def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
             "1. **只能复述**下面给出的编号事实，不得引入任何外部知识、不得补充数字；\n"
             "2. **不得预测价格**、不得给买卖建议、不得出现「建议买/卖、可以买、抄底、"
             "目标价、止损位」等话术；\n"
-            "3. ★ **第一行必须且只能是** `**结论**：<一句话，≤40 字，概括此刻状态 + 最大风险点>`"
-            "（前端按此把结论抽成「结论条」置顶；缺了这一行，结论就不会被突出显示）；\n"
-            "4. 其后严格输出三段，标题固定为：**现状** / **风险** / **还差什么**；\n"
-            "5. 每段 1~3 句；**每句末尾用 [编号] 标注依据的事实编号**；\n"
+            "3. ★ **只输出一个 JSON 对象**（不要 markdown、不要代码围栏、不要任何解释），"
+            '字段固定为：{"conclusion": "<一句话，≤40 字，概括此刻状态 + 最大风险点>", '
+            '"reasons": ["<现状>", "<风险>", "<还差什么>"]}；\n'
+            "4. `reasons` 固定 3 条、顺序为 现状 / 风险 / 还差什么，**每条以 `**现状**：` 这样的"
+            "标签开头**（前端按标签分角色渲染）；\n"
+            "5. 每条 1~3 句；**每句末尾用 [编号] 标注依据的事实编号**；\n"
             "6. 事实里没有的（如业绩预期、行业消息）一律不得提及；\n"
             "7. 事实中标注为「状态展示」「仅回避参考」「未检验」的信号，措辞必须保持同等谨慎。"
         )
@@ -269,7 +278,7 @@ def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
                 + ("\n".join(base["gaps"]) if base["gaps"] else "无")
                 + "\n—— 各信号的检验状态（措辞需保持一致）——\n"
                 + "\n".join(f"· {n}：{s}" for n, s, _ in SIGNAL_STATUS))
-        text = call_llm(system, user, temperature=0.2, tier="fast")
+        text = call_llm(system, user, temperature=0.2, tier="fast", json_mode=True)
         clean = _sanitize(text)
         if clean is None:
             out["llm"] = "rejected"
@@ -278,8 +287,21 @@ def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
             _CACHE[key] = {"ts": time.time(), "narrative": None, "llm": "rejected",
                            "llm_note": out["llm_note"]}
             return out
-        out.update({"narrative": clean, "llm": "ok"})
-        _CACHE[key] = {"ts": time.time(), "narrative": clean, "llm": "ok", "llm_note": ""}
+        # ★★ 2026-10-11（L3）：JSON → 逐字段校验（越界词表再统一过一遍）→ 代码组装 markdown。
+        #   · `narrative` 保留（= `ins["markdown"]`，首行仍是 L2 的 `**结论**：` 标记）⇒ 旧前端
+        #     行为**完全不变**；新增 `conclusion` / `reasons` 供前端按角色渲染（结论条 + 依据）。
+        #   · LLM 没给 JSON ⇒ `structured=False`、narrative 退回原始文本 ⇒ 前端 L2/L1 渲染。
+        #     **三级降级（结构化 → 标记 → 纯文本），任何一级都不猜、也不会比改造前差。**
+        from app.insight import parse_insight
+        ins = parse_insight(clean, sanitize=_sanitize)
+        if not ins["structured"]:
+            ins = {"conclusion": "", "reasons": [], "markdown": clean, "structured": False}
+            print("[diagnosis] LLM 未按 JSON 输出 ⇒ 退化为纯 markdown 通道")
+        out.update({"narrative": ins["markdown"], "conclusion": ins["conclusion"],
+                    "reasons": ins["reasons"], "structured": ins["structured"], "llm": "ok"})
+        _CACHE[key] = {"ts": time.time(), "narrative": ins["markdown"],
+                       "conclusion": ins["conclusion"], "reasons": ins["reasons"],
+                       "structured": ins["structured"], "llm": "ok", "llm_note": ""}
         return out
     except Exception as e:
         out["llm"] = "error"

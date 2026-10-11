@@ -207,10 +207,11 @@
             生成 AI 解读
           </button>
         </div>
-        <!-- ★ 2026-10-11（L2）：改走「观点卡」—— prompt 已约定首行 `**结论**：…` ⇒ 抽成琥珀
-             结论条置顶；「现状 / 风险 / 还差什么」三段作为「依据」默认收起
+        <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端下发**结构化**结论/依据（L3），
+             结论条置顶；「现状 / 风险 / 还差什么」三段作为依据默认收起
              （**真正的依据另有下方带 source 的事实列表**，所以收起不会藏掉数据）。 -->
-        <InsightBody v-if="diag.narrative" :text="diag.narrative"
+        <InsightBody v-if="diag.narrative || diag.conclusion" :text="diag.narrative"
+                     :conclusion="diag.conclusion" :reasons="diag.reasons"
                      collapsible class="text-xs bg-white/5 rounded-lg p-3" />
         <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
           {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}

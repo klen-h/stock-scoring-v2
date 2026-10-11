@@ -68,4 +68,14 @@ export function splitInsight(text) {
   return { conclusion: '', body: raw }
 }
 
+// ── 结构化观点（L3，2026-10-11）──────────────────────────────────────────────
+// 后端 `app/insight.py` 会把 LLM 的 JSON 校验成 `{conclusion, reasons[]}`（并同时组装 markdown）。
+// 前端**按角色渲染**：结论 → 琥珀结论条；依据 → 列表。这里只做"数组 → markdown 列表"的
+// 纯转换（便于在 node 里单测），实际渲染仍走同一个 `renderMd` + `md-body` 样式。
+/** `['**现状**：…','**风险**：…']` → `- **现状**：…\n- **风险**：…` */
+export function reasonsMarkdown(reasons) {
+  if (!Array.isArray(reasons)) return ''
+  return reasons.map((r) => `- ${String(r || '').trim()}`).filter((l) => l !== '- ').join('\n')
+}
+
 export default renderMd

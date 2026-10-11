@@ -2128,9 +2128,11 @@
                 </button>
               </div>
               <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
-              <!-- ★ 2026-10-11（L2）：改走「观点卡」—— 首行 `**结论**：…` 抽成琥珀结论条置顶，
-                   「依据」默认收起（卡片内嵌观点：先给结论，细节点开看）。 -->
-              <InsightBody v-else-if="radarAnalysis.markdown" :text="radarAnalysis.markdown"
+              <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端已把 conclusion/reasons **分开下发**
+                   （L3 结构化），前端按角色渲染：结论条置顶、「依据」默认收起。 -->
+              <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
+                           :text="radarAnalysis.markdown"
+                           :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
                            collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
               <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
               <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
@@ -3303,11 +3305,15 @@ async function loadPush(date) {
 //     **另一天**的结论；**刻意不放在 `loadPush` 里**，因为 `loadPush` 在 120s 轮询里，
 //     放那儿会每 2 分钟把用户正在看的分析清空。
 // ══════════════════════════════════════════════════════════════════════════
-const radarAnalysis = ref({ loading: false, markdown: '', error: '', cached: false, items_used: 0 })
+// ★ 2026-10-11（L3）：加 `conclusion` / `reasons` —— 后端已把结论与依据**分开下发**，
+//   前端只按角色渲染（旧数据/未升级后端 ⇒ '' / [] ⇒ 自动退回文本通道，行为与 L2 一致）。
+const radarAnalysis = ref({ loading: false, markdown: '', conclusion: '', reasons: [],
+                            error: '', cached: false, items_used: 0 })
 const radarOpen = ref(false)
 
 function resetRadar() {
-  radarAnalysis.value = { loading: false, markdown: '', error: '', cached: false, items_used: 0 }
+  radarAnalysis.value = { loading: false, markdown: '', conclusion: '', reasons: [],
+                          error: '', cached: false, items_used: 0 }
 }
 
 async function toggleRadar() {
@@ -3329,11 +3335,12 @@ async function loadRadarAnalysis(refresh = false) {
     const { data } = await getRadarAnalysis(day, refresh)
     radarAnalysis.value = {
       loading: false, markdown: data?.markdown || '', error: data?.error || '',
+      conclusion: data?.conclusion || '', reasons: data?.reasons || [],
       cached: !!data?.cached, items_used: data?.items_used || 0,
     }
   } catch (e) {
     radarAnalysis.value = {
-      loading: false, markdown: '', cached: false, items_used: 0,
+      loading: false, markdown: '', conclusion: '', reasons: [], cached: false, items_used: 0,
       error: '分析失败：' + (e?.response?.data?.detail || e?.message || e),
     }
   }

@@ -469,9 +469,11 @@
               </button>
             </div>
           </div>
-          <!-- ★ 2026-10-11（L2）：与工作台**同一份**「观点卡」（结论置顶 + 依据可折叠）——
-               同一段 LLM 输出在两处渲染必须一致（此前一处裸文本、一处 md，是本轮之前的坑）。 -->
-          <InsightBody v-if="radarAnalysis.markdown" :text="radarAnalysis.markdown"
+          <!-- ★ 2026-10-11（L2/L3）：与工作台**同一份**「观点卡」（结构化结论 + 依据可折叠）——
+               同一段 LLM 输出在两处渲染必须一致（此前一处裸文本、一处 md，是改造前的坑）。 -->
+          <InsightBody v-if="radarAnalysis.markdown || radarAnalysis.conclusion"
+                       :text="radarAnalysis.markdown"
+                       :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
                        collapsible class="mt-2 text-xs max-h-96 overflow-y-auto pr-1" />
           <div v-else-if="radarAnalysis.error" class="mt-2 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
           <div v-else-if="!radarAnalysis.loading" class="mt-1 text-[11px] text-muted leading-relaxed">
@@ -2030,7 +2032,10 @@ function dotCls(c) {
       : c === 'brief' ? 'bg-sky-400' : 'bg-gray-500'
 }
 
-const radarAnalysis = ref({ loading: false, markdown: '', error: '', cached: false, items_used: 0 })
+// ★ 2026-10-11（L3）：加 `conclusion` / `reasons` —— 后端已把结论与依据**分开下发**，
+//   前端只按角色渲染（旧数据/未升级后端 ⇒ '' / [] ⇒ 自动退回文本通道）。
+const radarAnalysis = ref({ loading: false, markdown: '', conclusion: '', reasons: [],
+                            error: '', cached: false, items_used: 0 })
 async function loadRadarAnalysis(refresh = false) {
   if (radarAnalysis.value.loading) return
   radarAnalysis.value = { ...radarAnalysis.value, loading: true, error: '' }
@@ -2038,11 +2043,12 @@ async function loadRadarAnalysis(refresh = false) {
     const { data } = await getRadarAnalysis(null, refresh)
     radarAnalysis.value = {
       loading: false, markdown: data?.markdown || '', error: data?.error || '',
+      conclusion: data?.conclusion || '', reasons: data?.reasons || [],
       cached: !!data?.cached, items_used: data?.items_used || 0,
     }
   } catch (e) {
     radarAnalysis.value = {
-      loading: false, markdown: '', cached: false, items_used: 0,
+      loading: false, markdown: '', conclusion: '', reasons: [], cached: false, items_used: 0,
       error: '分析失败：' + (e?.response?.data?.detail || e?.message || e),
     }
   }
