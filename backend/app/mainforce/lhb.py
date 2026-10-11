@@ -62,9 +62,27 @@ def ensure_table() -> None:
                 net_buy REAL, buy_total REAL, sell_total REAL,
                 quote_change REAL, up_reason TEXT, concepts TEXT,
                 turnover_ratio REAL, seats_json TEXT,
+                circ_mktcap REAL,
                 UNIQUE (code, date)
             )
         """)
+    # ★★ 2026-10-11：增列 `circ_mktcap`（**上榜日流通市值**，元）—— 用户："按你建议来"
+    #   （本项 = 让风险标签覆盖科创板）。为什么必须存它：
+    #     · 强度 = 净买额 / **流通市值** ⇒ 分母是唯一缺的东西；
+    #     · 原来只能"本地包收盘 × market_snapshot 股本"现算 ⇒ 包**无科创板/北交所**
+    #       ⇒ 这些个股**静默打不出标签**（实测 6 只净卖样本仅 4 只可打）；
+    #     · 而 zzshare `lhb_list` **自带 `circ_price`（当日流通市值）** ⇒ 一行一个数，
+    #       与预登记口径**数学等价**（收盘×股本 ≡ 流通市值），且**不依赖包/快照**
+    #       ⇒ 全板块（含 688/北交所）可分档，还省掉每请求一次包读取。
+    #   ⚠️ 旧行该列为 NULL ⇒ 读取侧保留"包收盘 × 股本"回退（见 `_event_bucket`）。
+    try:
+        db.execute("ALTER TABLE lhb_history ADD COLUMN IF NOT EXISTS "
+                   "circ_mktcap DOUBLE PRECISION")
+    except Exception:
+        try:
+            db.execute("ALTER TABLE lhb_history ADD COLUMN circ_mktcap REAL")
+        except Exception:
+            pass
 
 
 def _unwrap(resp):
@@ -96,6 +114,9 @@ def fetch_day_list(date: str) -> list:
                 "up_reason": it.get("up_desc") or it.get("up_reason") or "",
                 "concepts": (it.get("concepts") or "")[:2000],
                 "turnover_ratio": float(it.get("turnover_ratio") or 0),
+                # ★ 2026-10-11：源自带**上榜日流通市值**（`circ_price`，元）——
+                #   净买强度的分母（占流通市值 %），见 ensure_table 处的注释。
+                "circ_mktcap": float(it.get("circ_price") or 0) or None,
             })
         except (TypeError, ValueError):
             continue
@@ -135,26 +156,29 @@ def save_rows(rows: list) -> int:
                 db.execute("""
                     INSERT INTO lhb_history (code, name, date, net_buy, buy_total,
                         sell_total, quote_change, up_reason, concepts,
-                        turnover_ratio, seats_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        turnover_ratio, seats_json, circ_mktcap)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (code, date) DO UPDATE SET
                         name=EXCLUDED.name, net_buy=EXCLUDED.net_buy,
                         buy_total=EXCLUDED.buy_total, sell_total=EXCLUDED.sell_total,
                         quote_change=EXCLUDED.quote_change, up_reason=EXCLUDED.up_reason,
                         concepts=EXCLUDED.concepts, turnover_ratio=EXCLUDED.turnover_ratio,
+                        circ_mktcap=COALESCE(EXCLUDED.circ_mktcap, lhb_history.circ_mktcap),
                         seats_json=COALESCE(EXCLUDED.seats_json, lhb_history.seats_json)
                 """, (r["code"], r["name"], r["date"], r["net_buy"], r.get("buy_total"),
                       r.get("sell_total"), r["quote_change"], r["up_reason"],
-                      r["concepts"], r["turnover_ratio"], seats_json))
+                      r["concepts"], r["turnover_ratio"], seats_json,
+                      r.get("circ_mktcap")))
             else:
                 db.execute("""
                     INSERT OR REPLACE INTO lhb_history (code, name, date, net_buy,
                         buy_total, sell_total, quote_change, up_reason, concepts,
-                        turnover_ratio, seats_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        turnover_ratio, seats_json, circ_mktcap)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (r["code"], r["name"], r["date"], r["net_buy"], r.get("buy_total"),
                       r.get("sell_total"), r["quote_change"], r["up_reason"],
-                      r["concepts"], r["turnover_ratio"], seats_json))
+                      r["concepts"], r["turnover_ratio"], seats_json,
+                      r.get("circ_mktcap")))
             n += 1
         except Exception as e:
             print(f"[lhb] 写入失败 {r['code']} {r['date']}: {str(e)[:100]}")
@@ -266,6 +290,23 @@ def strength_pct(net_buy, close, float_shares):
     return nb / (px * fs) * 100.0
 
 
+def strength_from_mktcap(net_buy, circ_mktcap):
+    """净买强度（占流通市值 %）——**直接用它**（`lhb_history.circ_mktcap`，源自带上榜日
+    流通市值）。
+
+    ★ 与 `strength_pct`（收盘 × 流通股本）**数学等价**（收盘×股本 ≡ 流通市值），
+      但**不依赖本地包/行情快照** ⇒ 科创板/北交所个股同样可分档
+      （2026-10-11 新增，用户："按你建议来"）。
+    """
+    try:
+        nb, mc = float(net_buy or 0), float(circ_mktcap or 0)
+    except (TypeError, ValueError):
+        return None
+    if mc <= 0:
+        return None
+    return nb / mc * 100.0
+
+
 def bucket_of(strength):
     """四档（与 `scripts/lhb_edge_check.py::bucket_of` **逐字同源**，BIG=1.0）。"""
     if strength is None:
@@ -279,20 +320,21 @@ def bucket_of(strength):
     return "big_sell"
 
 
-def _event_bucket(code: str, date_str: str, net_buy):
-    """单事件分档：收盘取**本地包**（零 egress）、流通股本取 `market_snapshot`
-    （`flow.get_float_shares_from_snapshot`，30min 进程缓存）。
+def _event_bucket(code: str, date_str: str, net_buy, circ_mktcap=None):
+    """单事件分档。
 
-    ★ 任一缺失 ⇒ None —— **不猜、也不降级到别的口径**：换口径（如用涨跌幅代替强度）
+    ★ **首选 `circ_mktcap`**（`lhb_history.circ_mktcap` = 源自带的**上榜日流通市值**）：
+      一行一个数、**零额外取数**、且**全板块可用**（含科创板 688 / 北交所）——
+      2026-10-11 起新写入的行都有；这是"让风险标签覆盖科创板"的落点。
+    ★ 旧行（该列为 NULL，2026-10-11 之前入库的）回退：本地包收盘 × `market_snapshot`
+      股本（`flow.get_float_shares_from_snapshot`，30min 进程缓存）—— 那条路**包无 688/
+      北交所** ⇒ 老票里的科创板仍可能打不出标签（会随日批新写入自然变好，亦可回填）。
+    ★ 两路都缺 ⇒ None —— **不猜、也不降级到别的口径**：换口径（如用涨跌幅代替强度）
       就等于"用未经检验的指标下方向性结论"，违反项目红线（信号须经预登记背书）。
-
-    ⚠️ **覆盖缺口（必读，别当成 bug）**：收盘价来自本地包 ⇒ 包只含**沪深主板+创业板**
-      （**无科创板 688 / 北交所**）⇒ 实测「近 10 日净卖」6 只样本里 **4 只**能算出分档，
-      `688498`/`688048` 取不到价 ⇒ **静默不打风险标签**。这与预登记脚本的覆盖率局限同源
-      （脚本 v2 靠本地**全市场**日线库 6123 只补上了，而**生产侧没有那个库**）。
-      ⇒ 要覆盖科创板/北交所，须扩包或另接全市场日线源（**另一件事**，需评估 egress）。
     """
     try:
+        if circ_mktcap:
+            return bucket_of(strength_from_mktcap(net_buy, circ_mktcap))
         from app.scoring.kline_cache import get_cached_klines
         close = None
         for b in (get_cached_klines(code) or []):
@@ -333,7 +375,7 @@ def recent_summary(code: str, days: int = 10) -> dict:
               "recent": [], "buckets": {}, "last_bucket": None,
               "last_bucket_cn": "", "risk": False, "risk_cn": "", "risk_why": ""}
     try:
-        rows = db.fetch("SELECT date, net_buy, quote_change FROM lhb_history "
+        rows = db.fetch("SELECT date, net_buy, quote_change, circ_mktcap FROM lhb_history "
                         "WHERE code = %s AND date >= %s ORDER BY date DESC",
                         (code, start)) or []
     except Exception as e:
@@ -346,10 +388,11 @@ def recent_summary(code: str, days: int = 10) -> dict:
         net += v
         if len(recent) < 5:
             recent.append({"date": str(r.get("date"))[:10], "net_buy": v,
-                           "chg": r.get("quote_change")})
+                           "chg": r.get("quote_change"),
+                           "circ_mktcap": r.get("circ_mktcap")})
     buckets = {}
     for x in recent:
-        x["bucket"] = _event_bucket(code, x["date"], x["net_buy"])
+        x["bucket"] = _event_bucket(code, x["date"], x["net_buy"], x.get("circ_mktcap"))
         if x["bucket"]:
             buckets[x["bucket"]] = buckets.get(x["bucket"], 0) + 1
     last = (str(rows[0].get("date"))[:10] if rows else "")

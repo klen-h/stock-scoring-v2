@@ -13,7 +13,15 @@
 - DB 默认 SQLite，`DATABASE_URL` 走 PG（Supabase 东京）；`app/database.py` 自动转 `%s` 兼容双库。
 - 调度器 `flash/scheduler.py` ~30 asyncio loop 按日幂等；LLM/轻推送 `create_task`，重走 `*_heavy`（`RENDER_READ_ONLY=1` 全关）。
 - 盘后链路：K线 15:30 → 指标 16:40 → 快照 18:00 → 主线/消息分/日报 19:15+；简报按 `(date,phase)` 落 `trader_briefs`。
-- ★★ **日期键"两派" + 循环守卫铁律**（2026-10-08 查"日批每天两次/假期照跑"时挖出）：Render 侧 `*_loop` **必须用 `rules.is_trading_day()`**（只写 `weekday()<5` 会把 A 股节假日当工作日）**且显式传 `latest_completed_trading_day()`**（不传 ⇒ 内部 `_today()` = **运行日** ⇒ 写出"**键=假日、正文=上一交易日**"的错位行）。已修 `daily_report_loop`（19:30-23:59，实测它造出 09-25/10-01/02/05/06/07 六个假日键日报，已清）。**同类残留（2026-10-11 系统清理，范围远比当时记录的大）**：实测 **7 张分析表共 36 个假日键**（`sector_daily` 2792 行、`macro_daily_history` 48 行、`contradiction_reports` 10 键、`trader_briefs` 8 键、`contradictions` 3 键、`daily_reports`/`radar_analysis` 各 1 键），且**根因仍在产**（10-10/10-11 周末还在写）。⇒ 已建 **`scripts/cleanup_holiday_keys.py`**（**分表策略**：① 交易日键类 ⇒ 只删「上一交易日键已存在」的**重复行**、孤儿行**改键不删**；② **运营计数表 `llm_usage_daily`/`llm_usage_by_provider`/`push_log` 按自然日统计「属设计」，显式跳过** —— 别一刀切）＋ 日批兜底闸 **`data_hygiene`**（排 `data_gap` 之后，自愈）＋ 修掉 3 处最明确的守卫（`contradiction_scan_loop`/`contradiction_report_loop`/`midday_radar_loop`，两处还补了显式传 `latest_completed_trading_day()`）。★ **`scheduler.py` 仍有 20+ 处 `now.weekday() < 5`**（只看星期、不认 A 股节假日 —— **中秋 09-25 是周五却是休市日**就是反例）⇒ 逐个改风险大且必漏，靠兜底闸自愈；要根治须逐个换成 `rules.is_trading_day()`（未做）。**同一批日批内日期键也不一致**（`ranking_history`/`industry_mainline`/`sector_amount_daily` 用运行日，`plate_daily_zz`/`mainforce_state` 用交易日）—— 查"数据为何出现未来日期键"先看这条。
+- ★★ **日期键"两派" + 循环守卫铁律**（2026-10-08 查"日批每天两次/假期照跑"时挖出）：Render 侧 `*_loop` **必须用 `rules.is_trading_day()`**（只写 `weekday()<5` 会把 A 股节假日当工作日）**且显式传 `latest_completed_trading_day()`**（不传 ⇒ 内部 `_today()` = **运行日** ⇒ 写出"**键=假日、正文=上一交易日**"的错位行）。已修 `daily_report_loop`（19:30-23:59，实测它造出 09-25/10-01/02/05/06/07 六个假日键日报，已清）。**同类残留（2026-10-11 系统清理，范围远比当时记录的大）**：实测 **7 张分析表共 36 个假日键**（`sector_daily` 2792 行、`macro_daily_history` 48 行、`contradiction_reports` 10 键、`trader_briefs` 8 键、`contradictions` 3 键、`daily_reports`/`radar_analysis` 各 1 键），且**根因仍在产**（10-10/10-11 周末还在写）。⇒ 已建 **`scripts/cleanup_holiday_keys.py`**（**分表策略**：① 交易日键类 ⇒ 只删「上一交易日键已存在」的**重复行**、孤儿行**改键不删**；② **运营计数表 `llm_usage_daily`/`llm_usage_by_provider`/`push_log` 按自然日统计「属设计」，显式跳过** —— 别一刀切）＋ 日批兜底闸 **`data_hygiene`**（排 `data_gap` 之后，自愈）＋ 修掉 3 处最明确的守卫（`contradiction_scan_loop`/`contradiction_report_loop`/`midday_radar_loop`，两处还补了显式传 `latest_completed_trading_day()`）。★ **`scheduler.py` 的 21 处交易日守卫已全部统一为 `rules.is_trading_day(now)`**（2026-10-11 清扫 ②）：
+其中 **8 处是 light（Render 线上真跑）= 本轮实地价值**（`macro_daily` / `regime_cache` / `event_alert` /
+`backtest_preheat` / `open_confirmation` / `paper_fill` / `paper_track`(盘后分支) / `indicator_cache`），
+另 13 处为 `_heavy`（线上不跑）的**保险性**修正。★ **刻意保留 5 类**（已留档在 `scheduler.py`
+`_heavy` 上方，**别误改**）：`_latest_trading_day`（**自身就是节假日实现**）、
+`trade_plan_trigger_loop` / `paper_track_loop`(盘中分支)（另有 `get_china_market_status()["is_open"]`
+含 HOLIDAYS）、`zz_finance_sync_loop`（周一）/ `backtest_report_loop`（周五 16:00+ / 周六）＝**周语义**
+（已叠加 `is_trading_day`）。验证方式：用 `ast` 精确统计代码里的 `weekday` 属性访问
+（**文档字符串里的说明不算** —— 第一版用文本过滤就被自己的注释误报了）。**同一批日批内日期键也不一致**（`ranking_history`/`industry_mainline`/`sector_amount_daily` 用运行日，`plate_daily_zz`/`mainforce_state` 用交易日）—— 查"数据为何出现未来日期键"先看这条。
 - **日批本身没有 cron**：由上游 `Generate Backend Data Pack` 成功后 `workflow_run` 接棒（原 20:30 兜底已停用，注释明写"保留会重复跑一次"）。上游**两条触发（2026-10-08 用户给运行列表证实）**：① cron-job.org → `workflow_dispatch`，页面显示 **"Manually run by klen-h"，19:00 北京准时** ✓；② GitHub 兜底 `schedule: cron '0 14 * * 1-5'`（UTC 名义=北京 22:00，**实测总要晚 4~7h 才起跑**，落在北京 02:52~05:23）⇒ **日批每天两次 = 上游成功两次**。兜底本该被"最近 12h 已有成功 run ⇒ skip"的 guard 挡住，**实际从未生效**（时长 1h12m~1h31m = 整包跑满）⇒ 根因：guard job **没有 `actions/checkout`**，而 **`gh` 不读 `GITHUB_REPOSITORY`**（只从 CWD 的 git remote 或 `GH_REPO`/`--repo` 取仓库）⇒ `gh run list` 报 "not a git repository"，又被 **`2>/dev/null || echo 0` 补成 0** ⇒ 判据恒 0。**已修**：加 `GH_REPO` + `permissions: actions: read` + 不再吞错（失败打 warning 且按"不跳过"处理，宁多跑不误跳）；每天省 ~2h15m（包 ~1h20m + 日批 ~55m）。
 - ★★ **反复模式：Render 循环停摆 ⇒ 数据静默断档 ⇒ 迁入日批**（已发生：`mainforce_state` 09-09、`weekly_report`/`news_snapshot`/`lhb` 09-11、`zz_finance` 09-19、**`sector_snapshot_zz` 09-24（09-30 修）**）。**兜底闸（2026-09-30 起）**：`app/data_gaps.py` + 日批 `data_gap` 任务（排在所有数据写入之后）每晚自愈板块缺口（最近 5 交易日，无缺口零请求）并做 7 张关键表断档告警；判据口径是**交易日**（自然日会在休市期误报），**落后 ≥2 个交易日即告警**（容差 1 —— 设 2 会漏掉 09-24→09-29 这种夹着中秋休市的断档）。手动补历史：`python scripts/backfill_plate_daily.py --apply`（zzshare 支持历史日期；东财 clist 只给当前快照**不可回补**）。
 
@@ -250,9 +258,15 @@
   （**大额净买不提示**：v2 定案明写"不宜当买入信号"；"窗口内出现过"也不算，因为检验的是
   事件后 T+5、十几天前的事件早已过期）。分档口径与预登记脚本**逐字同源**（`BIG=1.0`，
   `strength_pct`/`bucket_of` 与脚本有 14 点网格等价断言），文案与依据**由后端下发**
-  （`risk_cn`/`risk_why`/`summary_cn`，前端不自行推导）。⚠️ **覆盖缺口（不是 bug）**：
-  收盘价取本地包 ⇒ **科创板 688/北交所个股静默不打标签**（实测近 10 日净卖样本 6 只中 4 只可打）；
-  要覆盖须扩包或另接全市场日线源（待议）。
+  （`risk_cn`/`risk_why`/`summary_cn`，前端不自行推导）。
+  ★ **覆盖缺口 2026-10-11 当天即解决**（用户："按你建议来"）：**源自带** `lhb_list.circ_price`
+  = **上榜日流通市值** ⇒ 加 `lhb_history.circ_mktcap` 列，强度 = 净买额/流通市值
+  （与预登记「收盘×股本」**数学等价**：11 只双算样本**分档 11/11 一致、强度差 ≤0.0001pct**）
+  ⇒ **不再依赖本地包**（包无 688/北交所）⇒ **科创板/北交所也能分档**；回填脚本
+  `scripts/backfill_lhb_mktcap.py`（98 日重拉，8330 行只剩 151 行无源=退市/改码），
+  近 10 日净卖样本覆盖率 **4/6 → 6/6**；顺带**省掉每请求一次包读取**。
+  ★ 坑（本项目通用）：**SQL 里的字面 `%` 必须写 `%%`**（DB 层当占位符）——
+  `LIKE '688%'` 会报 `IndexError: tuple index out of range`；用 `LEFT(code,3)='688'` 或转义。
 - ★★ **本轮最重要的方法论（两条，都是"避免自我欺骗"的通用闸）**：
   1. **收盘价入场在 A 股事件研究里几乎系统性高估** —— 收盘时才知道事件，**次日开盘已跳空**
      （龙虎榜实测：big_buy gap **+0.97%**、big_sell **−1.86%**，2.83pt 差距**在开盘即被定价**）

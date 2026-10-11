@@ -330,7 +330,8 @@ async def macro_daily_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "macro_daily"
-        if (now.weekday() < 5 and MACRO_DAILY_WINDOW[0] <= t < MACRO_DAILY_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and MACRO_DAILY_WINDOW[0] <= t < MACRO_DAILY_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发宏观每日快照锁定")
             try:
@@ -361,7 +362,9 @@ async def kline_cache_refresh_loop():
         now = rules.beijing_now()
         h, m = now.hour, now.minute
         today = now.strftime("%Y-%m-%d")
-        weekday = now.weekday()  # 0=周一, 6=周日
+        # ★ 2026-10-11：局部 `weekday = now.weekday()` 改为统一交易日判定（含 HOLIDAYS）
+        #   —— 见文件末尾 `_heavy` 上方的"清扫 ②"留档。
+        _is_td = rules.is_trading_day(now)
         
         # 工作日 15:30-23:59 触发刷新
         # ★ DATA_SOURCE=pack/local：K 线由 Actions 打包分发（kline-data 工作流），
@@ -372,7 +375,7 @@ async def kline_cache_refresh_loop():
             _pack_mode = _ps.enabled()
         except Exception:
             pass
-        if (weekday < 5 and h >= 15 and m >= 30
+        if (_is_td and h >= 15 and m >= 30
                 and not KLINE_CACHE_REFRESHED_TODAY and not _pack_mode):
             try:
                 print(f"[scheduler] 开始每日 K 线缓存刷新...")
@@ -430,10 +433,13 @@ async def indicator_cache_refresh_loop():
     while True:
         now = rules.beijing_now()
         h, m = now.hour, now.minute
-        weekday = now.weekday()  # 0=周一, 6=周日
+        # ★ 2026-10-11：局部 `weekday` 已废弃（统一用 `rules.is_trading_day(now)`，含 HOLIDAYS）
         
         # 工作日 16:00-23:59 触发刷新（确保 K 线缓存已刷新）
-        if weekday < 5 and h >= 16 and m >= 0 and not INDICATOR_CACHE_REFRESHED_TODAY:
+        # ★ 2026-10-11：`weekday < 5` → `rules.is_trading_day(now)`（节假日里有工作日；
+        #   本循环是 **light（线上真跑）**，节假日跑会往 indicator_cache 写错位键）。
+        if rules.is_trading_day(now) and h >= 16 and m >= 0 \
+                and not INDICATOR_CACHE_REFRESHED_TODAY:
             try:
                 print(f"[scheduler] 开始每日指标缓存刷新...")
                 from app.scoring.indicator_cache import refresh_indicator_cache
@@ -865,7 +871,8 @@ async def backtest_prices_refresh_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "backtest_backfill"
-        if (now.weekday() < 5 and BACKTEST_BACKFILL_WINDOW[0] <= t < BACKTEST_BACKFILL_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and BACKTEST_BACKFILL_WINDOW[0] <= t < BACKTEST_BACKFILL_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             # ★ 2026-09-25：节流（见 BACKFILL_RETRY_INTERVAL_SEC 注释）。
             #   成功路径不受影响（成功即 mark_done ⇒ 后续不再进本分支）。
@@ -956,7 +963,8 @@ async def mainflow_refresh_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "mainflow_backfill"
-        if (now.weekday() < 5 and MAINFLOW_REFRESH_WINDOW[0] <= t < MAINFLOW_REFRESH_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and MAINFLOW_REFRESH_WINDOW[0] <= t < MAINFLOW_REFRESH_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             try:
                 from app.mainforce.flow import backfill_all
@@ -984,7 +992,8 @@ async def mainforce_state_refresh_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "mainforce_state"
-        if (now.weekday() < 5 and MAINFORCE_STATE_WINDOW[0] <= t < MAINFORCE_STATE_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and MAINFORCE_STATE_WINDOW[0] <= t < MAINFORCE_STATE_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             try:
                 from app.mainforce.state import refresh_all
@@ -1020,7 +1029,8 @@ async def lhb_refresh_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "lhb_backfill"
-        if (now.weekday() < 5 and LHB_REFRESH_WINDOW[0] <= t < LHB_REFRESH_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and LHB_REFRESH_WINDOW[0] <= t < LHB_REFRESH_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             try:
                 from app.mainforce.lhb import backfill_days
@@ -1045,7 +1055,10 @@ async def zz_finance_sync_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "zz_finance_sync"
-        if (now.weekday() == 0 and ZZ_FINANCE_SYNC_WINDOW[0] <= t < ZZ_FINANCE_SYNC_WINDOW[1]
+        # ★ 2026-10-11：**周语义保留**（周一）+ 叠加 `is_trading_day` ——
+        #   节假日周一（如国庆）不该触发；周任务的补跑由日批 `task_zz_finance` 负责。
+        if (rules.is_trading_day(now) and now.weekday() == 0
+                and ZZ_FINANCE_SYNC_WINDOW[0] <= t < ZZ_FINANCE_SYNC_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             try:
                 from app.zzshare_finance import sync_latest_finance
@@ -1416,7 +1429,8 @@ async def open_confirmation_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         day_key = now.strftime("%Y%m%d")
-        if (now.weekday() < 5 and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
                 and not store.is_schedule_done("open_confirm", date_str=day_key)):
             print("[scheduler] 触发开盘买点确认")
             try:
@@ -1442,7 +1456,8 @@ async def paper_fill_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         day_key = now.strftime("%Y%m%d")
-        if (now.weekday() < 5 and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and OPEN_CONFIRM_WINDOW[0] <= t < OPEN_CONFIRM_WINDOW[1]
                 and not store.is_schedule_done("paper_fill", date_str=day_key)):
             print("[scheduler] 触发模拟盘开盘确认")
             try:
@@ -1467,7 +1482,10 @@ async def paper_track_loop():
             from app.strategies.paper_trading import track_positions
             if now.weekday() < 5 and rules.get_china_market_status()["is_open"]:
                 await asyncio.to_thread(track_positions, False)
-            elif now.weekday() < 5 and 940 <= t < 1440 and not store.is_schedule_done("paper_daily_close"):
+            # ★ 2026-10-11：盘后兜底分支**不能只看星期** —— 节假日（如国庆 10-01/02/05/06/07
+            #   都是工作日）会带着"没有当日行情"去结算模拟盘。
+            elif rules.is_trading_day(now) and 940 <= t < 1440 \
+                    and not store.is_schedule_done("paper_daily_close"):
                 await asyncio.to_thread(track_positions, True)
                 store.mark_schedule_done("paper_daily_close")
                 status["last_paper_track"] = rules.beijing_now().isoformat()
@@ -1500,7 +1518,8 @@ async def strategy_scan_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "strategy_scan"
-        if (now.weekday() < 5 and STRATEGY_SCAN_WINDOW[0] <= t < STRATEGY_SCAN_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and STRATEGY_SCAN_WINDOW[0] <= t < STRATEGY_SCAN_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发战法全量扫描")
             try:
@@ -1551,7 +1570,8 @@ async def regime_cache_loop():
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and REGIME_CACHE_WINDOW[0] <= t < REGIME_CACHE_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and REGIME_CACHE_WINDOW[0] <= t < REGIME_CACHE_WINDOW[1]
                 and not store.is_schedule_done("regime_cache")):
             try:
                 cache = await asyncio.to_thread(refresh_regime_cache)
@@ -1600,7 +1620,8 @@ async def event_alert_loop():
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
-        if (now.weekday() < 5 and EVENT_ALERT_WINDOW[0] <= t < EVENT_ALERT_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and EVENT_ALERT_WINDOW[0] <= t < EVENT_ALERT_WINDOW[1]
                 and not store.is_schedule_done("event_alert")):
             try:
                 msg = await asyncio.to_thread(run_alert)
@@ -1624,7 +1645,8 @@ async def backtest_preheat_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         day_key = now.strftime("%Y%m%d")
-        if (now.weekday() < 5 and BACKTEST_PREHEAT_WINDOW[0] <= t < BACKTEST_PREHEAT_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and BACKTEST_PREHEAT_WINDOW[0] <= t < BACKTEST_PREHEAT_WINDOW[1]
                 and not store.is_schedule_done("backtest_preheat", date_str=day_key)):
             print("[scheduler] 触发回测预热（signals/warfare/macro 写持久缓存）")
             try:
@@ -1657,7 +1679,11 @@ async def backtest_report_loop():
         t = now.hour * 60 + now.minute
         iso = now.isocalendar()
         week_key = f"W{iso[0]}-{iso[1]:02d}"
-        in_week_window = (now.weekday() == 4 and t >= 16 * 60) or now.weekday() == 5
+        # ★ 2026-10-11：**周语义保留**（周五 16:00 后 / 周六）+ 周五那支叠加交易日判定
+        #   —— 周五若逢节假日，应等周六（`weekday()==5` 分支）再出周报，而不是拿没有当日
+        #   行情的数据去算"本周"。周度补跑由日批 `weekly_report`（`_weekly_due`）负责。
+        in_week_window = ((now.weekday() == 4 and t >= 16 * 60
+                           and rules.is_trading_day(now)) or now.weekday() == 5)
         if in_week_window and not store.is_schedule_done("backtest_report", date_str=week_key):
             print(f"[scheduler] 触发周度回测报告生成（{week_key}）")
             try:
@@ -1816,7 +1842,8 @@ async def market_snapshot_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "market_snapshot"
-        if (now.weekday() < 5 and MARKET_SNAPSHOT_WINDOW[0] <= t < MARKET_SNAPSHOT_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and MARKET_SNAPSHOT_WINDOW[0] <= t < MARKET_SNAPSHOT_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发全市场行情收盘快照")
             try:
@@ -1943,7 +1970,8 @@ async def news_history_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "news_history"
-        if (now.weekday() < 5 and NEWS_HISTORY_WINDOW[0] <= t < NEWS_HISTORY_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and NEWS_HISTORY_WINDOW[0] <= t < NEWS_HISTORY_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
             print("[scheduler] 触发消息分每日快照")
             try:
@@ -2241,6 +2269,23 @@ async def start():
                   f"权重={_rc['weights']}")
     except Exception as e:
         print(f"[scheduler] 恢复市场状态缓存失败: {e}")
+    # ★★ 2026-10-11（用户："继续" = 清扫 ②）：本文件所有**交易日相关**的循环守卫，已由
+    #   `now.weekday() < 5` 换成 `rules.is_trading_day(now)`（口径唯一、含全年 HOLIDAYS）。
+    #   为什么必须换：A 股节假日里**有工作日** —— 2026 中秋 **09-25 是周五**、
+    #   国庆 **10-01/02/05/06/07 全是工作日** ⇒ `weekday()` 会把休市日当交易日；
+    #   而这些 loop 在 Render 上**真的会跑** ⇒ 写出「键 = 假日、正文 = 上一交易日」的
+    #   **错位行**（本轮实测清了 **36 个假日键**，见 `scripts/cleanup_holiday_keys.py`；
+    #   并已加日批兜底闸 `data_hygiene` 自愈 ⇒ 即使漏一处也不会积累）。
+    #   ★ **刻意保留 `weekday()` 的三类（后人别误改）**：
+    #     ① 已有假日感知门：`trade_plan_trigger_loop` / `paper_track_loop`(盘中分支)
+    #        另带 `get_china_market_status()["is_open"]`（该值本身已含 HOLIDAYS）；
+    #     ② **周语义**（不是交易日语义）：`zz_finance_sync_loop`（周一）、
+    #        `backtest_report_loop`（周五 16:00 后 / 周六）—— 均已**叠加** `is_trading_day`，
+    #        但星期本身仍要保留；
+    #     ③ `_latest_trading_day()`（本文件内的辅助函数）**自身就是节假日实现**（含 HOLIDAYS）。
+    #     另：`kline_cache_refresh_loop` / `indicator_cache_refresh_loop` 原先用**局部变量**
+    #        `weekday = now.weekday()` 承载判定 ⇒ 已一并统一（前者 `_heavy` 且 pack 模式下早退；
+    #        后者是 light = **线上真跑** ⇒ 必须改）。
     # ★ 只读模式下的重任务包装：RENDER_READ_ONLY=1 时返回空列表（不启动）
     def _heavy(loop_fn):
         return [] if READ_ONLY else [asyncio.create_task(loop_fn())]
