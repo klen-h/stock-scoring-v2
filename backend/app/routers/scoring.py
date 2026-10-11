@@ -147,7 +147,25 @@ MIN_PRICE = 3.0              # 单位：元
 
 
 def _pool_quality_filter(stock: dict) -> bool:
-    """质量门槛过滤：流通市值/股价"""
+    """批量池统一过滤：板块/ST + 流通市值/股价。
+
+    ★★ 2026-10-11（用户："评分快照 Top50 和前端本地计算的 Top50 差异过大"）——
+      根因 = **同一个股票池三处口径各自为政**：前端 `useFrontendScoring.isValidStock`
+      刻意过滤 ST + 科创板(688) + 创业板(300/301)；而本函数（score_top / live_ranking
+      共用）只看市值/价 ⇒ 快照在 ranking_live 就绪前走"在线两阶段"回退时把科创板
+      高分票（传音 81.9 等 6 只）写进了 Top6，前端本地榜一只都没有（实测差异 12/50）。
+      修复 = **把前端 isValidStock 的板块/ST 规则并进本共享过滤**（一处改、三路对齐：
+      /batch/top 在线榜、live_ranking 精算榜、18:00 快照——后者就是调 score_top 写的）。
+      ⚠️ 只用于**批量池**：详情页 score_single 不经过此处，688 单票照常可看可评。
+    """
+    code = stock.get("code") or ""
+    # 板块过滤（与前端 isValidStock 同规则、同理由）：科创板 688（50万开户门槛+20cm）、
+    # 创业板 300/301（20cm）—— 与其余榜单的既有认知口径一致
+    if code.startswith(("688", "300", "301")):
+        return False
+    name = (stock.get("name") or "").replace(" ", "").upper()
+    if name.startswith(("ST", "*ST", "SST")):
+        return False
     if (stock.get("float_cap", 0) or 0) < MIN_FLOAT_CAP:
         return False
     if (stock.get("price", 0) or 0) < MIN_PRICE:

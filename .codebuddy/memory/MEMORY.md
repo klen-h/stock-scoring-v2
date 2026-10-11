@@ -91,6 +91,14 @@
 - **观察池共享入口（P3-b，已做）**：`frontend/src/components/AnomalyEntry.vue` = 一个 `异动` 小 chip 链接 → `stockHref(code) + '?anomaly=1'`（**必须用共享 `stockHref`**，别硬编码路由前缀；`target=_blank` + `@click.stop` 防父行 `goDetail` 冒泡）。**挂两处**：① 工作台右栏 `components/workbench/StockListsCards.vue` 观察池行（该行**已加 `flex-wrap`** —— 右栏仅 320px，加元素要能优雅换行而非被裁）② 榜单页 `ScoreRank.vue` 观察池表**末列**。详情页读 `?anomaly=1` ⇒ **只把分析块展开、不自动请求**（成本仍由人点「开始分析」；"导航即烧钱"与按需纪律相悖）。⚠️ 观察池是**两个独立实现**（工作台子组件 vs 榜单页表格），共享入口只能靠**同一组件**保证不漂移。
 - ★★ **前端消费字段 vs 后端返回字段的自动对照校验**（可复用做法）：用正则把 `.vue` 里实际读的 `xxx.field` 抓出来，逐个断言 API 响应里存在（条件字段如 `error`/`cached_age_min` 单列白名单）。P3 用它一次验完 13 个字段 —— 这类"前端读了个后端不返回的字段"的静默 bug 已发生 3 次，**别靠肉眼**。
 - ★★ 板块源 = zzshare（`plates_rank` plate_type=14行业/15概念，**支持历史日期可回填**），落独立表 `plate_daily_zz`；与东财 taxonomy 不兼容**绝不混表**。`app/sector_zz.py` / `/sector/zz/*` / `scripts/backfill_plate_zz.py`；`eastmoney.get_sectors` 降级链 东财→zzshare→新浪；新浪无涨跌家数给 `None`（前端判 null 才渲染，不显假 0）。
+- ★★ **榜单股票池口径 = 一处定义、三路共用**（2026-10-11 根治"快照 vs 前端本地 Top50 差异 12/50"）：
+  共享过滤 = `routers/scoring._pool_quality_filter`（板块/ST：剔 **688/300/301 + ST***，与前端
+  `useFrontendScoring.isValidStock` 同规则；市值≥50亿 + 价≥3元 + PE>0）⇒ `/batch/top` 在线榜、
+  `live_ranking` 精算榜、18:00 快照（调 score_top 落 `ranking_history`）三路全走它。
+  ★ 陷阱复现：`live_ranking._build_pool` 注释自称"复刻 score_top 的池子"——**"复刻"就是漂移源**；
+  且快照(北京 22:43 写)**永远赶不上**当日 Actions 精算榜(北京次日凌晨) ⇒ 回退路径每天都在走，
+  口径不一致就必然暴露。前端要改板块规则时，**两处必须同步改**（前端 isValidStock + 后端
+  `_pool_quality_filter`）。⚠️ 该过滤只管**批量池**：详情页 score_single 不经过它，688 单票照常可看。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
