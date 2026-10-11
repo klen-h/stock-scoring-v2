@@ -99,7 +99,8 @@ def init_ranking_history_table():
 init_ranking_history_table()
 
 
-def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, replace_day: bool = False) -> int:
+def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False,
+                         replace_day: bool = False, date: Optional[str] = None) -> int:
     """
     记录当日评分排行榜。
     
@@ -108,16 +109,25 @@ def record_daily_ranking(top_stocks: List[Dict], only_if_empty: bool = False, re
                   dimensions 为三维评分明细（供权重优化分析），price 为快照价格。
       only_if_empty: True 时当天已有任何记录则跳过（用于盘中兜底，防止反复追加膨胀每日快照）
       replace_day: True 时先清空当天记录再写入（用于盘后/手动权威快照，保证每天固定 Top50）
+      ★ date（2026-10-11 新增，默认 None = 旧行为）：「**要记录哪个交易日**」→ 'YYYY-MM-DD'。
+        【为什么必须加】原实现写死 `today = _today_str()`（**自然日**）+ 守卫用"**此刻**是否
+        交易日" ⇒ 日批**跨午夜补跑**（周六 00:30 才跑到评分快照）时：守卫看到"今天是周六"
+        ⇒ 一律跳过 ⇒ **周五那份权威快照直接丢失**（不是写错，是根本没有）；反之若跑到
+        周一 00:30，守卫放行、键记成周一 ⇒ 「键=周一、内容=周五」的错位（本项目
+        "日期键两派"的老坑）。⇒ 现在由调用方传**本轮交易日**（日批传
+        `_batch_trading_day()`），守卫也改为校验**目标日**而非"此刻"。
+        不传 `date` 的调用方（调度器循环 22:30-24:00、前端手动保存、HTTP 兜底）不受影响。
     
     返回：成功记录的条数
     """
     now_bj = datetime.now(_BEIJING_TZ)
-    if not _is_trading_date(now_bj):
+    _target = datetime.strptime(str(date)[:10], "%Y-%m-%d") if date else now_bj
+    today = _target.strftime("%Y-%m-%d")
+    if not _is_trading_date(_target):
         # 统一交易日守卫：调度器/页面兜底/手动保存/调试接口全部走这里，
         # 非交易日一律不写（此前 HTTP 入口无检查，周末开一次评分页就多出一条脏快照）
-        print(f"[ranking] {now_bj:%Y-%m-%d} 非A股交易日（周末/节假日），跳过排行快照")
+        print(f"[ranking] {today} 非A股交易日（周末/节假日），跳过排行快照")
         return 0
-    today = _today_str()
     if only_if_empty:
         exists = db.fetch_one(
             "SELECT 1 FROM ranking_history WHERE rank_date = %s LIMIT 1", (today,)

@@ -1672,13 +1672,25 @@ async def backtest_report_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
-# ── 评分排行快照每日保存 ──
-# ★ 时间从 15:15 挪到 18:00，必须晚于 K线刷新(15:30) + 指标刷新(Actions 16:40/17:40)：
-#   原先 15:15 就跑，此时指标缓存里还是"前一交易日收盘"的数据，于是每日权威快照
-#   变成「今日收盘价 + 昨日技术特征」的混合体 —— 而回测/日报/拥挤度因子都读它。
-#   Actions 万一没跑成，到 SCORE_SNAPSHOT_DEADLINE 就照旧用前一日指标跑，不会更差。
-SCORE_SNAPSHOT_WINDOW = (1080, 1140)      # 北京时间 18:00-19:00
-SCORE_SNAPSHOT_DEADLINE = 1125            # 18:45：等到这个点就不再等指标刷新，直接跑
+# ── 评分排行快照每日保存（线上：**日批为主 + 本循环为兜底**）──
+# ★★ 2026-10-11（用户："score_snapshot_loop 时序"）—— 第三次校准，前两次与本次依据：
+#   · ① 原窗口 15:15：当时"数据就绪"的判据是 **DB `indicator_cache`**（Actions 16:40/17:40
+#     刷新）⇒ 15:15 早于刷新 ⇒ 权威快照 =「**今日收盘价 + 昨日技术特征**」的混合体
+#     （回测/日报/拥挤度因子都读它 ⇒ 静默污染）。
+#   · ② 上次修：窗口挪到 18:00-19:00 + "等指标缓存刷到今日"守卫。**方向对、依赖已失效**：
+#     2026-09-07 起 `indicator-refresh.yml` 的**定时已停用**（pack 模式下指标读取层优先读
+#     **数据包** ⇒ DB 表几乎无消费方）⇒ 实测 `indicator_cache.newest_update=2026-10-07`
+#     （**死表**）⇒ 该守卫**恒不通过**：真跑起来只会每天白等到 deadline 再写。
+#   · ③ 本次：判据换成 pack 时代唯一真相 **数据包日期**（与日批 `ensure_pack_fresh()` /
+#     `pack_source._latest_available_pack_day()` 同源）。后端包 **19:00 开始构建、实测
+#     ~20:43 才发布** ⇒ **18:00 窗口仍早于数据就绪**（同一个 bug 的新形式）⇒ 窗口挪到其后。
+SCORE_SNAPSHOT_WINDOW = (1350, 1440)      # 北京时间 22:30-24:00（晚于包发布 ~20:43 与日批全程）
+SCORE_SNAPSHOT_DEADLINE = 1410            # 23:30：此后包仍未就绪 ⇒ **放弃本轮**（宁可不写，也不写混合快照）
+# ★ 本循环在线上其实**不跑**（但仍要修对）：`_heavy()` 在 `RENDER_READ_ONLY=1` 下返回 `[]`
+#   ⇒ 线上权威快照由**日批 `task_score_snapshot`** 产出，而日批在 `main()` 被
+#   `ensure_pack_fresh()` 卡到包就绪为止（不通过直接 `return 3` 中止）⇒ 那条路径时序安全 ✓。
+#   本循环只是"日批没跑成"的兜底 ⇒ 故多一道"**当日已写过就不覆盖**"（两处写入字段结构不同，
+#   覆盖会让 BucketStats 分桶失去统计意义 —— 2026-09-13 已踩过一次）。
 
 async def score_snapshot_loop():
     """
@@ -1691,23 +1703,44 @@ async def score_snapshot_loop():
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
         task_key = "score_snapshot"
-        if (now.weekday() < 5 and SCORE_SNAPSHOT_WINDOW[0] <= t < SCORE_SNAPSHOT_WINDOW[1]
+        if (rules.is_trading_day(now)
+                and SCORE_SNAPSHOT_WINDOW[0] <= t < SCORE_SNAPSHOT_WINDOW[1]
                 and not store.is_schedule_done(task_key)):
-            # ★ 等指标缓存刷新到"今日"再跑（否则又退化成"今日价 + 昨日技术特征"）。
-            #   等到 SCORE_SNAPSHOT_DEADLINE 就不再等 —— Actions 若失败，保持旧行为。
-            if t < SCORE_SNAPSHOT_DEADLINE:
-                try:
-                    from app.scoring.indicator_cache import get_indicator_cache_status
-                    _ind_newest = (get_indicator_cache_status().get("newest_update") or "")
-                    if not _ind_newest.startswith(now.strftime("%Y-%m-%d")):
-                        print(f"[scheduler] 指标缓存尚未刷新到今日（最新="
-                              f"{_ind_newest or '空'}），评分快照等待中"
-                              f"（最迟 {SCORE_SNAPSHOT_DEADLINE // 60}:"
-                              f"{SCORE_SNAPSHOT_DEADLINE % 60:02d} 强制执行）")
+            need = rules.latest_completed_trading_day()
+            # ① 当日已有快照（通常是日批产出的权威版本）⇒ 本兜底循环只登记完成、**不覆盖**。
+            try:
+                from app.database import db as _db
+                _c = _db.fetch_one("SELECT COUNT(*) AS n FROM ranking_history "
+                                   "WHERE rank_date = %s", (need,)) or {}
+                if int(_c.get("n") or 0) > 0:
+                    store.mark_schedule_done(task_key)
+                    status["last_score_snapshot"] = rules.beijing_now().isoformat()
+                    print(f"[scheduler] {need} 快照已存在（日批产出）⇒ 兜底循环跳过，不覆盖")
+                    await asyncio.sleep(300)
+                    continue
+            except Exception as e:
+                print(f"[scheduler] 检查当日快照失败({e})，按原计划继续评分快照")
+            # ② 等**数据包**就绪（pack 时代唯一真相；DB `indicator_cache` 自 2026-09-07
+            #    定时停用后不再更新，拿它当判据会**恒不通过** —— 2026-10-11 改正）。
+            #    到 SCORE_SNAPSHOT_DEADLINE 仍不就绪 ⇒ 放弃本轮（不写混合快照）。
+            try:
+                from datetime import datetime as _dt
+                import app.pack_source as _ps
+                _got = _ps._parse_pack_date(_ps._pack_date())
+                _need_d = _dt.strptime(need, "%Y-%m-%d").date()
+                if _got is None or _got < _need_d:
+                    if t < SCORE_SNAPSHOT_DEADLINE:
+                        print(f"[scheduler] 数据包尚未就绪（包={_got} < 本轮={_need_d}）"
+                              f"⇒ 评分快照等待中（最迟 {SCORE_SNAPSHOT_DEADLINE // 60}:"
+                              f"{SCORE_SNAPSHOT_DEADLINE % 60:02d} 放弃本轮）")
                         await asyncio.sleep(300)
                         continue
-                except Exception as e:
-                    print(f"[scheduler] 读取指标缓存状态失败({e})，按原计划继续评分快照")
+                    print(f"[scheduler] 已过截止时间且包仍为 {_got}（< {_need_d}）"
+                          f"⇒ **放弃本轮快照**（宁可不写，也不写「今日价+昨日技术特征」）")
+                    await asyncio.sleep(300)
+                    continue
+            except Exception as e:
+                print(f"[scheduler] 读取数据包日期失败({e})，按原计划继续评分快照")
             print("[scheduler] 触发评分排行快照")
             last_err = ""
             for attempt in range(1, 4):   # 最多 3 次，间隔 90s（给行情缓存刷新留时间）

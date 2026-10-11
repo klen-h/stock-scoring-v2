@@ -407,10 +407,23 @@ def task_score_snapshot():
         "total_score": r["total_score"], "signal": r["signal"],
         "rank": i + 1, "dimensions": r.get("dimensions") or {},
         "price": (stocks_map.get(r["code"]) or {}).get("price") or 0,
-        # 主力行为标签（2026-09-09）：供吸筹/出货胜率验证（BucketStats）
-        "mainforce_signal": ((r.get("mainforce") or {}).get("signal")),
+        # 主力行为标签（2026-09-09）：供吸筹/出货胜率验证（BucketStats）。
+        # ★★ 2026-10-11 修（用户："score_snapshot 时序"）：原写的是
+        #   `"mainforce_signal": ((r.get("mainforce") or {}).get("signal"))` —— 而落库函数
+        #   `ranking_history.record_daily_ranking` 读的键是 **`mainforce`**
+        #   （`mf = stock.get("mainforce")`，兼容 dict 与扁平串），**`mainforce_signal`
+        #   这个键无人读** ⇒ 日批（9-11 起成为**线上唯一路径**）写出的 `mainforce_signal`
+        #   列**恒为 NULL** ⇒ BucketStats 的吸筹/出货分桶长期无数据。
+        #   （2026-09-13 修过"无标签覆盖"问题，但只补了 Render 循环 —— 而日批在该循环**之后**
+        #    跑 ⇒ 线上仍是 NULL 版本；本次按同一口径传 `mainforce`（dict 原样，由落库函数
+        #    自己取 signal），与 `scheduler.score_snapshot_loop` 完全一致。）
+        "mainforce": r.get("mainforce"),
     } for i, r in enumerate(data)]
-    n = record_daily_ranking(stocks, False, True)
+    # ★ 2026-10-11：显式传「本轮交易日」（同 `task_sector_snapshot` 的口径）
+    #   —— 否则跨午夜补跑时落库函数会用自然日当键：周六 00:30 跑到 → 守卫判"非交易日"
+    #   ⇒ 周五快照**直接丢失**；跑到周一 00:30 → 写成"键=周一、内容=周五"的错位行。
+    n = record_daily_ranking(stocks, False, True,
+                             date=_batch_trading_day().isoformat())
     return f"评分快照: {n} 条（Top {len(data)}）"
 
 

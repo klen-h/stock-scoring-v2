@@ -79,7 +79,25 @@
 
 ## 回测数据质量
 - 体检 `scripts/audit_backtest_data.py`；源异常日已标 `price_anomalies`（集中 2024，源里存在不可修复）。
-- 已知待修：盘中技术面昨收；`score_single` vs `batch/top` 盘中不同分；`score_snapshot_loop` 15:15 早于数据刷新；gate-watch 全池>20s 建议读日批快照。
+- 已知待修：盘中技术面昨收；`score_single` vs `batch/top` 盘中不同分；gate-watch 全池>20s 建议读日批快照。
+- ✅ **`score_snapshot` 时序**（2026-10-11 修完；原记"`score_snapshot_loop` 15:15 早于数据刷新"）——
+  真相是**修过两次、两次都没修在线上跑的路径上**：
+  ① 15:15→18:00 那次把判据押在 **DB `indicator_cache`**（Actions 16:40/17:40 刷新）上，而
+    **2026-09-07 起该 Actions 定时已停用**（pack 模式下指标读取层优先读**数据包**）⇒ 实测
+    `newest_update=2026-10-07`（**死表**）⇒ 守卫**恒不通过**；
+  ② 且该循环挂在 `_heavy()` 里（`RENDER_READ_ONLY=1` ⇒ 返回 `[]`）⇒ **线上根本不跑**，
+    权威快照由**日批 `task_score_snapshot`** 产出。
+  ⇒ 本次：循环窗口 18:00→**22:30-24:00**（后于包发布 ~20:43）、判据换成**数据包日期**
+  （与 `ensure_pack_fresh()` 同源）、加"**当日已写则不覆盖**"；日批侧本就有 `ensure_pack_fresh`
+  中止守卫 ✓ 无需改。
+  ★★ **顺带挖出并修掉真事故**：`task_score_snapshot` 传 `"mainforce_signal"` 键，而落库函数
+  `record_daily_ranking` 读的是 **`"mainforce"`** ⇒ 日批（线上唯一路径）写出的该列**恒 NULL**
+  （实测 **09-10 起每天 0.0%**，仅 09-09 有 20%）⇒ **BucketStats 吸筹/出货分桶整整一个月零数据**
+  （09-13 那次只修了循环、而日批在循环之后跑 ⇒ 线上仍 NULL）。已按同口径改传 `mainforce`。
+  ★ 另修：`record_daily_ranking` 加 `date=` 参数（原写死 `_today_str()` 自然日 + 守卫看"此刻"）
+  ⇒ 跨午夜补跑会**丢失/错位**当天快照；现由日批传 `_batch_trading_day()`。
+  ★ **教训（可复用）**：`_heavy()` 里的循环在 READ_ONLY 下 = **死代码** ⇒ 任何"修在循环里"的
+  改动都要先确认**线上到底哪条路径在跑**；本次两个 bug 同因（修在不跑的路径上）。
 
 ## 战法回测事实（2026-09-26/27）
 - **样本量看独立信号日**（≥20 为格子激活判据），非笔数（一天几十只高度相关）。
