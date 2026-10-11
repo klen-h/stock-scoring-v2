@@ -215,14 +215,24 @@
               :title="(CONSEC_STYLE[scoreData.mainforce.flow_consec_tier] || {}).tip || ''">
               {{ scoreData.mainforce.flow_consec_cn }}
             </span>
-            <!-- ★ 2026-10-10（P1-2）：龙虎榜「候选信号」（后端 `lhb` = 近 10 个自然日上榜汇总
-                 {n, net, last}）。**纯展示，不进决策链**（不改分/不排序/不进闸门）；
-                 悬停写明预登记结论，防把"上榜"当买点用（同 consec 标签的做法）。 -->
-            <span v-if="scoreData.lhb && scoreData.lhb.n"
-              class="px-2.5 py-0.5 rounded-full text-xs font-bold cursor-help"
-              :class="(scoreData.lhb.net || 0) >= 0 ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'"
-              :title="`近 10 个自然日上榜 ${scoreData.lhb.n} 次（最近 ${scoreData.lhb.last}），榜单口径净买合计 ${formatSignedAmt(scoreData.lhb.net || 0)}。⚠️ 展示口径，不进评分/排序/闸门。预登记检验（2026-10-10）：净买−净卖 T+5 差 +3.84pct、P=0.0000，但本地包覆盖率仅 46.6% ⇒ 降级（证据受限、不判通过）`">
-              龙虎榜 {{ scoreData.lhb.n }} 次 · {{ (scoreData.lhb.net || 0) >= 0 ? '净买' : '净卖' }} {{ formatSignedAmt(scoreData.lhb.net || 0) }}
+            <!-- ★ 2026-10-11：龙虎榜标签升级为「**风险/回避**」形态（用户："先做 1"）——
+                 依据 = 预登记脚本 `lhb_edge_check.py` 的 **v2 定案（PASS）**：样本 7,428 条、
+                 覆盖率 95.4%、四档单调；**信息主要在空头侧**（大额净卖后 T+5 −3.76%、
+                 胜率 32.3% vs 大额净买 +0.53%/44.9%）⇒ 脚本头明写「不宜当买入信号」。
+                 ⇒ 风险标签**只在"最近一次上榜为 大额净卖"时**出现
+                    （十几天前的事件早已过期，不可拿来警示当下）。
+                 ⇒ 文案与依据**一律用后端下发**（`lhb.risk_cn`/`risk_why`/`summary_cn` =
+                    唯一事实源，前端不自行推导方向性结论；同 consec 标签的做法）。
+                 ⚠️ 仍是**纯展示，不进决策链**（不改分/不排序/不进闸门）。 -->
+            <span v-if="scoreData.lhb && scoreData.lhb.risk"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold cursor-help bg-amber-500/20 text-amber-400"
+              :title="scoreData.lhb.risk_why || ''">
+              {{ scoreData.lhb.risk_cn }}
+            </span>
+            <span v-else-if="scoreData.lhb && scoreData.lhb.n"
+              class="px-2.5 py-0.5 rounded-full text-xs font-bold cursor-help bg-white/5 text-muted"
+              :title="(scoreData.lhb.summary_cn || '') + '。展示口径，不进评分/排序/闸门。'">
+              龙虎榜 {{ scoreData.lhb.n }} 次
             </span>
           </div>
         </div>
