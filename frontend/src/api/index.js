@@ -185,6 +185,11 @@ export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank'
 //   注册在前、会吞掉单段静态路径 ⇒ 原先 `/score/gate-watch` 恒返回
 //   `{"error":"未找到股票 gate-watch"}`（200、不抛错）⇒ 页面静默空列表。
 export const getGateWatch = (limit = 80) => http.get('/score/batch/gate-watch', { params: { limit }, timeout: 60000 })
+// ★ 2026-10-11（P1）个股「一页纸诊断」：既有结构化事实的聚合表述（**不是投资建议**）。
+//   ⚠️ 路径是**两段** `/score/diag/{symbol}`：后端 `/{symbol}` 单段通配路由会吞掉单段静态路径
+//   （2026-09-22 实锤，同上）。ai=false 只要事实（零 LLM 成本）；ai=true 追加 AI 解读。
+export const getStockDiag = (symbol, ai = false) =>
+  http.get(`/score/diag/${symbol}`, { params: { ai }, timeout: 45000 })
 // ★ 持仓雷达（2026-09-23）：以**用户持仓为主轴**的状态聚合 —— 评分/主力阶段/闸门就绪/
 //   战法命中/是否在观察池/所属板块被矛盾点名，一次回答「我手里那几只怎么样」。
 //   ⚠️ 路径两段 `/score/batch/*`：后端 `/{symbol}` 单段通配路由会吞掉单段静态路径（9-22 实锤）。

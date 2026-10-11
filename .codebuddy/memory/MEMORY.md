@@ -60,6 +60,13 @@
 - 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`）新增前防重复。
 
 ## 项目已有能力清单（提需求前先查）
+- ★ **个股「一页纸诊断」（P1，2026-10-11）**：`GET /score/diag/{symbol}` +
+  `backend/app/stock_diagnosis.py` + 详情页卡片 —— **把既有结构化事实聚合成可读结论**：
+  事实永远先渲染（评分·盘后口径 / 主力 / 闸门含"缺哪条" / 龙虎榜风险 / 财报现金质量），
+  每条带 `source`+`as_of` 可追溯、缺失**如实披露**；AI 解读**按需点按钮**（12h 缓存、不进轮询），
+  LLM 只复述编号事实，**越界话术（建议买/卖、目标价…）机械拦截并丢弃整段**；
+  后端 `SIGNAL_STATUS` 固定下发各信号"检验状态"（含"龙虎榜 PASS 但仅回避参考"）。
+  ⚠️ 路径必须**两段**（单段会被 `/{symbol}` 通配吞掉）；评分事实是**盘后口径**，与页面实时分不同。
 - 盘中警示 `intraday_alerts.py`（**指数级**：指数急跌/冲高回落/涨跌比/跌停家数）；矛盾扫描 `contradictions/`；LLM 素材 `flash/llm.py`；事件信号 `events/signal.py`。
 - ★ **个股异动判定唯一口径 = `routers/stock.py::_detect_anomaly()`**（2026-10-08 P1 抽出，全市场 `/api/stock/anomalies` 与单票 `detect_single_anomaly()` **共用**，防两处漂移）。8 条规则：急涨≥5% / 急跌≤-5% / 涨停 / 跌停（**用真值限价 `tencent.limit_up|limit_down` 比价** ⇒ ST±5%、创业板科创板±20% 不再漏判；旧口径 `9.8≤涨跌幅≤10.1` 判不出 19.9% 的真涨停） / 高换手>10% / 大振幅>8% / **放量（量比≥3 **且** \|涨跌幅\|≥2，severity=1 防过吵）** / **急拉升·急跳水（5分钟涨速≥3%）**。单票闸门 `detect_single_anomaly(code)` 返回 `should_analyze/tags/speed_5min/data_ts/from_snapshot`，**不调 LLM**。
 - ★★ **静默失效又一例（已修）**：前端 `ScoreRank.vue` 异动标签一直是 `v-for="tag in a.tags"`，而后端只返回 `signals`（结构体）⇒ **`tags` 恒 undefined ⇒ 标签从来没渲染出来过**（`v-for` over undefined 静默，构建/日志无痕）。后端现已同时返回 `tags`（= signames 的 type 数组）。**纪律：前端消费的字段名必须与后端逐一对照**——本项目此类问题已第 3 次（`getMarketOverview` 未 import、`getSectorSnapshot` 未 import、本次 `tags`）。

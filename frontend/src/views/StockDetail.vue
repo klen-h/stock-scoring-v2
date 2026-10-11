@@ -192,6 +192,52 @@
       </div>
 
       <!-- 主力行为（筹码结构 × 资金流组合信号，全池截面回测验证） -->
+      <!-- ★ 2026-10-11（P1）：一页纸诊断 = 既有结构化事实的**聚合表述**（不是新信号、不是投资建议）。
+           纪律：① 事实永远先渲染（AI 只是补充，未配置/失败/越界时自动降级为纯事实）；
+                 ② 每条依据可追溯（标签 + 值 + 来源 + 数据日期）；③ 缺失事实如实披露；
+                 ④ 底部固定展示**各信号的检验状态**与免责声明（后端下发，前端不自行推导）。 -->
+      <div class="mt-4 pt-4 border-t border-border">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold">一页纸诊断
+            <span class="text-xs text-muted font-normal ml-1">既有事实的聚合，不是投资建议</span>
+          </h3>
+          <span v-if="diag.loading" class="text-xs text-muted">加载中…</span>
+          <button v-else-if="!diag.narrative" @click="loadDiag(true)"
+            class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300">
+            生成 AI 解读
+          </button>
+        </div>
+        <div v-if="diag.narrative"
+          class="text-xs leading-relaxed whitespace-pre-wrap bg-white/5 rounded-lg p-3">{{ diag.narrative }}</div>
+        <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
+          {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}
+        </div>
+        <div v-if="diag.facts && diag.facts.length" class="mt-3 space-y-1">
+          <div class="text-xs text-muted">依据（可追溯）</div>
+          <div v-for="(f, i) in diag.facts" :key="i" class="text-xs flex items-baseline gap-2 flex-wrap">
+            <span class="text-muted font-mono w-4 text-right shrink-0">{{ i + 1 }}</span>
+            <span class="px-1 rounded bg-white/5 text-gray-300 shrink-0">{{ f.group }}·{{ f.label }}</span>
+            <span class="text-gray-200">{{ f.value }}</span>
+            <span class="text-muted ml-auto shrink-0 font-mono text-[10px]" :title="f.source + (f.as_of ? ' · ' + f.as_of : '')">
+              {{ f.source }}<template v-if="f.as_of"> · {{ f.as_of }}</template>
+            </span>
+          </div>
+        </div>
+        <div v-if="diag.gaps && diag.gaps.length" class="mt-2 text-xs text-amber-400/80">
+          数据缺失（如实披露）：{{ diag.gaps.join('；') }}
+        </div>
+        <div v-if="diag.signal_status && diag.signal_status.length"
+          class="mt-3 pt-3 border-t border-border space-y-1">
+          <div class="text-xs text-muted">各信号的检验状态（决定它能否进决策链）</div>
+          <div v-for="s in diag.signal_status" :key="s.name" class="text-xs flex items-baseline gap-2">
+            <span class="px-1 rounded shrink-0"
+              :class="s.in_decision ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/5 text-muted'">{{ s.name }}</span>
+            <span class="text-muted">{{ s.status }}</span>
+          </div>
+        </div>
+        <div v-if="diag.disclaimer" class="mt-2 text-xs text-amber-400/70">{{ diag.disclaimer }}</div>
+      </div>
+
       <div v-if="scoreData.mainforce" class="mt-4 pt-4 border-t border-border">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-semibold">主力行为</h3>
@@ -541,7 +587,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
 // ★ 2026-10-10（P1-2）：连续主力净流入分档配色（**共享源**，与榜单页/工作台观察池同一份；
 //   文案用后端下发的 `flow_consec_cn`，前端不拼天数——见 displayMeta 注释）。
@@ -555,6 +601,22 @@ const klineData = ref([])
 const technicalData = ref([])
 const fundamental = ref({ valuation: {}, financial: {} })
 const scoreData = ref({})
+
+// ★ 2026-10-11（P1）一页纸诊断：**事实先到**（ai=false，零 LLM 成本），AI 解读按需点按钮
+//   （LLM 调用有频次/配额成本 ⇒ 绝不进自动轮询）；失败只影响本卡，不影响页面其它部分。
+const diag = ref({ facts: [], gaps: [], signal_status: [], narrative: null,
+                   llm_note: '', disclaimer: '', loading: false, loaded: false })
+async function loadDiag(withAi = false) {
+  diag.value = { ...diag.value, loading: true }
+  try {
+    const r = await getStockDiag(code, withAi)
+    diag.value = { ...(r.data || r), loading: false, loaded: true }
+  } catch (e) {
+    diag.value = { ...diag.value, loading: false, loaded: true,
+                   llm_note: '诊断数据获取失败：' + (e?.response?.data?.detail || e?.message || e) }
+  }
+}
+onMounted(() => loadDiag(false))
 const loaded = ref(false)
 const period = ref('day')
 const activeIndicators = ref(['ma', 'macd', 'vol'])

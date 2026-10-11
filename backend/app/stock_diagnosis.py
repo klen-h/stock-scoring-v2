@@ -1,0 +1,272 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+【文件作用】个股「一页纸诊断」—— 把既有**结构化事实**聚合成可读结论（P1，2026-10-11）
+================================================================================
+【为什么有它】
+  详情页上躺着十几个标签（评分/主力阶段/连续净流入/闸门就绪/龙虎榜风险/财报断层…），
+  但它们是**散的**：用户要自己拼结论。外部开源项目（PanWatch 的"多分析师→决策书"、
+  daily_stock_analysis 的"决策仪表盘"）证明这种"合成呈现"很被需要。
+  本项目已有全部原料 ⇒ 本模块只做**聚合与表述**。
+
+【三条硬约束（本模块存在的意义，别放宽）】
+  C1 **LLM 只做聚合与表述，不产生新信号**：prompt 里只喂本模块取到的**编号事实**，
+     明令不得引入外部知识/不得预测价格/不得给买卖建议；输出**逐句可回溯到事实编号**。
+  C2 **无 LLM 也完整可用**：`facts` 永远返回（页面靠自己就能读）；`narrative` 只是补充。
+     LLM 未配置 / 调用失败 / **输出越界** ⇒ `narrative=None` + `llm_note` 说明原因。
+  C3 **口径一律可追溯**：每条 fact 必带 `source`（表/函数名）与 `as_of`（数据日期），
+     前端把依据列出来 —— 这是与"AI 直接吐结论"的项目最本质的差别。
+  另：**不落库、不改任何状态**（纯读 + LLM 表述）；每次调用按 (code, 事实版本) 进程内缓存。
+
+【事实来源（全部为既有口径，不新增数据面）】
+  · 评分/排名   `ranking_history` 最新一行（盘后口径，as_of = 其 rank_date）
+  · 主力行为    `mainforce_state.load_latest`（阶段/信号/5日净流入/连续净流入分档）
+  · 买入闸门    `trade_gate.evaluate` + `summarize`（**状态展示**，"还差什么"= ok=False 的条件）
+  · 龙虎榜      `mainforce.lhb.recent_summary`（近 10 日上榜 + 大额净卖风险标记）
+  · 财报现金    `mainforce.l3_history.bleeding_streak_map`（连续失血期数；名单外≠安全）
+
+【信号检验状态（一定会随结果返回）】
+  这是本模块的"免责 + 诚实"部分：每条信号**是否经过预测力检验、结论是什么**都写在
+  `SIGNAL_STATUS` 里，前端必须原样展示 —— 避免用户把"回避参考"读成"买入信号"。
+================================================================================
+"""
+import time
+from typing import Dict, List, Optional
+
+# ── 信号检验状态（**唯一事实源**；改这里等于改全站对该信号的表述口径）────────────
+# 每条：(信号名, 检验状态与结论, 是否进决策链)
+SIGNAL_STATUS = (
+    ("评分/排名", "生产口径（三维动态权重 = 技术/资金/基本面，随 market_regime 切换）；"
+                  "榜单分与详情页分已对齐（2026-10-11 统一技术面基准与指标实现）", True),
+    ("主力行为", "生产口径（日批 `mainforce_state`）；出货乘数仅在 `MAINFORCE_MODE=auto` "
+                 "且市况在闸门内时生效（只降不升）", True),
+    ("买入闸门", "**状态展示，不是买入信号**（`trade_gate.summarize` 的定位声明："
+                 "不参与排序、不改总分、不新增信号）", False),
+    ("龙虎榜风险", "预登记 **PASS**（2026-10-11；大额净卖后 T+5 −3.76%、胜率 32.3%，"
+                   "四档单调、P=0.0000）**但次日开盘入场不可交易**（diff 收窄至 +1.44pct、"
+                   "CI 跨 0）⇒ 仅作**回避参考**", False),
+    ("财报断层", "规则口径（净现比/商誉），**未做预测力检验** ⇒ 仅作排查用", False),
+)
+
+# ── LLM 输出越界词表（C1 的机械兜底；命中即**丢弃**整段解读，只留事实）────────────
+# 只拦"会诱导交易动作"的词；不拦"风险/回避/失血"这类描述性词（那是事实的一部分）。
+BANNED_PHRASES = (
+    "建议买入", "建议卖出", "建议加仓", "建议减仓", "可以买", "可以买入", "值得买入",
+    "应该买", "应该卖", "抄底", "满仓", "清仓", "止损位", "目标价", "止盈",
+    "强烈推荐", "推荐买入", "明日涨停", "必涨", "翻倍",
+)
+
+_CACHE: Dict[str, dict] = {}
+_CACHE_TTL = 12 * 3600          # 12h：事实是日频，同一天同一只票不必重复烧 LLM
+
+
+def _f(group: str, label: str, value, source: str, as_of: str = "") -> Dict:
+    """一条 fact（**必须**带 source/as_of —— C3）。"""
+    return {"group": group, "label": label, "value": value,
+            "source": source, "as_of": as_of}
+
+
+def build_facts(code: str) -> Dict:
+    """取该股的**结构化事实**（纯读，不触发重算）。返回 {"facts": [...], "gaps": [...]}。
+
+    `gaps` = 取不到的事实组说明（**诚实披露**：页面据此显示"N/A"，而不是假装没有）。
+    """
+    facts: List[Dict] = []
+    gaps: List[str] = []
+    name = ""
+
+    # ① 评分（**盘后精算榜优先**）—— ⚠️ 两个来源都是**盘后口径**，与详情页顶部的**实时分**
+    #   不是一个东西 ⇒ 标签写「盘后口径」+ 带 as_of，避免用户误以为算错了。
+    #   · `ranking_live` = 日批全量精算榜（池约 top1000，覆盖远好于 Top50 快照）
+    #   · `ranking_history` = 每日 Top50 快照（兜底；绝大多数个股不在其中）
+    try:
+        from app.database import db
+        row, src = None, ""
+        try:
+            d = (db.fetch_one("SELECT MAX(rank_date) AS d FROM ranking_live") or {}).get("d")
+            if d:
+                row = db.fetch_one(
+                    "SELECT rank_date, total_score, signal, rank_pos, name FROM ranking_live "
+                    "WHERE rank_date = %s AND code = %s", (str(d)[:10], code)) or None
+                src = "ranking_live（盘后全量精算榜，池 top1000）"
+        except Exception:
+            row = None
+        if not row:
+            row = db.fetch_one(
+                "SELECT rank_date, total_score, signal, rank_pos, name "
+                "FROM ranking_history WHERE code = %s ORDER BY rank_date DESC LIMIT 1",
+                (code,)) or None
+            src = "ranking_history（盘后 Top50 快照）"
+        if row:
+            name = name or (row.get("name") or "")
+            as_of = str(row.get("rank_date"))[:10]
+            facts.append(_f("评分", "综合评分（**盘后口径**）",
+                            round(float(row.get("total_score") or 0), 1),
+                            f"{src}.total_score", as_of))
+            facts.append(_f("评分", "信号（盘后口径）", row.get("signal") or "-",
+                            f"{src}.signal", as_of))
+            if row.get("rank_pos"):
+                facts.append(_f("评分", "当日在榜名次", row.get("rank_pos"),
+                                f"{src}.rank_pos", as_of))
+        else:
+            gaps.append("评分：既不在 `ranking_live` 精算池、也无 `ranking_history` 快照"
+                        " ⇒ 请以页面顶部的**实时分**为准")
+    except Exception as e:
+        gaps.append(f"评分：读取失败（{str(e)[:40]}）")
+
+    # ② 主力行为
+    try:
+        from app.mainforce.state import load_latest
+        mf = (load_latest([code]) or {}).get(code) or {}
+        if mf:
+            as_of = str(mf.get("date"))[:10]
+            name = name or (mf.get("name") or "")
+            facts.append(_f("主力", "阶段", mf.get("phase_cn") or mf.get("phase") or "-",
+                            "mainforce_state.phase", as_of))
+            facts.append(_f("主力", "信号", mf.get("signal_cn") or mf.get("signal") or "-",
+                            "mainforce_state.signal", as_of))
+            if mf.get("flow5_amt") is not None:
+                facts.append(_f("主力", "5日主力净流入",
+                                f"{float(mf['flow5_amt']):+.1f}%（占流通市值）",
+                                "mainforce_state.flow5_amt", as_of))
+            if mf.get("flow_consec_cn"):
+                facts.append(_f("主力", "连续净流入", mf["flow_consec_cn"],
+                                "mainforce_state.flow_consec（受读取窗口封顶，只报分档）", as_of))
+        else:
+            gaps.append("主力：`mainforce_state` 无该股记录")
+    except Exception as e:
+        gaps.append(f"主力：读取失败（{str(e)[:40]}）")
+
+    # ③ 买入闸门（"还差什么"就用它的 ok=False 条件；口径唯一事实源 trade_gate.summarize）
+    try:
+        from app.mainforce import trade_gate
+        res = trade_gate.evaluate(code)
+        summ = trade_gate.summarize(res)
+        as_of = "当日"
+        facts.append(_f("闸门", "条件就绪", f"{summ.get('ready')}/{summ.get('total')}"
+                                      f"（{summ.get('label')}）",
+                        "trade_gate.summarize.ready", as_of))
+        miss = [x["label"] for x in (summ.get("items") or []) if not x.get("ok")]
+        facts.append(_f("闸门", "还差什么", "、".join(miss) if miss else "无（三条件齐备）",
+                        "trade_gate.summarize.items[ok=False]", as_of))
+        if summ.get("position_label"):
+            facts.append(_f("闸门", "建议仓位档（**状态展示**）", summ["position_label"],
+                            "trade_gate.summarize.position_label", as_of))
+    except Exception as e:
+        gaps.append(f"闸门：读取失败（{str(e)[:40]}）")
+
+    # ④ 龙虎榜（风险标记 = 最近一次上榜为大额净卖）
+    try:
+        from app.mainforce.lhb import recent_summary
+        lhb = recent_summary(code, days=10) or {}
+        if lhb.get("n"):
+            facts.append(_f("龙虎榜", "近 10 日上榜", lhb.get("summary_cn") or f"{lhb['n']} 次",
+                            "lhb_history（净买额/流通市值分档）", lhb.get("last") or ""))
+            if lhb.get("risk"):
+                facts.append(_f("龙虎榜", "风险标记", lhb.get("risk_cn") or "大额净卖",
+                                "lhb.recent_summary.risk（预登记 PASS，仅回避参考）",
+                                lhb.get("last") or ""))
+        else:
+            facts.append(_f("龙虎榜", "近 10 日上榜", "无", "lhb_history", "近 10 自然日"))
+    except Exception as e:
+        gaps.append(f"龙虎榜：读取失败（{str(e)[:40]}）")
+
+    # ⑤ 财报现金质量（名单外 ≠ 安全，措辞必须保守）
+    try:
+        from app.mainforce.l3_history import bleeding_streak_map
+        streak = (bleeding_streak_map() or {}).get(code)
+        if streak:
+            facts.append(_f("财报", "经营现金流连续失血", f"{streak} 期",
+                            "l3_history.bleeding_streak_map（规则口径，未检验）", "最近报告期"))
+        else:
+            facts.append(_f("财报", "经营现金流连续失血", "不在失血名单内",
+                            "l3_history（名单只收'净现比<阈值/OCF 为负'的极端样本）", "最近报告期"))
+    except Exception as e:
+        gaps.append(f"财报：读取失败（{str(e)[:40]}）")
+
+    return {"code": code, "name": name, "facts": facts, "gaps": gaps}
+
+
+def _render_facts(facts: List[Dict]) -> str:
+    return "\n".join(f"[{i+1}] {x['group']}·{x['label']}：{x['value']}"
+                     f"（来源 {x['source']}{'，' + x['as_of'] if x['as_of'] else ''}）"
+                     for i, x in enumerate(facts))
+
+
+def _sanitize(text: str) -> Optional[str]:
+    """C1 机械兜底：命中越界词 ⇒ 返回 None（丢弃整段解读）。"""
+    t = (text or "").strip()
+    if not t:
+        return None
+    for w in BANNED_PHRASES:
+        if w in t:
+            return None
+    return t
+
+
+def diagnose(code: str, use_llm: bool = True, refresh: bool = False) -> Dict:
+    """一页纸诊断：`facts`（永远有）+ `narrative`（可选的 LLM 聚合表述）。
+
+    · LLM 未配置 / 失败 / **输出越界** ⇒ narrative=None，`llm_note` 说明原因（C2）
+    · 缓存键含**事实指纹**（条数+日期），事实一变自动失效 ⇒ 不会拿旧话术配新数据
+    """
+    base = build_facts(code)
+    facts = base["facts"]
+    fingerprint = f"{len(facts)}|{facts[0]['as_of'] if facts else ''}|{facts[-1]['as_of'] if facts else ''}"
+    key = f"{code}|{fingerprint}"
+    out = {"code": code, "name": base.get("name") or "",
+           "facts": facts, "gaps": base["gaps"],
+           "signal_status": [{"name": n, "status": s, "in_decision": d}
+                             for n, s, d in SIGNAL_STATUS],
+           "disclaimer": "本卡为**既有结构化事实的聚合表述**，不是投资建议；"
+                         "每条结论的出处见「依据」；未通过预测力检验的信号只作参考，不进决策链。",
+           "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+           "narrative": None, "llm": "off", "llm_note": ""}
+
+    if not use_llm:
+        out["llm_note"] = "未请求 AI 解读（use_llm=false）"
+        return out
+
+    cache = _CACHE.get(key)
+    if cache and not refresh and time.time() - cache["ts"] < _CACHE_TTL:
+        out.update({"narrative": cache["narrative"], "llm": cache["llm"],
+                    "llm_note": cache["llm_note"] + "（缓存）"})
+        return out
+
+    try:
+        from app.flash.llm import call_llm, llm_configured
+        if not llm_configured():
+            out["llm_note"] = "LLM 未配置 ⇒ 仅展示事实与依据"
+            return out
+        system = (
+            "你是 A 股**状态汇报员**。规则（违反即视为失败）：\n"
+            "1. **只能复述**下面给出的编号事实，不得引入任何外部知识、不得补充数字；\n"
+            "2. **不得预测价格**、不得给买卖建议、不得出现「建议买/卖、可以买、抄底、"
+            "目标价、止损位」等话术；\n"
+            "3. 严格输出三段，标题固定为：**现状** / **风险** / **还差什么**；\n"
+            "4. 每段 1~3 句；**每句末尾用 [编号] 标注依据的事实编号**；\n"
+            "5. 事实里没有的（如业绩预期、行业消息）一律不得提及；\n"
+            "6. 事实中标注为「状态展示」「仅回避参考」「未检验」的信号，措辞必须保持同等谨慎。"
+        )
+        user = (f"标的：{base.get('name') or ''} {code}\n"
+                f"—— 编号事实 ——\n{_render_facts(facts)}\n"
+                f"—— 缺失事实（如实说明，不要臆测）——\n"
+                + ("\n".join(base["gaps"]) if base["gaps"] else "无")
+                + "\n—— 各信号的检验状态（措辞需保持一致）——\n"
+                + "\n".join(f"· {n}：{s}" for n, s, _ in SIGNAL_STATUS))
+        text = call_llm(system, user, temperature=0.2, tier="fast")
+        clean = _sanitize(text)
+        if clean is None:
+            out["llm"] = "rejected"
+            out["llm_note"] = ("AI 输出含越界话术（买卖建议类词）或为空 ⇒ 已丢弃整段解读，"
+                               "仅展示事实与依据（C1 机械兜底）")
+            _CACHE[key] = {"ts": time.time(), "narrative": None, "llm": "rejected",
+                           "llm_note": out["llm_note"]}
+            return out
+        out.update({"narrative": clean, "llm": "ok"})
+        _CACHE[key] = {"ts": time.time(), "narrative": clean, "llm": "ok", "llm_note": ""}
+        return out
+    except Exception as e:
+        out["llm"] = "error"
+        out["llm_note"] = f"AI 解读生成失败（{str(e)[:60]}）⇒ 仅展示事实与依据"
+        return out

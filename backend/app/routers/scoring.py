@@ -1133,6 +1133,28 @@ def score_single(symbol: str):
     }
 
 
+# ★★ 2026-10-11（P1）：个股「一页纸诊断」—— 把既有结构化事实聚合成可读结论。
+#   ⚠️ 路径**必须两段**（`/diag/{symbol}`）：本文件早先注册的 `/{symbol}` 单段通配路由会吞掉
+#   单段静态路径（2026-09-22 观察池 `/score/gate-watch` 就被吞成 200 + {"error": "未找到股票"}，
+#   前端静默空列表）。两段路径与 `/{symbol}` 形状不同，天然不冲突。
+@router.get("/diag/{symbol}")
+def score_diag(symbol: str, ai: bool = True, refresh: bool = False):
+    """个股一页纸诊断（P1）。
+
+    返回 {code, name, facts[], gaps[], signal_status[], disclaimer,
+          narrative, llm, llm_note, generated_at}
+      · `facts` **永远返回**（标签 + 值 + **来源** + 数据日期 ⇒ 可追溯）；
+      · `narrative` = LLM 对**编号事实**的聚合表述（**不产生新信号**）；LLM 未配置 / 失败 /
+        **输出含买卖话术（越界）** ⇒ `null`（`llm_note` 说明原因，页面降级为纯事实）；
+      · 只读、不落库、不触发重算；同 (code, 事实指纹) 12h 进程内缓存。
+    参数：`ai=false` 只取事实（前端"先渲染事实、AI 按需点按钮"用）；`refresh=true` 绕缓存。
+    """
+    if "-" in symbol or "_" in symbol:
+        raise HTTPException(status_code=404, detail=f"未知端点: {symbol}")
+    from app.stock_diagnosis import diagnose
+    return diagnose(symbol, use_llm=bool(ai), refresh=bool(refresh))
+
+
 def _latest_bar_date(bars) -> Optional[str]:
     """原始 K 线最后一根的日期（判断日批表新鲜度）。"""
     try:
