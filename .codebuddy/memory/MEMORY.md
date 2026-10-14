@@ -124,6 +124,16 @@
   （陈旧告警也已改用 data_date 比较——原先用 saved_at 会把凌晨写的昨日快照误判成新鲜）。
   ⚠️ 同类残留（未修）：`market_emotion_daily.date` 也用"写入当天"而非"数据所属交易日"
   （实测 10-14 行装的是 10-12 收盘）⇒ 对账页/日报消费它时有错位风险。
+- ★★ **两源日线口径（2026-10-15 实测，形态/研究脚本用）**：`backtest_prices.close` 与
+  `data/zzshare_daily.db.close` **逐日完全一致（原始价）**（600777 重叠 688 日 / 600993 722 日）
+  ⇒ 可互认，但**只能取其一、不混**（复权/字段不同）。★ zzshare `daily.factor` **不是前复权乘数**
+  （600777 close 2.59×factor 26.37=68.3，与现价 4.35 离谱）⇒ 「close×factor」的旧说法
+  （shrink_rebound_* 注释）**不成立**。算收益统一用**原始收盘比**（除权跳空未复权，已知简化），
+  需要除权后单日收益用 zzshare 自带 `pct_chg`。`backtest_prices` 无 pct_chg/is_st/涨跌停列；
+  `zzshare` 全市场 2005-01-04~2026-09-24、backtest_prices 989 只 2023-09~昨日（每日更新）。
+- ★ **形态研究工具**：`scripts/pattern_launch_check.py`（缩量调整→放量启动，胜率验证；
+  可配参数/单股/全市场/样本闸+bootstrap+基准/MD+自包含 SVG HTML，落 `backend/backtest_reports/`）。
+  500 只默认参数实测：胜率 41%、超额 +0.91pp、P=0.105 ⇒ **不构成上涨预测**（描述性研究）。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
