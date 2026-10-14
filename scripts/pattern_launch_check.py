@@ -115,6 +115,8 @@ def parse_args(argv=None):
 
     out = p.add_argument_group("输出")
     out.add_argument("--no-html", action="store_true")
+    out.add_argument("--max-paths", type=int, default=400,
+                     help="事件研究图最多画多少条样本路径（蓄水池抽样；防全量时 HTML 膨胀）")
     out.add_argument("--selftest", action="store_true")
     return p.parse_args(argv)
 
@@ -624,7 +626,7 @@ def run_single(cfg, code, loader):
             ev.update({"vol_ratio": s["vol_ratio"], "pullback_ret": s["pullback_ret"],
                        "launch_pct": s["launch_pct"], "surge": s["surge"]})
             sigs_detail.append(ev)
-    return bars, sigs_detail
+    return bars, sigs, sigs_detail        # ★ 同时返回原始 sigs，避免调用方重复扫描
 
 
 def main(argv=None):
@@ -683,12 +685,14 @@ def main(argv=None):
     all_dates = []
     base_rets_all = []
     bars_single = None
+    rng_p = random.Random(cfg["seed"])     # 图表路径抽样（蓄水池）
+    path_seen = 0
 
     for code in codes:
         r = run_single(cfg, code, loader)
         if not r:
             continue
-        bars, sigs = r
+        bars, sigs_raw, sigs = r
         if code == args.code:
             bars_single = bars
         if sigs:
@@ -696,8 +700,9 @@ def main(argv=None):
             for s in sigs:
                 all_rets.append(s["ret"])
                 all_dates.append(s["date"])
-            # 事件研究路径（归一化到 T 日）
-            for s in scan_stock(bars, cfg):
+            # 事件研究路径（归一化到 T 日）—— ★ 蓄水池抽样：全量信号上万条时
+            #   逐条画 SVG 会让 HTML 膨胀到几十 MB 且极慢 ⇒ 只保留 max_paths 条
+            for s in sigs_raw:
                 t = s["idx"]
                 x0 = -cfg["pullback_days"]
                 seg = bars[t + x0:t + fwd + 1]
@@ -706,7 +711,13 @@ def main(argv=None):
                 base = bars[t]["close"]
                 xs = list(range(x0, fwd + 1))[:len(seg)]
                 ys = [b["close"] / base for b in seg][:len(xs)]
-                all_paths.append((xs, ys))
+                path_seen += 1
+                if len(all_paths) < cfg["max_paths"]:
+                    all_paths.append((xs, ys))
+                else:
+                    j = rng_p.randrange(path_seen)
+                    if j < cfg["max_paths"]:
+                        all_paths[j] = (xs, ys)
         # 基准：self（单股）或 market（全市场，抽样）
         if cfg["baseline"] == "self" and not args.all:
             base_rets_all.extend(unconditional_returns(bars, fwd, cfg["entry"], limit=1500))
