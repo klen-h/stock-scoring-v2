@@ -702,9 +702,13 @@ def main(argv=None):
     rng_p = random.Random(cfg["seed"])     # 图表路径抽样（蓄水池）
     path_seen = 0
 
-    for code in codes:
+    t_start = time.time()
+    for i_code, code in enumerate(codes, 1):
         r = run_single(cfg, code, loader)
         if not r:
+            if i_code % 500 == 0:      # ★ 进度（全量要 20 分钟，没有进度无法判断死活）
+                print(f"  [progress] {i_code}/{len(codes)} ｜ 信号 {len(all_rets)} ｜ "
+                      f"{time.time() - t_start:.0f}s", flush=True)
             continue
         bars, sigs_raw, sigs = r
         if code == args.code:
@@ -741,6 +745,9 @@ def main(argv=None):
         elif cfg["baseline"] == "market":
             base_rets_all.extend(unconditional_returns(
                 bars, fwd, cfg["entry"], limit=4, min_idx=_min_idx))
+        if i_code % 500 == 0:          # ★ 进度（flush 保证日志能实时看到）
+            print(f"  [progress] {i_code}/{len(codes)} ｜ 信号 {len(all_rets)} ｜ "
+                  f"{time.time() - t_start:.0f}s", flush=True)
 
     print(f"[done] 信号样本 {len(all_rets)} 个（{len(set(all_dates))} 个独立信号日）")
     if all_dates:
