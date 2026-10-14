@@ -214,7 +214,12 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
     key TEXT PRIMARY KEY,
     stocks_json TEXT NOT NULL,
     valid_codes_json TEXT NOT NULL,
-    saved_at TEXT NOT NULL
+    saved_at TEXT NOT NULL,
+    -- ★ 2026-10-14：**数据所属交易日**（YYYY-MM-DD）。saved_at 是"写入时刻"，
+    --   而快照也可能在凌晨/夜间被写（冷启动 bootstrap：内容 = 上一交易日收盘）
+    --   ⇒ 只标 saved_at 会把"昨天的数据"显示成"今天凌晨的行情"（用户报障）。
+    --   老行该列为 NULL ⇒ 读取侧回退 saved_at[:10]。
+    data_date TEXT
 );
 
 -- ── 用户表 ──

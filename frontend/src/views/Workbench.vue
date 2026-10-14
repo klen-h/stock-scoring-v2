@@ -1573,7 +1573,9 @@
             <span :class="radarErr ? 'text-red-400' : radarItems.length ? 'text-emerald-400' : 'text-amber-400'">
               持仓结算 {{ radarErr ? '失败' : (radarItems.length ? '✓' : '加载中') }}</span>
             <span :class="emotion ? 'text-emerald-400' : 'text-amber-400'">
-              盘面定稿 {{ emotion ? '✓' : '未就绪' }}<template v-if="ovStyle?.as_of">（{{ ovStyle.as_of }}<template
+              盘面定稿 {{ emotion ? '✓' : '未就绪' }}<template
+                v-if="ovStyle?.from_snapshot && ovStyle?.data_date">（数据 {{ ovStyle.data_date }} · <b>快照</b>）</template><template
+                v-else-if="ovStyle?.as_of">（{{ ovStyle.as_of }}<template
                 v-if="ovStyle.from_snapshot"> · <b>快照</b></template>）</template></span>
             <span :class="topErr ? 'text-red-400' : topItems.length ? 'text-emerald-400' : 'text-amber-400'">
               评分榜 {{ topErr ? '失败' : (topItems.length ? '✓' : '加载中') }}</span>
@@ -1670,14 +1672,20 @@
             <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
               <div class="text-sm font-semibold">今日盘面定稿
                 <span class="text-[10px] text-muted font-normal">（收盘口径<template
-                  v-if="ovStyle?.as_of"> · 行情 {{ ovStyle.as_of }}</template>）</span></div>
+                  v-if="ovStyle?.from_snapshot && ovStyle?.data_date"> · 数据 {{ ovStyle.data_date }} 收盘</template><template
+                  v-else-if="ovStyle?.as_of"> · 行情 {{ ovStyle.as_of }}</template>）</span></div>
               <!-- ★ 2026-09-25 加固（用户问"15:00 真能拿到吗"）：**数据时刻必须取"数据自身时刻"**
                    `ovStyle.as_of`（后端来自 `_cache['data_ts']`），而不是 `emotion.as_of`
                    （那只是**计算时刻**）—— 两者在"进程重启后从收盘快照恢复"时会差一整天，
-                   用错就是**谎报新鲜度**（后端注释里专门警告过这一点）。 -->
+                   用错就是**谎报新鲜度**（后端注释里专门警告过这一点）。
+                   ★★ 2026-10-14（用户报"今天的数据怎么用了昨天的"）：`as_of`（写入/抓取时刻）
+                   仍不足以表达"数据是哪天的"—— 快照可能在**凌晨/夜间**被写（冷启动 bootstrap，
+                   内容 = 上一交易日收盘）⇒ 显示成"10-14 04:32"会被读成"今天的行情"。
+                   ⇒ 快照路径改用后端下发的 **`ovStyle.data_date`（数据所属交易日）**，
+                     如"数据 10-13 收盘"，与 ⚠ 徽章互为印证。 -->
               <span v-if="ovStyle?.from_snapshot" class="text-[10px] text-amber-400"
-                    title="行情缓存来自数据库收盘快照（进程刚重启或非交易时段不重新抓取）⇒ 这是**上一交易日**的数据，不是今天的">
-                ⚠ 来自收盘快照（非实时）</span>
+                    :title="`行情缓存来自数据库收盘快照（进程刚重启或非交易时段不重新抓取）⇒ 数据是 ${ovStyle?.data_date || '上一交易日'} 收盘，不是今天的`">
+                ⚠ 来自收盘快照（非实时{{ ovStyle?.data_date ? ' · 数据 ' + ovStyle.data_date : '' }}）</span>
               <span v-else-if="emotion && emotion.trading_day === false"
                     class="text-[10px] text-amber-400">⚠ 非交易日（为最近交易日快照）</span>
             </div>

@@ -242,6 +242,11 @@ def _size_style(stocks: Dict, index_pct: Optional[float]) -> Dict:
             #   `data_ts` 本身是真实 epoch（实时=`time.time()`；快照=`saved_at` 解析），故显式 +08:00。
             "as_of": (datetime.fromtimestamp(data_ts, tz=timezone(timedelta(hours=8)))
                       .strftime("%m-%d %H:%M") if data_ts else None),
+            # ★★ 2026-10-14（用户报"今日盘面定稿显示昨天的数据"）：**数据所属交易日**。
+            #   展示层必须优先用它 —— `as_of` 在快照路径下是**写入时刻**，而快照可能在
+            #   凌晨/夜间被写（内容 = 上一交易日收盘）⇒ 显示成"10-14 04:32"会让人误以为
+            #   是今天的行情。前端在 from_snapshot 时展示 data_date（"数据 10-13 收盘"）。
+            "data_date": _cache.get("data_date"),
             # True = 数据来自收盘快照（盘后/周末）⇒ 前端应标注"上一交易日"，别当成实时
             "from_snapshot": bool(_cache.get("from_snapshot")),
         }

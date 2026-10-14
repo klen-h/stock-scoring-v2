@@ -114,6 +114,16 @@
   · ★ 陷阱复现：`live_ranking._build_pool` 注释自称"复刻 score_top 的池子"——**"复刻"就是漂移源**；
     且快照(北京 22:43 写)**永远赶不上**当日 Actions 精算榜(北京次日凌晨) ⇒ 回退路径每天都在走。
     ⚠️ `_pool_quality_filter` 只管**批量池**：详情页 score_single 不经过它。
+- ★★ **行情快照的时间语义（2026-10-14 修复，用户报"今日盘面定稿显示昨天的数据"）**：
+  `market_snapshot` 三列各司其职 —— `saved_at` = **写入时刻**（快照会在**凌晨/夜间**被写：
+  冷启动 bootstrap 盘后重启且快照不可用 ⇒ 全量刷新【拉到的是上一交易日收盘】+ 保存）；
+  `data_date` = **数据所属交易日**（★ 展示层唯一可用口径）；`market_snapshot.stocks_json` 内容
+  才是数据本体。`tencent._cache` 同构：`last_update`（缓存填充）≠ `data_ts`（抓取/写入时刻）
+  ≠ **`data_date`（数据日，前端"盘面定稿"用它）**。
+  ⇒ 铁律：**向用户展示"行情是哪天的"只能用 `data_date`**；`from_snapshot=True` 时还要带 ⚠ 徽章
+  （陈旧告警也已改用 data_date 比较——原先用 saved_at 会把凌晨写的昨日快照误判成新鲜）。
+  ⚠️ 同类残留（未修）：`market_emotion_daily.date` 也用"写入当天"而非"数据所属交易日"
+  （实测 10-14 行装的是 10-12 收盘）⇒ 对账页/日报消费它时有错位风险。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。

@@ -140,6 +140,7 @@ for _prefix, _code in _ALL_CODES:
 #   多个 HTTP 请求同时进来时，防止它们同时触发刷新（会重复请求、浪费资源）。
 #   类似前端"防抖/节流"，但这里是为了线程安全。
 _cache = {"stocks": {}, "last_update": 0, "data_ts": 0.0, "from_snapshot": False,
+          "data_date": None,          # ★ 2026-10-14：**数据所属交易日**（YYYY-MM-DD）
           "lock": threading.Lock()}
 
 
@@ -426,6 +427,7 @@ def refresh_all_stocks(force: bool = False):
         # ★ 实时抓取 ⇒ 数据时刻 = 抓取时刻；且不再是快照数据（见 _cache 结构注释）
         _cache["data_ts"] = _cache["last_update"]
         _cache["from_snapshot"] = False
+        _cache["data_date"] = _price_date_now()      # ★ 数据所属交易日（展示层用）
         # ★★ 2026-10-08（P0）：搭车记录"涨速采样点"（腾讯快照无涨速字段，只能自算）
         _record_speed(stocks)
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {mode}刷新完成: {len(stocks)} 只股票")
@@ -509,6 +511,24 @@ def speed_pct(code: str, minutes: int = 5):
 #   方案 C：快照同时存 _valid_codes，重启后增量刷新（~4000 只）而非全量（12000 只）。
 # 存储用数据库（跨 Render 部署持久；文件会被清空）。
 
+def _price_date_now() -> str:
+    """行情数据**所属交易日**（YYYY-MM-DD）——与 `routers/market._price_date()` 同规则：
+    交易日且已过 9:15 ⇒ 今天；否则 ⇒ 最近已完成交易日（凌晨/盘前拿到的就是它的收盘价）。
+
+    ★ 2026-10-14（用户报"今日盘面定稿显示昨天的数据"）：`data_ts`（抓取/写入时刻）不足以
+      表达"数据是哪天的" —— 凌晨 bootstrap 写的快照 saved_at 是凌晨，内容却是上一交易日
+      收盘 ⇒ 展示层必须用本函数的返回值（快照落库时一并存入 `market_snapshot.data_date`）。
+    """
+    try:
+        from app.flash import rules as _rules
+        now = _rules.beijing_now()
+        if _rules.is_trading_day(now) and (now.hour * 100 + now.minute) >= 915:
+            return now.strftime("%Y-%m-%d")
+        return str(_rules.latest_completed_trading_day(now))[:10]
+    except Exception:
+        return ""
+
+
 def save_market_snapshot() -> bool:
     """把当前内存缓存的全量行情 + _valid_codes 存为收盘快照（调度器收盘后调用）。"""
     try:
@@ -520,7 +540,9 @@ def save_market_snapshot() -> bool:
     if not stocks:
         print("[snapshot] 缓存为空，跳过快照保存")
         return False
-    ok = store.save_market_snapshot(stocks, _valid_codes)
+    # ★ 2026-10-14：一并落"数据所属交易日"（缓存里已有则用它，避免与展示口径不一致）
+    ok = store.save_market_snapshot(stocks, _valid_codes,
+                                    data_date=_cache.get("data_date") or _price_date_now())
     if ok:
         print(f"[snapshot] 收盘快照已保存: {len(stocks)} 只股票 + {len(_valid_codes)} 个有效代码")
     return ok
@@ -556,24 +578,32 @@ def restore_market_snapshot(restore_stocks: bool = True) -> bool:
             #   消费方（如大小盘风格的 as_of）用 data_ts + from_snapshot 才能诚实标注。
             _cache["data_ts"] = _parse_ts(snap.get("saved_at"))
             _cache["from_snapshot"] = True
+            # ★★ 2026-10-14（用户报"今日盘面定稿显示昨天的数据"）：另记**数据所属交易日**——
+            #   saved_at 是写入时刻（快照可能在凌晨/夜间被写，内容却是上一交易日收盘），
+            #   只标 saved_at 会把"昨天的数据"显示成"今天 04:32 的行情"。
+            #   老快照（无该列）回退 saved_at 的日期部分。
+            _cache["data_date"] = (str(snap.get("data_date") or "")[:10]
+                                   or str(snap.get("saved_at") or "")[:10] or None)
         print(f"[snapshot] 已从收盘快照恢复行情: {len(snap['stocks'])} 只 "
-              f"(快照时间 {snap.get('saved_at')})")
+              f"(快照时间 {snap.get('saved_at')} / 数据日 "
+              f"{_cache.get('data_date') or '未知'})")
         # ★ 2026-09-29：**陈旧快照告警**（真事故）：线上从数据包恢复了 **09-24** 的收盘快照，
         #   而 09-28 整个交易日的盘中刷新都没成功 ⇒ 行情缓存两天不动，interface/卡片显示的
         #   "现价/今日/持仓盈亏"全是 09-24 的，而时点用的是"请求时刻"⇒ 用户看不出是旧数据。
-        #   这里把「快照日 vs 期望日」直接打进日志（启动时唯一能自证的地方）。
+        #   这里把「数据日 vs 期望日」直接打进日志（启动时唯一能自证的地方）。
+        #   ★ 2026-10-14 修正：比较对象从 saved_at（写入时刻）改为 **data_date（数据所属
+        #     交易日）** —— 用写入时刻会把"凌晨写的昨日快照"误判成新鲜（真事故的隐藏形态）。
         #   期望口径：今天（交易日 9:15 后）或最近已完成交易日 —— 与 `_price_date()` 一致。
         try:
             from app.flash.rules import (beijing_now as _bj_now, is_trading_day as _is_td,
                                          latest_completed_trading_day as _lctd)
-            _raw = str(snap.get("saved_at") or "")
-            _day = _raw[:10] or "?"
+            _day = str(_cache.get("data_date") or str(snap.get("saved_at") or "")[:10] or "?")
             _now = _bj_now()
             _expect = (_now.strftime("%Y-%m-%d")
                        if (_is_td(_now) and (_now.hour, _now.minute) >= (9, 15))
                        else str(_lctd())[:10])
             if _day != _expect:
-                print(f"[snapshot] [WARN] 恢复的快照**不是最近交易日**: 快照 {_day} / "
+                print(f"[snapshot] [WARN] 恢复的快照**不是最近交易日**: 数据日 {_day} / "
                       f"期望 {_expect} ⇒ 行情已陈旧，等盘中刷新覆盖；"
                       f"若长时间不变，查 stock_cache_refresh_loop 的失败日志")
         except Exception:

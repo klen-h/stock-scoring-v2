@@ -570,19 +570,52 @@ def is_schedule_done(task: str, date_str: str = None) -> bool:
 #  全市场行情收盘快照（盘后/周末免刷新 + _valid_codes 持久化）
 # ================================================================
 
-def save_market_snapshot(stocks: dict, valid_codes: list) -> bool:
+def _price_date_now() -> str:
+    """行情数据**所属交易日** P（YYYY-MM-DD）。与 `routers/market._price_date()` 同规则：
+    交易日且已过 9:15 ⇒ 今天（竞价/盘中/盘后价格都是今天的）；否则 ⇒ `latest_completed_trading_day`
+    （此时手里的价格本就是"最近已完成交易日"的收盘 —— 凌晨写的快照正属此列）。
+    """
+    try:
+        from app.flash import rules as _rules
+        now = _rules.beijing_now()
+        if _rules.is_trading_day(now) and (now.hour * 100 + now.minute) >= 915:
+            return now.strftime("%Y-%m-%d")
+        return str(_rules.latest_completed_trading_day(now))[:10]
+    except Exception:
+        return ""
+
+
+def _ensure_data_date_col() -> None:
+    """幂等补列（老库 + 双后端各写一次；失败静默——读取侧有 saved_at 回退）。"""
+    for sql in ("ALTER TABLE market_snapshot ADD COLUMN IF NOT EXISTS data_date TEXT",
+                "ALTER TABLE market_snapshot ADD COLUMN data_date TEXT"):
+        try:
+            db.execute(sql)
+            return
+        except Exception:
+            continue
+
+
+def save_market_snapshot(stocks: dict, valid_codes: list,
+                         data_date: str = None) -> bool:
     """保存全市场行情收盘快照（单行覆盖，key='latest'）。
     stocks: _cache['stocks'] 全量字典；valid_codes: [(prefix, code), ...]。
+    data_date: ★ 2026-10-14 新增 —— **数据所属交易日**（缺省时自行推断）。
     成功返回 True。
     """
     if not stocks:
         return False
+    _ensure_data_date_col()
     try:
         db.upsert("market_snapshot", {
             "key": "latest",
             "stocks_json": json.dumps(stocks, ensure_ascii=False),
             "valid_codes_json": json.dumps(valid_codes, ensure_ascii=False),
             "saved_at": _now_iso(),
+            # ★ 2026-10-14（用户报"今日盘面定稿显示昨天的数据"）：saved_at 是**写入时刻**，
+            #   而快照也会在凌晨/夜间被写（冷启动 bootstrap：内容 = 上一交易日收盘）
+            #   ⇒ 必须另记数据所属交易日，供展示层标注"数据 10-13 收盘"。
+            "data_date": (data_date or _price_date_now() or None),
         }, conflict_columns=["key"])
         _SNAP_CACHE["ts"] = 0.0        # ★ 写入即失效读缓存（见 load_market_snapshot）
         # ★ 审查 P2-⑲：联动失效浮筹缓存（flow._FS_CACHE 同读这一行，TTL 30min
@@ -630,18 +663,24 @@ def _snap_disk_load(saved_at):
             return None
         conn = sqlite3.connect(_SNAP_DISK_PATH)
         try:
-            r = conn.execute("SELECT saved_at, stocks_json, valid_codes_json, ts "
-                             "FROM snap LIMIT 1").fetchone()
+            # ★ 2026-10-14：本机缓存由上方 `ALTER TABLE` 幂等补列；老缓存文件只有 4 列
+            #   ⇒ 用显式列名 + 兜底 SELECT 保证两代格式都能读（data_date 缺则 None）。
+            try:
+                conn.execute("ALTER TABLE snap ADD COLUMN data_date TEXT")
+            except Exception:
+                pass
+            r = conn.execute("SELECT saved_at, stocks_json, valid_codes_json, ts, "
+                             "data_date FROM snap LIMIT 1").fetchone()
             if not r:
                 return None
-            cur_saved, sj, vj, ts = r
+            cur_saved, sj, vj, ts, dd = r
             # 两边都转 str 比较：PG 可能回 datetime，SQLite 存的是 ISO 字符串
             if str(cur_saved) != str(saved_at):
                 return None
             if time.time() - float(ts) > _SNAP_DISK_TTL:
                 return None
             return {"stocks": json.loads(sj), "valid_codes": json.loads(vj),
-                    "saved_at": cur_saved}
+                    "saved_at": cur_saved, "data_date": dd}
         finally:
             conn.close()
     except Exception:
@@ -656,13 +695,19 @@ def _snap_disk_save(out: dict) -> None:
         conn = sqlite3.connect(tmp)
         try:
             conn.execute("CREATE TABLE IF NOT EXISTS snap("
-                         "saved_at TEXT, stocks_json TEXT, valid_codes_json TEXT, ts REAL)")
+                         "saved_at TEXT, stocks_json TEXT, valid_codes_json TEXT, ts REAL, "
+                         "data_date TEXT)")
+            try:      # 老 tmp 文件可能只有 4 列
+                conn.execute("ALTER TABLE snap ADD COLUMN data_date TEXT")
+            except Exception:
+                pass
             conn.execute("DELETE FROM snap")
-            conn.execute("INSERT INTO snap VALUES (?,?,?,?)",
+            conn.execute("INSERT INTO snap (saved_at, stocks_json, valid_codes_json, ts, "
+                         "data_date) VALUES (?,?,?,?,?)",
                          (str(out.get("saved_at") or ""),
                           json.dumps(out.get("stocks"), ensure_ascii=False),
                           json.dumps(out.get("valid_codes"), ensure_ascii=False),
-                          time.time()))
+                          time.time(), out.get("data_date")))
             conn.commit()
         finally:
             conn.close()
@@ -672,21 +717,31 @@ def _snap_disk_save(out: dict) -> None:
 
 
 def load_market_snapshot() -> dict:
-    """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at}；无则空 dict。
+    """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at, data_date}；无则空 dict。
 
     ★ 2026-09-18：三层 —— 进程内存（300s）→ **本机 SQLite（跨进程，saved_at 版本门控）**
       → 才回源。见上方 `_SNAP_DISK_*` 注释（这是「每重启一次就偷 336KB」的根治点）。
+    ★ 2026-10-14：多返回 `data_date`（**数据所属交易日**）—— 展示层要用它，不能用
+      saved_at（写入时刻；凌晨写的快照会让"昨天的数据"看起来像今天）。
     """
     if _SNAP_CACHE["data"] and time.time() - _SNAP_CACHE["ts"] <= _SNAP_TTL:
         return copy.deepcopy(_SNAP_CACHE["data"])
-    # ① 版本探测：**只取 saved_at 一列**（单行几十字节），不做整行读
+    # ① 版本探测：**只取两个小列**（单行几十字节），不做整行读
     saved_at = None
+    data_date = None
     try:
-        row = db.fetch_one("SELECT saved_at FROM market_snapshot WHERE key = %s",
-                           ("latest",))
+        row = db.fetch_one("SELECT saved_at, data_date FROM market_snapshot "
+                           "WHERE key = %s", ("latest",))
         saved_at = (row or {}).get("saved_at")
+        data_date = (row or {}).get("data_date")
     except Exception as e:
-        print(f"[store] 行情快照版本探测失败，退回整行读: {e}")
+        # 老库可能还没 data_date 列（迁移未跑）⇒ 退回只探 saved_at，不阻塞
+        try:
+            row = db.fetch_one("SELECT saved_at FROM market_snapshot WHERE key = %s",
+                               ("latest",))
+            saved_at = (row or {}).get("saved_at")
+        except Exception as e2:
+            print(f"[store] 行情快照版本探测失败，退回整行读: {e2}")
     # ② 本机持久缓存命中 → 零大流量
     if saved_at is not None:
         disk = _snap_disk_load(saved_at)
@@ -695,8 +750,13 @@ def load_market_snapshot() -> dict:
             _SNAP_CACHE["data"] = disk
             return copy.deepcopy(disk)
     # ③ 回源（本轮唯一一次整行读）
-    row = db.fetch_one("SELECT stocks_json, valid_codes_json, saved_at "
-                       "FROM market_snapshot WHERE key = %s", ("latest",))
+    row = None
+    try:
+        row = db.fetch_one("SELECT stocks_json, valid_codes_json, saved_at, data_date "
+                           "FROM market_snapshot WHERE key = %s", ("latest",))
+    except Exception:
+        row = db.fetch_one("SELECT stocks_json, valid_codes_json, saved_at "
+                           "FROM market_snapshot WHERE key = %s", ("latest",))
     if not row:
         return {}
     try:
@@ -704,6 +764,7 @@ def load_market_snapshot() -> dict:
             "stocks": json.loads(row["stocks_json"]),
             "valid_codes": json.loads(row["valid_codes_json"]),
             "saved_at": row.get("saved_at", ""),
+            "data_date": row.get("data_date"),
         }
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         print(f"[store] 读取行情收盘快照失败: {e}")
