@@ -109,6 +109,9 @@ def parse_args(argv=None):
     ev.add_argument("--target", type=float, default=0.10)
     ev.add_argument("--baseline", choices=["self", "market"], default="self",
                     help="基准：self=同股无条件 T+N；market=全市场无条件 T+N")
+    ev.add_argument("--baseline-eligibility", choices=["same", "all"], default="same",
+                    help="基准取样资格：same=与信号同一门槛(≥pullback+base 根，默认，推荐)；"
+                         "all=全部 bar（含新股上市初期 ⇒ 会把超额算歪，仅用于对照）")
     ev.add_argument("--seed", type=int, default=20261014)
     ev.add_argument("--min-samples", type=int, default=20)
     ev.add_argument("--bootstrap", type=int, default=4000)
@@ -317,11 +320,21 @@ def evaluate(bars, sig, cfg):
 # ================================================================
 # 基准（无条件 T+N 收益）
 # ================================================================
-def unconditional_returns(bars, fwd, entry_mode, limit=None):
-    """每根 bar 的 T+N 收益（T+1 开盘入场，最多 limit 根，降采样）。"""
+def unconditional_returns(bars, fwd, entry_mode, limit=None, min_idx=0):
+    """每根 bar 的 T+N 收益（T+1 开盘入场，最多 limit 根，降采样）。
+
+    ★★ 2026-10-15 修正两处（都会静默把"超额"算歪）：
+      ① **`min_idx`**：基准取样必须与信号**同一资格**（≥ pullback+base 根历史）——
+         否则基准里混进**新股上市连板期**（2018-2026 大量 IPO 连板，10 日 +50% 级），
+         而信号天然排除新股（需 80 根历史）⇒ 基准被抬高、超额被压低。
+         实测：修前全市场基准 +2.50%/10日（离谱，A股均值量级应在 0.x%）。
+      ② **出场日对齐**：信号是 `T+1 开盘 → T+1+fwd 收盘`（持有 fwd 日），基准原先写成
+         `T+1 开盘 → T+fwd 收盘`（少持一日）⇒ 少持一日在上涨市会低估基准。
+    """
     out = []
     step = max(1, len(bars) // 2000) if limit is None else 1
-    idxs = range(0, len(bars) - fwd - 1, step)
+    hi = len(bars) - fwd - 1                 # 需 bars[i+1+fwd] 存在（与信号口径一致）
+    idxs = range(min_idx, max(min_idx, hi), step)
     if limit is not None:
         idxs = list(idxs)
         random.Random(0).shuffle(idxs)
@@ -330,7 +343,7 @@ def unconditional_returns(bars, fwd, entry_mode, limit=None):
         entry = bars[i + 1]["open"] if entry_mode == "t1_open" else bars[i]["close"]
         if entry <= 0:
             continue
-        out.append(bars[i + fwd]["close"] / entry - 1)
+        out.append(bars[i + 1 + fwd]["close"] / entry - 1)
     return out
 
 
@@ -559,7 +572,8 @@ def write_reports(cfg, code_tag, stats, pval, obs, sigs_detail, by_year,
     lines.append("## 参数快照\n")
     for k in ("pullback_days", "vol_base_days", "vol_shrink", "pullback_min", "pullback_max",
               "below_high_tol", "launch_pct", "vol_surge", "breakout", "cooldown",
-              "entry", "fwd_days", "target", "baseline", "seed", "min_samples"):
+              "entry", "fwd_days", "target", "baseline", "baseline_eligibility",
+              "seed", "min_samples"):
         lines.append(f"- `{k}` = {cfg.get(k)}")
     lines.append("")
     if stats is None:
@@ -718,11 +732,15 @@ def main(argv=None):
                     j = rng_p.randrange(path_seen)
                     if j < cfg["max_paths"]:
                         all_paths[j] = (xs, ys)
-        # 基准：self（单股）或 market（全市场，抽样）
+        # 基准：self（单股）或 market（全市场，抽样）—— ★ min_idx 与信号同一资格
+        _min_idx = (cfg["pullback_days"] + cfg["vol_base_days"]
+                    if cfg["baseline_eligibility"] == "same" else 0)
         if cfg["baseline"] == "self" and not args.all:
-            base_rets_all.extend(unconditional_returns(bars, fwd, cfg["entry"], limit=1500))
+            base_rets_all.extend(unconditional_returns(
+                bars, fwd, cfg["entry"], limit=1500, min_idx=_min_idx))
         elif cfg["baseline"] == "market":
-            base_rets_all.extend(unconditional_returns(bars, fwd, cfg["entry"], limit=4))
+            base_rets_all.extend(unconditional_returns(
+                bars, fwd, cfg["entry"], limit=4, min_idx=_min_idx))
 
     print(f"[done] 信号样本 {len(all_rets)} 个（{len(set(all_dates))} 个独立信号日）")
     if all_dates:
