@@ -60,6 +60,8 @@ BELOW_HIGH_TOL = 0.0
 TARGET = 0.10
 ENTRY = "t1_open"
 BOOT = 1000
+COST = 0.003          # 双边成本（与 shrink_rebound_live 同源）；main 里可由 --cost 覆盖
+GO_LINE = 0.01        # 判定线：落地（净）超额 ≥ +1.00pp
 
 
 def base_cfg(fwd):
@@ -67,7 +69,7 @@ def base_cfg(fwd):
             "vol_shrink": 0.6, "pullback_min": PULLBACK_MIN, "pullback_max": PULLBACK_MAX,
             "below_high_tol": BELOW_HIGH_TOL, "launch_pct": 5.0, "vol_surge": VOL_SURGE,
             "breakout": True, "cooldown": COOLDOWN, "entry": ENTRY, "fwd_days": fwd,
-            "target": TARGET, "seed": 20261014, "bootstrap": BOOT}
+            "target": TARGET, "seed": 20261014, "bootstrap": BOOT, "cost": COST}
 
 
 # ================================================================
@@ -162,7 +164,7 @@ def svg_heatmap(grid, fwd, launch_pcts, vol_shrinks):
     cw, ch, pad = 92, 46, 78
     w = pad + cw * len(vol_shrinks) + 20
     h = pad + ch * len(launch_pcts) + 46
-    vals = [grid[(lp, vs)]["excess"] for lp in launch_pcts for vs in vol_shrinks
+    vals = [grid[(lp, vs)]["excess_net"] for lp in launch_pcts for vs in vol_shrinks
             if grid.get((lp, vs))]
     mx = max(1e-9, max(abs(v) for v in vals)) if vals else 1e-9
     svg = [f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
@@ -180,7 +182,7 @@ def svg_heatmap(grid, fwd, launch_pcts, vol_shrinks):
                 svg.append(f'<rect x="{x+2}" y="{y+2}" width="{cw-4}" height="{ch-4}" '
                            f'fill="#1e293b"/>')
                 continue
-            e = c["excess"]
+            e = c["excess_net"]        # ★ 落地（净）超额为准
             op = min(0.85, 0.12 + abs(e) / mx * 0.75)
             color = f"rgba(34,211,238,{op:.2f})" if e >= 0 else f"rgba(248,113,113,{op:.2f})"
             svg.append(f'<rect x="{x+2}" y="{y+2}" width="{cw-4}" height="{ch-4}" '
@@ -199,6 +201,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--start", default="2018-01-01")
     ap.add_argument("--source", choices=["zzshare", "db"], default="zzshare")
+    ap.add_argument("--cost", type=float, default=0.003,
+                    help="双边交易成本（默认 0.003；落地净收益 = 毛 − cost）")
     ap.add_argument("--verify", action="store_true")
     ap.add_argument("--verify-n", type=int, default=25)
     args = ap.parse_args(argv)
@@ -207,6 +211,8 @@ def main(argv=None):
         plc._load_env()
     if args.verify:
         return verify(args.verify_n)
+    global COST
+    COST = args.cost
 
     codes = (plc.all_codes_zz(args.start, None) if args.source == "zzshare"
              else plc.all_codes_db())
@@ -220,6 +226,7 @@ def main(argv=None):
     combos = [(lp, vs) for lp in LAUNCH_PCTS for vs in VOL_SHRINKS]
     sigs = {k: [] for k in combos}                    # 信号（含 fwd 前视由后续评估）
     rets = {(k, f): [] for k in combos for f in FWDS}
+    rets_net = {(k, f): [] for k in combos for f in FWDS}    # ★ 落地（扣成本）
     dates = {(k, f): [] for k in combos for f in FWDS}
     base = {f: [] for f in FWDS}
     need = PULLBACK_DAYS + VOL_BASE_DAYS
@@ -244,6 +251,7 @@ def main(argv=None):
                     ev = plc.evaluate(bars, s, cfg)
                     if ev:
                         rets[(k, f)].append(ev["ret"])
+                        rets_net[(k, f)].append(ev.get("ret_net", ev["ret"]))
                         dates[(k, f)].append(ev["date"])
         if i % 500 == 0:
             print(f"  [progress] {i}/{len(codes)} ｜ {time.time()-t0:.0f}s", flush=True)
@@ -253,28 +261,38 @@ def main(argv=None):
     detail = {}
     for k in combos:
         for f in FWDS:
-            r, d, b = rets[(k, f)], dates[(k, f)], base[f]
+            r, rn, d, b = rets[(k, f)], rets_net[(k, f)], dates[(k, f)], base[f]
             if not r or not b:
                 continue
             st = plc.summarize(r, d, {"seed": 20261014})
             bs = plc.summarize(b, list(range(len(b))), {})
             pv, obs = plc.clustered_pvalue(r, d, b, base_cfg(f))
-            detail[(k, f)] = {"n": st["n"], "clusters": st["clusters"], "win": st["win"],
-                              "avg": st["avg"], "median": st["median"],
-                              "base": bs["avg"], "excess": obs, "p": pv}
+            obs_net = statistics.mean(rn) - bs["avg"]        # ★ 落地超额（净）
+            cell = {"n": st["n"], "clusters": st["clusters"], "win": st["win"],
+                    "avg": st["avg"], "median": st["median"], "base": bs["avg"],
+                    "excess": obs, "p": pv, "excess_net": obs_net,
+                    "avg_net": statistics.mean(rn)}
+            detail[(k, f)] = cell
             if f == 10:
-                grid[k] = {"n": st["n"], "clusters": st["clusters"], "win": st["win"],
-                           "avg": st["avg"], "excess": obs, "p": pv}
+                grid[k] = cell
 
-    # 稳定性汇总（以 fwd=10 为主）
-    exc = [c["excess"] for c in grid.values()]
-    pos = sum(1 for c in grid.values() if c["excess"] > 0)
-    sig = sum(1 for c in grid.values() if c["p"] < 0.05 and c["excess"] > 0)
-    print(f"\n[fwd=10] 组合数 {len(exc)} ｜ 正超额 {pos}/{len(exc)} ｜ "
-          f"显著正(P<0.05) {sig}/{len(exc)}")
+    # 稳定性汇总（以 fwd=10 为主；★ 以**落地净超额**为准）
+    exc = [c["excess_net"] for c in grid.values()]
+    exc_g = [c["excess"] for c in grid.values()]
+    pos = sum(1 for c in grid.values() if c["excess_net"] > 0)
+    sig = sum(1 for c in grid.values() if c["p"] < 0.05 and c["excess_net"] > 0)
+    go = sum(1 for c in grid.values() if c["excess_net"] >= GO_LINE)
+    r = plc.REJECT_STATS
+    print(f"\n[落地口径 cost={COST*100:.2f}%][fwd=10] 组合数 {len(exc)} ｜ "
+          f"净超额>0 {pos}/{len(exc)} ｜ 显著正 {sig}/{len(exc)} ｜ "
+          f"≥+1.00pp 过关 {go}/{len(exc)}")
     if exc:
-        print(f"  超额 min/中位/max = {min(exc)*100:+.2f} / "
-              f"{statistics.median(exc)*100:+.2f} / {max(exc)*100:+.2f} pp")
+        print(f"  净超额 min/中位/max = {min(exc)*100:+.2f} / "
+              f"{statistics.median(exc)*100:+.2f} / {max(exc)*100:+.2f} pp"
+              f"  （毛 {min(exc_g)*100:+.2f} ~ {max(exc_g)*100:+.2f}）")
+    print(f"  可执行性剔除记账：候选 {r['limit_open'] + r['paused'] + r['no_fwd'] + r['ok']} ｜ "
+          f"T+1 一字板买不进 {r['limit_open']} ｜ 停牌 {r['paused']} ｜ "
+          f"无前视 {r['no_fwd']} ｜ 有效 {r['ok']}")
 
     # ── 输出 ──
     os.makedirs(plc.REPORT_DIR, exist_ok=True)
@@ -293,19 +311,29 @@ def main(argv=None):
             cells = []
             for vs in VOL_SHRINKS:
                 c = detail.get((lp, vs, f)) or detail.get(((lp, vs), f))
-                cells.append(f"{c['excess']*100:+.2f}pp (n={c['n']}, 胜{c['win']*100:.0f}%, "
-                             f"P={c['p']:.3f})" if c else "—")
+                cells.append(f"**净{c['excess_net']*100:+.2f}pp** / 毛{c['excess']*100:+.2f}pp"
+                             f" (n={c['n']}, 胜{c['win']*100:.0f}%, P={c['p']:.3f})"
+                             f"{' ✅' if c['excess_net'] >= GO_LINE else ''}" if c else "—")
             L.append(f"| **{lp}%** | " + " | ".join(cells) + " |")
-    L.append("\n## 稳定性汇总（fwd=10）\n")
-    L.append(f"- 组合数 **{len(exc)}** ｜ 正超额 **{pos}/{len(exc)}** ｜ "
-             f"显著正（P<0.05 且 ≥0）**{sig}/{len(exc)}**")
+    L.append(f"\n## 稳定性汇总（fwd=10 · 落地口径 cost={COST*100:.2f}%）\n")
+    L.append(f"- 组合数 **{len(exc)}** ｜ 净超额>0 **{pos}/{len(exc)}** ｜ "
+             f"显著正（P<0.05）**{sig}/{len(exc)}** ｜ "
+             f"**≥ +1.00pp 过关（对齐 shrink_rebound_live 判定线）{go}/{len(exc)}**")
     if exc:
-        L.append(f"- 超额 min / 中位 / max = **{min(exc)*100:+.2f} / "
-                 f"{statistics.median(exc)*100:+.2f} / {max(exc)*100:+.2f} pp**")
+        L.append(f"- **净**超额 min / 中位 / max = **{min(exc)*100:+.2f} / "
+                 f"{statistics.median(exc)*100:+.2f} / {max(exc)*100:+.2f} pp**"
+                 f"（毛 {min(exc_g)*100:+.2f} ~ {max(exc_g)*100:+.2f}）")
+    r = plc.REJECT_STATS
+    L.append(f"\n## 可执行性剔除记账\n")
+    L.append(f"- 候选 {r['limit_open'] + r['paused'] + r['no_fwd'] + r['ok']} ｜ "
+             f"T+1 一字板买不进 **{r['limit_open']}** ｜ 停牌 **{r['paused']}** ｜ "
+             f"无前视 **{r['no_fwd']}** ｜ **有效 {r['ok']}**")
     L.append("\n## 读法\n")
     L.append("- 若**多数格子**正超额且量级相近 ⇒ 不是阈值巧合（稳健）；"
              "若只有个别格子为正、邻格翻负 ⇒ 阈值敏感性高，**不可当信号用**。")
-    L.append("- 描述性研究，不构成预登记判据；未扣成本。\n")
+    L.append(f"- 口径：**净超额 = 毛超额 − {COST*100:.2f}%（双边成本）**；"
+             f"判定线 +1.00pp 对齐 `shrink_rebound_live`。")
+    L.append("- 仍为描述性研究：不构成预登记判据，亦未计冲击成本/容量约束。\n")
     with open(md, "w", encoding="utf-8") as f:
         f.write("\n".join(L))
 
@@ -314,10 +342,11 @@ def main(argv=None):
             "h1{font-size:20px;color:#e2e8f0}h2{font-size:15px;color:#94a3b8;margin:26px 0 8px}"
             "svg{border:1px solid #1e293b;border-radius:8px;display:block}"
             ".note{color:#64748b;font-size:11px}</style></head><body>",
-            f"<h1>缩量调整→放量启动 · 参数敏感性网格（{len(codes)} 只）</h1>",
-            "<div class='note'>格子=超额（青为正/红为负），下方 n 与胜率；"
+            f"<h1>缩量调整→放量启动 · 参数网格（{len(codes)} 只，落地口径 扣成本 "
+            f"{COST*100:.2f}%）</h1>",
+            "<div class='note'>格子=**净超额**（已扣双边成本；青为正/红为负），下方 n 与胜率；"
             "行=启动涨幅阈值，列=缩量阈值。图内为 T+10。</div>",
-            "<h2>T+10 超额热力图</h2>",
+            "<h2>T+10 净超额热力图</h2>",
             svg_heatmap(grid, 10, LAUNCH_PCTS, VOL_SHRINKS),
             "</body></html>"]
     hp = md.with_suffix(".html")

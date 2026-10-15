@@ -107,6 +107,11 @@ def parse_args(argv=None):
     ev.add_argument("--entry", choices=["t1_open", "t1_close", "t_close"], default="t1_open")
     ev.add_argument("--fwd", default="10", help="前视窗口，逗号分隔，如 5,10,20")
     ev.add_argument("--target", type=float, default=0.10)
+    ev.add_argument("--cost", type=float, default=0.003,
+                    help="双边交易成本（默认 0.003 = 佣金+印花税+滑点，与 shrink_rebound_live 同源）；"
+                         "报告同时给毛/净两套口径")
+    ev.add_argument("--exclude-limit-close", action="store_true",
+                    help="更严可执行性：信号日 T 涨停收盘 ⇒ 剔除（默认关）")
     ev.add_argument("--baseline", choices=["self", "market"], default="self",
                     help="基准：self=同股无条件 T+N；market=全市场无条件 T+N")
     ev.add_argument("--baseline-eligibility", choices=["same", "all"], default="same",
@@ -279,8 +284,13 @@ def scan_stock(bars, cfg):
 # ================================================================
 # 评估：前视指标 + 一字板剔除
 # ================================================================
+# ★ 剔除记账（口径透明：每个被丢掉的样本都要说得出理由）——2026-10-15 B 项
+REJECT_STATS = {"no_t1": 0, "paused": 0, "limit_open": 0, "limit_close": 0,
+                "no_fwd": 0, "ok": 0}
+
+
 def evaluate(bars, sig, cfg):
-    """返回 dict；若买不进（一字板）或无前视数据 → None。"""
+    """返回 dict；若买不进（T+1 停牌/一字板）或无前视数据 → None（并记账）。"""
     t = sig["idx"]
     fwd = cfg["fwd_days"]
     if cfg["entry"] == "t1_open":
@@ -297,24 +307,45 @@ def evaluate(bars, sig, cfg):
         entry = bars[t]["close"]
         i0 = t
     if entry <= 0:
+        REJECT_STATS["no_t1"] += 1
         return None
-    # 一字板剔除（T+1 开盘即涨停买不进）
     t1 = bars[t + 1] if t + 1 < len(bars) else None
+    # ★ 可执行性①：T+1 停牌 ⇒ 开盘根本买不进
+    if t1 is not None and t1.get("is_paused") == 1:
+        REJECT_STATS["paused"] += 1
+        return None
+    # ★ 可执行性②：T+1 开盘即涨停（一字/秒板）⇒ 买不进。
+    #   用**交易所涨停价**（zzshare `high_limit`）判 ⇒ 精确覆盖 10cm/20cm/30cm，
+    #   与项目先例 shrink_rebound_live 同口径（open ≥ high_limit×0.995）。
     if t1 is not None:
         if t1.get("high_limit"):
             if t1["open"] >= t1["high_limit"] * 0.995:
+                REJECT_STATS["limit_open"] += 1
                 return None
         elif t1.get("pct") is not None and t1["open"] / bars[t]["close"] - 1 >= 0.098:
+            REJECT_STATS["limit_open"] += 1
+            return None
+    # ★ 可执行性③（可选，默认关）：信号日 T 涨停收盘 ⇒ 次日多半高开抢筹，
+    #   属"看得见吃不到"，更保守的口径可剔除。
+    if cfg.get("exclude_limit_close"):
+        hl = bars[t].get("high_limit")
+        if hl and bars[t]["close"] >= hl * 0.995:
+            REJECT_STATS["limit_close"] += 1
             return None
     end_idx = i0 + fwd
     if end_idx >= len(bars):
+        REJECT_STATS["no_fwd"] += 1
         return None
     seg = bars[i0:end_idx + 1]
     ret = bars[end_idx]["close"] / entry - 1
     max_up = max(x["high"] for x in seg) / entry - 1
     max_dd = min(x["low"] for x in seg) / entry - 1
-    return {"date": sig["date"], "entry": entry, "ret": ret, "max_up": max_up,
-            "max_dd": max_dd, "hit": max_up >= cfg["target"]}
+    REJECT_STATS["ok"] += 1
+    cost = cfg.get("cost", 0.0) or 0.0
+    # ★ 落地口径：净收益 = 毛收益 − 双边成本（与 shrink_rebound_live 的 COST=0.003 同源）
+    return {"date": sig["date"], "entry": entry, "ret": ret, "ret_net": ret - cost,
+            "cost": cost, "max_up": max_up, "max_dd": max_dd,
+            "hit": max_up >= cfg["target"]}
 
 
 # ================================================================
@@ -561,7 +592,7 @@ svg{{border:1px solid #1e293b;border-radius:8px;display:block;margin-bottom:10px
 # 报告
 # ================================================================
 def write_reports(cfg, code_tag, stats, pval, obs, sigs_detail, by_year,
-                  base_stats, html, fwd):
+                  base_stats, html, fwd, stats_net=None, pval_net=None, obs_net=None):
     os.makedirs(REPORT_DIR, exist_ok=True)
     stamp = time.strftime("%Y%m%d_%H%M")
     tag = (code_tag or "ALL").replace(".", "_")
@@ -590,8 +621,16 @@ def write_reports(cfg, code_tag, stats, pval, obs, sigs_detail, by_year,
         lines.append(f"| 标准差 | {stats['std']*100:.2f}% |")
         if base_stats:
             lines.append(f"| 基准（无条件）均收益 | {base_stats['avg']*100:+.2f}% |")
-            lines.append(f"| 超额（信号−基准） | {obs*100:+.2f}pp |")
+            lines.append(f"| **毛超额**（信号−基准） | {obs*100:+.2f}pp |")
             lines.append(f"| 聚类 bootstrap P(均值≤基准) | {pval:.3f} |")
+        if stats_net and base_stats:
+            lines.append(f"| ★ 净均收益（扣成本 {cfg.get('cost', 0)*100:.2f}%） | "
+                         f"{stats_net['avg']*100:+.2f}% |")
+            lines.append(f"| ★ 净胜率 | {stats_net['win']*100:.1f}% |")
+            lines.append(f"| ★ **净超额**（落地） | **{obs_net*100:+.2f}pp** |")
+            lines.append(f"| ★ 聚类 bootstrap P（净） | {pval_net:.3f} |")
+            lines.append(f"| ★ 判定线（对齐 shrink_rebound_live：落地 ≥ +1.00pp） | "
+                         f"{'**过关**' if obs_net >= 0.01 else '**不过关**'} |")
         if stats["clusters"] < cfg["min_samples"]:
             lines.append(f"\n⚠️ **独立信号日 {stats['clusters']} < {cfg['min_samples']} ⇒ INSUFFICIENT**（数字仅供参考）\n")
         lines.append("\n## 达标 / 回撤\n")
@@ -606,12 +645,22 @@ def write_reports(cfg, code_tag, stats, pval, obs, sigs_detail, by_year,
         for y, n, wr, ar in by_year:
             lines.append(f"| {y} | {n} | {wr*100:.1f}% | {ar*100:+.2f}% |")
         lines.append("\n## 最近信号明细\n")
-        lines.append("| 日期 | 缩量倍数 | 调整段收益 | 启动涨幅 | 放量倍数 | T+N 收益 | 最大涨幅 | 最大回撤 |")
-        lines.append("|---|---|---|---|---|---|---|---|")
+        lines.append("| 日期 | 缩量倍数 | 调整段收益 | 启动涨幅 | 放量倍数 | 毛收益 | 净收益 | 最大涨幅 | 最大回撤 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
         for d in sorted(sigs_detail, key=lambda x: x["date"], reverse=True)[:25]:
             lines.append(f"| {d['date']} | {d['vol_ratio']:.2f} | {d['pullback_ret']*100:+.1f}% | "
                          f"{d['launch_pct']:+.1f}% | {d['surge']:.1f}× | {d['ret']*100:+.2f}% | "
+                         f"{d.get('ret_net', d['ret'])*100:+.2f}% | "
                          f"{d['max_up']*100:+.1f}% | {d['max_dd']*100:+.1f}% |")
+    # ★ 剔除记账（口径透明）
+    r = REJECT_STATS
+    tot = r["ok"] + r["limit_open"] + r["paused"] + r["no_fwd"] + r.get("limit_close", 0)
+    lines.append("\n## 可执行性剔除记账\n")
+    lines.append(f"- 候选信号 {tot} ｜ **有效 {r['ok']}**（{r['ok']/tot*100:.1f}%）")
+    lines.append(f"- 剔除：T+1 开盘即涨停（买不进）**{r['limit_open']}** ｜ T+1 停牌 "
+                 f"**{r['paused']}** ｜ 前视数据不足 **{r['no_fwd']}**"
+                 + (f" ｜ 信号日涨停收盘 **{r.get('limit_close', 0)}**"
+                    if cfg.get("exclude_limit_close") else ""))
     lines.append("\n## 已知简化\n")
     lines.append("- 收益用原始收盘比，除权跳空未复权；一字板剔除在 db 源为近似（+9.8% 阈值）。")
     lines.append("- 描述性研究，**不构成预登记判据**；样本闸不足时结论仅方向参考。\n")
@@ -696,6 +745,7 @@ def main(argv=None):
     all_sigs = []
     all_paths = []
     all_rets = []
+    all_rets_net = []                     # ★ 落地口径（扣双边成本）
     all_dates = []
     base_rets_all = []
     bars_single = None
@@ -717,6 +767,7 @@ def main(argv=None):
             all_sigs.extend(sigs)
             for s in sigs:
                 all_rets.append(s["ret"])
+                all_rets_net.append(s.get("ret_net", s["ret"]))
                 all_dates.append(s["date"])
             # 事件研究路径（归一化到 T 日）—— ★ 蓄水池抽样：全量信号上万条时
             #   逐条画 SVG 会让 HTML 膨胀到几十 MB 且极慢 ⇒ 只保留 max_paths 条
@@ -759,6 +810,11 @@ def main(argv=None):
     base_stats = summarize(base_rets_all, list(range(len(base_rets_all))), cfg)
     if stats and base_rets_all:
         pval, obs = clustered_pvalue(all_rets, all_dates, base_rets_all, cfg)
+    # ★ 落地口径（净 = 毛 − 成本）：同样给超额与 bootstrap P
+    stats_net = summarize(all_rets_net, all_dates, cfg)
+    pval_net = obs_net = None
+    if stats_net and base_rets_all:
+        pval_net, obs_net = clustered_pvalue(all_rets_net, all_dates, base_rets_all, cfg)
 
     # 中位数路径
     median = []
@@ -782,10 +838,20 @@ def main(argv=None):
         print(f"  样本 {stats['n']} ｜ 独立日 {stats['clusters']} ｜ 胜率 {stats['win']*100:.1f}% "
               f"｜ 均 {stats['avg']*100:+.2f}% ｜ 中位 {stats['median']*100:+.2f}%")
         if pval is not None:
-            print(f"  基准均 {base_stats['avg']*100:+.2f}% ｜ 超额 {obs*100:+.2f}pp "
+            print(f"  基准均 {base_stats['avg']*100:+.2f}% ｜ 毛超额 {obs*100:+.2f}pp "
                   f"｜ P(≤基准)={pval:.3f}")
+        if stats_net and obs_net is not None:
+            print(f"  ★落地（扣成本 {cfg['cost']*100:.2f}%）：净均 {stats_net['avg']*100:+.2f}% "
+                  f"｜ 净胜率 {stats_net['win']*100:.1f}% ｜ **净超额 {obs_net*100:+.2f}pp** "
+                  f"｜ P={pval_net:.3f} ｜ 判定线 +1.00pp ⇒ "
+                  f"{'过关' if obs_net >= 0.01 else '不过关'}")
         if stats["clusters"] < cfg["min_samples"]:
             print(f"  ⚠ INSUFFICIENT：独立信号日 {stats['clusters']} < {cfg['min_samples']}")
+    r = REJECT_STATS
+    print(f"  剔除记账：一字板(T+1开盘涨停)={r['limit_open']} 停牌={r['paused']} "
+          f"无前视={r['no_fwd']}"
+          + (f" 涨停收盘={r['limit_close']}" if cfg.get("exclude_limit_close") else "")
+          + f" ｜ 有效样本={r['ok']}")
 
     price_svg = chart_price(bars_single, all_dates, args.code) if bars_single and args.code else ""
     html = None
@@ -794,7 +860,8 @@ def main(argv=None):
                           median, -cfg["pullback_days"], fwd, all_rets, base_rets_all,
                           fwd, by_year, price_svg)
     md_path, html_path = write_reports(cfg, args.code or "ALL", stats, pval, obs,
-                                       all_sigs, by_year, base_stats, html, fwd)
+                                       all_sigs, by_year, base_stats, html, fwd,
+                                       stats_net, pval_net, obs_net)
     print(f"[report] {md_path}")
     if html_path:
         print(f"[report] {html_path}")
