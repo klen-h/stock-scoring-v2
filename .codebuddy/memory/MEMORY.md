@@ -156,6 +156,13 @@
   —— backtest_prices 逐股回填，当天可能只回填 ~150 只 ⇒ 取"近 5 日里覆盖 ≥800 只"的最新一日。
   数据源 = backtest_prices（995 只池，每日更新）；全市场需换 pack_source（loader 已解耦预留）。
   定位 = 描述性观察（候选+追踪），**非信号**。
+- ★★ **该形态已走完 A/B/C 三步（唯一一个完整闭环的形态）**：A 参数网格（稳健）→ B 成本+可执行性
+  （净超额仍在）→ **C 预登记立项（2026-10-15）**：判据冻结于 `PLAN_PATTERN_LAUNCH_EDGE.md` v1.0，
+  脚本 `scripts/pattern_launch_edge_check.py` 已注册 `edge_verify` 月度复核，
+  `SIGNAL_STATUS` = **「缩量启动形态：预登记中」**。
+  ★ 关键纪律：形态已在**全历史**看过三次 ⇒ **同一段历史无检验力** ⇒ 判据**只对前瞻样本生效**
+  （`pattern_scan_daily.date ≥ 2026-10-15`），闸门 ≥20 独立信号日 ∧ ≥120 观测（预计 1~3 个月），
+  **不得放宽参数再试**。GO 且用户拍板才可改 `SIGNAL_STATUS`。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
