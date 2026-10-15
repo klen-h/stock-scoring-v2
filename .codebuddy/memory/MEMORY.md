@@ -149,6 +149,13 @@
   T+20 净 +1.42~+2.27pp（12/12 过关）；剔除记账：候选 288,387 中一字板买不进 6,561(2.3%)。
   ⇒ 成本只吃掉 0.3pp，**边际仍在**，但单笔净期望仅 **+0.2~0.4%/10 日**、胜率 43~45%、中位仍负
   ⇒ 定性不变：**正边际但不赚钱**；未计冲击/容量。未预登记 ⇒ 描述性研究，不构成买入依据。
+- ★ **形态每日扫描（生产，2026-10-15）**：`app/pattern_launch.py` + `/api/pattern/*` +
+  日批 `task_pattern_launch_scan` + 前端 ScoreRank「形态扫描」tab + 榜单 `PATTERN_CHIP`（品红）高亮。
+  表：`pattern_scan_daily` / `pattern_watch`（T+1/5/10/20 追踪）/ `pattern_config`（JSON，
+  `PUT /api/pattern/config` 重设回测口径）。★ **陷阱**：扫描日判定**不能用 MAX(date)**
+  —— backtest_prices 逐股回填，当天可能只回填 ~150 只 ⇒ 取"近 5 日里覆盖 ≥800 只"的最新一日。
+  数据源 = backtest_prices（995 只池，每日更新）；全市场需换 pack_source（loader 已解耦预留）。
+  定位 = 描述性观察（候选+追踪），**非信号**。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
