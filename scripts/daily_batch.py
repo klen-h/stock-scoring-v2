@@ -444,6 +444,26 @@ def task_rank_live():
     return compute_and_store(limit=1000)
 
 
+def task_pattern_launch_scan():
+    """「缩量调整→放量启动」形态每日扫描（2026-10-15，用户需求）。
+
+    ★ 定位纪律：**候选清单 + 观察追踪**，不构成买卖建议 —— 研究三关已证该形态
+      「正边际但不赚钱」（T+10 净超额 +1.8pp，但胜率 43~45%、中位收益为负、T+5 全负）。
+    ★ 依赖：backtest_prices 已回填（task_backfill 排最前）⇒ 本任务排其后即可。
+    ★ 产出：`pattern_scan_daily`（当日扫描）+ `pattern_watch`（观察中票的后续变化回填）。
+    ★ 参数可重设（pattern_config，PUT /api/pattern/config）⇒ 未来重设回测条件免改代码。
+    """
+    from app import pattern_launch as pl
+    pl.ensure_tables()
+    result = pl.scan_latest()
+    if not result.get("available"):
+        return f"缩量启动扫描: 数据未就绪（{result.get('note') or 'backtest_prices 空'}）"
+    n = pl.persist_scan(result)
+    w = pl.update_watch_returns()
+    return (f"缩量启动扫描: 命中 {result['n']} 只（落库 {n}）｜ 观察回填 {w} 只 "
+            f"｜ 数据日 {result['date']} ｜ 参数 {result.get('params_hash')}")
+
+
 def task_shadow_rank():
     """影子榜（shadow_rank_daily）：生产 / 公告后衰减 两套 top50 落库（3 variant）。
 
@@ -956,6 +976,8 @@ TASKS = {
     "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
     # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
+    # ★ 2026-10-15：缩量启动形态每日扫描（描述性观察，非信号）。依赖 backfill 已回填。
+    "pattern_launch_scan": (task_pattern_launch_scan, "缩量启动形态扫描 + 观察回填"),
     "lhb": (task_lhb, "龙虎榜同步"),
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
@@ -998,7 +1020,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "calendar", "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
-                 "news_snapshot", "rank_live", "shadow_rank",
+                 "news_snapshot", "rank_live", "shadow_rank", "pattern_launch_scan",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",

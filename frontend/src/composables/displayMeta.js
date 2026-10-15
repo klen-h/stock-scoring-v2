@@ -169,6 +169,10 @@ export function boardChip(code) {
   return null
 }
 
+/** ★ 2026-10-15：缩量启动形态命中标注样式（品红/紫红，区别于科创紫、创业天蓝、琥珀=注意）。
+ *   语义：**候选清单，非买入信号**（研究已证该形态"正边际但不赚钱"）。 */
+export const PATTERN_CHIP = 'bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30'
+
 /** 个股 → 雪球（自动拼 SH/SZ/BJ 前缀）。与全站口径一致：名称→本地页、代码→雪球。 */
 export function xqUrl(code) {
   const c = String(code || '').replace(/\D/g, '').slice(0, 6)

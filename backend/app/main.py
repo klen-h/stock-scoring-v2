@@ -37,6 +37,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # 导入路由模块（每个模块负责一类业务接口）
 # from app.routers import xxx 中的 app 是 backend/app/ 目录（包）
 from app.routers import market, stock, capital, sector, scoring, macro, flash
+from app.routers import pattern as pattern_router
 from app.routers import contradictions as contradictions_router
 from app.routers import user as user_router
 from app.routers import auth as auth_router
@@ -235,6 +236,7 @@ app.include_router(stock.router,   prefix="/api/stock",   tags=["个股数据"])
 app.include_router(capital.router, prefix="/api/capital", tags=["资金流向"])  # 资金流向（当前为空壳）
 app.include_router(sector.router,  prefix="/api/sector",  tags=["板块数据"])  # 行业/概念列表+资金流、个股→行业映射
 app.include_router(scoring.router, prefix="/api/score",   tags=["评分数据"])  # 股票评分（核心功能）
+app.include_router(pattern_router.router, prefix="/api/pattern", tags=["形态扫描"])  # 缩量启动形态扫描/观察（2026-10-15）
 app.include_router(macro.router,   prefix="/api/macro",   tags=["宏观数据"])  # 宏观面板+规则方向分
 app.include_router(flash.router,   prefix="/api/flash",   tags=["快讯监控"])  # 快讯事件/LLM诊断/信号跟踪
 app.include_router(contradictions_router.router, prefix="/api/contradictions", tags=["矛盾扫描"])  # 三层矛盾扫描引擎

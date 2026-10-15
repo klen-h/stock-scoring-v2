@@ -251,7 +251,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -645,8 +645,96 @@
       </div>
     </div>
 
+    <!-- ★ 缩量启动形态扫描 / 观察（2026-10-15）：候选清单 + 观察追踪。描述性观察，非信号 -->
+    <div v-if="activeTab === 'pattern'" class="space-y-3">
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+          <span>缩量启动形态 · 今日候选（数据日 <b class="text-gray-300">{{ patternScan.date || '—' }}</b>
+            · 参数 启动涨≥{{ patternConfig.launch_pct ?? 3 }}% / 缩量≤{{ patternConfig.vol_shrink ?? 0.7 }}）</span>
+          <span class="text-[10px] text-amber-400">候选清单，非买入信号（研究：正边际但不赚钱）</span>
+        </div>
+        <table v-if="patternScan.items && patternScan.items.length" class="w-full text-xs">
+          <thead class="text-muted bg-white/[0.02]">
+            <tr>
+              <th class="text-left py-2.5 px-3">代码</th>
+              <th class="text-left py-2.5 px-3">板块</th>
+              <th class="text-left py-2.5 px-3">行业</th>
+              <th class="text-right py-2.5 px-3">启动涨幅</th>
+              <th class="text-right py-2.5 px-3">缩量倍数</th>
+              <th class="text-right py-2.5 px-3">放量倍数</th>
+              <th class="text-center py-2.5 px-3">形态质量分</th>
+              <th class="text-center py-2.5 px-3">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in patternScan.items" :key="it.code" class="border-b border-border/50">
+              <td class="py-2 px-3 font-mono text-accent">
+                <a :href="getXueqiuUrl(it.code)" target="_blank" rel="noopener" class="hover:underline">{{ it.code }}</a>
+                <span class="ml-1 px-1 rounded text-[10px]" :class="PATTERN_CHIP">缩量启动</span>
+              </td>
+              <td class="py-2 px-3">{{ it.board }}</td>
+              <td class="py-2 px-3 text-muted">{{ it.industry || '—' }}</td>
+              <td class="py-2 px-3 text-right font-mono text-red-400">+{{ it.launch_pct }}%</td>
+              <td class="py-2 px-3 text-right font-mono">{{ it.vol_ratio }}</td>
+              <td class="py-2 px-3 text-right font-mono">{{ it.surge }}×</td>
+              <td class="py-2 px-3 text-center font-mono" :class="scoreClass(it.score)">{{ it.score }}</td>
+              <td class="py-2 px-3 text-center">
+                <button v-if="!patternWatchCodes.has(it.code)" @click="addPattern(it.code)"
+                  class="px-2 py-0.5 rounded text-[11px] bg-accent/10 text-accent hover:bg-accent/20">＋观察</button>
+                <span v-else class="text-[11px] text-emerald-400">观察中</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="p-6 text-center text-xs text-muted">今日无命中（或日批尚未运行）</div>
+      </div>
+
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">我的观察 · 后续变化追踪（T+N 相对启动日次日开盘）</div>
+        <table v-if="patternWatch.length" class="w-full text-xs">
+          <thead class="text-muted bg-white/[0.02]">
+            <tr>
+              <th class="text-left py-2.5 px-3">代码</th>
+              <th class="text-left py-2.5 px-3">启动日</th>
+              <th class="text-right py-2.5 px-3">T+1</th>
+              <th class="text-right py-2.5 px-3">T+5</th>
+              <th class="text-right py-2.5 px-3">T+10</th>
+              <th class="text-right py-2.5 px-3">T+20</th>
+              <th class="text-right py-2.5 px-3">最大回撤</th>
+              <th class="text-center py-2.5 px-3">状态</th>
+              <th class="text-left py-2.5 px-3">备注</th>
+              <th class="text-center py-2.5 px-3">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="w in patternWatch" :key="w.code" class="border-b border-border/50">
+              <td class="py-2 px-3 font-mono text-accent">{{ w.code }} <span v-if="w.name" class="text-muted">{{ w.name }}</span></td>
+              <td class="py-2 px-3 text-muted">{{ w.launch_date }}</td>
+              <td class="py-2 px-3 text-right font-mono" :class="pctClass(w.rets?.[1])">{{ w.rets?.[1] != null ? (w.rets[1] * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="py-2 px-3 text-right font-mono" :class="pctClass(w.rets?.[5])">{{ w.rets?.[5] != null ? (w.rets[5] * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="py-2 px-3 text-right font-mono" :class="pctClass(w.rets?.[10])">{{ w.rets?.[10] != null ? (w.rets[10] * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="py-2 px-3 text-right font-mono" :class="pctClass(w.rets?.[20])">{{ w.rets?.[20] != null ? (w.rets[20] * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="py-2 px-3 text-right font-mono text-emerald-400">{{ w.max_dd != null ? (w.max_dd * 100).toFixed(1) + '%' : '—' }}</td>
+              <td class="py-2 px-3 text-center">
+                <select :value="w.status" @change="e => setPatternStatus(w.code, e.target.value)" class="bg-bg border border-border rounded px-1 py-0.5 text-[11px]">
+                  <option>观察中</option><option>达标</option><option>失效</option>
+                </select>
+              </td>
+              <td class="py-2 px-3">
+                <input :value="w.note" @change="e => setPatternNote(w.code, e.target.value)" placeholder="备注" class="bg-bg border border-border rounded px-1 py-0.5 text-[11px] w-28" />
+              </td>
+              <td class="py-2 px-3 text-center">
+                <button @click="removePattern(w.code)" class="px-2 py-0.5 rounded text-[11px] text-red-400 hover:bg-red-500/10">移除</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="p-6 text-center text-xs text-muted">暂无观察标的（点上方「＋观察」加入）</div>
+      </div>
+    </div>
+
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
@@ -669,6 +757,7 @@
         <tbody>
           <tr v-for="(item, idx) in tableData" :key="item.code"
             class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
+            :class="patternCodes.has(item.code) ? 'bg-fuchsia-500/[0.06]' : ''"
             @click="goDetail(item.code)">
             <td class="py-2 px-3 text-muted font-mono text-xs">{{ activeTab === 'bottom' ? stats.total - idx : idx + 1 }}</td>
             <td class="py-2 px-3 font-mono text-xs text-accent">
@@ -678,6 +767,9 @@
                  title="在雪球查看">{{ item.code }}</a>
               <span v-if="boardChip(item.code)"
                     class="ml-1 px-1 rounded text-[10px] align-middle" :class="boardChip(item.code).cls">{{ boardChip(item.code).label }}</span>
+              <span v-if="patternCodes.has(item.code)"
+                    class="ml-1 px-1 rounded text-[10px] align-middle" :class="PATTERN_CHIP"
+                    title="今日命中「缩量启动」形态（候选清单，非买入信号）">缩量启动</span>
             </td>
             <td class="py-2 px-3">{{ item.name }}</td>
             <td v-if="activeTab === 'top'" class="py-2 px-3 text-xs truncate max-w-[90px]">
@@ -899,6 +991,9 @@
                 <td class="py-1.5 px-3 font-mono text-accent">
                   {{ s.code }}<span v-if="boardChip(s.code)"
                     class="ml-1 px-1 rounded text-[10px] align-middle" :class="boardChip(s.code).cls">{{ boardChip(s.code).label }}</span>
+                  <span v-if="patternCodes.has(s.code)"
+                    class="ml-1 px-1 rounded text-[10px] align-middle" :class="PATTERN_CHIP"
+                    title="当日命中「缩量启动」形态">缩量启动</span>
                 </td>
                 <td class="py-1.5 px-3">{{ s.name }}</td>
                 <td class="py-1.5 px-3 text-right">{{ s.score }}</td>
@@ -1183,14 +1278,16 @@ import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, ge
   //   ⇒ 运行时抛 ReferenceError 被 `try/catch` 吞掉 ⇒ `marketAlerts` 恒为空数组
   //   ⇒ **异动监控的市场警示规则（_ALERT_RULES）从来没生效过**，且构建/日志都看不出。
   //   （同一类问题在 Workbench.vue 的 getSectorSnapshot 上也存在过，已一并修。）
-  getMarketOverview } from '../api'
+  getMarketOverview,
+  getPatternScan, getPatternWatch, addPatternWatch, updatePatternWatch, deletePatternWatch,
+  getPatternConfig, getPatternHighlightCodes } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 // ★ 2026-10-08 P3：异动分析入口（共享组件；工作台观察池 import 同一份，防两处漂移）
 import AnomalyEntry from '../components/AnomalyEntry.vue'
 // ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——
 //   原先定义在本文件内，工作台要用只能复制 ⇒ 两份必然漂移（用户要求两处"颜色与命名一致"）。
 // ★ 2026-10-10（P1-2）：加 `CONSEC_STYLE`（连续净流入分档配色）——与详情页/工作台同一份共享源。
-import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls, boardChip } from '../composables/displayMeta'
+import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls, boardChip, PATTERN_CHIP } from '../composables/displayMeta'
 // ★ 2026-10-11（L1/L2）：本页原先**没有渲染器**（「系统自洽性审查」的 LLM 输出是裸文本 ⇒
 //   星号外露、看不出重点）；现统一交给「观点卡」（内含全站唯一渲染器 `composables/markdown`）。
 import InsightBody from '../components/InsightBody.vue'
@@ -1212,6 +1309,7 @@ const tabs = [
   { key: 'positions', label: '我的持仓' },
   { key: 'radar', label: '今日雷达' },
   { key: 'watch', label: '观察池' },
+  { key: 'pattern', label: '形态扫描' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
   { key: 'verify', label: '胜率回查' },
@@ -1227,6 +1325,28 @@ const tableData = ref([])
 // ★ 观察池（2026-09-22）：买入闸门 ready≥2 的「等状态」候选
 const gateWatch = ref({ regime: '', total: 0, ready3: 0, items: [] })
 const gateWatchLoading = ref(false)
+// ── 缩量启动形态扫描 / 观察（2026-10-15）：候选清单 + 观察追踪，描述性观察，非信号 ──
+const patternScan = ref({ date: null, n: 0, items: [] })
+const patternWatch = ref([])
+const patternCodes = ref(new Set())       // 当日命中 code 集合（榜单醒目标注）
+const patternConfig = ref({})
+const patternWatchCodes = computed(() => new Set(patternWatch.value.map(w => w.code)))
+async function loadPatternCodes() {
+  try { const r = await getPatternHighlightCodes(); if (r?.codes) patternCodes.value = new Set(r.codes) } catch (e) {}
+}
+async function loadPatternScan() {
+  try { patternScan.value = (await getPatternScan()) || { items: [] } } catch (e) { patternScan.value = { items: [] } }
+}
+async function loadPatternWatch() {
+  try { patternWatch.value = (await getPatternWatch())?.items || [] } catch (e) { patternWatch.value = [] }
+}
+async function loadPatternConfig() {
+  try { patternConfig.value = (await getPatternConfig()) || {} } catch (e) {}
+}
+async function addPattern(code) { try { await addPatternWatch(code); await loadPatternWatch() } catch (e) { console.warn(e) } }
+async function removePattern(code) { try { await deletePatternWatch(code); await loadPatternWatch() } catch (e) { console.warn(e) } }
+async function setPatternStatus(code, status) { try { await updatePatternWatch(code, { status }) } catch (e) {} }
+async function setPatternNote(code, note) { try { await updatePatternWatch(code, { note }) } catch (e) {} }
 // ★ 持仓雷达（2026-09-23）：以**用户持仓**为主轴的状态聚合
 //   （评分 / 主力阶段 / 闸门就绪 / 战法命中 / 是否在观察池 / 所属板块被矛盾点名）
 const portfolioRadar = ref({ items: [], summary: {}, market: {}, regime: '' })
@@ -2109,6 +2229,7 @@ function switchTab(tab) {
   activeTab.value = tab
   // ★ 持仓雷达（2026-09-23）：每次切进来都重拉（后端有缓存 + 预热 ⇒ 秒开）
   if (tab === 'positions') loadPortfolioRadar()
+  if (tab === 'pattern') { loadPatternScan(); loadPatternWatch(); loadPatternConfig() }
   // ★ 今日雷达（2026-09-23）：系统提示时间线（切进来即拉当天）
   else if (tab === 'radar') loadPushLog()
   // 观察池：先取闸门清单（拿到 code 列表）→ 再拉一次实时涨跌幅
@@ -2320,6 +2441,8 @@ onMounted(() => {
   }
   loadTemp()
   loadSnapshots()
+  loadPatternCodes()          // 预取当日形态命中集合（供榜单醒目标注）
+  loadPatternConfig()
   autoSaveTimer = setInterval(autoSaveCheck, 60000)
   startAutoRefresh()
   // ★ 直达指定 tab：**必须放最后** —— `switchTab` 会触发该 tab 的首拉（观察池要先拿
