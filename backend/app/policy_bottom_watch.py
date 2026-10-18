@@ -56,6 +56,20 @@ PBW_POSITION_CAP = float(os.environ.get("PBW_POSITION_CAP") or 30)  # 未达成�
 _TABLE_READY = False
 
 
+def _default_day() -> str:
+    """默认交易日 = **最近已完成交易日**（与 `routers/market._price_date` 同口径）。
+
+    ★ 不能用"今天"：周日/节假日跑批时"今天"没有任何行情，会把清单算在空日上，
+      展示出来就是"今天的清单"（实际数据是上一交易日的）—— 与本项目反复修的
+      "写入时刻冒充数据时刻"是同一类错误。
+    """
+    try:
+        from app.flash.rules import latest_completed_trading_day
+        return str(latest_completed_trading_day())[:10]
+    except Exception:
+        return datetime.now().strftime("%Y-%m-%d")
+
+
 # ────────────────────────────────────────────────────────────────
 #  建表
 # ────────────────────────────────────────────────────────────────
@@ -315,7 +329,7 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
     返回结构见模块头/计划（items + n_checked + crossed_4 + position_hint）。
     """
     ensure_table()
-    day = str(day or datetime.now().strftime("%Y-%m-%d"))[:10]
+    day = str(day or _default_day())[:10]
     manual = manual if manual is not None else _manual_of(day)
 
     items: Dict[str, Dict] = {}
@@ -448,7 +462,7 @@ def save(data: Dict) -> bool:
 
 def load(day: str = None) -> Optional[Dict]:
     ensure_table()
-    day = str(day or datetime.now().strftime("%Y-%m-%d"))[:10]
+    day = str(day or _default_day())[:10]
     try:
         r = db.fetch_one("SELECT * FROM policy_bottom_watch WHERE date = %s", (day,))
     except Exception:
@@ -469,7 +483,7 @@ def load(day: str = None) -> Optional[Dict]:
 def confirm_nation_team(day: str, checked: bool, note: str = "") -> Dict:
     """第①条人工打勾（唯一人工项）。打勾后**立即重算**当日清单并落库。"""
     ensure_table()
-    day = str(day or datetime.now().strftime("%Y-%m-%d"))[:10]
+    day = str(day or _default_day())[:10]
     ts = datetime.now().isoformat()
     manual = {"checked": bool(checked), "note": note or "", "ts": ts}
     data = evaluate(day, manual=manual)
@@ -530,7 +544,7 @@ def run_daily(day: str = None) -> Dict:
       （否则补跑/重试会把"跨过 4/5"重复推企微 —— 与本项目"告警脱敏"纪律冲突）。
     """
     try:
-        day = str(day or datetime.now().strftime("%Y-%m-%d"))[:10]
+        day = str(day or _default_day())[:10]
         prev_today = load(day) or {}
         already_crossed = bool(prev_today.get("crossed_4"))
         data = evaluate(day)
