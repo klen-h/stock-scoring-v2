@@ -20,7 +20,9 @@
 这是最保守的"方向对不对"检验——不做幅度归因，排除运气成分需要积累样本后
 按类型分桶看准确率（validation_stats）。
 
-调度：contradiction_scan_loop 每日扫描后自动验证一次；路由 POST /validate 手动触发。
+调度：★ 2026-10-18 起**日批** `scripts/daily_batch.py: task_contradiction_scan` 扫描后必调
+（原先只在 `scheduler.contradiction_scan_loop` —— 该 loop 被 `_heavy` 包裹，生产只读模式下不跑
+⇒ 09-16 起验证静默停摆一个月）；路由 POST /validate 仍可手动触发。
 ================================================================================
 """
 
@@ -77,11 +79,23 @@ def _next_day_index_change(date_str: str) -> Optional[float]:
 def validate_yesterday(max_age_days: int = 10) -> Dict:
     """
     验证所有未验证且可判方向的历史矛盾（含更早遗漏的，最多回溯 max_age_days 天）。
-    返回 {validated, correct, wrong, flat, skipped}。
+    返回 {validated, correct, wrong, flat, skipped, skipped_non_directional, skipped_expired}。
+
+    ★★ 2026-10-18（审计发现的真缺陷，两个改动）：
+      ① **日期改用北京时间**：原 `datetime.now()` 在 Actions 容器里是 **UTC**
+         （日批 03:0x 北京时间 = 前一日 19:0x UTC）⇒ "今天"少一天、age 多一天，
+         把 10 天窗口无谓收紧一天，且在跨午夜时可能把当天新记录算成"待验"。
+      ② **跳过原因拆开计数**：原先把"类型本身无方向"与"超龄作废"都塞进 `skipped`
+         ⇒ 日志永远只显示一个数字，看不出"为什么验证了 0 条"（本次事故正是这样被埋了一个月）。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    try:
+        from app.flash.rules import beijing_now as _bj_now
+        today = _bj_now().strftime("%Y-%m-%d")
+    except Exception:
+        today = datetime.now().strftime("%Y-%m-%d")
     pending = store.load_unvalidated_before(today)
-    stats = {"validated": 0, "correct": 0, "wrong": 0, "flat": 0, "skipped": 0}
+    stats = {"validated": 0, "correct": 0, "wrong": 0, "flat": 0, "skipped": 0,
+             "skipped_non_directional": 0, "skipped_expired": 0}
 
     # 缓存次日涨跌（同一矛盾日复用）
     change_cache: Dict[str, Optional[float]] = {}
@@ -95,10 +109,14 @@ def validate_yesterday(max_age_days: int = 10) -> Dict:
             age = max_age_days + 1
         direction = predicted_direction(item)
         if direction is None:
+            # 类型本身无方向（日历/板块资金类）—— **设计如此**，不是漏验证
             stats["skipped"] += 1
+            stats["skipped_non_directional"] += 1
             continue
         if age > max_age_days:
+            # ★ 超过窗口 ⇒ 永久失去验证资格（这条数字必须在日志里可见，否则静默丢样本）
             stats["skipped"] += 1
+            stats["skipped_expired"] += 1
             continue
         if d not in change_cache:
             change_cache[d] = _next_day_index_change(d)

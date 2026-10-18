@@ -388,7 +388,26 @@ def task_contradiction_scan():
     d = _batch_trading_day().isoformat()
     items = scan_all(date=d)
     saved = save_contradictions(d, items)
-    return f"矛盾扫描: {len(items)} 条，保存 {saved}"
+    # ★★ 2026-10-18（审计发现的真缺陷）：**验证闭环原本只挂在 Render 的
+    #   `scheduler.contradiction_scan_loop`**，而该 loop 被 `_heavy(...)` 包裹
+    #   ⇒ 生产 `RENDER_READ_ONLY=1` 下整条不跑；日批又只 scan+save
+    #   ⇒ 实测 **09-16 之后 0 条被验证**，待验池堆到 75 条，而 `max_age_days=10`
+    #     会让它们**永久失去资格**（`contradictions` 91 条里只有 8 条验证过）。
+    #   ⇒ 验证必须挂在**真正每天运行的地方**（日批），与扫描同源同日。
+    vinfo = ""
+    try:
+        from app.contradictions.validator import validate_yesterday
+        vs = validate_yesterday()
+        vinfo = (f"；验证 {vs.get('validated', 0)} 条"
+                 f"（对 {vs.get('correct', 0)} / 错 {vs.get('wrong', 0)}"
+                 f" / 平 {vs.get('flat', 0)}）"
+                 f"，跳过：非方向性 {vs.get('skipped_non_directional', 0)}"
+                 f" / 超龄作废 {vs.get('skipped_expired', 0)}")
+    except Exception as e:
+        # 验证失败不影响扫描（扫描是主产出），但必须显式留痕（原先连这层都没有）
+        vinfo = f"；⚠ 验证失败（不影响扫描）: {e}"
+        print(f"[daily-batch] 矛盾验证失败: {e}")
+    return f"矛盾扫描: {len(items)} 条，保存 {saved}{vinfo}"
 
 
 def task_score_snapshot():
