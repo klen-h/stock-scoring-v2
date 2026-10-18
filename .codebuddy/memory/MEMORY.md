@@ -181,6 +181,13 @@
 - ★ **产品决策（2026-10-18 全部拍板，B 类清零）**：`flow_consec` 标签**保留**（tooltip 三处均已带
   KILL 结论，定位=事实描述）；gate-watch **过期即重算**（安全默认，40s 只在异常态）；模拟盘
   `ready==3` 入口**不动**，触发条件=**A2 回避侧**（≈2026-11 中旬）出结论再复议。
+- ★★ **两个"静默停摆"型缺陷（2026-10-18 审计发现，均未修）—— 遇到"数据不涨"先查这两处**：
+  ① **矛盾验证闭环**：验证只挂 `scheduler.contradiction_scan_loop`（被 `_heavy` 包裹 ⇒ `RENDER_READ_ONLY=1`
+  下不跑），而矛盾行由**日批**写（`scripts/daily_batch.py task_contradiction_scan`，只 scan+save）⇒
+  09-16 后 0 条验证、75 条待验；`max_age_days=10` 会**永久丢弃**超龄记录。
+  ② **模拟盘零开仓**：`is_strategy_admitted()` 在 defensive 市对全部战法返回 False（入场层全禁，
+  扫描层仍放宽攒样本）⇒ regime 防御期间模拟盘不建仓（09-18~10-16 实测），模拟盘类校验/Coach W3-4 全冻结。
+  ⇒ 结论：**"样本不够"要先区分"没在产生"和"在产生但没被记录"**，两者修法完全不同。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
