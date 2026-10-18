@@ -186,6 +186,11 @@
 - ★ **产品决策（2026-10-18 全部拍板，B 类清零）**：`flow_consec` 标签**保留**（tooltip 三处均已带
   KILL 结论，定位=事实描述）；gate-watch **过期即重算**（安全默认，40s 只在异常态）；模拟盘
   `ready==3` 入口**不动**，触发条件=**A2 回避侧**（≈2026-11 中旬）出结论再复议。
+- ★ **`MAINFORCE_MODE` 定案 `off`（2026-10-18）**：出货乘数 `mult` 自 **P1-12 方案A** 起
+  **无任何消费方**（`routers/scoring.py:1439` 明写"移除排序乘法"，只作标签字段）⇒ auto/off 行为等价；
+  但 auto 是"待接线"状态，留着会让未来一次接线把**未预登记背书**的乘数静默启用 ⇒ fail-closed。
+  四处（env.template / 两个 workflow / env_check 期望值）已统一 off；**若 Render 控制台仍留 auto，
+  `/api/health` 的 `switches_mismatch` 会报该项**（去控制台删掉即可）。要启用须显式改配置 + 预登记。
 - ★★ **两个"静默停摆"型缺陷（2026-10-18 审计发现）—— 遇到"数据不涨"先查这两处**：
   ① **矛盾验证闭环**（✅ 10-18 已修）：验证原先只挂 `scheduler.contradiction_scan_loop`（被 `_heavy`
   包裹 ⇒ `RENDER_READ_ONLY=1` 下不跑），而矛盾行由**日批**写（`task_contradiction_scan`，只 scan+save）
