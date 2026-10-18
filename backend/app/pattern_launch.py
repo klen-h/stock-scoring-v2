@@ -147,10 +147,25 @@ def _now() -> str:
 # ================================================================
 # 数据加载（与数据源解耦 ⇒ 未来换 pack 只改这里）
 # ================================================================
-def load_bars(code: str) -> list:
-    rows = db.fetch(
-        "SELECT date, open, high, low, close, volume FROM backtest_prices "
-        "WHERE code = %s ORDER BY date ASC", (code,)) or []
+def load_bars(code: str, tail: int = None) -> list:
+    """读单只 bars（升序）。
+
+    ★★ 2026-10-18（egress 治理）：新增 `tail` —— 只取**最近 N 根**。
+      背景（pg_stat_statements 实测）：`SELECT ... WHERE code=$1 ORDER BY date ASC`
+      累计 9,463 次 / 696 万行，其中本模块的每日扫描每次要把 995 只票的**全部历史**
+      （每只 ~740 根）读一遍 ≈ 45MB/天，而形态判定只需要 `pullback+base+余量` ≈ 120 根。
+      ⇒ 扫描路径改 `tail`（走 (code,date) 索引倒序取 N 再反转），日流量降至 ~8MB/天。
+      ⚠️ 观察追踪（update_watch_returns）需要**从 launch_date 起的完整段** ⇒ 不传 tail。
+    """
+    if tail and int(tail) > 0:
+        rows = db.fetch(
+            "SELECT date, open, high, low, close, volume FROM backtest_prices "
+            "WHERE code = %s ORDER BY date DESC LIMIT %s", (code, int(tail))) or []
+        rows = list(reversed(rows))
+    else:
+        rows = db.fetch(
+            "SELECT date, open, high, low, close, volume FROM backtest_prices "
+            "WHERE code = %s ORDER BY date ASC", (code,)) or []
     bars, prev = [], None
     for r in rows:
         cl, op, hi, lo = float(r["close"] or 0), float(r["open"] or 0), \
@@ -163,6 +178,48 @@ def load_bars(code: str) -> list:
                      "close": cl, "volume": float(r["volume"] or 0), "pct": pct})
         prev = cl
     return bars
+
+
+def load_bars_bulk(tail: int = 140, start: str = None) -> dict:
+    """**一次查询**取全池最近 `tail` 根 → {code: [bars]}。
+
+    ★★ 2026-10-18（egress + 延迟双治理）：原先 scan_latest 对 995 只票**逐只查**
+      （995 次往返，实测 **178 秒**）；改为一条 `ROW_NUMBER() OVER (PARTITION BY code)`
+      ⇒ **1 次往返、秒级**，且只取窗口内的行（egress 与逐只尾部读相同 ≈8MB）。
+      服务端扫描量由 `date >= start` 限制（默认按最新日回退 400 自然日，覆盖 120 交易日 + 长假）。
+    """
+    if start is None:
+        r = db.fetch_one("SELECT MAX(date) AS d FROM backtest_prices")
+        latest = str((r or {}).get("d") or "")[:10]
+        if not latest:
+            return {}
+        from datetime import datetime, timedelta
+        try:
+            start = (datetime.strptime(latest, "%Y-%m-%d") - timedelta(days=400)).strftime("%Y-%m-%d")
+        except ValueError:
+            start = latest[:4] + "-01-01"
+    rows = db.fetch("""
+        SELECT code, date, open, high, low, close, volume FROM (
+            SELECT code, date, open, high, low, close, volume,
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM backtest_prices WHERE date >= %s
+        ) t WHERE rn <= %s ORDER BY code, date ASC""", (start, int(tail))) or []
+    out = {}
+    for r in rows:
+        cl, op, hi, lo = float(r["close"] or 0), float(r["open"] or 0), \
+            float(r["high"] or 0), float(r["low"] or 0)
+        if cl <= 0 or op <= 0 or hi <= 0 or lo <= 0:
+            continue
+        out.setdefault(r["code"], []).append(
+            {"date": str(r["date"])[:10], "open": op, "high": hi, "low": lo,
+             "close": cl, "volume": float(r["volume"] or 0), "pct": None})
+    for bars in out.values():
+        prev = None
+        for b in bars:
+            if prev:
+                b["pct"] = (b["close"] / prev - 1) * 100
+            prev = b["close"]
+    return out
 
 
 def all_codes() -> list:
@@ -267,9 +324,15 @@ def scan_latest(date: str = None) -> dict:
     if not day:
         return {"available": False, "date": None, "items": [], "note": "backtest_prices 为空"}
     need = cfg["pullback_days"] + cfg["vol_base_days"]
+    # ★ 2026-10-18 egress：只读最近 need+20 根（扫描只认"最后一根是启动日"）；
+    #   仅当显式指定了一个**非最新**的历史日时才回退全量读（管理员补扫场景，罕见）。
+    _tail = None if (date and str(date)[:10] != str(latest_trading_date())[:10]) else need + 20
     items = []
-    for code in all_codes():
-        bars = load_bars(code)
+    # ★ 最新日的常规扫描走**一次批量读**（1 次往返）；只有补扫历史日才逐只全量读。
+    _bulk = load_bars_bulk(tail=(need + 20)) if _tail else None
+    _codes = list(_bulk.keys()) if _bulk is not None else all_codes()
+    for code in _codes:
+        bars = _bulk[code] if _bulk is not None else load_bars(code)
         if len(bars) < need + 1:
             continue
         for s in scan_stock(bars, cfg):

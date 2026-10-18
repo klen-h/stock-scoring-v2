@@ -630,6 +630,13 @@ def load_flow_map(codes: list = None, days: int = None) -> dict:
     """
     ensure_table()
     win = int(days) if days and int(days) > 0 else None
+    # ★★ 2026-10-18（egress 实测）：`days=None` = **整表读**，实测该语句累计
+    #   191 次 / **2000 万行 / ≈1.7GB**（全项目出口流量第一名）——全部来自研究脚本。
+    #   生产路径（`mainforce/state.refresh_all`）已传 days=FLOW_WINDOW_DAYS ✓。
+    #   这里加**显式告警**：以后谁再新增无窗口调用，日志里立刻看得见。
+    if win is None:
+        print("[mainflow] [WARN] load_flow_map(days=None) ⇒ 整表读（≈8.7MB/次）；"
+              "生产路径必须传 days，仅研究脚本允许全量")
     cutoff = _flow_window_cutoff(win) if win else ""
     if win and not cutoff:
         win = None                 # 取不到最新日期 ⇒ 退回整表读（宁多读，不给错窗口）
