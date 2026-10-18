@@ -969,6 +969,29 @@ def task_retention():
     return "保留期清理: " + db_retention.summarize(rows)
 
 
+def task_policy_announcement_watch():
+    """国家队增持公告 **自动提示**（★ 2026-10-19，巨潮法定披露渠道）。
+
+    ★ 只提示、不打勾：结果挂在市场底清单第①条下（标题+链接），
+      打勾权仍在人（见 `app/policy_announcements.py` 模块头的红线）。
+    ★ 失败**不抛**（网络/接口波动不能拖垮整批）：返回带 ⚠ 的文案，
+      清单侧会显示"自动检查不可用"，**绝不等于"没有公告"**。
+    ★ 排在 `policy_bottom_watch` **之前** —— 否则清单读到的是昨天的提示。
+    ★ searchkey 是分词匹配，模块内部已做"粗召回 + 本地连续字串过滤"；别改成直接信 searchkey。
+    """
+    from app import policy_announcements as pa
+    day = _batch_trading_day().isoformat()
+    r = pa.scan_and_store(day, push=True)
+    if not r.get("ok"):
+        return (f"增持公告提示: WARN 抓取失败（{str(r.get('error'))[:70]}）"
+                "⇒ 清单显示『自动检查不可用』（不等于没有公告）")
+    news = r.get("new_hits") or []
+    extra = f"，新增 {len(news)} 条已推企微" if news else ""
+    if r.get("hit_count"):
+        extra += f"；命中 {r['hit_count']} 条（见清单第①条）"
+    return f"增持公告提示: 扫描 {r.get('scanned')} 条{extra}"
+
+
 def task_policy_bottom_watch():
     """市场底确认清单（★ 2026-10-18，**纯观察器，非信号**）。
 
@@ -1073,6 +1096,10 @@ TASKS = {
     #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
     #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
     "data_gap": (task_data_gap, "数据底座断档自检 + 板块快照自愈"),
+    # ★ 2026-10-19：国家队增持公告**自动提示**（巨潮）——必须排在清单之前，
+    #   否则清单第①条读到的是"上一次"的提示。只提示不打勾，失败不抛。
+    "policy_announcement_watch": (task_policy_announcement_watch,
+                                  "国家队增持公告自动提示（巨潮，只提示不打勾）"),
     # ★ 2026-10-18：市场底确认清单（纯观察器）——必须在 intraday_path 之后（② 用它）、
     #   daily_report 之前（日报要渲染它）。不参与任何决策链。
     "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
@@ -1094,7 +1121,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
-                 "policy_bottom_watch",
+                 "policy_announcement_watch", "policy_bottom_watch",
                  "daily_report",
                  "trader_brief", "retention"]
 

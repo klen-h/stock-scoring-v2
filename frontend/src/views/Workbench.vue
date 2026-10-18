@@ -1209,20 +1209,47 @@
                 {{ pbw.position_hint }}</span>
             </div>
             <div class="space-y-1 text-[11px]">
-              <div v-for="it in pbwItems" :key="it.key" class="flex items-start gap-2">
-                <span class="shrink-0"
-                      :class="it.checked ? 'text-emerald-400' : 'text-muted'">
-                  {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
-                    v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
-                </span>
-                <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
-                <span class="flex-1 break-all">{{ it.detail }}</span>
-                <button v-if="it.key === 'nation_team_ann'"
-                        class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
-                        :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
-                        @click="toggleNationTeam">
-                  {{ it.checked ? '取消' : '打勾' }}
-                </button>
+              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
+                <div class="flex items-start gap-2">
+                  <span class="shrink-0"
+                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
+                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
+                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                  </span>
+                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
+                  <span class="flex-1 break-all">{{ it.detail }}</span>
+                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
+                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
+                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
+                  <button v-if="it.key === 'nation_team_ann'"
+                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
+                          @click="toggleNationTeam">
+                    {{ it.checked ? '取消' : '打勾' }}
+                  </button>
+                </div>
+                <!-- ★ 2026-10-19 自动提示明细：**只给证据与链接，不打勾**（打勾是人的判断）。
+                     「自动检查不可用」要显式区别于「未发现」——缺失 ≠ 不满足。 -->
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
+                     :href="h.url || undefined" target="_blank" rel="noopener"
+                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
+                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
+                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
+                  </a>
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
+                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="annRefreshing"
+                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
+                            @click="refreshAnnouncements">
+                      {{ annRefreshing ? '扫描中…' : '重扫' }}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2358,6 +2385,8 @@ import {
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
  getPolicyBottom, confirmPolicyBottom,
+  // ★ 2026-10-19：清单第①条的**自动提示**（巨潮公告；只提示不打勾）
+  getPolicyAnnouncements, refreshPolicyAnnouncements,
   // ★ 2026-09-30（用户："观察池需要展示个股的涨跌幅"）：**复用项目既有批量报价接口**
   //   （榜单页观察池 2026-09-22 起就在用 `getBatchPrices` 做同一件事）。
   getBatchPrices,
@@ -3099,19 +3128,48 @@ const PBW_LABELS = {
 }
 const pbwItems = computed(() => {
   const items = (pbw.value && pbw.value.items) || {}
-  return Object.keys(PBW_LABELS).map(k => ({
-    key: k,
-    label: PBW_LABELS[k],
-    checked: !!(items[k] || {}).checked,
-    insufficient: !!(items[k] || {}).insufficient,
-    detail: (items[k] || {}).detail || (items[k] || {}).note || '—',
-  }))
+  return Object.keys(PBW_LABELS).map(k => {
+    const o = items[k] || {}
+    // ★ 2026-10-19：第①条分两层 ——
+    //   `note` = 人工备注（结论）；`hint_text` = 自动扫描结果（事实，含"未发现"）。
+    //   有备注就显示备注，否则显示自动结果，避免"未确认"三个字盖掉"已扫到 2 条公告"。
+    const detail = k === 'nation_team_ann'
+      ? (o.note || o.hint_text || '—')
+      : (o.detail || o.note || '—')
+    return {
+      key: k,
+      label: PBW_LABELS[k],
+      checked: !!o.checked,
+      insufficient: !!o.insufficient,
+      detail,
+      // 自动提示（只有第①条有；其余为 undefined）
+      hints: o.hints || [],
+      hintCount: o.hint_count || 0,
+      hintStatus: o.hint_status || '',   // found / clear / unavailable / none
+      hintText: o.hint_text || '',
+    }
+  })
 })
 async function loadPolicyBottom() {
   try {
     const { data } = await getPolicyBottom()
     if (data && data.items) pbw.value = data
   } catch { /* 静默保留上次值 */ }
+}
+// ★ 2026-10-19：手动重扫公告（后端 scan_and_store(push=False)，不推企微）。
+//   重扫完必须重拉清单 —— 提示挂在清单第①条里，不重拉会显示旧结果。
+const annRefreshing = ref(false)
+async function refreshAnnouncements() {
+  if (annRefreshing.value) return
+  annRefreshing.value = true
+  try {
+    await refreshPolicyAnnouncements()
+    await loadPolicyBottom()
+  } catch (e) {
+    console.warn('[pbw] 公告重扫失败', e)
+  } finally {
+    annRefreshing.value = false
+  }
 }
 async function toggleNationTeam() {
   const cur = !!(pbw.value && pbw.value.items

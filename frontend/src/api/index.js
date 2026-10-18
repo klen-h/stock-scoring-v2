@@ -212,6 +212,16 @@ export const confirmPolicyBottom = (checked, note = '', date = '') =>
   http.post('/market/policy-bottom/confirm', null, {
     params: { checked: checked ? 1 : 0, note, ...(date ? { date } : {}) },
   })
+
+// ★ 2026-10-19：第①条的**自动提示**（巨潮公告扫描结果，日批写入；**只提示不打勾**）
+//   ⚠️ searchkey 是分词匹配，过滤在后端本地做（见 app/policy_announcements.py）
+export const getPolicyAnnouncements = (date = '') =>
+  http.get('/market/policy-bottom/announcements', { params: date ? { date } : {} })
+
+// 手动重扫（不推企微）；网络请求最长约 30~60s（2 个关键词 × 最多 5 页）
+export const refreshPolicyAnnouncements = (date = '') =>
+  http.post('/market/policy-bottom/announcements/refresh', null,
+    { params: date ? { date } : {}, timeout: 60000 })
 // ★ 系统提示时间线（信号总线，2026-09-23）：「系统今天说了什么」的统一视图。
 //   记录点在 `flash.wechat.push_markdown_batched`（全部业务推送的单点入口）⇒ 覆盖
 //   盘中警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练 / 数据源健康等全部来源。

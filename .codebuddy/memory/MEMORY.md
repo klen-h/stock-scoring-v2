@@ -153,6 +153,12 @@
   必须"按日全量拉 + 本地连续字串过滤（短语+动作词）"。`column=sse|szse` 对 fulltext 无效（两者结果相同）。
   实测近 90 天：白名单（四大行/三桶油等）`增持` 公告 360 条扫描 **0 命中**、`中央汇金` 整词 0 条
   ⇒ 当前**没有汇金/国新新发增持公告**（这轮是回购潮）。
+- ★ **市场底清单第①条已自动化（2026-10-19）**：`app/policy_announcements.py` 每日扫巨潮公告，
+  结果挂在 `policy_bottom_watch` 第①条（`hints/hint_status/hint_text`），**只提示不打勾**
+  （`checked` 仍只来自人工，`n_checked` 不受影响）。日批任务 `policy_announcement_watch`
+  **必须排在 `policy_bottom_watch` 之前**。`hint_status` 四态：`found/clear/unavailable/none`，
+  其中 **`unavailable`（抓取失败）必须与"未发现"显式区分**（缺失 ≠ 不满足）。
+  ★ 老行兼容：`checklist_json` 里没有 hints ⇒ 必须在 `load()` 现读现合并（否则接口全 None）。
 - ★ **龙虎榜席位口径（2026-10-18 澄清）**：`lhb_history.seats_json` 只对**池内个股 + 近 10 天**富化
   （`backfill_days(detail_recent=10)`，逐股 detail 慢），**池外恒为 0 是设计**；统计覆盖率**必须用池内做分母**
   （池内 267/4,458 = 6.0%，近月满覆盖；≤2026-07 为 0）。席位内容 = 买卖前五的营业部/机构专用/沪深股通

@@ -18,7 +18,10 @@ from __future__ import annotations
      **另行预登记**（Phase 2），不得直接接进模拟盘/仓位。
 
 五条判据（阈值全部 env 可调，见下方常量）：
-  ① 汇金/国新等国家队新公告        —— **人工打勾**（无结构化数据源；快讯只做提示，打勾权在人）
+  ① 汇金/国新等国家队新公告        —— **人工打勾 + 自动提示**（2026-10-19 起）：
+      `app/policy_announcements.py` 每日扫巨潮公告，把命中的标题/链接挂在本条下；
+      **只提示，不自动打勾**（"有公告"是事实，"构成国家队入场"是人的判断）。
+      抓取失败时显示"自动检查不可用"，**不等于没有公告**。
   ② 两市成交连续地量 < 13000 亿      —— 自动（market_amount_daily → intraday_path 回退）
   ③ 创业板指周线止跌（周线转涨）      —— 自动（指数日 K 聚合周线）
   ④ 涨跌比连续 2 日 > 0.8           —— 自动（market_emotion_daily.close_up/close_down）
@@ -323,6 +326,38 @@ def _manual_of(day: str) -> Dict:
             "ts": str(r.get("manual_at") or "")}
 
 
+def nation_hint(day: str) -> Dict:
+    """第①条的**自动提示**字段（读日批写入的公告扫描结果，一次小 SELECT）。
+
+    ★ 与"人工打勾"严格分离：本函数只产出展示用字段，**绝不改 checked**。
+    ★ 历史行兼容：2026-10-19 之前落库的 `checklist_json` 没有这些字段
+      ⇒ 必须在 `load()` 里**现读现合并**，否则老行永远显示不出提示
+      （本次实测踩到：接口返回的 ① 全是 None）。
+    """
+    aw = None
+    hint_text = ""
+    try:
+        from app import policy_announcements as pa
+        aw = pa.load(day)
+        hint_text = pa.summarize(aw) if aw else "自动检查：尚未运行（日批上线后自动填充）"
+    except Exception:
+        aw = None
+    hints = (aw or {}).get("hits") or []
+    if aw is None:
+        status = "none"          # 日批还没跑过 → 中性，不报错
+    elif not aw.get("ok"):
+        status = "unavailable"   # ★ 抓取失败 ≠ 没有公告
+    else:
+        status = "found" if hints else "clear"
+    return {
+        "hints": hints,
+        "hint_count": len(hints),
+        "hint_status": status,
+        "hint_text": hint_text,
+        "hint_scanned": (aw or {}).get("scanned") if aw else None,
+    }
+
+
 def evaluate(day: str = None, manual: Dict = None) -> Dict:
     """计算某日清单。`manual` 不传时读库中该日的人工打勾记录。
 
@@ -334,12 +369,17 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
 
     items: Dict[str, Dict] = {}
 
-    # ① 国家队公告（人工）
+    # ① 国家队公告（**人工打勾** + 2026-10-19 起**自动提示**）
+    #   ★ 提示只提供"有这些公告"的证据（标题/链接），**不打勾**：
+    #     打勾 = "我认为这构成国家队入场"，是需要人判断的结论；
+    #     自动提示 = "这几条公告标题里有汇金/国新/诚通或白名单个股"，是事实。
     items["nation_team_ann"] = {
         "checked": bool((manual or {}).get("checked")),
         "source": "manual",
         "note": (manual or {}).get("note") or "未确认（有公告请人工打勾）",
         "ts": (manual or {}).get("ts") or "",
+        # ── 自动提示（只展示，不参与 checked 计算） ──
+        **nation_hint(day),
     }
 
     # ② 成交连续地量
@@ -477,6 +517,15 @@ def load(day: str = None) -> Optional[Dict]:
     body["date"] = day
     body["manual"] = {"checked": bool(d.get("manual_nation_team")),
                       "note": d.get("manual_note") or "", "ts": str(d.get("manual_at") or "")}
+    # ★★ 2026-10-19：**现读现合并**自动提示。
+    #   原因：旧行（10-19 之前落库）的 `checklist_json` 里没有 hints 字段，
+    #   而接口优先返回落库行 ⇒ 不合并的话老行永远显示不出提示（实测踩到）。
+    #   只覆盖提示字段，**不动 checked / n_checked**（打勾仍以库里的人工记录为准）。
+    try:
+        it = body.setdefault("items", {}).setdefault("nation_team_ann", {})
+        it.update(nation_hint(day))
+    except Exception:
+        pass
     return body
 
 
@@ -533,6 +582,9 @@ def render_markdown(data: Dict = None, prefix: str = "") -> str:
         else:
             mark = "⬜"
         lines.append(f"{prefix}- {mark} {cn}：{it.get('detail') or it.get('note') or '—'}")
+        if key == "nation_team_ann" and it.get("hint_text"):
+            # ★ 2026-10-19：自动提示与"人工打勾"分开写 —— 前者是事实，后者是结论
+            lines.append(f"{prefix}  {it['hint_text']}")
     lines.append(f"{prefix}- {data.get('position_hint') or ''}")
     return "\n".join(lines)
 

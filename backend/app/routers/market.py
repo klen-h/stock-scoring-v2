@@ -574,6 +574,34 @@ def policy_bottom_confirm(
     return pbw.confirm_nation_team((date or "").strip()[:10], bool(checked), note)
 
 
+# ★ 2026-10-19：第①条的**自动提示**（巨潮公告）。只提示、不打勾 —— 打勾仍走上面那个接口。
+@router.get("/policy-bottom/announcements")
+def policy_bottom_announcements(
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+    """读最近一次自动扫描结果（日批写入；不在这里发起网络请求）。"""
+    from app import policy_bottom_watch as pbw
+    from app import policy_announcements as pa
+    day = (date or "").strip()[:10] or pbw._default_day()
+    d = pa.load(day)
+    if d is None:
+        return {"date": day, "hits": [], "hit_count": 0, "scanned": None,
+                "ok": None, "error": "", "text": "自动检查：尚未运行（日批上线后自动填充）"}
+    d["text"] = pa.summarize(d)
+    return d
+
+
+@router.post("/policy-bottom/announcements/refresh")
+def policy_bottom_announcements_refresh(
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+    """手动重扫（不推企微）。用于验证链路 / 盘中临时想看有没有新公告。"""
+    from app import policy_bottom_watch as pbw
+    from app import policy_announcements as pa
+    day = (date or "").strip()[:10] or pbw._default_day()
+    r = pa.scan_and_store(day, push=False)
+    r["text"] = pa.summarize(r)
+    return r
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  情绪快照 v0（GET /api/market/emotion，2026-09-25 交易方法论落地计划 A3）
 #  内容：涨停/跌停家数、昨日涨停股今日表现（赚钱效应）、连板高度（近似口径）
