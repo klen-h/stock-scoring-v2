@@ -969,6 +969,31 @@ def task_retention():
     return "保留期清理: " + db_retention.summarize(rows)
 
 
+def task_etf_share_watch():
+    """宽基 ETF 份额异动（★ 2026-10-19，国家队行为的 T+1 证据）。
+
+    ★ 纯观察器：结果只喂 `policy_bottom_watch` 第①条（连续 2 日 ⇒ **自动打勾**，
+      人工可覆盖），不改分数/不进闸门/不碰模拟盘。
+    ★ 数据源：**上交所官方** 份额披露（可查历史、一次 924 只），**不碰东财**。
+      深市 159915 暂不纳入（深交所该报表固定 10 条/页 = 76 页/日，成本过高）。
+    ★ 失败**不抛**：返回 WARN，清单侧显示"份额异动：检查不可用"（缺失 ≠ 没有异动）。
+    ★ 必须排在 `policy_bottom_watch` **之前**（清单要读当天结果）。
+    """
+    from app import etf_share_watch as esw
+    day = _batch_trading_day().isoformat()
+    r = esw.scan_and_store(day, push=True)
+    if not r.get("ok"):
+        return (f"ETF 份额异动: WARN {str(r.get('error'))[:70]}"
+                "⇒ 清单显示『检查不可用』（不等于没有异动）")
+    sus = r.get("suspicious") or []
+    extra = f"，疑似申购 {len(sus)} 只" if sus else ""
+    if r.get("confirmed"):
+        extra += "，★ 连续 2 日确认（第①条自动打勾）"
+    if r.get("pushed"):
+        extra += "，已推企微"
+    return f"ETF 份额异动: 窗口 {r.get('prev_date')}→{r.get('date')}{extra}"
+
+
 def task_policy_announcement_watch():
     """国家队增持公告 **自动提示**（★ 2026-10-19，巨潮法定披露渠道）。
 
@@ -1096,6 +1121,9 @@ TASKS = {
     #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
     #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
     "data_gap": (task_data_gap, "数据底座断档自检 + 板块快照自愈"),
+    # ★ 2026-10-19：宽基 ETF 份额异动（上交所官方，行为级证据）——必须排在清单之前。
+    #   连续 2 日 ≥8% ⇒ 第①条**自动打勾**（人工可覆盖）；失败不抛。
+    "etf_share_watch": (task_etf_share_watch, "宽基 ETF 份额异动（第①条证据）"),
     # ★ 2026-10-19：国家队增持公告**自动提示**（巨潮）——必须排在清单之前，
     #   否则清单第①条读到的是"上一次"的提示。只提示不打勾，失败不抛。
     "policy_announcement_watch": (task_policy_announcement_watch,
@@ -1121,7 +1149,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
-                 "policy_announcement_watch", "policy_bottom_watch",
+                 "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
                  "daily_report",
                  "trader_brief", "retention"]
 
@@ -1227,6 +1255,28 @@ def ensure_pack_fresh(max_wait_min: float):
             print(f"  强制重下数据包失败: {e}")
 
 
+def _batch_already_done(day: str) -> bool:
+    """该数据日是否**已完成过一次全量日批**（以 `daily_reports` 落库为标志）。
+
+    ★★ 2026-10-19（"日批凌晨重跑"事故，GitHub API 实测）：
+      `backend-pack.yml` 有一条兜底 `schedule: 0 14 * * 1-5`（UTC = 北京 22:00）。
+      GitHub 的定时任务**经常延迟 3~4 小时** ⇒ 实际在**次日 01:50** 才启动；它被
+      guard 判为"今天已跑"而**瞬间跳过**（run 耗时 0 分钟），但 run 结论仍是 `success`
+      ⇒ `workflow_run: completed` 又把 daily-batch 整个拉起，**全量跑第二遍**。
+      实测对照（北京时间）：
+        · 10-16 正常链：kline 18:00 → pack 19:00 → 20:17 → daily-batch 20:17~22:39
+        · 10-17 重复链：pack(schedule) 01:50（0 分钟跳过）→ daily-batch 01:50~03:25 ⚠️
+      ⇒ 每晚多烧 ~1.5h Actions + LLM 重跑；且**当天产物时间戳全被改写成凌晨**
+        （这正是"看到 02:53/03:06 就以为 cron 时区是 UTC"的由来 —— 其实 cron 是 Asia/Shanghai）。
+    """
+    try:
+        from app.database import db
+        r = db.fetch_one("SELECT 1 AS x FROM daily_reports WHERE date = %s LIMIT 1", (day,))
+        return bool(r)
+    except Exception:
+        return False        # 查不到 ⇒ **不拦**（宁可多跑一次，不能因判据故障漏跑）
+
+
 def main():
     ap = argparse.ArgumentParser(description="日批合并（唯一计算入口）")
     ap.add_argument("--tasks", default="all",
@@ -1270,6 +1320,16 @@ def main():
     print(f"=== 日批合并 ===")
     print(f"  任务: {', '.join(names)}")
     print(f"  数据源: pack（backend-pack.db）  强制重跑: {args.force}")
+
+    # ★★ 2026-10-19：**同日重复触发守卫**（成因见 `_batch_already_done` 注释）。
+    #   只拦"全量 + 自动触发(workflow_run) + 非 force"；手动 dispatch / 指定任务 / --force 照常跑。
+    if (args.tasks.strip() == "all" and not args.force
+            and os.environ.get("GITHUB_EVENT_NAME") == "workflow_run"):
+        _d = _batch_trading_day().isoformat()
+        if _batch_already_done(_d):
+            print(f"⏭ 跳过本次触发：{_d} 的日批已完成（daily_reports 已存在）。"
+                  "如需重跑请手动 dispatch 或加 --force。")
+            return 0
 
     if not args.no_pack_check:
         print("\n[0] 校验数据包新鲜度...")

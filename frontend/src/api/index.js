@@ -222,6 +222,15 @@ export const getPolicyAnnouncements = (date = '') =>
 export const refreshPolicyAnnouncements = (date = '') =>
   http.post('/market/policy-bottom/announcements/refresh', null,
     { params: date ? { date } : {}, timeout: 60000 })
+
+// ★ 2026-10-19：第①条的**份额异动证据**（上交所官方；连续 2 日 ≥8% ⇒ 自动打勾）
+//   ⚠️ 深市 159915 暂未纳入（深交所该报表固定 10 条/页 = 76 页/日，成本过高）
+export const getPolicyEtfShares = (date = '') =>
+  http.get('/market/policy-bottom/etf-shares', { params: date ? { date } : {} })
+
+export const refreshPolicyEtfShares = (date = '') =>
+  http.post('/market/policy-bottom/etf-shares/refresh', null,
+    { params: date ? { date } : {}, timeout: 60000 })
 // ★ 系统提示时间线（信号总线，2026-09-23）：「系统今天说了什么」的统一视图。
 //   记录点在 `flash.wechat.push_markdown_batched`（全部业务推送的单点入口）⇒ 覆盖
 //   盘中警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练 / 数据源健康等全部来源。

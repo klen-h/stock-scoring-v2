@@ -602,6 +602,36 @@ def policy_bottom_announcements_refresh(
     return r
 
 
+# ★ 2026-10-19：第①条的**份额异动证据**（上交所官方；连续 2 日 ≥8% ⇒ 自动打勾）
+@router.get("/policy-bottom/etf-shares")
+def policy_bottom_etf_shares(
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+    """读最近一次份额异动扫描结果（日批写入；不在这里发起网络请求）。"""
+    from app import policy_bottom_watch as pbw
+    from app import etf_share_watch as esw
+    day = (date or "").strip()[:10] or pbw._default_day()
+    d = esw.load(day)
+    if d is None:
+        return {"date": day, "rows": [], "suspicious": [], "count": 0,
+                "confirmed": False, "ok": None,
+                "text": "份额异动：尚未运行（日批上线后自动填充）"}
+    d["ok"] = True
+    d["text"] = esw.summarize(d)
+    return d
+
+
+@router.post("/policy-bottom/etf-shares/refresh")
+def policy_bottom_etf_shares_refresh(
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+    """手动重算份额异动（不推企微）。"""
+    from app import policy_bottom_watch as pbw
+    from app import etf_share_watch as esw
+    day = (date or "").strip()[:10] or pbw._default_day()
+    r = esw.scan_and_store(day, push=False)
+    r["text"] = esw.summarize(r)
+    return r
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  情绪快照 v0（GET /api/market/emotion，2026-09-25 交易方法论落地计划 A3）
 #  内容：涨停/跌停家数、昨日涨停股今日表现（赚钱效应）、连板高度（近似口径）

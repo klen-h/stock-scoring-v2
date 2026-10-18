@@ -1250,6 +1250,34 @@
                     </button>
                   </div>
                 </div>
+                <!-- ★ 2026-10-19 份额异动（行为级证据，比公告更早）：
+                     **连续 2 日 ≥8% 会把第①条自动打勾**（人工点过之后以人工为准）。 -->
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
+                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="etfRefreshing"
+                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
+                            @click="refreshEtf">
+                      {{ etfRefreshing ? '计算中…' : '重算' }}
+                    </button>
+                  </div>
+                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
+                       class="text-[10px] text-muted break-all">
+                    {{ r.code }} {{ r.name }}：今日
+                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
+                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
+                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
+                    </template>
+                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
+                  </div>
+                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
+                    （已有人工判断，自动结果不覆盖）
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -2387,6 +2415,8 @@ import {
  getPolicyBottom, confirmPolicyBottom,
   // ★ 2026-10-19：清单第①条的**自动提示**（巨潮公告；只提示不打勾）
   getPolicyAnnouncements, refreshPolicyAnnouncements,
+  // ★ 2026-10-19：第①条的**份额异动证据**（上交所；连续 2 日 ≥8% ⇒ 自动打勾）
+  refreshPolicyEtfShares,
   // ★ 2026-09-30（用户："观察池需要展示个股的涨跌幅"）：**复用项目既有批量报价接口**
   //   （榜单页观察池 2026-09-22 起就在用 `getBatchPrices` 做同一件事）。
   getBatchPrices,
@@ -3147,6 +3177,14 @@ const pbwItems = computed(() => {
       hintCount: o.hint_count || 0,
       hintStatus: o.hint_status || '',   // found / clear / unavailable / none
       hintText: o.hint_text || '',
+      // ★ 份额异动（行为级证据；连续 2 日 ≥8% ⇒ 后端已自动 checked）
+      etfRows: o.etf_rows || [],
+      etfHits: o.etf_hits || [],
+      etfStatus: o.etf_status || '',     // confirmed / watch / clear / none
+      etfConfirmed: !!o.etf_confirmed,
+      etfText: o.etf_text || '',
+      autoChecked: !!o.auto_checked,
+      manualDecided: !!o.manual_decided,
     }
   })
 })
@@ -3169,6 +3207,20 @@ async function refreshAnnouncements() {
     console.warn('[pbw] 公告重扫失败', e)
   } finally {
     annRefreshing.value = false
+  }
+}
+// ★ 2026-10-19：手动重算份额异动（上交所官方接口，不推企微）。
+const etfRefreshing = ref(false)
+async function refreshEtf() {
+  if (etfRefreshing.value) return
+  etfRefreshing.value = true
+  try {
+    await refreshPolicyEtfShares()
+    await loadPolicyBottom()      // 异动会改变第①条的 checked ⇒ 必须重拉清单
+  } catch (e) {
+    console.warn('[pbw] 份额异动重算失败', e)
+  } finally {
+    etfRefreshing.value = false
   }
 }
 async function toggleNationTeam() {

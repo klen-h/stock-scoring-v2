@@ -143,11 +143,22 @@
   ⚠️ 数据坑：`market_amount_daily` **不存在**（② 用 `intraday_path` 沪+深末点）；`macro_daily.date`
   混 `2026/9/7` 格式（**必须解析 datetime 排序**，否则 10 月排在 9 月前）；`market_emotion_daily.up/down`
   是**前一日**宽度、`close_*` 会冻结（用 `close_*` + `close_as_of` 同日校验 + 冻结检测，不合法标 insufficient）。
-- ★★ **日批真实运行时刻 = 次日 02:53~07:10（北京），不是文档写的 19:30**（2026-10-19 实测）：
-  cron-job.org 的 job `0 18 * * 1-5` **是 UTC**（= 北京次日 02:00），上游 `backend-pack` 约 50 分钟后
-  `workflow_run` 接棒 `daily-batch`。⇒ **交易当日晚上看不到当日数据**，极端情况次日 07:10 才写完
-  （GitHub 队列延迟最长约 5h）。修法：cron-job.org 改 `Asia/Shanghai` 或改 `0 10 * * 1-5`（UTC）。
-  ⚠️ 凡"调度时刻"写进注释/文档前，先问：**这个 cron 是 UTC 还是北京时**（本项目已踩）。
+- ★★ **日批时刻的真相（2026-10-19 用 GitHub API 复核，纠正我此前的错误结论）**：
+  ① **cron 时区一直是 Asia/Shanghai**，链路准点：18:00 kline → 19:00 backend-pack → **20:17** 完成
+    → daily-batch **20:17~22:39**。（此前"cron 是 UTC"的判断是错的，已改回。）
+  ② 库里那批 **01:50~03:25** 的产物来自**重复日批**：`backend-pack.yml` 的兜底
+    `schedule: 0 14 * * 1-5`（UTC=北京 22:00）常被 GitHub **延迟 3~4h** 到次日 01:50 才启动，
+    guard 秒跳过但 run 结论仍 `success` ⇒ `workflow_run completed` 又把 daily-batch 全量拉起跑第二遍。
+    ⇒ 已加 `scripts/daily_batch.py:_batch_already_done()`（全量 + workflow_run + 非 force 时，
+      若该数据日已有 `daily_reports` 就跳过）。**别只看库里的时间戳就推断调度时区**——
+      要先分清"正常链路"和"重复跑"。
+- ★ **ETF 份额数据源（2026-10-19 实测，避开东财）**：**上交所官方** `query.sse.com.cn`
+  `sqlId=COMMON_SSE_ZQPZ_ETFZL_XXPL_ETFGM_SEARCH_L`，参数 `STAT_DATE=YYYY-MM-DD`（**可查历史**，
+  非交易日返回 0 行），`pageHelp.pageSize=5000` 一次取回**全部 924 只**，字段 `TOT_VOL`=总份额（万份）。
+  ★ **深交所** `CATALOGID=1945` 的 `PAGESIZE` **无效、固定 10 条/页 ⇒ 758 只 = 76 页/日**，成本过高
+  ⇒ 159915 暂不纳入（这是有意的，不是漏了）。
+- ★ **市场底清单第①条现在是三层证据**：公告提示（巨潮，不参与打勾）+ **份额异动（连续 2 日 ≥8% ⇒ 自动打勾）**
+  + 人工覆盖（`manual_at` 非空则以人工为准）。份额判定用 `streak`（今天和前一日都 ≥ 门槛 ⇒ 2）。
 - ★ **巨潮公告检索的坑（2026-10-19 实测）**：`hisAnnouncement/query` 的 `searchkey` 是**分词全文匹配**，
   搜"汇金"会命中"银行承兑**汇**票…资**金**"、搜"中国诚通"会命中"中国海诚" ⇒ **不能当精确判据**；
   必须"按日全量拉 + 本地连续字串过滤（短语+动作词）"。`column=sse|szse` 对 fulltext 无效（两者结果相同）。

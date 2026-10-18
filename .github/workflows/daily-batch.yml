@@ -4,11 +4,12 @@ on:
   # ★ 主触发：后端包 workflow 成功后自动跑（不再猜时间）。
   #   后端包实测 1h43m，19:00 开始 → ~20:43 完成 → 本任务立即接棒，
   #   拿到的必然是今天的新包。
-  # ★★ 2026-10-19 实测更正：上面"19:00 开始 → 20:43 接棒"**不成立**。
-  #   上游 cron-job.org 的 `0 18 * * 1-5` 是 **UTC** ⇒ 实际 **02:00（次日北京）** 启动，
-  #   生产库实测日批窗口 = **次日 02:53 ~ 07:10（北京）**，日报 03:25~03:57。
-  #   ⇒ 交易当日晚上看不到当日数据；且 GitHub 队列延迟最长约 5 小时（10-12 那天 07:10 才写完）。
-  #   修法见 `kline-data.yml` 顶部注释（改 cron-job.org 时区或改成 `0 10 * * 1-5` UTC）。
+  # ★★ 2026-10-19 GitHub API 实测：cron 时区是 **Asia/Shanghai**，
+  #   正常链路 18:00 kline → 19:00 pack → **20:17 接棒 → 22:39 跑完**（与上面注释基本一致）。
+  #   ⚠️ 库里 02:53/03:06 的产物来自**第二次（重复）日批**：backend-pack 的兜底
+  #      `schedule: 0 14 * * 1-5`（UTC=北京 22:00）被 GitHub 延迟到次日 01:50 才启动，
+  #      guard 秒跳过但 run 结论仍 success ⇒ workflow_run 又把本任务全量拉起来跑一遍。
+  #      ⇒ 已在 `scripts/daily_batch.py` 加 `_batch_already_done()` 守卫（全量+workflow_run+非 force 时跳过）。
   workflow_run:
     workflows: ["Generate Backend Data Pack"]
     types: [completed]

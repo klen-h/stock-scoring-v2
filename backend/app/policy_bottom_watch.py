@@ -18,10 +18,13 @@ from __future__ import annotations
      **另行预登记**（Phase 2），不得直接接进模拟盘/仓位。
 
 五条判据（阈值全部 env 可调，见下方常量）：
-  ① 汇金/国新等国家队新公告        —— **人工打勾 + 自动提示**（2026-10-19 起）：
-      `app/policy_announcements.py` 每日扫巨潮公告，把命中的标题/链接挂在本条下；
-      **只提示，不自动打勾**（"有公告"是事实，"构成国家队入场"是人的判断）。
-      抓取失败时显示"自动检查不可用"，**不等于没有公告**。
+  ① 汇金/国新等国家队新公告        —— **三层证据**（2026-10-19 起）：
+      a) `app/policy_announcements.py` 扫巨潮公告 → 标题/链接挂在本条下，**只提示不参与打勾**
+         （"有公告"是事实，"构成国家队入场"是判断）；
+      b) `app/etf_share_watch.py` 算宽基 ETF 份额 → **单日 ≥8% 且连续 2 日 ⇒ 自动打勾**
+         （用户 2026-10-19 指定："连续 2 日放大就是第①项该自动打勾的条件"）；
+      c) **人工一旦点过打勾/取消（`manual_at` 非空），以人工为准**（自动可被覆盖）。
+      两层抓取失败都显示"不可用"，**不等于没有公告/没有异动**。
   ② 两市成交连续地量 < 13000 亿      —— 自动（market_amount_daily → intraday_path 回退）
   ③ 创业板指周线止跌（周线转涨）      —— 自动（指数日 K 聚合周线）
   ④ 涨跌比连续 2 日 > 0.8           —— 自动（market_emotion_daily.close_up/close_down）
@@ -358,6 +361,37 @@ def nation_hint(day: str) -> Dict:
     }
 
 
+def etf_hint(day: str) -> Dict:
+    """第①条的**份额异动证据**（宽基 ETF 申购；读日批写入的 `etf_share_watch`）。
+
+    ★ 与公告提示不同：这一层**参与** checked 计算（见 evaluate 里的 `auto_checked`）——
+      因为用户 2026-10-19 明确："连续 2 日放大升级为确认信号，这正是第①项该自动打勾的条件"。
+      但仍保留**人工覆盖**：一旦有人点过打勾/取消（`manual_at` 非空），以人工为准。
+    """
+    ew = None
+    text = ""
+    try:
+        from app import etf_share_watch as ew_mod
+        ew = ew_mod.load(day)
+        text = ew_mod.summarize(ew) if ew else "份额异动：尚未运行（日批上线后自动填充）"
+    except Exception:
+        ew = None
+    rows = (ew or {}).get("rows") or []
+    sus = [r for r in rows if r.get("suspicious")]
+    if ew is None:
+        status = "none"
+    else:
+        status = "confirmed" if ew.get("confirmed") else ("watch" if sus else "clear")
+    return {
+        "etf_rows": rows,
+        "etf_hits": sus,
+        "etf_status": status,                       # confirmed / watch / clear / none
+        "etf_confirmed": bool((ew or {}).get("confirmed")),
+        "etf_text": text,
+        "etf_date": (ew or {}).get("date") or "",
+    }
+
+
 def evaluate(day: str = None, manual: Dict = None) -> Dict:
     """计算某日清单。`manual` 不传时读库中该日的人工打勾记录。
 
@@ -369,17 +403,36 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
 
     items: Dict[str, Dict] = {}
 
-    # ① 国家队公告（**人工打勾** + 2026-10-19 起**自动提示**）
-    #   ★ 提示只提供"有这些公告"的证据（标题/链接），**不打勾**：
-    #     打勾 = "我认为这构成国家队入场"，是需要人判断的结论；
-    #     自动提示 = "这几条公告标题里有汇金/国新/诚通或白名单个股"，是事实。
+    # ① 国家队公告（**人工打勾** + 公告自动提示 + 份额异动证据）
+    #   三层证据严格分开：
+    #     · 公告提示 = 事实（"标题里有汇金/国新/诚通"）→ **不参与 checked**
+    #     · 份额异动 = 行为证据（"宽基 ETF 份额连续 2 日放大"）→ **参与 checked**（用户指定）
+    #     · 人工打勾 = 结论；**一旦人工做过判断（manual_at 非空），以人工为准**（可覆盖自动）
+    hint = nation_hint(day)
+    etf = etf_hint(day)
+    m = manual or {}
+    manual_decided = bool(m.get("ts"))
+    auto_checked = bool(etf.get("etf_confirmed"))
+    checked = bool(m.get("checked")) if manual_decided else auto_checked
+    if manual_decided:
+        source = "manual"
+    elif auto_checked:
+        source = "auto:etf_share"
+    else:
+        source = "manual"
     items["nation_team_ann"] = {
-        "checked": bool((manual or {}).get("checked")),
-        "source": "manual",
-        "note": (manual or {}).get("note") or "未确认（有公告请人工打勾）",
-        "ts": (manual or {}).get("ts") or "",
-        # ── 自动提示（只展示，不参与 checked 计算） ──
-        **nation_hint(day),
+        "checked": checked,
+        "source": source,
+        "auto_checked": auto_checked,
+        "manual_decided": manual_decided,
+        "auto_reason": (etf.get("etf_text") if auto_checked else ""),
+        "note": m.get("note") or ("自动：宽基 ETF 份额连续放大" if auto_checked
+                                  else "未确认（有公告请人工打勾）"),
+        "ts": m.get("ts") or "",
+        # ── 公告提示（只展示，不参与 checked 计算） ──
+        **hint,
+        # ── 份额异动（参与 checked） ──
+        **etf,
     }
 
     # ② 成交连续地量
@@ -524,6 +577,7 @@ def load(day: str = None) -> Optional[Dict]:
     try:
         it = body.setdefault("items", {}).setdefault("nation_team_ann", {})
         it.update(nation_hint(day))
+        it.update(etf_hint(day))
     except Exception:
         pass
     return body
@@ -582,9 +636,12 @@ def render_markdown(data: Dict = None, prefix: str = "") -> str:
         else:
             mark = "⬜"
         lines.append(f"{prefix}- {mark} {cn}：{it.get('detail') or it.get('note') or '—'}")
-        if key == "nation_team_ann" and it.get("hint_text"):
-            # ★ 2026-10-19：自动提示与"人工打勾"分开写 —— 前者是事实，后者是结论
-            lines.append(f"{prefix}  {it['hint_text']}")
+        if key == "nation_team_ann":
+            # ★ 2026-10-19：三层证据分开写 —— 公告=事实、份额=行为证据、打勾=结论
+            if it.get("hint_text"):
+                lines.append(f"{prefix}  {it['hint_text']}")
+            if it.get("etf_text"):
+                lines.append(f"{prefix}  {it['etf_text']}")
     lines.append(f"{prefix}- {data.get('position_hint') or ''}")
     return "\n".join(lines)
 
