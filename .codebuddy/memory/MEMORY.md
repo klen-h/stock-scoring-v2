@@ -194,6 +194,12 @@
   F1 只需"同批信号"对比、已有 46 笔可做；补防御段样本用回测切片快两个数量级；影子仓会弄脏
   "模拟盘"口径，未来统计都要加隐形过滤）。
   ⇒ 通用教训：**"样本不够"要先区分"没在产生"、"在产生但没被记录"、"在设计上就不产生"**，三者修法完全不同。
+- ★★ **模拟盘价格不可信（2026-10-18 F1 发现，未修）**：`paper_positions` 的 `exit_price` 与 `exit_date`
+  **不同源** —— `_close_position()` 落 `exit_date=_bj_date()`（今天），价格取自 `bars[-1]["close"]` 或
+  `_latest_close()`（`backtest_prices` 最新一根）。实测 **9/46（20%）的成交/退出价落在当日 [low,high] 之外**
+  （两源日线一致，非行情错）。⇒ **任何"模拟盘胜率/均收益"在修复前都不可当结论**；工具
+  `scripts/paper_vs_backtest_check.py` 已内置价格自检（`validate_prices`），跑评估前必须先看这一项。
+  修法：平仓时落 `exit_price_date` 并由它回填 `exit_date`；核对平仓 K 线复权口径。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
