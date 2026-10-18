@@ -82,9 +82,9 @@
 | A1 | `backtest_prices` 回填配额（150/日→594 缺口） | **已关闭** | 实测 **989 只**、2023-09 起、每日更新到昨日（`routers/system.py:183` 水位监控在跑）——已远超当初目标 |
 | A2 | `backtest_prices` 扩到 3000 只（pack 反灌） | **已被取代** | `data/zzshare_daily.db` 全市场 2005-01-04~2026-09-24 + `zz_daily_snapshots` 每日同步（15 天，09-18 起）；要长历史用它，不必扩 backtest_prices |
 | A3 | `mainflow_history` 整表读根治（8.7MB/次） | **已解决** | `mainforce/flow.py:411` 2026-09-17 上线**跨进程持久缓存**；聚合读仅 ≈954 行/30KB（方案不是"迁 pack"，但目的达成） |
-| A4 | `indicator-refresh.yml` 退役 + 旧 JSON 打包清理 | **未做** | workflow 仍在（`indicator-refresh.yml:24`，定时已停用、只留 dispatch）；`scripts/generate-kline-pack.py:634` 旧逻辑仍在，由 `kline-data.yml:59` 调用 |
+| A4 | `indicator-refresh.yml` 退役 + 旧 JSON 打包清理 | ✅ **已关闭（前提错误，2026-10-18）** | ①`indicator-refresh.yml` 的**定时已于 09-07 停用**（pack 覆盖≈100%、DB `indicator_cache` 基本无消费方），只剩 `workflow_dispatch` 手动补跑 ⇒ "退役"其实已完成，删文件反而丢掉应急恢复路径；②**旧 JSON 打包不能删**：`kline-pack-latest.json.gz` / `kline-delta-*.json` 被前端 `utils/klineDB.js` 读、`indicators-pack.json.gz` 被 `useFrontendScoring.js` 读 ⇒ 删了会断前端本地评分 |
 | A5 | Supabase 密码三处同步 | **已关闭** | 09-12 换新账号迁移完成（46 表验收、Render/.env 已指向新项目）；旧库密码已无关 |
-| A6 | 手册 v3.1 补记第八章（数据包/迁移） | **未做** | 现有第八章是「已知局限与待办」（`Agent知识库_完整操作手册_v3.1.md:416`） |
+| A6 | 手册补记（数据包/迁移） | ✅ **已完成（2026-10-18）** | 手册原有第八章是「已知局限」，故**新增第九章「数据包与迁移」**：四产物消费者矩阵（含"删任何一项先查表"）、SQLite 理由、包口径与版本门控、**四个已踩的坑**（文件名日期格式/CDN 缓存/末根缺失/包日期≠数据日）、生产链路、迁移史、应急运维 |
 
 ### 3.2 主力 / 因子（原 §2.2）
 
@@ -165,9 +165,10 @@
 5. **模拟盘 46 笔 vs 回测引擎胜率对比**（F1）：这是"体系能不能用"的核心校验，数据已在库里。
 6. **消息分 IC 定版**（G1）：再做 5 个交易日快照日即可跑。
 
-### P3 · 技术/文档债（可批量，无风险）
-7. `indicator-refresh.yml` 退役 + `generate-kline-pack.py` 旧 JSON 打包逻辑清理。
-8. 手册第八章补记（数据包/迁移）。
+### P3 · 技术/文档债 —— ✅ **2026-10-18 已收口（两项前提都要修正）**
+7. ~~`indicator-refresh.yml` 退役 + 旧 JSON 打包清理~~ ⇒ **不做**：前者定时早已停（09-07），
+   后者**不能删**（三个 JSON 包被前端读）。改为把"消费者矩阵"写进手册，防止后人再误删。
+8. ~~手册第八章补记~~ ⇒ **已完成**：新增第九章「数据包与迁移」。
 
 ## 五、口径与局限（诚实披露）
 

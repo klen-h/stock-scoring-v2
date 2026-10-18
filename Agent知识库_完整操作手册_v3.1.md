@@ -425,6 +425,70 @@ Agent必须在每日复盘中验证：昨日识别的矛盾今日是否兑现？
 7. [P2] 新增"外部冲击档"权重（若9/5非农验证有效）
 
 ================================================================================
+第九章：数据包与迁移（2026-10-18 补记）
+================================================================================
+
+⚠️ 读本章的目的：**别删错东西**。2026-10-18 审计时发现旧看板写着"清理旧 JSON 打包逻辑"，
+   而四个产物**全部有活消费方**（三个是前端在 fetch）—— 照那条做会直接打断前端本地评分。
+
+一、四个产物与消费者（**删任何一项前先查这张表**）
+
+  ┌────────────────────────────┬─────────────────────────────────┬──────────────────────────────┐
+  │ 产物                        │ 生成方                           │ 消费者 / 用途                 │
+  ├────────────────────────────┼─────────────────────────────────┼──────────────────────────────┤
+  │ kline-pack-YYYYMMDD.json.gz │ scripts/generate-kline-pack.py   │ 前端 utils/klineDB.js        │
+  │ kline-pack-latest.json.gz   │ 同上（latest 副本）               │ → IndexedDB（本地 K 线）      │
+  │ kline-delta-YYYYMMDD.json   │ 同上（当日增量）                  │ 前端（每日增量更新）          │
+  │ indicators-pack.json.gz     │ scripts/generate_backend_pack.py │ 前端 composables/            │
+  │                             │                                  │ useFrontendScoring.js        │
+  │                             │                                  │ （本地评分指标事实源）        │
+  │ backend-pack.db.gz          │ 同上（**SQLite**）                │ 后端 DATA_SOURCE=pack        │
+  │                             │                                  │ （klines/indicators/codes/meta）│
+  └────────────────────────────┴─────────────────────────────────┴──────────────────────────────┘
+
+  ⇒ **只有 `backend-pack.db.gz` 是 SQLite、只给后端**；其余三个都是前端 fetch（带 `?t=` 破 CDN 缓存）。
+
+二、为什么后端包用 SQLite 而不是 JSON
+  45MB JSON 解析成 dict 常驻 ~150-200MB ⇒ Render 512MB 直接 OOM。
+  SQLite 落磁盘按需查单只（<5ms），常驻内存≈0。
+
+三、包的口径
+  · kline-pack：`{version:2, date:"YYYYMMDD", stocks:{code:{name, market_cap,
+    klines:[[date,open,high,low,close,volume], ...]}}}`（默认近 60 日、最多 3000 只）
+  · 前端有 `REQUIRED_PACK_VERSION` 门控：**旧版本包会被拒收**，并提示"确认数据生成工作流已用新代码重跑"
+  · indicators：`_series`（500 天）是"评分统一事实源"，**必须与 kline-pack 同版本**
+  · Pages 只发布 `latest` 一份历史包，避免历史版本堆积
+
+四、已知坑（全部实际踩过）
+  1. **文件名日期格式**：`_parse_pack_date` 曾只认 `%Y-%m-%d`，而实际文件名是 `YYYYMMDD`
+     ⇒ 常驻进程一直挂旧包且无告警（2026-09-12 修）。
+  2. **CDN 缓存**：同一文件名可能返回旧包 ⇒ 前端每次 `?t=Date.now()`；后端按 `pack_date` 判新旧。
+  3. **末根缺失**：包在收盘前生成时最后一根 K 线不存在 ⇒ 前端必须"末根补齐重试"。
+  4. **"包日期" ≠ "数据所属交易日"**：与 `market_snapshot.data_date` 同一纪律 ——
+     任何"数据是哪天的"展示都必须取**数据所属日**，不能取文件生成时刻。
+
+五、生产链路（现状）
+  · 18:00 cron-job.org → Actions `kline-data`：拉全市场行情 → 落 `realtime-quotes.json`
+    → `generate-kline-pack.py`（K线 + 增量）→ `generate_backend_pack.py`
+    （backend-pack.db.gz + indicators-pack.json.gz）→ 发布 Pages
+  · 19:30+ Actions `daily-batch`：战法 / 矛盾 / 快照 / 榜单 / 消息分 / 日报等 21 项
+  · Render：`DATA_SOURCE=pack` + `RENDER_READ_ONLY=1` + `ENABLE_HEAVY_JOBS=0`（重活全在 Actions）
+  · 冷备：腾讯云 `stock-postgres`，每日 03:00 备份、留 14 份
+
+六、迁移史与现状
+  · 2026-09-12：Supabase 旧账号配额耗尽（402）⇒ **换新账号**迁移（46 表全恢复，关键表截止 09-11）
+  · 同期：`DATA_SOURCE` 切 `pack` + 研究脚本本机缓存 ⇒ egress 由 458MB/天 降至常态 2-3GB/月
+  · 原"脱离 Supabase"方案（买域名 + 命名隧道 + DB 迁腾讯云）**已放弃**：
+    换号后配额够用，腾讯云仅作灾备（该方案留档在 `PLAN_2026-09-12.md §5`）
+
+七、手工运维（应急，别当日常）
+  · 重建前端包：`python scripts/generate-kline-pack.py --output-dir ./data/kline`
+  · 重建后端包：`python scripts/generate_backend_pack.py --output-dir ./data/kline`
+  · 手动补 DB 指标缓存：`.github/workflows/indicator-refresh.yml` —— **仅 `workflow_dispatch`**，
+    定时已于 2026-09-07 停用（pack 覆盖率≈100%，DB `indicator_cache` 基本无消费方）；
+    保留该文件只为"需要手动重建"这一条路径，**不要把它当日常任务，也不要以为删了没影响**。
+
+================================================================================
 附录：核心术语表
 ================================================================================
 
