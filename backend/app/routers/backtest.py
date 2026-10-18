@@ -29,6 +29,18 @@ router = APIRouter()
 _CACHE_TTL = 600          # 结果缓存 10 分钟
 _cache = {}               # {name: (ts, result_json)}
 
+# ★★ 2026-10-18（egress 实测驱动）：**后台刷新冷却**。
+#   原实现（`get_strategy` 里 `if persisted:` 分支）**每次命中持久缓存都无条件起线程重算**
+#   ⇒ 用户每访问一次回测页（间隔 >60s）就触发一轮全量重算，而重算要
+#   `_load_prices_map` 拉几百只票的日线（实测 ~2.5 万行/次）——
+#   pg_stat_statements 里该语句累计 **748 次 / 1890 万行（≈1.4GB）**，就是这里来的。
+#   回测数据是**日频**（信号/日线每天才变一次）⇒ 一天刷几次足够。
+#   规则：① 持久缓存超过 `_REFRESH_AFTER_HOURS` 小时才考虑刷新；
+#         ② 同一策略两次刷新至少间隔 `_REFRESH_COOLDOWN` 秒；③ 内存缓存恢复正常 TTL。
+_REFRESH_AFTER_HOURS = 6
+_REFRESH_COOLDOWN = 1800            # 30 分钟
+_last_refresh = {}                  # {name: ts}（进程内；重启后首次访问会重算一次，可接受）
+
 _STRATEGY_NAMES = {"signals", "warfare", "macro"}
 
 
@@ -157,14 +169,18 @@ def get_strategy(name: str = Query(..., description="signals / warfare / macro")
         resp["cached"] = True
         return resp
 
-    # DB 持久缓存：有就秒回（标 stale），后台线程刷新（stale-while-revalidate）
+    # DB 持久缓存：有就秒回（标 stale）；**按需 + 冷却**后才后台刷新（stale-while-revalidate）
     persisted = _cache_load(name)
     if persisted:
         resp = persisted
         resp["cached"] = True
-        # 内存仅存 60s：后台刷新失败时，下个请求仍会重试刷新
-        _cache[name] = (time.time() - _CACHE_TTL + 60, resp)
-        threading.Thread(target=_refresh_background, args=(name,), daemon=True).start()
+        _cache[name] = (time.time(), resp)          # 正常 TTL（10 分钟）
+        age_h = resp.get("stale_hours") or 0
+        now_ts = time.time()
+        if (age_h >= _REFRESH_AFTER_HOURS
+                and now_ts - _last_refresh.get(name, 0) >= _REFRESH_COOLDOWN):
+            _last_refresh[name] = now_ts            # 先占位，防并发重复起线程
+            threading.Thread(target=_refresh_background, args=(name,), daemon=True).start()
         return resp
 
     # 无任何缓存（首次部署/清库）：同步计算
@@ -196,14 +212,30 @@ def _refresh_background(name: str):
         print(f"[backtest] 后台刷新 {name} 失败: {e}")
 
 
-def preheat_all():
-    """预热三类策略回测（scheduler 盘后调用），写内存 + DB 持久缓存。"""
+def preheat_all(force: bool = False, max_age_hours: float = 3.0) -> dict:
+    """预热三类策略回测，写内存 + DB 持久缓存。**返回 {策略: 结果}**（供日批日志）。
+
+    ★★ 2026-10-18（egress）：`force=False` 时**跳过仍新鲜的缓存**（默认 3 小时）——
+      日批重跑/重试不会白算一遍；单策略重算要拉几百只票日线（~2.5 万行）。
+    ★ 为什么必须由日批（Actions）调用：本函数原挂在 Render 的 `_heavy` 组，
+      而线上是 `RENDER_READ_ONLY=1` ⇒ **从未真正跑过** ⇒ 持久缓存长期陈旧
+      （实测 09-22 / 09-23 / 10-11）⇒ 每次访问回测页都退化成"重算"。
+    """
+    out = {}
     for name in sorted(_STRATEGY_NAMES):
         try:
+            if not force:
+                cur = _cache_load(name)
+                if cur and (cur.get("stale_hours") or 0) < max_age_hours:
+                    out[name] = "skip(fresh)"
+                    continue
             _compute_and_cache(name)
+            out[name] = "ok"
             print(f"[backtest] 预热 {name} 完成")
         except Exception as e:
+            out[name] = f"fail: {str(e)[:80]}"
             print(f"[backtest] 预热 {name} 失败: {e}")
+    return out
 
 
 # ── 周度回测报告归档（日批每周五生成；库为准，文件兜底）──────────────

@@ -444,6 +444,21 @@ def task_rank_live():
     return compute_and_store(limit=1000)
 
 
+def task_backtest_preheat():
+    """回测缓存预热（2026-10-18，egress 治理）。
+
+    ★ 为什么迁进日批：该预热原挂在 Render 的 `_heavy` 组，而线上 `RENDER_READ_ONLY=1`
+      ⇒ **从未真正跑过** ⇒ `backtest_cache` 长期陈旧（实测 09-22/09-23/10-11）⇒
+      每次访问回测页都退化成"重算"（单策略要拉几百只票日线，pg_stat_statements 里
+      该批读累计 748 次 / 1890 万行 ≈ 1.4GB）。
+    ★ 放在这里 = 每天一次、可观测、可失败告警；配合 `get_strategy` 的刷新冷却
+      （30 分钟 + 6 小时陈旧门槛）⇒ 用户访问不再触发重算。
+    """
+    from app.routers.backtest import preheat_all
+    r = preheat_all()
+    return "回测预热: " + ", ".join(f"{k}={v}" for k, v in r.items())
+
+
 def task_pattern_launch_scan():
     """「缩量调整→放量启动」形态每日扫描（2026-10-15，用户需求）。
 
@@ -978,6 +993,8 @@ TASKS = {
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
     # ★ 2026-10-15：缩量启动形态每日扫描（描述性观察，非信号）。依赖 backfill 已回填。
     "pattern_launch_scan": (task_pattern_launch_scan, "缩量启动形态扫描 + 观察回填"),
+    # ★ 2026-10-18：回测缓存预热（原 Render _heavy 组，只读模式从未跑过 ⇒ 缓存长期陈旧）
+    "backtest_preheat": (task_backtest_preheat, "回测缓存预热（用户访问不再触发重算）"),
     "lhb": (task_lhb, "龙虎榜同步"),
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
@@ -1021,6 +1038,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "rank_live", "shadow_rank", "pattern_launch_scan",
+                 "backtest_preheat",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",

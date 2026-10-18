@@ -174,6 +174,10 @@
   ④ 流量基线：`scripts/egress_probe.py snapshot/diff`（tag `cleanup_20261018`）；
   pg_stat_statements 实测 **98.5M 行/37 天 ≈ 430MB/天**，与 Supabase 页面 429MB/天吻合。
   ⑤ **`kline_cache`/`indicator_cache` 是生产表**（评分引擎靠它们避免回源），**不可当缓存清掉**。
+  ⑥ ★★ **Render 只读模式（`RENDER_READ_ONLY=1`）下所有 `_heavy` 循环都不跑** ⇒ 任何"靠 Render
+  循环保活"的缓存/预热在线上**等于从未生效**（`backtest_preheat` 就是如此：缓存停在 09-22，
+  导致每次访问回测页都重算、累计 748 次/1890 万行≈1.4GB）。**必须迁进日批（Actions）**；
+  且消费侧要有"陈旧门槛 + 刷新冷却"（`routers/backtest.py`：stale≥6h 且距上次≥30min 才刷新）。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
