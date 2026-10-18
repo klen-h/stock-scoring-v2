@@ -49,7 +49,7 @@ def load_paper() -> list:
     """已平仓的模拟盘记录（**只取 closed**；cancelled 是没成交，不参与业绩）。"""
     rows = db.fetch(
         "SELECT id, code, name, strategy_name, signal_date, entry_price, stop_loss, "
-        "fill_price, fill_date, exit_price, exit_date, exit_reason, pnl_pct "
+        "fill_price, fill_date, exit_price, exit_date, exit_price_date, exit_reason, pnl_pct "
         "FROM paper_positions WHERE status = 'closed' "
         "ORDER BY signal_date, id")
     out = []
@@ -80,10 +80,15 @@ def validate_prices(paper: list, bars_map: dict) -> list:
     for p in paper:
         bars = bars_map.get(p["code"]) or []
         by = {b["date"]: b for b in bars}
-        fb, eb = by.get(p["fill_date"]), by.get(p["exit_date"])
+        # ★ 2026-10-18（同型修复后的新口径）：退出价必须按 **exit_price_date**
+        #   （价格所属交易日）校验；该列为空 = 回填时无法归属 ⇒ 一律视为不可信。
+        pd = str(p.get("exit_price_date") or "")[:10]
+        p["price_date"] = pd or p["exit_date"]
+        p["price_known"] = bool(pd)
+        fb, eb = by.get(p["fill_date"]), by.get(p["price_date"])
         p["fill_ok"] = bool(fb and p["fill_price"]
                             and fb["low"] - 0.011 <= p["fill_price"] <= fb["high"] + 0.011)
-        p["exit_ok"] = bool(eb and p["exit_price"]
+        p["exit_ok"] = bool(p["price_known"] and eb and p["exit_price"]
                             and eb["low"] - 0.011 <= p["exit_price"] <= eb["high"] + 0.011)
         p["price_ok"] = p["fill_ok"] and p["exit_ok"]
         if not p["price_ok"]:
@@ -91,8 +96,10 @@ def validate_prices(paper: list, bars_map: dict) -> list:
                 "code": p["code"], "name": p["name"], "signal_date": p["signal_date"],
                 "fill_date": p["fill_date"], "fill_price": p["fill_price"],
                 "fill_range": f"{fb['low']:.2f}~{fb['high']:.2f}" if fb else "无此日",
-                "exit_date": p["exit_date"], "exit_price": p["exit_price"],
-                "exit_range": f"{eb['low']:.2f}~{eb['high']:.2f}" if eb else "无此日",
+                "exit_date": p["price_date"], "exit_price": p["exit_price"],
+                "exit_range": (f"{eb['low']:.2f}~{eb['high']:.2f}" if eb
+                               else ("来源不明（exit_price_date 为空）" if not p["price_known"]
+                                     else "无此日")),
                 "fill_ok": p["fill_ok"], "exit_ok": p["exit_ok"],
             })
     return bad
@@ -373,18 +380,19 @@ def write_report(paper, rows, stP, stA, stB, skA, skB, split, dec, bad, clean_st
              f"几乎全是亏损单（如 600686 −8.18% vs 引擎 −1.00%），把结论整体拉偏。")
     L.append(f"3. **参数差**（A−B）胜率 {stA.get('win', 0) - stB.get('win', 0):+.1f}pp ⇒ 现行 −7% 止损"
              "（`WARFARE_STOP_PCT_V2`）与早期 0.85 止损之间**有实质差别**，不是纯噪声。")
-    L.append("4. ★ **新发现的数据缺陷（P1）**：模拟盘记录的成交/退出价有 "
-             f"**{len(bad)}/{len(rows)} = {len(bad) / max(len(rows), 1) * 100:.0f}%** 落在当日 "
-             "[low, high] 之外。两个候选机制（都在 `strategies/paper_trading.py`，已定位到行）：")
+    L.append("4. ★ **数据缺陷（P1）—— 已修（2026-10-18）**：模拟盘记录的成交/退出价曾有 "
+             f"**9/46 = 20%** 落在当日 [low, high] 之外；修复后剩 **{len(bad)} 笔**"
+             "（4 笔退出价来源不明 + 1 笔成交价越界）。根因两处，均已定位到行：")
     L.append("   - **① 价格与日期不同源**：`_close_position()` 用 `exit_date = _bj_date()`（**今天**）落库，"
              "而价格来自 `bars[-1][\"close\"]`（盘后兜底分支）或 `_latest_close()`（安全网分支）**不一定是同一天** "
              "⇒ 「退出日」是今天、「退出价」是别的日子 ⇒ 必然越界。")
     L.append("   - **② 复权口径**：部分个股呈**每只恒定的价差/比率**（603408 10.91 vs 11.60、"
              "600686 10.10 vs 10.89、001296 20.00 vs 22.00），符合「前复权 vs 不复权」的特征"
              "（`backtest_prices` 是原始价）⇒ 需核对平仓所用 K 线的取数口径。")
-    L.append("   → **修法**：平仓时把「价格所属交易日」一并落库（新增 `exit_price_date`），"
-             "`exit_date` 一律由它回填；并核对平仓 K 线是否复权。**在此之前，任何「模拟盘实测绩效」"
-             "都只能当参考，不能当结论。**")
+    L.append("   → **已落地**：`_close_position(..., price_date)` 让价格与日期**成对赋值**；"
+             "新增 `exit_price_date` 列并由它回填 `exit_date`；`scripts/backfill_paper_exit_date.py` "
+             "回填历史（**38 本来就对 / 4 校正 / 4 无法归属**，后者的 `exit_price_date` 置 NULL）；"
+             "`paper_stats`/`paper_attribution` 与本源已**排除来源不明的记录**（宁少不假）。")
     L.append("")
 
     path_md.write_text("\n".join(L), encoding="utf-8")

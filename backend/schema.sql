@@ -148,6 +148,10 @@ CREATE TABLE IF NOT EXISTS paper_positions (
     status TEXT NOT NULL DEFAULT 'pending',
     exit_price REAL,
     exit_date TEXT,
+    -- ★ 2026-10-18：**exit_price 所属交易日**（exit_date 由它回填）。
+    --   原先 exit_date 写"平仓动作发生的日子"，而价格常来自别的交易日 K 线
+    --   ⇒ 9/46 笔"退出价落在当日 [low,high] 之外"（物理上不可能成交）。
+    exit_price_date TEXT,
     exit_reason TEXT,
     pnl_pct REAL,
     pnl_amount REAL,

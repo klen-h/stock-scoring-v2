@@ -223,6 +223,13 @@
 2. **复权口径**：部分个股呈**每只恒定的比率**（603408 10.91 vs 11.60、600686 10.10 vs 10.89、
    001296 20.00 vs 22.00）⇒ 符合"前复权 vs 不复权"特征，需核对平仓所用 K 线的取数口径。
 
-**修法（建议）**：平仓时把**价格所属交易日**一并落库（`exit_price_date`），`exit_date` 由它回填；
-再核对平仓 K 线是否复权。**在此之前，一切"模拟盘实测绩效"只能当参考**——
-F1 的对比也因此必须先剔除这 9 笔（剔除后结论从"模拟盘更差 0.32pt"翻转为"基本吻合、略好"）。
+**✅ 已修（2026-10-18，同日）**：
+- `_close_position(pos, price, reason, price_date)` —— 价格与日期**成对赋值**（止损/止盈取触发 bar 的日期、
+  到期取 `bars[-1]` 的日期、盘中取今天、安全网取 `_latest_bar()` 的日期）；新增 `exit_price_date` 列，
+  `exit_date` 由它回填（`closed_at` 仍是真实写入时刻）；`/paper/positions/{id}/close` 同步改。
+- `scripts/backfill_paper_exit_date.py` 回填历史：**38 笔本来就对 / 4 笔校正 / 4 笔无法归属**
+  （价格在 `fill_date` 之后任何 open/close 里都找不到，`exit_price_date` 置 NULL 不猜）。
+- `paper_stats` / `paper_attribution` **排除来源不明的记录**（宁少不假），`paper_attribution` 另报
+  `excluded_bad_price` 数量。
+- F1 复跑：越界笔 9 → **5**（4 笔未知 + 1 笔成交价越界）；可信样本 37 → **41 笔**，
+  P 胜率 **43.9% / −0.311%** vs A **41.5% / −0.263%** ⇒ **+2.4pp / −0.05pt（基本吻合）**。

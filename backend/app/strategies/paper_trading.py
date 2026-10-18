@@ -162,6 +162,13 @@ def _migrate() -> None:
         "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS peak_equity REAL",
         "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS cooldown_until TEXT",
         "ALTER TABLE paper_account ADD COLUMN IF NOT EXISTS risk_frozen INTEGER DEFAULT 0",
+        # ★★ 2026-10-18（F1 对比发现：20% 已平仓记录的成交/退出价不在当日 [low,high] 内）：
+        #   `exit_date` 原先写的是 `_bj_date()`（**平仓动作发生的日子**），而价格常常来自
+        #   **别的交易日**的 K 线（盘后兜底取 `bars[-1].close`、安全网取"最新一根收盘"）
+        #   ⇒ "退出日"与"退出价"不同源，两者拼在一起就是物理上不可能的价格。
+        #   与 `market_snapshot.saved_at` 事故**同型**（写入时刻冒充数据时刻）。
+        #   ⇒ 另记**价格所属交易日**，`exit_date` 由它回填（`closed_at` 仍是真正的写入时刻）。
+        "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS exit_price_date TEXT",
         """CREATE TABLE IF NOT EXISTS paper_risk_events (
             id SERIAL PRIMARY KEY,
             time TEXT NOT NULL,
@@ -679,22 +686,40 @@ def _hold_days(fill_date: str, exit_date: str = None) -> int:
         return 0
 
 
+def _latest_bar(code: str) -> tuple:
+    """最新一根日线 → (close, date)。**必须成对返回**：价格与日期分离是本次事故的根因。"""
+    row = db.fetch_one("SELECT close, date FROM backtest_prices WHERE code=%s "
+                       "ORDER BY date DESC LIMIT 1", (code,))
+    if not row or not row.get("close"):
+        return 0.0, ""
+    return float(row["close"]), str(row["date"])[:10]
+
+
 def _latest_close(code: str) -> float:
-    row = db.fetch_one("SELECT close FROM backtest_prices WHERE code=%s ORDER BY date DESC LIMIT 1", (code,))
-    return float(row["close"]) if row and row.get("close") else 0.0
+    """仅取收盘价（保留给老调用方）；**新代码请用 `_latest_bar`** 以便同时拿到日期。"""
+    return _latest_bar(code)[0]
 
 
-def _close_position(pos: dict, exit_price: float, reason: str) -> None:
-    """平仓并结算（含双边成本，与 engine.match_signals 同口径）。"""
+def _close_position(pos: dict, exit_price: float, reason: str,
+                    price_date: str = None) -> None:
+    """平仓并结算（含双边成本，与 engine.match_signals 同口径）。
+
+    ★★ 2026-10-18：新增 `price_date` = **`exit_price` 所属的交易日**。
+      不传 ⇒ 退回 `_bj_date()`（仅适用于"价格确实取自今天的实时/日线"的路径）。
+      `exit_date` 一律由它回填；`closed_at` 仍是真正的写入时刻 —— 两者语义不同，
+      混用会让"退出日"和"退出价"来自不同日子（实测 9/46 笔因此落在当日区间之外）。
+    """
+    px_date = (str(price_date or "").strip()[:10]) or _bj_date()
     fill = float(pos["fill_price"] or 0)
     if fill <= 0 or exit_price <= 0:
         db.execute(
-            "UPDATE paper_positions SET status='closed', exit_reason=%s, exit_date=%s, closed_at=%s "
-            "WHERE id=%s", (reason, _bj_date(), _now_iso(), pos["id"]))
+            "UPDATE paper_positions SET status='closed', exit_reason=%s, exit_date=%s, "
+            "exit_price_date=%s, closed_at=%s WHERE id=%s",
+            (reason, px_date, px_date, _now_iso(), pos["id"]))
         # ★ Coach 平仓闭环（W2 模拟盘完整接入 B-2）：关闭预承诺剧本
         try:
             from app.coach.audit import close_plan
-            close_plan(pos["id"], pos["code"], pos.get("fill_date"), _bj_date(), reason)
+            close_plan(pos["id"], pos["code"], pos.get("fill_date"), px_date, reason)
         except Exception as e:
             print(f"[paper] Coach 剧本关闭失败（不影响平仓）: {e}")
         return
@@ -706,14 +731,15 @@ def _close_position(pos: dict, exit_price: float, reason: str) -> None:
     cost = float(pos["cost"] or 0)
     pnl_amount = cost * (pnl_pct / 100)
     db.execute(
-        "UPDATE paper_positions SET status='closed', exit_price=%s, exit_date=%s, exit_reason=%s, "
+        "UPDATE paper_positions SET status='closed', exit_price=%s, exit_date=%s, "
+        "exit_price_date=%s, exit_reason=%s, "
         "pnl_pct=%s, pnl_amount=%s, is_win=%s, closed_at=%s WHERE id=%s",
-        (exit_price, _bj_date(), reason, round(pnl_pct, 2), round(pnl_amount, 2),
+        (exit_price, px_date, px_date, reason, round(pnl_pct, 2), round(pnl_amount, 2),
          1 if pnl_pct > 0 else 0, _now_iso(), pos["id"]))
     # ★ Coach 平仓闭环（W2 模拟盘完整接入 B-2）：关闭预承诺剧本并记录是否按剧本离场
     try:
         from app.coach.audit import close_plan
-        close_plan(pos["id"], pos["code"], pos.get("fill_date"), _bj_date(), reason)
+        close_plan(pos["id"], pos["code"], pos.get("fill_date"), px_date, reason)
     except Exception as e:
         print(f"[paper] Coach 剧本关闭失败（不影响平仓）: {e}")
     db.execute("UPDATE paper_account SET realized_pnl = realized_pnl + %s, updated_at=%s WHERE id=%s",
@@ -757,7 +783,9 @@ def track_positions(use_daily: bool = False) -> dict:
             continue
         stop = float(h["stop_loss"] or 0)
         target = float(h["target_price"] or 0)
-        reason, exit_p = None, 0.0
+        # ★ 2026-10-18：`exit_d` = **价格所属交易日**，必须与 `exit_p` 成对赋值
+        #   （只给价格不给日期 ⇒ 平仓把"动作发生日"当"数据日"，价格可能落在当日区间外）
+        reason, exit_p, exit_d = None, 0.0, None
         if use_daily:
             # 盘后兜底：只用 fill_date 之后的日线（T+1 可卖日），排除买入当日
             # ★ 跌停一字卖不出（与 engine.match_signals 同口径）：封死跌停的交易日
@@ -772,9 +800,10 @@ def track_positions(use_daily: bool = False) -> dict:
                         if _limit_down_locked(bars, j):
                             continue          # 封死跌停卖不出，看下一日
                         reason, exit_p = "stop_loss", min(float(b["open"] or 0), stop)
+                        exit_d = b["date"]
                         break
                     if target > 0 and high >= target:
-                        reason, exit_p = "take_profit", target
+                        reason, exit_p, exit_d = "take_profit", target, b["date"]
                         break
                 if not reason:
                     # 持有到期才离场（engine 口径：含成交日在内的第 N 个交易日收盘）。
@@ -784,13 +813,17 @@ def track_positions(use_daily: bool = False) -> dict:
                     #   分支都会平仓，未到期仓位被按 timeout_no_trigger 以「昨日
                     #   收盘价」提前离场，实际持有期退化为 ~2 日，与回测 v2 口径分叉。
                     if 1 + len(bars) >= _max_hold():
+                        # ★ 价格与日期**成对取自同一根 bar**：`bars[-1]` 通常是"昨收"
+                        #   （当日 K 线 16:10 才回填），若把今天当退出日就会越界。
                         reason, exit_p = "expire", float(bars[-1]["close"] or 0)
+                        exit_d = bars[-1]["date"]
                     else:
                         continue   # 未满持有期且未触发止损止盈 → 顺延明日兜底
             elif _hold_days(h["fill_date"], today) >= _max_hold() + 2:
                 # 安全网：日线数据长期缺失（回填持续失败）时按最新收盘价强平，
                 # 防止仓位永久挂起；正常情况走不到这里。
-                reason, exit_p = "expire", _latest_close(h["code"])
+                reason = "expire"
+                exit_p, exit_d = _latest_bar(h["code"])
         else:
             q = quotes.get(h["code"]) or {}
             price = float(q.get("price") or 0)
@@ -800,9 +833,9 @@ def track_positions(use_daily: bool = False) -> dict:
             if locked and price > 0 and stop > 0 and price <= stop:
                 print(f"[paper] {h['code']} 跌停封死（{price:.2f}），卖出顺延")
             elif price > 0 and stop > 0 and price <= stop:
-                reason, exit_p = "stop_loss", price
+                reason, exit_p, exit_d = "stop_loss", price, today   # 实时价 = 今天的价
             elif price > 0 and target > 0 and price >= target:
-                reason, exit_p = "take_profit", price
+                reason, exit_p, exit_d = "take_profit", price, today
             # ★ 2026-09-13 审查 P0-2：v2 的到期离场统一由盘后兜底按 engine 口径
             #   （含成交日第 N 个交易日收盘价）执行；盘中不再按自然日强平——
             #   否则周五成交的仓位周一（仅 1 个交易日）就会被自然日计数误判到期。
@@ -816,9 +849,13 @@ def track_positions(use_daily: bool = False) -> dict:
                 else:
                     # 强平按实时价结算（与止损/止盈同口径）；_latest_close 盘中
                     # 读到的是昨收，到期日一字涨跌停结算价会差出约 10%
-                    reason, exit_p = "expire", price if price > 0 else _latest_close(h["code"])
+                    if price > 0:
+                        reason, exit_p, exit_d = "expire", price, today
+                    else:
+                        reason = "expire"
+                        exit_p, exit_d = _latest_bar(h["code"])
         if reason:
-            _close_position(h, exit_p, reason)
+            _close_position(h, exit_p, reason, exit_d)
             closed += 1
     _update_peak_equity()   # G2 基准：每次跟踪后刷新净值峰值
     print(f"[paper] 持仓跟踪{'（盘后兜底）' if use_daily else ''}: 平仓 {closed} 笔")
@@ -829,10 +866,26 @@ def track_positions(use_daily: bool = False) -> dict:
 #  Phase 4：统计回填 + 白名单自动刷新
 # ================================================================
 
+def _stats_rows(rows: list) -> tuple:
+    """统计口径过滤：剔除**退出价来源不明**的记录（`exit_price_date IS NULL`）。
+
+    ★★ 2026-10-18：回填时发现 4 笔的退出价在 `fill_date` 之后任何 open/close 里都找不到
+      （且落在当日 [low, high] 之外 ⇒ 物理上不可能成交）。把它们计入胜率/均收益，
+      等于用"不知道是哪天的价格"算绩效 ⇒ 一律排除，并如实报出数量。
+    返回 (可用行, 剔除数)。
+    """
+    bad = [r for r in rows if not r.get("exit_price_date")]
+    good = [r for r in rows if r.get("exit_price_date")]
+    if bad:
+        print(f"[paper] 统计排除 {len(bad)} 笔：退出价来源不明（exit_price_date 为空）")
+    return good, len(bad)
+
+
 def paper_stats() -> dict:
     """按战法分组已平仓统计（复用 backtest.strategies._strategy_stat 口径）。"""
     from app.backtest.strategies import _strategy_stat
     rows = db.fetch("SELECT * FROM paper_positions WHERE status='closed' ORDER BY closed_at ASC")
+    rows, _excluded = _stats_rows(rows or [])
     groups = {}
     for r in rows:
         groups.setdefault(r["strategy_name"], []).append(r)
@@ -861,9 +914,11 @@ def paper_attribution() -> dict:
     from app.strategies.recommendation import STRATEGY_ZH
     rows = db.fetch(
         "SELECT * FROM paper_positions WHERE status='closed' ORDER BY closed_at ASC") or []
+    rows, excluded = _stats_rows(rows)
     if not rows:
-        return {"closed_total": 0, "by_strategy": {}, "by_exit_reason": {},
-                "by_hold_bucket": {}, "by_confidence": {}, "by_plan_followed": {}}
+        return {"closed_total": 0, "excluded_bad_price": excluded, "by_strategy": {},
+                "by_exit_reason": {}, "by_hold_bucket": {}, "by_confidence": {},
+                "by_plan_followed": {}}
 
     # 教练剧本执行一致性：position_id → followed（1 按剧本 / 0 未按剧本 / 缺 无剧本）
     followed_map = {}
@@ -919,6 +974,8 @@ def paper_attribution() -> dict:
 
     return {
         "closed_total": len(rows),
+        # ★ 2026-10-18：如实报出"因退出价来源不明被排除"的笔数（宁少不假）
+        "excluded_bad_price": excluded,
         "by_strategy": _group(rows, lambda r: STRATEGY_ZH.get(r["strategy_name"], r["strategy_name"])),
         "by_exit_reason": _group(rows, lambda r: _EXIT_REASON_ZH.get(r.get("exit_reason"), r.get("exit_reason") or "未知")),
         "by_hold_bucket": _group(rows, _bucket),

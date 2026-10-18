@@ -81,10 +81,12 @@ def close_position(pid: int):
     row = db.fetch_one("SELECT * FROM paper_positions WHERE id=%s", (pid,))
     if not row or row["status"] != "holding":
         raise HTTPException(status_code=404, detail="持仓不存在或已平仓")
-    price = paper_trading._latest_close(row["code"])
+    # ★ 2026-10-18：价格与日期**成对取**（只用 _latest_close 会让 exit_date 落在"今天"
+    #   而价格是别的交易日 ⇒ 与当日区间不符）
+    price, price_date = paper_trading._latest_bar(row["code"])
     if price <= 0:
         raise HTTPException(status_code=409, detail="无有效平仓价")
-    paper_trading._close_position(row, price, "manual")
+    paper_trading._close_position(row, price, "manual", price_date)
     return {"ok": True, "message": f"{row['code']} 已手动平仓 @ {price}"}
 
 
