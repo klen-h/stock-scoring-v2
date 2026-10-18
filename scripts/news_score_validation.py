@@ -11,11 +11,23 @@
 初步结论（2026-09-05，n=161）：合并 IC +0.202（T+2）——方向为正，
 但仅 3 个截面日，不足以定论；建议积累 ≥20 个快照日（约 4 周）后重跑定版。
 
+★★ 定版（2026-10-18，快照日 **34** 个 / 2026-08-24~10-16，已过 20 日门槛）：
+  **FAIL —— 无可用预测力**。T+2 按日 IC 均值 **−0.003**（中位 +0.047，正比 17/25，
+  CI [−0.086,+0.071]，P(均值≥0.10)=0.004）；T+5 均值 **+0.004**（13/22，CI 跨 0）。
+  判据（PLAN 原定）IC ≥ 0.10 ⇒ 不达标 ⇒ **维持"独立展示、不进综合分"**。
+  ⚠️ 当初的 +0.202 是 **3 个截面 + 跨日合并** 的产物，两个因素都不可信：
+     · 3 天样本的 IC 只是噪声；
+     · **跨日合并**把不同日期的分数水平混在一起排名 ⇒ 会混入"日期级水平差异"
+       （实测合并 −0.181 而按日均值 −0.003，符号被压反）。
+  ⇒ 判定口径固定为：**按日算 rank IC → 对日取均值 → 按日聚类 bootstrap**（本脚本已实现）。
+  若日后消息分算法有实质改动，须**新开预登记 v2** 再验，不得在本判据上"再跑几次看看"。
+
 用法：python scripts/news_score_validation.py [--fwd 2 5]
 """
 
 import argparse
 import os
+import random
 import sys
 import time
 
@@ -93,6 +105,7 @@ def main():
         print(f"\n=== T+{n} ===")
         print("日期 | n | IC | 高分组均收益 | 低分组均收益")
         pooled_x, pooled_y = [], []
+        day_ics = []      # ★ 2026-10-18：**按日 IC 序列**（判定的正确口径，见下方说明）
         for d in sorted(by_date):
             xs, ys = [], []
             for code, s in by_date[d]:
@@ -103,20 +116,53 @@ def main():
             if len(xs) < 20:
                 continue
             ic = spearman(xs, ys)
+            if ic is not None:
+                day_ics.append(ic)
             med = statistics.median(xs)
             hi = [y for x, y in zip(xs, ys) if x > med]
             lo = [y for x, y in zip(xs, ys) if x <= med]
             pooled_x += xs
             pooled_y += ys
-            print(f"{d} | {len(xs)} | {ic:+.3f} | {sum(hi)/len(hi):+.2f}% | {sum(lo)/len(lo):+.2f}%")
-        ic = spearman(pooled_x, pooled_y)
-        if ic is not None:
-            print(f"合并: n={len(pooled_x)} IC={ic:+.3f}"
-                  + ("  → 方向为正，继续积累" if ic > 0.05 else
-                     "  → 方向为负/无信号，纳入综合分需谨慎" if ic < -0.05 else
-                     "  → 无有效信号"))
-        else:
+            # ★ 2026-10-18 修：某日所有个股 score 相同（全 0 或全同一档）时，
+            #   `x > med` 为空集 ⇒ 原来直接除零崩掉（实测跑 6 个截面就挂）。
+            #   空组显式打 "—"（**不是 0**：0 会被读成"该组收益为零"）。
+            hi_s = f"{sum(hi) / len(hi):+.2f}%" if hi else "—"
+            lo_s = f"{sum(lo) / len(lo):+.2f}%" if lo else "—"
+            print(f"{d} | {len(xs)} | {ic:+.3f} | {hi_s} | {lo_s}")
+        pooled_ic = spearman(pooled_x, pooled_y)
+        if pooled_ic is not None:
+            print(f"合并: n={len(pooled_x)} IC={pooled_ic:+.3f}"
+                  "   ← ⚠️ 跨日合并仅参考：把不同日期的原始分数混在一起排名，"
+                  "会混入“日期级分数水平差异”，**不能用于判定**")
+
+        # ★★ 2026-10-18：**判定口径 = 按日 IC 的均值**（rank IC 必须**在截面内**算，
+        #   再对日取平均；跨日合并在统计上是错的 —— 实测出现过“合并 −0.181 而
+        #   按日多为正”的矛盾，就是日期水平差把符号压反了）。
+        #   bootstrap 按**日重采样**（与项目其他检验同纪律：按簇重采样，不按个股）。
+        if not day_ics:
             print("样本不足（<20），等 news_history 积累")
+            continue
+        mean_ic = sum(day_ics) / len(day_ics)
+        srt = sorted(day_ics)
+        med_ic = srt[len(srt) // 2] if len(srt) % 2 else (srt[len(srt) // 2 - 1] + srt[len(srt) // 2]) / 2
+        pos = sum(1 for v in day_ics if v > 0)
+        rnd = random.Random(20261018)
+        boot = []
+        for _ in range(2000):
+            pick = [day_ics[rnd.randrange(len(day_ics))] for _ in range(len(day_ics))]
+            boot.append(sum(pick) / len(pick))
+        boot.sort()
+        lo, hi = boot[int(0.025 * len(boot))], boot[int(0.975 * len(boot)) - 1]
+        p_pass = sum(1 for b in boot if b >= 0.10) / len(boot)
+        print(f"按日 IC: 均值 {mean_ic:+.3f} ｜ 中位 {med_ic:+.3f} ｜ 正比 {pos}/{len(day_ics)}"
+              f" ｜ 聚类 bootstrap 95%CI [{lo:+.3f}, {hi:+.3f}] ｜ P(均值≥0.100)={p_pass:.3f}")
+        if len(day_ics) < 20:
+            print(f"判定: INSUFFICIENT（快照日 {len(day_ics)} < 20）")
+        elif mean_ic >= 0.10 and lo > 0:
+            print("判定: **PASS**（判据：按日 IC 均值 ≥ 0.10 且 CI 下界 > 0）")
+        else:
+            print("判定: **FAIL**（判据：按日 IC 均值 ≥ 0.10 且 CI 下界 > 0）"
+                  " ⇒ 消息分**无可用预测力**，不得纳入综合分/决策链")
 
 
 if __name__ == "__main__":
