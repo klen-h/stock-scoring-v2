@@ -136,6 +136,10 @@
   （shrink_rebound_* 注释）**不成立**。算收益统一用**原始收盘比**（除权跳空未复权，已知简化），
   需要除权后单日收益用 zzshare 自带 `pct_chg`。`backtest_prices` 无 pct_chg/is_st/涨跌停列；
   `zzshare` 全市场 2005-01-04~2026-09-24、backtest_prices 989 只 2023-09~昨日（每日更新）。
+- ★ **龙虎榜席位口径（2026-10-18 澄清）**：`lhb_history.seats_json` 只对**池内个股 + 近 10 天**富化
+  （`backfill_days(detail_recent=10)`，逐股 detail 慢），**池外恒为 0 是设计**；统计覆盖率**必须用池内做分母**
+  （池内 267/4,458 = 6.0%，近月满覆盖；≤2026-07 为 0）。席位内容 = 买卖前五的营业部/机构专用/沪深股通
+  实名 + `youzi` 游资标识。做"席位→收益"回溯研究需另回填 ~4,191 条 detail（先测限频）。
 - ★ **形态研究工具**：`scripts/pattern_launch_check.py`（缩量调整→放量启动，胜率验证；
   可配参数/单股/全市场/样本闸+bootstrap+基准/MD+自包含 SVG HTML，落 `backend/backtest_reports/`）
   + `scripts/pattern_launch_grid.py`（参数敏感性网格；一次扫描多组合，全量 5.5 分钟；
