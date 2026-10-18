@@ -240,6 +240,19 @@ async def stock_cache_refresh_loop():
             except Exception as e:
                 fails += 1
                 print(f"[scheduler] 行情缓存刷新失败(连续 {fails} 次): {e}")
+        else:
+            # ★★ 2026-10-18（用户报"最新的快照有问题：行情 10-16 03:10 · 快照"）：
+            #   本循环原先**只在盘中刷新**，非交易时段什么都不做 ⇒ 若进程在**盘后/夜间**
+            #   重启（启动时恢复了当时那份快照），而**次日日批**又写了更新的快照，
+            #   进程内存就永远停在那份旧快照上 —— 实测：内存 `data_date=10-15`、
+            #   库里已是 `10-16`（10-17 02:53 写入），整个周末都在服务旧数据。
+            #   ⇒ 非交易时段每次醒来都问一句「库里有没有更新的快照」，有就采纳。
+            #   代价：一次只取两列的小 SELECT / 2 分钟（比用户看到错数据便宜得多）。
+            try:
+                from app.tencent import sync_snapshot_if_newer
+                await asyncio.to_thread(sync_snapshot_if_newer)
+            except Exception as e:
+                print(f"[scheduler] 快照同步失败: {e}")
         # ★★ 2026-09-29：**行情缓存陈旧巡检**（每次醒来都查，同一天只告警一次）。
         #   为什么必须加（真实事故）：线上缓存冻结在 **09-24 收盘快照**、09-28 整个交易日
         #   的刷新都没成功，而失败路径只有一行 print（日志一滚就没了）⇒ 两天后是**用户
@@ -253,7 +266,12 @@ async def stock_cache_refresh_loop():
                                          latest_completed_trading_day as _lctd)
             _ts = float(_tq.get("data_ts") or 0)
             #   时区：+8h 后走 gmtime ⇒ **与服务器时区无关**（Render 上是 UTC，别用 localtime）
-            _day = time.strftime("%Y-%m-%d", time.gmtime(_ts + 8 * 3600)) if _ts else "?"
+            # ★★ 2026-10-18：**必须优先用 `data_date`（数据所属交易日）**。原先用 data_ts 的日期，
+            #   而快照路径下 data_ts = saved_at（**写入时刻**）—— 实测线上 data_ts=10-16 03:10
+            #   格式化后正好 == 期望日 10-16 ⇒ **巡检通过、零告警**，而内容其实是 10-15 收盘。
+            #   （同一个坑的第三种形态：写入时刻冒充数据时刻。）
+            _day = (str(_tq.get("data_date") or "").strip()[:10]
+                    or (time.strftime("%Y-%m-%d", time.gmtime(_ts + 8 * 3600)) if _ts else "?"))
             _now = _bj_now()
             _expect = (_now.strftime("%Y-%m-%d")
                        if (_is_td(_now) and (_now.hour, _now.minute) >= (9, 15))

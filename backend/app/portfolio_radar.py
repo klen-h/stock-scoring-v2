@@ -660,6 +660,10 @@ def _build_impl() -> Dict:
         #   `tencent.py` 106-123 行的注释**早就写明**这条纪律（`last_update` = 缓存填充时刻、
         #   `data_ts` = 数据时刻），消费者要显示"数据截至"必须用后者。此处把它暴露给前端。
         "quote_as_of": _bj_ts_str(_tq_cache().get("data_ts") or 0),
+        # ★★ 2026-10-18（用户报"行情 10-16 03:10 · 快照"）：`quote_as_of` 在快照路径下是
+        #   **写入时刻**（10-16 03:10 写的快照，内容其实是 10-15 收盘）⇒ 前端标"行情 10-16 03:10"
+        #   会让人读成"10-16 的行情"。另下发**数据所属交易日**，快照态一律用它显示。
+        "quote_data_date": (_tq_cache().get("data_date") or None),
         "quote_from_snapshot": bool(_tq_cache().get("from_snapshot")),
         "regime": regime,
         "strategy_date": str(sig_date)[:10] if sig_date else None,

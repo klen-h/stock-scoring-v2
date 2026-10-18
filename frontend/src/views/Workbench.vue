@@ -2504,6 +2504,10 @@ const radarAsOf = ref('')
 //   `tencent._cache["data_ts"]`）—— 与 `radarAsOf`（= 本次计算时刻）**不是一回事**。
 const radarQuoteAsOf = ref('')
 const radarQuoteSnap = ref(false)
+// ★ 2026-10-18（用户报"行情 10-16 03:10 · 快照"）：快照态下 `quote_as_of` 是**写入时刻**，
+//   内容可能是上一交易日收盘（10-16 03:10 写的快照装的是 10-15 的数据）⇒ 必须另存
+//   「数据所属交易日」并优先展示它，否则用户会把"写入时刻"读成"行情是哪天的"。
+const radarQuoteDataDate = ref('')
 // ★ 2026-09-29：**组合层**风控三件（风格暴露 / 板块集中度 / 海外敏感链）——
 //   逐只 alerts 之外的整体视角，数据零新增请求（后端 `portfolio_risk`）。
 const radarRisk = ref(null)
@@ -2827,27 +2831,36 @@ const styleTitle = computed(() => {
     + `黄线（等权） ${signNum(s.equal)}%\n`
     + `背离（加权−等权） ${signNum(s.spread)}%（正=权重强于个股）\n`
     + `真实上证指数 ${signNum(s.index_pct)}%（对照）\n\n${gs}\n\n`
-    + `数据 ${s.as_of || '—'}${s.from_snapshot ? '（收盘快照，非实时）' : ''}\n${s.note || ''}`
+    + `数据 ${(s.from_snapshot && s.data_date) ? `${s.data_date} 收盘` : (s.as_of || '—')}`
+    + `${s.from_snapshot ? '（收盘快照，非实时）' : ''}\n${s.note || ''}`
 })
 const radarSummaryKeyed = computed(() => radarSummary.value || {})
 // ★ 2026-09-29：卡片"时点"文案 —— 快照态显示 `MM-DD HH:MM · 快照`（标黄），实时态只显示 HH:MM。
 const radarQuote = computed(() => {
   const ts = radarQuoteAsOf.value
   if (!ts) return null
+  if (!radarQuoteSnap.value) return { text: ts.slice(11, 16), stale: false }
+  // ★★ 2026-10-18：快照态**优先显示数据所属交易日**（"10-15 收盘（快照）"），
+  //   只有后端没给 data_date（老版本/老快照）时才退回写入时刻 —— 这是最后兜底，
+  //   因为它会把"10-16 03:10 写的昨日快照"读成"10-16 的行情"。
+  const dd = radarQuoteDataDate.value
   return {
-    text: radarQuoteSnap.value ? `${ts.slice(5, 16)} · 快照` : ts.slice(11, 16),
-    stale: !!radarQuoteSnap.value,
+    text: dd ? `${dd.slice(5)} 收盘（快照）` : `${ts.slice(5, 16)} · 快照`,
+    stale: true,
   }
 })
 // ⚠️ hover 文案放 computed 里而不是模板内联：模板里**跨行**的反引号字符串会被
 //   @vue/compiler 的表达式解析器判成 "Unterminated template"（实测踩到，构建直接失败）。
 const radarQuoteTitle = computed(() => {
   if (!radarQuote.value) return ''
+  const dd = radarQuoteDataDate.value
   return [
-    `行情数据自身时刻 = ${radarQuoteAsOf.value}` +
-      (radarQuoteSnap.value ? '（收盘快照，非实时）' : ''),
-    `本卡片计算时刻 = ${radarAsOf.value || '—'}（是"什么时候算的"，不是"数据是什么时候的"）`,
-    '现价 / 今日 / 盈亏 都取自这份行情；两者不一致 = 行情源陈旧',
+    dd ? `数据所属交易日 = ${dd}（收盘）` : `行情写入时刻 = ${radarQuoteAsOf.value}`,
+    radarQuoteSnap.value
+      ? '⚠ 来自收盘快照（非实时）：这是"最近已完成交易日"的收盘价，不是今天的盘中价'
+      : `抓取时刻 = ${radarQuoteAsOf.value}`,
+    `本卡片计算时刻 = ${radarAsOf.value || '—'}（"什么时候算的"，不是"数据是什么时候的"）`,
+    '现价 / 今日 / 盈亏 都取自这份行情；数据日 ≠ 最近交易日 = 行情源陈旧',
   ].join('\n')
 })
 // 组合待办：未决策教练卡（当天实时 / 回放日全部）
@@ -3148,6 +3161,7 @@ async function loadRadar() {
     radarAsOf.value = (data && data.as_of) || ''
     radarQuoteAsOf.value = (data && data.quote_as_of) || ''
     radarQuoteSnap.value = !!(data && data.quote_from_snapshot)
+    radarQuoteDataDate.value = (data && data.quote_data_date) || ''
     radarRisk.value = (data && data.portfolio_risk) || null
     radarErr.value = ''
   } catch (e) {

@@ -548,8 +548,8 @@ def save_market_snapshot() -> bool:
     return ok
 
 
-def restore_market_snapshot(restore_stocks: bool = True) -> bool:
-    """从数据库收盘快照恢复内存状态（启动时调用）。
+def restore_market_snapshot(restore_stocks: bool = True, _snap: dict = None) -> bool:
+    """从数据库收盘快照恢复内存状态（启动时调用；`_snap` 供调用方复用已读到的快照）。
 
     无论何时都恢复 _valid_codes（方案 C：让重启后的刷新走增量而非全量）。
     仅当 restore_stocks=True（盘后/周末）时才恢复全量行情——盘中恢复昨日收盘数据会误导。
@@ -561,7 +561,7 @@ def restore_market_snapshot(restore_stocks: bool = True) -> bool:
         print(f"[snapshot] 无法导入 store: {e}")
         return False
     global _valid_codes
-    snap = store.load_market_snapshot()
+    snap = _snap if _snap is not None else store.load_market_snapshot()
     if not snap:
         print("[snapshot] 无收盘快照，首次将全量扫描")
         return False
@@ -609,6 +609,37 @@ def restore_market_snapshot(restore_stocks: bool = True) -> bool:
         except Exception:
             pass
         return True
+
+
+def sync_snapshot_if_newer() -> bool:
+    """非交易时段：库里快照的**数据日**比内存新时采纳它。返回是否更新了内存。
+
+    ★★ 2026-10-18（用户报"最新的快照有问题：行情 10-16 03:10 · 快照"）：
+      事故形态 —— 进程在**盘后/夜间**重启，启动时恢复了当时那份快照（内容 = 上一交易日收盘，
+      如 10-16 03:10 写的那份装的是 **10-15** 收盘）；随后**次日日批**又写了更新的一份
+      （10-17 02:53 写、装 10-16 收盘）。
+      而 `stock_cache_refresh_loop` **只在盘中刷新** ⇒ 非交易时段（周末/长假）没有任何路径
+      去读新快照 ⇒ 进程两天都在用 10-15 的数据，且**陈旧巡检也看不出来**
+      （巡检原先比较 data_ts 的日期，而 data_ts=写入时刻 10-16 03:10，格式化后正好命中期望日）。
+
+    口径：只认 **`data_date`（数据所属交易日）**，字符串比较（YYYY-MM-DD 可直接比大小）。
+    只在"更**新**"时采纳，绝不回退；读不到/相等/异常一律不动（fail-open，不打断主循环）。
+    """
+    try:
+        from app.flash import store
+        snap = store.load_market_snapshot()
+    except Exception as e:
+        print(f"[snapshot] 同步检查失败（忽略）: {e}")
+        return False
+    if not snap or not snap.get("stocks"):
+        return False
+    new_d = str(snap.get("data_date") or str(snap.get("saved_at") or "")[:10])[:10]
+    cur_d = str(_cache.get("data_date") or "")[:10]
+    if not new_d or (cur_d and new_d <= cur_d):
+        return False
+    print(f"[snapshot] 检测到更新的收盘快照: 内存数据日 {cur_d or '空'} → {new_d}"
+          f"（saved_at={snap.get('saved_at')}），采纳之")
+    return restore_market_snapshot(restore_stocks=True, _snap=snap)
     print(f"[snapshot] 已恢复 {len(_valid_codes)} 个有效代码（行情待盘中刷新）")
     return False
 
