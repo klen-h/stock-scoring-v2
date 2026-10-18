@@ -1392,11 +1392,11 @@ async def score_top(
         for item in result_data:
             item["news_score"] = news_scores.get(item["code"], 0)
 
-        # ★ 主力行为标注（mainforce_state 日批表）：出货嫌疑/吸筹区标签 + 乘数。
-        #   乘数在读端现算（不信任批处理进程的 env）：MAINFORCE_MODE=auto 且
-        #   当前 regime 在闸门内时，出货嫌疑 ×0.85（只降不升）；
-        #   offensive 段高位常常继续涨 → 恒不惩罚。默认 off 只挂标签不动分。
-        #   信号判定仍用 raw total（与拥挤度同不变量）。
+        # ★ 主力行为标注（mainforce_state 日批表）：出货嫌疑/吸筹区标签 + 乘数字段。
+        #   ★ 2026-10-18：**这里只拼标签，不乘分**（乘数由 P1-12 方案A 移除，见下方 1439 行
+        #   的裁决注释）。`mult` 字段仅作展示/透出，**全库无消费方**；配置已定案 `off`
+        #   （`mainforce/overlay.py` 模块头有定案依据）。要恢复"出货降权"须重新预登记。
+        #   信号判定与排序同用 raw total（与拥挤度同不变量）。
         try:
             from app.mainforce.overlay import DISTRIBUTION_MULT, GATE_REGIMES
             from app.mainforce.overlay import _mode as _mf_mode

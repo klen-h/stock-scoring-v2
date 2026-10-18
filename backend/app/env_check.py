@@ -30,9 +30,13 @@ EXPECTED_SWITCHES: Dict[str, tuple] = {
     "CONTRADICTION_RISK_HOOK": (
         "1",
         "宽度崩塌风控钩子（severe 次日新仓风险额减半 + 趋势类暂停推送/入池）"),
+    # ★ 2026-10-18 定案 = **off**（原期望值写 auto，与代码默认 off 不一致 ⇒ 静默分叉）。
+    #   依据：P1-12 方案A 后 `mult` **无任何消费方**（全库检索确认）⇒ auto/off 行为等价；
+    #   而 auto 是"待接线"状态，留着会让未来一次接线把未背书的惩罚乘数静默启用。
+    #   ⇒ fail-closed：启用须显式改配置 + 预登记。仍留 auto 的环境会在此处显示不符（应被看见）。
     "MAINFORCE_MODE": (
-        "auto",
-        "主力出货乘数闸门（P1-12 方案A 后仅作标签，不再影响排序/分数）"),
+        "off",
+        "主力出货乘数闸门（**当前无消费方**：P1-12 方案A 后仅作标签 ⇒ 定案 off）"),
     "STRATEGY_GRIND_GATE": ("on", "阴跌闸门（neutral/nb + MA 向下 → 入场层全禁）"),
     "STRATEGY_WIDE_SCAN": ("on", "扫描层放宽（阴跌段照常扫描落库攒样本）"),
     "STRATEGY_MAINFORCE_GATE": ("on", "战法信号主力过滤闸门（推送/入池）"),

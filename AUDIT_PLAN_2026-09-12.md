@@ -90,7 +90,7 @@
 
 | # | 原项 | 结论 | 证据 / 说明 |
 |---|---|---|---|
-| B1 | `MAINFORCE_MODE=auto` 观察期结论 | **未定（三处不一致）** | 代码默认 `off`（`mainforce/overlay.py:54`）；`deploy/env.template:52` 与 `daily-batch.yml:170`/`backend-pack.yml` 都是 `auto` ⇒ 本地/线上行为可能不同，需定案 |
+| B1 | `MAINFORCE_MODE=auto` 观察期结论 | ✅ **2026-10-18 定案 = `off`** | 代码默认 `off`，而 `env.template` / `daily-batch.yml` / `backend-pack.yml` / `env_check` 四处都是 `auto` ⇒ 已统一为 **off**（fail-closed）。依据：P1-12 方案A 后 **`mult` 无任何消费方**（全库检索确认）⇒ auto/off 行为等价，"观察期"本身失去意义；留 auto 会让将来一次接线把未背书的乘数静默启用。启用须显式改配置 + 预登记 |
 | B2 | 龙虎榜席位（游资/机构识别） | **卡在数据** | 字段与语义已实现（`lhb_history.seats_json`、`mainforce/lhb.py:136` 有 `youzi` 标识），但**实测 30,893 条里只有 267 条有席位 = 0.9%** ⇒ 口径无法排期，先补数据或明确放弃 |
 | B3 | 矛盾扫描 × 主力行为交叉验证 | **未做** | 现只有 `mainforce/trade_gate.py:85` 读取"当日矛盾数"削弱主力依据；无"出货嫌疑 ∩ 矛盾"交叉 |
 | B4 | zzshare 阶段 1 验收（现金流因子） | **未做** | `_score_quality` 仍只有 ROE/负债率/毛利率（`scoring/engine.py:1130`）；zzshare 现金流仅用于 L3 矛盾扫描 |

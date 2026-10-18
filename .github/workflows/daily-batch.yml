@@ -116,8 +116,10 @@ jobs:
           # 主力出货乘数闸门：本地 .env 已用 auto、.env.example 亦建议 auto，
           # 此前 Actions/Render 均未配（=off）→ 与本地意图不符。P1-12 方案A 后
           # 该值仅影响 mainforce 标签（mult/active），不再影响排序/分数。
-          # ⚠️ Render 控制台需同步配 MAINFORCE_MODE=auto（代码侧无法代改）。
-          MAINFORCE_MODE: auto
+          # ★ 2026-10-18 定案 off（原写 auto，与代码默认值不一致 = 静默分叉）：
+          #   `mult` 自 P1-12 方案A 后**无消费方** ⇒ auto/off 行为等价；
+          #   留 auto 会让将来一次接线把未背书的惩罚乘数静默启用 ⇒ fail-closed。
+          MAINFORCE_MODE: off
         run: |
           python scripts/daily_batch.py \
             --tasks ${{ github.event.inputs.tasks || 'all' }} \

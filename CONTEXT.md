@@ -53,7 +53,7 @@
 | `backend/app/mainforce/chips.py` | 筹码分布 CYQ 轮动模型（获利盘/集中度/价格位置，numpy） |
 | `backend/app/mainforce/flow.py` | 主力资金流（新浪主源；东财兜底已封禁勿高频）+ `mainflow_history` 表 + 快照股本反推 |
 | `backend/app/mainforce/phases.py` | 主力阶段标签（吸筹/洗盘/拉升/出货/下跌，向量化） |
-| `backend/app/mainforce/overlay.py` | 组合信号合成 + 出货乘数 0.85（MAINFORCE_MODE 开关 + regime 闸门） |
+| `backend/app/mainforce/overlay.py` | 组合信号合成 + 出货乘数 0.85（MAINFORCE_MODE 开关 + regime 闸门；★ 2026-10-18 定案 `off` —— 该乘数当前**无消费方**，仅作字段透出） |
 | `backend/app/mainforce/state.py` | 日批全池计算 → `mainforce_state` 表（1,173 只/11 分钟，17:30 调度） |
 | `backend/app/mainforce/gate.py` | 战法信号主力过滤闸门（剔高位+拉升段，推送/入池生效；重放验证 48.1%→50.3%） |
 | `backend/app/mainforce/lhb.py` | 龙虎榜数据层（zzshare 源）+ `lhb_history` 表（87 日/7,160 行；净买强度四桶单调，大额净卖 -6.28%/T5） |

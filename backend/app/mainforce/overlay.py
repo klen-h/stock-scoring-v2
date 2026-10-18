@@ -34,6 +34,20 @@ from __future__ import annotations  # 兼容 Python 3.9（Render/Docker）：允
     拥挤/出货惩罚方向不确定 → 恒不惩罚）
   - 买侧组合仅输出标签（mainforce.signal = accumulate/watch），不参与排序
 
+★★ 2026-10-18 **定案：`off`**（此前 `env.template` / 两个 workflow / `env_check`
+   都写 `auto`，与代码默认值不一致 —— "三处 auto vs 一处 off" 的静默分叉）。
+  定案依据（不是偏好，是事实）：
+    1. **P1-12 方案A 之后 `mult` 已没有任何消费方** —— 全库检索确认：没有任何代码把
+       `overlay()["mult"]` 乘进分数/排序（`state.py` 只是把字段透出给接口），
+       `scoring.py` 里出现的 `DISTRIBUTION_MULT` 也只是常量引用。
+       ⇒ 今天 `auto` 与 `off` **行为完全等价**，"auto 观察期"这件事本身已经失去意义。
+    2. 但 `auto` 是**待接线状态**：将来若有人把 `mult` 接回排序，环境里的 `auto` 会让一个
+       **从未有预登记背书**的惩罚乘数**静默生效**。
+    3. ⇒ 默认取 `off`（fail-closed）：要启用必须**显式改配置 + 走预登记**
+       （回测底座已有：`scripts/mainforce_factor_backtest.py`）。
+   若某环境仍留着 `MAINFORCE_MODE=auto`，`env_check` 会把它列为不符项（这是**真实的**
+   配置偏差，应当被看见，而不是把期望值改成 auto 去迁就）。
+
 数据注入：engine.py 保持零网络/零 DB，本模块接收 bars + flow_rows，
 由调用方（routers/scoring、批量任务）从 backtest_prices/mainflow_history 读取。
 ================================================================================

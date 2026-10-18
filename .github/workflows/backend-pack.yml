@@ -167,7 +167,8 @@ jobs:
           #   （非密钥，可直接写死），让日志干净 ⇒ 真出现不符时才有信号价值。
           WHITELIST_CRITERION: expectancy
           CONTRADICTION_RISK_HOOK: '1'
-          MAINFORCE_MODE: auto
+          # ★ 2026-10-18 定案 off（与代码默认/模板/日批一致；原 auto 是静默分叉）
+          MAINFORCE_MODE: off
         run: python scripts/daily_batch.py --tasks mainflow --no-pack-check --no-quotes
 
       - name: Generate backend data pack (klines + indicators + mainforce)
