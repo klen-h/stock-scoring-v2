@@ -163,6 +163,17 @@
   ★ 关键纪律：形态已在**全历史**看过三次 ⇒ **同一段历史无检验力** ⇒ 判据**只对前瞻样本生效**
   （`pattern_scan_daily.date ≥ 2026-10-15`），闸门 ≥20 独立信号日 ∧ ≥120 观测（预计 1~3 个月），
   **不得放宽参数再试**。GO 且用户拍板才可改 `SIGNAL_STATUS`。
+- ★★ **Supabase 容量/流量铁律（2026-10-18 实测处置：库 409→275MB、egress 4.04GB/5GB）**：
+  ① **研究数据绝不落 PG**：`mf_edge_daily` 曾 134MB/34 万行留在库里（研究表），而权威副本是本地
+  `backend/data/mf_edge_daily.db`（39.8 万行超集）⇒ 已 DROP。**新研究一律写本地 SQLite**。
+  ② **读 `backtest_prices` 必须带窗口**：全量读是 egress 第一大户（累计 ≈3GB）。批量用
+  `ROW_NUMBER() OVER (PARTITION BY code)` **一次查询**取全池最近 N 根（形态扫描由此 178s→6.4s、
+  45MB→8.6MB/天）；**禁止 995 次逐只往返**。
+  ③ `load_flow_map(days=None)` = 整表读（≈8.7MB/次，累计 191 次/20M 行/1.7GB）⇒ 生产必须传 days；
+  代码已加 WARN。
+  ④ 流量基线：`scripts/egress_probe.py snapshot/diff`（tag `cleanup_20261018`）；
+  pg_stat_statements 实测 **98.5M 行/37 天 ≈ 430MB/天**，与 Supabase 页面 429MB/天吻合。
+  ⑤ **`kline_cache`/`indicator_cache` 是生产表**（评分引擎靠它们避免回源），**不可当缓存清掉**。
 
 ## 路由与验证纪律
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
