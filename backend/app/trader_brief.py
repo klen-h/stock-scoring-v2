@@ -359,6 +359,22 @@ def _render_funding_md(data: dict, phase: str) -> str:
     return "\n".join(out) + "\n\n"
 
 
+def _render_pbw_md(data: dict) -> str:
+    """市场底确认清单（★ 2026-10-18，**确定性渲染、两阶段都展示**）。
+
+    为什么不交给 LLM：清单是"打勾进度"，数字必须与库内一致；
+    交给 LLM 叙述就等于把可核对的进度变成可能被改写的话术（项目既有红线）。
+    """
+    try:
+        from app import policy_bottom_watch as _pbw
+        day = str((data or {}).get("date") or "")[:10]
+        body = _pbw.render_markdown(_pbw.load(day) if day else None)
+        return (body + "\n\n") if body else ""
+    except Exception as e:
+        print(f"[trader_brief] 市场底清单渲染失败（不影响简报）: {e}")
+        return ""
+
+
 def _fallback_skeleton(data: dict, reason: str) -> str:
     """LLM 不可用/失败时的规则骨架简报（绝不用 LLM 常识补写）。"""
     lines = [f"> AI 暂不可用（{reason}），以下为规则版简报（仅确定性内容）", ""]
@@ -460,7 +476,8 @@ def generate_trader_brief(phase: str = None, force: bool = False,
 
     narrative = _validate_refs(narrative, data)
     funding_md = _render_funding_md(data, phase)   # ★ P1-6：盘前固定展示两融+情绪
-    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n{funding_md}"
+    pbw_md = _render_pbw_md(data)                  # ★ 2026-10-18：市场底确认清单（观察器）
+    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n{funding_md}{pbw_md}"
           f"> 数据窗口：{data.get('candidates_date', today)}")
 
     data_json = json.dumps(data, ensure_ascii=False)

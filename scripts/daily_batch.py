@@ -969,6 +969,36 @@ def task_retention():
     return "保留期清理: " + db_retention.summarize(rows)
 
 
+def task_policy_bottom_watch():
+    """市场底确认清单（★ 2026-10-18，**纯观察器，非信号**）。
+
+    ★ 依赖：`intraday_path`（② 成交额的二级源，同批更早跑）与 `market_emotion_daily`
+      （④ 涨跌比，由 Render 盘后 loop 写）。任一缺数据不会失败，只把该条标 `insufficient`
+      （缺失 ≠ 不满足）。
+    ★ 推送只在"达成数首次跨过 4"当日一次；同日重跑不重复推（`run_daily` 内幂等）。
+    ★ 不碰评分/排序/闸门/模拟盘准入 —— 见 `app/policy_bottom_watch.py` 模块头的预登记声明。
+    """
+    from app import policy_bottom_watch as pbw
+    day = _batch_trading_day().isoformat()
+    r = pbw.run_daily(day)
+    if not r.get("ok"):
+        raise RuntimeError(f"市场底清单计算失败: {r.get('error')}")
+    extra = ""
+    if r.get("crossed_4"):
+        try:
+            from app.flash import wechat
+            md = pbw.render_markdown(pbw.load(day))
+            wechat.push_markdown_batched("市场底确认清单达成 4/5", md,
+                                         force=True, category="alert")
+            extra = "，已推送企微"
+        except Exception as e:
+            print(f"[daily-batch] 清单达成推送失败: {e}")     # ASCII（铁律⑥）
+            extra = f"，推送失败({str(e)[:40]})"
+    elif r.get("already_crossed"):
+        extra = "，今日已推送过（幂等）"
+    return f"市场底清单: {r.get('n_checked')}/5{extra}"
+
+
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
@@ -1043,6 +1073,9 @@ TASKS = {
     #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
     #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
     "data_gap": (task_data_gap, "数据底座断档自检 + 板块快照自愈"),
+    # ★ 2026-10-18：市场底确认清单（纯观察器）——必须在 intraday_path 之后（② 用它）、
+    #   daily_report 之前（日报要渲染它）。不参与任何决策链。
+    "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
@@ -1061,6 +1094,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
+                 "policy_bottom_watch",
                  "daily_report",
                  "trader_brief", "retention"]
 

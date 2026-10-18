@@ -983,6 +983,18 @@ def _render_llm_json(data: dict, valid_codes: set) -> str:
         level = h.get("key_level")
         lv = f"（关键位 {level:g}）" if isinstance(level, (int, float)) and level > 0 else ""
         holdings.append(f"- {code} {name}：{note}{lv}")
+    # ★ 2026-10-18：市场底确认清单（**纯观察器，非信号**；见 app/policy_bottom_watch.py 模块头）
+    #   放在预案之前：读者先看到"底确认到哪一步"，再看具体观察位。
+    try:
+        from app import policy_bottom_watch as _pbw
+        _pbw_md = _pbw.render_markdown()
+        if _pbw_md:
+            add("## 市场底确认清单")
+            add(_pbw_md)
+            add("")
+    except Exception as e:
+        print(f"[daily_report] 市场底清单渲染失败（不影响日报）: {e}")
+
     if watch or holdings:
         add("## 明日预案与持仓观察")
         if watch:

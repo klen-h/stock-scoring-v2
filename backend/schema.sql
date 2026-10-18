@@ -226,6 +226,23 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
     data_date TEXT
 );
 
+-- ── 市场底确认清单（★ 2026-10-18，纯观察器，**不产生任何买卖信号**）──
+-- 五条判据每日打分：国家队公告（人工）/ 成交地量 / 创业板周线止跌 / 涨跌比连续转暖 / 美债+油价缓和。
+-- 预登记声明见 `app/policy_bottom_watch.py` 模块头：不改分数、不进闸门、不碰模拟盘准入。
+-- checklist_json = 逐条判定明细（含 insufficient 标记：**缺失 ≠ 不满足**）。
+CREATE TABLE IF NOT EXISTS policy_bottom_watch (
+    date TEXT PRIMARY KEY,
+    checklist_json TEXT NOT NULL,
+    n_checked INTEGER,
+    n_total INTEGER,
+    -- 达成数"首次跨过 4/5"的标记（推送闸；同日重跑不重复推）
+    crossed_4 INTEGER DEFAULT 0,
+    manual_nation_team INTEGER DEFAULT 0,
+    manual_note TEXT,
+    manual_at TEXT,
+    created_at TEXT
+);
+
 -- ── 用户表 ──
 
 CREATE TABLE IF NOT EXISTS users (

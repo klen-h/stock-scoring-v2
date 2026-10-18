@@ -204,6 +204,14 @@ export const postFeedback = (payload) =>
 //   ⚠️ 后端冷启动首次约半分钟 ⇒ 可能先返回 `warming: true` 占位（服务端有后台预热 loop，
 //      正常秒开）；前端据此显示「正在准备」，**不要当成错误**。
 export const getPortfolioRadar = () => http.get('/score/batch/portfolio-radar', { timeout: 45000 })
+// ★ 2026-10-18：市场底确认清单（**纯观察器，非信号**；口径见后端 app/policy_bottom_watch.py）
+//   只有第①条（国家队公告）可人工打勾 —— 无结构化数据源，打勾权在人。
+export const getPolicyBottom = () => http.get('/market/policy-bottom')
+
+export const confirmPolicyBottom = (checked, note = '', date = '') =>
+  http.post('/market/policy-bottom/confirm', null, {
+    params: { checked: checked ? 1 : 0, note, ...(date ? { date } : {}) },
+  })
 // ★ 系统提示时间线（信号总线，2026-09-23）：「系统今天说了什么」的统一视图。
 //   记录点在 `flash.wechat.push_markdown_batched`（全部业务推送的单点入口）⇒ 覆盖
 //   盘中警示 / 矛盾扫描 / 午间雷达 / 日报周报 / 模拟盘 / 教练 / 数据源健康等全部来源。

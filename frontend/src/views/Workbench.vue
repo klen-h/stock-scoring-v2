@@ -1192,6 +1192,41 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-10-18：**市场底确认清单**（`app/policy_bottom_watch.py`）——
+               把"政策底已现、市场底滞后 1~3 个月"这个判断，变成每天可打勾的 5 条。
+               ⚠️ 它是**观察器，不是信号**：不改分、不进闸门、不碰模拟盘准入（模块头有预登记声明）。
+               ⚠️ 只有第①条（国家队公告）可人工打勾 —— 该类信息无结构化数据源，打勾权在人，
+                  快讯关键词只作辅助；④ 涨跌比在"冻结日"会显示⬜(数据不足)，那是**缺失≠不满足**。 -->
+          <div v-if="pbw" class="rounded-xl border border-border p-4 bg-panel/60">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">市场底确认清单
+                <span class="text-[10px] text-muted font-normal">
+                  （观察器 · 非信号 · {{ pbw.n_checked }}/{{ pbw.n_total }}<template
+                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）
+                </span></div>
+              <span class="text-[10px]"
+                    :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
+                {{ pbw.position_hint }}</span>
+            </div>
+            <div class="space-y-1 text-[11px]">
+              <div v-for="it in pbwItems" :key="it.key" class="flex items-start gap-2">
+                <span class="shrink-0"
+                      :class="it.checked ? 'text-emerald-400' : 'text-muted'">
+                  {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
+                    v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                </span>
+                <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
+                <span class="flex-1 break-all">{{ it.detail }}</span>
+                <button v-if="it.key === 'nation_team_ann'"
+                        class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                        :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
+                        @click="toggleNationTeam">
+                  {{ it.checked ? '取消' : '打勾' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
                  · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
                  · 右列 = **行动**（⑤ 持仓状态；原 ④ 待执行决策 2026-09-28 已删 —— 与右栏教练卡重复）
@@ -2322,6 +2357,7 @@ import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
+ getPolicyBottom, confirmPolicyBottom,
   // ★ 2026-09-30（用户："观察池需要展示个股的涨跌幅"）：**复用项目既有批量报价接口**
   //   （榜单页观察池 2026-09-22 起就在用 `getBatchPrices` 做同一件事）。
   getBatchPrices,
@@ -3052,6 +3088,44 @@ async function safe(fn, setter, errSetter) {
 async function loadOverview() {
   await safe(() => getMarketOverview(), d => { overview.value = d || {} })
 }
+// ★ 2026-10-18：市场底确认清单（观察器）。失败静默保留上次值（铁律 11）。
+const pbw = ref(null)
+const PBW_LABELS = {
+  nation_team_ann: '国家队公告',
+  amount_dry_up: '成交连续地量',
+  chinext_weekly: '创业板周线止跌',
+  breadth_ratio_2d: '涨跌比连续转暖',
+  us10y_or_oil: '美债/油价缓和',
+}
+const pbwItems = computed(() => {
+  const items = (pbw.value && pbw.value.items) || {}
+  return Object.keys(PBW_LABELS).map(k => ({
+    key: k,
+    label: PBW_LABELS[k],
+    checked: !!(items[k] || {}).checked,
+    insufficient: !!(items[k] || {}).insufficient,
+    detail: (items[k] || {}).detail || (items[k] || {}).note || '—',
+  }))
+})
+async function loadPolicyBottom() {
+  try {
+    const { data } = await getPolicyBottom()
+    if (data && data.items) pbw.value = data
+  } catch { /* 静默保留上次值 */ }
+}
+async function toggleNationTeam() {
+  const cur = !!(pbw.value && pbw.value.items
+    && pbw.value.items.nation_team_ann && pbw.value.items.nation_team_ann.checked)
+  try {
+    const { data } = await confirmPolicyBottom(!cur, '')
+    if (data && data.ok !== false && data.items) pbw.value = data
+    else await loadPolicyBottom()
+  } catch (e) {
+    // 失败不动 UI（宁可显示旧状态，也不要显示"已勾选"但其实没落库）
+    console.warn('[pbw] 人工打勾失败', e)
+  }
+}
+
 async function loadTemperature() {
   try {
     const { data } = await getMarketTemperature()
@@ -3786,6 +3860,7 @@ function startPolling() {
     //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
     loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
+loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
     // ★ 2026-09-28（方案 C）：快讯诊断（LLM 最新一条）是**高速变量** ⇒ 纳入轮询，
     //   否则右栏那行常驻内容会停在"打开页面那一刻"。`loadGlobals()` 已顺带刷新
     //   `macro`（未锁定时）/`sentiment`，故顶栏宏观摘要不必再单独拉。
@@ -3861,7 +3936,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

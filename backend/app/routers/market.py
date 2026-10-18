@@ -549,6 +549,32 @@ def trigger_refresh(background_tasks: BackgroundTasks):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  市场底确认清单（★ 2026-10-18，**纯观察器，不产生买卖信号**）
+#  设计/口径见 `app/policy_bottom_watch.py` 模块头（含预登记声明）。
+#  ⚠️ 只有第①条（国家队公告）可人工打勾 —— 无结构化数据源，打勾权在人。
+# ══════════════════════════════════════════════════════════════════════════
+@router.get("/policy-bottom")
+def policy_bottom(date: Optional[str] = Query(None, description="交易日，缺省=当天")):
+    """读清单：已落库的直接返回；没有则**现算**（不落库，避免与日批口径打架）。"""
+    from app import policy_bottom_watch as pbw
+    day = (date or "").strip()[:10] or None
+    d = pbw.load(day) if day else pbw.load()
+    if d:
+        return d
+    return pbw.evaluate(day)
+
+
+@router.post("/policy-bottom/confirm")
+def policy_bottom_confirm(
+        checked: int = Query(1, ge=0, le=1, description="1=打勾 / 0=取消"),
+        note: str = Query("", description="备注（哪家、什么公告）"),
+        date: Optional[str] = Query(None, description="交易日，缺省=当天")):
+    """第①条（国家队公告）人工打勾 —— 唯一人工项；打勾后**立即重算并落库**。"""
+    from app import policy_bottom_watch as pbw
+    return pbw.confirm_nation_team((date or "").strip()[:10], bool(checked), note)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  情绪快照 v0（GET /api/market/emotion，2026-09-25 交易方法论落地计划 A3）
 #  内容：涨停/跌停家数、昨日涨停股今日表现（赚钱效应）、连板高度（近似口径）
 #  数据：全市场行情内存缓存（零额外请求）+ backtest_prices 近 8 个交易日收盘
