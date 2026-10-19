@@ -472,7 +472,7 @@ Agent必须在每日复盘中验证：昨日识别的矛盾今日是否兑现？
     拉全市场行情 → 落 `realtime-quotes.json` → `generate-kline-pack.py`（K线 + 增量）
     → `generate_backend_pack.py`（backend-pack.db.gz + indicators-pack.json.gz）→ 发布 Pages
   · 19:00 `backend-pack` → **20:17** 完成 → Actions `daily-batch` **20:17~22:39**：
-    战法 / 矛盾 / 快照 / 榜单 / 消息分 / 市场底清单 / 日报等 **35 项**
+    战法 / 矛盾 / 快照 / 榜单 / 消息分 / 市场底清单 / 日报等 **38 项**
     （⚠️ 兜底 schedule 曾被延迟到次日 01:50 并触发**重复日批**，已加 `_batch_already_done()` 拦截）
   · Render：`DATA_SOURCE=pack` + `RENDER_READ_ONLY=1` + `ENABLE_HEAVY_JOBS=0`（重活全在 Actions）
   · 冷备：腾讯云 `stock-postgres`，每日 03:00 备份、留 14 份

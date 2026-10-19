@@ -79,6 +79,13 @@ SCRIPTS = (
     #   T+5/T+10 样本已达标（25/21 个到期日）；T+20 约 10-23、分层（ranking_live）约 11 月中。
     #   ★ 窗口无 offensive 市况、signal='buy' 恒 0 ⇒ 结论限定于「禁买市里最不差的 50 只」。
     ("score_edge_check", "评分 Top50 预测力（次日开盘超额）", 20, "到期快照日"),
+    # ★★ 2026-10-19 新增：**板块联动筛选**（判据冻结于 `PLAN_SECTOR_LINKAGE.md` v1.0）。
+    #   A 段：行业 ret5 前 30% 且 >0 ⇒ 未来 5 日是否跑赢同日全行业等权（本机 21 年库优先，
+    #          Actions 上回退 PG 窗口函数，样本约 700 交易日）；
+    #   B 段：既有快照日的「过滤版 Top50 vs 原版」T+5 超额差（配对聚类 bootstrap）。
+    #   GO 需 A、B 双 PASS 且用户拍板；KILL ⇒ `SECTOR_LINKAGE_MODE` 定案 off。
+    #   ⚠️ 影子期样本从 2026-10-19 起积累，B 段前期必然 INSUFFICIENT（正确行为）。
+    ("sector_linkage_edge_check", "板块联动筛选（行业强度 + 快照A/B）", 20, "到期快照日"),
     # ★ 2026-10-11 新增：**market_regime 判市框架的增量价值**（判据冻结于 `PLAN_NEXT.md`
     #   §C1【附 A】v1.0）。评分 KILL 之后它是全项目最大的未检验假设（门控权重/仓位/战法白名单）。
     #   主判据：跟随 regime（defensive ⇒ 次日 0.5 仓）的 20 日窗口增量 vs **永远满仓** ≥ +1.0pt

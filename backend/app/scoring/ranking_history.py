@@ -764,6 +764,24 @@ def get_daily_rankings(days: int = 30) -> List[Dict]:
     now_prices = _current_prices(list({r["code"] for r in rows}))
     today = _today_str()
 
+    # ★ 2026-10-19 板块联动：并行读「过滤版」快照（`ranking_history_sector`，日批写）。
+    #   只**附带**在原快照上，不改变 `stocks` 口径 —— 回查页可切"原版/联动版"对照。
+    sector_by_day: Dict[str, list] = {}
+    try:
+        srows = db.fetch(
+            "SELECT rank_date, code, name, rank_pos, total_score, signal, sector_reason "
+            "FROM ranking_history_sector WHERE rank_date >= %s "
+            "ORDER BY rank_date DESC, rank_pos ASC", (since,)) or []
+        for r in srows:
+            sector_by_day.setdefault(str(r["rank_date"])[:10], []).append({
+                "code": r["code"], "name": r.get("name"),
+                "rank": r.get("rank_pos"), "score": r.get("total_score"),
+                "signal": r.get("signal"), "sector_reason": r.get("sector_reason"),
+            })
+    except Exception as e:
+        # 表不存在（未开启/未跑过日批）属正常 —— 不污染主流程
+        print(f"[ranking] 过滤版快照不可用（忽略）: {str(e)[:60]}")
+
     by_date: Dict[str, list] = {}
     for r in rows:
         by_date.setdefault(r["rank_date"], []).append(r)
@@ -792,10 +810,14 @@ def get_daily_rankings(days: int = 30) -> List[Dict]:
         verified_stocks = [s for s in stocks if s["returnPct"] is not None]
         verified = len(verified_stocks) > 0
         wins = sum(1 for s in verified_stocks if s["returnPct"] > 0)
+        sec = sector_by_day.get(d) or []
         snapshots.append({
             "date": d,
             "ts": 0,  # 占位，与本地快照结构一致（前端不依赖此字段）
             "stocks": stocks,
+            # ★ 板块联动版（平行表；没有该日行 ⇒ 空数组，前端据此隐藏切换）
+            "sector_stocks": sec,
+            "sector_filtered": bool(sec),
             "verified": verified,
             "verifiedAt": int(time.time() * 1000) if verified else None,
             "winRate": round(wins / len(verified_stocks) * 100) if verified_stocks else 0,

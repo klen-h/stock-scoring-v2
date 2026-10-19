@@ -79,6 +79,21 @@
         </template>
       </div>
     </div>
+    <!-- ★ 2026-10-19 板块联动（判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）
+         只在后端 on 模式出现；shadow/off 不占版面。口径以后端下发为准，前端不推导。 -->
+    <div v-if="sectorFilterMeta && sectorFilterMeta.mode === 'on'"
+         class="bg-card border border-border rounded-lg p-2 px-3 text-xs flex items-center gap-2 flex-wrap">
+      <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30">板块联动</span>
+      <span v-if="sectorFilterMeta.active" class="text-gray-300">
+        强势板块 {{ sectorFilterMeta.strong_n }} 个<template
+          v-if="(sectorFilterMeta.strong || []).length">（{{ (sectorFilterMeta.strong || []).slice(0, 4).join(' / ') }}{{ (sectorFilterMeta.strong || []).length > 4 ? ' 等' : '' }}）</template>
+        · 排除 {{ sectorFilterMeta.excluded_n }} 只
+        <template v-if="sectorFilterMeta.backfilled_n">· 递补 {{ sectorFilterMeta.backfilled_n }} 只</template>
+      </span>
+      <span v-else class="text-muted">今日未过滤：{{ sectorFilterReasonText }}</span>
+      <span class="text-muted ml-auto">数据日 {{ sectorFilterMeta.as_of || '—' }}</span>
+    </div>
+
     <!-- 下载进度条 -->
     <div v-if="frontendUpdating && frontendProgress.loaded > 0" class="bg-card border border-border rounded-lg p-2 px-3">
       <div class="flex items-center gap-2 text-xs">
@@ -973,6 +988,23 @@
           </div>
           <span class="text-muted text-xs">{{ expandedSnapshots.has(snap.date) ? '收起' : '展开' }}</span>
         </div>
+        <!-- ★ 2026-10-19 板块联动「双版本对照」：过滤版来自 `ranking_history_sector`
+             （日批写；原 `ranking_history` 口径不变）。没有该日行 ⇒ 整块不显示。 -->
+        <div v-if="snap.sector_filtered" class="px-3 pb-2">
+          <details>
+            <summary class="text-xs text-amber-300 cursor-pointer hover:text-amber-200">
+              板块联动版（{{ snap.sector_stocks.length }} 只 · 点击展开对照；原版 {{ snap.stocks.length }} 只）
+            </summary>
+            <div class="mt-2 grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1 text-xs text-gray-300">
+              <span v-for="s in snap.sector_stocks" :key="s.code" :title="s.code">
+                {{ s.rank }}. {{ s.name }}<span class="text-muted">（{{ s.code }}）</span>
+              </span>
+            </div>
+            <div class="mt-1 text-[10px] text-muted">
+              口径：判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0；影子期只作对照，未进决策链。
+            </div>
+          </details>
+        </div>
         <div v-if="expandedSnapshots.has(snap.date)">
           <table class="w-full text-sm">
             <thead>
@@ -1409,6 +1441,21 @@ const cacheStatus = ref('loading')
 //   回归「定位说明 + 候选漏斗」。
 const showOps = ref(false)
 const rankMode = ref('total_score')   // total_score | composite（nb 市组合分排序口径）
+
+// ★ 2026-10-19 板块联动（判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）：
+//   只在后端 SECTOR_LINKAGE_MODE=on 时出现；文案只解释"为什么没过滤"，不自行推导结论。
+const SECTOR_REASON_CN = {
+  ok: '过滤生效',
+  bull_market: '普涨日（行业选择无增量）',
+  no_strong: '今日无强势板块',
+  unavailable: '强度数据不可用',
+  insufficient_days: '历史数据不足',
+  insufficient_industries: '参评行业不足',
+  error: '读取失败',
+  mode_off: '未启用',
+}
+const sectorFilterReasonText = computed(() =>
+  SECTOR_REASON_CN[sectorFilterMeta.value?.reason] || '未启用')
 const stats = reactive({ total: 0, buyCount: 0, watchCount: 0, sellCount: 0 })
 const temp = ref({})   // 市场环境温度（独立信号）
 // ── 影子榜对比（生产 / 梯度衰减 / ×0 对照）──
@@ -1507,6 +1554,7 @@ const {
   updateProgress: frontendProgress,
   error: frontendError,
   poolCount: frontendPoolCount,
+  sectorFilterMeta,
   useFrontendMode,
   initFrontendScoring,
   downloadKlineData,

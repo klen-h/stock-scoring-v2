@@ -81,6 +81,10 @@ export const getStrategyRecommendation = (name) => http.get(`/strategies/${name}
 export const getSupportResistance = (code, lookback = 60) => http.get(`/strategies/${code}/support-resistance`, { params: { lookback } })
 export const getRSISignals = (code, period = 14) => http.get(`/strategies/${code}/rsi`, { params: { period } })
 
+// 板块联动筛选（2026-10-19，判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）
+// mode=off|shadow|on；on 时下发 weak_codes（弱势板块代码）供本地榜对齐过滤
+export const getSectorStrength = (date) => http.get('/score/batch/sector-strength', { params: { date } })
+
 // 宏观数据（全球+国内面板 + 规则方向分）
 export const getMacroSnapshot = () => http.get('/macro/snapshot')
 export const getMacroDaily = (date) => http.get('/macro/daily', { params: { date } })

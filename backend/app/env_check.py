@@ -43,6 +43,12 @@ EXPECTED_SWITCHES: Dict[str, tuple] = {
     "TRADE_GATE": ("on", "模拟盘买入闸门"),
     "WARFARE_EXIT_POLICY": ("v2", "战法退出策略版本（v1/v2 持有期与止损口径不同）"),
     "MIDDAY_REGIME_GATE": ("1", "午盘 LLM 信号仅 offensive 市放行"),
+    # ★ 2026-10-19：板块联动筛选（`PLAN_SECTOR_LINKAGE.md` v1.0）。
+    #   部署意图 = **shadow**（只算 + 平行落库 + 前端对照），切 `on` 须先过预登记 GO + 用户拍板；
+    #   `off` 则连强度表都不写。三态显式，防"代码默认 ≠ 部署意图"的静默分叉。
+    "SECTOR_LINKAGE_MODE": (
+        "shadow",
+        "板块联动筛选（off/shadow/on；on 须预登记 GO + 拍板）"),
 }
 
 
@@ -76,6 +82,9 @@ def _actual(name: str) -> Optional[str]:
         if name == "MIDDAY_REGIME_GATE":
             from app.signals.tracker import MIDDAY_REGIME_GATE_ENABLED
             return "1" if MIDDAY_REGIME_GATE_ENABLED else "0"
+        if name == "SECTOR_LINKAGE_MODE":
+            from app.sector_strength import mode as _ss_mode
+            return _ss_mode()
     except Exception as e:      # 读失败不阻断（自检自身故障绝不能影响服务启动）
         return f"<err:{type(e).__name__}>"
     return None

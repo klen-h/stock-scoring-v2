@@ -19,7 +19,7 @@ import {
   importIndicatorsPack,
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
-import { getFinanceBatch, getScoreWeights } from '../api'
+import { getFinanceBatch, getScoreWeights, getSectorStrength } from '../api'
 import { scoreStock, roughScore, setRegimeState, setGateRules, buildGate, decayTotal } from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
@@ -332,6 +332,12 @@ function buildShadowBoards(results, finMap, weights, top = 50) {
   }
 }
 
+// ★ 2026-10-19 板块联动（`PLAN_SECTOR_LINKAGE.md` v1.0）：
+//   只在后端 `SECTOR_LINKAGE_MODE=on` 且当日过滤生效时启用；判据参数全在后端，
+//   前端只消费 `weak_codes`（行业已映射但不在强势板块）⇒ **单一事实源，不自己推导**。
+//   失败/未启用 ⇒ 不过滤（fail-open，与后端一致）。
+const sectorFilterMeta = ref(null)
+
 export async function computeRanking(options = {}) {
   const { mode = 'top', limit = 50, signal = '买入' } = options
 
@@ -428,12 +434,46 @@ export async function computeRanking(options = {}) {
 
     // 7. 排序并取结果
     preciseResults.sort((a, b) => b.total_score - a.total_score)
+    const _origTop = new Set(preciseResults.slice(0, limit).map(x => x.code))
+
+    // 7.0 板块联动过滤（**只在后端 on 模式生效**；判据冻结在 PLAN_SECTOR_LINKAGE.md v1.0）
+    //   后端下发 `weak_codes`（行业已映射但不在强势板块）⇒ 命中才排除；
+    //   映射缺失的代码不在清单里 ⇒ 自动放行（与后端 unmapped 语义一致）。
+    //   任何异常 ⇒ 不过滤（fail-open），绝不阻断榜单。
+    let _rankPool = preciseResults
+    sectorFilterMeta.value = null
+    try {
+      const sres = await getSectorStrength()
+      const ssf = (sres && sres.data) || {}
+      const meta = {
+        mode: ssf.mode || 'off', active: !!ssf.active,
+        reason: ssf.reason || '', strong_n: ssf.strong_n || 0,
+        excluded_n: 0, backfilled_n: 0, short: false,
+        as_of: ssf.as_of || null, strong: ssf.strong || [],
+      }
+      if (ssf.mode === 'on' && ssf.active && (ssf.weak_codes || []).length) {
+        const weak = new Set(ssf.weak_codes)
+        const kept = []
+        const rest = []
+        for (const r of preciseResults) (weak.has(r.code) ? rest : kept).push(r)
+        _rankPool = kept.concat(rest)       // 强势在前；不足时按原顺序补足
+        meta.excluded_n = rest.length
+      }
+      sectorFilterMeta.value = meta
+    } catch (e) {
+      console.warn('[前端评分] 板块联动数据不可用（本次不过滤）:', e && e.message)
+    }
 
     let finalResults = []
     if (mode === 'signal') {
-      finalResults = preciseResults.filter(r => r.signal === signal).slice(0, limit)
+      finalResults = _rankPool.filter(r => r.signal === signal).slice(0, limit)
     } else {
-      finalResults = preciseResults.slice(0, limit)
+      finalResults = _rankPool.slice(0, limit)
+    }
+    if (sectorFilterMeta.value && sectorFilterMeta.value.active) {
+      sectorFilterMeta.value.backfilled_n =
+        finalResults.filter(r => !_origTop.has(r.code)).length
+      sectorFilterMeta.value.short = finalResults.length < limit
     }
 
     // 7.5 影子榜（本地）：复用本次精算结果，零额外成本、与主榜同源、盘中实时
@@ -1243,6 +1283,7 @@ export function useFrontendScoring() {
     isComputing,
     scoringResult,
     shadowBoards,
+    sectorFilterMeta,
     poolCount,
     lastScoreTime,
     error,

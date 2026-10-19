@@ -446,6 +446,32 @@ def task_score_snapshot():
     return f"评分快照: {n} 条（Top {len(data)}）"
 
 
+def task_sector_strength():
+    """行业强度（板块联动筛选的数据底座；判据冻结于 `PLAN_SECTOR_LINKAGE.md` v1.0）。
+
+    ★ 必须在 `rank_live` 之前（过滤版榜单要用它）、在 `backfill` 之后（价源）。
+    ★ 只算一次、落 `sector_strength_daily`；榜单/接口只读表，不重算。
+    """
+    from app.sector_strength import compute, mode
+    if mode() == "off":
+        return "板块强度: mode=off，跳过"
+    r = compute(day=_batch_trading_day().isoformat())
+    if not r.get("ok"):
+        raise RuntimeError(f"板块强度计算失败: {r.get('reason')}")
+    return (f"板块强度: {r.get('rated_n')} 行业 / 强势 {r.get('strong_n')}"
+            f"（{r.get('reason')}，上涨占比 {r.get('market_up_ratio')}%）")
+
+
+def task_sector_linkage_snapshot():
+    """过滤版 Top50 落**平行表** `ranking_history_sector`（原 `ranking_history` 一字不动）。
+
+    ★ 依赖 `rank_live`（全量精算榜，约 1000 行 ⇒ 才能"排除后递补满员"）。
+    ★ shadow/on 才写；强度表不可用 ⇒ 跳过（fail-open，不留空榜污染回查）。
+    """
+    from app.sector_strength import snapshot_from_live
+    return snapshot_from_live(day=_batch_trading_day().isoformat())
+
+
 def task_rank_live():
     """全量精算榜单（ranking_live）：后端 /batch/top 直接读，与前端本地榜同口径。
 
@@ -1083,9 +1109,15 @@ TASKS = {
     # ★ 2026-09-11 迁入：原 Render 19:20 循环被只读模式关闭 → news_history 停在 09-08。
     #   依赖 score_snapshot 写入的当日 ranking_history Top50。
     "news_snapshot": (task_news_snapshot, "消息分每日快照（消息面回测底座）"),
+    # ★ 2026-10-19 新增：板块联动筛选的数据底座（判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）。
+    #   必须在 rank_live 之前（过滤版榜单要用它）、在 backfill 之后（价源）。
+    "sector_strength": (task_sector_strength, "行业强度（板块联动筛选，预登记 v1.0）"),
     # ★ 2026-09-11 新增：全量精算榜（ranking_live）——后端 /batch/top 直接读。
     #   依赖 mainforce_state（资金面第 5 因子 flow5）与全市场行情缓存。
     "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
+    # ★ 2026-10-19 新增：过滤版 Top50 落平行表（ranking_history_sector）——
+    #   必须紧跟 rank_live（才能从 ~1000 行里"排除后递补满员"）；原表一字不动。
+    "sector_linkage": (task_sector_linkage_snapshot, "板块联动过滤榜（平行表，原榜不动）"),
     # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
     # ★ 2026-10-15：缩量启动形态每日扫描（描述性观察，非信号）。依赖 backfill 已回填。
@@ -1144,7 +1176,8 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "calendar", "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
-                 "news_snapshot", "rank_live", "shadow_rank", "pattern_launch_scan",
+                 "news_snapshot", "sector_strength", "rank_live", "sector_linkage",
+                 "shadow_rank", "pattern_launch_scan",
                  "backtest_preheat",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",

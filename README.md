@@ -67,6 +67,7 @@
 | **动手改代码**（不犯错 / 怎么验证） | [`开发文档.md`](开发文档.md) ← **首选** |
 | 部署与运行 | [`DEPLOY.md`](DEPLOY.md)、[`EGRESS.md`](EGRESS.md)（免费额度治理）、[`交易日全流程.md`](交易日全流程.md) |
 | 了解在做的计划 | [`PLAN_RESERVE_SIGNALS.md`](PLAN_RESERVE_SIGNALS.md) |
+| 板块联动筛选（评分榜强势板块过滤） | [`PLAN_SECTOR_LINKAGE.md`](PLAN_SECTOR_LINKAGE.md) —— **影子期**：`SECTOR_LINKAGE_MODE=shadow`，只并行落库、不改榜单；切 `on` 须预登记 GO + 拍板 |
 | 了解当时怎么想的 | `PLAN_*.md` / `*_202609*.md`（⚠️ **多为当时快照，别当现状读**，如 `CONTEXT.md` 停在 2026-09-06） |
 | 上线观测 | [`上线观测单_20260930.md`](上线观测单_20260930.md) |
 
@@ -91,3 +92,5 @@ cd frontend && npm run dev                    # 前端工作台
 
 - **2026-10-11** 建立：定位与三条产品红线、**LLM 外发数据清单**（全仓 grep 统计 9 个功能点）、
   明确不做清单、文档地图与免责声明。
+- **2026-10-19** 新增板块联动筛选（`PLAN_SECTOR_LINKAGE.md` v1.0，影子期默认 `shadow`）：
+  行业强度前 30% 才允许进榜；判据先冻结、结果只用于 GO/KILL，`ranking_history` 原口径不动。

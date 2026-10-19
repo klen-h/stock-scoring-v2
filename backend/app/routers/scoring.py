@@ -1297,6 +1297,8 @@ async def score_top(
         sliced = cached_data[:limit]
         return {
             "data": sliced,
+            "data_sector": (entry.get("sector_data") or [])[:limit],
+            "sector_filter": entry.get("sector_meta"),
             "total": entry.get("total", len(cached_data)),
             "cache_status": "ready",
             "cached": True,
@@ -1311,7 +1313,10 @@ async def score_top(
             #   total_score，nb 市下组合分列在此窗口「闪一下就没了」。
             _rm = entry.get("rank_mode") or _rank_mode()
             if entry["data"]:
-                return {"data": entry["data"][:limit], "total": entry.get("total", 0),
+                return {"data": entry["data"][:limit],
+                        "data_sector": (entry.get("sector_data") or [])[:limit],
+                        "sector_filter": entry.get("sector_meta"),
+                        "total": entry.get("total", 0),
                         "cache_status": "ready", "cached": True, "stale": True,
                         "rank_mode": _rm}
             return {"data": [], "total": 0, "cache_status": "computing",
@@ -1347,11 +1352,13 @@ async def score_top(
         #    但把库里那份榜的代码并进候选池，修掉"简化分盲区"。
         _total = len(valid)
         _stored = {"date": None, "data": []}
+        _cand_full = []          # 过滤版榜单的候选全池（有当日 rank_live 时 ≈1000 行）
         try:
             from app.scoring.live_ranking import _today_bj, load as _load_live_ranking
             _stored = _load_live_ranking(limit=1000)  # 组合分排序需更大池（覆盖基本面强但总分中游的票）
             if (_stored.get("data") or []) and _stored.get("date") == _today_bj():
                 _cand = [SimpleNamespace(**r) for r in _stored["data"]]
+                _cand_full = _cand
                 # ★ nb 市组合分重排（2026-09-15）：同 _batch_with_precise_top 口径
                 if _use_composite_rank():
                     _cand = _sort_by_composite(_cand)
@@ -1370,26 +1377,58 @@ async def score_top(
                 valid, lambda results: results[:limit], limit=limit, side="top",
             )
 
-        result_data = [{
-            "code": r.code,
-            "name": r.name,
-            "total_score": r.total_score,
-            "signal": r.signal,
-            "signal_level": r.signal_level,
-            "change_pct": getattr(r, 'change_pct', 0) or 0,
-            # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
-            "factors_up": getattr(r, 'factors_up', []) or [],
-            # 买入时机指标
-            "buy_point": getattr(r, 'buy_point', {}) or {},
-            # 各维度得分（用于权重优化分析）
-            "dimensions": getattr(r, 'dimensions', {}) or {},
-            # nb 市组合分（基本面+资金面-技术面），排序键；非 nb 市为 None
-            "composite_score": _composite_raw(getattr(r, 'dimensions', {}) or {}),
-        } for r in top]
+        def _rank_item(r):
+            """榜单行（原版/过滤版共用同一构造，避免两套字段漂移）。"""
+            return {
+                "code": r.code,
+                "name": r.name,
+                "total_score": r.total_score,
+                "signal": r.signal,
+                "signal_level": r.signal_level,
+                "change_pct": getattr(r, 'change_pct', 0) or 0,
+                # Top 50 专属：买入原因（加分因素标签），其他批量接口不返回此字段
+                "factors_up": getattr(r, 'factors_up', []) or [],
+                # 买入时机指标
+                "buy_point": getattr(r, 'buy_point', {}) or {},
+                # 各维度得分（用于权重优化分析）
+                "dimensions": getattr(r, 'dimensions', {}) or {},
+                # nb 市组合分（基本面+资金面-技术面），排序键；非 nb 市为 None
+                "composite_score": _composite_raw(getattr(r, 'dimensions', {}) or {}),
+            }
+
+        result_data = [_rank_item(r) for r in top]
+
+        # ★★ 2026-10-19 板块联动筛选（判据冻结于 `PLAN_SECTOR_LINKAGE.md` v1.0）：
+        #   `data` **保持原版**（ranking_history / 日报 / 观察池 / 既有回查零影响），
+        #   过滤版并列在 `data_sector`；前端在 `on` 模式改用它。
+        #   候选全池优先用当日 ranking_live（≈1000 行）⇒ 排除后能递补满员；
+        #   回退路径只有 top N ⇒ 可能 short（显式标记，不静默）。
+        sector_data, sector_meta = [], {"mode": "off", "active": False,
+                                       "reason": "off", "excluded_n": 0,
+                                       "backfilled_n": 0, "unmapped_n": 0,
+                                       "short": False, "strong_n": 0, "as_of": None}
+        try:
+            from app import sector_strength as _ss
+            if _ss.mode() != "off":
+                _picked, sector_meta = _ss.filter_ranked(_cand_full or top, limit=limit)
+                sector_data = []
+                for _i, _r in enumerate(_picked):
+                    _it = _rank_item(_r)
+                    _it["rank"] = _i + 1
+                    _it["sector_rank"] = _i + 1
+                    sector_data.append(_it)
+        except Exception as _e:
+            print(f"[rank] 板块联动过滤失败（回退原榜）: {_e}")
+            sector_data, sector_meta = [], {"mode": "off", "active": False,
+                                            "reason": "error", "excluded_n": 0,
+                                            "backfilled_n": 0, "unmapped_n": 0,
+                                            "short": False, "strong_n": 0, "as_of": None}
 
         # ★ 排行榜标注：批量算消息面情绪分（快讯源 1 次请求），不参与综合分，仅作参考
-        news_scores = _batch_news_scores([r.code for r in top])
-        for item in result_data:
+        # ★ 2026-10-19：标注对象 = 原版 + 过滤版（两份可能大部分重合，重复标注无副作用）。
+        _ann_items = result_data + sector_data
+        news_scores = _batch_news_scores([x["code"] for x in _ann_items])
+        for item in _ann_items:
             item["news_score"] = news_scores.get(item["code"], 0)
 
         # ★ 主力行为标注（mainforce_state 日批表）：出货嫌疑/吸筹区标签 + 乘数字段。
@@ -1408,7 +1447,7 @@ async def score_top(
             except Exception:
                 pass
             _mf_eff = (_mf_mode() == "auto" and _regime in GATE_REGIMES)
-            _mf = _mf_load([r.code for r in top])
+            _mf = _mf_load([x["code"] for x in _ann_items])
             # ★ 2026-09-17：买入条件就绪摘要（**状态展示**：不参与排序、不改总分、
             #   不产生买入信号）。复用上面已批量加载的 _mf → 零额外 DB 查询
             #   （evaluate 内部的"当日矛盾"计数已加 30s 进程缓存）。口径见
@@ -1418,7 +1457,7 @@ async def score_top(
                 from app.mainforce.trade_gate import summarize as _tg_sum
             except Exception:
                 _tg_eval = _tg_sum = None
-            for item in result_data:
+            for item in _ann_items:
                 m = _mf.get(item["code"])
                 if m:
                     item["mainforce"] = {
@@ -1445,26 +1484,60 @@ async def score_top(
         except Exception as e:
             print(f"[mainforce] 排行标注失败: {e}")
 
-        # ★ 写入短期缓存
+        # ★ 写入短期缓存（原版 + 过滤版一起缓存，两者同源同批计算）
         _rank_result_cache["top"] = {
             "data": result_data,
+            "sector_data": sector_data,
+            "sector_meta": sector_meta,
             "ts": _time.time(),
             "total": _total,
             "rank_mode": _rank_mode(),
         }
 
         # 后台记录当日排行（用于计算连续上榜天数）
+        # ⚠️ 仍写**原版** ⇒ `ranking_history` 口径一字不动；过滤版由日批写平行表。
         if background_tasks:
             background_tasks.add_task(_record_ranking, result_data)
 
         return {
             "data": result_data,
+            "data_sector": sector_data,
+            "sector_filter": sector_meta,
             "total": _total,
             "cache_status": "ready",
             "rank_mode": _rank_mode(),
         }
     finally:
         _rank_result_cache["computing"] = False
+
+
+# ⚠️ 路径必须是**两段**（`/batch/sector-strength`）—— 同 `/batch/gate-watch` 的教训：
+#   本文件 `@router.get("/{symbol}")` 在 L977，晚注册的**单段**静态路由会被它吞掉
+#   ⇒ 返回 200 `{"error":"未找到股票 sector-strength"}`，前端 axios 不报错、静默失效。
+@router.get("/batch/sector-strength")
+def sector_strength_status(date: str = None):
+    """板块联动筛选：当日**行业强度表** + 强势板块清单 + 过滤状态（只读）。
+
+    数据由日批 `task_sector_strength` 预计算（`sector_strength_daily`），本接口只读；
+    前端本地榜在 `on` 模式用 `strong` 清单做同步过滤（避免两端口径漂移）。
+    """
+    from app.sector_strength import load as _load_ss, mode as _ss_mode
+    st = _load_ss(date)
+    out = {"mode": _ss_mode(), "date": date or st.get("as_of"), **st}
+    # ★ 前端本地榜对齐（避免"后端过滤、前端不过滤"的两套口径）：
+    #   下发**弱势代码清单**（行业已映射但不在强势板块）⇒ 前端规则 = 命中 weak 才排除；
+    #   映射缺失的代码不在清单里 ⇒ 自动 fail-open（与后端 `unmapped_n` 语义一致）。
+    #   只在 on 模式且过滤生效时下发，避免无谓流量（~5k 个 6 位码 ≈ 50KB）。
+    if out.get("mode") == "on" and out.get("active") and out.get("strong"):
+        try:
+            from app.industry_map import get_industry_map
+            strong = set(out["strong"])
+            out["weak_codes"] = sorted(c for c, ind in get_industry_map().items()
+                                       if ind not in strong)
+        except Exception as e:
+            print(f"[rank] 弱势代码清单生成失败: {e}")
+            out["weak_codes"] = []
+    return out
 
 
 @router.get("/batch/shadow-rank")

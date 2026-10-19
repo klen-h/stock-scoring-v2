@@ -62,6 +62,15 @@
 - 本机持久缓存统一模式（flow/l3/emotion-closes/ind-dist-src）：进程内 → 本机 gzip/json → 回源；指纹单行查询；取不到指纹不走缓存；空结果不写盘。
 - ★ **2026-10-19 起 `app/industry_map.py` = 个股→行业映射的唯一缓存入口**（1h，`get_industry_map()` / `invalidate()`），
   已接 `mainline` / `stock_moves` / `earnings_pressure` / `sector_industry` —— 此前 4 处各自整表读 5932 行。
+- ★★ **板块联动筛选（2026-10-19，判据冻结 `PLAN_SECTOR_LINKAGE.md` v1.0）**：
+  `app/sector_strength.py` —— 用 `stock_industry` 49 行业 + `backtest_prices` 等权聚合自建行业指数（**不桥接 zzshare 104 板块**：
+  与个股行业仅 4 个同名）；强势 = `ret5>0` ∧ 横截面前 30% ∧ 成员≥5；普涨守卫 = 连续 3 日上涨占比≥70% ⇒ 过滤失效；
+  任何缺失 ⇒ **fail-open 放行 + 显式 reason**（不产空榜）。
+  日批 `sector_strength`（rank_live 前）→ `sector_linkage`（rank_live 后，写平行表 `ranking_history_sector`）。
+  `ranking_history` **原版一字不动**；`/score/batch/top` 并列返回 `data_sector` + `sector_filter`（`data` 保持原版）。
+  开关 `SECTOR_LINKAGE_MODE=off|shadow|on`（默认 shadow，已登记 `env_check`）；前端 `on` 时才用 `weak_codes` 同步过滤。
+  ★ **不要把「单一静态路由」直接挂 `/score/<name>`**：`@router.get("/{symbol}")` 在 L977 ⇒ 晚注册会被吞（200 `{"error":...}`）；
+    本次 `/score/batch/sector-strength` 就用两段路径。
 - 两条包发布链独立：`kline-data.yml`(18:00)→前端包 + realtime-quotes；`backend-pack.yml`(19:00)→`backend-pack.db.gz`（日批唯一依赖）。
 - ★★ `pack_source` 读侧 = 「命中包→用包；**未命中→回退 DB**」⇒ **包的覆盖口径必须 ⊇ 所有消费方池**。
   2026-10-10 修过一次（回测池 129 只 + 基准指数被质量过滤剔掉 ⇒ 43MB/天）。**质量过滤只应筛新增候选，不能筛既有消费方代码**。
@@ -167,6 +176,7 @@
 | 假设 | 结论 | 关键数字 |
 |---|---|---|
 | 评分 Top50 买入含义 | **FAIL/KILL** | T+5 −1.43pt、T+10 −2.21pt（vs 可取价池 941 只），P<0.0001 |
+| 板块联动筛选（行业 ret5 前 30%） | **PARTIAL（首跑）** | A 段行业强度未来 5 日超额 **+4.09pp**（CI −0.01~+9.30，408 日）；B 段过滤版−原版 **+0.58pt**（CI −0.10~+1.32，30 快照日）⇒ 未 GO，`SECTOR_LINKAGE_MODE` 维持 **shadow** |
 | regime 判市减仓 | **FAIL/KILL** | vs 永远满仓 −0.30pt/20 日，95% 上界 +0.24pt；机制=趋势跟随滞后 |
 | 主力节奏 H1（吸筹∧三绿） | **PARTIAL** | T+5 +0.19pt(P .25)、T+10 +1.14pt(P .0025) 但子样本 −0.28、T+20 +0.144(P .40) ⇒ **无稳健超额** |
 | 消息分（news_score） | **FAIL** | 34 快照日，按日 rank IC 均值 T+2 −0.003 / T+5 +0.004（判据 ≥0.10） |
@@ -254,6 +264,9 @@
   ★ 维护约定：稳定规则写手册；**易变清单（表结构/任务表/进度）只给入口不给快照**。
 
 ## 13. 工程方法论 / 踩坑精华
+- ★★ **新增日批任务前先 grep 任务键与函数名**：`task_sector_snapshot` **已存在**（板块每日快照），
+  本次同名 `def` **直接覆盖旧函数**、且 TASKS 里两个键指向同一名字 ⇒ 旧任务被静默替换（编译/启动都不报错）。
+  ⇒ 新任务命名先 `grep -n "def task_"` + `grep -n '"<key>"'`，并跑一次 `len(TASKS)/DEFAULT_ORDER` 一致性检查（含重复项检测）。
 - **验证**：`py_compile` 查不出 NameError ⇒ 真 import + 真调用 + 独立进程；空数据 0==0 是假绿灯（先校验样本非空）；
   ★★ 同批次不对同一文件连发多编辑（静默丢，分批 + 每批 grep 复验关键行）。
 - **数据/字段**：缺数据 `None` 不填 0；`dict.get(k, default)` 对 None 不生效；跨系统按字段名取不按位置；
