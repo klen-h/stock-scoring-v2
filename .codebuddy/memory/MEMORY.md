@@ -1,619 +1,306 @@
 # 长期记忆（stock-scoring-v2）
 
-> ## 🔁 换账号 / 新会话 / 换机器：如何接上上下文
-> 上下文 = 本目录 Markdown，与账号无关；`.codebuddy/memory/*.md` 已 git 跟踪 ⇒ clone 后即在。
-> 新会话第一句：`先读 .codebuddy/memory/MEMORY.md 与最近 2 天 daily，读完复述进展与未完成项再继续。`
-> 阅读顺序：本文件 → 最近 1~2 天 daily → 更早按日期翻。不依赖聊天记录（绑账号）；换机前先 commit。
+> ## 接续方式（换账号 / 新会话 / 换机器）
+> 上下文 = 本目录 Markdown，与账号无关，已 git 跟踪。
+> 新会话第一句：`读 .codebuddy/memory/MEMORY.md + 最近 2 天 daily，复述进展与未完成项再继续`。
+> 阅读顺序：本文件 → 最近 1~2 天 daily → `PLAN_NEXT.md` 顶部「开工摘要」。
+> ★ 本文件只放**跨会话必须记住的结论与铁律**；完整经过、证据、逐条验证记录在各日 daily 里，此处不重抄。
 
----
+## 0. 当前状态（2026-10-19）
+- 未提交：`scripts/daily_batch.py` —— `_batch_already_done()` 判据由 `daily_reports` 改为**自建 `batch_runs` 表**。
+  原因：Render 的日报兜底 loop 19:30 就写了 `date=10-19` 的日报，早于日批 20:17 ⇒ 第一版守卫把**当天整批跳过**
+  （实测 10-19 只剩 19:31 那条日报，`market_snapshot`/`contradictions`/`gate_snapshot_history` 全停在 10-16）。
+  ⇒ **"批次是否完成"必须用只有日批会写的表**，`daily_reports` 有多个写入方。
+- 权威待办 = `PLAN_NEXT.md` 顶部「开工摘要」；**B 类待拍板 = 0**。
+- 只能等时钟：A1 评分 T+20（≈10-23）、A2 回避侧 / A3 影子榜解冻（≈11 月中）、C4/C5 等前瞻样本、C6 未立项。
 
-## 架构与运行形态
+## 1. 架构与运行形态
 - 单进程 FastAPI（`backend/app/main.py`）`/api/*` + 前端静态；生产 `uvicorn 0.0.0.0:8000`，**不要 `--reload`**。
-- 前端生产 = GitHub Pages（pnpm 构建推 gh-pages，入口 `klen-h.github.io/stock-scoring-v2`）；Render 后端兜底 dist。
+- 前端生产 = GitHub Pages（pnpm 构建推 gh-pages）；Render 后端兜底 dist。
 - DB 默认 SQLite，`DATABASE_URL` 走 PG（Supabase 东京）；`app/database.py` 自动转 `%s` 兼容双库。
-- 调度器 `flash/scheduler.py` ~30 asyncio loop 按日幂等；LLM/轻推送 `create_task`，重走 `*_heavy`（`RENDER_READ_ONLY=1` 全关）。
-- 盘后链路：K线 15:30 → 指标 16:40 → 快照 18:00 → 主线/消息分/日报 19:15+；简报按 `(date,phase)` 落 `trader_briefs`。
-- ★★ **日期键"两派" + 循环守卫铁律**（2026-10-08 查"日批每天两次/假期照跑"时挖出）：Render 侧 `*_loop` **必须用 `rules.is_trading_day()`**（只写 `weekday()<5` 会把 A 股节假日当工作日）**且显式传 `latest_completed_trading_day()`**（不传 ⇒ 内部 `_today()` = **运行日** ⇒ 写出"**键=假日、正文=上一交易日**"的错位行）。已修 `daily_report_loop`（19:30-23:59，实测它造出 09-25/10-01/02/05/06/07 六个假日键日报，已清）。**同类残留（2026-10-11 系统清理，范围远比当时记录的大）**：实测 **7 张分析表共 36 个假日键**（`sector_daily` 2792 行、`macro_daily_history` 48 行、`contradiction_reports` 10 键、`trader_briefs` 8 键、`contradictions` 3 键、`daily_reports`/`radar_analysis` 各 1 键），且**根因仍在产**（10-10/10-11 周末还在写）。⇒ 已建 **`scripts/cleanup_holiday_keys.py`**（**分表策略**：① 交易日键类 ⇒ 只删「上一交易日键已存在」的**重复行**、孤儿行**改键不删**；② **运营计数表 `llm_usage_daily`/`llm_usage_by_provider`/`push_log` 按自然日统计「属设计」，显式跳过** —— 别一刀切）＋ 日批兜底闸 **`data_hygiene`**（排 `data_gap` 之后，自愈）＋ 修掉 3 处最明确的守卫（`contradiction_scan_loop`/`contradiction_report_loop`/`midday_radar_loop`，两处还补了显式传 `latest_completed_trading_day()`）。★ **`scheduler.py` 的 21 处交易日守卫已全部统一为 `rules.is_trading_day(now)`**（2026-10-11 清扫 ②）：
-其中 **8 处是 light（Render 线上真跑）= 本轮实地价值**（`macro_daily` / `regime_cache` / `event_alert` /
-`backtest_preheat` / `open_confirmation` / `paper_fill` / `paper_track`(盘后分支) / `indicator_cache`），
-另 13 处为 `_heavy`（线上不跑）的**保险性**修正。★ **刻意保留 5 类**（已留档在 `scheduler.py`
-`_heavy` 上方，**别误改**）：`_latest_trading_day`（**自身就是节假日实现**）、
-`trade_plan_trigger_loop` / `paper_track_loop`(盘中分支)（另有 `get_china_market_status()["is_open"]`
-含 HOLIDAYS）、`zz_finance_sync_loop`（周一）/ `backtest_report_loop`（周五 16:00+ / 周六）＝**周语义**
-（已叠加 `is_trading_day`）。验证方式：用 `ast` 精确统计代码里的 `weekday` 属性访问
-（**文档字符串里的说明不算** —— 第一版用文本过滤就被自己的注释误报了）。**同一批日批内日期键也不一致**（`ranking_history`/`industry_mainline`/`sector_amount_daily` 用运行日，`plate_daily_zz`/`mainforce_state` 用交易日）—— 查"数据为何出现未来日期键"先看这条。
-- **日批本身没有 cron**：由上游 `Generate Backend Data Pack` 成功后 `workflow_run` 接棒（原 20:30 兜底已停用，注释明写"保留会重复跑一次"）。上游**两条触发（2026-10-08 用户给运行列表证实）**：① cron-job.org → `workflow_dispatch`，页面显示 **"Manually run by klen-h"，19:00 北京准时** ✓；② GitHub 兜底 `schedule: cron '0 14 * * 1-5'`（UTC 名义=北京 22:00，**实测总要晚 4~7h 才起跑**，落在北京 02:52~05:23）⇒ **日批每天两次 = 上游成功两次**。兜底本该被"最近 12h 已有成功 run ⇒ skip"的 guard 挡住，**实际从未生效**（时长 1h12m~1h31m = 整包跑满）⇒ 根因：guard job **没有 `actions/checkout`**，而 **`gh` 不读 `GITHUB_REPOSITORY`**（只从 CWD 的 git remote 或 `GH_REPO`/`--repo` 取仓库）⇒ `gh run list` 报 "not a git repository"，又被 **`2>/dev/null || echo 0` 补成 0** ⇒ 判据恒 0。**已修**：加 `GH_REPO` + `permissions: actions: read` + 不再吞错（失败打 warning 且按"不跳过"处理，宁多跑不误跳）；每天省 ~2h15m（包 ~1h20m + 日批 ~55m）。
-- ★★ **反复模式：Render 循环停摆 ⇒ 数据静默断档 ⇒ 迁入日批**（已发生：`mainforce_state` 09-09、`weekly_report`/`news_snapshot`/`lhb` 09-11、`zz_finance` 09-19、**`sector_snapshot_zz` 09-24（09-30 修）**）。**兜底闸（2026-09-30 起）**：`app/data_gaps.py` + 日批 `data_gap` 任务（排在所有数据写入之后）每晚自愈板块缺口（最近 5 交易日，无缺口零请求）并做 7 张关键表断档告警；判据口径是**交易日**（自然日会在休市期误报），**落后 ≥2 个交易日即告警**（容差 1 —— 设 2 会漏掉 09-24→09-29 这种夹着中秋休市的断档）。手动补历史：`python scripts/backfill_plate_daily.py --apply`（zzshare 支持历史日期；东财 clist 只给当前快照**不可回补**）。
+- 调度器 `flash/scheduler.py` ~30 个 asyncio loop 按日幂等；**`RENDER_READ_ONLY=1` 下所有 `_heavy` 循环不跑 = 死代码**，
+  重计算一律迁进日批（`scripts/daily_batch.py`）。★ 反复模式：Render 循环停摆 ⇒ 数据静默断档（已发生 5 次）。
+- 盘后链路（北京，实测）：18:00 kline-data → 19:00 backend-pack → 20:17 完成 → 日批 20:17~22:39（`workflow_run` 接棒，日批无自己的 cron）。
+- ★★ **重复日批的真因**：`backend-pack.yml` 兜底 `schedule: 0 14 * * 1-5`（UTC=BJ 22:00）常被 GitHub 延迟 3~4h
+  到次日 01:50；guard 秒跳过但 run 仍 `success` ⇒ `workflow_run` 把日批**全量跑第二遍**（10-17 01:50~03:25）。
+  ⇒ 才有 `_batch_already_done()` 守卫。**别用库里时间戳反推调度时区**（cron 一直是 Asia/Shanghai）。
+- ★★ **日期键两派 + 循环守卫铁律**：`*_loop` 必须用 `rules.is_trading_day()`（`weekday()<5` 会把节假日当工作日）
+  **且显式传 `latest_completed_trading_day()`**（不传 ⇒ 内部 `_today()` = 运行日 ⇒ 写出"键=假日、正文=上一交易日"的错位行）。
+  `scheduler.py` 21 处守卫已统一；**刻意保留**：`_latest_trading_day`（自身即节假日实现）、
+  `trade_plan_trigger_loop`/`paper_track_loop`(盘中分支，另有 `get_market_status()["is_open"]`)、
+  `zz_finance_sync_loop`(周一)、`backtest_report_loop`(周五/周六) —— **别误改**。
+- 同一批日批内日期键也不一致：`ranking_history`/`industry_mainline`/`sector_amount_daily` 用运行日，
+  `plate_daily_zz`/`mainforce_state` 用交易日。查"未来日期键"先看这条。
+- 节假日键清理：`scripts/cleanup_holiday_keys.py`（分表策略：交易日键类只删「上一交易日已有」的重复行、孤儿行改键；
+  **运营计数表 `llm_usage_*`/`push_log` 按自然日统计属设计，显式跳过**）+ 日批兜底 `data_hygiene`。
 
-## 前端布局纪律（浮层/弹窗）
-- ★★ 顶栏浮层统一做法：`<Teleport to="body">` + `fixed` + `max-h-[calc(100vh_-_Nrem)]` + `overflow-y-auto overscroll-contain`；水平居中 `left-1/2 -translate-x-1/2`。锚点+视口比例 max-h 必然横向出屏/纵向不扣顶栏（09-29 实证）。Tailwind calc 空格写 `_`；核对 grep `max-height:calc` 而非字面量。
-- ★ 同一组件"内联 vs 浮层"诉求相反 ⇒ prop 分流（`MacroEnvCard.full`）；放开截断仍要宽度上限（`flex-shrink-0` 内文本按 max-content 撑破容器）。
-- ★ 浮层层次三件套：遮罩压暗 `bg-black/60` + 亮描边 `border-white/15` + 深投影 `shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]`（`shadow-2xl` 深色底无效）；核对投影 grep `--tw-shadow` 变量。
-- ★ 滚动容器必须自带底色（`bg-card`）+ **显式** `overflow-x-auto`（`overflow-y-auto` 会把另一轴算成 auto；别用 `overflow-x-hidden` 裁信息）。
-
-## 前端呈现纪律（观点输出排版，2026-10-11「L1」起）
-- ★★ 凡**观点输出**（LLM 日报/简报/复盘/矛盾报告/雷达分析/一页纸诊断/事实问答）一律：容器加
-  `class="md-body"` + `v-html="renderMd(text)"` —— 渲染器 `composables/markdown.js`、样式
-  `styles/md.css`，**全站各只有一份**（`main.js` 引入）。**绝不再写 `whitespace-pre-wrap` 裸文本**：
-  那会把 `**加粗**`/`##` **原样显示成星号**（2026-10-11 一次修掉 4 处）。
-  背景：此前 `.md-body` 被抄 **5 份**、`new MarkdownIt` **5 份**且选项已漂移（`linkify` 1 false /
-  4 true，MonitorView 那份还缺表格样式）⇒ 同一段 LLM 文本在不同页面渲染不同。
-- ★ 重点层级（已内置，改前先读 `styles/md.css` 头部注释）：`h2/h3` 加左侧色条、`strong` 提亮到纯白、
-  **`> 引用块` = 琥珀「结论条」**（改前是 `#9ca3af` 灰字，比正文**更弱** ⇒ 结论被藏起来）。
-- ★★ **用色纪律**：`rise/fall`（红涨绿跌）＋ `displayMeta` 的"绿=机会 / 红=风险""红=净流入"已把红绿占满
-  ⇒ **强调不得用红/绿**（会与涨跌语义打架、越强调越难读），只用琥珀/蓝/白灰阶 + 结构。
-- ★ "重点"必须有**稀缺性**（单条结论最多 1~2 处强调），否则等于没强调（同"第一屏全是运维信息"教训）。
-- **刻意不合并**：`ScoreRank` 推送时间线的正文用 `contentSegs()` 做「名称(代码)→详情页」的**自定义分词**，
-  与 markdown 渲染互斥 ⇒ 保持裸文本；**不要为它开 `html: true`**（LLM/推送文本不可信，`html:false` 是安全底线）。
-- ★★ **「观点卡」+「一句话结论」契约（L2，2026-10-11）**：
-  · **卡片内嵌**的 LLM 观点用 `components/InsightBody.vue`（结论置顶为琥珀「结论条」+ 依据可折叠）；
-    **整页长文**（日报/简报/周报/复盘/矛盾报告）仍用 `md-body` + `renderMd`（长文折叠只添堵，
-    且日报/简报的同一份文本还要进企微推送）。已用：雷达 ×2（工作台/榜单）、一页纸诊断、事实问答。
-  · **契约**：生成侧若想让结论被置顶，就**首行**输出 `**结论**：<一句话>`（或 `## 结论` + 下一行）。
-    解析 = `composables/markdown.js::splitInsight`：**只认显式标记，绝不靠"第一段就是结论"猜**
-    （日报首段是"市场脉冲"，猜错会把普通段落放大成结论）；**无标记 ⇒ 完全按普通 md 渲染**，
-    所以旧数据/未改的生成器行为零变化（这是它能安全上线的唯一理由）。
-    已约定 prompt：雷达（`routers/flash.py`）、一页纸诊断（`stock_diagnosis.py`）、
-    **简报**（`trader_brief._SYSTEM_PROMPT` —— 简报的 `narrative` 本来就在最前面，
-    首行标记天然生效，无需后端结构）；**日报**改走**读侧抽取**：`insight.section_first_paragraph`
-    取**机械标题** `## 今日主线` 的首段，由 `routers/daily_report.py::report_daily` 作为
-    `conclusion` 下发（日报的 LLM 段在**文末**，首行标记够不到；而标题是我们**自己代码写死**的
-    `add("## 今日主线")` ⇒ 确定性抽取，**不是猜模型把结论放哪**）。
-    **仍未约定**：复盘 / 周报 / 矛盾报告。
-- ★ 日报/简报到前端的落点（2026-10-11）：**简报**在日报页 + 工作台盘前/盘后卡走 `InsightBody`
-  （结论条置顶、**依据不折叠** —— 简报是给人通读的）；**日报页**在正文上方加一条"只传 `conclusion`"的
-  结论条（正文仍渲染**完整报告**，含"今日主线"小节，**刻意不删**）。日报的 `markdown` **一字未动**
-  ⇒ 企微推送（推的就是这份 markdown）不受影响；+ 简报 prompt 改动会让推送顶部多一行加粗结论（无害）。
-- ★★ **结构化结论（L3，2026-10-11）—— 三级降级：结构化 → L2 标记 → 纯文本**
-  · 后端 **`app/insight.py::parse_insight`**（唯一入口）：LLM 的 JSON → 逐字段校验 →
-    `{conclusion, reasons[]}`，**并同时组装 markdown**（首行仍是 `**结论**：` 标记）⇒
-    新老两条通道内容**同源**，不会一处改了另一处没改。
-  · **解析失败 = 原文照旧渲染**（`structured=False`）⇒ 任何一级都不猜、**不会比改造前差**；
-    这也是它敢上线的唯一理由。前端 `InsightBody` 优先用结构化字段，否则走文本通道。
-  · 已接入：雷达（`routers/flash.py`，表幂等加列 `conclusion`/`reasons`）、一页纸诊断
-    （`stock_diagnosis.py`）。★ **诊断的"缓存命中分支"也必须带这两个字段** ——
-    2026-10-11 就是这里漏改，被验证脚本抓出来（d2 KeyError）。
-  · 纪律：结论超长（>120 字）⇒ **丢弃而不是截断**（不替模型改原话）；越界词 ⇒ 仍整段判失败；
-    LLM 没给 JSON ⇒ `print` 一行"退化为纯 markdown"（可观测，便于发现 prompt 失效）。
-
-## 数据与缓存
-- ★★★ `tencent._cache`：显示"数据时点"必须用 `data_ts`+`from_snapshot`，**绝不用 `last_update`**（=填充时刻，快照恢复故意设"现在"）。事故：线上缓存冻结 09-24 两天才被用户肉眼发现。已暴露 `quote_as_of/quote_from_snapshot`（`/api/market/emotion` + `portfolio_radar.build()`）；`stock_cache_refresh_loop` 巡检 data_ts vs 期望交易日。**判定缓存冻结日**：`/score/batch/top` 的 change_pct 与 `backtest_prices` 逐日逐只比对。`/api/market/emotion` 的 `data_date` 是日历推断，不能证明缓存日期。
-- ★ 时点：`datetime.fromtimestamp` 走服务器本地时区（生产 UTC）差 8h ⇒ `time.gmtime(ts+8*3600)` 或 `fromtimestamp(ts, tz=timezone(timedelta(hours=8)))`；`datetime.now()` 一律 `flash.rules.beijing_now()`。
-- ★ Vue 模板属性里跨行反引号 ⇒ `Unterminated template` 构建失败；多行文案放 computed。
-- 轮询接口必须"裁列+截断正文"（`SUBSTR`，SQLite 无 `LEFT()`）；判据：前端定时轮询+返回表行 ⇒ 先问"列表需要整行吗"。
-- 本机持久缓存统一模式（flow/l3/emotion-closes/ind-dist-src）：进程内→本机 gzip/json→回源；指纹单行查询；取不到指纹不走缓存；空结果不写盘。
-- 竞价落库：`market_emotion_daily` 三组互不覆盖字段（主/close_*/auction_*）；竞价数据只在 10 分钟窗口存在，窗外不写；`_emotion_daily_row` 必须组装整行（SQLite `INSERT OR REPLACE` 缺列清空）。
-- `kline_cache`/`indicator_cache`：indicator 36h；`kline_count`∈(0,250) 视为截断跳过。
-- 两条包发布链独立：`kline-data.yml`(18:00)→前端包+realtime-quotes；`backend-pack.yml`(19:00)→`backend-pack.db.gz`（日批唯一依赖）。前端包失败≠日批失败；瓶颈=K线阶段 1566 只单只请求。
-- ★★ **腾讯 qt 快照字段下标实测地图**（2026-10-08 真值核对，勿再按文档抄——本项目踩过 44/45/46 的坑）：`[3]现价 [4]昨收 [6]成交量(手) [7]外盘 [8]内盘 [9..28]五档(买一价/量…卖五价/量) [31]涨跌额 [32]涨跌幅% [37]成交额(万) [38]换手% [39]PE [41]最高 [42]最低 [43]振幅 [44]流通市值(亿) [45]总市值(亿) [46]PB [47]涨停价 [48]跌停价 [49]量比 [50]委差(手，=买五档量−卖五档量) [51]均价 [57]成交额(万,重复)`。验证法：涨停价必须 = 昨收×1.10（万科A 4.26→4.69 ✓）、均价 = 成交额元/成交量股（✓）、委差 = 五档差（✓）。**已落库的解析字段**：`tencent._fetch_tencent` 现含上述 18+5 个（新增 `limit_up/limit_down/volume_ratio/bid_diff/avg_price`）。
-- **涨速自算**（腾讯无该字段）：`tencent._SPEED_CACHE` + `_record_speed()`（**钩在 `refresh_all_stocks` 尾部，绝不能在 `_fetch_tencent`** —— 否则 `restore_market_snapshot` 会把**收盘快照**当实时价记进序列）＋ `speed_pct(code, minutes=5)`。仅 `get_china_market_status().is_open` 时采样；保留 6min/最小间隔 20s/≤32 点。**数据不足返回 None，不返回 0**。实际采样间隔 ≈2min（调度器 120s + 函数内 60s 冷却）⇒ `speed_5min` 可用、`speed_1min` 基本恒 None。
-- **单股异动前端入口（P3）**：`GET /api/stock/anomaly-signals/{symbol}` = **轻量闸门**（不调 LLM、复用 `detect_single_anomaly`，毫秒级）⇒ `StockDetail.vue` 挂载时调用，**折叠标题上主动标出异动标签**（用户原话"项目察觉不到"的正解：页面先察觉、人再决定要不要深看）。分析块**默认折叠**，展开才请求，`refresh` 强制重算；卡片含结论标签/置信度/支持·反对证据/观察位/风险/缺失维度/矛盾告警/免责声明。
-- **观察池共享入口（P3-b，已做）**：`frontend/src/components/AnomalyEntry.vue` = 一个 `异动` 小 chip 链接 → `stockHref(code) + '?anomaly=1'`（**必须用共享 `stockHref`**，别硬编码路由前缀；`target=_blank` + `@click.stop` 防父行 `goDetail` 冒泡）。**挂两处**：① 工作台右栏 `components/workbench/StockListsCards.vue` 观察池行（该行**已加 `flex-wrap`** —— 右栏仅 320px，加元素要能优雅换行而非被裁）② 榜单页 `ScoreRank.vue` 观察池表**末列**。详情页读 `?anomaly=1` ⇒ **只把分析块展开、不自动请求**（成本仍由人点「开始分析」；"导航即烧钱"与按需纪律相悖）。⚠️ 观察池是**两个独立实现**（工作台子组件 vs 榜单页表格），共享入口只能靠**同一组件**保证不漂移。
-- ★★ **前端消费字段 vs 后端返回字段的自动对照校验**（可复用做法）：用正则把 `.vue` 里实际读的 `xxx.field` 抓出来，逐个断言 API 响应里存在（条件字段如 `error`/`cached_age_min` 单列白名单）。P3 用它一次验完 13 个字段 —— 这类"前端读了个后端不返回的字段"的静默 bug 已发生 3 次，**别靠肉眼**。
-- ★★ 板块源 = zzshare（`plates_rank` plate_type=14行业/15概念，**支持历史日期可回填**），落独立表 `plate_daily_zz`；与东财 taxonomy 不兼容**绝不混表**。`app/sector_zz.py` / `/sector/zz/*` / `scripts/backfill_plate_zz.py`；`eastmoney.get_sectors` 降级链 东财→zzshare→新浪；新浪无涨跌家数给 `None`（前端判 null 才渲染，不显假 0）。
-- ★★ **榜单股票池口径（2026-10-11 两次裁决，以第二次为准）**：
-  · 快照/`/batch/top`/精算榜 = **全市场口径（含科创板 688 + 创业板）**，只剔 ST + 市值≥50亿 + 价≥3元
-    （`routers/scoring._pool_quality_filter`，三路共用）。**上午版曾照前端旧规则剔 688/300/301，
-    已撤销**——① 创业板：项目主流口径是**保留**（战法池 09-06 裁决、generate_backend_pack、
-    精算榜 185 只）；② 科创板：快照是"全市场机会发现"口径，**决策简报靠它产出有效信号**
-    （"科创板软件/数据类密集上榜"，用户实测认可）⇒ **不许用过滤抹平差异、牺牲信息**。
-  · **前端本地榜**：`useFrontendScoring.isValidStock` 只剔 ST/亏损（创业板+科创板**全部放开**，
-    10-11 三次演进定稿）。⚠️ 前端包脚本 `generate-kline-pack.py` 的 `DISABLED_PREFIXES` **同步清空**
-    （此前连创业板都屏蔽 ⇒ 用户本地榜实际全主板，放开 isValidStock 也没数据）；**未下载到新包前**，
-    新板块票因无 K 线自动缺席（`getKlines` 空 ⇒ 跳过，优雅降级）。
-  · ★ **K 线包扩容已落地（10-11 用户拍板）**：`generate_backend_pack._pack_quality` 撤 688 剔除
-    （拟纳入 405 只市值≥50亿；包 gz 31.7MB → +2.6MB；Supabase/Render ≈零增量 —— 包的 K 线来自
-    腾讯由 Actions 拉、消费方从 Pages 下载，RAM 不变因 SQLite 落盘按需查）。战法池在自身
-    filter_stock_pool 层仍剔 688 ⇒ 包里多出的 688 对战法无害（覆盖是超集）。
-  · ★ **板块标注**：`displayMeta.boardChip(code)`（科创=紫/创业=天蓝，**主板不标注保持稀缺性**；
-    避开红绿/琥珀语义）——已接 StockListsCards 评分榜行、ScoreRank 主表+快照表。
-  · ★ **观察池不得混入 ETF/指数**：`mainforce_state` 宇宙继承 `backtest_prices`（含 31 个基准/
-    持仓 ETF，带 sh/sz 前缀如 sh588000）⇒ 主力日批为它们白算、观察池曾捞出（用户报"出现
-    sh588000"）。修复 = `routers/scoring._is_stock_code`（6 位纯数字 + 0/3/6 开头）在观察池
-    live 重算 + 快照读取**双处过滤**；主力批量本身暂未改（浪费很小，消费侧已切断）。
-  · ★ 陷阱复现：`live_ranking._build_pool` 注释自称"复刻 score_top 的池子"——**"复刻"就是漂移源**；
-    且快照(北京 22:43 写)**永远赶不上**当日 Actions 精算榜(北京次日凌晨) ⇒ 回退路径每天都在走。
-    ⚠️ `_pool_quality_filter` 只管**批量池**：详情页 score_single 不经过它。
-- ★★ **行情快照的时间语义（2026-10-14 修复，用户报"今日盘面定稿显示昨天的数据"）**：
-  `market_snapshot` 三列各司其职 —— `saved_at` = **写入时刻**（快照会在**凌晨/夜间**被写：
-  冷启动 bootstrap 盘后重启且快照不可用 ⇒ 全量刷新【拉到的是上一交易日收盘】+ 保存）；
-  `data_date` = **数据所属交易日**（★ 展示层唯一可用口径）；`market_snapshot.stocks_json` 内容
-  才是数据本体。`tencent._cache` 同构：`last_update`（缓存填充）≠ `data_ts`（抓取/写入时刻）
-  ≠ **`data_date`（数据日，前端"盘面定稿"用它）**。
-  ⇒ 铁律：**向用户展示"行情是哪天的"只能用 `data_date`**；`from_snapshot=True` 时还要带 ⚠ 徽章
-  （陈旧告警也已改用 data_date 比较——原先用 saved_at 会把凌晨写的昨日快照误判成新鲜）。
-  ⚠️ 同类残留（未修）：`market_emotion_daily.date` 也用"写入当天"而非"数据所属交易日"
-  （实测 10-14 行装的是 10-12 收盘）⇒ 对账页/日报消费它时有错位风险。
-  ★★ **该坑已出现三次，修一次要顺带查这三处**：① `market_snapshot.saved_at`（写入时刻，10-14 修）；
-  ② 模拟盘 `exit_date` 用 `_bj_date()` 而价格取自 `bars[-1]`/`_latest_close()`（10-18 发现，**未修**）；
-  ③ 行情陈旧巡检比 `data_ts` 的日期（快照态=写入时刻 10-16 03:10，格式化后正好命中期望日 ⇒
-  **零告警**，10-18 修）。⇒ **"只在交易时段跑"的循环 + "盘后重启" = 静默陈旧**，
-  非交易时段必须有"库里有没有更新的快照"这条路径（`tencent.sync_snapshot_if_newer()`，10-18 上线）。
-- ★★ **两源日线口径（2026-10-15 实测，形态/研究脚本用）**：`backtest_prices.close` 与
-  `data/zzshare_daily.db.close` **逐日完全一致（原始价）**（600777 重叠 688 日 / 600993 722 日）
-  ⇒ 可互认，但**只能取其一、不混**（复权/字段不同）。★ zzshare `daily.factor` **不是前复权乘数**
-  （600777 close 2.59×factor 26.37=68.3，与现价 4.35 离谱）⇒ 「close×factor」的旧说法
-  （shrink_rebound_* 注释）**不成立**。算收益统一用**原始收盘比**（除权跳空未复权，已知简化），
-  需要除权后单日收益用 zzshare 自带 `pct_chg`。`backtest_prices` 无 pct_chg/is_st/涨跌停列；
-  `zzshare` 全市场 2005-01-04~2026-09-24、backtest_prices 989 只 2023-09~昨日（每日更新）。
-- ★ **市场底确认清单（C7，2026-10-18 上线 Phase 1）**：`app/policy_bottom_watch.py` —— **纯观察器，
-  零决策链**（不改分/不排序/不进闸门/不碰模拟盘）。五条：①国家队公告（**人工打勾**）②成交连续 3 日
-  <13000 亿 ③创业板周线转涨 ④涨跌比连续 2 日 >0.8 ⑤10Y<5% 或 布伦特<95；达成 4/5 首次跨过推一次企微。
-  ★ **试错仓/仓位权限明确不做**（与"不开影子仓、防御市禁入场"冲突；Phase 2 须另行预登记）。
-  ⚠️ 数据坑：`market_amount_daily` **不存在**（② 用 `intraday_path` 沪+深末点）；`macro_daily.date`
-  混 `2026/9/7` 格式（**必须解析 datetime 排序**，否则 10 月排在 9 月前）；`market_emotion_daily.up/down`
-  是**前一日**宽度、`close_*` 会冻结（用 `close_*` + `close_as_of` 同日校验 + 冻结检测，不合法标 insufficient）。
-- ★★ **日批时刻的真相（2026-10-19 用 GitHub API 复核，纠正我此前的错误结论）**：
-  ① **cron 时区一直是 Asia/Shanghai**，链路准点：18:00 kline → 19:00 backend-pack → **20:17** 完成
-    → daily-batch **20:17~22:39**。（此前"cron 是 UTC"的判断是错的，已改回。）
-  ② 库里那批 **01:50~03:25** 的产物来自**重复日批**：`backend-pack.yml` 的兜底
-    `schedule: 0 14 * * 1-5`（UTC=北京 22:00）常被 GitHub **延迟 3~4h** 到次日 01:50 才启动，
-    guard 秒跳过但 run 结论仍 `success` ⇒ `workflow_run completed` 又把 daily-batch 全量拉起跑第二遍。
-    ⇒ 已加 `scripts/daily_batch.py:_batch_already_done()`（全量 + workflow_run + 非 force 时，
-      若该数据日已有 `daily_reports` 就跳过）。**别只看库里的时间戳就推断调度时区**——
-      要先分清"正常链路"和"重复跑"。
-- ★ **ETF 份额数据源（2026-10-19 实测，避开东财）**：**上交所官方** `query.sse.com.cn`
-  `sqlId=COMMON_SSE_ZQPZ_ETFZL_XXPL_ETFGM_SEARCH_L`，参数 `STAT_DATE=YYYY-MM-DD`（**可查历史**，
-  非交易日返回 0 行），`pageHelp.pageSize=5000` 一次取回**全部 924 只**，字段 `TOT_VOL`=总份额（万份）。
-  ★ **深交所** `CATALOGID=1945` 的 `PAGESIZE` **无效、固定 10 条/页 ⇒ 758 只 = 76 页/日**，成本过高
-  ⇒ 159915 暂不纳入（这是有意的，不是漏了）。
-- ★ **市场底清单第①条现在是三层证据**：公告提示（巨潮，不参与打勾）+ **份额异动（连续 2 日 ≥8% ⇒ 自动打勾）**
-  + 人工覆盖（`manual_at` 非空则以人工为准）。份额判定用 `streak`（今天和前一日都 ≥ 门槛 ⇒ 2）。
-- ★ **巨潮公告检索的坑（2026-10-19 实测）**：`hisAnnouncement/query` 的 `searchkey` 是**分词全文匹配**，
-  搜"汇金"会命中"银行承兑**汇**票…资**金**"、搜"中国诚通"会命中"中国海诚" ⇒ **不能当精确判据**；
-  必须"按日全量拉 + 本地连续字串过滤（短语+动作词）"。`column=sse|szse` 对 fulltext 无效（两者结果相同）。
-  实测近 90 天：白名单（四大行/三桶油等）`增持` 公告 360 条扫描 **0 命中**、`中央汇金` 整词 0 条
-  ⇒ 当前**没有汇金/国新新发增持公告**（这轮是回购潮）。
-- ★ **市场底清单第①条已自动化（2026-10-19）**：`app/policy_announcements.py` 每日扫巨潮公告，
-  结果挂在 `policy_bottom_watch` 第①条（`hints/hint_status/hint_text`），**只提示不打勾**
-  （`checked` 仍只来自人工，`n_checked` 不受影响）。日批任务 `policy_announcement_watch`
-  **必须排在 `policy_bottom_watch` 之前**。`hint_status` 四态：`found/clear/unavailable/none`，
-  其中 **`unavailable`（抓取失败）必须与"未发现"显式区分**（缺失 ≠ 不满足）。
-  ★ 老行兼容：`checklist_json` 里没有 hints ⇒ 必须在 `load()` 现读现合并（否则接口全 None）。
-- ★ **龙虎榜席位口径（2026-10-18 澄清）**：`lhb_history.seats_json` 只对**池内个股 + 近 10 天**富化
-  （`backfill_days(detail_recent=10)`，逐股 detail 慢），**池外恒为 0 是设计**；统计覆盖率**必须用池内做分母**
-  （池内 267/4,458 = 6.0%，近月满覆盖；≤2026-07 为 0）。席位内容 = 买卖前五的营业部/机构专用/沪深股通
-  实名 + `youzi` 游资标识。做"席位→收益"回溯研究需另回填 ~4,191 条 detail（先测限频）。
-- ★ **形态研究工具**：`scripts/pattern_launch_check.py`（缩量调整→放量启动，胜率验证；
-  可配参数/单股/全市场/样本闸+bootstrap+基准/MD+自包含 SVG HTML，落 `backend/backtest_reports/`）
-  + `scripts/pattern_launch_grid.py`（参数敏感性网格；一次扫描多组合，全量 5.5 分钟；
-  `--verify` 断言与主工具逐条一致）。
-  ★★ **基准口径铁律（2026-10-15 踩过）**：基准必须**与信号同一资格**（≥pullback+base 根历史）
-  —— 否则基准会混入**新股上市连板期**（10 日 +50% 级），实测把超额算歪 **5.8pp**、甚至翻转符号
-  （旧 +3.51%/+2.50% vs 修正 −2.29%/−1.60%）。`--baseline-eligibility same|all` 默认 same。
-  **全量结论（6058 只/2018 起，修正口径）**：T+10 超额 **+2.09pp**、P=0.000（9004 样本/1624 独立日），
-  但**中位 −1.45%、胜率 43.1%**、最大回撤均值 −8.02% ⇒ **正边际但不赚钱（右偏）**；
-  网格 12 组合 T+10/T+20 **全正且全显著**（+1.21~+2.59pp）⇒ **稳健非巧合**；
-  ★ **T+5 全格负超额**（−0.14~−0.74pp）⇒ 短期负边际，追高先吃亏；
-  ★ 参数方向反直觉：**启动越温和(3%)、缩量越宽松(0.7) 超额越大**，追激进启动更差。
-  ★ **B 落地口径（2026-10-15，对齐 shrink_rebound_live）**：双边成本 0.003 + 剔 ST +
-  剔 T+1 开盘即涨停（`high_limit×0.995`，精确覆盖 10/20/30cm）+ 判定线"落地净超额 ≥ +1pp"。
-  结果：T+5 全负（−0.44~−1.04pp）；**T+10 净 +0.91~+1.99pp（11/12 组合过关）**；
-  T+20 净 +1.42~+2.27pp（12/12 过关）；剔除记账：候选 288,387 中一字板买不进 6,561(2.3%)。
-  ⇒ 成本只吃掉 0.3pp，**边际仍在**，但单笔净期望仅 **+0.2~0.4%/10 日**、胜率 43~45%、中位仍负
-  ⇒ 定性不变：**正边际但不赚钱**；未计冲击/容量。未预登记 ⇒ 描述性研究，不构成买入依据。
-- ★ **形态每日扫描（生产，2026-10-15）**：`app/pattern_launch.py` + `/api/pattern/*` +
-  日批 `task_pattern_launch_scan` + 前端 ScoreRank「形态扫描」tab + 榜单 `PATTERN_CHIP`（品红）高亮。
-  表：`pattern_scan_daily` / `pattern_watch`（T+1/5/10/20 追踪）/ `pattern_config`（JSON，
-  `PUT /api/pattern/config` 重设回测口径）。★ **陷阱**：扫描日判定**不能用 MAX(date)**
-  —— backtest_prices 逐股回填，当天可能只回填 ~150 只 ⇒ 取"近 5 日里覆盖 ≥800 只"的最新一日。
-  数据源 = backtest_prices（995 只池，每日更新）；全市场需换 pack_source（loader 已解耦预留）。
-  定位 = 描述性观察（候选+追踪），**非信号**。
-- ★★ **该形态已走完 A/B/C 三步（唯一一个完整闭环的形态）**：A 参数网格（稳健）→ B 成本+可执行性
-  （净超额仍在）→ **C 预登记立项（2026-10-15）**：判据冻结于 `PLAN_PATTERN_LAUNCH_EDGE.md` v1.0，
-  脚本 `scripts/pattern_launch_edge_check.py` 已注册 `edge_verify` 月度复核，
-  `SIGNAL_STATUS` = **「缩量启动形态：预登记中」**。
-  ★ 关键纪律：形态已在**全历史**看过三次 ⇒ **同一段历史无检验力** ⇒ 判据**只对前瞻样本生效**
-  （`pattern_scan_daily.date ≥ 2026-10-15`），闸门 ≥20 独立信号日 ∧ ≥120 观测（预计 1~3 个月），
-  **不得放宽参数再试**。GO 且用户拍板才可改 `SIGNAL_STATUS`。
-- ★★ **Supabase 容量/流量铁律（2026-10-18 实测处置：库 409→275MB、egress 4.04GB/5GB）**：
-  ① **研究数据绝不落 PG**：`mf_edge_daily` 曾 134MB/34 万行留在库里（研究表），而权威副本是本地
-  `backend/data/mf_edge_daily.db`（39.8 万行超集）⇒ 已 DROP。**新研究一律写本地 SQLite**。
-  ② **读 `backtest_prices` 必须带窗口**：全量读是 egress 第一大户（累计 ≈3GB）。批量用
-  `ROW_NUMBER() OVER (PARTITION BY code)` **一次查询**取全池最近 N 根（形态扫描由此 178s→6.4s、
-  45MB→8.6MB/天）；**禁止 995 次逐只往返**。
-  ③ `load_flow_map(days=None)` = 整表读（≈8.7MB/次，累计 191 次/20M 行/1.7GB）⇒ 生产必须传 days；
-  代码已加 WARN。
-  ④ 流量基线：`scripts/egress_probe.py snapshot/diff`（tag `cleanup_20261018`）；
-  pg_stat_statements 实测 **98.5M 行/37 天 ≈ 430MB/天**，与 Supabase 页面 429MB/天吻合。
-  ⑤ **`kline_cache`/`indicator_cache` 是生产表**（评分引擎靠它们避免回源），**不可当缓存清掉**。
-  ⑥ ★★ **Render 只读模式（`RENDER_READ_ONLY=1`）下所有 `_heavy` 循环都不跑** ⇒ 任何"靠 Render
-  循环保活"的缓存/预热在线上**等于从未生效**（`backtest_preheat` 就是如此：缓存停在 09-22，
-  导致每次访问回测页都重算、累计 748 次/1890 万行≈1.4GB）。**必须迁进日批（Actions）**；
-  且消费侧要有"陈旧门槛 + 刷新冷却"（`routers/backtest.py`：stale≥6h 且距上次≥30min 才刷新）。
-- ★ **产品决策（2026-10-18 全部拍板，B 类清零）**：`flow_consec` 标签**保留**（tooltip 三处均已带
-  KILL 结论，定位=事实描述）；gate-watch **过期即重算**（安全默认，40s 只在异常态）；模拟盘
-  `ready==3` 入口**不动**，触发条件=**A2 回避侧**（≈2026-11 中旬）出结论再复议。
-- ★ **`MAINFORCE_MODE` 定案 `off`（2026-10-18）**：出货乘数 `mult` 自 **P1-12 方案A** 起
-  **无任何消费方**（`routers/scoring.py:1439` 明写"移除排序乘法"，只作标签字段）⇒ auto/off 行为等价；
-  但 auto 是"待接线"状态，留着会让未来一次接线把**未预登记背书**的乘数静默启用 ⇒ fail-closed。
-  四处（env.template / 两个 workflow / env_check 期望值）已统一 off；**若 Render 控制台仍留 auto，
-  `/api/health` 的 `switches_mismatch` 会报该项**（去控制台删掉即可）。要启用须显式改配置 + 预登记。
-- ★★ **两个"静默停摆"型缺陷（2026-10-18 审计发现）—— 遇到"数据不涨"先查这两处**：
-  ① **矛盾验证闭环**（✅ 10-18 已修）：验证原先只挂 `scheduler.contradiction_scan_loop`（被 `_heavy`
-  包裹 ⇒ `RENDER_READ_ONLY=1` 下不跑），而矛盾行由**日批**写（`task_contradiction_scan`，只 scan+save）
-  ⇒ 09-16 后 0 条验证。★ **关键口径**：91 条里 **75 条属非方向性类型**（设计上就不验证，
-  `validator.py` 顶部注释有言），真正有方向的只有 19 条 ⇒ "验证数少"大部分是**结构限制**不是丢失。
-  已改：日批调用 `validate_yesterday()` + `today` 改北京时间（原 UTC 使 10 天窗口少一天）+
-  跳过原因拆成 `非方向性`/`超龄作废`。验证样本约 **0.5~1 条/天**，30 条门槛要 1~2 个月。
-  ② **模拟盘零开仓**（维持现状，10-18 决定）：`is_strategy_admitted()` 在 defensive 市对全部战法
-  返回 False（入场层全禁，扫描层仍攒样本）⇒ 09-18~10-16 零建仓，模拟盘类校验/Coach W3-4 全冻结。
-  ★ **决定：不开影子仓**（理由：防御段建仓=复现已被回测否决的场景 562 笔 41.5%/−0.505%/PF0.72；
-  F1 只需"同批信号"对比、已有 46 笔可做；补防御段样本用回测切片快两个数量级；影子仓会弄脏
-  "模拟盘"口径，未来统计都要加隐形过滤）。
-  ⇒ 通用教训：**"样本不够"要先区分"没在产生"、"在产生但没被记录"、"在设计上就不产生"**，三者修法完全不同。
-- ★★ **模拟盘价格不可信（2026-10-18 F1 发现，同日已修）**：`paper_positions.exit_price` 与 `exit_date`
-  曾**不同源**（`exit_date=_bj_date()` 今天，价格取自 `bars[-1]`/`_latest_close()`）⇒ **9/46（20%）**
-  的成交/退出价落在当日 [low,high] 之外。已修：`_close_position(..., price_date)` 价格与日期**成对赋值**、
-  新增 `exit_price_date` 并由它回填 `exit_date`、`paper_stats`/`paper_attribution` **排除来源不明的记录**
-  （`exit_price_date IS NULL`，如实报 `excluded_bad_price`）。回填：38 对 / 4 校正 / 4 无法归属。
-  ⚠️ **4 笔来源仍未知**（价格在任何 open/close 里都找不到；已排除复权嫌疑）。工具
-  `scripts/paper_vs_backtest_check.py` 内置价格自检（`validate_prices`），**跑任何模拟盘绩效评估前先看它**。
-
-## 路由与验证纪律
-- FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**，否则 200 `{"error":...}` 非静默。
-- `routers/system.py` 挂 `/api/system` 前缀（main.py include 决定）；路径错会落 SPA 兜底返回 200 text/html 极难发现。判据：正确路径返回 JSON（未带 token 为 401）。
-- 验证三条：① import 调用≠HTTP 验证（前后端配合必须真起后端+HTTP/浏览器）；② `pnpm build` 通过≠功能可用；③ 前端"本地优先"路径单独验（`tryLoadLocalAll`）。
-
-- ★★ **临时脚本纪律（2026-10-11 一天内连踩 3 次）**：① 中文引号一律写 `「」` —— 在 `.py` 里写
-  ASCII `"…"` 会**直接语法错**；② **临时脚本也先 `python -m py_compile` 再跑**（别拿一整个往返
-  换一次语法错）；③ 括号嵌套别硬凑，宁可多写一行中间变量。
-- ★ **验证脚本自己也会错**（L3 实证：断言写的是"字面 SQL"，而代码是 f-string 动态拼的）⇒
-  失败先分清**产品错**还是**断言错**；判"是否还有某写法"用 **AST**，不要文本匹配
-  （本项目注释密度极高，必被自己的说明误伤）。
-- ★ **预登记前只看数据可用性、绝不看结果**（写 `PLAN_SCORE_EDGE.md` 时立的规矩）：
-  一旦偷看，判据会被无意识调向"好看的那侧"，预登记就白立了。
-
-## 告警与信号纪律
-- 口径：『跌多少』（绝对涨跌幅）vs『从高点回撤』（路径）是两条规则；双条件缺一不可；高波动标的门槛按倍数加严；一次拉取喂多条规则。
-- ★★ **涨/跌停家数只能"精确判"，绝不能用涨跌幅近似**（2026-10-09 事故：盘中误推「跌停 123 只/黑天鹅熔断」）。**唯一口径 = `app/limit_stats.py`**（2026-10-10 收拢；三层：① `realtime_uplimit.peek()` zzshare rt_k + `high_limit/low_limit` 逐票判、覆盖率 100%、**只读缓存不抓取** ② 内存行情**真值限价** `tencent.limit_up/limit_down` ③ 项目唯一板幅 `backtest.engine._limit_pct` + 0.3pt 容差。⚠️ 判据**照抄** `realtime_uplimit.classify`：涨停用 `_BREAK_TOL`(0.2%) 缓冲、**跌停严格 `close<=low_limit`（不擅自"对称化"）**——我第一版自己写了 0.005 元固定容差，实测涨停差 24 只）。**禁用** `change_pct <= -9.7 / >= 9.9` 之类固定阈值：创业板/科创板 ±20%、ST ±5%、北交 ±30% ⇒ 20cm 板跌 10% 离跌停还差一半却被计入（10-09 早盘 826涨/4044跌 时把计数放大到 **123**，而**收盘真值仅 11~13 只**、当日还是 96 涨停的**上涨日**）。采用 rt_k 值前**必须**同时满足 `is_intraday`（盘前/休市是上一交易日收盘定稿口径）与 `trading>=3500`（`snapshot()` fail-open，缺批会**静默漏报**）；两层回退也必须是精确口径（`tencent.limit_down` 真值价 → 板块保守阈值）。`black_swan_active()` 为真会**撤销模拟盘待确认买单**（`paper_trading.py`）；本次实测 `exit_reason='black_swan'` 0 条，**无实际损害**。**2026-10-10 已全量迁移**（此前我以为只有 overview 没迁 —— **判断错了**：它 09-30 就切了；真正残留的是 `market_regime._market_breadth_now`（→**E2 事件信号**）、`coach/rules._breadth`（→**加仓条件 `ld<10` / `position_sizing` `ld≥100 ⇒ 仓位×0.7`**）、`flash/intraday_alerts`；`routers/market` 两函数改为**委托**共享模块）。实测新口径与 rt_k **逐值一致**（涨停 72/72、跌停 11/11），旧 ±9.9 口径偏高 **+27 涨停 / +4 跌停**。★ 顺带修掉一个**项目旧实现也有**的缺陷：**新股上市首 5 日/退市整理期无涨跌幅限制**（`limit_*=0`，如 `C力勤 001246` 跌 15.87%）曾被算成跌停 ⇒ 加守卫"**涨跌幅超板幅 ⇒ 不受约束 ⇒ 不计数**"。**未做（须另立研究）**：`strategies/*` 用 `change_pct>=9.5` 在历史K线上认涨停 —— 那是**战法定义**，改它会作废既有回测证据，需预登记 + 重跑。
-- 新信号上线先做预测力检验（①会不会过吵 ②响了有没有用）；模板 `scripts/reversal_edge_check.py`；**判定标准预登记**写死脚本头。★ **预登记脚本必须接进周期日批**（样板 `subfactor_ic`，每月首个交易日）—— 否则"样本是时钟"意味着样本够了也没人跑（2026-09-30 实测 `event_live_review`/`gate_ready_backtest`/`sector_momentum_edge_check` 三个脚本**全项目无调用方**）。
-- **策略上线三重检验铁律**（bootstrap 证伪后沉淀）：① block bootstrap 显著性（按信号日分块，B≥10000）② 复利净值 ③ 分年分解。`均收益为正`≠`赚钱`（算术均值被"大赚笔+复利损耗"双重欺骗）。
-- 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`）新增前防重复。
-
-## 核心假设的检验状态（**必读**）
-- ★★★ **主力节奏假设（吸筹∧三绿 → T+5/T+10）：预登记判据 v1.0 已冻结；R1/R2 已完成实施，
-  回填后台进行中（未跑收益、未看任何收益数字）**（2026-10-11~12，`PLAN_MAINFORCE_EDGE.md`；
-  C4 @ `PLAN_NEXT.md`）。要点：引擎复用 score_edge_check（次日开盘/可取价池/+0.60 GO 线/
-  +0.30 等效性 KILL 线/seed=20261011）；**一字板剔除进主判据**；样本闸 ≥20 判定日 ∧ ≥120 观测；
-  **降级规则预冻结**（90 交易日不满足 ⇒ 自动切 H2 吸筹∧ready≥2，再不满足只准 INSUFFICIENT）。
-  · **R1 实测（10-11）**：单票 overlay 15ms + gate 76ms ⇒ 全池外推 295 秒/日 ≤ 300 秒线 ⇒ 回填可行
-    （压线）；phase/signal 一致率预览 100%（n=150）。
-  · **R2 已完成（10-13）**：`scripts/mf_edge_backfill.py` 落**本地 SQLite**
-    （`backend/data/mf_edge_daily.db`）—— **426 日（2025-01-02~2026-10-09）· 397,787 行 · 945 只**；
-    **正式一致性闸 = 99.0% ≥95% ✅**（回填数据准入通过）。**单日成本 14.4s**（三处修复后；
-    本地写 941 行 = 15.6ms vs Supabase 逐行两次挂死 ⇒ **回填数据不进 Supabase**）。
-    ★ **H1（吸筹∧三绿）= 2,090 观测 / 96 个判定日 ≥ 样本闸 ✓✓（主假设无需降级）**；
-    H2 = 37,245 / 392 日（备而不用）。
-  · **踩坑（复用先例必抄返回类型）**：`detect_market_regime` 返回**对象列表**非单值；
-    `flow.load_flow_map` 整表读会 statement timeout / SSL 断 ⇒ 直读分块 + 本地缓存；
-    `trade_gate._today_contradictions` 30s 缓存 ⇒ 回填时每天 ~10 次网络重读（吃满 250s/日）
-    ⇒ 启动读一次恒定（只影响 reasons 文案，不影响 ready）；
-    `universe_at` 逐日查询 ⇒ 30 天/批 + **每批增量存盘**（否则中断=白装）。
-  · **egress 纪律（实测教训）**：pack 未覆盖票的 fallback 必须**一次性读 + 本地缓存 +
-    SQL 侧行数截断**（旧版逐日直读全历史 ⇒ 两天烧 ~1.9GB）。
-  · ★★★ **首跑（10-13，`scripts/mf_edge_check.py`）：T+5 / T+10 双 `PARTIAL`** ——
-    96 判定日 / 1,745 观测（闸达标）。T+5 **+0.19pt**（P=0.25、95%上界 +0.67pt）；
-    T+10 **+1.14pt（P=0.0025）** 但**不重叠子样本转负**（−0.28pt）⇒ 被冻结判据的
-    `same_dir` 条件拦下（**防"假显著"的活教材**）；剔首尾 20% 日期后 T+5 仅 +0.04pt
-    ⇒ 超额由极少数日/极小样本驱动。**结论：吸筹∧三绿的买入含义未被证实（也未被否定）**
-    ⇒ SIGNAL_STATUS 已如实披露、B4 维持原状；edge_verify 月度复检已注册。
-  · 踩坑：pack `codes.market_cap` 单位是**亿元**（第一版当万元 ⇒ 选股全滤光）。
-  · ★ **T+20 扩展（10-14，§11 先冻结后跑）**：90 判定日 / 1,462 观测达标 ⇒ **PARTIAL**
-    （+0.144pt、P(μ>0)=0.399、子样本 **−1.996pt**、剔首尾后 −0.274pt）⇒ **三期（5/10/20）
-    判定一致、三期不重叠子样本全部方向不一致**；超额最高日三期高度重叠且各只有 1~8 只
-    入选 ⇒ **系统性结论：无稳健超额证据**（不是"略正向"）。族内多重性按 Bonferroni
-    处理（T+20 α=0.05/3；T+10 首跑 α 不改）。
-- ★★★ **评分系统的预测力：预登记检验已跑，判定 FAIL（KILL）**（2026-10-11；判据 v1.1 冻结于
-  `PLAN_SCORE_EDGE.md`，结果在其 §9）：快照 Top50 此后 **T+5 跑输可取价池等权 −1.43pt**
-  （25 到期日/1250 观测；T+10 −2.21pt；单侧 P(μ<0)<0.0001、95%CI [−1.78,−1.07]、
-  不重叠子样本同向 −0.93pt、幸存偏差 0/1250、剔近涨停 3 只次不影响）。
-  与 `shadow_rank` 首跑 hint（base −2.19%/7 天，defensive）**同向印证**。
-  ★ 结论限定：禁买/防御市窗口（buy 恒 0、无 offensive）、基准=**可取价池**（941 只 = 评分宇宙
-  2224 的 42%，缺价 1283 只无法测）；**不等于"评分毫无信息"** —— 只测了「顶部 vs 平均」；
-  「高分=回避」的反向检验**须另行预登记**（本项目已验证信号清一色在空头侧，若评分在回避侧
-  有信息，价值立刻成立）。
-  · 已执行后果：`SIGNAL_STATUS` 评分行改为如实披露 ✓；**未改任何生产参数**（权重/闸门/白名单
-    /模拟盘入口原样）；`scripts/score_edge_check.py` 已注册进 `edge_verify` 月度复检
-    （T+20 约 10-23、`ranking_live` 分层约 11 月中，到点自动复判）。
-  · 数据面（同日实测）：快照 31 日（08-17~10-09）、每日恒 50、列名 `rank_pos`；`backtest_prices`
-    含 `open`（可执行口径）、池 974 行/日；日历取 `backtest_prices(sh000300)`（研究库停在 09-24 ✗）。
-  · 跑前评估曾修掉判据 3 处（v1.0→v1.1 留痕在 PLAN §10）：KILL 改等效性式（防"显著为负落
-    PARTIAL"与"真零掷硬币触发"）、基准改名可取价池（pool_total=2224 实测）、涨停近似改板幅口径。
-  · **收口后续清单 = `PLAN_NEXT.md`**（2026-10-11 建）：A 等时钟（T+20 ≈10-23／回避侧 ≈11 月中，
-    届时实现 `--source=live`／shadow_rank 解冻）；B 等决策（**B1 FAIL 呈现披露最优先**：
-    榜单/工作台/README 仍把 Top50 当买入参考 ／ B2 flow_consec 去留 ／ B3 gate-watch 过期语义
-    ／ B4 模拟盘入口不动）；C 待立项（**C1 regime 框架检验** = 下一个免检假设，判"对"需先定义
-    未来代理，须先出设计讨论稿／C2 输出消费闭环，复用 coach_alerts.executed 通道）。
-- ★★★ **regime 判市框架：预登记检验已跑，判定 FAIL（KILL）**（2026-10-11，判据冻结于
-  `PLAN_NEXT.md` §C1 附 A v1.0，结果同处）：跟随 regime 减仓（defensive ⇒ 次日 0.5 仓）在
-  2023-2026（**回填重算 696 判定日**、34 个 20 日窗口、回填与实时记录重叠段一致率 100%）**无增量**：
-  vs 永远满仓 **−0.30pt/20日**、95% 上界 +0.24pt（< +0.50 无增量线）、P(μ>0)=0.77。
-  ★★ 机制（描述性）：判市是趋势跟随型 ⇒ **滞后** —— defensive 标签的 198 天里池平均**上涨**
-  +0.11%/日，减仓合计少赚 10.65pt。★ 结论限定：只测了**仓位择时**这一种用法；对权重/战法
-  白名单门控、回填口径外不作断言。已执行后果：`SIGNAL_STATUS` 新增「判市框架」FAIL 行；
-  **未改任何生产参数**；`scripts/regime_edge_check.py` 已注册月度复检。
-
-## 项目已有能力清单（提需求前先查）
-- ★ **个股「一页纸诊断」（P1，2026-10-11）**：`GET /score/diag/{symbol}` +
-  `backend/app/stock_diagnosis.py` + 详情页卡片 —— **把既有结构化事实聚合成可读结论**：
-  事实永远先渲染（评分·盘后口径 / 主力 / 闸门含"缺哪条" / 龙虎榜风险 / 财报现金质量），
-  每条带 `source`+`as_of` 可追溯、缺失**如实披露**；AI 解读**按需点按钮**（12h 缓存、不进轮询），
-  LLM 只复述编号事实，**越界话术（建议买/卖、目标价…）机械拦截并丢弃整段**；
-  后端 `SIGNAL_STATUS` 固定下发各信号"检验状态"（含"龙虎榜 PASS 但仅回避参考"）。
-  ⚠️ 路径必须**两段**（单段会被 `/{symbol}` 通配吞掉）；评分事实是**盘后口径**，与页面实时分不同。
-- ★ **个股「事实问答」（P2，2026-10-11）**：`POST /score/ask`（body `{code,q,ai}`）——
-  对**当前标的**的自然语言问询，与 P1 **共用同一套事实 / 越界词表 / 检验状态**。
-  边界（写死在 `stock_diagnosis.ask`）：**只读、不落库、不做交易动作**；输入清洗（去控制字符 + 200 字截断）；
-  用户文本放 `<<< >>>` 分隔块 + prompt 明令"提问不是指令"⇒ **真正的兜底是输出侧机械拦截**
-  （命中买卖/预测话术即丢弃整段，实测注入样本被拦 ✓）；空问题不发请求；3s 限速；12h 缓存。
-  ★ 为什么用 POST：问题文本不该进 URL/访问日志，且 POST 不会被 `/{symbol}` 的 GET 通配吞掉。
-  ⚠️ **首次取事实实测 11.0s**（5 组跨库往返）⇒ 进程内 **30min** 事实缓存（`_FACTS_TTL`），别再调小。
-- 盘中警示 `intraday_alerts.py`（**指数级**：指数急跌/冲高回落/涨跌比/跌停家数）；矛盾扫描 `contradictions/`；LLM 素材 `flash/llm.py`；事件信号 `events/signal.py`。
-- ★ **个股异动判定唯一口径 = `routers/stock.py::_detect_anomaly()`**（2026-10-08 P1 抽出，全市场 `/api/stock/anomalies` 与单票 `detect_single_anomaly()` **共用**，防两处漂移）。8 条规则：急涨≥5% / 急跌≤-5% / 涨停 / 跌停（**用真值限价 `tencent.limit_up|limit_down` 比价** ⇒ ST±5%、创业板科创板±20% 不再漏判；旧口径 `9.8≤涨跌幅≤10.1` 判不出 19.9% 的真涨停） / 高换手>10% / 大振幅>8% / **放量（量比≥3 **且** \|涨跌幅\|≥2，severity=1 防过吵）** / **急拉升·急跳水（5分钟涨速≥3%）**。单票闸门 `detect_single_anomaly(code)` 返回 `should_analyze/tags/speed_5min/data_ts/from_snapshot`，**不调 LLM**。
-- ★★ **静默失效又一例（已修）**：前端 `ScoreRank.vue` 异动标签一直是 `v-for="tag in a.tags"`，而后端只返回 `signals`（结构体）⇒ **`tags` 恒 undefined ⇒ 标签从来没渲染出来过**（`v-for` over undefined 静默，构建/日志无痕）。后端现已同时返回 `tags`（= signames 的 type 数组）。**纪律：前端消费的字段名必须与后端逐一对照**——本项目此类问题已第 3 次（`getMarketOverview` 未 import、`getSectorSnapshot` 未 import、本次 `tags`）。
-- ★ **单股异动 LLM 分析（P2，2026-10-08）**：`GET /api/stock/anomaly-analysis/{symbol}?refresh=` —— 判读「拉高出货/诱多上套/真实突破/**暂无定论**」。数据四层：L1 盘口快照（复用 `detect_single_anomaly`）＋L2 主力（`_mainforce_for`，口径**照抄详情页**：优先 `mainforce_state` 但**日期须与最新K线一致**才算新鲜，否则现算 `float_shares=float_cap×1e4÷现价`）＋L3 大盘（`llm.format_a_share_context`）＋L4 历史（`backtest_prices` **只取价格**，绝不跨源算量比）。表 `stock_anomaly_analysis(code,date,result_json,created_at)`，**复用窗口仅 30 分钟**（盘中结论会过时）。护栏：`daily_report._ORDER_WORDS` 剔指令式措辞（计 `filtered_fields`）＋结论与主力资金标签矛盾则**代码层强制降置信度**（`_consistency_warnings`）＋**失败不写缓存**（否则窗口内一直返回失败）。**结论不进决策链**；成本=最多 1 次 LLM/次、`tier="fast"`、受日熔断与 6s 节流约束。⚠️ `_stock_history` 两条诚实前提：`backtest_prices` 仅 ~800 只（池外返回 None）、日线 **15:40 后**才回填（盘中最后一根是**昨日** ⇒ 文案须标注"截至上一交易日"）。
-- 持仓聚合 `portfolio_radar.py` + `/score/batch/portfolio-radar`。
-- 运维五件套：`/api/system/{status,runtime-files,memory(52探针),db-usage}` + `memory_watch.py` + `db_retention.py`（Supabase 500MB 超限=只读）。
-- 评分榜双模式：前端本地引擎 `useFrontendScoring`（K线包入 IndexedDB+实时行情+本地精算）；工作台 `loadTop` 本地优先（5 分钟复用窗口，force 跳过），`topMode` 标记「本地实时/后端批次」。
-- **观察池涨跌幅**：`gate_watch` 接口**不含 `change_pct`**（避免全池重算被拖到 >30s）⇒ 实时涨跌幅一律由前端 `getBatchPrices` 批量补（榜单页 09-22 起、工作台 09-30 起，同一做法；盘中随轮询只刷价格）。两处的「等状态/还差什么」文字走 **hover 提示**而非常显（右栏仅 320px）。
-- 宏观面板 `macro.py` 已抓：A50/纳指期货/恒生科技/美债/VIX/美元/离岸在岸人民币/金龙指数(gb_$hxc)/原油/黑色系；顶栏外盘四件套 = A50/离岸/布伦特/纳指期货 + 隔夜累计变化（自上次 A 股收盘以来）+ 外盘开市指示；「隔夜与今日（财经日历）」卡。
-- coach 外部领先预警：纳指隔夜+美元 5 日，**仅 defensive 市有增量价值**；⚠️ 纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115（已如实标注"解释/风控用途"）。
-- 涨停梯队（zzshare 日批）+ 炸板率/大面率（按板幅分桶、剔一字板）+ 连板梯队断层判读 + 昨日涨停赚钱效应。
-- 板块五层（**提"板块察觉不到"类需求前必读**）：① `mainline`/`industry_mainline` = **评分 Top50 的行业扎堆**（≠ 板块涨跌幅，大盘股板块天然低配：房地产日均仅 1.5 只）② 板块快照双源 —— 东财 `sector_daily`（日批写，常缺行、09-29 与真值矛盾不可信，**盘后不要用它**）+ zzshare `plate_daily_zz`（前端「板块分化」+ 盘后板块卡用，可回填）③ `industry_amount_share`（腾讯内存聚合，需行情缓存就绪）④ **`app/sector_momentum.py` = 板块动量/异动侦测**：异动=3日≥+5%/5日≥+8% **或** 当日前5且≥+2%（双口径），连续命中只报首日，同日≥8 项判为系统性普涨/普跌 ⑤ **`app/stock_moves.py` = 个股级"放量拉升"（含涨停，按 `stock_industry.main_industry` 聚合）**：涨幅 ≥3% 且【涨停 **或**（换手 ≥5% **或** 成交额 ≥15亿且换手 ≥1.5%）】，流通 ≥50亿、剔新股/ST；一字板另标。⚠️ **大盘股换手天然低**（实测涨幅≥3% 且流通≥300亿的换手均值仅 3.52%）⇒ 必须留"成交额"路径，否则系统性误杀云铝这类票（换手 1.97% 但成交额 17.7亿）。④⑤ **只进日报/复盘、不推送不进决策链**（因子验证 `scripts/sector_momentum_edge_check.py` 预登记，当前 INSUFFICIENT）。⚠️ zzshare 104 粗分 与 新浪 49 类**仅 4 个同名** ⇒ 板块层**不可关联个股**（强行匹配会给误导性 0）——个股层的行业标签走 `stock_industry` 天然可用。
-
-## Supabase egress（详见 EGRESS.md）
-- 账号级 5GB/月（本地+Render+Actions 共用）；实测 ~273MB/天；头号放大器=进程内缓存×低频数据+`--reload` 重启整份重读。排障：`pg_stat_statements` 按 rows + 必查 `stats_reset`（否则 14 天累计当一天）；探针 `scripts/egress_probe.py`（两次快照做差 = 真实字节）。⚠️ 报告里带 `≤` 的是**上限**（只取部分列的语句按整行宽估，可虚高两个数量级）。
-- ★★ **Actions 的 egress 无法靠"缓存"解决**（2026-10-10 实测 6.14GB/29天 ≈ 212MB/天）：Actions 每次是**全新 runner** ⇒ `backend/data/` 下所有本机缓存层（`sync_meta` 版本门控 / 本机 SQLite / 指纹 / TTL）**全部失效** ⇒ **凡没进数据包的库表，每次跑都整表读一次**。⇒ 只有两条路：**并入数据包** 或 **窄化读取**。
-- **Actions 里连库的只有 2 个作业**（其余已逐一排除）：① 日批 `daily-batch.yml`（`DATA_SOURCE=pack` ✓ + `ensure_pack_fresh()` 会下包 ⇒ K线/指标/回测价格**零回源**；但冷启必付 `mainflow_history` + `stock_finance_zz` + `stock_finance_ocf_hist`）② 产包 `backend-pack.yml`（只读 `kline_cache` 代码表 / `market_snapshot` 快照 1.1MB / 近 6 日资金流）。`ci.yml`（无 DATABASE_URL，只 compileall+import）、`deploy-preview.yml`、`kline-data.yml` **都不碰 Supabase**。⇒ Actions ≈ **27MB/天**（兜底 guard 修好后 1 次/天）；**200MB/天 是账号级总量**，其余在本地/Render。
-- ★★ **`load_flow_map(codes=None, days=N)` 窗口化**（2026-10-10）：`mainforce/state.refresh_all` 只用**近 5 日**资金流（overlay 里是 `flow_rows[-5:]`），却整表读 146 日/只（12.9MB / 120,850 行 / 次）⇒ 传 `days=FLOW_WINDOW_DAYS(20)`（实得 27 交易日）后 **25,732 / 128,535 行 = 20%**。**语义边界**：`flow5_amt`/`flow5_amt_yuan` 逐值不变；`flow_consec` 上限=窗口天数但**全库无消费方**；**陈旧票（最后一行早于窗口）或判不出 ⇒ 自动退回整表读**（否则这些票会从"有旧数据"变"无数据"，静默改 overlay 降级口径）。窗口读**不读不写** `flow-map.db`（整表口径）。
-- ★★ **`local` 模式包陈旧 ⇒ 整份静默回退 DB**（`pack_source._maybe_refresh` 开头就 `if _DATA_SOURCE != "pack": return`）⇒ 只 `print` 一次警告，极易漏看。**纪律：`DATA_SOURCE=local` 前必须先 `python scripts/sync_local.py --force`**。
-- ★ `main.py` 的 `_performance_warmup`（2026-10-10 修）：原先**只判 `READ_ONLY`**（注释却写"db 模式且非只读才预热"）⇒ 已补 `pack_source.enabled() ⇒ 跳过`。理由：它在启动 30s 后跑，而此刻包可能**还没下完**（读侧静默回退 DB）⇒ `_load_prices_map` 无 start 会拉全历史（db 模式 20-40MB/次）。
-- ★★ **`pack_source` 的读侧语义 = 「命中包→用包；**未命中→回退 DB**」** ⇒ **包的覆盖口径必须 ⊇ 所有消费方池**，否则那批代码天天回源（这是"配了 pack 也照样烧"的第二种形态）。**2026-10-10 实测并修复**：`backtest_prices` 954 只里 **129 只（13.5%）不在包内**（被产包的**质量过滤**——ST/科创板/市值<50亿——剔掉，而它们仍是回测/绩效/周报的既有池）＋基准 `sh000852`(中证1000)/`sh000905`/`sh512100`(E2 标的) 从未入池 ⇒ 对应 pg_stat_statements 里 **43MB/天、46K 行/次** 的 `backtest_prices` 大 IN（单语句第二名）。修法见 `generate_backend_pack.py::_backtest_pool_codes` + `_EXTRA_INDEX_CODES`（**消费方池豁免质量过滤**，并打印"回测池覆盖 0 缺口"自证）。⚠️ 教训：**质量过滤只应筛"新增候选"，绝不能筛掉既有消费方代码**；同类 bug 2026-09-09 修过战法池、**漏了 backtest_prices 池**。
-- ★ **线上数据源/包新鲜度的可观测端点**（排障第一站，公开）：
-  `GET /api/score/kline-cache/status` ⇒ pack/local 模式直接给 `{total_cached, newest_update(包日期), source}`。
-  2026-10-10 用它证实 Render 运行期 `source=pack` ✓，并发现 **Render 的包滞后 ~10h**（根因：`_pack_outdated()/_is_stale()` 调 `_latest_available_pack_day()` **不传时区** ⇒ Render(UTC) 的 22:00 闸门落在 BJ 06:00-08:00 ⇒ 当晚新包次日早上才下）。**不影响 egress**（UTC 只会算出更早的 latest ⇒ 保守），只影响新鲜度；建议修法：**只给 `_pack_outdated()` 传 `beijing_now()`**（`_is_stale()` 保持宽松，避免"包延迟→全量回退 DB"）。
-
-## 回测数据质量
-- 体检 `scripts/audit_backtest_data.py`；源异常日已标 `price_anomalies`（集中 2024，源里存在不可修复）。
-- ✅ **gate-watch 全池>20s**（2026-10-11 **核实：早已修好，无需改**）——端点 `gate_watch`
-  主路径 `_gate_watch_from_snapshot()` 读 `gate_snapshot_history`（2026-09-22 改造），**实测**：
-  热请求（60s 进程缓存）**0.000s**、冷请求 **1.4~5.5s**（拆分：DB 取 65.5KB 快照行 **2.4s** 为主，
-  JSON 解析 0.003s）vs `_gate_watch_live()` 文档实测 **39.8s** ⇒ 快 10~27 倍。
-  配套已做：快照新鲜度校验（>5 天回退 live）、**战法 join 随快照存**（否则读侧要 15.7s）、
-  日批 `gate_history.snapshot` **必须调 `_live`**（调端点会把旧快照原样写进当天 ⇒ 永久停在旧数据）。
-  ⚠️ 残留（未改，需产品决策）：快照 >5 天（长假+日批连续失败）会回退 live ⇒ 又变 ~40s。
-- ★★ **教训（2026-10-11 一天内踩到 3 次）**：「回测数据质量」的"**已知待修**"清单**从不回写修复状态** ——
-  `score_snapshot` 时序、`score_single` vs `batch/top`、gate-watch 性能**三项里两项半早已修好**
-  （另一次是 `score_snapshot` "修在 `_heavy()` 死路径上"）⇒ **每轮动手前必须先核实当前代码**
-  （本项目"修过但没生效 / 修在不跑的路径上"的坑极多）⇒ 该清单应改成「待修 / 已修+日期」两栏。
-- ✅ **盘中口径：「`score_single` vs `batch/top` 盘中不同分」与「盘中技术面昨收」= 同一根因**（2026-10-11 修完）——
-  详情页盘中用**实时 K 线（含当日半根）**；批量精算 `_precise_score_sync` 优先用**数据包预计算指标**
-  （截止上一交易日；`expected_kline_date()` **盘中返回 None** ⇒ 不合成当日 bar）⇒ 同一只票两个分。
-  修法：新增 `kline_cache.append_intraday_bar()` 显式入口（**零网络请求**：只读内存行情，
-  复用 `_append_today_bar`），盘中精算改走「缓存 K 线 + 合成当日 bar」；**合成序列绝不写回缓存**
-  （否则 36h 缓存盘后把半根当真 bar 采信 ⇒ 静默污染）；详情页盘中降级走缓存时同样补半根。
-  ★ 另：两套指标实现 `_calc_technical`(慢，图表端点用) / `_calc_technical_fast`(快，包·批量·日批用)
-  实测末根指标有 **≤0.012 的系统性小差** ⇒ 评分路径已统一用 fast。
-  ★ **code 形态坑**：`_tencent_cache_key` **只认裸 6 位码**，传 `sh600000` 会取不到行情 ⇒ **静默不合成**
-  （已在本函数内归一化；凡"按 code 取行情"的新代码都要注意）。
-- ✅ **`score_snapshot` 时序**（2026-10-11 修完；原记"`score_snapshot_loop` 15:15 早于数据刷新"）——
-  真相是**修过两次、两次都没修在线上跑的路径上**：
-  ① 15:15→18:00 那次把判据押在 **DB `indicator_cache`**（Actions 16:40/17:40 刷新）上，而
-    **2026-09-07 起该 Actions 定时已停用**（pack 模式下指标读取层优先读**数据包**）⇒ 实测
-    `newest_update=2026-10-07`（**死表**）⇒ 守卫**恒不通过**；
-  ② 且该循环挂在 `_heavy()` 里（`RENDER_READ_ONLY=1` ⇒ 返回 `[]`）⇒ **线上根本不跑**，
-    权威快照由**日批 `task_score_snapshot`** 产出。
-  ⇒ 本次：循环窗口 18:00→**22:30-24:00**（后于包发布 ~20:43）、判据换成**数据包日期**
-  （与 `ensure_pack_fresh()` 同源）、加"**当日已写则不覆盖**"；日批侧本就有 `ensure_pack_fresh`
-  中止守卫 ✓ 无需改。
-  ★★ **顺带挖出并修掉真事故**：`task_score_snapshot` 传 `"mainforce_signal"` 键，而落库函数
-  `record_daily_ranking` 读的是 **`"mainforce"`** ⇒ 日批（线上唯一路径）写出的该列**恒 NULL**
-  （实测 **09-10 起每天 0.0%**，仅 09-09 有 20%）⇒ **BucketStats 吸筹/出货分桶整整一个月零数据**
-  （09-13 那次只修了循环、而日批在循环之后跑 ⇒ 线上仍 NULL）。已按同口径改传 `mainforce`。
-  ★ 另修：`record_daily_ranking` 加 `date=` 参数（原写死 `_today_str()` 自然日 + 守卫看"此刻"）
-  ⇒ 跨午夜补跑会**丢失/错位**当天快照；现由日批传 `_batch_trading_day()`。
-  ★ **教训（可复用）**：`_heavy()` 里的循环在 READ_ONLY 下 = **死代码** ⇒ 任何"修在循环里"的
-  改动都要先确认**线上到底哪条路径在跑**；本次两个 bug 同因（修在不跑的路径上）。
-
-## 战法回测事实（2026-09-26/27）
-- **样本量看独立信号日**（≥20 为格子激活判据），非笔数（一天几十只高度相关）。
-- `backtest_prices` 池 = 战法选股∪近30天上榜+ETF（810 只全主板）⇒ 选择偏差且**自我固化**（没选中⇒无数据⇒永不可检验）。⚠️ 另：该表仅 **839 只**（非全市场 2083），由它自算的涨停名单必然偏少。
-- 24 格矩阵（6战法×4态）19 负 5 正，正者 bootstrap 全不显著 ⇒ **现有战法体系不可交易**（已砍 `ma_convergence`）。闸门必须按战法校准。
-- 数据基础：`data/zzshare_daily.db`（21 年 1672 万行含真实涨跌停价 high_limit/low_limit）+ `data/idx_daily.json`（腾讯 fqkline 分段翻页缓存）。
-
-## 事件驱动 E2（涨停潮）
-- 生效口径：`up_ratio≥0.90 且 涨停比例≥2.0%`（比例化修掉"绝对家数随池子漂移"；换算比例必须用历史中位池子 ~2444 只）。核心=**涨停潮非普涨**；涨停约束不可删（去掉 edge 腰斩）；阈值是"平台"非"尖峰"；`能过判据≠该改`。
-- 可执行性终验（真实指数，T+1 开盘买持 20 日）：**中证1000 +2.76pp**(P=0.0012)、中证500 +2.03、创业板指 +1.53 可执行；沪深300 +0.12 不可执行 ⇒ **E2=小盘风险偏好回升信号**（edge 随市值下沉单调递增）。扣 0.3% 成本中证1000 +2.46pp；T+20 为倒 U 顶点（非事后挑选）；止损 -7% 负贡献不采用。展示层 `EXEC_STATS`→前端 title。
-- 复利检验：只做 E2 28.4%/年 < 全程持有 35.2%/年 ⇒ **不能独立择时**，只能作"防御期提前解除"判据。独立簇 57 次中位 +5.3%、胜率 68%。
-- 局限：极稀有（2021-2023 三年零事件、2026:0）；2008 熊市假信号（28 次 −1.1%）⇒ 不脱离 regime 单独用。
-- 触达闭环完整：`events/alert.py` 推送（簇去重窗口=**28 自然日=20 交易日**，与 CLUSTER_GAP 一致）+ `daily_report` 1.5 小节 + `market_events` 落库。前端 Workbench 顶栏事件项（仅 E1/E2 触发占位「事件·仅提示」）。**v0 不进决策链**；升级需 §9.1 预登记判据（样本≥10天/簇≥5 等），等实盘样本（`event_live_review.py` 就绪）。
-- 归档：E1 冰点/E3 恐慌反转无 edge；**行业动量无预测力**（E2 期=普涨非轮动，买宽基即可）；**小盘偏好轮动**相对多空 P=0.0000 但不可执行（轮动 +2.80% < 一直持小盘 +2.98%）。
-- ★ 方法论（通用铁律）：**状态/区间类信号必须用"进入点"检验**（重叠偏差：阴跌案例每日口径 +2.82 翻转进入点 −0.50）；**事件优于状态**（当日可判定离散事件可执行）；样本内发现换定义重验；**因子显著≠可交易**（多空要有做空手段、轮动要优于静态持有）；分层收益先分年拆解+组收益用中位数+必须用超额口径剔 β；`|涨跌幅|/|跳空|>11%` 过滤异常值。
-
-## 春节效应（P2-a，已进决策链）
-- 主结果：节后 T+1 收盘买持 3 日：中证500 +1.75%（扣成本，17/20）、中证1000 +2.56%（12/12）；**春节特有**（国庆 −0.27%/五一 +0.72% 证伪"长假效应"）；**无需持股过节**（首日跳空仅 +0.18%）；仅中小盘（沪深300 不显著）；无法与 2 月季节性分离（诚实标注叠加）。
-- 落点：决策卡独立字段 `calendar_exception`（`backend/app/spring_festival.py` + `trader_brief.py` + Workbench 独立块）；`overrides` 仅 regime∈{defensive,neutral_bearish} 给出；**不改 `trade_gate.evaluate`/`REGIME_ALLOWED`/`REGIME_POSITION`**（叠加提示通道，与 E2 落点一致）。
-- ★ 定位技巧：用「当月最长休市缺口」自动定位长假，不硬编码（22/22 吻合农历正月初一）。
-- ★ 维护：**每年国务院公告后把次年春节假期加入 `flash.rules.HOLIDAYS`**（precision 自动升 actual）。验证 `scripts/test_spring_festival.py`（勿删）。
-- 踩坑：同一语义在不同分支必须共用同一推导口径（固定偏移曾致 `action=buy` 永不出现）。
-- 未做（诚实标注）：企微推送（需定"推几次"防刷屏）、日报小节。
-
-## LLM 配置
-- 主力 `deepseek-ai/DeepSeek-R1`；免费站影子 `LLM_FREE_SHADOW=1`（=排除出正式链，名字反直觉易设错）。熔断单站连败 2 次→30min；排障 `/api/system/llm-usage`。`render.yaml` 只是环境变量清单非事实来源。
-
-## 因子体检周期化
-- `subfactor_ic_backtest.py` 每月首交易日随日批跑；幂等判据必须读库（Actions 每次全新 checkout）。企微推送分级：有告警 force，无告警尊重 `WECHAT_BUSINESS_ALERTS`；企微不支持 markdown 表格（自动转列表）。
-
-## 日期口径（全项目规范）
-- "数据所属日期"一律 `rules.latest_completed_trading_day()`（15:00 分界+跳周末/HOLIDAYS），绝不用北京自然日。
-- **凡"是否落后/停更/过期"一律比交易日不比自然日**（中秋/国庆连休误报教训；`restore_regime_cache_from_db` 已改）。
-- 两把尺子：15:00（业务）vs 22:00（包可用下限），15:00~22:00 窗口分开判，判早回退查 Supabase ≈600MB/天。
+## 2. 时间 / 日期口径（铁律）
+- "数据所属日期"一律 `rules.latest_completed_trading_day()`（15:00 分界 + 跳周末/HOLIDAYS），绝不用北京自然日。
+- **凡"落后/停更/过期"一律比交易日**，不比自然日（长假误报）。两把尺子：15:00（业务）vs 22:00（包可用下限）。
+- ★★★ **"写入时刻" ≠ "数据所属时刻"** —— 本项目已踩四次，落库前必问一句：
+  ① `market_snapshot.saved_at`（≠`data_date`，10-14 修）；② 模拟盘 `exit_date`（10-18 修，改 `exit_price_date`）；
+  ③ 行情陈旧巡检比 `data_ts` 的日期（快照态=写入时刻 ⇒ 零告警，10-18 修）；④ `market_emotion_daily.date` 仍用写入日（**未修**）。
+  ⇒ 对外展示"行情是哪天的"只能用 `data_date`；`from_snapshot=True` 要带 ⚠ 徽章。
+- ★★ `tencent._cache`：显示时点用 `data_ts`+`from_snapshot`，**绝不用 `last_update`**（=填充时刻，快照恢复故意设"现在"）。
+  已暴露 `quote_as_of/quote_from_snapshot`；`stock_cache_refresh_loop` 巡检 data_ts。
+- ★ **"只在交易时段跑"的循环 + 盘后重启 = 静默陈旧**：非交易时段必须有"库里有没有更新快照"的路径
+  （`tencent.sync_snapshot_if_newer()`，10-18 上线）。
+- ★ 时区：`datetime.now()` 一律 `flash.rules.beijing_now()`；`fromtimestamp` 不带 tz 走服务器本地（生产 UTC）差 8h。
+- 批任务日期由调用方传入（`_batch_trading_day()`）；"连续 N 天"按交易日步进；判任务完成看 `created_at`。
 - `routers/scoring.py` 里"榜是否今天"继续用 `_today_bj()` 自然日（新鲜度判据）**不要换**。
-- 批任务日期由调用方传入（`_batch_trading_day()`），不能用 now()；"连续 N 天"按交易日步进；判任务完成看 `created_at`。
+- 春节：**每年国务院公告后把次年假期加进 `flash.rules.HOLIDAYS`**（precision 自动升 actual）。
 
-## 跨市场因子口径
-- 外部分子（纳指/VIX/美元）按"同日"对齐=时区前视 ⇒ 评估一律 lag1/"A 股开盘前已知"口径。
-- 跨市场因子价值常是非线性、条件性 ⇒ 必须分组检验。算"隔夜变化"基准用 A 股收盘后快照，不能用 `change_pct`。
+## 3. 数据与缓存
+- ★★ 腾讯 qt 快照字段下标实测（勿按文档抄）：`[3]现价 [4]昨收 [6]量(手) [7]外盘 [8]内盘 [9..28]五档
+  [31]涨跌额 [32]涨跌幅 [37]成交额(万) [38]换手 [39]PE [41]高 [42]低 [43]振幅 [44]流通市值(亿)
+  [45]总市值(亿) [46]PB [47]涨停价 [48]跌停价 [49]量比 [50]委差（买五−卖五，手）[51]均价 [57]成交额(万,重复)`。
+- 涨速自算（腾讯无该字段）：`_SPEED_CACHE` + `_record_speed()` **钩在 `refresh_all_stocks` 尾部**（不能在 `_fetch_tencent`，
+  否则快照恢复会把收盘价当实时价）。仅 `is_open` 时采样；**数据不足返回 None 不返回 0**；实际间隔≈2min ⇒ `speed_1min` 基本恒 None。
+- 竞价落库：`market_emotion_daily` 三组互不覆盖字段（主 / `close_*` / `auction_*`）；只在 10 分钟窗口写；
+  `_emotion_daily_row` 必须组装整行（SQLite `INSERT OR REPLACE` 缺列会清空）。
+- `kline_cache` 36h；`kline_count∈(0,250)` 视为截断跳过。**`kline_cache`/`indicator_cache` 是生产表**（评分引擎靠它避免回源），不可当缓存清。
+- 本机持久缓存统一模式（flow/l3/emotion-closes/ind-dist-src）：进程内 → 本机 gzip/json → 回源；指纹单行查询；取不到指纹不走缓存；空结果不写盘。
+- ★ **2026-10-19 起 `app/industry_map.py` = 个股→行业映射的唯一缓存入口**（1h，`get_industry_map()` / `invalidate()`），
+  已接 `mainline` / `stock_moves` / `earnings_pressure` / `sector_industry` —— 此前 4 处各自整表读 5932 行。
+- 两条包发布链独立：`kline-data.yml`(18:00)→前端包 + realtime-quotes；`backend-pack.yml`(19:00)→`backend-pack.db.gz`（日批唯一依赖）。
+- ★★ `pack_source` 读侧 = 「命中包→用包；**未命中→回退 DB**」⇒ **包的覆盖口径必须 ⊇ 所有消费方池**。
+  2026-10-10 修过一次（回测池 129 只 + 基准指数被质量过滤剔掉 ⇒ 43MB/天）。**质量过滤只应筛新增候选，不能筛既有消费方代码**。
+- ★ `local` 模式包陈旧 ⇒ 整份静默回退 DB（只 print 一次警告）⇒ 用 `DATA_SOURCE=local` 前先 `python scripts/sync_local.py --force`。
+- ★ 排障第一站（公开）：`GET /api/score/kline-cache/status` ⇒ `{total_cached, newest_update, source}`。
+- ★ 本地零 egress 历史库：`data/zzshare_daily.db`（4.2GB，`daily` 1672 万行 / 6123 只 / 2005-01-04~2026-09-24，
+  含 `high_limit/low_limit/factor/turnover_rate` + `_code_industry` + `meta` 交易日历）；`backend/data/pack/backend-pack.db`（klines/indicators/codes，
+  仅沪深主板+创业板，**无 688/北交**、股票池是"当前"的 ⇒ 有幸存者偏差）；`data/rescan.db`（战法重扫）。
+  ⚠️ 它们在工作区根，`search_file` 看不到 ⇒ **盘点本地资产用 os.walk**。
+- ★★ 两源日线口径：`backtest_prices.close` 与 zzshare `daily.close` **逐日完全一致（原始价）**，可互认但**不能混**。
+  zzshare `daily.factor` **不是前复权乘数** ⇒ 算收益用**原始收盘比**（除权跳空未复权，已知简化），需除权后单日收益用 `pct_chg`。
 
-## 部署与资源
-- ★★ **线上部署滞后 main**：排查线上异常第一步 `curl /api/health` 看 `build`（=RENDER_GIT_COMMIT 前 7 位）vs `git rev-parse HEAD`。旧版替代法：`git log -S "<新代码字面量>"` + curl 端点卡版本区间 + `merge-base --is-ancestor`。免费信号：免费版部署清空 `backend/data/` ⇒ 旧文件在=期间没部署。
-- 数据源告警两道闸：① `_NO_WECHAT_SOURCES`（东财板块/主站——封 IP 常态有兜底）② 环境总开关 `WECHAT_SOURCE_ALERTS=0`。抑制时日志 `[health] 已抑制企微推送（…）` ⇒ **用户收到推送但无此行 = 旧代码**。
-- Render free = 500MB/0.1CPU；**缓存四件套**：条数上限+单条上限+取用时物理删除+★**字节级上限**（`strategies._PRICES_BARS_MAX=50000`、`flow._FLOW_MAP_ROWS_MAX=120000`，超限整体清空——前三条挡不住"每条都很大"）。
-- `cache_release.py` 主动释放：盘后 19:00 每日一次 + RSS≥75% 自适应（120min 防抖）；**绝不释放**：`tencent._cache`（盘后=收盘定稿快照）、`flash.*`（重复推送）、`wechat._token_cache`、`signal_bus`、`sync_meta`。手动 `POST /api/system/cache-release`。
-- OOM 真实触发=特定请求一次性灌入（`performance._replay_track` + `flow.load_flow_map` 整表 8.8 万行≈110MB）⇒ 诊断要问"哪个请求触发的"。内存阈值判断用 `used_pct` 百分比非绝对 MB。
-- 生产 Python 3.9 禁 PEP 604；FastAPI 无 await 路由写 `def`；后端日志 ASCII。
+## 4. Supabase 容量 / egress
+- 账号级 5GB/月（本地 + Render + Actions 共用）；2026-10-18 实测 430MB/天。库容已 409→275MB。
+- ★★ **2026-10-19 复核（面板 190MB/天）**：探针 `cleanup_20261018`→`today1019`（32h）≈**166MB**
+  （按整行宽算的**上限** ⇒ ≈123MB/天）；对照 `now1013`→`cleanup_20261018` 是 **304MB/天**
+  ⇒ 10-18 的清理确实见效（`backtest_prices` 从 660 万行/5 天降到 4.9 万行）。
+  今日大头（探针口径）：**mainflow 整表读 9 次 31MB**（来自研究脚本/`research_cache`，**不是日批**）、
+  `strategy_results` 28MB（战法信号映射，多进程各持缓存）、`coach` 列表+归因 ≈27MB、
+  `stock_industry` 12MB、`macro_daily` 8.6MB、`macro_history` 7.2MB。
+  ★★ **通用坑 1："只缓存成功"等于没缓存** —— `_usd_5d_change` 在"数据不够/序列过期/异常"分支
+  直接 `return None` **不写缓存** ⇒ 每次调用都整表读（32h 实测 515 次 / 4.6k 行）。**降级路径也要缓存**（短 TTL）。
+  ★★ **通用坑 2：多个进程各持一份进程内缓存**（Render + 本地后端 + 脚本）⇒ 调大 TTL 的收益按进程数打折；
+  判断"某语句为何一天几百次"先问"是不是有 N 个进程"。
+  ★ 探针本身：`python scripts/egress_probe.py snapshot --tag X` / `diff --from A --to B` / `top`；
+  Windows 先 `$env:PYTHONIOENCODING="utf-8"`（脚本 print 含 ✅，GBK 会崩但快照已落盘）。
+- ★★ **研究数据绝不落 PG**（`mf_edge_daily` 曾 134MB，权威副本是本地 `backend/data/mf_edge_daily.db`）⇒ 新研究一律写本地 SQLite。
+- ★★ **读 `backtest_prices` 必须带窗口**：批量用 `ROW_NUMBER() OVER (PARTITION BY code)` 一次查询取全池最近 N 根
+  （形态扫描 178s→6.4s、45MB→8.6MB/天）；**禁止逐只往返**。`load_flow_map` 生产必须传 `days`（整表读≈8.7MB/次）。
+- ★★ 包新鲜度/预热类"靠 Render 循环保活"在只读模式**等于从未生效**（`backtest_preheat` 停在 09-22）。
+  已迁日批 `task_backtest_preheat`；消费侧加"陈旧≥6h 且距上次≥30min 才刷新"。
+- ★ Actions 每次全新 runner ⇒ `backend/data/` 下所有本机缓存全失效 ⇒ 没进数据包的库表每次整表读。只有两条路：并入包 / 窄化读取。
+- ★ Supabase 长查询会 SSL 断连 ⇒ 大表读按 code 分块（120/块）+ 重试 + `db._reset_pg_conn()`。
+- 排障：`pg_stat_statements` 按 rows（必查 `stats_reset`）；探针 `scripts/egress_probe.py snapshot/diff`。
+  报告里带 `≤` 的是**上限**（按整行宽估，可虚高两个数量级）。
+- Render free = 500MB / 0.1CPU；缓存四件套：条数上限 + 单条上限 + 取用时物理删除 + **字节级上限**
+  （`strategies._PRICES_BARS_MAX=50000`、`flow._FLOW_MAP_ROWS_MAX=120000`，超限整体清空）。
+- `cache_release.py`：盘后 19:00 每日一次 + RSS≥75% 自适应（120min 防抖）；**绝不释放** `tencent._cache`（收盘定稿）、
+  `flash.*`、`wechat._token_cache`、`signal_bus`、`sync_meta`。
 
-## 环境传导链
-- 四层合成 `mainforce/confluence.py`：宏观±2 + regime±2/±1 + 板块±1 + 个股±2，sum(−7~+7)。
+## 5. 前端纪律
+- ★★ **观点输出**（LLM 日报/简报/复盘/矛盾报告/雷达/一页纸/事实问答）一律 `class="md-body"` + `v-html="renderMd(text)"`；
+  渲染器 `composables/markdown.js`、样式 `styles/md.css` **全站各只有一份**（`main.js` 引入）。
+  **绝不再写 `whitespace-pre-wrap` 裸文本**（会把 `**加粗**` 显示成星号）。
+  **刻意例外**：`ScoreRank` 推送时间线用 `contentSegs()` 做「名称(代码)→详情页」分词，保持裸文本；**不要为它开 `html:true`**（安全底线）。
+- ★★ **观点卡 + 一句话结论（L2）**：卡片内嵌观点用 `components/InsightBody.vue`（结论置顶为琥珀结论条 + 依据可折叠）；
+  整页长文仍用 `md-body`。契约：生成侧首行输出 `**结论**：<一句话>`；解析 `markdown.js::splitInsight` **只认显式标记，
+  绝不猜"第一段就是结论"**；**无标记 ⇒ 完全按普通 md 渲染**（旧数据零变化，这是能安全上线的唯一理由）。
+- ★★ **结构化结论（L3）**：后端 `app/insight.py::parse_insight` 唯一入口（JSON → 逐字段校验 → `{conclusion, reasons[]}`，
+  同时组装 markdown ⇒ 新老通道同源）。**解析失败 = 原文照旧渲染**（`structured=False`），永不比改造前差。
+  已接：雷达、一页纸诊断（★ **缓存命中分支也必须带这两个字段**）；纪律：结论 >120 字 ⇒ **丢弃不截断**；越界词 ⇒ 整段失败。
+- ★ 重点层级（改前先读 `md.css` 头部注释）：`h2/h3` 左侧色条、`strong` 提亮纯白、**`> 引用块` = 琥珀结论条**。
+- ★★ 用色纪律：`rise/fall`（红涨绿跌）+ `displayMeta` 的"绿=机会/红=风险""红=净流入"已占满红绿 ⇒
+  **强调不得用红/绿**，只用琥珀/蓝/白灰阶 + 结构；"重点"必须稀缺（单条结论 ≤1~2 处）。
+- ★★ **顶栏浮层**：`<Teleport to="body">` + `fixed` + `max-h-[calc(100vh_-_Nrem)]` + `overflow-y-auto overscroll-contain`；
+  水平居中 `left-1/2 -translate-x-1/2`。层次三件套：`bg-black/60` 遮罩 + `border-white/15` 亮描边 +
+  `shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]`（`shadow-2xl` 在深色底无效）。
+  滚动容器自带底色 `bg-card` + **显式** `overflow-x-auto`（`overflow-y-auto` 会把另一轴算 auto）。
+- ★ 同一组件"内联 vs 浮层"诉求相反 ⇒ prop 分流（`MacroEnvCard.full`）。
+- ★★ **前端消费字段必须与后端逐一对照**（此类静默 bug 已 3 次：未 import 却调用、`tags` 恒 undefined）⇒
+  **别靠肉眼**，用正则抓 `.vue` 里读的 `xxx.field` 逐个断言 API 有。
+- ★ `composables/displayMeta.js` = 前端 helper 唯一共享源（`PHASE_STYLE/phaseCn/STRATEGY_SHORT/readyCls/stockHref/
+  xqIndexUrl/pctClass/scoreClass/hhmm/dirColor/levelColor/boardChip`）；新组件 import，不许页面内再定义。
+  **指数跳转必须 `xqIndexUrl(prefix,code)`**（`000001` 撞平安银行）。
+- ★★ 同一数据两处渲染=必然漂移（教练卡实证）⇒ 共用同一 computed 或只留一处。
+  `coach_alerts.alert_time` 是完整 ISO ⇒ 展示一律 `displayMeta.hhmm()`。
+- ★ **接口实时 ≠ 页面实时**：新刷新项必须进 `startPolling()` 120s 组，否则盘中静默不更新。
+- ★ Vue 模板属性里跨行反引号 ⇒ `Unterminated template`；多行文案放 computed。图表偏好：榜单/分布纯 CSS 条，Workbench 不引 echarts。
+- 站内带 tab 跳转统一 `?tab=<key>`；默认 tab 显式排除（否则守卫跳过加载 ⇒ 白屏）。
+- 新看板/tab 自带一行定位（是什么/不是什么/下一步）；榜单=候选池+变化监测，非买点清单。
 
-## Coach
-- `rules.yaml`/`rules.py`/`audit.py`/`monitor.py`；持仓源 `paper_positions`+`user_portfolio`；真实持仓默认止损=成本×0.92。API `/api/coach/alerts|consistency|abandon-reasons|plans*`。
+## 6. 路由 / 验证纪律
+- FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**
+  （`/score/diag/{symbol}` 必须两段，否则被通配吞掉，返回 200 `{"error":...}` 非静默）。
+- `routers/system.py` 挂 `/api/system`；路径错会落 SPA 兜底返回 200 text/html，极难发现（正确路径返回 JSON）。
+- 验证三条：① import 调用 ≠ HTTP 验证（必须真起后端 + HTTP/浏览器）；② `pnpm build` 通过 ≠ 功能可用；
+  ③ 前端"本地优先"路径单独验（`tryLoadLocalAll`）。
+- ★ **临时脚本纪律**：中文引号一律 `「」`（ASCII 引号在 `.py` 里直接语法错）；**先 `python -m py_compile` 再跑**；
+  Windows GBK 下 print 别带 emoji/特殊箭头。
+- ★ **验证脚本自己也会错** ⇒ 失败先分清"产品错"还是"断言错"；判"是否还有某写法"用 **AST 不用文本匹配**（注释密度极高）。
+- 测试脚本 import `app.database` 前设 `DATABASE_URL=sqlite:///...`（否则跑线上 Supabase）。
 
-## 项目约定
-- **推送纪律（用户明确）**：不自行 git push；改完先汇报改动+验证结果，等指令再推；未明确要求不自动 commit。
+## 7. 告警与信号纪律
+- ★★ **涨/跌停家数只能精确判**，唯一口径 = `app/limit_stats.py`（三层：rt_k 逐票判 high/low_limit → 内存真值限价 →
+  `backtest.engine._limit_pct` + 0.3pt 容差；**只读缓存不抓取**）。
+  **禁用** `change_pct<=-9.7/>=9.9` 近似（20cm 板会把跌 10% 算成跌停；10-09 事故把 11~13 只放大到 123 只）。
+  ★ 判据照抄 `realtime_uplimit.classify`：涨停 `_BREAK_TOL` 0.2% 缓冲、**跌停严格 `close<=low_limit`（不擅自对称化）**。
+  用 rt_k 前必须同时满足 `is_intraday` 且 `trading>=3500`；**新股首 5 日/退市整理期 `limit_*=0` ⇒ 不计数**。
+  ⚠️ `strategies/*` 用 `change_pct>=9.5` 在历史 K 线认涨停 = **战法定义**，改它作废既有回测证据，须预登记。
+- 口径：『跌多少』（绝对涨跌幅）vs『从高点回撤』（路径）是两条规则；高波动标的门槛按倍数加严；一次拉取喂多条规则。
+- 新信号上线先做预测力检验（①会不会过吵 ②响了有没有用）；模板 `scripts/reversal_edge_check.py`；**判据预登记写死脚本头**。
+- ★ **预登记脚本必须接进周期日批**（`app.edge_verify.SCRIPTS` + 日批 `task_verify_monthly`，幂等 + 分级推送）；
+  脚本须支持 `--json`（末行 `{"script","verdict","n","need","unit","detail"}`）。现有 7 个。
+- **策略上线三重检验**：block bootstrap 显著性（按信号日分块 B≥10000）+ 复利净值 + 分年分解。
+  `均收益为正` ≠ `赚钱`（算术均值被"大赚笔 + 复利损耗"双重欺骗）。
+- ★★ **事件类信号进决策链前必须过"次日开盘"这一关**：收盘价入场在 A 股系统性高估（收盘才知道事件，次日开盘已跳空）。
+  样板 `scripts/lhb_executability_check.py` / `event_executability_check.py`。
+- ★★ **覆盖率缺口若与效应强度相关，会把结论系统性拉平** ⇒ 见"覆盖率门/子样本限制"先问：缺的是随机样本还是与效应相关的样本？
+- 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`），新增前防重复。
+- ★ `flow_consec` KILL 曾写成"差≤0 **或** P≥0.20"= 单条件过松 ⇒ **KILL 用双条件**或「95%CI 上界<0」；GO 用「差≥阈值 ∧ CI 下界>0」。
+
+## 8. 信号检验状态（**别重复研究**）
+| 假设 | 结论 | 关键数字 |
+|---|---|---|
+| 评分 Top50 买入含义 | **FAIL/KILL** | T+5 −1.43pt、T+10 −2.21pt（vs 可取价池 941 只），P<0.0001 |
+| regime 判市减仓 | **FAIL/KILL** | vs 永远满仓 −0.30pt/20 日，95% 上界 +0.24pt；机制=趋势跟随滞后 |
+| 主力节奏 H1（吸筹∧三绿） | **PARTIAL** | T+5 +0.19pt(P .25)、T+10 +1.14pt(P .0025) 但子样本 −0.28、T+20 +0.144(P .40) ⇒ **无稳健超额** |
+| 消息分（news_score） | **FAIL** | 34 快照日，按日 rank IC 均值 T+2 −0.003 / T+5 +0.004（判据 ≥0.10） |
+| 龙虎榜净买强度 | 多头**禁用** / 空头**可用** | close0 +4.29pct；**次日开盘 +1.44pct、CI 跨 0** ⇒ 落地=回避标签 |
+| 缩量启动形态 | **预登记中**（C5） | T+10 净 +0.91~+1.99pp（11/12 组合）、T+5 全负；只对 `date≥2026-10-15` 前瞻样本生效 |
+| 现有 6 战法 | **不可交易** | 24 格矩阵 19 负 5 正，正者 bootstrap 全不显著（已砍 `ma_convergence`） |
+| E2 涨停潮 | 小盘风险偏好回升信号 | up_ratio≥0.90 ∧ 涨停≥2.0%；中证1000 +2.76pp(P=.0012) 可执行，沪深300 不可执行 |
+| 春节效应 | **已进决策链** | 节后 T+1 收盘买持 3 日：中证500 +1.75%、中证1000 +2.56%；国庆/五一双双证伪 |
+| 行业动量 / 小盘轮动 / 北向 | 无预测力或不可执行 | 详见 daily 2026-09 段 |
+
+- ★ 方法论铁律（通用）：**状态/区间类信号必须用"进入点"检验**（重叠偏差能翻转符号）；**事件优于状态**；
+  样本内发现要换定义重验；**因子显著 ≠ 可交易**；分层收益先分年 + 组分位用中位数 + 必须超额口径剔 β。
+- ★ **预登记前只看数据可用性、绝不看结果**（一旦偷看，判据会被无意识调向好看那侧）。
+- ★ **形态纪律**：已在全历史看过三次 ⇒ **同一段历史无检验力** ⇒ 判据只对前瞻样本生效，闸门 ≥20 独立信号日 ∧ ≥120 观测，
+  **不得放宽参数再试**；GO 且用户拍板才改 `SIGNAL_STATUS`。
+- 年度维护：`PLAN_*.md` 冻结判据、每月 `edge_verify` 自动复检；`SIGNAL_STATUS` 如实披露到前端。
+
+## 9. 已建成能力（提需求前先查）
+- **个股一页纸诊断** `GET /score/diag/{symbol}`（`app/stock_diagnosis.py`，路径必须两段）：事实先渲染（评分盘后口径/主力/闸门缺哪条/
+  龙虎榜风险/财报现金质量），每条带 `source`+`as_of`，缺失如实披露；AI 解读**按需点按钮**（12h 缓存、不进轮询），越界话术整段丢弃。
+- **事实问答** `POST /score/ask`（只读、不落库、不做交易动作；输入清洗 + `<<< >>>` 分隔块 + 输出侧机械拦截；3s 限速；首次取事实 11s ⇒ 30min 事实缓存）。
+- **个股异动** 唯一口径 `routers/stock.py::_detect_anomaly()`（8 条规则；涨停/跌停用真值限价比价；放量要求量比≥3 **且** |涨跌幅|≥2）。
+  单票轻量闸门 `GET /api/stock/anomaly-signals/{symbol}`（毫秒、不调 LLM）⇒ 详情页挂载时调用、折叠标题先标标签；
+  LLM 深读 `GET /api/stock/anomaly-analysis/{symbol}`（30 分钟复用窗口、失败不写缓存、结论不进决策链）。
+- **观察池入口** `components/AnomalyEntry.vue`（`stockHref(code)+'?anomaly=1'`，两处：工作台 `StockListsCards.vue` + `ScoreRank.vue`）。
+- **盘中警示** `flash/intraday_alerts.py`（指数级）；**矛盾扫描** `contradictions/`；**事件信号** `events/signal.py`；
+  **组合雷达** `portfolio_radar.py` + `/score/batch/portfolio-radar`；**教练** `coach/`（`rules.yaml` + `paper_positions`/`user_portfolio`）。
+- **运维五件套** `/api/system/{status,runtime-files,memory,db-usage}` + `memory_watch.py` + `db_retention.py`。
+- **评分榜双模式**：前端本地引擎 `useFrontendScoring`（K 线包入 IndexedDB + 实时行情 + 本地精算）；工作台 `loadTop` 本地优先（5 分钟复用，`topMode` 标记）。
+- **板块五层**：① `mainline`/`industry_mainline` = 评分 Top50 的行业扎堆（≠板块涨跌幅）② `sector_daily`（东财，常缺行、**盘后别用**）
+  + `plate_daily_zz`（zzshare，可回填，前端"板块分化"用）③ `industry_amount_share`（腾讯内存聚合）
+  ④ `app/sector_momentum.py`（板块动量/异动侦测）⑤ `app/stock_moves.py`（个股级放量拉升，按 `stock_industry.main_industry` 聚合）。
+  ④⑤ 只进日报/复盘，不推送不进决策链。⚠️ zzshare 104 粗分 与新浪 49 类**仅 4 个同名** ⇒ 板块层不可关联个股。
+- **形态扫描（生产）**：`app/pattern_launch.py` + `/api/pattern/*` + 日批 `task_pattern_launch_scan` + 前端「形态扫描」tab。
+  表 `pattern_scan_daily` / `pattern_watch`（T+1/5/10/20 追踪）/ `pattern_config`。
+  ★ 陷阱：扫描日**不能用 MAX(date)**（逐股回填，当天可能只 150 只）⇒ 取"近 5 日里覆盖 ≥800 只"的最新一日。
+- **市场底确认清单（C7）**：`app/policy_bottom_watch.py`，**纯观察器零决策链**，五条（国家队公告/成交<1.3 万亿×3/创业板周线转涨/
+  涨跌比>0.8×2/10Y<5% 或布伦特<95），达成 4/5 首次推一次企微；**试错仓明确不做**。
+  第①条三层证据：公告提示（`policy_announcements.py`，只提示不打勾）+ ETF 份额异动（连续 2 日 ≥8% 自动打勾）+ 人工覆盖优先。
+  日批顺序：`etf_share_watch` → `policy_announcement_watch` → `policy_bottom_watch` → `daily_report`。
+  ⚠️ 数据坑：`market_amount_daily` **不存在**（用 `intraday_path` 沪+深末点）；`macro_daily.date` 混 `2026/9/7` 格式（**必须解析 datetime 排序**）；
+  `market_emotion_daily.up/down` 是**前一日**宽度、`close_*` 会冻结 ⇒ 判据用 `close_*` + 同双校验，不合法标 `insufficient`（**缺失≠不满足**）。
+  ★★ **2026-10-19：这个"混合日期格式"的坑还有两个消费方，已修** —— `flash/store.load_macro_daily_history`
+  与 `coach/rules._usd_5d_change` 都写 `ORDER BY date DESC LIMIT N`（文本排序）⇒ 取到 9 月那批；
+  后者因此判"序列过期"并 `return None` ⇒ **外部领先预警（纳指隔夜 + 美元 5 日）被无声关闭了两周**。
+  修法：`macro_daily` 只有几十行 ⇒ **全量取回 + 按日期对象排序**（别再靠 SQL 文本排序）。
+- **数据源实测**：ETF 份额主源 = 上交所 `query.sse.com.cn`（`STAT_DATE` 可查历史、`pageSize=5000` 一次 924 只、`TOT_VOL`=总份额万份）；
+  深交所 `CATALOGID=1945` 固定 10 条/页（758 只 = 76 页）⇒ 159915 **有意不纳入**。
+  巨潮公告 `searchkey` 是**分词全文匹配**（"汇金"命中"承兑汇票/募集资金"）⇒ **不能当精确判据**，必须按日全量拉 + 本地连续字串过滤。
+
+## 10. 股票池 / 榜单口径（2026-10-11 裁决）
+- 快照 / `/batch/top` / 精算榜 = **全市场口径（含 688 + 创业板）**，只剔 ST + 市值≥50 亿 + 价≥3 元
+  （`routers/scoring._pool_quality_filter`，三路共用）。**不许用过滤抹平差异**（科创板是机会发现口径）。
+- 前端本地榜 `useFrontendScoring.isValidStock` 只剔 ST/亏损（创业板+科创板全放开）；`generate-kline-pack.py` 的 `DISABLED_PREFIXES` 已清空。
+- K 线包已扩 688（`_pack_quality` 撤剔除，包 +2.6MB，RAM 不变）；战法池自身 filter 层仍剔 688 ⇒ 无害。
+- ★ 观察池不得混入 ETF/指数：`mainforce_state` 宇宙继承 `backtest_prices`（含基准 ETF，带 sh/sz 前缀）⇒
+  `routers/scoring._is_stock_code`（6 位纯数字 + 0/3/6 开头）在 live 重算 + 快照读取**双处过滤**。
+- ★ 陷阱：`live_ranking._build_pool` 注释自称"复刻 score_top 的池子"——**"复刻"就是漂移源**；快照（22:43）永远赶不上 Actions 精算榜（次日凌晨）。
+- ⚠️ `_pool_quality_filter` 只管批量池，详情页 `score_single` 不经过它。
+
+## 11. 模拟盘 / 决策链事实
+- ★★ 平仓价与退出日**必须成对赋值**（`_close_position(..., price_date)`，`exit_price_date` 列；`paper_stats`/`paper_attribution`
+  排除 `exit_price_date IS NULL`）。2026-10-18 修：此前 9/46（20%）成交价落在当日 [low,high] 之外。回填 38 对 / 4 校正 / 4 无法归属。
+  ⇒ **跑任何模拟盘绩效评估前先看 `scripts/paper_vs_backtest_check.py` 的价格自检**。
+- F1（模拟盘 vs 回测引擎，同批 41 笔可信）：胜率 43.9% vs 41.5%、均 −0.311% vs −0.263% ⇒ **撮合假设与实测基本吻合**。
+- ★ 防御市（regime=defensive）`is_strategy_admitted()` 对全部战法返回 False ⇒ 入场层全禁（扫描层仍攒样本）。
+  **决定：不开影子仓**（避免复现已被回测否决的场景、弄脏"模拟盘"口径；补样本用回测切片快两个数量级）。
+- ★ `MAINFORCE_MODE` 定案 **off**（出货乘数 `mult` 自 P1-12 方案A 起**无任何消费方**，只作标签）⇒ auto/off 等价，
+  留 auto 会让未来接线把未预登记背书的乘数静默启用。四处配置已统一；Render 控制台若仍 auto，`/api/health.switches_mismatch` 会报。
+- ★ 矛盾验证闭环：91 条里 **75 条属非方向性类型（设计上不验证）**，真正有方向的只有 19 条 ⇒ "验证数少"多数是结构限制。
+  日批已调 `validate_yesterday()` + `today` 改北京时间 + 跳过原因拆 `非方向性/超龄作废`。
+- ★ 通用教训：**"样本不够"要先区分「没在产生」「在产生但没被记录」「在设计上就不产生」**，三者修法完全不同。
+
+## 12. 项目约定 / 用户偏好
+- ★★ **推送纪律**：不自行 `git push`；改完先汇报改动 + 验证结果，等指令再推；未明确要求不自动 commit。
+- 日报不推企微、只前端 `/report`；主使用习惯 = 每天挂 Top50 看实时行情（主链路 = 后端评分，前端本地计算次要）。
+- 本机：Windows GBK；起后端先 `PYTHONIOENCODING=utf-8`（否则 lifespan 直接失败，易误判）；
+  HTTP 验证最稳 = 单进程 uvicorn 子线程 + urllib。
 - gh-pages 三写入者必须同一 `concurrency.group` + `cancel-in-progress:false` + `keep_files:true`。
-- 新看板/tab 自带一行定位（是什么/不是什么/下一步）；榜单=候选池+变化监测非买点清单；新 tab 接 `startAutoRefresh`。
-- ★★ **同一数据两处渲染=必然漂移**：共用同一 computed 或只留一处渲染（教练卡实证：一处过滤 executed 一处没漏；`readonly` 漏传致重复回写）。`TodoCard` 自判 `isDone`（`executed` 是 `'yes'|'no'|null` 三态字符串），不再依赖外层传参。
-- ★★ `coach_alerts.alert_time` 是完整 ISO，展示一律 `displayMeta.hhmm()`；后端刻意不改（历史行已 ISO，改则同列混格式）。
-- ★★ 行情缓存 `change_pct` 开盘前=上一交易日涨幅、开盘后=当日涨幅 ⇒ 历史名单用 `backtest_prices` 自算的 `prev_limit`（当天恒定）；`_prev_trading_day` 走交易日历（休市≠缺口）。
-- ★ "信息只在某阶段看得到"=渲染位置问题，先查 `v-if` 在哪个分支再谈数据。
-- ★ 顶栏"摘要+点击浮层"既定模式；缩写前提=完整信息有别的可达入口；内存只在 ≥75% 才亮。
-- `macro.direction` 早盘锁定（`macro_daily_loop` 08:55–13:00 一次，当日固定；未锁定回退实时算，有锁定快照绝不动）；`flashDiag`/`sentiment` 全天会变。
-- ★★ **接口实时≠页面实时**：新刷新项必须进 `startPolling()` 120s 组，否则盘中静默不更新。
-- ★ ★ 时间字段两种差 8h 错法：`datetime.now()`/`time.strftime()`（服务器本地）与 `fromtimestamp` 无 tz ⇒ 正解 `beijing_now()` 或带 tz 的 fromtimestamp。
-- ★ `composables/displayMeta.js` = 前端 helper 唯一共享源：`PHASE_STYLE/PHASE_CN/phaseCn/STRATEGY_SHORT/readyCls/readyChipCls/stockHref/xqUrl/xqIndexUrl/pctClass/signNum/scoreClass/hhmm/dirColor/levelColor`。**指数跳转必须 `xqIndexUrl(prefix,code)`**（`000001` 撞平安银行；市场前缀唯一源=后端 `MAIN_INDICES` 经 `/market/overview` 下发）；新组件 import 不许页面内再定义。
-- ★ 主力 `phase` 全覆盖六档 vs `signal` 稀有（157/2083）⇒ 要每行有标签用 `phase`；中文名优先后端 `phase_cn`，`phaseCn` 兜底。
-- 站内带 tab 页面跳转统一 `?tab=<key>` 直达；默认 tab 显式排除（否则守卫跳过加载⇒白屏）。
-- 图表偏好：榜单/分布纯 CSS 条，Workbench 不引 echarts。
-- 测试脚本 import app.database 前设 `DATABASE_URL=sqlite:///...`（否则跑线上 Supabase）。
+- `report_store` **不能被"顺手写"**：`_weekly_due()` 自愈判据是"最新一份报告（不看 tag）的日期"⇒ 新落库报告会破坏周报漏跑自愈。
+- 周度闸门别自己写 `weekday()==4`：用 `_batch_trading_day()` + `_week_last_trading_day(d)`。
+- 文档：`README.md`（门面 + 红线 + **LLM 外发数据清单**：日报/简报/战法诊断/复盘/盘中异动解读都会把持仓送出网）；
+  `开发文档.md`（动手手册，6 条红线 + 架构速查 + 已验证/已证伪清单 + 不做清单）；`Agent知识库_完整操作手册_v3.1.md`（第九章=数据包与迁移，
+  **删任何包头/包文件前先查消费者矩阵**）。`CONTEXT.md` 停在 2026-09-06，别再当现状读。
+  ★ 维护约定：稳定规则写手册；**易变清单（表结构/任务表/进度）只给入口不给快照**。
 
-## 主力节奏跟随框架（项目北极星）
-- 一句话：跟对主力节奏但永远慢一步。三层可靠度递减：①状态（有回测背书→可决策）②方向（flow5 倒U/两融，看连续趋势）③时点（仅形态参考，永不进决策链）。
-- 红线：跟"已确认的节奏"不抢跑；盘中观察→盘后确认→次日执行。
-- ★ flow5 IC/accum-distribution 是横截面证据（选股），"跟节奏"是时间序列命题（择时）——横截面≠时间序列。Phase 0：Gate A NO-GO、防守侧=价格状态别名（provisional）、时间序列未 KILL。
+## 13. 工程方法论 / 踩坑精华
+- **验证**：`py_compile` 查不出 NameError ⇒ 真 import + 真调用 + 独立进程；空数据 0==0 是假绿灯（先校验样本非空）；
+  ★★ 同批次不对同一文件连发多编辑（静默丢，分批 + 每批 grep 复验关键行）。
+- **数据/字段**：缺数据 `None` 不填 0；`dict.get(k, default)` 对 None 不生效；跨系统按字段名取不按位置；
+  同一指标一页一口径；一个字段不回答两个相反问题；改枚举同步硬编码数量。
+- **外部源静默失效**：恒 0 比报错危险（被 docstring"属正常"合理化）⇒ 显式 `available/reason/stopped_since` + 保留 falsy 旧字段。
+- **SQL/双库**：PG/SQLite 四坑（JSON 列已对象别再 loads / Decimal 显式 float / NULLS LAST 是 PG 专有 / 占位符统一 `%s`）；
+  `INSERT OR REPLACE` 整行替换先读合并；加列用 `ALTER TABLE ADD COLUMN`；★ **SQL 里的字面 `%` 必须写 `%%`**（`LIKE '688%'` 会报错，用 `LEFT(code,3)`）。
+- **前端**：未 import 却调用 = 静默失效（vite 不查未定义标识符）；"信息只在某阶段看得到"= 先查 `v-if` 在哪个分支。
+- **决策/语义**：缺证据 ≠ 反证；完成时刻不确定 ⇒ 事件驱动 > 轮询；展示层与计算层都显式区分 0 与缺失。
+- **PowerShell/git**：`git commit -m` 单引号且内容无引号；`python -c` 含中文/%/in 易解析坏 ⇒ 写临时脚本。
 
-## 开发文档（入口，2026-10-11 建立）
-- **`README.md`**（2026-10-11 新建；仓库此前**没有** README）= **门面 + 红线 + LLM 外发披露**：
-  三条产品红线（不实盘/不进决策链/预登记）、⚠️ **LLM 外发数据清单**（全仓 grep 统计 9 个功能点，
-  其中**日报/简报/战法诊断/复盘/盘中异动解读都会把「你的持仓」送出网**）、
-  "不配置 LLM ⇒ 相关功能**自动降级**为纯规则/纯事实；想一点都不出网 ⇒ 把 `LLM_*`/`LLM_FREE_*`
-  指向自建 OpenAI 兼容端点"、明确不做清单、文档地图（标注 `*_202609*.md` 多为过时快照）、免责声明。
-- **`开发文档.md`（根目录）= 动手手册**（不是又一份分析报告）：6 条红线（不实盘 / 不进决策链 /
-  预登记 / egress / 交易日键 / 文案后端下发，每条配真实事故）＋ 架构速查（评分·闸门·信号治理·
-  兜底闸四条链路）＋ 工程约定与验证教训 ＋ **已验证·已证伪清单（别重复研究）** ＋ 下一阶段
-  （P1 一页纸 AI 诊断 / P2 自然语言入口 / P3 README 红线页）＋ **不做清单**（因子 DSL·实盘·桌面端）
-  ＋ 新增功能标准动作模板 ＋ 变更记录。
-- 入口指引已加到 `CONTEXT.md` 顶部（**该文件停在 2026-09-06、内容已落后，别再当现状读**）。
-- ★ **维护约定**：稳定规则写进手册；**易变清单（表结构/任务表/进度）只给入口不给快照** ——
-  否则手册自己会变成负债（本项目已有 40 余份文档，其中多份因"快照过时"失去参考价值）。
-- 由来：用户贴外部开源调研（TSP/AQuant/PanWatch/QuantDesktop/daily_stock_analysis/easytrader/Qlib）
-  问启示 ⇒ 结论：**那批项目解决"看什么"，本项目已在解决"凭什么信"** ⇒ 增量在**呈现层**，
-  不在功能堆叠（堆功能=反向稀释本项目"证伪战法体系/砍信号"的成果）。
+## 14. 其他长期事实（细节见对应 daily）
+- **主力节奏跟随框架（项目北极星）**：跟对主力节奏但永远慢一步。三层可靠度递减：①状态（有回测背书→可决策）
+  ②方向（flow5 倒 U / 两融，看连续趋势）③时点（仅形态参考，永不进决策链）。红线：盘中观察→盘后确认→次日执行。
+  ★ flow5 IC / accum-distribution 是**横截面证据（选股）**，"跟节奏"是**时间序列命题（择时）**——横截面 ≠ 时间序列。
+- **环境传导链**：`mainforce/confluence.py` 四层合成 宏观±2 + regime±2/±1 + 板块±1 + 个股±2，sum(−7~+7)。
+- **LLM**：主力 `deepseek-ai/DeepSeek-R1`；`LLM_FREE_SHADOW=1` = 影子站**排除出正式链**（名字反直觉易设错）；
+  单站连败 2 次→熔断 30min；排障 `/api/system/llm-usage`。`render.yaml` 只是变量清单，不是事实来源。
+- **宏观面板**：`macro.py` 已抓 A50/纳指期货/恒生科技/美债/VIX/美元/离岸在岸人民币/金龙指数/原油/黑色系；
+  顶栏外盘四件套 = A50/离岸/布伦特/纳指期货 + 隔夜累计变化（自上次 A 股收盘）。`macro.direction` 早盘锁定（08:55–13:00 一次，当日固定）。
+- **coach 外部领先预警**：纳指隔夜 + 美元 5 日，**仅 defensive 市有增量**；⚠️ 纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115（已如实标注"解释/风控用途"）。
+- **涨停梯队**（zzshare 日批）+ 炸板率/大面率（按板幅分桶、剔一字板）+ 连板断层判读 + 昨日涨停赚钱效应。
+- **跨市场因子**：外部因子按"同日"对齐 = 时区前视 ⇒ 评估一律 lag1 / "A 股开盘前已知"口径；价值常非线性 ⇒ 必须分组检验。
+- **因子体检周期化**：`subfactor_ic_backtest.py` 每月首个交易日随日批跑；幂等判据必须读库（Actions 每次全新 checkout）。
+  企微**不支持 markdown 表格**（自动转列表）。
+- **部署**：★ 排查线上异常第一步 `curl /api/health` 看 `build`（=RENDER_GIT_COMMIT 前 7 位）vs `git rev-parse HEAD`。
+  数据源告警两道闸：`_NO_WECHAT_SOURCES`（东财板块/主站，封 IP 常态有兜底）+ `WECHAT_SOURCE_ALERTS=0`；
+  抑制时日志有 `[health] 已抑制企微推送` ⇒ **收到推送但无此行 = 旧代码**。
+  生产 Python 3.9 **禁 PEP 604**；FastAPI 无 await 的路由写 `def`；后端日志 ASCII。OOM 诊断要问"哪个请求一次性灌入"。
+- **回测数据质量**：体检 `scripts/audit_backtest_data.py`，源异常日标 `price_anomalies`（集中 2024，源里不可修复）。
+  ✅ gate-watch 早已优化：快照读 0.000s（热）/ 1.4~5.5s（冷）vs live 39.8s；快照 >5 天会回退 live（异常态宁慢要真数据）。
+  ✅ 盘中 `score_single` vs `batch/top` 不同分 = `_calc_technical` 不用当日半根 ⇒ 已加 `kline_cache.append_intraday_bar()`
+  （零网络，**合成序列绝不写回缓存**）；两套指标末根 ≤0.012 系统差 ⇒ 评分统一用 fast。
+  ★ `_tencent_cache_key` **只认裸 6 位码**（传 `sh600000` 取不到行情 ⇒ 静默不合成）。
+  ✅ `score_snapshot` 已改 22:30-24:00 + 判据改用**数据包日期** + "当日已写不覆盖"；日批 `mainforce_signal`→`mainforce` 键名 bug 已修
+  （曾致 BucketStats 吸筹/出货分桶整整一个月零数据）。★ 教训：`_heavy()` 里的循环在 READ_ONLY 下 = 死代码，
+  改之前先确认**线上到底哪条路径在跑**（"修在不跑的路径上"已发生两次）。
+- **战法池口径**：`backtest_prices` 池 = 战法选股 ∪ 近 30 天上榜 + ETF（≈810~995 只，全主板）⇒ **有选择偏差且自我固化**
+  （没选中 ⇒ 无数据 ⇒ 永不可检验）；该表**不是全市场**，由它自算的涨停名单必然偏少。
+- **春节效应落点**：`calendar_exception` 独立字段（`app/spring_festival.py` + `trade_brief.py` + Workbench 独立块），
+  `overrides` 仅在 `regime∈{defensive, neutral_bearish}` 给出；**不改 `trade_gate.evaluate`/`REGIME_ALLOWED`/`REGIME_POSITION`**。
+  定位长假用「当月最长休市缺口」，不硬编码（22/22 吻合）。**未做**：企微推送、日报小节。
+- **观察池涨跌幅**：`gate_watch` 接口**不含 `change_pct`**（全池重算会 >30s）⇒ 前端一律 `getBatchPrices` 批量补（榜单页 09-22 起、工作台 09-30 起）。
+- 轮询接口必须"裁列 + 截断正文"（`SUBSTR`，SQLite 无 `LEFT()`）；判据：前端定时轮询 + 返回表行 ⇒ 先问"列表需要整行吗"。
 
-## 工程方法论（评审沉淀）
-- 任何"节拍/周期"检验先跑 null 模拟（bootstrap 摧毁时序结构）对比。
-- 控制变量是生死项：表观效应被价格状态解释掉 2/3 是常态；未控制归因不进结论。
-- 失败条款先于结果落盘（预注册 GO/DOWNGRADE/KILL，防 forking paths）；工程失败≠科学证伪。
-- 稀有标签一致率有基数率 bug ⇒ sensitivity/precision/κ 条件化。
-
-## 踩坑纪律（一行精华版）
-- **验证**：py_compile 查不出 NameError ⇒ 真 import+真调用+独立进程；空数据 0==0 假绿灯（先校验样本非空）；★★ 同批次不对同一文件连发多编辑（静默丢，分批+每批 grep 复验关键行）。
-- **数据/字段**：缺数据 None 不填 0；`dict.get(k,default)` 对 None 不生效；跨系统按字段名取不按位置；同一指标一页一口径；一个字段不回答两个相反问题；表列 vs 代码常量先 grep 谁在用。
-- **外部源静默失效**：恒 0 比报错危险（被 docstring"属正常"合理化）⇒ 显式状态字段 `available/reason/stopped_since` + 保留 falsy 旧字段向后兼容（北向 2024-08-19 断供、`flash_calendar` 停 09-04 实证）。
-- **日期/时间**：时间条件 vs 日历条件正交；日期键"运行日/交易日"两派混用失效；相对日期声明锚点；缓存写入时刻≠数据时刻。
-- **SQL/双库**：PG/SQLite 四坑（JSON 列已对象别再 loads / Decimal 显式 float / NULLS LAST 是 PG 专有 / 占位符统一 %s）；`INSERT OR REPLACE` 整行替换先读合并；加列用 `ALTER TABLE ADD COLUMN`。
-- **PowerShell/git**：`git commit -m` 单引号且内容无引号；`python -c` 含中文/%/in 易解析坏 ⇒ 转义写法或临时脚本。
-- **并发/前端**：同文件多 edit 串行；改枚举同步硬编码数量；删函数 grep 全库（含注释）；前端未 import 却调用=静默失效（vite 不查未定义标识符）。
-- **决策/语义**：缺证据≠反证；用户说改名先确认同一概念；完成时刻不确定→事件驱动>轮询；展示与计算层都显式区分 0 与缺失。
-
-## 本机环境 / 用户偏好
-- Windows GBK：print 别带 emoji/⇒；本机起后端先 `PYTHONIOENCODING=utf-8`（否则 lifespan 直接失败，易误判）；HTTP 验证最稳=单进程 uvicorn 子线程+urllib。
-- 日报不推企微只前端 `/report`；主使用习惯=每天挂 Top50 看实时行情（主链路=后端评分，前端本地计算次要）。
-
-## 当前进行中（2026-09-29）
-- **战法体系 bootstrap 证伪** ⇒ 现有 6 战法全部不可上线；框架=诚实告知"战法体系不可交易"。
-- **E2 已完成全链**（阈值比例化→可执行性四步验证→前端顶栏→推送/日报/落库闭环）⇒「推得出去+标的明确（中证1000 ETF 512100）」。剩余：① 等实盘样本（`event_live_review.py`）② 升级决策链单独预登记（报告 §9.1 判据已落盘）。
-- **春节效应已进决策链**，观察 2027 实盘首触（届时维护 HOLIDAYS）。事件方向其他候选：国庆/五一已证伪；FOMC/两会缺历史数据需评估成本。
-- **北向资金已评估否决**（断供+自有资金流无预测力双重否定）；事件域聚焦三件：E2+春节+解禁避险。
-- **评分权重/衰减冻结（2026-10-11 更新）**：条件"数量面"已满足（**12 快照日 / 近 30 日 13 个
-  defensive**），但**到期待判只有 7 天**（T+5）< 新设的 **20 天**门槛 ⇒ **仍不能解冻**。
-  工具已升级：`scripts/shadow_rank_edge_check.py`（**超额口径剔 β + 配对聚类 bootstrap +
-  Bonferroni(0.025) + 预登记 GO/KILL**，已接 `edge_verify` 月度复核）；原
-  `compare_shadow_rank.py` 只报绝对收益、无显著性检验 ⇒ **不足以支撑决策链变更**（其头部已加警示）。
-  首跑：`base` 超额 **−2.19%**（defensive 期 Top50 跑输全池）、`grad` +0.04pt(ns)、
-  `zero` **+0.62pt / P=0.0006**（★ 看着"显著"，但只有 7 天 ⇒ 被 20 天门槛**正确挡住**；
-  T+10 只有 2 天也报 P=0.0000 —— 纯噪声）。约 **2026-11 中旬**（20 个到期日）自动出结论。
-- 待用户配置：`BATCH_CALLBACK_TOKEN`（Render env + GitHub secret 同值）。
-
-## PLAN_RESERVE_SIGNALS 进展（2026-10-11 更新）
-- **P0-1 / P0-2 / P1-1 / P1-2 / P2-1 / P2-2 全部落地**（详见 `PLAN_RESERVE_SIGNALS.md` 各节 ✅）：
-  macro 水平阈值改分位口径（`macro-rules-v4`）／储备月度面板（`reserve_monthly`）／
-  reversal 组合预登记／`flow_consec` 标签 + 龙虎榜候选信号／**日内分时归档**（`intraday_path`）／
-  **盈利承压监测**（`earnings_pressure`，含质量闸）。首跑结论：`flow_consec` 无预测力（FAIL）、
-  盈利承压 1335 只/宏观 high。
-- ★★ **龙虎榜净买强度**：v2 定案（2026-10-11）**PASS**（close0 口径 `big_buy − big_sell` 的
-  T+5 = **+4.29pct**，P=0.0000、CI [+2.24,+6.53]、96 个上榜日、7,428 条、**四档单调**）；
-  **判据/门槛一字未改**，只把取价源从 pack（46.6%）换成**本地全市场库**（95.4%）⇒ 覆盖率门通过。
-  **★★ 同日 A 步（可执行性终验）推翻了"可交易"**：入场点换成**次日开盘**后
-  diff 掉到 **+1.44pct**、CI **[−0.33,+3.39] 跨 0**、P=0.0603 ⇒ 未达 GO；
-  **`big_buy` open1 净 −0.80%、胜率 42.0%**（不重叠复利净值 −14.02%）⇒ **多头侧禁用**；
-  `big_sell` 净 −2.25% ⇒ **空头侧明确**。
-  ⇒ **落地形态 = 风险/回避标签**（"上榜且大额净卖 ⇒ 次日显著低开 −1.86%"），已注册
-  `edge_verify` 复检。★ **2026-10-11 已上线**（用户："先做 1"）：详情页 `StockDetail.vue`
-  只做**空头侧** —— `lhb.risk` 仅在「**最近一次**上榜为**大额净卖**」时亮琥珀色警示
-  （**大额净买不提示**：v2 定案明写"不宜当买入信号"；"窗口内出现过"也不算，因为检验的是
-  事件后 T+5、十几天前的事件早已过期）。分档口径与预登记脚本**逐字同源**（`BIG=1.0`，
-  `strength_pct`/`bucket_of` 与脚本有 14 点网格等价断言），文案与依据**由后端下发**
-  （`risk_cn`/`risk_why`/`summary_cn`，前端不自行推导）。
-  ★ **覆盖缺口 2026-10-11 当天即解决**（用户："按你建议来"）：**源自带** `lhb_list.circ_price`
-  = **上榜日流通市值** ⇒ 加 `lhb_history.circ_mktcap` 列，强度 = 净买额/流通市值
-  （与预登记「收盘×股本」**数学等价**：11 只双算样本**分档 11/11 一致、强度差 ≤0.0001pct**）
-  ⇒ **不再依赖本地包**（包无 688/北交所）⇒ **科创板/北交所也能分档**；回填脚本
-  `scripts/backfill_lhb_mktcap.py`（98 日重拉，8330 行只剩 151 行无源=退市/改码），
-  近 10 日净卖样本覆盖率 **4/6 → 6/6**；顺带**省掉每请求一次包读取**。
-  ★ 坑（本项目通用）：**SQL 里的字面 `%` 必须写 `%%`**（DB 层当占位符）——
-  `LIKE '688%'` 会报 `IndexError: tuple index out of range`；用 `LEFT(code,3)='688'` 或转义。
-- ★★ **本轮最重要的方法论（两条，都是"避免自我欺骗"的通用闸）**：
-  1. **收盘价入场在 A 股事件研究里几乎系统性高估** —— 收盘时才知道事件，**次日开盘已跳空**
-     （龙虎榜实测：big_buy gap **+0.97%**、big_sell **−1.86%**，2.83pt 差距**在开盘即被定价**）
-     ⇒ **任何事件类信号进决策链前必须过"次日开盘"这一关**（样板
-     `scripts/lhb_executability_check.py` / `event_executability_check.py`）。
-  2. **覆盖率缺口若与效应强度相关，会把结论系统性拉平**（v1 的 46.6% 缺口恰好落在小票/科创
-     —— 龙虎榜效应最强处）⇒ 见"覆盖率门/子样本限制"先问：**缺的是随机样本，还是与效应相关的样本？**
-- ★ **一般化教训（本轮最有价值的方法论）**：**覆盖率缺口若与效应强度相关，会把结论系统性拉平** ——
-  v1 的 46.6% 缺口恰好落在小票/科创（龙虎榜效应最强处），于是梯度被打破、效应量被低估
-  （+3.84 vs 真值 +4.29）。⇒ 任何"覆盖率门/子样本限制"都要先问一句：**缺的是随机样本，还是
-  与效应相关的样本？**
-- ★ **预登记脚本统一接法**：注册进 `app.edge_verify.SCRIPTS`（`(名, 说明, need, 单位)`），
-  由日批 `task_verify_monthly` 月度复核（幂等 + 分级推送 + 落 `verify_monthly` 报告）。
-  脚本须支持 `--json` ⇒ 末尾追加一行 `{"script","verdict","n","need","unit","detail"}`。
-  现有 **7 个**（gate/sector/event + reversal_composite + flow_consec + lhb + intraday）。
-- ★★ **`report_store` 不能被"顺手写"**：`daily_batch._weekly_due()` 的自愈判据是
-  `report_store.list_reports(limit=1)` =「**最新一份报告（不看 tag）**的日期」⇒ 任何新落库的
-  报告都会把"最新报告日期"顶成当天，**破坏周报的漏跑自愈**（2026-09-19 修过的"整周漏报"）。
-  ⇒ 新任务要么复用既有 tag 的闸门，要么**只推企微/只出日志**（P2-2 `earnings_pressure` 即如此，
-  清单对外走 `GET /api/macro/earnings-pressure`）。
-- ★ **周度闸门别自己写 `weekday()==4`**：用 `_batch_trading_day()` + `_week_last_trading_day(d)`
-  （跨午夜补跑、长假前最后交易日不是周五 —— 两个坑 2026-09-19 都修过；实测周日跑批按"本轮
-  交易日=上周五"正确判定）。
-- ★ **Supabase 长查询会 SSL 断连**（`SSL connection has been closed unexpectedly`）⇒ 大表读
-  一律**按 code 分块（120/块）+ 重试 + `db._reset_pg_conn()`**（`mainflow_history` 一次性
-  12 万行读实测踩到；项目既有范式见 `state._load_bars_all`）。
-- ★ **本地数据包 = 被低估的零 egress 历史库**：`backend/data/pack/backend-pack.db` 有
-  `klines`（~200 万行 / 2736 只 / ~3 年）+ `indicators` + `codes`；**宽度/未来收益都能本地算**
-  （已用于 LHB 检验）。⚠️ 只覆盖沪深主板+创业板，**无科创板/北交所**（且股票池是"当前"的 ⇒
-  含幸存者偏差）。另 `research-cache.db` / `flow-map.db` / `market-snapshot-cache.db` 同理可用。
-- ★★ **`data/zzshare_daily.db`（4.2GB，**工作区根**）才是最大的零 egress 历史库**（2026-10-11 盘点）：
-  `daily` = **16,720,877 行 / 6123 只 / 2005-01-04~2026-09-24**，列含
-  `open/high/low/close/pre_close/pct_chg/volume/amount/factor/high_limit/low_limit/turnover_rate`
-  ⇒ **含真实涨跌停价 + 复权因子 + 换手率**（判涨跌停/算超额/做事件研究都不必再猜）＋
-  `_code_industry`（5932 只行业映射）+ `meta`（交易日历 2005 起）。
-  ⇒ 凡"需要全市场历史日线"的研究**先查它**（零 egress、21 年、含 ST/科创/北交）。
-  已知消费方：`scripts/subfactor_ic_backtest.py`、战法回测。另 `data/rescan.db`（1.3GB 战法重扫结果）。
-  ⚠️ 它**只到 2026-09-24**（比 pack 早）；补最新段要么走 pack（口径不同：腾讯前复权 vs 未复权+factor），
-  要么另做补库动作（注意 egress）。⚠️ 也因它在工作区根且体积大 ⇒ `search_file`/`.gitignore` 都看不到它
-  （**盘点本地资产必须用 os.walk，别信搜索**）。
-- ★ **判据自省（留作 v2）**：`flow_consec` 的 KILL 曾写成「差≤0 **或** P≥0.20」= 单条件过松
-  （纯噪声下约一半概率误杀）⇒ **KILL 用双条件**（差≤0 **且** P≥0.20）或「95%CI 上界 <0」；
-  正向判定用「差≥阈值 **且** CI 下界 >0」。
+## 15. 计划索引
+- `PLAN_NEXT.md` = **权威待办**（顶部 5 行开工摘要 / A 等时钟 / B 已清零 / C 立项 / D 不做）。
+- `PLAN_SCORE_EDGE.md`（评分 KILL 判据 v1.1 + 结果 §9）、`PLAN_MAINFORCE_EDGE.md`（主力节奏 v1.0）、
+  `PLAN_PATTERN_LAUNCH_EDGE.md`（形态 v1.0 预登记）、`PLAN_RESERVE_SIGNALS.md`（储备信号 P0~P2 已落地）、
+  `AUDIT_PLAN_2026-09-12.md`（旧看板 36 项审计，**`PLAN_2026-09-12.md` 已退役**）、`EGRESS.md`。
