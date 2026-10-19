@@ -64,7 +64,10 @@ SMALL_N = 30                    # "统计上有意义"的门槛（低于此 ⇒ 
 # ⚠️ 基准代码/退路选择**不在此定义** —— 见 `app.benchmarks`（唯一事实源，2026-09-29 收敛）
 OUTCOME_TOL = 0.5               # 与库内 outcome_pct 的一致性容差（pt）
 _CACHE = {"ts": 0.0, "key": "", "val": None}
-_CACHE_TTL = 300.0              # 5 分钟（数据日频，同其它教练模块惯例）
+# ★ 2026-10-19（egress 实测）：归因是**60 天回看 + 日频**的面板，但每次缓存失效都要
+#   再读一遍 `coach_alerts` 全量 + 逐只 `backtest_prices`（探针 32h：436 次调用 /
+#   6,072 次逐只价查询 ≈ 27MB）。⇒ 5 分钟放宽到 30 分钟（同"教练模块日频"口径）。
+_CACHE_TTL = 1800.0
 
 
 def _cutoff(days: int) -> str:

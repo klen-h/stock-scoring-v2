@@ -156,12 +156,9 @@ def _load_rows(periods: List[str]) -> List[Dict]:
 
 
 def _industry_of() -> Dict[str, str]:
-    try:
-        rows = db.fetch("SELECT code, main_industry FROM stock_industry") or []
-    except Exception as e:
-        print(f"[earnings] 行业映射读取失败: {str(e)[:80]}")
-        return {}
-    return {r["code"]: (r.get("main_industry") or "") for r in rows if r.get("code")}
+    # ★ 2026-10-19（egress）：共享 1h 缓存（原每次整表读 ≈1MB；映射为月级重建）。
+    from app.industry_map import get_industry_map
+    return get_industry_map()
 
 
 def _trim(d: Dict, limit: int) -> Dict:

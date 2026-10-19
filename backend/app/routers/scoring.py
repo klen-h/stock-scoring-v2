@@ -2051,7 +2051,11 @@ def _industry_map(codes) -> dict:
 #   本函数是实测最慢的一处（单次 16.9~20.7s：`strategy_results` 大 JSON + 无可用索引），
 #   而战法是**日频**数据 ⇒ 缓存安全、收益极大（观察池 live 与持仓雷达共用）。
 _SIG_MAP_CACHE = {"ts": 0.0, "val": ({}, None)}
-_SIG_MAP_TTL = 600.0
+# ★ 2026-10-19（egress 实测）：战法扫描是**日频**（每天一份，见 `strategy_results.scan_date`），
+#   600s 在"多个进程各持一份缓存"时仍会叠出 ~25 次/小时（探针 32h 实测 805 次调用 /
+#   4.5k 行 ≈ 28MB，按大 JSON 行宽估）。⇒ 放宽到 30 分钟：新扫描最多延迟半小时进观察池标签，
+#   不影响任何决策（战法本身已证伪、只作标签）。失败路径不写缓存（原逻辑保留）。
+_SIG_MAP_TTL = 1800.0
 
 
 def _load_signal_map():

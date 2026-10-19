@@ -16,6 +16,7 @@
 """
 
 import json
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -293,6 +294,7 @@ def record_advices(advices: List[dict], push: bool = False,
             print(f"[coach] 建议落库失败 {key}: {e}")
     if fresh:
         print(f"[coach] 新增建议 {len(fresh)} 条（推送={push}）")
+        _alert_list_invalidate()      # 列表缓存立即失效（新建议秒现）
     return fresh
 
 
@@ -371,6 +373,7 @@ def write_back_execution(alert_id: int, executed: str, reason: str = "") -> bool
     try:
         db.execute("UPDATE coach_alerts SET executed=%s, abandon_reason=%s WHERE id=%s",
                    (executed, (reason or "").strip(), alert_id))
+        _alert_list_invalidate()      # 执行状态变了 → 列表缓存立即失效
         return True
     except Exception as e:
         print(f"[coach] 执行回写失败 {alert_id}: {e}")
@@ -460,12 +463,31 @@ _ALERT_LIST_COLS = ("id", "alert_date", "alert_time", "rule_id", "label", "sever
                     "pushed")
 
 
+# ★ 2026-10-19（egress 实测）：教练列表是**前端轮询**的（工作台 `loadCoach` 取 100 条、
+#   教练页取 50 条），32h 探针实测 1,460 次调用 / 4.5 万行 ≈ 20MB（按整行宽算的上限）。
+#   教练卡是日频数据（规则引擎按天产出，盘中偶尔新增）⇒ 加 5 分钟进程缓存；
+#   写入侧 `record_advices` / 执行回写 / 结果回填都会**立即失效**，新建议照常秒现。
+_ALERT_LIST_CACHE = {"ts": 0.0, "key": None, "val": None}
+_ALERT_LIST_TTL = 300.0
+
+
+def _alert_list_invalidate() -> None:
+    _ALERT_LIST_CACHE.update(ts=0.0, key=None, val=None)
+
+
 def recent_alerts(limit: int = 50, trunc: Optional[int] = 300) -> List[dict]:
     """最近 N 条教练卡（**列表口径**：不含 `numbers_json`，`message` 截断到 `trunc` 字符）。
 
     `trunc=None` ⇒ 退回原 `SELECT *` 全字段（需要完整正文的调用方用）。
+    ★ 5 分钟进程缓存（写入侧主动失效）—— 见 `_ALERT_LIST_CACHE` 上方说明。
     """
     ensure_tables()
+    key = (int(limit), None if trunc is None else int(trunc))
+    now = time.time()
+    cached = _ALERT_LIST_CACHE["val"]
+    if (cached is not None and _ALERT_LIST_CACHE["key"] == key
+            and now - _ALERT_LIST_CACHE["ts"] < _ALERT_LIST_TTL):
+        return [dict(r) for r in cached]      # 深拷贝：调用方可能原地改写
     try:
         if trunc is None:
             rows = db.fetch("SELECT * FROM coach_alerts ORDER BY id DESC LIMIT %s",
@@ -476,7 +498,9 @@ def recent_alerts(limit: int = 50, trunc: Optional[int] = 300) -> List[dict]:
                 f"SELECT {cols}, SUBSTR(message, 1, %s) AS message "
                 f"FROM coach_alerts ORDER BY id DESC LIMIT %s",
                 (int(trunc), int(limit)))
-        return [dict(r) for r in (rows or [])]
+        out = [dict(r) for r in (rows or [])]
+        _ALERT_LIST_CACHE.update(ts=now, key=key, val=out)
+        return [dict(r) for r in out]
     except Exception as e:
         print(f"[coach] 建议查询失败: {e}")
         return []

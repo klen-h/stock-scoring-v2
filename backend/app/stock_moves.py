@@ -69,15 +69,12 @@ def _is_limit_up(code: str, chg: float) -> bool:
 
 
 def _industry_map() -> Dict[str, str]:
-    """{code: main_industry}（最细子板块）。失败返回 {}（则聚合为空，只出个股名录）。"""
-    from app.database import db
-    try:
-        rows = db.fetch("SELECT code, main_industry FROM stock_industry")
-        return {str(r["code"]): str(r["main_industry"])
-                for r in (rows or []) if r.get("main_industry")}
-    except Exception as e:
-        print(f"[stock_moves] industry map failed: {str(e)[:70]}")    # ASCII（铁律⑥）
-        return {}
+    """{code: main_industry}（最细子板块）。失败返回 {}（则聚合为空，只出个股名录）。
+
+    ★ 2026-10-19（egress）：改走 `app.industry_map` 的共享 1h 缓存（原每次整表读 ≈1MB）。
+    """
+    from app.industry_map import get_industry_map
+    return get_industry_map()
 
 
 def snapshot(force: bool = False) -> dict:

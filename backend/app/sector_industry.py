@@ -625,21 +625,13 @@ def _ensure_amount_table() -> None:
 
 
 def _industry_map() -> dict:
-    """`{code: main_industry}` 全表映射（1 小时进程缓存）。失败返回上次的/空。"""
-    now = time.time()
-    cached = _IMAP_CACHE.get("val")
-    if cached is not None and now - _IMAP_CACHE["ts"] < _IMAP_TTL:
-        return cached
-    try:
-        rows = db.fetch("SELECT code, main_industry FROM stock_industry") or []
-        m = {str(r["code"]): r["main_industry"]
-             for r in rows if r.get("code") and r.get("main_industry")}
-        if m:
-            _IMAP_CACHE.update(ts=now, val=m)
-        return m
-    except Exception as e:
-        print(f"[industry] industry map load failed: {e}")       # ASCII（铁律⑥）
-        return cached or {}
+    """`{code: main_industry}` 全表映射（共享 1 小时进程缓存）。失败返回上次的/空。
+
+    ★ 2026-10-19（egress）：委托 `app.industry_map` —— 4 个调用方共用同一份缓存，
+      避免各自整表读 5.9 千行。
+    """
+    from app.industry_map import get_industry_map
+    return get_industry_map()
 
 
 def industry_amount_share(top: int = 15) -> dict:

@@ -341,7 +341,10 @@ def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUN
 #   被通知轮询/信号页/对账反复整份读。写入侧 save_tracking 立即失效 → 同进程永远读到最新；
 #   TTL 仅作跨进程兜底（当前唯一写入方是 Render 自身）。
 _TRACK_CACHE = {"ts": 0.0, "data": None}
-_TRACK_TTL = 120
+# ★ 2026-10-19（egress 实测）：整份状态 ~16KB/次，被通知轮询/信号页/对账反复读
+#   （32h 实测 256 次 ≈4MB）。写入侧 `save_tracking` 立即失效 ⇒ 同进程永远读到最新，
+#   跨进程兜底 TTL 放宽到 5 分钟（这一份是跟踪快照，不要求秒级同步）。
+_TRACK_TTL = 300
 
 _DEFAULT_TRACKING = {
     "activeSignals": [], "history": [], "priceHistory": {},

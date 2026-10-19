@@ -161,9 +161,10 @@ def compute_mainline(date: str = None) -> dict:
         "WHERE rank_date = %s AND rank_pos <= 50 ORDER BY rank_pos", (date,))
     if not rows:
         return {"ok": False, "error": f"{date} 无 Top50 数据（先跑评分快照）"}
-    ind_map = {r["code"]: r["main_industry"]
-               for r in db.fetch(
-                   "SELECT code, main_industry FROM stock_industry")}
+    # ★ 2026-10-19（egress）：改走 `app.industry_map` 的共享 1h 缓存 ——
+    #   本处原本每次整表读 5.9 千行（≈1MB），而映射是月级重建。
+    from app.industry_map import get_industry_map
+    ind_map = get_industry_map()
     agg = {}
     unknown = 0
     for r in rows:
