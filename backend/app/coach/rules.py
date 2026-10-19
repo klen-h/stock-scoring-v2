@@ -680,6 +680,18 @@ def _ev_reversal_no_panic(pos, params, ctx):
 #   美债 10Y/30Y 仅 ~0.066（同步而非领先）⇒ 不采用。
 
 _USD5_CACHE = {"ts": 0.0, "val": None}
+# ★ 2026-10-19（egress 实测）：原实现只在**算成功**时写缓存 ⇒ "数据不够 / 序列过期 /
+#   异常"这些**降级分支每次调用都整表读一次**（`macro_daily` 32h 实测 515 次 / 4.6k 行
+#   ≈8.6MB，探针上限口径）。现在**失败态也缓存**（短 TTL，10 分钟）：
+#   降级期间不再重复读库，到期自动重试一次。
+_USD5_TTL_OK = 3600.0
+_USD5_TTL_MISS = 600.0
+
+
+def _usd5_miss(now):
+    """把"算不出"也记为一次缓存（短 TTL）—— 避免降级分支把每次调用变成一次读库。"""
+    _USD5_CACHE.update(ts=now, val=None)
+    return None
 
 
 def _parse_macro_date(s):
@@ -703,15 +715,20 @@ def _usd_5d_change(days: int = 5):
 
     取不到（快照攒得不够 / 面板缺 dxy）返回 None ⇒ 调用方只用纳指一侧，**不误报**。
     快照结构与 `get_macro_snapshot()` 同构：`{"panel": {"dxy": {"price": ...}}}`。
-    1 小时进程缓存（日度数据，不必频繁读库）。
+    成功 1 小时缓存、失败 10 分钟缓存（日度数据，不必频繁读库）。
     """
     now = _time.time()
-    if _USD5_CACHE["val"] is not None and now - _USD5_CACHE["ts"] < 3600:
+    _ttl = _USD5_TTL_OK if _USD5_CACHE["val"] is not None else _USD5_TTL_MISS
+    if now - _USD5_CACHE["ts"] < _ttl:
         return _USD5_CACHE["val"]
     try:
         from app.database import db
-        rows = db.fetch("SELECT date, data_json FROM macro_daily "
-                        "ORDER BY date DESC LIMIT %s", (int(days) + 4,)) or []
+        # ★ 2026-10-19（顺带修掉一个**静默失效**）：`macro_daily.date` 混着 `2026/9/7`
+        #   与 `2026-10-16` 两种写法 ⇒ 文本 `ORDER BY date DESC` 会把 9 月排在 10 月**前**
+        #   ⇒ 原 `LIMIT days+4` 永远只看到 9 月那批，`pts[-1]` 停在 09-30，
+        #   新鲜度校验判"序列过期"⇒ **这条外部领先预警被无声关闭了整整两周**。
+        #   表只有几十行 ⇒ 全量取回后按**日期对象**排序（与 `policy_bottom_watch` 同口径）。
+        rows = db.fetch("SELECT date, data_json FROM macro_daily") or []
         pts = []
         for r in rows:
             d = _parse_macro_date(r.get("date"))
@@ -725,7 +742,7 @@ def _usd_5d_change(days: int = 5):
             if price:
                 pts.append((d, float(price)))
         if len(pts) < int(days) + 1:
-            return None
+            return _usd5_miss(now)
         pts.sort(key=lambda x: x[0])
         # ★★ 新鲜度校验（2026-09-20）：最后一点必须接近「最近已完成交易日」，
         #   否则 `macro_daily` 停更时会拿**过期数据**算出"近 N 日变化"⇒ 误报。
@@ -739,16 +756,16 @@ def _usd_5d_change(days: int = 5):
         if expect and (expect - pts[-1][0]).days > 5:
             print(f"[coach] 美元序列过期（最新 {pts[-1][0]}，应至 {expect}）"
                   f"⇒ 本次只用纳指一侧")
-            return None
+            return _usd5_miss(now)
         base = pts[-(int(days) + 1)][1]
         if not base:
-            return None
+            return _usd5_miss(now)
         val = (pts[-1][1] / base - 1) * 100
         _USD5_CACHE.update(ts=now, val=val)
         return val
     except Exception as e:
         print(f"[coach] 美元 N 日变化读取失败（降级为只用纳指）: {e}")
-        return None
+        return _usd5_miss(now)
 
 
 def _external_lead(ctx: dict, params: dict) -> dict:

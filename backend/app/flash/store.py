@@ -328,7 +328,10 @@ def load_review_history(phase: str, limit: int = 20, since: str = "") -> list:
 #   LLM 趋势上下文等路径反复整份读（实测 6,496 次 ≈ 8~13MB/天）。宏观快照每 3 分钟
 #   才写一次，300 秒缓存 + 写入侧失效足够；调用方只读不写（llm.py 趋势上下文）。
 _MACRO_CACHE = {"ts": 0.0, "data": []}
-_MACRO_TTL = 300
+# ★ 2026-10-19（egress 实测）：150 条 ≈110KB/次，32h 实测 82 次 ≈7MB（前端宏观图轮询）。
+#   写入侧 `append_macro_history` 会立即失效 ⇒ 同进程读到最新；跨进程兜底放宽到 10 分钟
+#   （宏观快照 3 分钟写一次，但这一份只用于**趋势图**，不是决策输入）。
+_MACRO_TTL = 600
 
 
 def load_macro_history() -> list:
@@ -460,16 +463,42 @@ def load_macro_daily(date_str: str = None) -> dict:
         return {}
 
 
+_MACRO_DAILY_HIST_CACHE = {"ts": 0.0, "days": None, "val": None}
+_MACRO_DAILY_HIST_TTL = 600.0     # 日频数据；写入侧不失效（最多晚 10 分钟看到当日快照）
+
+
 def load_macro_daily_history(days: int = 30) -> list:
-    """加载近 N 日宏观快照（日期正序，最新在后）。"""
-    rows = db.fetch("SELECT * FROM macro_daily ORDER BY date DESC LIMIT %s", (days,))
+    """加载近 N 日宏观快照（日期正序，最新在后）。
+
+    ★ 2026-10-19 两处修正（egress + 正确性）：
+      ① `date` 混 `2026/9/7` 与 `2026-10-16` 两种写法 ⇒ 文本 `ORDER BY date DESC`
+         会把 9 月排在 10 月**前**（实测取到的是 09 月那批）⇒ 改为**解析后排序再截断**。
+      ② 该接口被前端宏观面板轮询，整段 ≈60KB/次 ⇒ 10 分钟进程缓存（日频数据足够）。
+         表只有几十行，全量取回的成本可忽略。
+    """
+    now = time.time()
+    cached = _MACRO_DAILY_HIST_CACHE["val"]
+    if (cached is not None and _MACRO_DAILY_HIST_CACHE["days"] == int(days)
+            and now - _MACRO_DAILY_HIST_CACHE["ts"] < _MACRO_DAILY_HIST_TTL):
+        return list(cached)
+    rows = db.fetch("SELECT * FROM macro_daily") or []
     out = []
     for r in rows:
         try:
             out.append({"date": r["date"], "snapshot": json.loads(r["data_json"])})
         except (json.JSONDecodeError, KeyError):
             pass
-    return list(reversed(out))
+    # 按日期对象排序（`_parse_macro_date` 同款：斜杠/短横线 + 不补零都兼容）
+    def _key(x):
+        parts = str(x.get("date") or "").strip().replace("/", "-").split("-")
+        try:
+            return (int(parts[0]), int(parts[1]), int(parts[2]))
+        except (ValueError, IndexError):
+            return (0, 0, 0)
+    out.sort(key=_key)
+    out = out[-int(days):] if int(days) > 0 else out
+    _MACRO_DAILY_HIST_CACHE.update(ts=now, days=int(days), val=out)
+    return list(out)
 
 
 # ================================================================
