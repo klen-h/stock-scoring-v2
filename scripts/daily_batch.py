@@ -95,7 +95,15 @@ def task_backfill():
       180min 上限）。幂等，可重复跑。
     """
     from backfill_history import backfill_lagging
-    return f"回填完成: {backfill_lagging()}"
+    r = backfill_lagging()
+    # ★ 2026-10-20：显式回报滞后/STALE 数量（原先把整个 dict 塞进日志，
+    #   747 只滞后时被淹没；而旧逻辑还会把"源限流"伪装成"已同步"）。
+    miss = r.get("stock_missing") or []
+    txt = (f"回填完成: {r.get('stock_rows')} 行，基准 {r.get('benchmark')}，"
+           f"滞后 {len(miss)} 只，STALE {r.get('stale') or 0} 只")
+    if miss:
+        txt += f"（前5: {', '.join(miss[:5])}）"
+    return txt
 
 
 def task_mainflow():

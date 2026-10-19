@@ -45,6 +45,27 @@ INDEX_BENCHMARKS = (
 )
 
 _EM_FAIL_STREAK = 0   # 东财连续失败计数，>=3 后全局切换腾讯源（东财可能被临时封 IP）
+# ★★ 2026-10-20：目标日期 + STALE 计数（由 `backfill_daily` 传入 benchmark）。
+#   起因（实测事故）：10-19 晚回填只写入 **263 只**，其余 **747 只静默停在 10-16**——
+#   旧逻辑把"已有数据 + 源返回空"一律当作"已同步到最新"直接 return 0，
+#   既不计数也不告警；而当时东财限流、腾讯 WAF 冷却 ⇒ 两个源都返回空。
+#   后果：`pattern_launch.latest_trading_date()` 因覆盖不足回退到 10-16，
+#         形态扫描连续几天重复扫旧日。
+#   ⇒ 现在用「库内最新 < benchmark」显式判定 STALE，计数 + 换源重试一次 + 汇总回报。
+_TARGET_DATE = None
+_STALE_COUNT = 0
+
+
+def _stale_fail(code: str, name: str, got, target: str) -> None:
+    """已有数据但没拿到基准日：源限流/滞后的**可见化**（不再伪装成"已同步"）。"""
+    global _EM_FAIL_STREAK, _STALE_COUNT
+    _STALE_COUNT += 1
+    _EM_FAIL_STREAK += 1
+    if _EM_FAIL_STREAK >= 3 and not data.DISABLE_EASTMONEY:
+        data.DISABLE_EASTMONEY = True
+        print("  [WARN] 连续 STALE，后续全部切换腾讯源")
+    print(f"  [STALE] {code} {name} 最新 {got} < 基准 {target}"
+          f"（源无新数据/被限流；连续 {_EM_FAIL_STREAK}）")
 
 
 def _basis_changed(code: str, start: str, rows: list) -> bool:
@@ -107,6 +128,14 @@ def backfill(code: str, name: str) -> int:
     if start:
         print(f"  增量 {code} {name}（已有数据至 {start}）")
     rows = data.fetch_history(code, start=start)
+    _target = str(_TARGET_DATE)[:10] if _TARGET_DATE else ""
+    if not rows and start and _target and str(start)[:10] < _target:
+        # ★★ 2026-10-20：不再直接当作"已同步"——见文件顶部 `_TARGET_DATE` 说明。
+        _stale_fail(code, name, start, _target)
+        time.sleep(min(5.0, RATE_LIMIT * 2))
+        rows = data.fetch_history(code, start=start)      # 换源后重试一次
+        if not rows:
+            return 0
     if not rows:
         if start:
             # 已有数据且无新增日期 = 已同步到最新，不是失败。
@@ -245,6 +274,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
       绩效轨道依赖上榜股 5 日内日线就绪，普通排队可能让整批快照日缺席。
       quota=None 时不限量（一次性补历史用，见 backfill_lagging）。
     """
+    global _TARGET_DATE, _STALE_COUNT
     stats = {"codes": 0, "rows": 0}
 
     # ① 先回填基准指数池（★ 2026-09-29 P0：沪深300 → +中证500/中证1000，
@@ -258,6 +288,9 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     benchmark = (db.fetch_one(
         "SELECT MAX(date) AS d FROM backtest_prices WHERE code='sh000300'") or {}).get("d")
     stats["benchmark"] = benchmark
+    # ★ 2026-10-20：STALE 判定基准（个股/ETF 都应同步到这一天）+ 计数清零
+    _TARGET_DATE = str(benchmark)[:10] if benchmark else None
+    _STALE_COUNT = 0
 
     # ② ETF 优先队列：无数据/滞后的排最前优先补，已同步的直接跳过（不发请求）
     #    此前按字典顺序全量请求 28 只：新加标的排在池尾，限流/配额下长期 0 数据
@@ -340,7 +373,10 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
             latest = after_map.get(c)
             if not latest or latest < benchmark:
                 stats["stock_missing"].append(f"{c}({name})")
+    stats["stale"] = _STALE_COUNT
+    stats["stock_missing_n"] = len(stats.get("stock_missing") or [])
     print(f"[backfill_daily] 完成: {stats}")
+    _TARGET_DATE = None
     return stats
 
 

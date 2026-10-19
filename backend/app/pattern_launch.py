@@ -315,6 +315,21 @@ def _industry(code: str) -> str:
         return ""
 
 
+def _name_industry(code: str) -> tuple:
+    """一次查询拿 (名称, 板块)。★ 2026-10-20：`scan_latest` 原先**根本不产出 name**
+    ⇒ `persist_scan` 写的是 `it.get("name","")`，落库/前端/日志全是空名
+    （实测 603013 亚普股份 显示为空）。只在**命中时**查（每日 0~2 只），无 egress 压力。
+    """
+    try:
+        r = db.fetch_one(
+            "SELECT name, main_industry_code FROM stock_industry WHERE code = %s",
+            (code,))
+        r = r or {}
+        return (r.get("name") or "", r.get("main_industry_code") or "")
+    except Exception:
+        return ("", "")
+
+
 # ================================================================
 # 每日扫描（主入口）
 # ================================================================
@@ -339,11 +354,13 @@ def scan_latest(date: str = None) -> dict:
             if s["date"] != day:
                 continue
             score = quality_score(s)
+            _nm, _ind = _name_industry(code)
             items.append({
-                "code": code, "launch_date": s["date"], "launch_pct": round(s["launch_pct"], 2),
+                "code": code, "name": _nm,
+                "launch_date": s["date"], "launch_pct": round(s["launch_pct"], 2),
                 "vol_ratio": round(s["vol_ratio"], 3), "pullback_ret": round(s["pullback_ret"], 4),
                 "surge": round(s["surge"], 2), "price": s["price"], "board": _board(code),
-                "industry": _industry(code), "score": score,
+                "industry": _ind, "score": score,
                 "score_json": json.dumps({"shrink_q": round(max(0.0, min(1.0, 1 - s["vol_ratio"] / 0.6)), 2),
                                           "surge_q": round(max(0.0, min(1.0, s["surge"] / 4.0)), 2),
                                           "launch_q": round(max(0.0, min(1.0, 1 - abs(s["launch_pct"] - 7) / 7)), 2),

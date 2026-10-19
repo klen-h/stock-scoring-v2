@@ -1371,6 +1371,16 @@ async def score_top(
                     valid, lambda results: results[:limit], limit=limit, side="top",
                     extra_codes={r["code"] for r in (_stored.get("data") or [])},
                 )
+                # ★ 2026-10-20：板块联动版的**递补池**允许用「最近已完成交易日」的全量精算榜
+                #   （盘中/日批前，当日 rank_live 还不存在；而"这套规则在最新完整榜上会选出什么"
+                #    正是前端「板块联动」tab 要展示的内容）。`data`（主榜）口径**不受影响**。
+                try:
+                    from app.flash.rules import latest_completed_trading_day as _lctd
+                    if ((_stored.get("data") or [])
+                            and str(_stored.get("date"))[:10] == str(_lctd())[:10]):
+                        _cand_full = [SimpleNamespace(**r) for r in _stored["data"]]
+                except Exception:
+                    pass
         except Exception as _e:
             print(f"[rank] 全量精算榜不可用（回退在线两阶段）: {_e}")
             top = await _batch_with_precise_top(

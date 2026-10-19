@@ -932,6 +932,126 @@
       </table>
     </div>
 
+    <!-- ★ 2026-10-20 板块联动筛选（判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）
+         影子期照常展示：强势板块清单 + 联动版 Top50，仅作对照；主榜/ranking_history 不变。 -->
+    <div v-if="activeTab === 'linkage'" class="space-y-3">
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+          <span class="text-muted">
+            板块联动筛选 · 数据日
+            <b class="text-gray-300">{{ linkageStrength.as_of || linkageStrength.date || '—' }}</b>
+            <span class="ml-2 px-1.5 py-0.5 rounded border text-[10px]" :class="linkageModeCls">
+              {{ linkageModeText }}
+            </span>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-[10px] text-amber-400">判据冻结 v1.0 · 影子期只展示，不改榜单</span>
+            <button @click="loadLinkage" :disabled="linkageLoading"
+              class="px-2 py-1 rounded text-xs bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
+              {{ linkageLoading ? '加载中…' : '刷新' }}
+            </button>
+          </span>
+        </div>
+        <div class="px-3 py-2 text-xs flex items-center gap-x-4 gap-y-1 flex-wrap">
+          <span v-if="linkageStrength.active" class="text-emerald-400">● 过滤生效</span>
+          <span v-else class="text-muted">○ 未过滤（{{ linkageReasonText }}）</span>
+          <span class="text-muted">强势板块 <b class="text-gray-200">{{ linkageStrong.length }}</b></span>
+          <span class="text-muted">全池上涨占比 {{ linkageStrength.market_up_ratio ?? '—' }}%</span>
+          <span class="text-muted">
+            排除 {{ linkageMeta.excluded_n ?? 0 }} · 递补 {{ linkageMeta.backfilled_n ?? 0 }}
+            · 未映射 {{ linkageMeta.unmapped_n ?? 0 }}
+          </span>
+          <span class="text-muted">联动版 {{ linkageRows.length }} 只 / 原版 {{ tableData.length }} 只</span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <!-- 行业强度 / 强势板块 -->
+        <div class="bg-card border border-border rounded-lg overflow-hidden">
+          <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">
+            强势板块（5 日强度前 30% 且 &gt; 0）
+          </div>
+          <table v-if="linkageStrong.length" class="w-full text-xs">
+            <thead class="text-muted bg-white/[0.02]">
+              <tr>
+                <th class="text-left py-2 px-3">#</th>
+                <th class="text-left py-2 px-3">行业</th>
+                <th class="text-right py-2 px-3">5日</th>
+                <th class="text-right py-2 px-3">10日</th>
+                <th class="text-right py-2 px-3">成分</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in linkageStrong" :key="s.industry" class="border-b border-border/50">
+                <td class="py-1.5 px-3 text-muted">{{ s.rank_pos }}</td>
+                <td class="py-1.5 px-3">{{ s.industry }}</td>
+                <td class="py-1.5 px-3 text-right font-mono"
+                  :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(2) }}</td>
+                <td class="py-1.5 px-3 text-right font-mono"
+                  :class="(s.ret10 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                  {{ s.ret10 == null ? '—' : s.ret10.toFixed(2) }}
+                </td>
+                <td class="py-1.5 px-3 text-right text-muted">{{ s.member_n }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="p-6 text-center text-xs text-muted">
+            当日无强势板块 / 强度数据不可用
+          </div>
+          <div v-if="linkageOthers.length" class="px-3 py-2 text-[11px] text-muted border-t border-border">
+            其后（按 5 日强度）：
+            <span v-for="(s, i) in linkageOthers" :key="s.industry">
+              {{ i ? ' · ' : '' }}{{ s.industry }}
+              <span :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(1) }}%</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- 联动版 Top50 -->
+        <div class="bg-card border border-border rounded-lg overflow-hidden">
+          <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
+            <span>板块联动版 Top {{ linkageRows.length }}</span>
+            <span class="text-[10px]">原榜口径不变（ranking_history）</span>
+          </div>
+          <table v-if="linkageRows.length" class="w-full text-xs">
+            <thead class="text-muted bg-white/[0.02]">
+              <tr>
+                <th class="text-left py-2 px-3">#</th>
+                <th class="text-left py-2 px-3">代码</th>
+                <th class="text-left py-2 px-3">名称</th>
+                <th class="text-right py-2 px-3">评分</th>
+                <th class="text-center py-2 px-3">信号</th>
+                <th class="text-right py-2 px-3">涨跌</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="r in linkageRows" :key="r.code" class="border-b border-border/50">
+                <td class="py-1.5 px-3 text-muted">{{ r.rank }}</td>
+                <td class="py-1.5 px-3 font-mono text-accent">{{ r.code }}</td>
+                <td class="py-1.5 px-3">{{ r.name }}</td>
+                <td class="py-1.5 px-3 text-right font-mono">{{ r.total_score?.toFixed(1) }}</td>
+                <td class="py-1.5 px-3 text-center">{{ r.signal }}</td>
+                <td class="py-1.5 px-3 text-right font-mono"
+                  :class="(r.change_pct ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                  {{ (r.change_pct ?? 0) >= 0 ? '+' : '' }}{{ (r.change_pct ?? 0).toFixed(2) }}%
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="p-6 text-center text-xs text-muted">
+            暂无联动版榜单（过滤未生效时与主榜一致；日批产出后可对照）
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-card border border-border rounded-lg px-3 py-2 text-[11px] text-muted">
+        口径：行业 = <code>stock_industry.main_industry</code>（新浪 49 类）；强度 = 成分股日收益等权均值的 5 日复利；
+        强势 = <b>ret5 &gt; 0 且横截面前 30%</b> 且成分 ≥5 只；连续 3 日上涨占比 ≥70%（普涨）⇒ 当日不过滤。
+        判据冻结于 <code>PLAN_SECTOR_LINKAGE.md</code> v1.0，**未通过预登记前不进决策链**；
+        原 <code>ranking_history</code> 口径一字未改。
+      </div>
+    </div>
+
     <!-- 胜率回查面板 -->
     <div v-if="activeTab === 'verify'" class="space-y-4">
       <!-- 操作栏 -->
@@ -1312,7 +1432,7 @@ import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, ge
   //   （同一类问题在 Workbench.vue 的 getSectorSnapshot 上也存在过，已一并修。）
   getMarketOverview,
   getPatternScan, getPatternWatch, addPatternWatch, updatePatternWatch, deletePatternWatch,
-  getPatternConfig, getPatternHighlightCodes } from '../api'
+  getPatternConfig, getPatternHighlightCodes, getSectorStrength } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 // ★ 2026-10-08 P3：异动分析入口（共享组件；工作台观察池 import 同一份，防两处漂移）
 import AnomalyEntry from '../components/AnomalyEntry.vue'
@@ -1344,6 +1464,9 @@ const tabs = [
   { key: 'pattern', label: '形态扫描' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
+  // ★ 2026-10-20：板块联动筛选（强势板块 + 联动版 Top50）。影子期也照常展示，
+  //   但不改主榜/ranking_history —— 用户要看的是"这套规则会选出什么"。
+  { key: 'linkage', label: '板块联动' },
   { key: 'verify', label: '胜率回查' },
   { key: 'backtest', label: '历史回测' },
   { key: 'optimize', label: '权重优化' },
@@ -1378,6 +1501,50 @@ async function loadPatternConfig() {
 async function addPattern(code) { try { await addPatternWatch(code); await loadPatternWatch() } catch (e) { console.warn(e) } }
 async function removePattern(code) { try { await deletePatternWatch(code); await loadPatternWatch() } catch (e) { console.warn(e) } }
 async function setPatternStatus(code, status) { try { await updatePatternWatch(code, { status }) } catch (e) {} }
+
+// ── 板块联动筛选（2026-10-20；判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）────────────
+// 影子期（shadow）也照常展示：行业强度清单 + 联动版 Top50，仅作"会选出什么"的对照，
+// 不改主榜、不改 ranking_history、不进决策链。
+const linkageLoading = ref(false)
+const linkageStrength = ref({})
+const linkageRows = ref([])
+const linkageMeta = ref({})
+const linkageReasonCN = {
+  ok: '过滤生效', bull_market: '普涨日（行业选择无增量）', no_strong: '今日无强势板块',
+  unavailable: '强度数据不可用', insufficient_days: '历史数据不足',
+  insufficient_industries: '参评行业不足', error: '读取失败', mode_off: '未启用',
+}
+const linkageModeText = computed(() => ({
+  off: '未启用', shadow: '影子期（不改榜单）', on: '已生效',
+}[linkageStrength.value?.mode] || '—'))
+const linkageModeCls = computed(() => linkageStrength.value?.mode === 'on'
+  ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+  : 'bg-amber-500/15 text-amber-300 border-amber-500/30')
+const linkageStrong = computed(() =>
+  (linkageStrength.value?.industries || []).filter(x => x.is_strong))
+const linkageOthers = computed(() =>
+  (linkageStrength.value?.industries || []).filter(x => !x.is_strong).slice(0, 10))
+const linkageReasonText = computed(() =>
+  linkageReasonCN[linkageMeta.value?.reason || linkageStrength.value?.reason] || '未生效')
+
+async function loadLinkage() {
+  linkageLoading.value = true
+  try {
+    // 强度清单（含各行业 ret5/ret10）+ 后端当前榜单（含 data_sector 过滤版）
+    const [ss, top] = await Promise.all([
+      getSectorStrength(),
+      getScoreTop({ limit: 50 }),
+    ])
+    linkageStrength.value = (ss && ss.data) || {}
+    const t = (top && top.data) || {}
+    linkageRows.value = t.data_sector || []
+    linkageMeta.value = t.sector_filter || {}
+  } catch (e) {
+    console.warn('[linkage] 加载失败（页面其余部分不受影响）:', e?.message)
+  } finally {
+    linkageLoading.value = false
+  }
+}
 async function setPatternNote(code, note) { try { await updatePatternWatch(code, { note }) } catch (e) {} }
 // ★ 持仓雷达（2026-09-23）：以**用户持仓**为主轴的状态聚合
 //   （评分 / 主力阶段 / 闸门就绪 / 战法命中 / 是否在观察池 / 所属板块被矛盾点名）
@@ -2283,6 +2450,7 @@ function switchTab(tab) {
   // 观察池：先取闸门清单（拿到 code 列表）→ 再拉一次实时涨跌幅
   else if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()
+  else if (tab === 'linkage') loadLinkage()
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口
     if (shadowLocal()) loadData()
