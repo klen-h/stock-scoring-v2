@@ -1255,26 +1255,60 @@ def ensure_pack_fresh(max_wait_min: float):
             print(f"  强制重下数据包失败: {e}")
 
 
-def _batch_already_done(day: str) -> bool:
-    """该数据日是否**已完成过一次全量日批**（以 `daily_reports` 落库为标志）。
+def _ensure_batch_runs():
+    """日批**自己的**完成标记表（只由本脚本写）。"""
+    from app.database import db
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS batch_runs (
+            data_day TEXT PRIMARY KEY,
+            finished_at TEXT,
+            n_ok INTEGER,
+            n_fail INTEGER,
+            source TEXT
+        )
+    """)
 
-    ★★ 2026-10-19（"日批凌晨重跑"事故，GitHub API 实测）：
-      `backend-pack.yml` 有一条兜底 `schedule: 0 14 * * 1-5`（UTC = 北京 22:00）。
-      GitHub 的定时任务**经常延迟 3~4 小时** ⇒ 实际在**次日 01:50** 才启动；它被
-      guard 判为"今天已跑"而**瞬间跳过**（run 耗时 0 分钟），但 run 结论仍是 `success`
-      ⇒ `workflow_run: completed` 又把 daily-batch 整个拉起，**全量跑第二遍**。
-      实测对照（北京时间）：
-        · 10-16 正常链：kline 18:00 → pack 19:00 → 20:17 → daily-batch 20:17~22:39
-        · 10-17 重复链：pack(schedule) 01:50（0 分钟跳过）→ daily-batch 01:50~03:25 ⚠️
-      ⇒ 每晚多烧 ~1.5h Actions + LLM 重跑；且**当天产物时间戳全被改写成凌晨**
-        （这正是"看到 02:53/03:06 就以为 cron 时区是 UTC"的由来 —— 其实 cron 是 Asia/Shanghai）。
+
+def _batch_already_done(day: str) -> bool:
+    """该数据日是否**已完成过一次全量日批**（只认 `batch_runs`，由本脚本收尾时写入）。
+
+    ★★ 2026-10-19 事故（**第一版守卫写错，当场吃掉当天日批**）：
+      第一版拿 `daily_reports` 是否已有该日来判"日批已完成"。但 **Render 的日报兜底 loop
+      在 19:30 就写了一条 `date=10-19` 的日报**（早于日批 20:17）⇒ 20:17 的日批被整批跳过。
+      实测后果：10-19 除了那条 19:31 的日报，**`market_snapshot` / `contradictions` /
+      `gate_snapshot_history` 全部停在 10-16** ⇒ "今天根本没跑"。
+      ⇒ 判据必须用**只有日批会写**的表；`daily_reports` 有多个写入方（Render loop / 日批），
+        拿它当"批次完成"标志是错的。
+
+    ★ 本条守卫要解决的**原始**问题（别删）：
+      `backend-pack.yml` 的兜底 `schedule: 0 14 * * 1-5`（UTC = 北京 22:00）常被 GitHub
+      延迟 3~4 小时到次日 **01:50** 才启动；guard 判"今天已跑"而**秒跳过**（run 0 分钟），
+      但 run 结论仍 `success` ⇒ `workflow_run: completed` 又把 daily-batch 全量拉起跑第二遍
+      （实测 10-17 01:50→03:25，白烧 1.5h + LLM 重跑，并把当天产物时间戳改写成凌晨）。
     """
     try:
+        _ensure_batch_runs()
         from app.database import db
-        r = db.fetch_one("SELECT 1 AS x FROM daily_reports WHERE date = %s LIMIT 1", (day,))
+        r = db.fetch_one(
+            "SELECT 1 AS x FROM batch_runs WHERE data_day = %s AND COALESCE(n_fail, 0) = 0",
+            (day,))
         return bool(r)
     except Exception:
         return False        # 查不到 ⇒ **不拦**（宁可多跑一次，不能因判据故障漏跑）
+
+
+def _mark_batch_done(day: str, n_ok: int) -> None:
+    """全量日批**成功跑完**才写标记（失败不写 ⇒ 后续触发仍会重跑）。"""
+    try:
+        _ensure_batch_runs()
+        from app.database import db
+        db.upsert("batch_runs", {
+            "data_day": str(day)[:10],
+            "finished_at": datetime.now().isoformat(),
+            "n_ok": int(n_ok), "n_fail": 0, "source": "daily_batch",
+        }, conflict_columns=["data_day"])
+    except Exception as e:
+        print(f"  [batch_runs] 写完成标记失败（忽略）: {e}")
 
 
 def main():
@@ -1383,6 +1417,10 @@ def main():
         print("::error::日批存在失败任务，见上方明细")
         _notify(f"日批 {datetime.now():%m-%d %H:%M} 完成，失败 {len(fail_list)} 项：\n{lines}")
         return 1
+    # ★ 全量且无失败 ⇒ 写"本数据日已完成"标记（只由本脚本写，供同日重复触发守卫用）。
+    #   ⚠️ 只在**全量**时写：单任务重算不代表整批完成。
+    if args.tasks.strip() == "all":
+        _mark_batch_done(_batch_trading_day().isoformat(), len(ok_list))
     return 0
 
 
