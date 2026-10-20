@@ -266,7 +266,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'linkage'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -748,6 +748,26 @@
       </div>
     </div>
 
+    <!-- ★ 2026-10-20 板块联动：表格上方的状态条（模式/是否生效/排除递补），
+         表格本身**复用主榜渲染**（列与样式完全一致），见下方 `displayRows`。 -->
+    <div v-if="activeTab === 'linkage'"
+      class="bg-card border border-border rounded-lg px-3 py-2 text-xs flex items-center gap-x-4 gap-y-1 flex-wrap">
+      <span class="px-1.5 py-0.5 rounded border text-[10px]" :class="linkageModeCls">{{ linkageModeText }}</span>
+      <span class="text-muted">数据日 <b class="text-gray-300">{{ linkageStrength.as_of || linkageStrength.date || '—' }}</b></span>
+      <span v-if="linkageStrength.active" class="text-emerald-400">● 过滤生效</span>
+      <span v-else class="text-muted">○ 未过滤（{{ linkageReasonText }}）</span>
+      <span class="text-muted">强势板块 <b class="text-gray-200">{{ linkageStrong.length }}</b></span>
+      <span class="text-muted">全池上涨占比 {{ linkageStrength.market_up_ratio ?? '—' }}%</span>
+      <span class="text-muted">
+        排除 {{ linkageMeta.excluded_n ?? 0 }} · 递补 {{ linkageMeta.backfilled_n ?? 0 }}
+        · 未映射 {{ linkageMeta.unmapped_n ?? 0 }}
+      </span>
+      <button @click="loadLinkage" :disabled="linkageLoading"
+        class="ml-auto px-2 py-1 rounded bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
+        {{ linkageLoading ? '加载中…' : '刷新' }}
+      </button>
+    </div>
+
     <!-- 数据表格 -->
     <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
@@ -756,21 +776,21 @@
             <th class="text-left py-2.5 px-3">排名</th>
             <th class="text-left py-2.5 px-3">代码</th>
             <th class="text-left py-2.5 px-3">名称</th>
-            <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">板块</th>
+            <th v-if="showTopCols" class="text-left py-2.5 px-3">板块</th>
             <th class="text-right py-2.5 px-3">涨跌幅</th>
             <th class="text-right py-2.5 px-3">综合评分</th>
             <th class="text-center py-2.5 px-3">信号</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">连续</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">可信度</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">消息</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">主力</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">买入时机</th>
-            <th v-if="activeTab === 'top'" class="text-left py-2.5 px-3">买入原因</th>
-            <th v-if="activeTab === 'top'" class="text-center py-2.5 px-3">操作</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">连续</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">可信度</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">消息</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">主力</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">买入时机</th>
+            <th v-if="showTopCols" class="text-left py-2.5 px-3">买入原因</th>
+            <th v-if="showTopCols" class="text-center py-2.5 px-3">操作</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(item, idx) in tableData" :key="item.code"
+          <tr v-for="(item, idx) in displayRows" :key="item.code"
             class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
             :class="patternCodes.has(item.code) ? 'bg-fuchsia-500/[0.06]' : ''"
             @click="goDetail(item.code)">
@@ -787,7 +807,7 @@
                     title="今日命中「缩量启动」形态（候选清单，非买入信号）">缩量启动</span>
             </td>
             <td class="py-2 px-3">{{ item.name }}</td>
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-xs truncate max-w-[90px]">
+            <td v-if="showTopCols" class="py-2 px-3 text-xs truncate max-w-[90px]">
               <span :title="chainTip(item)" class="text-muted">{{ industryOf(item) }}</span>
             </td>
             <td class="py-2 px-3 text-right font-mono text-xs"
@@ -817,7 +837,7 @@
               </span>
             </td>
             <!-- 连续上榜天数 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+            <td v-if="showTopCols" class="py-2 px-3 text-center">
               <span v-if="persistenceMap[item.code]" 
                 :class="persistenceMap[item.code].consecutive_days >= 5 ? 'text-emerald-400 font-bold' : persistenceMap[item.code].consecutive_days >= 3 ? 'text-amber-400 font-medium' : 'text-muted'">
                 {{ persistenceMap[item.code].consecutive_days }}天
@@ -825,7 +845,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 可信度等级 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+            <td v-if="showTopCols" class="py-2 px-3 text-center">
               <span v-if="persistenceMap[item.code]" 
                 :class="rankTrustClass(persistenceMap[item.code].trust_grade)"
                 class="px-1.5 py-0.5 rounded text-xs font-bold"
@@ -835,7 +855,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 消息面情绪分（参考，不参与综合分；前端本地模式无此数据） -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+            <td v-if="showTopCols" class="py-2 px-3 text-center">
               <span v-if="item.news_score != null"
                 class="px-2 py-0.5 rounded-full text-xs font-bold"
                 :class="item.news_score > 0 ? 'bg-emerald-500/20 text-emerald-400' :
@@ -848,7 +868,7 @@
             <!-- 主力行为标注（筹码结构×资金流组合信号，日批计算；后端模式才有数据）
                  distribution=出货嫌疑（高位高获利+主力流出，回测10日-7.5pt）
                  accum=吸筹区（低位筹码密集+主力净流入，回测10日+1.1pt） -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+            <td v-if="showTopCols" class="py-2 px-3 text-center">
               <span v-if="item.mainforce?.signal"
                 class="px-1.5 py-0.5 rounded text-xs font-bold cursor-help"
                 :class="item.mainforce.signal === 'distribution' ? 'bg-red-500/20 text-red-400' :
@@ -876,7 +896,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center">
+            <td v-if="showTopCols" class="py-2 px-3 text-center">
               <div v-if="item.buy_point?.buy_timing" class="space-y-0.5">
                 <!-- 时机标签：绿=适合介入 黄=等回调 红=追高风险 -->
                 <span class="px-2 py-0.5 rounded-full text-xs font-medium"
@@ -897,7 +917,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 买入原因列：仅 Top 50 tab 显示，展示加分因素绿色小标签 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3" @click.stop>
+            <td v-if="showTopCols" class="py-2 px-3" @click.stop>
               <div v-if="item.factors_up && item.factors_up.length" class="flex flex-wrap gap-1">
                 <span v-for="f in item.factors_up" :key="f"
                   class="px-1.5 py-0.5 rounded text-[11px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
@@ -906,7 +926,7 @@
               <span v-else class="text-xs text-muted">-</span>
             </td>
             <!-- 操作列：仅 Top 50，一键添加到持仓 -->
-            <td v-if="activeTab === 'top'" class="py-2 px-3 text-center space-x-1" @click.stop>
+            <td v-if="showTopCols" class="py-2 px-3 text-center space-x-1" @click.stop>
               <button v-if="!portfolioCodes?.has(item.code)"
                 @click="quickAddPosition(item)"
                 class="px-2 py-0.5 rounded text-[11px] bg-accent/15 text-accent hover:bg-accent/25 transition-colors"
@@ -924,7 +944,7 @@
             </td>
           </tr>
           <tr v-if="!tableData.length">
-            <td :colspan="activeTab === 'top' ? 13 : 5" class="py-12 text-center text-muted">
+            <td :colspan="showTopCols ? 13 : 5" class="py-12 text-center text-muted">
               {{ cacheStatus === 'loading' ? '行情数据加载中，请稍后...' : '暂无数据' }}
             </td>
           </tr>
@@ -933,114 +953,45 @@
     </div>
 
     <!-- ★ 2026-10-20 板块联动筛选（判据冻结于 PLAN_SECTOR_LINKAGE.md v1.0）
-         影子期照常展示：强势板块清单 + 联动版 Top50，仅作对照；主榜/ranking_history 不变。 -->
+         榜单表格复用主榜渲染（列完全一致），这里只补充"为什么是这些票"的行业证据。 -->
     <div v-if="activeTab === 'linkage'" class="space-y-3">
       <div class="bg-card border border-border rounded-lg overflow-hidden">
-        <div class="px-3 py-2 text-xs border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
-          <span class="text-muted">
-            板块联动筛选 · 数据日
-            <b class="text-gray-300">{{ linkageStrength.as_of || linkageStrength.date || '—' }}</b>
-            <span class="ml-2 px-1.5 py-0.5 rounded border text-[10px]" :class="linkageModeCls">
-              {{ linkageModeText }}
-            </span>
-          </span>
-          <span class="flex items-center gap-2">
-            <span class="text-[10px] text-amber-400">判据冻结 v1.0 · 影子期只展示，不改榜单</span>
-            <button @click="loadLinkage" :disabled="linkageLoading"
-              class="px-2 py-1 rounded text-xs bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
-              {{ linkageLoading ? '加载中…' : '刷新' }}
-            </button>
-          </span>
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">
+          强势板块（5 日强度前 30% 且 &gt; 0）· 共 {{ linkageStrong.length }} 个
         </div>
-        <div class="px-3 py-2 text-xs flex items-center gap-x-4 gap-y-1 flex-wrap">
-          <span v-if="linkageStrength.active" class="text-emerald-400">● 过滤生效</span>
-          <span v-else class="text-muted">○ 未过滤（{{ linkageReasonText }}）</span>
-          <span class="text-muted">强势板块 <b class="text-gray-200">{{ linkageStrong.length }}</b></span>
-          <span class="text-muted">全池上涨占比 {{ linkageStrength.market_up_ratio ?? '—' }}%</span>
-          <span class="text-muted">
-            排除 {{ linkageMeta.excluded_n ?? 0 }} · 递补 {{ linkageMeta.backfilled_n ?? 0 }}
-            · 未映射 {{ linkageMeta.unmapped_n ?? 0 }}
+        <table v-if="linkageStrong.length" class="w-full text-xs">
+          <thead class="text-muted bg-white/[0.02]">
+            <tr>
+              <th class="text-left py-2 px-3">#</th>
+              <th class="text-left py-2 px-3">行业</th>
+              <th class="text-right py-2 px-3">5日</th>
+              <th class="text-right py-2 px-3">10日</th>
+              <th class="text-right py-2 px-3">成分</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in linkageStrong" :key="s.industry" class="border-b border-border/50">
+              <td class="py-1.5 px-3 text-muted">{{ s.rank_pos }}</td>
+              <td class="py-1.5 px-3">{{ s.industry }}</td>
+              <td class="py-1.5 px-3 text-right font-mono"
+                :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(2) }}</td>
+              <td class="py-1.5 px-3 text-right font-mono"
+                :class="(s.ret10 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
+                {{ s.ret10 == null ? '—' : s.ret10.toFixed(2) }}
+              </td>
+              <td class="py-1.5 px-3 text-right text-muted">{{ s.member_n }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="p-6 text-center text-xs text-muted">
+          当日无强势板块 / 强度数据不可用（此时榜单不过滤，与主榜一致）
+        </div>
+        <div v-if="linkageOthers.length" class="px-3 py-2 text-[11px] text-muted border-t border-border">
+          其后（按 5 日强度）：
+          <span v-for="(s, i) in linkageOthers" :key="s.industry">
+            {{ i ? ' · ' : '' }}{{ s.industry }}
+            <span :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(1) }}%</span>
           </span>
-          <span class="text-muted">联动版 {{ linkageRows.length }} 只 / 原版 {{ tableData.length }} 只</span>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <!-- 行业强度 / 强势板块 -->
-        <div class="bg-card border border-border rounded-lg overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">
-            强势板块（5 日强度前 30% 且 &gt; 0）
-          </div>
-          <table v-if="linkageStrong.length" class="w-full text-xs">
-            <thead class="text-muted bg-white/[0.02]">
-              <tr>
-                <th class="text-left py-2 px-3">#</th>
-                <th class="text-left py-2 px-3">行业</th>
-                <th class="text-right py-2 px-3">5日</th>
-                <th class="text-right py-2 px-3">10日</th>
-                <th class="text-right py-2 px-3">成分</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in linkageStrong" :key="s.industry" class="border-b border-border/50">
-                <td class="py-1.5 px-3 text-muted">{{ s.rank_pos }}</td>
-                <td class="py-1.5 px-3">{{ s.industry }}</td>
-                <td class="py-1.5 px-3 text-right font-mono"
-                  :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(2) }}</td>
-                <td class="py-1.5 px-3 text-right font-mono"
-                  :class="(s.ret10 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
-                  {{ s.ret10 == null ? '—' : s.ret10.toFixed(2) }}
-                </td>
-                <td class="py-1.5 px-3 text-right text-muted">{{ s.member_n }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-else class="p-6 text-center text-xs text-muted">
-            当日无强势板块 / 强度数据不可用
-          </div>
-          <div v-if="linkageOthers.length" class="px-3 py-2 text-[11px] text-muted border-t border-border">
-            其后（按 5 日强度）：
-            <span v-for="(s, i) in linkageOthers" :key="s.industry">
-              {{ i ? ' · ' : '' }}{{ s.industry }}
-              <span :class="(s.ret5 ?? 0) >= 0 ? 'text-rise' : 'text-fall'">{{ s.ret5?.toFixed(1) }}%</span>
-            </span>
-          </div>
-        </div>
-
-        <!-- 联动版 Top50 -->
-        <div class="bg-card border border-border rounded-lg overflow-hidden">
-          <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between flex-wrap gap-2">
-            <span>板块联动版 Top {{ linkageRows.length }}</span>
-            <span class="text-[10px]">原榜口径不变（ranking_history）</span>
-          </div>
-          <table v-if="linkageRows.length" class="w-full text-xs">
-            <thead class="text-muted bg-white/[0.02]">
-              <tr>
-                <th class="text-left py-2 px-3">#</th>
-                <th class="text-left py-2 px-3">代码</th>
-                <th class="text-left py-2 px-3">名称</th>
-                <th class="text-right py-2 px-3">评分</th>
-                <th class="text-center py-2 px-3">信号</th>
-                <th class="text-right py-2 px-3">涨跌</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in linkageRows" :key="r.code" class="border-b border-border/50">
-                <td class="py-1.5 px-3 text-muted">{{ r.rank }}</td>
-                <td class="py-1.5 px-3 font-mono text-accent">{{ r.code }}</td>
-                <td class="py-1.5 px-3">{{ r.name }}</td>
-                <td class="py-1.5 px-3 text-right font-mono">{{ r.total_score?.toFixed(1) }}</td>
-                <td class="py-1.5 px-3 text-center">{{ r.signal }}</td>
-                <td class="py-1.5 px-3 text-right font-mono"
-                  :class="(r.change_pct ?? 0) >= 0 ? 'text-rise' : 'text-fall'">
-                  {{ (r.change_pct ?? 0) >= 0 ? '+' : '' }}{{ (r.change_pct ?? 0).toFixed(2) }}%
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-else class="p-6 text-center text-xs text-muted">
-            暂无联动版榜单（过滤未生效时与主榜一致；日批产出后可对照）
-          </div>
         </div>
       </div>
 
@@ -1509,6 +1460,10 @@ const linkageLoading = ref(false)
 const linkageStrength = ref({})
 const linkageRows = ref([])
 const linkageMeta = ref({})
+// 表格复用主榜渲染：联动 tab 用过滤版，其余 tab 用原榜（列完全一致，不做第二套表格）
+const showTopCols = computed(() => activeTab.value === 'top' || activeTab.value === 'linkage')
+const displayRows = computed(() =>
+  activeTab.value === 'linkage' ? linkageRows.value : tableData.value)
 const linkageReasonCN = {
   ok: '过滤生效', bull_market: '普涨日（行业选择无增量）', no_strong: '今日无强势板块',
   unavailable: '强度数据不可用', insufficient_days: '历史数据不足',
@@ -1539,6 +1494,19 @@ async function loadLinkage() {
     const t = (top && top.data) || {}
     linkageRows.value = t.data_sector || []
     linkageMeta.value = t.sector_filter || {}
+    // 「连续/可信度」两列与主榜一致 ⇒ 需要单独取（失败只影响这两列显示 "-"）
+    try {
+      const codes = linkageRows.value.map(x => x.code)
+      if (codes.length) {
+        const pr = await getRankingPersistence(codes)
+        const list = (pr && pr.data && pr.data.data) || []
+        const map = { ...persistenceMap.value }
+        for (const it of list) map[it.code] = it
+        persistenceMap.value = map
+      }
+    } catch (e) {
+      console.warn('[linkage] 连续/可信度加载失败（该两列显示 -）:', e?.message)
+    }
   } catch (e) {
     console.warn('[linkage] 加载失败（页面其余部分不受影响）:', e?.message)
   } finally {
