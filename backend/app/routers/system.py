@@ -999,3 +999,39 @@ def workbench_decision_card(user: dict = Depends(get_current_user)) -> Dict:
         return build_decision_card()
     except Exception as e:
         return {"error": str(e)[:200]}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  工作台盘中变化检测器（2026-10-21）
+#  目的：先证明"每 30 分钟有没有料"，再决定是否为 LLM 盘面分析付费。
+#  零 LLM、零新增数据源；每档只发 1 次腾讯请求采 3 个核心指数。
+# ══════════════════════════════════════════════════════════════════════════
+
+@router.get("/workbench-scan")
+def workbench_scan_day(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认今天"),
+                       user: dict = Depends(get_current_user)) -> Dict:
+    """某日 8 档采样明细（含每档分数、worth、触发原因）。"""
+    from app import workbench_scan
+    return workbench_scan.day_detail(date)
+
+
+@router.get("/workbench-scan/summary")
+def workbench_scan_summary(days: int = Query(7, ge=1, le=60),
+                           user: dict = Depends(get_current_user)) -> Dict:
+    """多日统计 —— **这个接口的 worth_rate 就是"要不要上 LLM"的判据**。
+
+    · worth_rate ≤ 0.25 ⇒ 8 档里 ≤2 档有料 ⇒ 应按"变化触发"而非固定半小时；
+    · worth_rate ≥ 0.6 ⇒ 每半小时确实在变 ⇒ 固定频率也说得过去。
+    """
+    from app import workbench_scan
+    return workbench_scan.summary(days)
+
+
+@router.get("/workbench-scan/preview")
+def workbench_scan_preview(user: dict = Depends(get_current_user)) -> Dict:
+    """只读预览：现在采一档、与当日最近一档比，**不写库**（可反复调用）。
+
+    用于上线前验证取数口径/阈值；盘中调用会发 1 次腾讯指数请求。
+    """
+    from app import workbench_scan
+    return workbench_scan.preview()

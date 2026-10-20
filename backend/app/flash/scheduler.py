@@ -60,6 +60,7 @@ status = {
     "last_backtest_preheat": None,
     "last_score_snapshot": None,
     "last_market_snapshot": None,
+    "last_workbench_scan": None,
     "last_open_confirm": None,
     "last_news_alert": None,
     "last_news_history": None,
@@ -736,6 +737,38 @@ async def intraday_alert_loop():
             #   放在告警之后、且内部自吞异常 ⇒ 基线绝不拖垮告警循环。
             await _snapshot_tail_baseline(rules.beijing_now())
         await asyncio.sleep(180)
+
+
+async def workbench_scan_loop():
+    """工作台盘中「变化检测器」采样（2026-10-21）。
+
+    ★ 为什么独立成一个循环：用户想在盘中每 30 分钟做一次 LLM 盘面分析，
+      但工作台大半数据是日频的 ⇒ 先跑几天**零 LLM 的规则采样**，用
+      `workbench_scan.summary()` 的 worth_rate 回答"这半小时到底有没有料"。
+    ★ 频率：每 60s 醒一次，只命中 `workbench_scan.SLOTS` 的 8 个采样点
+      （09:45/10:15/10:45/11:15/13:15/13:45/14:15/14:45）才真采；
+      同一档由表主键 `date|slot` 幂等，重启不会重复写。
+    ★ 成本：每档 **1 次腾讯请求**（3 个核心指数）+ 内存行情聚合 + 1 行写库；
+      8 档/交易日 ≈ 24 个请求、8 行 —— 比任何现有盘中循环都轻。
+    ★ 只读模式保留：它只读内存行情 + 写自己的采样表，不触发重任务。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            if rules.is_trading_day(now) and _trading_session_now():
+                from app.workbench_scan import _due_slot, run_slot
+                slot = _due_slot(now)
+                if slot:
+                    r = await _run_sync(run_slot, slot)
+                    # 只在**真写入**时打日志：同一档 60s 一查会命中 already，
+                    # 每档打一次即可（否则 35 分钟宽限内刷 35 行同样的日志）。
+                    if r and r.get("written"):
+                        status["last_workbench_scan"] = now.isoformat()
+                        print(f"[scheduler] workbench scan {slot}: "
+                              f"score={r.get('score')} worth={r.get('worth')}")  # ASCII
+        except Exception as e:
+            print(f"[scheduler] workbench scan failed: {e}")       # ASCII（铁律⑥）
+        await asyncio.sleep(60)
 
 
 async def portfolio_radar_warm_loop():
@@ -2387,6 +2420,9 @@ async def start():
             #   内存行情，**零 Supabase 流量**；触发阈值才推企微（每类每档每日一次）
             #   ⇒ ≈230 指数请求/交易日（相对每 5 分钟刷 ~4000 只仍 <1%）。
             asyncio.create_task(intraday_alert_loop()),
+             # ★ 2026-10-21：工作台盘中变化检测（8 档/日，零 LLM）——
+             #   为"是否值得上 LLM 盘面分析"积累证据；极轻量，只读模式保留。
+             asyncio.create_task(workbench_scan_loop()),
              *_heavy(contradiction_scan_loop),
              *_heavy(contradiction_report_loop),
              *_heavy(news_history_loop),
