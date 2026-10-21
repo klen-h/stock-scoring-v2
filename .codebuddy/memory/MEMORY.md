@@ -91,6 +91,13 @@
   已修：gate 改走 `research_cache.ohlc_for`（新鲜度守卫 + 日期类型统一）与
   `research_cache.flow_map`（24h），再加 30 分钟结果缓存。**不要**用
   `load_flow_map(days=60)` 替代：窗口读先跑 `GROUP BY code` 且不读磁盘缓存，实测 **444s**。
+- ★★ **2026-10-22 zzshare 结论**：`daily(trade_date=)` 一天一请求拿全市场，但**复权口径与腾讯不同**
+  （`factor` 乘性 vs 腾讯 qfq；近 150 根价位差 0.8~4%，750 根 5~13%）⇒ **不能整包替换**。
+  正确用法：历史留腾讯包，只追加新交易日的原始 bar（`scripts/update_pack_incremental.py`，
+  重叠校验 + factor 变化检测 + 除权股回退腾讯）；实测 2099 只从 10-19 补到 10-21 约 1 分钟。
+  **后端包同法**（`update_backend_pack_incremental.py`：重算 indicators/trend，mainforce/news 继承上一份）；
+  2026-10-22 已增量 + 发布三包（kline 2099 / backend 2884 / indicators 2884，date=20261022）。
+  ⚠️ zzshare 无 ETF/指数日线 ⇒ 39 只（sh510300 等）保留旧 bar；`mainforce` 标签可能旧 1 天。
 - ★★ **2026-10-22 追加**：只加"缓存过旧 ⇒ 整批回源"会变成新黑洞 —— 信号日=今天、
   本机缓存停在前一天时，**每个新进程**都退化回 366k 行全历史（实测 57 次/4h）。
   正确姿势：**按日期增量补**（`_top_up_bars`：`date >= 各自末根`，常态 ≈1k 行）

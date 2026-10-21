@@ -415,7 +415,18 @@ def main():
                     help="K 线拉取并发数（默认 5；串行会顶穿 Actions 90 分钟上限）")
     ap.add_argument("--no-mainforce", action="store_true",
                     help="跳过主力行为计算（快速跑通 K 线+指标时用）")
+    # ★ 2026-10-22（本地/时间取舍）：腾讯配额 ≈0.3~0.4 QPS，**耗时只由请求数（池大小）决定**，
+    #   与每只拉多少根无关（750→260 不会更快）。真赶时间只能砍池：
+    #   按市值保留前 N 只（指数/ETF/回测池优先保留）。被砍掉的代码在 pack 未命中时
+    #   会回源 Supabase（egress ↑），所以只在"今天必须先跑完"时用。
+    ap.add_argument("--max-codes", type=int, default=0,
+                    help="按市值截断最终池（0=不限制）；如 1200 ⇒ 请求数降一半")
+    ap.add_argument("--source", choices=["tencent", "zzshare"],
+                    default=os.environ.get("PACK_SOURCE", "tencent"),
+                    help="K 线来源：zzshare=本地库（股票），ETF/指数仍走腾讯")
     args = ap.parse_args()
+    # ★ 必须在 load_gkp() 之前写入：PACK_SOURCE 是模块级常量，import 时读取。
+    os.environ["PACK_SOURCE"] = args.source
 
     print("=== 后端数据包生成（backend-pack.db，SQLite）===")
     gkp = load_gkp()
@@ -517,6 +528,13 @@ def main():
     dropped = len(pool_all) - len(pool)
     print(f"\n[2/4] 股票池: 全量 {len(pool_all)} → 质量过滤后 {len(pool)} 只"
           f"（剔除 ST/<50亿 共 {dropped} 只；科创板 2026-10-11 起纳入），市值降序拉取")
+    if args.max_codes and len(pool) > args.max_codes:
+        head = list(_EXTRA_INDEX_CODES) \
+            + [c for c in etf_codes if c not in _EXTRA_INDEX_CODES]
+        rest = [c for c in kept_stocks if c not in set(head)]
+        pool = head + rest[:max(0, args.max_codes - len(head))]
+        print(f"  ⚠️ --max-codes={args.max_codes} ⇒ 截断到 {len(pool)} 只"
+              f"（按市值保留；被砍掉的代码 pack 未命中时会回源 Supabase）")
     # ★ 2026-10-10：把"消费方池覆盖度"打进日志 ⇒ **下次产包自己验证本修复**（缺口应为 0）
     if bt_codes:
         _bt_miss = [c for c in bt_codes if c not in set(pool)]

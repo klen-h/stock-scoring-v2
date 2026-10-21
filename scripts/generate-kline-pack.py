@@ -49,6 +49,21 @@ DEFAULT_DAYS = 150      # K 线天数（需足够长让 EMA26/DEA 系列指标�
 BATCH_SIZE = 50         # 批量请求行情每批数量
 KLINE_BATCH_SIZE = 10   # K 线请求每批数量（仅用于节流节奏，仍是串行请求）
 
+# ── 数据源（2026-10-22）────────────────────────────────────────────────────
+#   tencent（默认）：逐只 fqkline。腾讯是 IP 级滑动窗口配额，2876 只 ≈ 2.5h，且会撞 WAF。
+#   zzshare：读本地 `data/zzshare_daily.db`（按天整市场，2005 起；已有 1600 万行）。
+#     股票（6 位 0/3/6）走本地；ETF/指数（sh510300 等）仍回退腾讯（约 31 个请求）。
+#     复权：按天模式 `adj` 无效 ⇒ 用 `factor` 自算 qfq = price × factor / factor_latest；
+#     成交量：zzshare 是"股"，包内是"手" ⇒ ÷100（实测中位数、10~90 分位都恰好 100.0）。
+PACK_SOURCE = (os.environ.get("PACK_SOURCE") or "tencent").strip().lower()
+ZZ_DB_PATH = os.environ.get("PACK_ZZ_DB") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "zzshare_daily.db")
+try:
+    ZZ_MAX_BARS = int(os.environ.get("PACK_ZZ_MAX_BARS") or 750)
+except (TypeError, ValueError):
+    ZZ_MAX_BARS = 750
+
 # ★ 以下四项可用环境变量覆盖（2026-09-06 后端包超时对策）：
 #   后端包 ~700 只×750 根，串行 + 单只最多 3 次重试(1+3+6s 退避 + 3×10s 超时)
 #   = 坏股票单只惩罚可达 40s，几百只堆积直接顶穿 90 分钟 job 上限。
@@ -573,6 +588,9 @@ def refetch_stale_lastbar(klines_data: Dict, days: int, workers: int = 1,
     """
     if not klines_data:
         return klines_data
+    if PACK_SOURCE == "zzshare":
+        # 本地库按天整市场写入，不存在"逐只补齐"的时滞；停牌股的末根本来就旧。
+        return klines_data
     for rnd in range(max_rounds):
         last = [v[-1][0] for v in klines_data.values() if v]
         if not last:
@@ -600,6 +618,66 @@ def refetch_stale_lastbar(klines_data: Dict, days: int, workers: int = 1,
     return klines_data
 
 
+def _zz_ts_code(code: str) -> str:
+    """6 位 A 股代码 → zzshare ts_code；ETF/指数（带 sh/sz 前缀）返回 ''（走腾讯）。"""
+    c = str(code or "").strip().lower()
+    if len(c) != 6 or not c.isdigit():
+        return ""
+    if c[0] in "03":
+        return c + ".SZ"
+    if c[0] == "6":
+        return c + ".SH"
+    if c[0] in "48":
+        return c + ".BJ"
+    return ""
+
+
+def _zz_fetch_bars(codes: List[str], days: int) -> Tuple[Dict, List[str]]:
+    """从本地 zzshare 读最近 N 根并转成 pack 口径（qfq + 手）。
+
+    返回 (命中 {code: bars}, 未命中待回退腾讯的 codes)。
+    任何异常都只让**该批**回退腾讯，不阻断产包（本地库只是加速源）。
+    """
+    import sqlite3
+    if not os.path.exists(ZZ_DB_PATH):
+        print(f"  [zzshare] 本地库不存在: {ZZ_DB_PATH} ⇒ 全部回退腾讯")
+        return {}, list(codes)
+    limit = max(30, min(int(days or ZZ_MAX_BARS), ZZ_MAX_BARS))
+    out: Dict[str, List] = {}
+    missing: List[str] = []
+    t0 = time.time()
+    conn = sqlite3.connect(ZZ_DB_PATH)
+    try:
+        for code in codes:
+            ts = _zz_ts_code(code)
+            if not ts:
+                missing.append(code)          # ETF/指数/非 A 股 → 腾讯
+                continue
+            rows = conn.execute(
+                "SELECT date, open, high, low, close, volume, factor FROM daily "
+                "WHERE code=? ORDER BY date DESC LIMIT ?", (ts, limit)).fetchall()
+            if len(rows) < 30:
+                missing.append(code)          # 新股/本地缺 → 腾讯
+                continue
+            rows.reverse()
+            f_last = float(rows[-1][6] or 1.0) or 1.0
+            bars = []
+            for d, o, h, l, c, v, f in rows:
+                k = (float(f) if f else f_last) / f_last
+                bars.append([str(d)[:10],
+                             round(float(o) * k, 2), round(float(h) * k, 2),
+                             round(float(l) * k, 2), round(float(c) * k, 2),
+                             round((float(v) if v else 0.0) / 100.0)])
+            out[code] = bars
+    finally:
+        conn.close()
+    latest = max((b[-1][0] for b in out.values() if b), default="")
+    print(f"  [zzshare] 命中 {len(out)}/{len(codes)} 只（{ZZ_DB_PATH}，"
+          f"每只≤{limit} 根，最新 bar {latest}，{time.time() - t0:.1f}s）；"
+          f"回退腾讯 {len(missing)} 只")
+    return out, missing
+
+
 def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
     """
     批量获取 K 线数据（最多两轮：首轮 + 失败重试，重试前整体停顿让 WAF 冷却）
@@ -608,9 +686,23 @@ def fetch_all_klines(codes: List[str], days: int, workers: int = 1) -> Dict:
              后端包传 5~6：~700 只×750 根，串行实测顶穿 90 分钟 job 上限，
              并发后压到 1/5 时长；WAF 冷却状态已加锁，触发时所有线程一起让路。
              ★ 不建议 >8：腾讯是 IP 级限流，过高并发会直接撞 501 全局冷却。
+
+    ★ 2026-10-22：`PACK_SOURCE=zzshare` 时先读本地库（0 网络），只把
+      ETF/指数与本地缺失的代码交给腾讯 —— 请求数从 2876 降到 ~31。
     """
     result = {}
-    total = len(codes)
+    total = len(codes)          # 全池（含本地命中，进度条按全池算）
+    if PACK_SOURCE == "zzshare" and codes:
+        # ★★ 2026-10-22 实测：zzshare 的 factor 是**乘性复权**，与腾讯 qfq 口径不同
+        #   （近 150 根价位差 0.8~4%，750 根差 5~13%）⇒ **不能整包替换**，
+        #   否则 MA/EMA/筹码 price_pos 会整体漂移。
+        #   安全用法是 scripts/update_pack_incremental.py（历史留腾讯，只追加新 bar）。
+        print("  [zzshare] WARN 全量模式仅限研究：factor 口径与腾讯 qfq 不同，"
+              "不要用它覆盖正式包（见 update_pack_incremental.py）")
+        zz, missing = _zz_fetch_bars(codes, days)
+        result.update(zz)
+        codes = missing
+    print(f"  [配置] 数据源 {PACK_SOURCE} / 剩余需请求 {len(codes)} 只（总 {total}）")
     pending = list(codes)
     workers = max(1, int(workers or 1))
 
@@ -859,7 +951,13 @@ def main():
                         help="K 线拉取并发数（默认 1=串行，Actions 行为不变；本地可设 6+ 提速）")
     parser.add_argument("--fail-threshold", type=int, default=3,
                         help="连续失败达该次数的代码硬过滤（默认 3；退市/合并股约 1 天即中）")
+    parser.add_argument("--source", choices=["tencent", "zzshare"],
+                        default=os.environ.get("PACK_SOURCE", "tencent"),
+                        help="K 线来源：tencent=逐只（会撞 WAF）；zzshare=本地库（快）")
     args = parser.parse_args()
+
+    global PACK_SOURCE
+    PACK_SOURCE = args.source
     
     print(f"=== K 线数据包生成 ===")
     print(f"  输出目录: {args.output_dir}")
