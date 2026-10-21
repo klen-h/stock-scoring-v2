@@ -84,6 +84,13 @@
   zzshare `daily.factor` **不是前复权乘数** ⇒ 算收益用**原始收盘比**（除权跳空未复权，已知简化），需除权后单日收益用 `pct_chg`。
 
 ## 4. Supabase 容量 / egress
+- ★★ **2026-10-21 1.465GB/天 归因**：三条语句占九成 —— `mainflow_history` 整表 84 次/2 天、
+  `backtest_prices` 全历史 IN 76 次（366k 行/次）、`ANY` 分块 748 次；共同驱动 =
+  **`gate.gate_states_for_signals`**（每次 1 整表资金流 + 1~2 全历史日线，而
+  `_load_prices_map` 的 5 万根字节上限会**每次写缓存即清空** ⇒ 缓存形同虚设）。
+  已修：gate 改走 `research_cache.ohlc_for`（新鲜度守卫 + 日期类型统一）与
+  `research_cache.flow_map`（24h），再加 30 分钟结果缓存。**不要**用
+  `load_flow_map(days=60)` 替代：窗口读先跑 `GROUP BY code` 且不读磁盘缓存，实测 **444s**。
 - 账号级 5GB/月（本地 + Render + Actions 共用）；2026-10-18 实测 430MB/天。库容已 409→275MB。
 - ★★ **2026-10-19 复核（面板 190MB/天）**：探针 `cleanup_20261018`→`today1019`（32h）≈**166MB**
   （按整行宽算的**上限** ⇒ ≈123MB/天）；对照 `now1013`→`cleanup_20261018` 是 **304MB/天**

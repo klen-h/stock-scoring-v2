@@ -32,6 +32,111 @@ from app.mainforce.phases import detect_phase
 HIGH_POS_THRESHOLD = 0.75   # 筹码区间顶部（与验证口径一致）
 _fs_cache = {"ts": 0.0, "map": None}
 
+# ★★ 2026-10-21（egress 实测 1.465GB/天）：本函数一次调用 = 
+#   ① `load_flow_map()` **整表** 8.7MB（原来没传窗口）；
+#   ② `_load_prices_map()` **全历史** ~40MB（1018 只 × 750 根）。
+#   而 `recommendation._recompute_whitelist`（6h 缓存）、`performance._replay_track`
+#   （1h 缓存）与各个研究脚本都会调它 —— pg_stat_statements 实测两天内
+#   **84 次整表读 / 76 次全历史 IN 查询**，正是这次 1.4GB 的来源。
+#   修法（最终形态）：
+#     ① 日线走 `research_cache.ohlc_for`（本机 SQLite / 数据包优先），
+#        带**新鲜度守卫**（缓存末日 < 最新信号日 ⇒ 回源，宁可多读也不静默放行）；
+#     ② 资金流走 `research_cache.flow_map`（本机 24h；闸门只把 flow5 写进输出，
+#        `ok` 由 price_pos / phase 决定 ⇒ 陈旧 1 天不改变拦截结论）；
+#     ③ 结果做 **30 分钟进程缓存**（白名单 6h / 绩效 1h 两层缓存之间会重复调用）。
+#   ⚠️ 日线**不能**加 start 缩短（chip 网格由 bars 的 min/max 决定，会改变 price_pos，
+#      实测 n 136→149）。
+#   ⚠️ 也不要退化成 `load_flow_map(days=60)`：窗口读每次都要跑 `_stale_flow_codes`
+#      的 `GROUP BY code`，且**不读写**整表磁盘缓存 —— 实测一次 **444 秒**。
+_GATE_CACHE = {"ts": 0.0, "key": None, "val": None}
+_GATE_TTL = 1800.0
+_pack_warned = {"done": False}
+
+
+def _gate_cache_key(signals: list) -> str:
+    """signals 的稳定指纹（排序后 md5）—— 同一批信号无论顺序如何都命中同一缓存。"""
+    import hashlib
+    raw = "|".join(sorted("%s,%s" % (s.get("code"), s.get("date"))
+                          for s in signals))
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _norm_date(x, as_str: bool):
+    """把日期统一成 signals 使用的类型（str 或 date）。
+
+    ★ 为什么需要：本地缓存/数据包里的日期是 TEXT，Supabase 的是 DATE。
+      闸门里的 `chip_series(dates_out=...)` 用 `dates_out` 去命中 bar 的日期，
+      类型不一致会**静默命中不到** ⇒ 状态缺失 ⇒ 调用方按 ok=True 放行（偏松）。
+    """
+    if as_str:
+        return str(x)[:10]
+    import datetime
+    if isinstance(x, str):
+        try:
+            return datetime.date.fromisoformat(x[:10])
+        except ValueError:
+            return x
+    if isinstance(x, datetime.datetime):
+        return x.date()
+    return x
+
+
+def _load_gate_bars(by_code: dict) -> dict:
+    """闸门用日线：**本机缓存/数据包优先**，缺失或过旧才回源（2026-10-21 egress）。
+
+    背景：本函数原来直接 `_load_prices_map(codes)`（全历史 750 根 × 1018 只
+    ≈ 40MB/次），而 `_load_prices_map` 的进程缓存被 5 万根字节上限清空 ⇒
+    **每次调用都重新过网**。实测两天 76 次 ≈ 1.4GB。
+    `research_cache.ohlc_for` 则以本机 SQLite 为准（脚本跨进程复用；Render 从
+    pack 建一次），只有本机没有的代码才回源。
+    ⚠️ 新鲜度守卫：缓存末日 < 最新信号日 ⇒ 直接回源（否则今天的信号会被
+      `d <= bars[-1]` 滤掉 → 闸门静默放行，这是比多读几 MB 严重得多的错）。
+    """
+    codes = set(by_code)
+    first = next((d for ds in by_code.values() for d in ds), None)
+    as_str = isinstance(first, str)
+    latest = max(str(d)[:10] for ds in by_code.values() for d in ds)
+    try:
+        from app import research_cache
+        cached = research_cache.ohlc_for(codes)
+        if cached:
+            cmax = max((str(b[-1].get("date"))[:10]
+                        for b in cached.values() if b), default="")
+            if cmax >= latest:
+                return {c: [dict(b, date=_norm_date(b.get("date"), as_str))
+                            for b in bars]
+                        for c, bars in cached.items()}
+            print("[gate] local ohlc stale (%s < %s) -> DB fallback"
+                  % (cmax, latest))                      # ASCII（铁律⑥）
+    except Exception as e:
+        print("[gate] local ohlc unavailable (%s) -> DB fallback"
+              % type(e).__name__)                        # ASCII（铁律⑥）
+    from app.backtest.strategies import _load_prices_map
+    return _retry_read(lambda: _load_prices_map(codes), "回测价格批量")
+
+
+def _load_gate_flow() -> dict:
+    """闸门用资金流：**本机缓存优先**（24h），缺失才回源。
+
+    ★ 为什么不用 `load_flow_map(days=60)` 直接读：
+      ① 窗口读每次都要先跑 `_stale_flow_codes`（`GROUP BY code` 全表聚合）；
+      ② 实测本机一次 60 日窗口读 **444 秒**（Supabase pooler 慢，不是行数问题），
+         而且窗口读**不读写**整表磁盘缓存（见 flow.load_flow_map 注释）；
+      ③ 闸门的 `flow5` **只用于输出展示**，`ok` 由 price_pos / phase 决定
+         （见下方 `blocked` 构造）⇒ 24h 缓存陈旧 1 天也不改变拦截结论。
+    ⇒ 回源用**整表读**（有本机 SQLite 兜底：一次之后 24h 内零流量）。
+    """
+    try:
+        from app import research_cache
+        m = research_cache.flow_map()          # 本机 SQLite，24h
+        if m:
+            return m
+    except Exception as e:
+        print("[gate] local flow cache unavailable (%s) -> DB"
+              % type(e).__name__)               # ASCII（铁律⑥）
+    from app.mainforce.flow import load_flow_map
+    return _retry_read(load_flow_map, "mainflow_history（整表 + 本机磁盘缓存）")
+
 
 def _mode_on() -> bool:
     import os
@@ -144,22 +249,41 @@ def gate_states_for_signals(signals: list) -> dict:
     """
     批量还原信号日当日的主力过滤状态（无前视，供白名单重算/回测复用）。
     signals: [{code, date, ...}]；返回 {(code, date): gate_dict}（同 strategy_gate 结构）。
+    ★ 30 分钟进程缓存（见文件头 `_GATE_CACHE` 说明）：同一批 signals 只算一次。
     """
+    if not signals:
+        return {}
+    ck = _gate_cache_key(signals)
+    now = time.time()
+    if _GATE_CACHE["key"] == ck and now - _GATE_CACHE["ts"] < _GATE_TTL:
+        return dict(_GATE_CACHE["val"])
+
     by_code = {}
     for s in signals:
         by_code.setdefault(s["code"], []).append(s["date"])
-    from app.mainforce.flow import load_flow_map
-    flow_map = _retry_read(load_flow_map, "mainflow_history（整表 8.7MB）")
+    # ★ 2026-10-21：本机资金流缓存优先（原来整表 8.7MB/次，见 `_load_gate_flow`）
+    flow_map = _load_gate_flow()
     fs_map = _retry_read(_float_map, "流通股本 map")
+    # ★ 一次性告警：DATA_SOURCE 不是 pack 时，下面这步会走 Supabase 全历史
+    #   （~40MB/次）。研究脚本/本地默认 db ⇒ 每次跑都白付。日志里能看到。
+    if not _pack_warned["done"]:
+        _pack_warned["done"] = True
+        try:
+            from app import pack_source
+            if not pack_source.enabled():
+                print("[gate] WARN DATA_SOURCE != pack -> cache miss may read "
+                      "full history from Supabase (~40MB)")   # ASCII（铁律⑥）
+        except Exception:
+            pass
     out = {}
     # ★ 批量加载（单 IN 查询 + 6h 进程缓存，与战法回放路径共享）——
     #   逐股 load_prices 是 253 次独立查询，曾把绩效接口拖到 30s 超时
     # ★ 2026-09-13：**不要**给这里加 start 缩短历史！chip_series 的价格网格
     #   由传入 bars 的 min/max 决定（chips.py L84-89），缩短历史会改变网格 →
-    #   price_pos 跨过 0.75 阈值 → 闸门判断漂移（实测 n 136→149）。要省这部分
-    #   egress 请走 `DATA_SOURCE=pack`（pack_source 命中则走本地 sqlite，零 egress）。
-    from app.backtest.strategies import _load_prices_map
-    bars_map = _retry_read(lambda: _load_prices_map(set(by_code)), "回测价格批量")
+    #   price_pos 跨过 0.75 阈值 → 闸门判断漂移（实测 n 136→149）。
+    # ★★ 2026-10-21：改走 `_load_gate_bars` —— 本机缓存/数据包优先（见其说明），
+    #   过旧才回源。这一条是当天 1.4GB 的主因（76 次全历史 IN 查询）。
+    bars_map = _load_gate_bars(by_code)
     for code, dates in by_code.items():
         bars = bars_map.get(code)
         if not bars or len(bars) < 130:
@@ -190,7 +314,8 @@ def gate_states_for_signals(signals: list) -> dict:
                 "phase": pm["phase"], "price_pos": cm["price_pos"],
                 "winner_ratio": cm["winner_ratio"], "flow5": flow5,
             }
-    return out
+    _GATE_CACHE.update(ts=time.time(), key=ck, val=out)
+    return dict(out)
 
 
 def _phase_series_safe(bars: list, dates_out: list) -> dict:
