@@ -94,11 +94,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # ★ 必须显式指定：本 job 未 checkout，gh 无法从目录推断仓库
           GH_REPO: ${{ github.repository }}
+          CURRENT_RUN: ${{ github.run_id }}
         run: |
           EVENT="${{ github.event_name }}"
-          echo "event=$EVENT repo=$GH_REPO"
+          echo "event=$EVENT repo=$GH_REPO current=$CURRENT_RUN"
           SKIP=false
-          if [ "$EVENT" = "schedule" ]; then
+          # ★★ 2026-10-21：先判「是否已有本 workflow 在跑/排队」（排除自己）。
+          #   背景：本 job 现在会等前端包（最多 180 分钟），正常 20:43 完成的假设不再成立
+          #   ⇒ 22:00（北京）的兜底 schedule 很可能在**第一次还没跑完时**触发。
+          #   原守卫只看「最近 12h 是否有 success」——跑着的这次还不是 success ⇒ 不跳过
+          #   ⇒ 排队再跑一遍完整的 2.5 小时（且和第一次抢同一配额）。
+          if RUNNING=$(gh run list --workflow=backend-pack.yml --limit 30 \
+                --json databaseId,status \
+                --jq "[.[] | select(.databaseId != $CURRENT_RUN and (.status==\"in_progress\" or .status==\"queued\"))] | length"); then
+            echo "running_or_queued=$RUNNING"
+          else
+            RUNNING=0
+            echo "::warning::gh run list 查询失败，无法判定是否有并发运行（按不跳过处理）"
+          fi
+          if [ "$RUNNING" -gt 0 ]; then
+            echo "⏭ 已有 backend-pack 在跑/排队 ⇒ 本次跳过（防双跑）"
+            SKIP=true
+          fi
+          if [ "$SKIP" = "false" ] && [ "$EVENT" = "schedule" ]; then
             # 兜底守卫：最近 12 小时内已有成功的 backend-pack ⇒ 今天正常路径已跑过
             if OK=$(gh run list --workflow=backend-pack.yml --status=success \
                       --created=">=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M)" \
@@ -124,13 +142,47 @@ jobs:
     runs-on: ubuntu-latest
     # ★ 2026-09-10 池扩容到战法池口径（1431 → ~2080 只，+45%）后实测需 ~130 分钟，
     #   原 150 分钟余量太薄，放宽到 180。
-    timeout-minutes: 180
+    # ★★ 2026-10-21：180 → **360**（GitHub 上限）。池已涨到 **2915 只**（+ 科创/创业板/回测池），
+    #   按腾讯当前实际配额（≈0.3~0.4 QPS）主轮就要 120~160 分钟；再叠加"等前端包跑完"
+    #   的等待（最多 180 分钟）⇒ 300 分钟也可能不够，给到 GitHub 上限 360。
+    timeout-minutes: 360
+    # ★ wait-for-frontend 步骤要用 gh run list 查运行历史
+    permissions:
+      actions: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      # ★★ 2026-10-21：**等前端包跑完再拉**（10-20 后端包失败的真正放大器）。
+      #   前端包 18:00 启动，正常 ~37 分钟；一旦被 WAF 拖到 150~240 分钟，就会与
+      #   19:00 启动的本 job **重叠**。两个 job 虽然在不同 runner 上，但 GitHub
+      #   托管 runner 的出口 IP 并不保证互不相同（同区域 NAT 复用），而腾讯是
+      #   **IP 级滑动窗口配额** ⇒ 后端包一开局就只有 ~100 个请求的额度
+      #   （10-20 日志：第 1 次 WAF 出现在 99 只），随后 300s 冷却连环触发。
+      #   这里显式等（最多 180 分钟），正常日子前端 18:37 已结束 ⇒ 零等待。
+      - name: Wait for frontend pack (avoid WAF quota overlap)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          for i in $(seq 1 90); do
+            N=$(gh run list --workflow=kline-data.yml --limit 20 --json status \
+                  --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length' \
+                  2>/dev/null || echo 0)
+            if [ "$N" = "0" ]; then
+              echo "frontend pack idle -> continue"
+              exit 0
+            fi
+            echo "frontend pack still running (${i}/90), wait 120s"
+            sleep 120
+          done
+          echo "::warning::waited 180min for frontend pack; continue anyway"
+
+      - name: Log egress IP (WAF diagnosis)
+        run: curl -s --max-time 10 https://api.ipify.org || true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -197,6 +249,9 @@ jobs:
           #   ★ 2026-09-18：基准 45 → 120（与脚本 generate-kline-pack.py 的默认值对齐，
           #     那两处长期不一致，见 inputs 处的回归说明）。
           PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '120' }}
+          # ★ 2026-10-21：退避上限 300 → 600（300s 实测排不空窗口）。
+          #   2915 只 × 750 根的响应体比前端大得多，撞墙后的恢复期也更长。
+          PACK_WAF_MAX_COOLDOWN: '600'
           # ★★ 2026-09-17 主旋钮：全进程请求速率上限（令牌桶，无突发）。
           #   被动冷却只能事后止血 —— 只要"发出的请求速率"高于腾讯阈值就必然反复撞墙，
           #   而 WAF 按滑动窗口判定，撞得越勤窗口越排不空 → 自锁（这正是耗时失控的机制）。
@@ -206,6 +261,9 @@ jobs:
           #     按本注释的处置阶梯降到 1。1 QPS ⇒ 2057 只下限 ≈ 35 分钟，仍在 timeout 内。
           #     若显示零拦截且嫌慢 → 再试 2~3（先看日志末尾那行 WAF 汇总）。
           PACK_QPS: ${{ github.event.inputs.qps || '1' }}
+          # ★ 撞墙降速下限 0.35：2915 只 / 0.35 ≈ 139 分钟，加上最多 180 分钟等待
+          #   仍 < 360；若降到 0.25 就是 194 分钟，会顶穿 timeout。
+          PACK_QPS_MIN: '0.35'
           PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
           PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
         run: |

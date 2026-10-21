@@ -235,6 +235,13 @@
 - 快照 / `/batch/top` / 精算榜 = **全市场口径（含 688 + 创业板）**，只剔 ST + 市值≥50 亿 + 价≥3 元
   （`routers/scoring._pool_quality_filter`，三路共用）。**不许用过滤抹平差异**（科创板是机会发现口径）。
 - 前端本地榜 `useFrontendScoring.isValidStock` 只剔 ST/亏损（创业板+科创板全放开）；`generate-kline-pack.py` 的 `DISABLED_PREFIXES` 已清空。
+- ★★ **腾讯 K 线 WAF（2026-10-21）**：`web.ifzq.gtimg.cn` 是**滑动窗口配额**（本地单请求 200，不代表没被限）；
+  2144 只实测被压到 ≈0.4 QPS，前端包 150 分钟 timeout。铁律：**退避必须按"两次 501 的间隔"加码**
+  （"冷却期内再 501 才 ×2"在全局门下永不成立）+ **501 不能记成个股失败**（会造成请求正反馈）+
+  撞墙同时降速（×0.6，下限 0.25 QPS）。细节见 2026-10-21 daily §100。
+  ★ 前端包（18:00）被拖长时会与后端包（19:00）**重叠**，而 GitHub runner 出口 IP 不保证不同 ⇒
+  `backend-pack` 已加 `Wait for frontend pack` + **in-progress 守卫**（兜底 schedule 不再双跑），
+  timeout 360；两条 job 都打 egress IP 便于判断是否同 IP。
 - K 线包已扩 688（`_pack_quality` 撤剔除，包 +2.6MB，RAM 不变）；战法池自身 filter 层仍剔 688 ⇒ 无害。
 - ★ 观察池不得混入 ETF/指数：`mainforce_state` 宇宙继承 `backtest_prices`（含基准 ETF，带 sh/sz 前缀）⇒
   `routers/scoring._is_stock_code`（6 位纯数字 + 0/3/6 开头）在 live 重算 + 快照读取**双处过滤**。

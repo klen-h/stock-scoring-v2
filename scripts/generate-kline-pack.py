@@ -72,6 +72,26 @@ WAF_MAX_COOLDOWN = _env_int("PACK_WAF_MAX_COOLDOWN", 300)
 # ★ 单只股票在冷却上的最长累计等待（秒）。超限就放行该股（记为失败、交下一轮），
 #   避免一个线程被一支股票无限占住 —— 见 _waf_wait_until_clear 的返回语义。
 WAF_WAIT_MAX = _env_int("PACK_WAF_WAIT_MAX", 900)
+# ★★ 2026-10-21（10-20 前端包被 WAF 拖到 150 分钟 timeout 的修复）：
+#   【现象】日志里每次都是「本次冷却 120s」，退避**从未加码**；两次拦截之间的
+#     成功数 132 → 48 → 34 → 26 → 20 → 12 逐级下滑，2144 只跑不完。
+#   【根因 1】退避加倍的条件是「**冷却期内**再收到 501」，但冷却期是全局门，
+#     请求根本发不出去 ⇒ 该条件在单线程下**永远不成立**（退避恒为 1.0）。
+#   【根因 2】任意一次成功就把 `_waf_backoff` 重置为 1.0 —— 而 501 之后的下一次
+#     请求本来就大概率成功 ⇒ 即使根因 1 修好，退避也会立刻被打回 120s。
+#   【修法】① 以「距上次 501 的间隔」判断是否加码（<15 分钟 = 窗口没排空 ⇒ ×2）；
+#           ② 只有「连续成功 ≥300 只 且 距上次 501 ≥15 分钟」才回落；
+#           ③ 撞墙同时**自适应降速**（×0.6，只降不升，下限 QPS_MIN）。
+WAF_QUIET_RESET_SEC = _env_int("PACK_WAF_QUIET_RESET_SEC", 900)
+WAF_SUCCESS_RESET = _env_int("PACK_WAF_SUCCESS_RESET", 300)
+# ★ 拦截次数上限：超过就**主动报错退出**（job 显示 failure，而不是被 timeout 砍成
+#   cancelled —— 后者会连带跳过 Pages 发布，且日志里看不出原因）。
+#   退避已到 300s 还持续撞墙 ⇒ 继续跑只会把 IP 罚得更久；换一个 runner（重跑）更有效。
+WAF_MAX_EVENTS = _env_int("PACK_WAF_MAX_EVENTS", 30)
+# ★ 单只股票允许因全局限流重试几次（**不消耗** KLINE_RETRIES 的真实重试预算）。
+#   原来 501 直接 return None ⇒ 每撞一次墙就多一只"失败股"，下一轮再请求一次
+#   ⇒ 越封越多请求（正反馈）。
+WAF_RETRY_MAX = _env_int("PACK_WAF_RETRY_MAX", 3)
 KLINE_RETRIES = _env_int("PACK_KLINE_RETRIES", 3)        # 单只股票重试次数（含首次）
 RETRY_BACKOFF = [int(x) for x in
                  (os.environ.get("PACK_RETRY_BACKOFF") or "1,3,6").split(",") if x]
@@ -110,7 +130,13 @@ _session.headers.update({
 #   错误结论（指标已修，见 _waf_report）。
 # 这里加**全局令牌桶**：不管开几个线程，全进程的请求**发出速率**硬压到 PACK_QPS 内。
 # 这是与「并发数」解耦的正确旋钮 —— 并发只决定在途请求的重叠度，不决定速率。
-PACK_QPS = float(os.environ.get("PACK_QPS", "2") or 2)
+# ★★ 2026-10-21：2 → 1。10-20 前端包（2144 只）按 2 QPS 跑，日志显示每 120s
+#   冷却只换来约 50 只成功（≈0.4 QPS 的实际配额）；起手 2 QPS 只是把窗口瞬间打满、
+#   换来更长的惩罚，总耗时反而更差。1 QPS 起步 + 撞墙后 ×0.6 降速，
+#   2144 只最坏 ≈ 90~120 分钟（job timeout 已放宽到 240 分钟）。
+PACK_QPS = float(os.environ.get("PACK_QPS", "1") or 1)
+# 撞墙后降速的下限：再低就永远跑不完（2144 只 × 1/0.25s ≈ 143 分钟）
+QPS_MIN = float(os.environ.get("PACK_QPS_MIN", "0.25") or 0.25)
 _qps_lock = threading.Lock()
 _qps_next = 0.0            # 下一个允许发出请求的时刻（无突发的匀速限流）
 
@@ -144,9 +170,11 @@ _waf_lock = threading.Lock()
 
 # ★ 2026-09-17：退避自适应 + 观测指标（不再人工猜冷却时长，见 WAF_MAX_COOLDOWN 注释）
 _waf_backoff = 1.0          # 当前退避倍数（× WAF_COOLDOWN）
-_waf_events = 0             # 501 触发次数（进程内累计；仅"非冷却期"首次开窗才 +1）
+_waf_events = 0             # 501 触发次数（进程内累计）
 _waf_wait_total = 0.0       # 累计冷却等待（★ 线程·秒，跨线程累加，不是墙钟）
 _proc_t0 = 0.0              # 进程内首次 K 线请求时刻（墙钟口径的观测定点）
+_waf_last_event_ts = 0.0    # 上次 501 的时刻（判断"冷却是否真的排空了窗口"）
+_waf_success_streak = 0     # 连续成功只数（只有长干净期才回落退避）
 
 
 def _waf_wait_until_clear() -> bool:
@@ -188,19 +216,48 @@ def _waf_wait_until_clear() -> bool:
 
 
 def _waf_record_501(symbol: str) -> None:
-    """记录一次 501：非冷却期触发 → 开新窗口；冷却期内仍被拦 → 退避 ×2 加码。"""
+    """记录一次 501，并按"是否排空窗口"决定加码 + 降速（2026-10-21 重写）。
+
+    旧实现的加倍条件是「**冷却期内**再收到 501」—— 但冷却期是全局门，请求发不出去
+    ⇒ 单线程下该条件永不成立，退避永远是 1.0（10-20 日志每次都 120s 的根因）。
+    现在改为看**两次 501 的间隔**：
+      · < WAF_QUIET_RESET_SEC（15 分钟）⇒ 上次冷却没排空滑动窗口 ⇒ 退避 ×2（封顶 300s）
+      · 否则 ⇒ 视为新的一轮，从基准 120s 开始
+    同时按 ×0.6 降速（只降不升）：撞墙本身就是"当前速率高于配额"的证据。
+    """
     global _waf_blocked_until, _consecutive_failures, _waf_backoff, _waf_events
+    global _waf_last_event_ts, _waf_success_streak, PACK_QPS
     with _waf_lock:
         now = time.time()
-        if now >= _waf_blocked_until:
+        gap = now - _waf_last_event_ts
+        # ★ 5 秒内视为**同一波**（并发 5 线程会在冷却结束时齐发，可能同时吃 5 个 501）。
+        #   同一波只加码一次，否则 5 个线程会把退避瞬间乘到上限、把 QPS 砍到地板。
+        new_burst = gap > 5
+        if new_burst:
+            if gap < WAF_QUIET_RESET_SEC:
+                _waf_backoff = min(WAF_MAX_COOLDOWN / max(1, WAF_COOLDOWN),
+                                   _waf_backoff * 2)
+            else:
+                _waf_backoff = 1.0
             _waf_events += 1
+            qps_before = PACK_QPS
+            if PACK_QPS > 0:
+                PACK_QPS = max(QPS_MIN, round(PACK_QPS * 0.6, 3))
         else:
-            _waf_backoff = min(WAF_MAX_COOLDOWN / WAF_COOLDOWN, _waf_backoff * 2)
+            qps_before = PACK_QPS
+        _waf_last_event_ts = now
+        _waf_success_streak = 0
         _waf_blocked_until = now + WAF_COOLDOWN * _waf_backoff
         _consecutive_failures = 0
         n, mult, waited = _waf_events, _waf_backoff, _waf_wait_total
+        qps_after = PACK_QPS
     print(f"\n  [WAF] 第 {n} 次拦截 {symbol} → 本次冷却 {WAF_COOLDOWN * mult:.0f}s"
+          f" / 限速 {qps_before:g}→{qps_after:g} QPS"
           f"（累计线程等待 {waited:.0f}s，非墙钟）")
+    if n >= WAF_MAX_EVENTS:
+        raise RuntimeError(
+            f"WAF 拦截已达 {n} 次（上限 {WAF_MAX_EVENTS}）——出口 IP 已被腾讯重点限流，"
+            f"继续跑只会拉长惩罚。已主动中止，请重跑（换 runner/IP）或稍后重试。")
 
 
 def _waf_report() -> str:
@@ -347,7 +404,11 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     获取单只股票 K 线数据（带重试 + WAF 检测 + 全局熔断）
     返回: [[date, open, high, low, close, volume], ...] 或 None
     """
+    # ⚠️ `_waf_backoff` / `_waf_success_streak` 必须声明：本函数成功分支会对它们
+    #   赋值（旧版漏了 `_waf_backoff` ⇒ `_waf_backoff = 1.0` 只是建了个**局部变量**，
+    #   模块级退避从未被"成功"重置过 —— 与"永远 120s"是同一组 bug 的两半）。
     global _waf_blocked_until, _consecutive_failures, _proc_t0
+    global _waf_backoff, _waf_success_streak
     if not _proc_t0:
         _proc_t0 = time.time()      # 进程内首次 K 线请求时刻（墙钟口径观测点）
 
@@ -386,7 +447,13 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
     }
 
     last_err = None
-    for attempt in range(KLINE_RETRIES):
+    # ★★ 2026-10-21：501 改为「全局限流」而不是「这只股票失败」。
+    #   旧写法 501 → return None ⇒ 该股被计入 failed，下一轮再请求一次 ⇒
+    #   每撞一次墙就多制造一次请求（正反馈），而它根本不是这只股票的问题。
+    #   现在 501 只等待 + 继续（不消耗 real_attempts），单只最多吃 WAF_RETRY_MAX 次。
+    real_attempts = 0
+    waf_hits = 0
+    while real_attempts < KLINE_RETRIES:
         # 冷却中则等解除（有上限），不放弃该股（否则「假失败」会灌满重试轮）
         if not _waf_wait_until_clear():
             return None
@@ -396,10 +463,13 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
         try:
             resp = _session.get(url, params=params, timeout=REQUEST_TIMEOUT)
 
-            # WAF 检测：腾讯返回 501 表示被防火墙拦截 → 全局冷却
+            # WAF 检测：腾讯返回 501 表示被防火墙拦截 → 全局冷却 + 降速
             if resp.status_code == 501:
+                waf_hits += 1
                 _waf_record_501(symbol)
-                return None
+                if waf_hits > WAF_RETRY_MAX:
+                    return None
+                continue                      # 不计入真实重试预算
 
             resp.raise_for_status()
             data = resp.json()
@@ -409,7 +479,9 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
 
             if not day_data:
                 last_err = "空数据"
-                time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
+                time.sleep(RETRY_BACKOFF[real_attempts]
+                           if real_attempts < len(RETRY_BACKOFF) else 6)
+                real_attempts += 1
                 continue
 
             # 解析并格式化
@@ -425,12 +497,20 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
                     result.append([date, open_p, high, low, close, volume])
 
             if len(result) >= 30:
+                # ★ 2026-10-21：不再"一次成功就回落退避"（那会让退避永远是 1.0）；
+                #   只有长干净期（距上次 501 ≥15 分钟）且连续成功够多，才回落基准。
                 with _waf_lock:
                     _consecutive_failures = 0
-                    _waf_backoff = 1.0        # 通了 → 退避回落到基准
+                    _waf_success_streak += 1
+                    if (_waf_success_streak >= WAF_SUCCESS_RESET
+                            and time.time() - _waf_last_event_ts >= WAF_QUIET_RESET_SEC):
+                        _waf_backoff = 1.0
+                        _waf_success_streak = 0
                 return result
             last_err = f"K线不足({len(result)}根)"
-            time.sleep(RETRY_BACKOFF[attempt] if attempt < len(RETRY_BACKOFF) else 6)
+            time.sleep(RETRY_BACKOFF[real_attempts]
+                       if real_attempts < len(RETRY_BACKOFF) else 6)
+            real_attempts += 1
 
         except Exception as e:
             last_err = str(e)
@@ -447,8 +527,9 @@ def fetch_kline(code: str, days: int = 60) -> Optional[List]:
             if wait:
                 print(f"\n  连续失败 {_cf} 次，暂停 {wait}s")
                 time.sleep(wait)
-            elif attempt < len(RETRY_BACKOFF):
-                time.sleep(RETRY_BACKOFF[attempt])
+            elif real_attempts < len(RETRY_BACKOFF):
+                time.sleep(RETRY_BACKOFF[real_attempts])
+            real_attempts += 1
 
     return None
 
