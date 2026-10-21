@@ -81,16 +81,60 @@ def _norm_date(x, as_str: bool):
     return x
 
 
-def _load_gate_bars(by_code: dict) -> dict:
-    """闸门用日线：**本机缓存/数据包优先**，缺失或过旧才回源（2026-10-21 egress）。
+def _top_up_bars(cached: dict, latest: str) -> tuple:
+    """把末根 < latest 的代码**按日期增量**补几根，并写回本机缓存。
 
-    背景：本函数原来直接 `_load_prices_map(codes)`（全历史 750 根 × 1018 只
-    ≈ 40MB/次），而 `_load_prices_map` 的进程缓存被 5 万根字节上限清空 ⇒
-    **每次调用都重新过网**。实测两天 76 次 ≈ 1.4GB。
-    `research_cache.ohlc_for` 则以本机 SQLite 为准（脚本跨进程复用；Render 从
-    pack 建一次），只有本机没有的代码才回源。
-    ⚠️ 新鲜度守卫：缓存末日 < 最新信号日 ⇒ 直接回源（否则今天的信号会被
-      `d <= bars[-1]` 滤掉 → 闸门静默放行，这是比多读几 MB 严重得多的错）。
+    ★★ 2026-10-22：原来的"缓存过旧 ⇒ 整批回源"是新的流量黑洞 ——
+      只要本机缓存比今天晚一天（盘后信号日 = 今天），**每个新进程**都会
+      退化成 366k 行全历史读（pg_stat_statements：57 次/4h）。
+      现在只补 `date >= 各自末根`：常态是 1018 只 × 1 根 ≈ 1k 行，
+      写回后下一个进程直接命中。
+    返回 (cached, added_rows)。
+    """
+    from app.database import db
+    from app import research_cache
+
+    def _d(x):
+        return str(x)[:10]
+
+    tail = [c for c, b in cached.items() if b and _d(b[-1].get("date")) < latest]
+    if not tail:
+        return cached, 0
+    cutoff = min(_d(cached[c][-1].get("date")) for c in tail)
+    rows = db.fetch(
+        "SELECT code, date, open, high, low, close, volume FROM backtest_prices "
+        "WHERE code = ANY(%s) AND date >= %s ORDER BY code, date",
+        (tail, cutoff)) or []
+    added = 0
+    for r in rows:
+        c = r["code"]
+        arr = cached.setdefault(c, [])
+        byd = {_d(x.get("date")): x for x in arr}
+        key = _d(r["date"])
+        if key in byd:
+            continue
+        byd[key] = {"date": r["date"], "open": r["open"], "high": r["high"],
+                    "low": r["low"], "close": r["close"], "volume": r["volume"]}
+        cached[c] = [byd[k] for k in sorted(byd)]
+        added += 1
+    if added:
+        try:
+            research_cache.upsert_bars({c: cached[c] for c in tail})
+        except Exception as e:
+            print("[gate] ohlc cache writeback failed (%s)" % type(e).__name__)
+    return cached, added
+
+
+def _load_gate_bars(by_code: dict) -> dict:
+    """闸门用日线：**本机缓存/数据包优先**，缺失才回源（2026-10-21/22 egress）。
+
+    背景：原来直接 `_load_prices_map(codes)`（全历史 750 根 × 1018 只 ≈ 40MB/次），
+    而 `_load_prices_map` 的进程缓存被 5 万根字节上限清空 ⇒ **每次调用都重新过网**。
+    `research_cache.ohlc_for` 以本机 SQLite 为准（脚本跨进程复用；Render 从 pack
+    建一次），只有本机没有的代码才回源。
+    ⚠️ 新鲜度守卫：缓存末日 < 最新信号日时必须补 —— 否则今天的信号会被
+      `d <= bars[-1]` 滤掉 → 闸门静默放行（比多读几 MB 严重得多）。
+      但**只增量补**（`_top_up_bars`），不做整批回源。
     """
     codes = set(by_code)
     first = next((d for ds in by_code.values() for d in ds), None)
@@ -102,11 +146,17 @@ def _load_gate_bars(by_code: dict) -> dict:
         if cached:
             cmax = max((str(b[-1].get("date"))[:10]
                         for b in cached.values() if b), default="")
+            if cmax < latest:
+                cached, added = _top_up_bars(cached, latest)
+                cmax = max((str(b[-1].get("date"))[:10]
+                            for b in cached.values() if b), default="")
+                print("[gate] ohlc topped up %d rows (cache %s, signal %s)"
+                      % (added, cmax, latest))           # ASCII（铁律⑥）
             if cmax >= latest:
                 return {c: [dict(b, date=_norm_date(b.get("date"), as_str))
                             for b in bars]
                         for c, bars in cached.items()}
-            print("[gate] local ohlc stale (%s < %s) -> DB fallback"
+            print("[gate] local ohlc still stale (%s < %s) -> DB fallback"
                   % (cmax, latest))                      # ASCII（铁律⑥）
     except Exception as e:
         print("[gate] local ohlc unavailable (%s) -> DB fallback"

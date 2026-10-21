@@ -230,6 +230,31 @@ def ohlc_for(codes, max_age_h: float = DEFAULT_MAX_AGE_H) -> dict:
 
 
 # ── 资金流 ──────────────────────────────────────────────────────────────────
+def upsert_bars(by_code: dict) -> int:
+    """把 `{code: [{date,open,high,low,close,volume}]}` 写回本机 `ohlc` 表。
+
+    ★ 2026-10-22（egress）：给 `gate._load_gate_bars` 的**增量补数**用 ——
+      闸门发现本机缓存末日 < 最新信号日时，只按 `date >= 末根` 补几根，
+      然后写回本机 ⇒ 下一个进程直接命中，不再退化成"全历史 366k 行"。
+      返回写入行数；任何异常由调用方兜住（缓存只是加速，不参与正确性）。
+    """
+    rows = []
+    for c, bars in (by_code or {}).items():
+        for b in bars or []:
+            rows.append((c, b.get("date"), b.get("open"), b.get("high"),
+                         b.get("low"), b.get("close"), b.get("volume")))
+    if not rows:
+        return 0
+    conn = _conn()
+    try:
+        with conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO ohlc VALUES (?,?,?,?,?,?,?)", rows)
+        return len(rows)
+    finally:
+        conn.close()
+
+
 def flow_map(max_age_h: float = DEFAULT_MAX_AGE_H, force: bool = False) -> dict:
     """{code: [{date, main_net, super_net, big_net, main_pct, super_pct, close, pct_chg}]}。"""
     conn = _conn()
