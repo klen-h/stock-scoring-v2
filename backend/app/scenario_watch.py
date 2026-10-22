@@ -22,6 +22,9 @@ from __future__ import annotations
   · 银行补跌 = 多（磨底末段信号）；创业板周线止跌 = 多
   · 上证：≥3674 多（结构修复）/ <3550 空（最后缓冲之下）/ 其余中性
   · 汇金 ETF 确认 = 多（承接加码）
+  · 伊朗/中东：近 7 日金十快讯，升级词 > 缓和词 → 空；硬触发（空袭/开战/布雷/触雷/
+    封锁霍尔木兹，且须含"伊朗"）→ 判空 + `geo_alert` 高亮，但**不直接切换情景**
+    （情景仍按油价/10Y/点位，避免单条新闻过度反应）；含"编造/虚假/否认"与金十聚合稿剔除。
   · 情景：任一熊市触发器命中 → 熊市加深；任一修复触发器命中 → 提前修复；否则基准。
 
 ★ 红线：观察器，不改分数、不进闸门、不碰模拟盘。多/空只是"信号倾向"，不是仓位指令。
@@ -62,6 +65,62 @@ EVENTS = [
      "note": "全年最重要会议；点阵图 4.10/4.25/4.50 → 进攻/中性/防守"},
 ]
 POINT_PLOT = [("4.10%", "进攻"), ("4.25%", "中性"), ("4.50%", "防守")]
+
+# ★ 地缘事件（金十快讯按**内容**匹配；实测 flash_news.cluster 字段当前为空）
+GEO_KW = ["伊朗", "美伊", "伊美", "霍尔木兹", "中东", "哈梅内伊",
+          "以色列", "真主党", "哈马斯", "红海", "油轮"]
+GEO_UP = ["军事打击", "空袭", "导弹", "开战", "战争", "袭击", "封锁",
+          "布雷", "地面部队", "最后通牒", "核武", "铀浓缩", "冲突升级"]
+GEO_DOWN = ["谈判", "停火", "协议", "和谈", "会谈", "解除制裁", "缓和", "撤军"]
+GEO_HARD = ["空袭", "开战", "战争爆发", "封锁霍尔木兹", "布雷", "水雷", "触雷",
+            "地面部队", "导弹袭击", "击落"]
+# 剔除：否定/传闻 + 金十自己的聚合稿（否则一条汇总会重复计数）
+GEO_NOISE = ["编造", "虚假", "否认", "辟谣", "传言", "并未", "不会",
+             "金十数据整理", "重要新闻汇总", "中东局势跟踪"]
+
+
+def _geo_signal(day: str) -> Dict:
+    """近 7 日金十快讯里的伊朗/中东事件：升级 vs 缓和。
+
+    ★ 硬触发（军事打击/空袭/开战/封锁霍尔木兹/布雷）直接判空；
+      含"编造/虚假/否认"的条目剔除（例：特朗普称伊朗编造袭击推高油价）。
+    """
+    try:
+        from app.database import db
+        try:
+            base = datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            base = datetime.now()
+        cutoff = (base - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = db.fetch("SELECT time, content FROM flash_news WHERE time >= %s "
+                        "ORDER BY id DESC", (cutoff,)) or []
+    except Exception as e:
+        return _sig("geo", "伊朗/中东事件", None, "条", "不足",
+                    f"快讯库不可用：{str(e)[:40]}")
+
+    geo = [r for r in rows
+           if any(k in (r.get("content") or "") for k in GEO_KW)
+           and not any(k in (r.get("content") or "") for k in GEO_NOISE)]
+    if not geo:
+        return _sig("geo", "伊朗/中东事件", 0, "条", "中性", "近 7 日无相关快讯")
+
+    def _hit(r, words):
+        c = r.get("content") or ""
+        return any(w in c for w in words)
+
+    up_rows = [r for r in geo if _hit(r, GEO_UP)]
+    down_rows = [r for r in geo if _hit(r, GEO_DOWN)]
+    # ★ 硬触发必须是"伊朗相关的实际动能事件"（计划/威胁/警告只算升温，不算硬触发）
+    hard_row = next((r for r in geo
+                     if _hit(r, GEO_HARD) and "伊朗" in (r.get("content") or "")), None)
+    lean = "空" if hard_row else ("空" if len(up_rows) > len(down_rows)
+                                  else ("多" if len(down_rows) > len(up_rows) else "中性"))
+    latest = (hard_row or geo[0]).get("content") or ""
+    latest = latest.replace("\n", " ")[:60]
+    return {**_sig("geo", "伊朗/中东事件", len(up_rows), "条", lean,
+                   f"升级{len(up_rows)}/缓和{len(down_rows)}"
+                   f"{'，★硬触发' if hard_row else ''}；最新：{latest}"),
+            "hard": bool(hard_row)}
 
 
 def _today() -> str:
@@ -182,10 +241,17 @@ def evaluate(day: str = None) -> Dict:
                      "多" if etf_conf else "中性",
                      "连续 2 日份额放大=确认" if etf_conf else "未确认"))
 
+    # 9 地缘事件（金十快讯：伊朗/中东）
+    geo = _geo_signal(day)
+    sigs.append(geo)
+    hard_geo = bool(geo.get("hard"))
+
     n_up = sum(1 for s in sigs if s["lean"] == "多")
     n_dn = sum(1 for s in sigs if s["lean"] == "空")
     lean = "偏多" if n_up > n_dn else ("偏空" if n_dn > n_up else "中性")
 
+    # ★ 情景切换仍按**可交易的市场观测值**（油价/10Y/点位）—— 单条新闻不直接改情景，
+    #   只作为 geo_alert 高亮；这是用户推演里"选后打伊朗（油价120+）"的原始口径。
     bear = (oil is not None and oil >= SC_BRENT_HIGH) or \
            (us is not None and us >= SC_US10Y_HIGH) or \
            (shc is not None and shc < SC_SH_REDLINE)
@@ -206,13 +272,15 @@ def evaluate(day: str = None) -> Dict:
                      "soon": d is not None and 0 <= d <= 1})
     note = (f"推演证伪记分卡：{len(sigs)} 项信号，偏多 {n_up} / 偏空 {n_dn}。"
             f"情景倾向={scenario}。"
-            f"近 7 日内关键日历："
+            + ("★地缘硬触发（实际动能事件已出现；油价未达阈值前不切换情景）。"
+               if hard_geo else "")
+            + "近 7 日内关键日历："
             + ("、".join(f"{e['name']}({e['t_minus']}d)" for e in evts
                          if e["t_minus"] is not None and 0 <= e["t_minus"] <= 7)
                or "无"))
 
     return {"date": day, "signals": sigs, "lean": lean, "scenario": scenario,
-            "events": evts, "point_plot": POINT_PLOT,
+            "events": evts, "point_plot": POINT_PLOT, "geo_alert": hard_geo,
             "n_up": n_up, "n_down": n_dn, "note": note}
 
 
@@ -254,7 +322,10 @@ def load(day: str = None) -> Dict:
         signals = []
     return {"date": d, "signals": signals, "lean": row.get("lean"),
             "scenario": row.get("scenario"), "note": row.get("note"),
-            "events": EVENTS, "point_plot": POINT_PLOT}
+            "events": EVENTS, "point_plot": POINT_PLOT,
+            "geo_alert": any(s.get("hard") for s in signals),
+            "n_up": sum(1 for s in signals if s.get("lean") == "多"),
+            "n_down": sum(1 for s in signals if s.get("lean") == "空")}
 
 
 def run_daily(day: str = None) -> Dict:

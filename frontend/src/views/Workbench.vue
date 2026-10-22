@@ -416,6 +416,9 @@
               <span class="font-mono">{{ e.t_minus == null ? '' : (e.t_minus < 0 ? '已过' : 'T-' + e.t_minus + 'd') }}</span>
             </span>
           </div>
+          <div v-if="scen.geo_alert" class="text-[10px] text-rose-300 mt-1">
+            ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
+          </div>
           <div class="text-[10px] text-muted mt-1">{{ scen.note }}</div>
         </div>
 
@@ -3524,7 +3527,8 @@ function leanDot(l) {
 function scenVal(s) {
   const v = s.value
   if (v === null || v === undefined) return '—'
-  return `${Number(v).toFixed(2)}${s.unit || ''}`
+  const n = Number(v)
+  return `${Number.isInteger(n) ? n : n.toFixed(2)}${s.unit || ''}`
 }
 async function loadScenario() {
   try {
