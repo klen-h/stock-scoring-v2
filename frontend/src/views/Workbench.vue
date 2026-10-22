@@ -259,6 +259,64 @@
     <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-4 items-start">
       <!-- ── 主工作区 ── -->
       <div class="space-y-4 min-w-0">
+        <!-- ★ 2026-10-22：盘中「变化检测器」—— 8 档规则采样（09:45~14:45）。
+             定位：展示项，回答"这半小时有没有料"；零 LLM、不进决策链。
+             默认展开、点标题收起；回放模式按 selectedDate 查历史。 -->
+        <div class="bg-card border border-border rounded-lg p-4">
+          <div class="flex items-center justify-between cursor-pointer select-none"
+               @click="wsOpen = !wsOpen">
+            <div class="text-sm font-semibold">盘中变化 · 8 档
+              <span class="text-[10px] text-muted font-normal">（09:45~14:45 · 规则采样，零 LLM）</span>
+            </div>
+            <div class="flex items-center gap-3 text-[11px]">
+              <span v-if="wsDay" class="text-muted">当日
+                <b :class="wsDay.worth_n ? 'text-amber-300' : 'text-muted'">{{ wsDay.worth_n }}/{{ wsDay.judged }}</b> 有料</span>
+              <span v-if="wsSummary && wsSummary.worth_rate != null" class="text-muted">7日
+                <b class="text-accent">{{ wsSummary.worth_rate }}</b></span>
+              <span class="text-muted">{{ wsOpen ? '收起' : '展开' }}</span>
+            </div>
+          </div>
+
+          <div v-if="wsLoading" class="text-xs text-muted mt-2">加载中…</div>
+          <div v-else-if="wsErr" class="text-xs text-muted mt-2">{{ wsErr }}</div>
+          <template v-else-if="wsDay">
+            <div v-if="!wsRows.length" class="text-xs text-muted mt-2">
+              该日尚无采样——检测器 2026-10-21 上线，交易时段每 30 分钟一档。
+            </div>
+            <template v-else>
+              <div class="flex flex-wrap gap-1.5 mt-2">
+                <button v-for="r in wsRows" :key="r.slot"
+                        @click.stop="wsSel = r.slot; wsOpen = true"
+                        class="px-1.5 py-0.5 rounded border text-[11px] font-mono transition"
+                        :class="[wsColor(r.score), wsSel === r.slot ? 'ring-1 ring-accent' : 'opacity-80 hover:opacity-100']"
+                        :title="(r.reasons || []).map(x => x.text + (x.pts ? ' +' + x.pts : '')).join('\n')">
+                  {{ r.slot }}<span v-if="r.worth" class="ml-0.5">●</span><span class="ml-1">{{ r.score }}</span>
+                </button>
+              </div>
+
+              <div v-if="wsOpen && wsPick" class="mt-2 border-t border-border/40 pt-2 text-xs space-y-1">
+                <div class="flex items-center justify-between">
+                  <span class="text-muted">{{ wsPick.slot }} · 交易 {{ wsPick.trading_min }} 分钟<span v-if="wsPick.as_of"> · {{ wsPick.as_of }}</span></span>
+                  <span :class="wsPick.worth ? 'text-amber-300' : 'text-muted'">
+                    {{ wsPick.worth ? '有料' : '无实质变化' }} · {{ wsPick.score }} 分</span>
+                </div>
+                <div v-if="!(wsPick.reasons || []).length" class="text-muted">—（无触发项）</div>
+                <div v-for="(x, i) in (wsPick.reasons || [])" :key="i" class="flex gap-2">
+                  <span class="text-muted font-mono w-24 shrink-0">{{ x.tag }}</span>
+                  <span class="flex-1">{{ x.text }}</span>
+                  <span v-if="x.pts" class="text-accent font-mono shrink-0">+{{ x.pts }}</span>
+                </div>
+                <div v-if="wsPick.leader_cur" class="text-muted">领涨板块：{{ wsPick.leader_cur }}</div>
+              </div>
+
+              <div class="text-[10px] text-muted mt-2">
+                判据：指数 30 分钟移动 / 宽度翻转 / 涨跌停变化 / 领涨切换 / 区间成交额 / 快讯；
+                ≥40 分记为「有料」。展示项，不进决策链。
+              </div>
+            </template>
+          </template>
+        </div>
+
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
         <template v-if="isReplay">
           <div v-if="dayLoading" class="bg-card border border-border rounded-lg p-6 text-muted text-sm">加载中…</div>
@@ -2427,6 +2485,8 @@ import {
   getDailyReport, getSystemStatus, getSystemMemory, getDbUsage,
   getMacroDaily, getMacroSnapshot, getFlashDiagnosis, getCalendar,
   getWorkbenchDecisionCard,
+  // ★ 2026-10-22：盘中变化检测器（8 档规则采样，零 LLM）
+  getWorkbenchScan, getWorkbenchScanSummary,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
   getUserPositionSizing,
@@ -3253,6 +3313,50 @@ async function loadRegime() {
     regimeLabel.value = ({ offensive: '进攻', neutral: '震荡', neutral_bearish: '震荡偏空（阴跌）', defensive: '防御' })[r.regime] || (r.regime || '—')
   } catch { regimeLabel.value = '—' }
 }
+
+// ★ 2026-10-22：盘中「变化检测器」——8 档规则采样（09:45~14:45）。
+//   定位：**展示项**，回答问题"这半小时有没有料"，不进决策链、不调 LLM。
+//   数据：/api/system/workbench-scan（当日 8 档）+ /summary（7 日 worth_rate）。
+const wsDay = ref(null)
+const wsSummary = ref(null)
+const wsLoading = ref(false)
+const wsErr = ref('')
+const wsOpen = ref(true)
+const wsSel = ref('')
+const wsRows = computed(() => (wsDay.value && wsDay.value.rows) || [])
+const wsPick = computed(() => wsRows.value.find(x => x.slot === wsSel.value) || null)
+function wsColor(score) {
+  const s = Number(score) || 0
+  if (s >= 80) return 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+  if (s >= 60) return 'bg-orange-500/20 text-orange-300 border-orange-500/40'
+  if (s >= 40) return 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+  if (s >= 20) return 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+  return 'bg-slate-500/10 text-muted border-border'
+}
+async function loadWorkbenchScan() {
+  wsLoading.value = true
+  wsErr.value = ''
+  try {
+    const [d, s] = await Promise.all([
+      getWorkbenchScan(selectedDate.value),
+      getWorkbenchScanSummary(7),
+    ])
+    wsDay.value = d.data || null
+    wsSummary.value = s.data || null
+    // 默认选中**最后一个有料档**（没有则最后一档），点开即看到原因
+    if (!wsSel.value && wsRows.value.length) {
+      const worth = wsRows.value.filter(x => x.worth)
+      wsSel.value = (worth[worth.length - 1] || wsRows.value[wsRows.value.length - 1]).slot
+    }
+  } catch (e) {
+    wsErr.value = '盘中变化数据加载失败（接口需登录）'
+    wsDay.value = null
+  } finally {
+    wsLoading.value = false
+  }
+}
+watch(selectedDate, () => { wsSel.value = ''; loadWorkbenchScan() })
+
 // ★ 2026-09-27 事件驱动信号（v0 展示项）。定位三行（项目约定）：
 //   **是什么**  极端普涨（涨家数占比≥90%）+ 涨停骤增（≥50 家）的"政策脉冲"实时提示
 //   **不是什么** 不是买卖信号；不进决策链；不改市况/仓位/战法准入
@@ -3952,6 +4056,9 @@ function startPolling() {
   timers.push(setInterval(() => { if (isLivePhase()) loadRealtimeUplimit() }, 60000))
   // ★ 2026-09-29：成交额环比 60s 轮询（后端 60s 缓存 + 腾讯分时轻量）——同样只在交易时段发。
   timers.push(setInterval(() => { if (isLivePhase()) loadAmountRt() }, 60000))
+  // ★ 2026-10-22：盘中变化检测器 5 分钟刷一次（采样本身 30 分钟一档；
+  //   5 分钟足够让新档出现后不久可见，且只读 2 个小查询，不构成 egress 负担）。
+  timers.push(setInterval(() => { if (isLivePhase()) loadWorkbenchScan() }, 300000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
   //   ⇒ 最多刷 5 次，**9:24→9:25 的定稿瞬间可能滞后 ≤2 分钟**（那是最关键的几十秒）。
@@ -4046,7 +4153,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

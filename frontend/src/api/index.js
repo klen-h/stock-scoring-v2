@@ -436,3 +436,7 @@ export const getAmountRealtime = () => http.get('/market/amount-realtime', { tim
 export const getWorkbenchDayIndex = (days = 30) => http.get('/system/workbench/day-index', { params: { days } })
 export const getWorkbenchDay = (date) => http.get('/system/workbench/day', { params: { date }, timeout: 30000 })
 export const getWorkbenchDecisionCard = () => http.get('/system/workbench/decision-card', { timeout: 30000 })
+
+// ★ 2026-10-22：盘中「变化检测器」——8 档规则采样（零 LLM，09:45~14:45）
+export const getWorkbenchScan = (date) => http.get('/system/workbench-scan', { params: { date }, timeout: 30000 })
+export const getWorkbenchScanSummary = (days = 7) => http.get('/system/workbench-scan/summary', { params: { days }, timeout: 30000 })
