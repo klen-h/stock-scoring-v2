@@ -170,39 +170,8 @@ def main():
                   conn.execute("SELECT code, name, market_cap FROM codes")}
     print(f"  上一份包 pack_date={prev_date} / {len(codes_info)} 只")
 
-    # 目标日
-    from app.flash.rules import beijing_now, latest_completed_trading_day
-    from update_pack_incremental import _zz_code, _zz_max_date, _merge_one
-    expected = latest_completed_trading_day(beijing_now())
-    expected_ymd = expected.replace("-", "")
-    target = _zz_max_date(args.zz_db)
-    target_ymd = target.replace("-", "")
-    if args.backfill and target_ymd < expected_ymd:
-        # ★ Actions 没有本地库：只从上一份包末日补（2~3 个请求），不能从 2005 起。
-        start = (f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:]}"
-                 if len(prev_date) == 8 else "2005-01-01")
-        print(f"  回填 zzshare {start} ~ {expected} …")
-        subprocess.run([sys.executable, os.path.join(
-            ROOT, "scripts", "backfill_zzshare_daily.py"),
-            "--start", start, "--end", expected], check=False)
-        target = _zz_max_date(args.zz_db)
-        target_ymd = target.replace("-", "")
-    print(f"  zzshare 最新={target} / 应处理交易日={expected}")
-    if target_ymd < expected_ymd:
-        # 目标日没就绪 ⇒ 不产"日期新、数据旧"的包；返回 2 让 workflow 稍后重试。
-        print(f"::error::zzshare 尚未发布 {expected} 日线（最新 {target or '无'}）")
-        return 2
-    if not target or target_ymd <= prev_date:
-        # 今天已经更新过：把发布所需文件补齐（否则 artifact/publish 会缺文件）。
-        ind_gz = os.path.join(args.pack_dir, "indicators-pack.json.gz")
-        if not os.path.exists(ind_gz):
-            _download_raw(BACKEND_URL.replace("backend-pack.db.gz",
-                                              "indicators-pack.json.gz"),
-                          ind_gz, label="指标包")
-        print("  已是最新，无需更新。")
-        return 0
-
-    # 读上一份 klines / indicators
+    # 读上一份 klines / indicators（先读：**数据末日**才是增量判据，
+    #   pack_date 只是生成日 —— 如 10-22 生成、数据到 10-21）
     prev_bars = {}
     for code, date, o, h, l, c, v in conn.execute(
             "SELECT code, date, open, high, low, close, volume FROM klines "
@@ -215,7 +184,44 @@ def main():
         except Exception:
             pass
     conn.close()
-    print(f"  上一份 K 线: {len(prev_bars)} 只 / 指标 {len(prev_ind)} 只")
+    prev_last = max((b[-1][0] for b in prev_bars.values() if b), default="")
+    prev_ymd = str(prev_last)[:10].replace("-", "")
+    print(f"  上一份 K 线: {len(prev_bars)} 只 / 指标 {len(prev_ind)} 只 "
+          f"/ 数据末日={prev_last}")
+
+    # 目标日
+    from app.flash.rules import beijing_now, latest_completed_trading_day
+    from update_pack_incremental import _zz_code, _zz_max_date, _merge_one
+    expected = latest_completed_trading_day(beijing_now())
+    expected_ymd = expected.replace("-", "")
+    target = _zz_max_date(args.zz_db)
+    target_ymd = target.replace("-", "")
+    print(f"  pack_date={prev_date} / zzshare 最新={target or '无'} "
+          f"/ 应处理交易日={expected}")
+    if args.backfill and target_ymd < expected_ymd:
+        # ★ Actions 没有本地库：只从**数据末日**补（2~3 个请求），不能从 2005 起。
+        start = (f"{prev_ymd[:4]}-{prev_ymd[4:6]}-{prev_ymd[6:]}"
+                 if len(prev_ymd) == 8 else "2005-01-01")
+        print(f"  回填 zzshare {start} ~ {expected} …")
+        subprocess.run([sys.executable, os.path.join(
+            ROOT, "scripts", "backfill_zzshare_daily.py"),
+            "--start", start, "--end", expected], check=False)
+        target = _zz_max_date(args.zz_db)
+        target_ymd = target.replace("-", "")
+    print(f"  zzshare 最新={target} / 应处理交易日={expected}")
+    if target_ymd < expected_ymd:
+        # 目标日没就绪 ⇒ 不产"日期新、数据旧"的包；返回 2 让 workflow 稍后重试。
+        print(f"::error::zzshare 尚未发布 {expected} 日线（最新 {target or '无'}）")
+        return 2
+    if not target or target_ymd <= prev_ymd:
+        # 今天已经更新过：把发布所需文件补齐（否则 artifact/publish 会缺文件）。
+        ind_gz = os.path.join(args.pack_dir, "indicators-pack.json.gz")
+        if not os.path.exists(ind_gz):
+            _download_raw(BACKEND_URL.replace("backend-pack.db.gz",
+                                              "indicators-pack.json.gz"),
+                          ind_gz, label="指标包")
+        print("  已是最新，无需更新。")
+        return 0
 
     # 合并
     zconn = sqlite3.connect(args.zz_db)
@@ -250,9 +256,32 @@ def main():
             skipped.append(code)
     zconn.close()
     print(f"  增量: 更新 {n_up} / 无新 bar {n_new} / 除权重算 {n_rebase} "
-          f"/ 跳过 {len(skipped)}（多为 ETF/指数，zzshare 无数据）")
+          f"/ 跳过 {len(skipped)}（ETF/指数 + 个股异常）")
 
-    # 可选：腾讯回退（默认关；当前 IP 被 WAF 罚，62 只会拖到小时级）
+    # ★ ETF/指数：zzshare 没有 ⇒ 腾讯**批量行情**（1 请求/全部）+ 东财历史兜底
+    from etf_index_daily import fetch_quotes, merge_with_pack
+    etf_list = [c for c in skipped if not _zz_code(c)]
+    etf_q = fetch_quotes(etf_list) if etf_list else {}
+    em_ok = em_bad = 0
+    still = []
+    for c in skipped:
+        if _zz_code(c):
+            still.append(c)              # 个股异常（重叠不符等）→ 可选腾讯回退
+            continue
+        b, st = merge_with_pack(prev_bars.get(c) or [], c, BARS_MAX,
+                                quote=etf_q.get(c))
+        if st == "ok":
+            merged[c] = b
+            em_ok += 1
+        elif st == "no_new":
+            pass                          # 停牌/无新 bar，保留旧 bar
+        else:
+            still.append(c)
+            em_bad += 1
+    skipped = still
+    print(f"  ETF/指数（东财）: 补齐 {em_ok} / 失败 {em_bad} / 仍停旧 {len(still)}")
+
+    # 可选：腾讯回退（默认关；当前 IP 被 WAF 罚，会拖到小时级）
     if args.tencent and skipped:
         gkp = _load_mod("gkp", os.path.join(ROOT, "scripts", "generate-kline-pack.py"))
         gkp.PACK_QPS = 0.6

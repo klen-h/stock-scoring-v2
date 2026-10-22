@@ -183,20 +183,25 @@ def main():
     prev = _load_prev(args.pack_dir, args.url)
     prev_date = str(prev.get("date") or "").replace("-", "")
     stocks = prev.get("stocks") or {}
+    # ★ 关键：包里的 `date` 是**生成日**，不等于数据末日（如 10-22 生成、数据到 10-21）。
+    #   增量判据必须用**最后一根 bar 的日期**，否则当天重跑会误判"已是最新"而不补数据。
+    prev_last = max((str((v.get("klines") or [[""]])[-1][0])[:10]
+                     for v in stocks.values() if v.get("klines")), default="")
+    prev_ymd = prev_last.replace("-", "")
 
     # 目标交易日
     from app.flash.rules import beijing_now, latest_completed_trading_day
     expected = latest_completed_trading_day(beijing_now())
     target = _zz_max_date(args.zz_db)
     target_ymd = target.replace("-", "")
-    print(f"  上一份包 date={prev_date} / zzshare 最新={target or '无'} / "
-          f"应处理交易日={expected}")
+    print(f"  上一份包 date={prev_date} / 数据末日={prev_last} / "
+          f"zzshare 最新={target or '无'} / 应处理交易日={expected}")
     expected_ymd = expected.replace("-", "")
     if args.backfill and target_ymd < expected_ymd:
-        # ★ Actions 没有本地库：必须从**上一份包末日**开始补（只 2~3 个请求），
-        #   不能从 2005 起（那是 5000+ 次请求）。上一份包末日同时是重叠校验所需。
-        start = (f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:]}"
-                 if len(prev_date) == 8 else "2005-01-01")
+        # ★ Actions 没有本地库：必须从**数据末日**开始补（只 2~3 个请求），
+        #   不能从 2005 起（那是 5000+ 次请求）。数据末日同时是重叠校验所需。
+        start = (f"{prev_ymd[:4]}-{prev_ymd[4:6]}-{prev_ymd[6:]}"
+                 if len(prev_ymd) == 8 else "2005-01-01")
         print(f"  回填 zzshare {start} ~ {expected} …")
         subprocess.run([sys.executable, os.path.join(
             ROOT, "scripts", "backfill_zzshare_daily.py"),
@@ -210,7 +215,7 @@ def main():
     if target_ymd < expected_ymd:
         print(f"::error::zzshare 尚未发布 {expected} 日线（最新 {target or '无'}）")
         return 2
-    if not target or target_ymd <= prev_date:
+    if not target or target_ymd <= prev_ymd:
         print("  已是最新，无需更新。")
         return 0
 
@@ -261,6 +266,32 @@ def main():
           f"重叠不符 {mismatch} / 无重叠 {no_overlap} / 跳过 {len(skipped)}")
     if no_new:
         print("  （无新 bar 多为停牌股；保留原末根，不造假 bar）")
+
+    # ★ ETF/指数（前端池一般没有，留作保险）：腾讯批量行情 1 请求 + 东财兜底
+    from etf_index_daily import fetch_quotes, merge_with_pack
+    etf_list = [c for c in skipped if not _zz_code(c)]
+    etf_q = fetch_quotes(etf_list) if etf_list else {}
+    em_ok = em_bad = 0
+    still = []
+    for c in skipped:
+        if _zz_code(c):
+            still.append(c)
+            continue
+        info = stocks.get(c) or {}
+        b, st = merge_with_pack(info.get("klines") or [], c, args.days,
+                                quote=etf_q.get(c))
+        if st == "ok":
+            new_stocks[c] = {"name": info.get("name"),
+                             "market_cap": info.get("market_cap"),
+                             "klines": b}
+            em_ok += 1
+        elif st == "no_new":
+            pass
+        else:
+            still.append(c)
+            em_bad += 1
+    skipped = still
+    print(f"  ETF/指数（东财）: 补齐 {em_ok} / 失败 {em_bad} / 仍停旧 {len(still)}")
 
     # 可选腾讯回退（默认关：Actions 上撞 WAF；重算已覆盖除权股）
     if args.tencent and skipped:
