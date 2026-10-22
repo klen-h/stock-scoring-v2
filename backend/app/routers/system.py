@@ -1043,6 +1043,14 @@ def key_level_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return kl.load(date)
 
 
+@router.get("/ai-basket-watch")
+def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                    user: dict = Depends(get_current_user)) -> Dict:
+    """AI 硬件主线篮子回撤观察器（纯观察，不进决策链）。"""
+    from app import ai_basket_watch as ab
+    return ab.load(date)
+
+
 @router.get("/workbench-scan/preview")
 def workbench_scan_preview(user: dict = Depends(get_current_user)) -> Dict:
     """只读预览：现在采一档、与当日最近一档比，**不写库**（可反复调用）。

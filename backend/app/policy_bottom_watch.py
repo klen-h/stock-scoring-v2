@@ -416,12 +416,28 @@ def nation_hint(day: str) -> Dict:
         status = "unavailable"   # ★ 抓取失败 ≠ 没有公告
     else:
         status = "found" if hints else "clear"
+    # ★ 2026-10-23：回购/增持公告密度（承接盘强度；只展示，不参与打勾）
+    flow5 = {}
+    flow_text = ""
+    try:
+        from app import policy_announcements as pa
+        flow5 = pa.density(5)
+        if flow5.get("to"):
+            w = (f"{flow5.get('from', '')[5:]}~{flow5.get('to', '')[5:]}"
+                 if flow5.get("from") else "")
+            flow_text = (f"近{flow5.get('window_days', 3)}日（{w}）"
+                         f"回购 {flow5['buyback']} 条 / 增持 {flow5['increase']} 条"
+                         "（承接盘强度，仅参考）")
+    except Exception:
+        flow5 = {}
     return {
         "hints": hints,
         "hint_count": len(hints),
         "hint_status": status,
         "hint_text": hint_text,
         "hint_scanned": (aw or {}).get("scanned") if aw else None,
+        "flow5": flow5,
+        "flow_text": flow_text,
     }
 
 
@@ -710,6 +726,8 @@ def render_markdown(data: Dict = None, prefix: str = "") -> str:
                 lines.append(f"{prefix}  {it['hint_text']}")
             if it.get("etf_text"):
                 lines.append(f"{prefix}  {it['etf_text']}")
+            if it.get("flow_text"):
+                lines.append(f"{prefix}  {it['flow_text']}")
     lines.append(f"{prefix}- {data.get('position_hint') or ''}")
     return "\n".join(lines)
 

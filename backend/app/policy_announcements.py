@@ -74,8 +74,11 @@ WHITE_CODES = {
     "601186": "中国铁建", "601766": "中国中车", "600050": "中国联通",
 }
 
-# 粗召回关键词（只要"增持/权益变动"两类就够，覆盖标题写法）
-RECALL_KEYS = ("增持", "权益变动")
+# 粗召回关键词（"增持/权益变动"覆盖国家队；"回购"用于承接盘强度计数）
+RECALL_KEYS = ("增持", "权益变动", "回购")
+# ★ 2026-10-23（用户 10-22 复盘）：回购/增持公告密度 = 承接盘强度的数值证据。
+#   与"国家队命中"分开：这里**全市场计数**（不要求汇金/白名单），只统计条数。
+FLOW_KINDS = ("buyback", "increase")
 LOOKBACK_DAYS = 3          # 回看窗口（天）——容忍日批失败/补跑，靠去重不会重复提示
 MAX_PAGES = 5              # 每个关键词最多翻几页（30 条/页 ⇒ 上限 150 条/关键词）
 PAGE_SIZE = 30
@@ -134,6 +137,24 @@ def _classify(code: str, title: str) -> Optional[Dict]:
     return None
 
 
+# 回购/增持计数要排除的噪声（2026-10-23 实测 10-22：241 条里"回购"150 条，
+#   绝大多数是「限制性股票回购注销」「股权激励」；"增持"30 条里混着「被动增加」）
+_BUYBACK_NOISE = ("回购注销", "注销完成", "限制性股票", "股权激励", "被动")
+_INCREASE_NOISE = ("被动", "减持", "不减持")
+
+
+def _classify_flow(title: str) -> Optional[str]:
+    """回购/增持计数（全市场，不要求国家队）。排除注销/激励/被动增持等噪声。"""
+    t = str(title or "")
+    if not t:
+        return None
+    if "回购" in t and not any(n in t for n in _BUYBACK_NOISE):
+        return "buyback"
+    if "增持" in t and not any(n in t for n in _INCREASE_NOISE):
+        return "increase"
+    return None
+
+
 def scan(day: str, lookback_days: int = LOOKBACK_DAYS) -> Dict:
     """扫描 [day-lookback, day] 的公告，返回命中清单。
 
@@ -151,6 +172,8 @@ def scan(day: str, lookback_days: int = LOOKBACK_DAYS) -> Dict:
     scanned = 0
     truncated = False
     errors: List[str] = []
+    flow_counts = {k: 0 for k in FLOW_KINDS}
+    flow_samples = {k: [] for k in FLOW_KINDS}
 
     for key in RECALL_KEYS:
         for page in range(1, MAX_PAGES + 1):
@@ -175,6 +198,18 @@ def scan(day: str, lookback_days: int = LOOKBACK_DAYS) -> Dict:
                 seen.add(uid)
                 if dstr and not (start <= dstr <= day):
                     continue                      # seDate 理论上已过滤，双保险
+                # ★ 2026-10-23：先记回购/增持计数（全市场），再做国家队判定。
+                #   同一公告可以既是国家队、也是回购/增持（两者不互斥）。
+                fk = _classify_flow(title)
+                if fk:
+                    flow_counts[fk] += 1
+                    if len(flow_samples[fk]) < 5:
+                        u = a.get("adjunctUrl") or ""
+                        flow_samples[fk].append({
+                            "date": dstr, "code": code, "name": name,
+                            "title": title[:120],
+                            "url": f"http://static.cninfo.com.cn/{u}" if u else "",
+                        })
                 m = _classify(code, title)
                 if not m:
                     continue
@@ -195,6 +230,7 @@ def scan(day: str, lookback_days: int = LOOKBACK_DAYS) -> Dict:
         "ok": not errors, "date": day, "window": [start, day],
         "scanned": scanned, "hits": hits, "hit_count": len(hits),
         "truncated": truncated, "error": ("；".join(errors[:3]) if errors else ""),
+        "flow": {"counts": flow_counts, "samples": flow_samples},
     }
 
 
@@ -216,12 +252,23 @@ def ensure_table() -> None:
             created_at TEXT
         )
     """)
+    # ★ 2026-10-23：回购/增持计数列（幂等迁移；旧行默认 0）
+    for col, typ in (("buyback_n", "INTEGER DEFAULT 0"),
+                     ("increase_n", "INTEGER DEFAULT 0"),
+                     ("flow_json", "TEXT")):
+        try:
+            db.execute(f"ALTER TABLE policy_announcement_watch "
+                       f"ADD COLUMN IF NOT EXISTS {col} {typ}")
+        except Exception:
+            pass
     _TABLE_READY = True
 
 
 def save(data: Dict) -> bool:
     ensure_table()
     day = str(data.get("date") or "")[:10]
+    flow = (data.get("flow") or {})
+    counts = flow.get("counts") or {}
     try:
         db.upsert("policy_announcement_watch", {
             "date": day,
@@ -230,6 +277,9 @@ def save(data: Dict) -> bool:
             "scanned": int(data.get("scanned") or 0),
             "ok": 1 if data.get("ok") else 0,
             "error": str(data.get("error") or "")[:300],
+            "buyback_n": int(counts.get("buyback") or 0),
+            "increase_n": int(counts.get("increase") or 0),
+            "flow_json": json.dumps(flow.get("samples") or {}, ensure_ascii=False),
             "created_at": datetime.now().isoformat(),
         }, conflict_columns=["date"])
         return True
@@ -260,9 +310,42 @@ def load(day: str) -> Optional[Dict]:
                  - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     except ValueError:
         start = day
+    try:
+        flow_samples = json.loads(r.get("flow_json") or "{}")
+    except (ValueError, TypeError):
+        flow_samples = {}
     return {"date": day, "window": [start, day], "hits": hits, "hit_count": len(hits),
             "scanned": r.get("scanned"), "ok": bool(r.get("ok")),
-            "error": r.get("error") or "", "created_at": str(r.get("created_at") or "")}
+            "error": r.get("error") or "", "created_at": str(r.get("created_at") or ""),
+            "flow": {"counts": {"buyback": int(r.get("buyback_n") or 0),
+                                "increase": int(r.get("increase_n") or 0)},
+                     "samples": flow_samples}}
+
+
+def density(days: int = 5) -> Dict:
+    """最近一次扫描窗口内的回购/增持公告条数（承接盘强度的数值证据）。
+
+    ★ 不做"近 N 天求和"：每次扫描窗口是 day-3..day，逐日相加会**重复计数**同一公告。
+      直接返回最新一行的计数 + 它自己的 window（准确、可核对）。
+    """
+    ensure_table()
+    try:
+        r = db.fetch_one(
+            "SELECT date, buyback_n, increase_n FROM policy_announcement_watch "
+            "WHERE ok=1 ORDER BY date DESC LIMIT 1") or {}
+    except Exception as e:
+        return {"days": 0, "buyback": 0, "increase": 0, "total": 0,
+                "error": str(e)[:80]}
+    day = str(r.get("date") or "")[:10]
+    try:
+        start = (datetime.strptime(day, "%Y-%m-%d")
+                 - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    except ValueError:
+        start = day
+    b = int(r.get("buyback_n") or 0)
+    i = int(r.get("increase_n") or 0)
+    return {"days": 1, "buyback": b, "increase": i, "total": b + i,
+            "from": start, "to": day, "window_days": LOOKBACK_DAYS}
 
 
 def scan_and_store(day: str, push: bool = True) -> Dict:

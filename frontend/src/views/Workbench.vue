@@ -361,9 +361,30 @@
               </div>
             </div>
           </div>
+          <!-- ★ 2026-10-23：AI 硬件主线篮子（纯观察） -->
+          <div v-if="!riskLoading && !riskErr && aiBasket && aiBasket.basket"
+               class="mt-3 pt-2 border-t border-border/40 text-xs">
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="text-[11px] text-muted">AI 硬件篮子</span>
+              <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
+                回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
+              <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">
+                5日 {{ fmtPct(aiBasket.basket.ret5) }}</span>
+              <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">
+                30日 {{ fmtPct(aiBasket.basket.ret30) }}</span>
+              <span class="text-muted">高位占比
+                {{ Math.round((aiBasket.basket.pos120 || 0) * 100) }}%</span>
+            </div>
+            <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px]">
+              <span v-for="r in (aiBasket.rows || [])" :key="r.code" class="text-muted">
+                {{ r.name }}
+                <span class="font-mono" :class="(r.dd120 || 0) <= -40 ? 'text-rose-300' : ''">{{ fmtPct(r.dd120) }}</span>
+              </span>
+            </div>
+          </div>
           <div class="text-[10px] text-muted mt-2">
-            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌；失守=今日跌破且昨日仍在其上；
-            观察器不构成买卖信号。
+            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
+            篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
           </div>
         </div>
 
@@ -1382,6 +1403,7 @@
                     </template>
                     <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
                   </div>
+                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
                   <div v-if="it.manualDecided" class="text-[10px] text-muted">
                     （已有人工判断，自动结果不覆盖）
                   </div>
@@ -2537,8 +2559,8 @@ import {
   getWorkbenchDecisionCard,
   // ★ 2026-10-22：盘中变化检测器（8 档规则采样，零 LLM）
   getWorkbenchScan, getWorkbenchScanSummary,
-  // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位
-  getCrowdingWatch, getKeyLevelWatch,
+  // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子
+  getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
   getUserPositionSizing,
@@ -3298,6 +3320,8 @@ const pbwItems = computed(() => {
       etfStatus: o.etf_status || '',     // confirmed / watch / clear / none
       etfConfirmed: !!o.etf_confirmed,
       etfText: o.etf_text || '',
+      // ★ 2026-10-23：回购/增持公告密度（承接盘强度，只展示）
+      flowText: o.flow_text || '',
       autoChecked: !!o.auto_checked,
       manualDecided: !!o.manual_decided,
     }
@@ -3413,6 +3437,7 @@ async function loadWorkbenchScan() {
 // ★ 2026-10-23：拥挤赛道 / 指数关键位（纯观察器）
 const crowd = ref(null)
 const keyLv = ref(null)
+const aiBasket = ref(null)
 const riskLoading = ref(false)
 const riskErr = ref('')
 const crowdTop = computed(() => {
@@ -3438,12 +3463,14 @@ async function loadRiskWatch() {
   riskLoading.value = true
   riskErr.value = ''
   try {
-    const [c, k] = await Promise.all([
+    const [c, k, a] = await Promise.all([
       getCrowdingWatch(selectedDate.value),
       getKeyLevelWatch(selectedDate.value),
+      getAiBasketWatch(selectedDate.value),
     ])
     crowd.value = c.data || null
     keyLv.value = k.data || null
+    aiBasket.value = a.data || null
   } catch (e) {
     riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
   } finally {

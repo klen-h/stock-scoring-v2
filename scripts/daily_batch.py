@@ -1069,6 +1069,23 @@ def task_crowding_watch():
         return f"拥挤赛道: WARN {str(e)[:70]}"
 
 
+def task_ai_basket_watch():
+    """AI 硬件主线篮子回撤观察器（2026-10-23）。**纯观察器，不进决策链**。
+
+    ★ 6 只龙头等权，读数据包；输出篮子与个股的 5/30 日收益、距 120 日高点回撤。
+    """
+    try:
+        from app import ai_basket_watch as ab
+        r = ab.compute(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"AI硬件篮子: WARN {str(r.get('reason'))[:70]}"
+        b = r.get("basket") or {}
+        return (f"AI硬件篮子: {r.get('n')} 只 / 回撤 {b.get('dd120')}% / "
+                f"5日 {b.get('ret5')}% / 30日 {b.get('ret30')}%")
+    except Exception as e:
+        return f"AI硬件篮子: WARN {str(e)[:70]}"
+
+
 def task_key_level_watch():
     """指数关键位观察器（2026-10-23）。**纯观察器，不进决策链**。
 
@@ -1208,6 +1225,7 @@ TASKS = {
     # ★ 2026-10-23：两个纯观察器（拥挤赛道 / 指数关键位），不进决策链
     "crowding_watch": (task_crowding_watch, "拥挤赛道观察器（行业30日/高位占比）"),
     "key_level_watch": (task_key_level_watch, "指数关键位观察器（前低/整数位）"),
+    "ai_basket_watch": (task_ai_basket_watch, "AI硬件篮子回撤观察器"),
     "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
@@ -1223,7 +1241,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "sector_strength",
-                 "crowding_watch", "key_level_watch",
+                 "crowding_watch", "key_level_watch", "ai_basket_watch",
                  "rank_live", "sector_linkage",
                  "shadow_rank", "pattern_launch_scan",
                  "backtest_preheat",
