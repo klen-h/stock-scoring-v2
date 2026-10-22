@@ -32,6 +32,7 @@ from __future__ import annotations
 """
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -69,14 +70,17 @@ POINT_PLOT = [("4.10%", "进攻"), ("4.25%", "中性"), ("4.50%", "防守")]
 # ★ 地缘事件（金十快讯按**内容**匹配；实测 flash_news.cluster 字段当前为空）
 GEO_KW = ["伊朗", "美伊", "伊美", "霍尔木兹", "中东", "哈梅内伊",
           "以色列", "真主党", "哈马斯", "红海", "油轮"]
-GEO_UP = ["军事打击", "空袭", "导弹", "开战", "战争", "袭击", "封锁",
-          "布雷", "地面部队", "最后通牒", "核武", "铀浓缩", "冲突升级"]
+GEO_UP = ["军事打击", "空袭", "导弹", "开战", "袭击", "封锁", "布雷",
+          "地面部队", "最后通牒", "核武", "铀浓缩", "冲突升级", "军事行动"]
+# ★ 否定式升级（"否认谈判"/"拒绝谈判"）—— 若只按子串匹配会被算成"缓和"
+GEO_UP_RE = [r"否认.{0,8}谈判", r"并未.{0,8}谈判", r"拒绝.{0,8}谈判",
+             r"不谈.{0,4}判"]
 GEO_DOWN = ["谈判", "停火", "协议", "和谈", "会谈", "解除制裁", "缓和", "撤军"]
 GEO_HARD = ["空袭", "开战", "战争爆发", "封锁霍尔木兹", "布雷", "水雷", "触雷",
             "地面部队", "导弹袭击", "击落"]
-# 剔除：否定/传闻 + 金十自己的聚合稿（否则一条汇总会重复计数）
-GEO_NOISE = ["编造", "虚假", "否认", "辟谣", "传言", "并未", "不会",
-             "金十数据整理", "重要新闻汇总", "中东局势跟踪"]
+# 剔除：明显否定/传闻 + 金十自己的聚合稿（否则一条汇总会重复计数）
+GEO_NOISE = ["编造", "虚假", "辟谣", "传言", "金十数据整理",
+             "重要新闻汇总", "中东局势跟踪"]
 
 
 def _geo_signal(day: str) -> Dict:
@@ -108,7 +112,13 @@ def _geo_signal(day: str) -> Dict:
         c = r.get("content") or ""
         return any(w in c for w in words)
 
-    up_rows = [r for r in geo if _hit(r, GEO_UP)]
+    def _hit_up(r):
+        c = r.get("content") or ""
+        if any(w in c for w in GEO_UP):
+            return True
+        return any(re.search(p, c) for p in GEO_UP_RE)
+
+    up_rows = [r for r in geo if _hit_up(r)]
     down_rows = [r for r in geo if _hit(r, GEO_DOWN)]
     # ★ 硬触发必须是"伊朗相关的实际动能事件"（计划/威胁/警告只算升温，不算硬触发）
     hard_row = next((r for r in geo

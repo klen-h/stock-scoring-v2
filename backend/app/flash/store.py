@@ -17,7 +17,7 @@ import json
 import os
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.database import db
 
 # ── 数据目录（兼容旧代码引用）──
@@ -91,42 +91,72 @@ def save_state(state: dict) -> None:
     db.upsert("flash_state", {"key": "pushedClusters", "value": json.dumps(state.get("pushedClusters", []))}, conflict_columns=["key"])
 
 
+# ★ 2026-10-23：快讯保留期（推演证伪要看近 7 日伊朗/中东事件，原先只留 300 条 ≈1~2 天）
+FLASH_KEEP_DAYS = int(os.environ.get("FLASH_KEEP_DAYS") or 7)
+FLASH_KEEP_ROWS = int(os.environ.get("FLASH_KEEP_ROWS") or 20000)
+
+
+def _cluster_of(content: str) -> str:
+    """按 `rules.EVENT_CLUSTERS` 归类（首个命中），与 service 聚合同一口径。
+
+    ★ 2026-10-23 修：`save_raw_data` 收到的是**聚类前**的 items，cluster 一直写空串
+      ⇒ 按簇查询（如"伊朗局势"）命中 0 条。这里在写库侧补算。
+    """
+    try:
+        from app.flash import rules
+        for cdef in rules.EVENT_CLUSTERS:
+            if any(rules._kw_match(kw, content or "") for kw in cdef["keywords"]):
+                return cdef["name"]
+    except Exception:
+        pass
+    return "其他"
+
+
 def save_raw_data(all_items: list, new_items: list) -> None:
-    """原始快讯落盘（保留最近 300 条，按 id 去重，新在前）。"""
+    """原始快讯落盘（默认保留 7 天，按 id 去重，新在前）。"""
     # ★ 2026-09-11 egress：没有新快讯就直接返回——此前每轮轮询都先查一次
     #   现有 ID 全表（实测 401 次/天、238 万行/21天），而绝大多数轮询并无新条目。
     if not new_items:
         return
-    # 获取现有 ID（只取近 3 天：表本身只保留最近 300 条）
+    # 获取现有 ID（只取近 3 天；表按 FLASH_KEEP_DAYS 清理）
     try:
         cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")
         existing = db.fetch("SELECT id FROM flash_news WHERE time >= %s", (cutoff,))
     except Exception:
         existing = db.fetch("SELECT id FROM flash_news")
     existing_ids = {row["id"] for row in existing}
-    
+
     # 过滤新数据
     unique_new = [i for i in new_items if i.get("id") and i["id"] not in existing_ids]
-    
+
     # 插入新数据
     for item in unique_new:
         try:
+            content = item.get("content", "") or ""
+            cluster = (item.get("cluster") or item.get("_cluster")
+                       or _cluster_of(content))
             db.upsert("flash_news", {
                 "id": item.get("id", ""),
-                "content": item.get("content", ""),
+                "content": content,
                 "time": item.get("time", ""),
-                "cluster": item.get("cluster", ""),
+                "cluster": cluster,
                 "is_pushed": 1 if item.get("isPushed") else 0
             }, conflict_columns=["id"])
         except Exception as e:
             print(f"[store] 保存快讯失败: {e}")
-    
-    # 清理旧数据（保留 300 条）
-    db.execute("""
-        DELETE FROM flash_news WHERE id NOT IN (
-            SELECT id FROM flash_news ORDER BY time DESC LIMIT 300
-        )
-    """)
+
+    # 清理旧数据：先按天数（默认 7 天），再按行数兜底（防一次大刷新撑爆）
+    try:
+        cut = ((datetime.now(timezone.utc) + timedelta(hours=8))
+               - timedelta(days=FLASH_KEEP_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+        db.execute("DELETE FROM flash_news WHERE time < %s", (cut,))
+        db.execute("""
+            DELETE FROM flash_news WHERE id NOT IN (
+                SELECT id FROM flash_news ORDER BY time DESC LIMIT %s
+            )
+        """, (FLASH_KEEP_ROWS,))
+    except Exception as e:
+        print(f"[store] 清理旧快讯失败: {e}")
     _RAW_CACHE["ts"] = 0.0      # ★ 写入即失效缓存（下面 load_raw_items 的 TTL 缓存）
 
 
