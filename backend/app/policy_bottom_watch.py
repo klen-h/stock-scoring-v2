@@ -17,7 +17,7 @@ from __future__ import annotations
      "不开影子仓、防御市禁入场"直接冲突。若将来要做，须以"清单达成日的前瞻收益"为对象
      **另行预登记**（Phase 2），不得直接接进模拟盘/仓位。
 
-五条判据（阈值全部 env 可调，见下方常量）：
+六条判据（阈值全部 env 可调，见下方常量）：
   ① 汇金/国新等国家队新公告        —— **三层证据**（2026-10-19 起）：
       a) `app/policy_announcements.py` 扫巨潮公告 → 标题/链接挂在本条下，**只提示不参与打勾**
          （"有公告"是事实，"构成国家队入场"是判断）；
@@ -29,6 +29,14 @@ from __future__ import annotations
   ③ 创业板指周线止跌（周线转涨）      —— 自动（指数日 K 聚合周线）
   ④ 涨跌比连续 2 日 > 0.8           —— 自动（market_emotion_daily.close_up/close_down）
   ⑤ 10Y 美债 < 5.0% 或 布伦特 < 95  —— 自动（macro_daily 最新快照）
+  ⑥ 强势板块（银行）补跌日           —— 自动（★ 2026-10-23，用户提供 2018 年底剧本：
+      "下跌末段的最后一个信号往往是强势板块的补跌（2018 年底的银行、2024 年初的中字头）。
+       工行在普跌日创新高 = 磨底没到最后一段。银行指数单日跌幅超过中证全指时记 1。"）
+      · 数据：中证银行 399986 / 中证全指 000985 的腾讯指数日 K（各 1 次请求）；
+      · checked = 银行当日收跌 **且** 跑输全指（滞后 pp > `PBW_CATCHDOWN_LAG`，默认 0）；
+      · 近 20 日超额一并展示（正 = 此前强势，"补跌"语义才成立），**不参与判定**；
+      · ⚠️ 2026-10-22 实测口径：工行新高当日银行板块大概率跑赢 ⇒ 本条不勾 = 磨底未到最后段。
+      n_total 变为 6；PBW_PASS 仍为 4（env 可调）。
 
 ★★ 数据口径的坑（实现时踩到，后续别改回去）
   · `market_emotion_daily.up/down` 记录于 **00:0x / 09:10**（当日开盘前）⇒ 实际是**前一交易日**的宽度，
@@ -58,6 +66,10 @@ PBW_US10Y = float(os.environ.get("PBW_US10Y") or 5.0)              # 美债 10Y 
 PBW_BRENT = float(os.environ.get("PBW_BRENT") or 95.0)             # 布伦特门槛（美元）
 PBW_PASS = int(os.environ.get("PBW_PASS") or 4)                    # 清单达成数（含）即"确认"
 PBW_POSITION_CAP = float(os.environ.get("PBW_POSITION_CAP") or 30)  # 未达成时的**提示**仓位上限（%）
+# ── ⑥ 强势板块补跌（2026-10-23）──
+PBW_BANK_IDX = os.environ.get("PBW_BANK_IDX") or "399986"   # 中证银行
+PBW_MKT_IDX = os.environ.get("PBW_MKT_IDX") or "000985"     # 中证全指
+PBW_CATCHDOWN_LAG = float(os.environ.get("PBW_CATCHDOWN_LAG") or 0.0)  # 银行至少跑输多少 pp 才记 1
 
 _TABLE_READY = False
 
@@ -253,6 +265,58 @@ def _chinext_weekly(as_of: str = None) -> Dict:
         "detail": (f"本周 {w2} 收 {c2:.1f} vs 上周 {c1:.1f}（{chg_now:+.2f}%）；"
                    f"再前周 {chg_prev:+.2f}%"),
         "value": round(chg_now, 2),
+    }
+
+
+def _bank_catchdown(as_of: str = None) -> Dict:
+    """⑥ 强势板块（银行）补跌日（2026-10-23，用户提供 2018 年底剧本）。
+
+    · checked = 银行**当日收跌** 且 跑输中证全指（lag > PBW_CATCHDOWN_LAG，默认 0pp）；
+    · 近 20 日超额一并展示（正 = 此前强势，"补跌"语义才成立），**不参与判定**；
+    · `as_of`：回放历史日时只取该日及之前的 K 线（防前视）；两指数最新日期必须
+      一致且等于本日（防"一只更新一只滞后"的错位比较）。
+    """
+    try:
+        from app.contradictions.scanner import _load_index_kline
+        bank = _load_index_kline(PBW_BANK_IDX, count=40) or []
+        mkt = _load_index_kline(PBW_MKT_IDX, count=40) or []
+    except Exception as e:
+        return {"checked": False, "insufficient": True,
+                "detail": f"指数K线取数失败: {str(e)[:60]}"}
+    cutoff = str(as_of or "")[:10]
+    if cutoff:
+        bank = [b for b in bank if str(b.get("date") or "")[:10] <= cutoff]
+        mkt = [b for b in mkt if str(b.get("date") or "")[:10] <= cutoff]
+    if len(bank) < 22 or len(mkt) < 22:
+        return {"checked": False, "insufficient": True,
+                "detail": f"K线不足（银行 {len(bank)} / 全指 {len(mkt)}，需 ≥22）"}
+    bd = str(bank[-1].get("date") or "")[:10]
+    md = str(mkt[-1].get("date") or "")[:10]
+    if bd != md:
+        return {"checked": False, "insufficient": True,
+                "detail": f"两指数最新日期不齐（银行 {bd} / 全指 {md}）"}
+    if cutoff and bd != cutoff:
+        return {"checked": False, "insufficient": True,
+                "detail": f"最新K线为 {bd}（非本日 {cutoff}），疑似数据滞后"}
+    try:
+        b_chg = float(bank[-1]["close"]) / float(bank[-2]["close"]) - 1
+        m_chg = float(mkt[-1]["close"]) / float(mkt[-2]["close"]) - 1
+        b20 = float(bank[-1]["close"]) / float(bank[-21]["close"]) - 1
+        m20 = float(mkt[-1]["close"]) / float(mkt[-21]["close"]) - 1
+    except (KeyError, TypeError, ZeroDivisionError, ValueError):
+        return {"checked": False, "insufficient": True, "detail": "K线字段异常"}
+    lag = (m_chg - b_chg) * 100
+    rs20 = (b20 - m20) * 100
+    checked = bool(b_chg < 0 and lag > PBW_CATCHDOWN_LAG)
+    strong = "此前强势" if rs20 > 0 else "此前不强（补跌语义弱）"
+    return {
+        "checked": checked, "insufficient": False,
+        "value": round(b_chg * 100, 2), "unit": "%",
+        "bank_chg": round(b_chg * 100, 2), "mkt_chg": round(m_chg * 100, 2),
+        "lag_pp": round(lag, 2), "rs20_pp": round(rs20, 2), "kline_date": bd,
+        "detail": (f"银行 {b_chg * 100:+.2f}% vs 全指 {m_chg * 100:+.2f}%"
+                   f"（跑输 {lag:+.2f}pp，需银行收跌）；"
+                   f"近20日超额 {rs20:+.2f}pp（{strong}）"),
     }
 
 
@@ -500,6 +564,9 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
             "as_of": m.get("generated_at") or m.get("date"),
         }
 
+    # ⑥ 强势板块（银行）补跌日（2026-10-23）
+    items["bank_catchdown"] = {"source": "auto", **_bank_catchdown(as_of=day)}
+
     n_checked = sum(1 for v in items.values() if v.get("checked"))
     n_total = len(items)
     prev_n = _prev_checked(day)
@@ -619,6 +686,7 @@ _ITEM_CN = (
     ("chinext_weekly", "创业板周线止跌"),
     ("breadth_ratio_2d", "涨跌比连续转暖"),
     ("us10y_or_oil", "美债/油价缓和"),
+    ("bank_catchdown", "强势板块补跌"),
 )
 
 

@@ -3215,6 +3215,9 @@ const PBW_LABELS = {
   chinext_weekly: '创业板周线止跌',
   breadth_ratio_2d: '涨跌比连续转暖',
   us10y_or_oil: '美债/油价缓和',
+  // ★ 2026-10-23：2018 年底剧本——市场底前最后一个信号是强势板块（银行/红利）补跌；
+  //   工行在普跌日创新高 = 磨底未到最后段。银行单日收跌且跑输中证全指时记 1。
+  bank_catchdown: '强势板块补跌',
 }
 const pbwItems = computed(() => {
   const items = (pbw.value && pbw.value.items) || {}

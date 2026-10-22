@@ -732,7 +732,11 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
 
     # 判断市场前缀 & 是否为指数
     # 指数的 K线字段名是 "day"，股票是 "qfqday"（qfq=前复权，调整历史价格使连贯）
-    INDEX_MAP = {"000001": "sh", "399001": "sz", "399006": "sz", "000300": "sh", "000905": "sh", "000688": "sh"}
+    # ★ 2026-10-23：补 000985（中证全指）/ 399986（中证银行）——
+    #   市场底清单第⑥条"强势板块补跌"需要这两个指数；不在 map 里会被当股票
+    #   （qfqday 键取不到 → 永远空列表），且 000985 会被误配 sz 前缀。
+    INDEX_MAP = {"000001": "sh", "399001": "sz", "399006": "sz", "000300": "sh",
+                 "000905": "sh", "000688": "sh", "000985": "sh", "399986": "sz"}
     if symbol in INDEX_MAP:
         prefix = INDEX_MAP[symbol]
         is_index = True
