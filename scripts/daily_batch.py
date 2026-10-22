@@ -1051,6 +1051,41 @@ def task_policy_announcement_watch():
     return f"增持公告提示: 扫描 {r.get('scanned')} 条{extra}"
 
 
+def task_crowding_watch():
+    """拥挤赛道观察器（2026-10-23，用户 10-22 复盘）。**纯观察器，不进决策链**。
+
+    ★ 读数据包算：行业 30 日收益中位数、120 日高位股占比、距 120 日高点回撤；
+      等级 = 退潮（已回撤≥25%且近5日仍跌）/ 高拥挤 / 升温 / 正常。
+    ★ 失败不抛（观察器缺一天不影响主链）。
+    """
+    try:
+        from app import crowding_watch as cw
+        r = cw.compute(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"拥挤赛道: WARN {str(r.get('reason'))[:70]}"
+        return (f"拥挤赛道: {r.get('n_industries')} 行业 / "
+                f"高拥挤+升温 {r.get('high_n')} / 退潮 {r.get('ebb_n')}")
+    except Exception as e:
+        return f"拥挤赛道: WARN {str(e)[:70]}"
+
+
+def task_key_level_watch():
+    """指数关键位观察器（2026-10-23）。**纯观察器，不进决策链**。
+
+    ★ 前低（60日）/ 整数位 / 年内低点；首次跌破才记 broke。
+    ★ 腾讯指数 K 线 6 次请求；失败不抛（缺一天不影响主链）。
+    """
+    try:
+        from app import key_level_watch as kl
+        r = kl.compute(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"关键位: WARN {str(r.get('reason'))[:70]}"
+        return (f"关键位: {len(r.get('rows') or [])} 指数 / "
+                f"失守 {r.get('broke_n')} / 年内新低 {r.get('year_low_n')}")
+    except Exception as e:
+        return f"关键位: WARN {str(e)[:70]}"
+
+
 def task_policy_bottom_watch():
     """市场底确认清单（★ 2026-10-18，**纯观察器，非信号**）。
 
@@ -1170,6 +1205,9 @@ TASKS = {
                                   "国家队增持公告自动提示（巨潮，只提示不打勾）"),
     # ★ 2026-10-18：市场底确认清单（纯观察器）——必须在 intraday_path 之后（② 用它）、
     #   daily_report 之前（日报要渲染它）。不参与任何决策链。
+    # ★ 2026-10-23：两个纯观察器（拥挤赛道 / 指数关键位），不进决策链
+    "crowding_watch": (task_crowding_watch, "拥挤赛道观察器（行业30日/高位占比）"),
+    "key_level_watch": (task_key_level_watch, "指数关键位观察器（前低/整数位）"),
     "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
@@ -1184,7 +1222,9 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "calendar", "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
-                 "news_snapshot", "sector_strength", "rank_live", "sector_linkage",
+                 "news_snapshot", "sector_strength",
+                 "crowding_watch", "key_level_watch",
+                 "rank_live", "sector_linkage",
                  "shadow_rank", "pattern_launch_scan",
                  "backtest_preheat",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",

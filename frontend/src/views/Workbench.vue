@@ -317,6 +317,56 @@
           </template>
         </div>
 
+        <!-- ★ 2026-10-23：拥挤赛道 / 指数关键位（纯观察器，不进决策链） -->
+        <div class="bg-card border border-border rounded-lg p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-semibold">拥挤与关键位
+              <span class="text-[10px] text-muted font-normal">（观察器 · 不进决策链）</span>
+            </div>
+            <span v-if="crowd && crowd.date" class="text-[10px] text-muted font-mono">{{ crowd.date }}</span>
+          </div>
+          <div v-if="riskLoading" class="text-xs text-muted">加载中…</div>
+          <div v-else-if="riskErr" class="text-xs text-muted">{{ riskErr }}</div>
+          <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+            <div>
+              <div class="text-[11px] text-muted mb-1">拥挤赛道（30日 / 高位占比 / 距120日高）</div>
+              <div v-if="!crowd || !(crowd.rows || []).length" class="text-muted">—</div>
+              <div v-else class="space-y-0.5">
+                <div v-for="r in crowdTop" :key="r.industry" class="flex items-center gap-2">
+                  <span class="w-16 shrink-0 truncate" :title="(r.leaders || []).join('、')">{{ r.industry }}</span>
+                  <span class="w-14 text-right font-mono"
+                        :class="(r.ret30 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">{{ fmtPct(r.ret30) }}</span>
+                  <span class="w-12 text-right font-mono text-muted"
+                        :title="'pos120≥0.9 的成员占比'">{{ Math.round((r.pos_high || 0) * 100) }}%</span>
+                  <span class="w-14 text-right font-mono"
+                        :class="(r.dd120 || 0) <= -25 ? 'text-rose-400' : 'text-muted'">{{ fmtPct(r.dd120) }}</span>
+                  <span class="px-1 rounded text-[10px]" :class="crowdBadge(r.level)">{{ r.level }}</span>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="text-[11px] text-muted mb-1">指数关键位（前低 / 整数位 / 年内低点）</div>
+              <div v-if="!keyLv || !(keyLv.rows || []).length" class="text-muted">—</div>
+              <div v-else class="space-y-0.5">
+                <div v-for="r in keyLv.rows" :key="r.code" class="flex items-center gap-2">
+                  <span class="w-14 shrink-0 truncate">{{ r.name }}</span>
+                  <span class="w-16 text-right font-mono">{{ r.close }}</span>
+                  <span class="w-14 text-right font-mono"
+                        :class="(r.chg_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">{{ fmtPct(r.chg_pct) }}</span>
+                  <span class="w-20 text-right text-muted" :title="r.detail">{{ r.support_type }} {{ r.support }}</span>
+                  <span class="w-12 text-right font-mono"
+                        :class="(r.dist_pct ?? 99) <= 1.5 ? 'text-amber-300' : 'text-muted'">{{ fmtPct(r.dist_pct) }}</span>
+                  <span class="px-1 rounded text-[10px]" :class="keyBadge(r.status)">{{ r.status }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="text-[10px] text-muted mt-2">
+            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌；失守=今日跌破且昨日仍在其上；
+            观察器不构成买卖信号。
+          </div>
+        </div>
+
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
         <template v-if="isReplay">
           <div v-if="dayLoading" class="bg-card border border-border rounded-lg p-6 text-muted text-sm">加载中…</div>
@@ -2487,6 +2537,8 @@ import {
   getWorkbenchDecisionCard,
   // ★ 2026-10-22：盘中变化检测器（8 档规则采样，零 LLM）
   getWorkbenchScan, getWorkbenchScanSummary,
+  // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位
+  getCrowdingWatch, getKeyLevelWatch,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
   getUserPositionSizing,
@@ -3358,7 +3410,51 @@ async function loadWorkbenchScan() {
     wsLoading.value = false
   }
 }
-watch(selectedDate, () => { wsSel.value = ''; loadWorkbenchScan() })
+// ★ 2026-10-23：拥挤赛道 / 指数关键位（纯观察器）
+const crowd = ref(null)
+const keyLv = ref(null)
+const riskLoading = ref(false)
+const riskErr = ref('')
+const crowdTop = computed(() => {
+  const rows = (crowd.value && crowd.value.rows) || []
+  const rank = { 高拥挤: 0, 升温: 1, 退潮: 2, 正常: 3 }
+  return [...rows].sort((a, b) =>
+    (rank[a.level] ?? 9) - (rank[b.level] ?? 9) || (b.score || 0) - (a.score || 0),
+  ).slice(0, 5)
+})
+function crowdBadge(level) {
+  if (level === '高拥挤') return 'bg-rose-500/20 text-rose-300'
+  if (level === '升温') return 'bg-amber-500/20 text-amber-300'
+  if (level === '退潮') return 'bg-slate-500/20 text-slate-300'
+  return 'bg-border/40 text-muted'
+}
+function keyBadge(status) {
+  if (status === '失守年内低点' || status === '失守前低') return 'bg-rose-500/20 text-rose-300'
+  if (status === '失守整数位') return 'bg-orange-500/20 text-orange-300'
+  if (status === '逼近支撑') return 'bg-amber-500/20 text-amber-300'
+  return 'bg-border/40 text-muted'
+}
+async function loadRiskWatch() {
+  riskLoading.value = true
+  riskErr.value = ''
+  try {
+    const [c, k] = await Promise.all([
+      getCrowdingWatch(selectedDate.value),
+      getKeyLevelWatch(selectedDate.value),
+    ])
+    crowd.value = c.data || null
+    keyLv.value = k.data || null
+  } catch (e) {
+    riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
+  } finally {
+    riskLoading.value = false
+  }
+}
+watch(selectedDate, () => {
+  wsSel.value = ''
+  loadWorkbenchScan()
+  loadRiskWatch()
+})
 
 // ★ 2026-09-27 事件驱动信号（v0 展示项）。定位三行（项目约定）：
 //   **是什么**  极端普涨（涨家数占比≥90%）+ 涨停骤增（≥50 家）的"政策脉冲"实时提示
@@ -4156,7 +4252,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan(), loadRiskWatch()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

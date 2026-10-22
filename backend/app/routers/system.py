@@ -1027,6 +1027,22 @@ def workbench_scan_summary(days: int = Query(7, ge=1, le=60),
     return workbench_scan.summary(days)
 
 
+@router.get("/crowding-watch")
+def crowding_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                   user: dict = Depends(get_current_user)) -> Dict:
+    """拥挤赛道观察器（行业 30 日收益 + 高位股占比 + 回撤；纯观察，不进决策链）。"""
+    from app import crowding_watch as cw
+    return cw.load(date)
+
+
+@router.get("/key-level-watch")
+def key_level_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                    user: dict = Depends(get_current_user)) -> Dict:
+    """指数关键位观察器（前低/整数位/年内低点是否失守；纯观察，不进决策链）。"""
+    from app import key_level_watch as kl
+    return kl.load(date)
+
+
 @router.get("/workbench-scan/preview")
 def workbench_scan_preview(user: dict = Depends(get_current_user)) -> Dict:
     """只读预览：现在采一档、与当日最近一档比，**不写库**（可反复调用）。

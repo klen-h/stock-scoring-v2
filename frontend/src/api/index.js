@@ -440,3 +440,7 @@ export const getWorkbenchDecisionCard = () => http.get('/system/workbench/decisi
 // ★ 2026-10-22：盘中「变化检测器」——8 档规则采样（零 LLM，09:45~14:45）
 export const getWorkbenchScan = (date) => http.get('/system/workbench-scan', { params: { date }, timeout: 30000 })
 export const getWorkbenchScanSummary = (days = 7) => http.get('/system/workbench-scan/summary', { params: { days }, timeout: 30000 })
+
+// ★ 2026-10-23：两个观察器（不进决策链）——拥挤赛道 / 指数关键位
+export const getCrowdingWatch = (date) => http.get('/system/crowding-watch', { params: { date }, timeout: 30000 })
+export const getKeyLevelWatch = (date) => http.get('/system/key-level-watch', { params: { date }, timeout: 30000 })
