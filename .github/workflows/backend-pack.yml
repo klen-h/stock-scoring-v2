@@ -145,7 +145,9 @@ jobs:
     # ★★ 2026-10-21：180 → **360**（GitHub 上限）。池已涨到 **2915 只**（+ 科创/创业板/回测池），
     #   按腾讯当前实际配额（≈0.3~0.4 QPS）主轮就要 120~160 分钟；再叠加"等前端包跑完"
     #   的等待（最多 180 分钟）⇒ 300 分钟也可能不够，给到 GitHub 上限 360。
-    timeout-minutes: 360
+    # ★★ 2026-10-22：改 zzshare 增量（下载上一份包 66MB + 2~3 次日线 + 重算指标），
+    #   正常 10~15 分钟；120 分钟是给"日线未发布"重试（6×10 分钟）+ mainflow 兜底。
+    timeout-minutes: 120
     # ★ wait-for-frontend 步骤要用 gh run list 查运行历史
     permissions:
       actions: read
@@ -168,7 +170,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          for i in $(seq 1 90); do
+          # ★ 2026-10-22：前端包改增量后 ~5 分钟；这里只需等它把新包推上 Pages，
+          #   最多 20 分钟（原 180 分钟是为 2.5h 的腾讯全量拉的）。
+          for i in $(seq 1 10); do
             N=$(gh run list --workflow=kline-data.yml --limit 20 --json status \
                   --jq '[.[] | select(.status=="in_progress" or .status=="queued")] | length' \
                   2>/dev/null || echo 0)
@@ -176,10 +180,10 @@ jobs:
               echo "frontend pack idle -> continue"
               exit 0
             fi
-            echo "frontend pack still running (${i}/90), wait 120s"
+            echo "frontend pack still running (${i}/10), wait 120s"
             sleep 120
           done
-          echo "::warning::waited 180min for frontend pack; continue anyway"
+          echo "::warning::waited 20min for frontend pack; continue anyway"
 
       - name: Log egress IP (WAF diagnosis)
         run: curl -s --max-time 10 https://api.ipify.org || true
@@ -223,53 +227,22 @@ jobs:
           MAINFORCE_MODE: off
         run: python scripts/daily_batch.py --tasks mainflow --no-pack-check --no-quotes
 
-      - name: Generate backend data pack (klines + indicators + mainforce)
+      - name: Update backend pack incrementally (zzshare)
+        # ★★ 2026-10-22：不再逐只拉腾讯（2915 只 × 750 根 = 3~6h + WAF）。
+        #   新链路：Pages 上一份包（66MB，1 请求）→ zzshare 缺口交易日（2~3 请求）
+        #   → 拼接（重叠/factor 校验）→ 重算 indicators/trend；mainforce/news 继承上一份。
+        #   日线未发布返回 2：10 分钟后重试（最多 6 次）。
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          # ★ count 硬上限 800（脚本内建，勿删）：腾讯 fqkline 对 days*2=2200 直接
-          #   拒绝返回 0 根——这是后端包一直拉不到数据的真正根因（2026-09-07 实测）。
-          # ★ 超时给足 15s：750 根响应体大，6s 会误杀慢请求。
-          # ★ 连败暂停阈值 15：仅在真出问题时兜底，不让频繁 sleep 拖慢正常拉取。
-          PACK_REQUEST_TIMEOUT: '15'
-          PACK_KLINE_RETRIES: '2'
-          PACK_RETRY_BACKOFF: '1,2'
-          PACK_CONSECUTIVE_COOLDOWN: '15'
-          # ★ 2026-09-17 复盘（重要，别再单纯改这个数字）：
-          #   9-15 把冷却 120 → 45s 的依据是「120s 太长、罚站是耗时主因」。9-17 实测
-          #   否证了这个推断：当天日志 [WAF] 拦截 **~117 次**（改前注释记载 40+ 次），
-          #   且进度多次整段停滞（506/2057 连续 3 个 50 只窗口、967/2057 连续 150 只
-          #   零成功）→ 45s 不但没更省时间，反而把封禁拉成了连续惩罚。
-          #   机制：腾讯按「滑动窗口速率」判定，45s 的静默排不空窗口 → 冷却结束立刻
-          #   又被拦 → 再冷却；同时冷却中「睡一轮就放弃」把股票误记为失败 → 重试轮
-          #   再打一遍请求 → 正反馈。
-          #   → 已在 generate-kline-pack.py 修：① 冷却期内再 501 就自适应 ×2 加码
-          #     （45→90→180，PACK_WAF_MAX_COOLDOWN 封顶 300），任一成功即回落基准；
-          #     ② 冷却改为「循环睡到解除」，不再批量误记失败；③ 跑完打印 WAF 汇总
-          #     （拦截次数/累计等待/末次退避），下次 A/B 有硬数据。
-          #   ★ 2026-09-18：基准 45 → 120（与脚本 generate-kline-pack.py 的默认值对齐，
-          #     那两处长期不一致，见 inputs 处的回归说明）。
-          PACK_WAF_COOLDOWN: ${{ github.event.inputs.waf_cooldown || '120' }}
-          # ★ 2026-10-21：退避上限 300 → 600（300s 实测排不空窗口）。
-          #   2915 只 × 750 根的响应体比前端大得多，撞墙后的恢复期也更长。
-          PACK_WAF_MAX_COOLDOWN: '600'
-          # ★★ 2026-09-17 主旋钮：全进程请求速率上限（令牌桶，无突发）。
-          #   被动冷却只能事后止血 —— 只要"发出的请求速率"高于腾讯阈值就必然反复撞墙，
-          #   而 WAF 按滑动窗口判定，撞得越勤窗口越排不空 → 自锁（这正是耗时失控的机制）。
-          #   实测：原「5 线程 × 每线程 0.5~0.9s sleep」≈ 峰值 7 req/s、5 个请求可同时飞出。
-          #   2 QPS = 120 请求/分钟；2057 只理论下限 ≈ 17 分钟。
-          #   ★ 2026-09-18：2 QPS 实测**仍然撞**（Actions 上 23 次拦截、180 分钟被 timeout 砍），
-          #     按本注释的处置阶梯降到 1。1 QPS ⇒ 2057 只下限 ≈ 35 分钟，仍在 timeout 内。
-          #     若显示零拦截且嫌慢 → 再试 2~3（先看日志末尾那行 WAF 汇总）。
-          PACK_QPS: ${{ github.event.inputs.qps || '1' }}
-          # ★ 撞墙降速下限 0.35：2915 只 / 0.35 ≈ 139 分钟，加上最多 180 分钟等待
-          #   仍 < 360；若降到 0.25 就是 194 分钟，会顶穿 timeout。
-          PACK_QPS_MIN: '0.35'
-          PACK_WORKERS: ${{ github.event.inputs.workers || '5' }}
-          PACK_QUOTES_URL: 'https://klen-h.github.io/stock-scoring-v2/data/realtime-quotes.json'
+          ZZSHARE_TOKEN: ${{ secrets.ZZSHARE_TOKEN }}
         run: |
-          python scripts/generate_backend_pack.py \
-            --output-dir ./data/kline \
-            ${{ github.event.inputs.skip_mainforce == 'true' && '--no-mainforce' || '' }}
+          for i in $(seq 1 6); do
+            python scripts/update_backend_pack_incremental.py \
+              --pack-dir ./data/kline --backfill && exit 0
+            echo "::warning::zzshare 日线未就绪或增量失败，10 分钟后重试 ($i/6)"
+            sleep 600
+          done
+          echo "::error::增量重试 6 次仍失败"
+          exit 1
 
       - name: Upload Pages artifacts
         uses: actions/upload-artifact@v4

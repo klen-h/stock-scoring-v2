@@ -43,16 +43,14 @@ def _load_mod(name, path):
     return mod
 
 
-def _download(url, dest):
+def _download_raw(url, dest, label="文件"):
+    """流式下载原始字节（不解释内容）。Actions 里也要用，避免 66MB 卡死。"""
     import requests
-    print(f"  下载上一份后端包: {url}")
-    import shutil
-    gz_tmp = dest + ".download.gz"
-    # ★ 流式下载：66MB 一次性进内存/单次 read 容易被卡死（本次实测 12 分钟 0.3s CPU）。
+    print(f"  下载{label}: {url}")
     r = requests.get(url, timeout=(20, 60), stream=True)
     r.raise_for_status()
     got = 0
-    with open(gz_tmp, "wb") as f:
+    with open(dest, "wb") as f:
         for chunk in r.iter_content(1024 * 1024):
             if not chunk:
                 continue
@@ -60,10 +58,20 @@ def _download(url, dest):
             got += len(chunk)
             if got % (10 * 1024 * 1024) < 1024 * 1024:
                 print(f"    下载 {got / 1048576:.0f} MB …")
-    print(f"  下载完成 {got / 1048576:.1f} MB，解压中…")
+    print(f"  下载完成 {got / 1048576:.1f} MB → {dest}")
+    return dest
+
+
+def _download(url, dest, keep_gz=None):
+    """下载 .db.gz → 解压到 dest；keep_gz 给定时同时保留原始 gz（发布用）。"""
+    import shutil
+    gz_tmp = dest + ".download.gz"
+    _download_raw(url, gz_tmp, label="上一份后端包")
     # ★ Pages 上是**真 gzip 文件**（HTTP 不透明传输），requests 不会自动解压。
     with gzip.open(gz_tmp, "rb") as fi, open(dest, "wb") as fo:
         shutil.copyfileobj(fi, fo, 1024 * 1024)
+    if keep_gz:
+        shutil.copyfile(gz_tmp, keep_gz)
     os.remove(gz_tmp)
     print(f"  已解压: {dest} ({os.path.getsize(dest) / 1048576:.1f} MB)")
     return dest
@@ -136,7 +144,10 @@ def _load_prev_db(pack_dir):
         except Exception as e:
             print(f"  本地后端包不可用（{e}）→ 改用 Pages")
         os.remove(tmp)
-    return _download(BACKEND_URL, tmp)
+    # 下载时顺手把原始 gz 留在 pack 目录：若"今天已是最新"直接退出，
+    # 发布步骤仍能找到 backend-pack.db.gz（不让 workflow 发空包/失败）。
+    keep = os.path.join(pack_dir, "backend-pack.db.gz")
+    return _download(BACKEND_URL, tmp, keep_gz=keep)
 
 
 def main():
@@ -163,17 +174,31 @@ def main():
     from app.flash.rules import beijing_now, latest_completed_trading_day
     from update_pack_incremental import _zz_code, _zz_max_date, _merge_one
     expected = latest_completed_trading_day(beijing_now())
+    expected_ymd = expected.replace("-", "")
     target = _zz_max_date(args.zz_db)
     target_ymd = target.replace("-", "")
-    if args.backfill and target_ymd < expected.replace("-", ""):
-        print(f"  回填 zzshare {target or '2005-01-01'} ~ {expected} …")
+    if args.backfill and target_ymd < expected_ymd:
+        # ★ Actions 没有本地库：只从上一份包末日补（2~3 个请求），不能从 2005 起。
+        start = (f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:]}"
+                 if len(prev_date) == 8 else "2005-01-01")
+        print(f"  回填 zzshare {start} ~ {expected} …")
         subprocess.run([sys.executable, os.path.join(
             ROOT, "scripts", "backfill_zzshare_daily.py"),
-            "--start", target or "2005-01-01", "--end", expected], check=False)
+            "--start", start, "--end", expected], check=False)
         target = _zz_max_date(args.zz_db)
         target_ymd = target.replace("-", "")
     print(f"  zzshare 最新={target} / 应处理交易日={expected}")
+    if target_ymd < expected_ymd:
+        # 目标日没就绪 ⇒ 不产"日期新、数据旧"的包；返回 2 让 workflow 稍后重试。
+        print(f"::error::zzshare 尚未发布 {expected} 日线（最新 {target or '无'}）")
+        return 2
     if not target or target_ymd <= prev_date:
+        # 今天已经更新过：把发布所需文件补齐（否则 artifact/publish 会缺文件）。
+        ind_gz = os.path.join(args.pack_dir, "indicators-pack.json.gz")
+        if not os.path.exists(ind_gz):
+            _download_raw(BACKEND_URL.replace("backend-pack.db.gz",
+                                              "indicators-pack.json.gz"),
+                          ind_gz, label="指标包")
         print("  已是最新，无需更新。")
         return 0
 

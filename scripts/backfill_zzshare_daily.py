@@ -29,11 +29,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BACKEND = os.path.join(ROOT, "backend")
 sys.path.insert(0, BACKEND)
 
-for _line in open(os.path.join(BACKEND, ".env"), encoding="utf-8"):
-    _line = _line.strip()
-    if _line and not _line.startswith("#") and "=" in _line:
-        _k, _v = _line.split("=", 1)
-        os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+# ★ Actions 里没有 backend/.env（gitignored）⇒ 必须容错，否则起手就 FileNotFoundError。
+_env_path = os.path.join(BACKEND, ".env")
+if os.path.exists(_env_path):
+    for _line in open(_env_path, encoding="utf-8"):
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 
 from app.zzshare_client import get_api  # noqa: E402
 
@@ -59,7 +62,9 @@ def _norm_date(d: str) -> str:
 
 
 def init_db(path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _dir = os.path.dirname(path)
+    if _dir:
+        os.makedirs(_dir, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -186,6 +191,13 @@ def main():
             failed.append(day)
             continue
         n = save_day(conn, day, df)
+        # ★★ 2026-10-22：0 行不能标记完成。zzshare 当日日线常在 18:00 后才发布，
+        #   提前拉会返回空表；旧逻辑照样写 meta ⇒ 重试时被 done_dates 跳过，
+        #   包就"日期是今天、数据到昨天"。0 行 ⇒ 视为未完成，下一轮重拉。
+        if n <= 0:
+            print(f"  {day} 返回 0 行（可能尚未发布）→ 不标记完成，保留待拉")
+            failed.append(day)
+            continue
         written_total += n
         conn.execute("INSERT OR REPLACE INTO meta (date, done_at) VALUES (?, ?)",
                      (day, time.strftime("%Y-%m-%d %H:%M:%S")))

@@ -135,6 +135,37 @@ def _merge_one(prev_bars, zrows, days):
     return (merged[-days:], "ok" if added else "no_new")
 
 
+def _merge_exdiv(prev_bars, zrows, days):
+    """除权股：按 factor 比例缩放旧历史 + 追加新 bar（Actions 里不依赖腾讯）。
+
+    误差只来自"乘性 vs 腾讯口径"在该次分红上的差异（~1%），
+    远好于把这只股票停在 2 天前；Actions 也就无需再碰 WAF。
+    """
+    if not prev_bars or not zrows:
+        return prev_bars, False
+    last_d = str(prev_bars[-1][0])[:10]
+    by_d = {str(r[0])[:10]: r for r in zrows}
+    if last_d not in by_d:
+        return prev_bars, False
+    try:
+        k = float(by_d[last_d][5]) / float(zrows[-1][5])
+    except (TypeError, ValueError, ZeroDivisionError):
+        return prev_bars, False
+    if not (0.5 < k < 2.0):
+        return prev_bars, False
+    out = [[b[0], round(b[1] * k, 2), round(b[2] * k, 2),
+            round(b[3] * k, 2), round(b[4] * k, 2), b[5]] for b in prev_bars]
+    added = 0
+    for d, o, h, l, c, v, f, paused in zrows:
+        d = str(d)[:10]
+        if d <= last_d or paused or not v:
+            continue
+        out.append([d, round(float(o), 2), round(float(h), 2),
+                    round(float(l), 2), round(float(c), 2), float(v) / 100.0])
+        added += 1
+    return (out[-days:], added > 0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pack-dir", default=DEFAULT_DIR)
@@ -144,6 +175,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--backfill", action="store_true",
                     help="先跑 backfill_zzshare_daily.py 补到最近交易日")
+    ap.add_argument("--tencent", action="store_true",
+                    help="异常/缺数据时回退腾讯（默认关：Actions 上撞 WAF，改用 factor 重算）")
     args = ap.parse_args()
 
     print("=== 前端 K 线包增量更新（zzshare 只补新 bar）===")
@@ -158,8 +191,12 @@ def main():
     target_ymd = target.replace("-", "")
     print(f"  上一份包 date={prev_date} / zzshare 最新={target or '无'} / "
           f"应处理交易日={expected}")
-    if args.backfill and target_ymd < expected.replace("-", ""):
-        start = target or "2005-01-01"
+    expected_ymd = expected.replace("-", "")
+    if args.backfill and target_ymd < expected_ymd:
+        # ★ Actions 没有本地库：必须从**上一份包末日**开始补（只 2~3 个请求），
+        #   不能从 2005 起（那是 5000+ 次请求）。上一份包末日同时是重叠校验所需。
+        start = (f"{prev_date[:4]}-{prev_date[4:6]}-{prev_date[6:]}"
+                 if len(prev_date) == 8 else "2005-01-01")
         print(f"  回填 zzshare {start} ~ {expected} …")
         subprocess.run([sys.executable, os.path.join(
             ROOT, "scripts", "backfill_zzshare_daily.py"),
@@ -167,21 +204,27 @@ def main():
         target = _zz_max_date(args.zz_db)
         target_ymd = target.replace("-", "")
         print(f"  回填后 zzshare 最新={target}")
+    # ★ 目标日必须已就绪：否则产出的包"日期是今天、数据到昨天"，
+    #   ensure_pack_fresh 只看 pack_date 会放行 ⇒ 日批静默跑在旧数据上。
+    #   返回 2 让 workflow 的 retry 循环等 10 分钟再来。
+    if target_ymd < expected_ymd:
+        print(f"::error::zzshare 尚未发布 {expected} 日线（最新 {target or '无'}）")
+        return 2
     if not target or target_ymd <= prev_date:
         print("  已是最新，无需更新。")
         return 0
 
     gkp = _load_gkp()
-    gkp.PACK_QPS = 0.6            # 回退腾讯的少量股票：慢一点，避免撞墙
+    gkp.PACK_QPS = 0.6
     conn = sqlite3.connect(args.zz_db)
-    updated = no_new = mismatch = exdiv = no_overlap = 0
-    fallback = []
+    updated = no_new = rebased = mismatch = no_overlap = 0
+    skipped = []
     new_stocks = {}
     for code, info in stocks.items():
         bars = info.get("klines") or []
         ts = _zz_code(code)
         if not ts or not bars:
-            fallback.append(code)
+            skipped.append(code)          # ETF/指数：zzshare 无数据，保留旧 bar
             continue
         last_d = str(bars[-1][0])[:10]
         rows = conn.execute(
@@ -196,36 +239,44 @@ def main():
                                 "klines": merged}
         elif st == "no_new":
             no_new += 1
+        elif st == "exdiv":
+            m2, ok = _merge_exdiv(bars, rows, args.days)
+            if ok:
+                rebased += 1
+                new_stocks[code] = {"name": info.get("name"),
+                                    "market_cap": info.get("market_cap"),
+                                    "klines": m2}
+            else:
+                no_overlap += 1
+                skipped.append(code)
         elif st == "mismatch":
             mismatch += 1
-            fallback.append(code)
-        elif st == "exdiv":
-            exdiv += 1
-            fallback.append(code)
+            skipped.append(code)
         else:
             no_overlap += 1
-            fallback.append(code)
+            skipped.append(code)
     conn.close()
 
-    print(f"  增量: 更新 {updated} / 无新 bar {no_new} / 除权 {exdiv} / "
-          f"重叠不符 {mismatch} / 无重叠 {no_overlap} / 回退腾讯 {len(fallback)}")
+    print(f"  增量: 更新 {updated} / 无新 bar {no_new} / 除权重算 {rebased} / "
+          f"重叠不符 {mismatch} / 无重叠 {no_overlap} / 跳过 {len(skipped)}")
     if no_new:
         print("  （无新 bar 多为停牌股；保留原末根，不造假 bar）")
 
-    # 回退腾讯（通常 0~20 只）
-    for i, code in enumerate(fallback, 1):
-        try:
-            kl = gkp.fetch_kline(code, args.days)
-        except Exception as e:
-            kl = None
-            print(f"  腾讯回退异常 {code}: {e}")
-        if kl:
-            info = stocks.get(code) or {}
-            new_stocks[code] = {"name": info.get("name"),
-                                "market_cap": info.get("market_cap"),
-                                "klines": kl}
-        if i % 10 == 0:
-            print(f"  回退腾讯 {i}/{len(fallback)} …")
+    # 可选腾讯回退（默认关：Actions 上撞 WAF；重算已覆盖除权股）
+    if args.tencent and skipped:
+        for i, code in enumerate(skipped, 1):
+            try:
+                kl = gkp.fetch_kline(code, args.days)
+            except Exception as e:
+                kl = None
+                print(f"  腾讯回退异常 {code}: {e}")
+            if kl:
+                info = stocks.get(code) or {}
+                new_stocks[code] = {"name": info.get("name"),
+                                    "market_cap": info.get("market_cap"),
+                                    "klines": kl}
+            if i % 10 == 0:
+                print(f"  回退腾讯 {i}/{len(skipped)} …")
 
     # 未处理的代码沿用上一份（停牌等）
     for code, info in stocks.items():

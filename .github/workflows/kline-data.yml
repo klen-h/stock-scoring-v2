@@ -47,7 +47,9 @@ jobs:
     #   连带 Pages 发布 skipped）。腾讯当前配额下 2144+末根补齐 ≈ 120~150 分钟，
     #   240 分钟给重试留余量。⚠️ 若日志末尾 WAF 汇总显示拦截 ≥ WAF_MAX_EVENTS，
     #   脚本会主动报错（failure）而不是熬到 cancelled —— 直接重跑换 runner/IP 更快。
-    timeout-minutes: 240
+    # ★★ 2026-10-22：改为 zzshare 增量（1 次 Pages + 2~3 次日线请求 + 0~60 次腾讯），
+    #   正常 3~5 分钟完成；保留 90 分钟是为了"日线未发布"时 6×10 分钟的等待重试。
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -70,26 +72,22 @@ jobs:
       - name: Install dependencies
         run: pip install -q -r backend/requirements.txt
 
-      - name: Generate K-line data package (frontend)
-        # ★ 全市场行情拉取后落盘 realtime-quotes.json——后端 job 通过 artifact 复用（0 请求）
-        # ★★ 2026-10-21：限速参数显式写进 workflow（原来吃脚本默认 2 QPS）。
-        #   10-20 实测 2 QPS 会在 ~350 个请求后触发 501，之后每 120s 只放行 ~50 个
-        #   （≈0.4 QPS 的硬配额）；起手 1 QPS + 撞墙后脚本内自适应 ×0.6 降速，
-        #   总耗时反而更短（少撞墙 = 少罚站）。QPS_MIN=0.3 防止降得跑不完。
+      - name: Update K-line pack incrementally (zzshare)
+        # ★★ 2026-10-22：不再逐只拉腾讯（2144 只 × 150 根 = 2.5h + WAF）。
+        #   新链路：Pages 上的上一份包（1 请求）→ zzshare 只取缺口交易日（2~3 请求）
+        #   → 重叠校验 + factor 校验 → 拼接。历史仍是腾讯 qfq，口径不变。
+        #   日线未发布时返回 2：10 分钟后重试（最多 6 次）。
         env:
-          PACK_QPS: '1'
-          PACK_QPS_MIN: '0.3'
-          PACK_WAF_COOLDOWN: '120'
-          # ★ 2026-10-21：300 → 600。实测 300s 仍排不空腾讯的滑动窗口
-          #   （冷却结束立刻又被拦，成功数逐级下滑）；给它 10 分钟才能真解除。
-          PACK_WAF_MAX_COOLDOWN: '600'
-          # 2144 只 → 撞墙是常态而非异常：上限放宽到 40 次（脚本默认 30）
-          PACK_WAF_MAX_EVENTS: '40'
+          ZZSHARE_TOKEN: ${{ secrets.ZZSHARE_TOKEN }}
         run: |
-          python scripts/generate-kline-pack.py \
-            --output-dir ./data/kline \
-            --quotes-file ./data/kline/realtime-quotes.json \
-            --days ${{ github.event.inputs.days || 150 }}
+          for i in $(seq 1 6); do
+            python scripts/update_pack_incremental.py \
+              --pack-dir ./data/kline --backfill && exit 0
+            echo "::warning::zzshare 日线未就绪或增量失败，10 分钟后重试 ($i/6)"
+            sleep 600
+          done
+          echo "::error::增量重试 6 次仍失败"
+          exit 1
 
       - name: Upload Pages artifacts (kline packs)
         uses: actions/upload-artifact@v4
@@ -98,16 +96,8 @@ jobs:
           path: |
             ./data/kline/kline-pack-latest.json.gz
             ./data/kline/kline-pack-*.json.gz
-            # ★ 同步发布全市场行情：后端包已拆到独立 workflow（错峰 17:50），
-            #   无法再用 artifact 传递，改从 Pages 取（~150KB，1 请求）
-            ./data/kline/realtime-quotes.json
-          retention-days: 3
-
-      - name: Upload quotes artifact (backend reuse)
-        uses: actions/upload-artifact@v4
-        with:
-          name: realtime-quotes
-          path: ./data/kline/realtime-quotes.json
+          # ★ 2026-10-22：增量链路不再全市场拉行情 ⇒ 不再产出 realtime-quotes.json。
+          #   后端包改用上一份包的 codes(name/市值)，不需要该文件。
           retention-days: 3
 
       - name: Upload artifact (for debugging)
