@@ -397,6 +397,10 @@
             <div class="flex items-center gap-2 text-[11px]">
               <span v-if="scen && scen.scenario" class="px-1.5 rounded"
                     :class="scenBadge(scen.scenario)">{{ scen.scenario }}</span>
+              <span v-if="scen && scen.scenario_candidate"
+                    class="px-1.5 rounded bg-rose-500/20 text-rose-300"
+                    title="近 48h 实际动能事件 ≥3 条；仅提示，不自动改仓">
+                {{ scen.scenario_candidate }}</span>
               <span v-if="scen" class="text-muted">{{ scen.lean }} ·
                 {{ scen.n_up }}多 / {{ scen.n_down }}空</span>
             </div>
@@ -418,6 +422,9 @@
           </div>
           <div v-if="scen.geo_alert" class="text-[10px] text-rose-300 mt-1">
             ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
+          </div>
+          <div v-if="scen.geo_candidate" class="text-[10px] text-rose-300 mt-1">
+            ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
           </div>
           <div class="text-[10px] text-muted mt-1">{{ scen.note }}</div>
         </div>

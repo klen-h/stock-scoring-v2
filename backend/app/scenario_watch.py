@@ -53,6 +53,8 @@ SC_BRENT_HIGH = float(os.environ.get("SC_BRENT_HIGH") or 120.0)
 SC_SH_FIX = float(os.environ.get("SC_SH_FIX") or 3674.0)      # 上证收复结构
 SC_SH_LAST = float(os.environ.get("SC_SH_LAST") or 3550.0)    # 上证最后缓冲
 SC_SH_REDLINE = float(os.environ.get("SC_SH_REDLINE") or 3500.0)
+# ★ 地缘动能候选阈值（2026-10-23 用户）：近 48h 实际动能事件 ≥3 条 ⇒ 熊市情景候选
+SC_GEO_KINETIC = int(os.environ.get("SC_GEO_KINETIC") or 3)
 
 # 关键日历（用户推演给定；时间仅作倒计时，不自动执行任何动作）
 EVENTS = [
@@ -128,14 +130,28 @@ def _geo_signal(day: str) -> Dict:
     latest = (hard_row or geo[0]).get("content") or ""
     latest = latest.replace("\n", " ")[:60]
     # ★ 动能 vs 口头：硬触发（须含伊朗）算动能，其余算口头威胁
-    n_kinetic = len([r for r in geo if _hit(r, GEO_HARD)
-                     and "伊朗" in (r.get("content") or "")])
+    def _t2dt(s):
+        try:
+            return datetime.strptime(str(s)[:19], "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return None
+
+    kin_rows = [r for r in geo if _hit(r, GEO_HARD)
+                and "伊朗" in (r.get("content") or "")]
+    n_kinetic = len(kin_rows)
     n_verbal = len(geo) - n_kinetic
+    latest_dt = max((d for d in (_t2dt(r.get("time")) for r in geo) if d),
+                    default=None)
+    cut48 = latest_dt - timedelta(hours=48) if latest_dt else None
+    k48 = len([r for r in kin_rows
+               if cut48 and _t2dt(r.get("time")) and _t2dt(r.get("time")) >= cut48])
+    cand = k48 >= SC_GEO_KINETIC
     return {**_sig("geo", "伊朗/中东事件", len(up_rows), "条", lean,
                    f"升级{len(up_rows)}/缓和{len(down_rows)}｜"
-                   f"动能{n_kinetic}/口头{n_verbal}"
+                   f"动能{n_kinetic}(近48h {k48})/口头{n_verbal}"
                    f"{'，★硬触发' if hard_row else ''}；最新：{latest}"),
-            "hard": bool(hard_row)}
+            "hard": bool(hard_row), "kinetic": n_kinetic,
+            "kinetic_48h": k48, "candidate": cand}
 
 
 def _today() -> str:
@@ -260,6 +276,7 @@ def evaluate(day: str = None) -> Dict:
     geo = _geo_signal(day)
     sigs.append(geo)
     hard_geo = bool(geo.get("hard"))
+    geo_cand = bool(geo.get("candidate"))
 
     n_up = sum(1 for s in sigs if s["lean"] == "多")
     n_dn = sum(1 for s in sigs if s["lean"] == "空")
@@ -289,6 +306,9 @@ def evaluate(day: str = None) -> Dict:
             f"情景倾向={scenario}。"
             + ("★地缘硬触发（实际动能事件已出现；油价未达阈值前不切换情景）。"
                if hard_geo else "")
+            + (f"★地缘候选：近 48h 动能 {geo.get('kinetic_48h')} 条 ≥ "
+               f"{SC_GEO_KINETIC} ⇒ 熊市情景候选（仅提示，不自动改仓）。"
+               if geo_cand else "")
             + "近 7 日内关键日历："
             + ("、".join(f"{e['name']}({e['t_minus']}d)" for e in evts
                          if e["t_minus"] is not None and 0 <= e["t_minus"] <= 7)
@@ -296,6 +316,8 @@ def evaluate(day: str = None) -> Dict:
 
     return {"date": day, "signals": sigs, "lean": lean, "scenario": scenario,
             "events": evts, "point_plot": POINT_PLOT, "geo_alert": hard_geo,
+            "geo_candidate": geo_cand,
+            "scenario_candidate": "熊市加深（地缘候选）" if geo_cand else "",
             "n_up": n_up, "n_down": n_dn, "note": note}
 
 
@@ -339,6 +361,10 @@ def load(day: str = None) -> Dict:
             "scenario": row.get("scenario"), "note": row.get("note"),
             "events": EVENTS, "point_plot": POINT_PLOT,
             "geo_alert": any(s.get("hard") for s in signals),
+            "geo_candidate": any(s.get("candidate") for s in signals),
+            "scenario_candidate": ("熊市加深（地缘候选）"
+                                   if any(s.get("candidate") for s in signals)
+                                   else ""),
             "n_up": sum(1 for s in signals if s.get("lean") == "多"),
             "n_down": sum(1 for s in signals if s.get("lean") == "空")}
 
