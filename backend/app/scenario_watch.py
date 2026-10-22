@@ -127,8 +127,13 @@ def _geo_signal(day: str) -> Dict:
                                   else ("多" if len(down_rows) > len(up_rows) else "中性"))
     latest = (hard_row or geo[0]).get("content") or ""
     latest = latest.replace("\n", " ")[:60]
+    # ★ 动能 vs 口头：硬触发（须含伊朗）算动能，其余算口头威胁
+    n_kinetic = len([r for r in geo if _hit(r, GEO_HARD)
+                     and "伊朗" in (r.get("content") or "")])
+    n_verbal = len(geo) - n_kinetic
     return {**_sig("geo", "伊朗/中东事件", len(up_rows), "条", lean,
-                   f"升级{len(up_rows)}/缓和{len(down_rows)}"
+                   f"升级{len(up_rows)}/缓和{len(down_rows)}｜"
+                   f"动能{n_kinetic}/口头{n_verbal}"
                    f"{'，★硬触发' if hard_row else ''}；最新：{latest}"),
             "hard": bool(hard_row)}
 
