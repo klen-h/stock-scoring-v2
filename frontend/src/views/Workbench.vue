@@ -388,6 +388,37 @@
           </div>
         </div>
 
+        <!-- ★ 2026-10-23：磨底 2.0 推演证伪记分卡（组合信号，不进决策链） -->
+        <div class="bg-card border border-border rounded-lg p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-semibold">推演证伪 · 磨底 2.0
+              <span class="text-[10px] text-muted font-normal">（组合信号 · 观察器）</span>
+            </div>
+            <div class="flex items-center gap-2 text-[11px]">
+              <span v-if="scen && scen.scenario" class="px-1.5 rounded"
+                    :class="scenBadge(scen.scenario)">{{ scen.scenario }}</span>
+              <span v-if="scen" class="text-muted">{{ scen.lean }} ·
+                {{ scen.n_up }}多 / {{ scen.n_down }}空</span>
+            </div>
+          </div>
+          <div v-if="!scen" class="text-xs text-muted">加载中…</div>
+          <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1 text-xs">
+            <div v-for="s in scen.signals" :key="s.key" class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full shrink-0" :class="leanDot(s.lean)"></span>
+              <span class="text-muted shrink-0">{{ s.label }}</span>
+              <span class="font-mono" :title="s.note">{{ scenVal(s) }}</span>
+            </div>
+          </div>
+          <div class="mt-2 pt-2 border-t border-border/40 text-[11px] text-muted flex flex-wrap gap-x-3 gap-y-0.5">
+            <span v-for="e in scen.events" :key="e.date"
+                  :class="e.soon ? 'text-amber-300' : ''"
+                  :title="e.note">{{ e.name }}
+              <span class="font-mono">{{ e.t_minus == null ? '' : (e.t_minus < 0 ? '已过' : 'T-' + e.t_minus + 'd') }}</span>
+            </span>
+          </div>
+          <div class="text-[10px] text-muted mt-1">{{ scen.note }}</div>
+        </div>
+
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
         <template v-if="isReplay">
           <div v-if="dayLoading" class="bg-card border border-border rounded-lg p-6 text-muted text-sm">加载中…</div>
@@ -2559,8 +2590,8 @@ import {
   getWorkbenchDecisionCard,
   // ★ 2026-10-22：盘中变化检测器（8 档规则采样，零 LLM）
   getWorkbenchScan, getWorkbenchScanSummary,
-  // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子
-  getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch,
+  // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
+  getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
   getUserPositionSizing,
@@ -3477,10 +3508,37 @@ async function loadRiskWatch() {
     riskLoading.value = false
   }
 }
+// ★ 2026-10-23：磨底 2.0 推演证伪记分卡
+const scen = ref(null)
+function scenBadge(s) {
+  if (s === '熊市加深') return 'bg-rose-500/20 text-rose-300'
+  if (s === '提前修复') return 'bg-emerald-500/20 text-emerald-300'
+  return 'bg-amber-500/20 text-amber-300'
+}
+function leanDot(l) {
+  if (l === '多') return 'bg-emerald-400'
+  if (l === '空') return 'bg-rose-400'
+  if (l === '不足') return 'bg-slate-500'
+  return 'bg-slate-400/60'
+}
+function scenVal(s) {
+  const v = s.value
+  if (v === null || v === undefined) return '—'
+  return `${Number(v).toFixed(2)}${s.unit || ''}`
+}
+async function loadScenario() {
+  try {
+    const { data } = await getScenarioWatch(selectedDate.value)
+    scen.value = data || null
+  } catch (e) {
+    scen.value = null
+  }
+}
 watch(selectedDate, () => {
   wsSel.value = ''
   loadWorkbenchScan()
   loadRiskWatch()
+  loadScenario()
 })
 
 // ★ 2026-09-27 事件驱动信号（v0 展示项）。定位三行（项目约定）：
@@ -4279,7 +4337,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan(), loadRiskWatch()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

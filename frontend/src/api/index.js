@@ -445,3 +445,4 @@ export const getWorkbenchScanSummary = (days = 7) => http.get('/system/workbench
 export const getCrowdingWatch = (date) => http.get('/system/crowding-watch', { params: { date }, timeout: 30000 })
 export const getKeyLevelWatch = (date) => http.get('/system/key-level-watch', { params: { date }, timeout: 30000 })
 export const getAiBasketWatch = (date) => http.get('/system/ai-basket-watch', { params: { date }, timeout: 30000 })
+export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { params: { date }, timeout: 30000 })

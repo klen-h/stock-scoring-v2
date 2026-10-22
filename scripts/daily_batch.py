@@ -1069,6 +1069,24 @@ def task_crowding_watch():
         return f"拥挤赛道: WARN {str(e)[:70]}"
 
 
+def task_scenario_watch():
+    """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
+
+    ★ 组合 policy_bottom_watch / key_level_watch / etf_share_watch 的既有结果，
+      把用户推演的验证信号（成交额/涨跌比/10Y/油价/银行补跌/创业板周线/上证位置/
+      汇金ETF）逐条判多空，输出情景倾向（基准/熊市加深/提前修复）+ 日历倒计时。
+    """
+    try:
+        from app import scenario_watch as sw
+        r = sw.run_daily(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"推演证伪: WARN {str(r.get('error'))[:70]}"
+        return (f"推演证伪: {r.get('scenario')} / 偏多 {r.get('n_up')} / "
+                f"偏空 {r.get('n_down')}")
+    except Exception as e:
+        return f"推演证伪: WARN {str(e)[:70]}"
+
+
 def task_ai_basket_watch():
     """AI 硬件主线篮子回撤观察器（2026-10-23）。**纯观察器，不进决策链**。
 
@@ -1226,6 +1244,7 @@ TASKS = {
     "crowding_watch": (task_crowding_watch, "拥挤赛道观察器（行业30日/高位占比）"),
     "key_level_watch": (task_key_level_watch, "指数关键位观察器（前低/整数位）"),
     "ai_basket_watch": (task_ai_basket_watch, "AI硬件篮子回撤观察器"),
+    "scenario_watch": (task_scenario_watch, "磨底2.0推演证伪记分卡"),
     "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
@@ -1249,6 +1268,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
+                 "scenario_watch",
                  "daily_report",
                  "trader_brief", "retention"]
 

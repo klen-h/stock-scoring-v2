@@ -1051,6 +1051,14 @@ def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return ab.load(date)
 
 
+@router.get("/scenario-watch")
+def scenario_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                   user: dict = Depends(get_current_user)) -> Dict:
+    """磨底 2.0 推演证伪记分卡（纯观察，不进决策链）。"""
+    from app import scenario_watch as sw
+    return sw.load(date)
+
+
 @router.get("/workbench-scan/preview")
 def workbench_scan_preview(user: dict = Depends(get_current_user)) -> Dict:
     """只读预览：现在采一档、与当日最近一档比，**不写库**（可反复调用）。

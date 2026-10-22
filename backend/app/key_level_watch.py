@@ -20,6 +20,7 @@ from __future__ import annotations
 ================================================================================
 """
 import math
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -36,6 +37,26 @@ INDICES = [
     ("000905", "中证500"),
     ("000985", "中证全指"),
 ]
+
+# ★ 2026-10-23（用户推演）：结构性关键位（前双底/颈线），非整数关口。
+#   格式 env `KEY_LEVELS_EXTRA`：`代码:位1,位2;代码:位1`（默认上证 3674/3681/3750）。
+def _extra_levels() -> Dict[str, List[float]]:
+    raw = (os.environ.get("KEY_LEVELS_EXTRA") or "000001:3674,3681,3750").strip()
+    out: Dict[str, List[float]] = {}
+    for seg in raw.split(";"):
+        seg = seg.strip()
+        if ":" not in seg:
+            continue
+        code, lv = seg.split(":", 1)
+        vals = []
+        for x in lv.split(","):
+            try:
+                vals.append(float(x.strip()))
+            except (TypeError, ValueError):
+                pass
+        if vals:
+            out[code.strip()] = vals
+    return out
 
 
 def ensure_table() -> None:
@@ -165,16 +186,30 @@ def load(day: str = None) -> Dict:
                             "ORDER BY code", (d,)) if d else []
     except Exception as e:
         return {"date": day, "rows": [], "note": f"读取失败: {str(e)[:80]}"}
+    extra_map = _extra_levels()
     out = []
     for x in rows:
+        code = x.get("code")
+        close = _num(x.get("close"))
+        chg = _num(x.get("chg_pct"))
+        prev = (close / (1 + chg / 100)) if close and chg is not None else None
+        extra = []
+        for L in extra_map.get(code or "", []):
+            extra.append({
+                "level": L,
+                "dist_pct": round((close / L - 1) * 100, 2) if close else None,
+                "broke": bool(close and close < L),
+                "reclaimed": bool(prev and close >= L > prev),
+            })
         out.append({
-            "code": x.get("code"), "name": x.get("name"),
-            "close": _num(x.get("close")), "chg_pct": _num(x.get("chg_pct")),
+            "code": code, "name": x.get("name"),
+            "close": close, "chg_pct": chg,
             "support": _num(x.get("support")), "support_type": x.get("support_type"),
             "dist_pct": _num(x.get("dist_pct")), "status": x.get("status"),
             "broke": bool(x.get("broke")),
             "first_year_low": bool(x.get("first_year_low")),
             "detail": x.get("detail"),
+            "extra": extra,
         })
     return {"date": d, "rows": out,
             "note": "观察器：关键位失守只说明结构走坏，不构成买卖信号；"
