@@ -91,7 +91,7 @@
              0.5% 需要消化；收盘前就有的 0.5% 昨天已反映）。故在此常显"**此刻哪些市场在开市**"
              —— 一眼看清手里这些数字是"活的"还是"上一收盘的静态值"。
              时段判定**复用后端 `market_clock`**（唯一实现），前端不复制逻辑。 -->
-        <div v-if="macroClock" class="text-center px-1.5 border-l border-border/60"
+        <!-- <div v-if="macroClock" class="text-center px-1.5 border-l border-border/60"
              :title="`北京时间 ${macroClock.beijing_time}｜A股 9:30-15:00 · 港股 9:30-16:00 · 日经 8:00-14:00 · 美股 21:30-04:00`">
           <div class="text-[10px] text-muted">外盘开市</div>
           <div class="text-[11px] font-semibold leading-snug"
@@ -99,7 +99,7 @@
             {{ openMarkets.length ? openMarkets.map(m => m.label).join('/') : '全部收盘' }}
           </div>
           <div class="text-[10px] text-muted font-mono">{{ macroClock.beijing_time }}</div>
-        </div>
+        </div> -->
         <!-- ★ 2026-09-25 P1（用户："到了 A 股开盘，如果没总结外盘正常开市时间，会漏点什么"）：
              显示**自上次 A 股收盘以来**外盘的累计变化 —— 这才是"A 股开盘要消化的新增信息"。
              只按 |变化| 取前 2 项（顶栏防过载），全部项与口径说明放 title。
@@ -261,7 +261,11 @@
     <div class="bg-card border border-border rounded-lg p-1.5 grid grid-cols-3 md:grid-cols-6 gap-1">
       <button v-for="p in PHASES" :key="p.key"
               class="relative rounded-lg px-1.5 py-2 text-center transition-all border min-w-0"
-              :class="nodeClass(p.key)"
+              :class="[nodeClass(p.key),
+                       selectedPhase === p.key
+                         ? 'ring-2 ring-accent/70 shadow-[0_0_14px_rgba(88,166,255,0.45)]'
+                         : (isToday && livePhase === p.key
+                            ? 'ring-1 ring-accent/40 animate-pulse' : '')]"
               @click="selectPhase(p.key)">
         <!-- 徽标：未决策教练卡数（当天） / 简报降级 -->
         <span v-if="badge(p.key)" class="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1
@@ -270,24 +274,15 @@
           {{ badge(p.key) }}
         </span>
         <div class="text-sm font-bold tracking-wide truncate" :class="PHASE_STYLE[p.key].text">{{ p.label }}</div>
-        <div class="text-[11px] font-mono text-muted mt-0.5">{{ p.time }}</div>
-        <!-- 温和自动跟随提示：用户停在别处而实时阶段已推进
-             ★ 2026-09-25 用户反馈："选择当前流转状态的时候高度会缩小" —— 根因就是这里：
-               原为 `v-if="... && selectedPhase !== p.key"` ⇒ **一旦选中该节点，这行直接消失**
-               ⇒ 该按钮比其它按钮矮一截，整条时间轴跟着抖动。
-               ⇒ 改为"**始终渲染、选中时用 invisible 隐身**"（`visibility:hidden` 仍占位）
-                  ⇒ 高度恒定，提示照旧只在未选中时可见。 -->
-        <div v-if="isToday && livePhase === p.key"
-             class="text-[10px] mt-1 truncate"
-             :class="[PHASE_STYLE[p.key].text, selectedPhase === p.key ? 'invisible' : 'animate-pulse']">
-          ● 已进入，点击切换</div>
       </button>
     </div>
 
     <!-- 主体：主工作区（随阶段切换/懒加载） + 常驻右栏 -->
-    <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-4 items-start">
+    <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3 items-start">
       <!-- ── 主工作区 ── -->
-      <div class="space-y-4 min-w-0">
+      <div class="space-y-3 min-w-0">
+        <!-- ★ 2026-10-23：观察器 + 教练卡 左右并排 -->
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
              原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
@@ -478,6 +473,30 @@
               配色：涨跌幅=红涨绿跌；回撤 ≤-25% 标红（风险）；距支撑 ≤1.5% 标黄（逼近）；状态标签单独着色。
             </span>
           </div>
+        </div>
+
+        <!-- 教练卡（今日）—— 与观察器左右并排（原在常驻右栏） -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="todoOpen = !todoOpen" :title="todoOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>教练卡
+              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
+                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
+            </button>
+            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
+          </div>
+          <template v-if="todoOpen">
+            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
+            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+            </div>
+            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
+          </template>
+          <div v-else class="text-[10px] text-muted">
+            已收起（{{ todayCoach.length }} 条<template v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
+          </div>
+        </div>
         </div>
 
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
@@ -920,7 +939,7 @@
                   右列＝隔夜与今日（财经日历）+ 决策简报（盘前）
                · 断点 **2xl**：主区已被常驻右栏占 320px，xl 下每列仅 ~460px 太挤。
                · 两列**各自堆叠**（masonry）而非 grid 行对齐 —— 否则短列会留大片空洞。 -->
-          <div class="grid grid-cols-1 2xl:grid-cols-2 gap-4 items-start">
+          <div class="grid grid-cols-1 2xl:grid-cols-2 gap-3 items-start">
           <div class="space-y-4 min-w-0">
           <!-- ★ P1 今日决策卡（规则引擎确定性输出；空状态给生成按钮，不静默） -->
           <div class="bg-card border border-accent/40 rounded-lg p-4">
@@ -1286,6 +1305,7 @@
                **① 看盘序 = 全宽长卡，不参与分栏** —— 它内部是 6 格横向指标 + 数行横向信息
                （大小盘风格 / 尾盘承接 / 昨日涨停表现 / 竞价 Top5），天然"横着读"
                ⇒ 挤进半列必然折行。②③④⑤ 才分栏（安排见下方注释）。 -->
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
           <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div v-if="emotion && emotion.trading_day === false"
@@ -1422,111 +1442,6 @@
             </div>
           </div>
 
-          <!-- ★★ 2026-10-18：**市场底确认清单**（`app/policy_bottom_watch.py`）——
-               把"政策底已现、市场底滞后 1~3 个月"这个判断，变成每天可打勾的 5 条。
-               ⚠️ 它是**观察器，不是信号**：不改分、不进闸门、不碰模拟盘准入（模块头有预登记声明）。
-               ⚠️ 只有第①条（国家队公告）可人工打勾 —— 该类信息无结构化数据源，打勾权在人，
-                  快讯关键词只作辅助；④ 涨跌比在"冻结日"会显示⬜(数据不足)，那是**缺失≠不满足**。 -->
-          <div v-if="pbw" class="rounded-xl border border-border p-4 bg-panel/60">
-            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <div class="text-sm font-semibold">市场底确认清单
-                <span class="text-[10px] text-muted font-normal">
-                  （观察器 · 非信号 · {{ pbw.n_checked }}/{{ pbw.n_total }}<template
-                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）
-                </span></div>
-              <span class="text-[10px]"
-                    :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
-                {{ pbw.position_hint }}</span>
-            </div>
-            <div class="space-y-1 text-[11px]">
-              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
-                <div class="flex items-start gap-2">
-                  <span class="shrink-0"
-                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
-                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
-                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
-                  </span>
-                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
-                  <span class="flex-1 break-all">{{ it.detail }}</span>
-                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
-                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
-                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
-                  <button v-if="it.key === 'nation_team_ann'"
-                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
-                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
-                          @click="toggleNationTeam">
-                    {{ it.checked ? '取消' : '打勾' }}
-                  </button>
-                </div>
-                <!-- ★ 2026-10-19 自动提示明细：**只给证据与链接，不打勾**（打勾是人的判断）。
-                     「自动检查不可用」要显式区别于「未发现」——缺失 ≠ 不满足。 -->
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
-                     :href="h.url || undefined" target="_blank" rel="noopener"
-                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
-                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
-                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
-                  </a>
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
-                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="annRefreshing"
-                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
-                            @click="refreshAnnouncements">
-                      {{ annRefreshing ? '扫描中…' : '重扫' }}
-                    </button>
-                  </div>
-                </div>
-                <!-- ★ 2026-10-19 份额异动（行为级证据，比公告更早）：
-                     **连续 2 日 ≥8% 会把第①条自动打勾**（人工点过之后以人工为准）。 -->
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
-                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="etfRefreshing"
-                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
-                            @click="refreshEtf">
-                      {{ etfRefreshing ? '计算中…' : '重算' }}
-                    </button>
-                  </div>
-                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
-                       class="text-[10px] text-muted break-all">
-                    {{ r.code }} {{ r.name }}：今日
-                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
-                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
-                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
-                    </template>
-                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
-                  </div>
-                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
-                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
-                    （已有人工判断，自动结果不覆盖）
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
-                 · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
-                 · 右列 = **行动**（⑤ 持仓状态；原 ④ 待执行决策 2026-09-28 已删 —— 与右栏教练卡重复）
-               与竞价看板同一切法逻辑（左"读"右"做"），但**不加竖线**（多张独立卡各有边框）。
-               ⚠️ 断点 **xl**(1280)；两列各自 `space-y-4` 堆叠、不做行对齐 ——
-                 ⑤ 持仓状态的高度随持仓只数变化，行对齐必在短列留大片空洞。 -->
-          <!-- ★★ 2026-09-28（用户："主线板块 Top5 放在左边，涨停梯队与清单和持仓状态放在右边"）：
-               两列内容**互换** —— 用 **CSS `order`**（`xl:order-*` 仅宽屏生效）实现，
-               而非搬动 ~200 行模板：**同一份 DOM、只改视觉列序** ⇒ 零搬运风险、易于回退。
-               生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态**。
-               （④ 待执行决策 2026-09-28 已删 —— 教练卡统一只在常驻右栏展示一份。）
-               ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③ 排。 -->
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
-          <div class="min-w-0 space-y-4 xl:order-2">
           <!-- ★ B2 涨停复盘（zzshare：连板梯队/涨停清单；匿名限流时占位）
                ★ 2026-09-25：优先读**已落库快照**（`zz_daily_snapshots`）—— 原实现每次直连
                  zzshare ⇒ 匿名受限/盘中易失败，而日批明明已落库一份完整 payload。 -->
@@ -1561,8 +1476,7 @@
                   <b class="font-mono text-gray-300">{{ realtimeUplimit.is_intraday
                     ? (realtimeUplimit.updated_at || '').slice(11) : realtimeUplimit.data_date }}</b>
                   <span class="text-[10px]">{{ realtimeUplimit.is_intraday ? '' : '（收盘定稿）' }}</span></span>
-                <span class="text-muted">涨停 <b class="font-mono text-red-400">{{ realtimeUplimit.limit_up }}</b></span>
-                <span class="text-muted">跌停 <b class="font-mono text-emerald-400">{{ realtimeUplimit.limit_down }}</b></span>
+                <!-- ★ 2026-10-23：涨停/跌停已在上方「看盘序」显示，此处去重，只留炸板/一字/晋级率 -->
                 <span class="text-muted">炸板 <b class="font-mono text-amber-300">{{ realtimeUplimit.broken }}</b><span
                   class="text-[10px]">（{{ realtimeUplimit.broken_rate ?? '—' }}%）</span></span>
                 <span class="text-muted">一字 <b class="font-mono text-gray-300">{{ realtimeUplimit.yizi }}</b></span>
@@ -1682,6 +1596,113 @@
             </template>
           </div>
 
+        </div>
+          <!-- ★★ 2026-10-18：**市场底确认清单**（`app/policy_bottom_watch.py`）——
+               把"政策底已现、市场底滞后 1~3 个月"这个判断，变成每天可打勾的 5 条。
+               ⚠️ 它是**观察器，不是信号**：不改分、不进闸门、不碰模拟盘准入（模块头有预登记声明）。
+               ⚠️ 只有第①条（国家队公告）可人工打勾 —— 该类信息无结构化数据源，打勾权在人，
+                  快讯关键词只作辅助；④ 涨跌比在"冻结日"会显示⬜(数据不足)，那是**缺失≠不满足**。 -->
+          <!-- ★ 2026-10-23：已移到右侧常驻栏（原教练卡位置，见 aside）—— 旧块停用 -->
+          <div v-if="false" class="rounded-xl border border-border p-4 bg-panel/60">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div class="text-sm font-semibold">市场底确认清单
+                <span class="text-[10px] text-muted font-normal">
+                  （观察器 · 非信号 · {{ pbw.n_checked }}/{{ pbw.n_total }}<template
+                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）
+                </span></div>
+              <span class="text-[10px]"
+                    :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
+                {{ pbw.position_hint }}</span>
+            </div>
+            <div class="space-y-1 text-[11px]">
+              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
+                <div class="flex items-start gap-2">
+                  <span class="shrink-0"
+                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
+                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
+                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                  </span>
+                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
+                  <span class="flex-1 break-all">{{ it.detail }}</span>
+                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
+                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
+                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
+                  <button v-if="it.key === 'nation_team_ann'"
+                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
+                          @click="toggleNationTeam">
+                    {{ it.checked ? '取消' : '打勾' }}
+                  </button>
+                </div>
+                <!-- ★ 2026-10-19 自动提示明细：**只给证据与链接，不打勾**（打勾是人的判断）。
+                     「自动检查不可用」要显式区别于「未发现」——缺失 ≠ 不满足。 -->
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
+                     :href="h.url || undefined" target="_blank" rel="noopener"
+                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
+                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
+                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
+                  </a>
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
+                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="annRefreshing"
+                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
+                            @click="refreshAnnouncements">
+                      {{ annRefreshing ? '扫描中…' : '重扫' }}
+                    </button>
+                  </div>
+                </div>
+                <!-- ★ 2026-10-19 份额异动（行为级证据，比公告更早）：
+                     **连续 2 日 ≥8% 会把第①条自动打勾**（人工点过之后以人工为准）。 -->
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
+                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="etfRefreshing"
+                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
+                            @click="refreshEtf">
+                      {{ etfRefreshing ? '计算中…' : '重算' }}
+                    </button>
+                  </div>
+                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
+                       class="text-[10px] text-muted break-all">
+                    {{ r.code }} {{ r.name }}：今日
+                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
+                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
+                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
+                    </template>
+                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
+                  </div>
+                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
+                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
+                    （已有人工判断，自动结果不覆盖）
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
+                 · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
+                 · 右列 = **行动**（⑤ 持仓状态；原 ④ 待执行决策 2026-09-28 已删 —— 与右栏教练卡重复）
+               与竞价看板同一切法逻辑（左"读"右"做"），但**不加竖线**（多张独立卡各有边框）。
+               ⚠️ 断点 **xl**(1280)；两列各自 `space-y-4` 堆叠、不做行对齐 ——
+                 ⑤ 持仓状态的高度随持仓只数变化，行对齐必在短列留大片空洞。 -->
+          <!-- ★★ 2026-09-28（用户："主线板块 Top5 放在左边，涨停梯队与清单和持仓状态放在右边"）：
+               两列内容**互换** —— 用 **CSS `order`**（`xl:order-*` 仅宽屏生效）实现，
+               而非搬动 ~200 行模板：**同一份 DOM、只改视觉列序** ⇒ 零搬运风险、易于回退。
+               生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态**。
+               （④ 待执行决策 2026-09-28 已删 —— 教练卡统一只在常驻右栏展示一份。）
+               ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③ 排。 -->
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
+          <div class="min-w-0 space-y-4 xl:order-2">
           <!-- ★ 2026-09-25 用户："持仓状态放在涨停梯队与清单下面，主线板块 Top5 移到右边"
                ⇒ 左列 = ② 涨停梯队与清单 + ⑤ 持仓状态；右列 = ③ 主线板块（+ 当时的 ④ 待执行决策）。
                ★ 本次**必须搬内容**（顺序变更无法用"选切点"实现）：先在 ② 之后**插入副本**，
@@ -2403,7 +2424,7 @@
       </div>
 
       <!-- ── 常驻右栏（全天不变，不被时间轴切走） ── -->
-      <aside class="space-y-4 min-w-0">
+      <aside class="space-y-3 min-w-0">
         <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：由右栏**最下**移到**最上**
              —— 它是"系统今天说了什么"的全时段入口，置顶后阅读顺序成：先看系统提示 →
              再看待办/持仓/评分榜。默认收起、折叠控件在标题行（见卡内注释）。
@@ -2521,29 +2542,95 @@
                 ④ 标题由「待办 · 未决策教练卡」改为「**教练卡**」：它现在同时承载
                    "未决策待办"与"已决策结果"，旧名只说一半（徽标仍标未决策条数）。
                 ⚠️ 回放（isReplay）时 `readonly=true` ⇒ 全部只读 + 状态徽标（历史不可改）。 -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                    @click="todoOpen = !todoOpen"
-                    :title="todoOpen ? '点击收起' : '点击展开'">
-              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>
-              教练卡
-              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
-                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
+        <!-- 市场底确认清单（2026-10-23：从盘中移到原教练卡位置，可收起展开） -->
+        <div v-if="pbw" class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
+                    @click="togglePbw" :title="pbwOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ pbwOpen ? '▼' : '▶' }}</span>
+              <span>市场底确认清单
+                <span class="text-[10px] text-muted font-normal">
+                  （{{ pbw.n_checked }}/{{ pbw.n_total }}<template
+                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）</span>
+              </span>
             </button>
-            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
+            <span class="text-[10px]"
+                  :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
+              {{ pbw.position_hint }}</span>
           </div>
-          <template v-if="todoOpen">
-            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
-              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+          <template v-if="pbwOpen">
+            <div class="space-y-1 text-[11px]">
+              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
+                <div class="flex items-start gap-2">
+                  <span class="shrink-0"
+                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
+                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
+                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                  </span>
+                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
+                  <span class="flex-1 break-all">{{ it.detail }}</span>
+                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
+                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
+                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
+                  <button v-if="it.key === 'nation_team_ann'"
+                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
+                          @click="toggleNationTeam">
+                    {{ it.checked ? '取消' : '打勾' }}
+                  </button>
+                </div>
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
+                     :href="h.url || undefined" target="_blank" rel="noopener"
+                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
+                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
+                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
+                  </a>
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
+                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="annRefreshing"
+                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
+                            @click="refreshAnnouncements">
+                      {{ annRefreshing ? '扫描中…' : '重扫' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-if="it.key === 'nation_team_ann'"
+                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                  <div class="flex items-center gap-2 text-[10px]"
+                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
+                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
+                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
+                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                            :disabled="etfRefreshing"
+                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
+                            @click="refreshEtf">
+                      {{ etfRefreshing ? '计算中…' : '重算' }}
+                    </button>
+                  </div>
+                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
+                       class="text-[10px] text-muted break-all">
+                    {{ r.code }} {{ r.name }}：今日
+                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
+                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
+                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
+                    </template>
+                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
+                  </div>
+                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
+                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
+                    （已有人工判断，自动结果不覆盖）
+                  </div>
+                </div>
+              </div>
             </div>
-            <!-- ★ 未决策可交互（执行/放弃回写）；已决策自动变只读结果徽标；回放全只读 -->
-            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
           </template>
           <div v-else class="text-[10px] text-muted">
-            已收起（{{ todayCoach.length }} 条<template
-              v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
+            已收起（{{ pbw.n_checked }}/{{ pbw.n_total }}）—— 点击标题展开
           </div>
         </div>
 
