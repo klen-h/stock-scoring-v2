@@ -5,7 +5,9 @@
     <!-- ① 评分榜 Top10 -->
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between mb-2">
-        <div class="text-sm font-semibold">评分榜 Top10
+        <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                @click="toggleTop" :title="topOpen ? '点击收起' : '点击展开'">
+          <span class="text-[10px] text-muted">{{ topOpen ? '▼' : '▶' }}</span>评分榜 Top10
           <!-- ★ 口径如实标注：本地实时（前端引擎，盘中可实时）vs 后端批次 -->
           <!-- ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道
                他在实时刷新"）：盘中（含竞价/盘中/午盘）显示**距下次刷新的秒数**。
@@ -17,7 +19,7 @@
                   ? '本地计算：前端 K 线包 + 实时行情、本地精算 ⇒ 盘中为实时（与榜单页同源）。K 线包 2026-10-11 起扩容纳入科创板；包未覆盖的票自动缺席'
                   : '后端批次：/score/batch/top（盘中通常是上一交易日快照）。全市场口径（含创业板/科创板）；科创/创业已用行内标签标注'">
             （{{ topMode === 'local' ? '本地实时' : '后端批次' }}<template
-              v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template>）</span></div>
+              v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template>）</span></button>
         <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
       </div>
       <!-- ★ 2026-10-11（B1 拍板）：FAIL 披露（PLAN_SCORE_EDGE.md §9）—— 一行成本防误读 -->
@@ -26,6 +28,11 @@
       </div>
       <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
       <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
+      <div v-else-if="!topOpen" class="text-[11px] text-muted truncate">
+        Top1 {{ topItems[0].name || topItems[0].code }}
+        <b class="font-mono text-gray-200">{{ topItems[0].total_score }}</b>
+        · 共 {{ topItems.length }} 只
+      </div>
       <div v-else class="space-y-1 text-xs">
         <div v-for="(r, i) in topItems" :key="r.code"
              class="flex items-center gap-1.5 border-b border-border/40 py-1.5">
@@ -187,6 +194,18 @@ const props = defineProps({
 
 // 观察池默认**收起**（用户要求）
 const watchOpen = ref(false)
+// ★ 2026-10-23（用户："评分榜 Top10 也做展开收起"）：默认展开，状态记 localStorage
+const TOP_KEY = 'wb_top_open'
+const topOpen = ref((() => {
+  try {
+    const v = localStorage.getItem(TOP_KEY)
+    return v == null ? true : v === '1'
+  } catch { return true }
+})())
+function toggleTop() {
+  topOpen.value = !topOpen.value
+  try { localStorage.setItem(TOP_KEY, topOpen.value ? '1' : '0') } catch { /* ignore */ }
+}
 
 /**
  * 主力阶段（六档全覆盖）：本地模式来自 `mainforce.phase`（K 线包），

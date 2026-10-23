@@ -14,8 +14,8 @@
            ★ 2026-09-29：上述是**默认（内联卡）**口径；`full=true`（顶栏浮层）改成
              "可换行 + 不截断"= **展示全部**（见 `full` prop 注释）。 -->
       <div :class="full
-              ? 'flex flex-wrap items-center gap-x-5 gap-y-2 min-w-0'
-              : 'flex items-center gap-5 min-w-0'">
+              ? 'flex flex-wrap items-center gap-x-3 gap-y-1.5 min-w-0'
+              : 'flex items-center gap-3 min-w-0'">
         <div class="flex items-center gap-2.5 flex-shrink-0">
           <span class="text-4xl font-bold font-mono leading-none"
                 :class="dirColor(macro.direction?.level)">

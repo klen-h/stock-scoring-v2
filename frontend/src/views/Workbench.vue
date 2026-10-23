@@ -104,15 +104,44 @@
              显示**自上次 A 股收盘以来**外盘的累计变化 —— 这才是"A 股开盘要消化的新增信息"。
              只按 |变化| 取前 2 项（顶栏防过载），全部项与口径说明放 title。
              ⚠️ 用 `change_pct`（相对昨结）做不到这件事：它含"A 股收盘前就已反映"的部分。 -->
-        <div v-if="overnightItems.length" class="text-center px-1.5 border-l border-border/60"
-             :title="overnightTitle">
-          <div class="text-[10px] text-muted">隔夜{{ overnightBaseLabel }}</div>
+        <button v-if="overnightItems.length" type="button"
+                class="text-center px-1.5 border-l border-border/60 hover:opacity-80"
+                title="点击查看全部隔夜品种与口径"
+                @click.stop="overnightOpen = !overnightOpen">
+          <div class="text-[10px] text-muted">隔夜{{ overnightBaseLabel }} <span class="text-[9px]">▼</span></div>
           <div v-for="o in overnightItems.slice(0, 2)" :key="o.key"
                class="text-[11px] font-mono leading-snug" :class="pctClass(o.pct)">
             {{ o.label }} {{ signNum(o.pct) }}%
           </div>
-        </div>
+        </button>
       </div>
+
+      <!-- ★ 2026-10-23：隔夜明细浮层（点击顶栏「隔夜」展开，列出全部品种） -->
+      <Teleport to="body">
+        <div v-if="overnightOpen" class="fixed inset-0 z-40" @click="overnightOpen = false"></div>
+        <div v-if="overnightOpen"
+             class="fixed right-4 top-[3.25rem] z-50 w-[min(92vw,380px)]
+                    bg-card border border-white/15 rounded-lg p-3 text-xs
+                    shadow-[0_24px_64px_-16px_rgba(0,0,0,0.9)]"
+             @click.stop>
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-sm font-semibold">隔夜{{ overnightBaseLabel }}</div>
+            <button type="button" class="text-muted hover:text-gray-200 px-1"
+                    @click="overnightOpen = false">✕</button>
+          </div>
+          <div class="text-[10px] text-muted mb-1.5">
+            自上次 A 股收盘以来的累计变化（正=该品种上涨）；只影响"开盘要消化多少"，不是信号。
+          </div>
+          <div class="space-y-0.5">
+            <div v-for="o in overnightItems" :key="o.key"
+                 class="flex items-center justify-between border-b border-border/40 py-1">
+              <span>{{ o.label }}</span>
+              <span class="font-mono" :class="pctClass(o.pct)">{{ signNum(o.pct) }}%</span>
+            </div>
+          </div>
+          <div class="text-[10px] text-muted mt-2 whitespace-pre-line">{{ overnightTitle }}</div>
+        </div>
+      </Teleport>
 
       <!-- ★★ 2026-09-28（用户："把宏观方向 · 偏空的分数也移到顶部右上角，放在情绪的左边…
            但是快讯的也很重要，以及支撑因素、压制因素、过热项、过冷项也需要展示" ⇒ 方案 A）：
@@ -259,23 +288,29 @@
     <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-4 items-start">
       <!-- ── 主工作区 ── -->
       <div class="space-y-4 min-w-0">
-        <!-- ★ 2026-10-22：盘中「变化检测器」—— 8 档规则采样（09:45~14:45）。
-             定位：展示项，回答"这半小时有没有料"；零 LLM、不进决策链。
-             默认展开、点标题收起；回放模式按 selectedDate 查历史。 -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <div class="flex items-center justify-between cursor-pointer select-none"
-               @click="wsOpen = !wsOpen">
-            <div class="text-sm font-semibold">盘中变化 · 8 档
-              <span class="text-[10px] text-muted font-normal">（09:45~14:45 · 规则采样，零 LLM）</span>
+        <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
+             原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
+             摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1">
+            <div class="text-sm font-semibold">观察器
+              <span class="text-[10px] text-muted font-normal">（纯观察 · 不进决策链）</span>
             </div>
-            <div class="flex items-center gap-3 text-[11px]">
-              <span v-if="wsDay" class="text-muted">当日
-                <b :class="wsDay.worth_n ? 'text-amber-300' : 'text-muted'">{{ wsDay.worth_n }}/{{ wsDay.judged }}</b> 有料</span>
-              <span v-if="wsSummary && wsSummary.worth_rate != null" class="text-muted">7日
-                <b class="text-accent">{{ wsSummary.worth_rate }}</b></span>
-              <span class="text-muted">{{ wsOpen ? '收起' : '展开' }}</span>
-            </div>
+            <button type="button" class="text-[10px] text-muted hover:text-accent"
+                    :title="obsAllOpen ? '全部收起' : '全部展开'"
+                    @click="toggleAllObs">{{ obsAllOpen ? '全部收起 ▴' : '全部展开 ▾' }}</button>
           </div>
+
+          <!-- ① 盘中变化 -->
+          <div class="border-t border-border/40 py-1">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    :title="wsPick?.reasons?.map(x => x.text).join('；') || ''"
+                    @click="wsOpen = !wsOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="wsDot"></span>
+              <span class="text-xs font-semibold shrink-0">盘中变化</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ wsLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ wsOpen ? '▾' : '▸' }}</span>
+            </button>
 
           <div v-if="wsLoading" class="text-xs text-muted mt-2">加载中…</div>
           <div v-else-if="wsErr" class="text-xs text-muted mt-2">{{ wsErr }}</div>
@@ -315,16 +350,18 @@
               </div>
             </template>
           </template>
-        </div>
-
-        <!-- ★ 2026-10-23：拥挤赛道 / 指数关键位（纯观察器，不进决策链） -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-sm font-semibold">拥挤与关键位
-              <span class="text-[10px] text-muted font-normal">（观察器 · 不进决策链）</span>
-            </div>
-            <span v-if="crowd && crowd.date" class="text-[10px] text-muted font-mono">{{ crowd.date }}</span>
           </div>
+
+          <!-- ② 拥挤与关键位（AI 篮子在④） -->
+          <div class="border-t border-border/40 py-1">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="crowdOpen = !crowdOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="crowdDot"></span>
+              <span class="text-xs font-semibold shrink-0">拥挤与关键位</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ crowdLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ crowdOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="crowdOpen" class="mt-1.5">
           <div v-if="riskLoading" class="text-xs text-muted">加载中…</div>
           <div v-else-if="riskErr" class="text-xs text-muted">{{ riskErr }}</div>
           <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
@@ -361,53 +398,19 @@
               </div>
             </div>
           </div>
-          <!-- ★ 2026-10-23：AI 硬件主线篮子（纯观察） -->
-          <div v-if="!riskLoading && !riskErr && aiBasket && aiBasket.basket"
-               class="mt-3 pt-2 border-t border-border/40 text-xs">
-            <div class="flex items-center gap-3 flex-wrap">
-              <span class="text-[11px] text-muted">AI 硬件篮子</span>
-              <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
-                回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
-              <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-rise' : 'text-fall'">
-                5日 {{ fmtPct(aiBasket.basket.ret5) }}</span>
-              <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">
-                30日 {{ fmtPct(aiBasket.basket.ret30) }}</span>
-              <span class="text-muted">高位占比
-                {{ Math.round((aiBasket.basket.pos120 || 0) * 100) }}%</span>
-            </div>
-            <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px]">
-              <span v-for="r in (aiBasket.rows || [])" :key="r.code" class="text-muted">
-                {{ r.name }}
-                <span class="font-mono" :class="(r.dd120 || 0) <= -40 ? 'text-rose-300' : ''">{{ fmtPct(r.dd120) }}</span>
-              </span>
             </div>
           </div>
-          <div class="text-[10px] text-muted mt-2">
-            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
-            篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
-          </div>
-        </div>
 
-        <!-- ★ 2026-10-23：磨底 2.0 推演证伪记分卡（组合信号，不进决策链） -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <div class="flex items-center justify-between mb-2">
-            <div class="text-sm font-semibold">推演证伪 · 磨底 2.0
-              <span class="text-[10px] text-muted font-normal">（组合信号 · 观察器）</span>
-            </div>
-            <div class="flex items-center gap-2 text-[11px]">
-              <span v-if="scen && scen.scenario" class="px-1.5 rounded"
-                    :class="scenBadge(scen.scenario)">{{ scen.scenario }}</span>
-              <span v-if="scen && scen.scenario_candidate"
-                    class="px-1.5 rounded bg-rose-500/20 text-rose-300"
-                    title="近 48h 实际动能事件 ≥3 条；仅提示，不自动改仓">
-                {{ scen.scenario_candidate }}</span>
-              <span v-if="scen && scen.checklist && scen.checklist.n_total"
-                    class="text-muted" :title="scen.checklist.hint || ''">
-                清单 {{ scen.checklist.n_checked }}/{{ scen.checklist.n_total }}</span>
-              <span v-if="scen" class="text-muted">{{ scen.lean }} ·
-                {{ scen.n_up }}多 / {{ scen.n_down }}空</span>
-            </div>
-          </div>
+          <!-- ③ 推演证伪 -->
+          <div class="border-t border-border/40 py-1">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="scenOpen = !scenOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="scenDot"></span>
+              <span class="text-xs font-semibold shrink-0">推演证伪</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ scenLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ scenOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="scenOpen" class="mt-1.5">
           <div v-if="!scen" class="text-xs text-muted">加载中…</div>
           <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1 text-xs">
             <div v-for="s in scen.signals" :key="s.key" class="flex items-center gap-1.5">
@@ -436,6 +439,42 @@
             ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
           </div>
           <div class="text-[10px] text-muted mt-1">{{ scen.note }}</div>
+            </div>
+          </div>
+
+          <!-- ④ AI 硬件篮子 -->
+          <div v-if="aiBasket && aiBasket.basket" class="border-t border-border/40 py-1">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="aiOpen = !aiOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="aiDot"></span>
+              <span class="text-xs font-semibold shrink-0">AI 硬件篮子</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ aiLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ aiOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="aiOpen" class="mt-1.5 text-xs">
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
+                  回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
+                <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                  5日 {{ fmtPct(aiBasket.basket.ret5) }}</span>
+                <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                  30日 {{ fmtPct(aiBasket.basket.ret30) }}</span>
+                <span class="text-muted">高位占比
+                  {{ Math.round((aiBasket.basket.pos120 || 0) * 100) }}%</span>
+              </div>
+              <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11px]">
+                <span v-for="r in (aiBasket.rows || [])" :key="r.code" class="text-muted">
+                  {{ r.name }}
+                  <span class="font-mono" :class="(r.dd120 || 0) <= -40 ? 'text-rose-300' : ''">{{ fmtPct(r.dd120) }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div class="text-[10px] text-muted mt-1">
+            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
+            篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
+          </div>
         </div>
 
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
@@ -506,8 +545,8 @@
                ③ 高开榜只给名字与幅度，**未标注"是否池内 / 有信号"**（数据现成）。
                ④ 无竞价量比（需"昨日同期竞价额"，本项目无分时数据 ⇒ 短期做不到，诚实标注）。 -->
         <template v-else-if="selectedPhase === 'auction'">
-          <div class="bg-card border border-indigo-500/40 rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
+          <div class="bg-card border border-indigo-500/40 rounded-lg p-3">
+            <div class="flex items-center justify-between mb-1.5">
               <div class="text-sm font-semibold">竞价看板
                 <span class="text-[10px] text-muted font-normal">（9:20 后不可撤单 · 9:25 定稿）</span></div>
               <span class="text-[10px] text-muted font-mono">{{ emotion?.as_of || '' }}</span>
@@ -1160,8 +1199,8 @@
           <div class="space-y-4 min-w-0">
 
           <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-1.5">
               <div class="text-sm font-semibold">隔夜与今日（财经日历）</div>
               <router-link target="_blank" to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
             </div>
@@ -1191,13 +1230,20 @@
             </div>
             <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
             <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
-            <div v-for="(e, i) in calendarToday" :key="i" class="text-xs border-b border-border/40 py-1">
-              <span class="font-mono text-muted mr-2">{{ (e.time || e.date || '').slice(0, 16) }}</span>
-              {{ e.title || e.event || e.content || e.name || '—' }}
+            <div v-else class="text-xs">
+              <div v-for="(e, i) in calShown" :key="i" class="border-b border-border/40 py-1">
+                <span class="font-mono text-muted mr-2">{{ (e.time || e.date || '').slice(0, 16) }}</span>
+                {{ e.title || e.event || e.content || e.name || '—' }}
+              </div>
+              <button v-if="calendarToday.length > 3" type="button"
+                      class="mt-1 text-[10px] text-accent hover:underline"
+                      @click="calOpen = !calOpen">
+                {{ calOpen ? '收起' : `展开全部（${calendarToday.length} 条）` }}
+              </button>
             </div>
           </div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-1.5">
               <div class="text-sm font-semibold">决策简报（盘前）<span
                 v-if="premarketOver" class="ml-2 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[10px]">盘前已结束 · 以下为盘前回顾（09:10 生成），勿据此做盘中决策</span></div>
               <div class="flex items-center gap-2">
@@ -1222,7 +1268,9 @@
             <div v-else-if="briefPhase !== 'premarket' || !briefMd" class="text-muted text-xs">—（尚未生成）</div>
             <!-- ★ 2026-10-11：简报 prompt 已约定首行 `**结论**：…` ⇒ 走「观点卡」抽出结论条置顶；
                  「依据」= 该做/该防等原文，**不折叠**（简报本身是给人通读的，折叠只添堵）。 -->
-            <InsightBody v-else :text="briefMd" class="text-xs" />
+            <div v-else class="max-h-[320px] overflow-y-auto pr-1">
+              <InsightBody :text="briefMd" class="text-xs" />
+            </div>
           </div>
           </div>
           </div>
@@ -2433,7 +2481,10 @@
              ⚠️ 与顶栏「宏观」浮层**同源**（同一个 `flashDiag` / `sizing`）⇒ 两处不会不一致；
                完整口径（油金相关性说明、周回撤曲线等）仍在浮层那张卡里。
              ⚠️ 数据未产出时**整块不渲染** —— 不占位、不假装有结论。 -->
-        <div v-if="flashDiag" class="bg-card border border-border rounded-lg px-4 py-2.5 text-xs">
+        <router-link v-if="flashDiag" to="/monitor" target="_blank" rel="noopener"
+                     title="点击新标签打开「快讯监控」"
+                     class="group relative block bg-card border border-border rounded-lg px-4 py-2.5 text-xs hover:border-accent/40 transition-colors">
+          <span class="absolute top-1 right-2 text-[10px] text-muted group-hover:text-accent">↗</span>
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-sm font-bold whitespace-nowrap"
                   :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
@@ -2452,7 +2503,7 @@
                :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
             {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
           </div>
-        </div>
+        </router-link>
 
         <!-- 教练卡（今日）—— **全站唯一一份**
              ★★ 2026-09-28 最终形态（用户："只留一份在右栏即可，只是决策的结果展示在那里即可，
@@ -2898,6 +2949,10 @@ const barWShare = (pct) => {
 }
 const calendarToday = ref([])
 const calendarErr = ref('')
+// ★ 2026-10-23：今日事件默认只显示 3 条（盘前卡够用即可），可展开
+const calOpen = ref(false)
+const calShown = computed(() =>
+  calOpen.value ? calendarToday.value : calendarToday.value.slice(0, 3))
 // ★ 2026-09-29（P1）：日历**前瞻**（未来 3 天核心事件）—— 与盘前企微推送**同口径**
 //   （筛选全在后端 `flash/calendar_ahead`：国家白名单 + 核心指标词 + 5星通道 + 同指标合并）。
 //   与下方 `calendarToday`（全量今日事件、含官员讲话）互补：它回答"**哪天是数据敏感期**"。
@@ -3192,9 +3247,9 @@ const openMarkets = computed(() => {
   //    用 `!== false` 兼容未升级的后端（字段缺失时不误判为休市）。
   if (c.is_a_stock_trading && c.is_trading_day !== false) out.push({ k: 'cn', label: 'A股' })
   // 港股/日经/美股：项目只有 A 股节假日日历，无对应假期表 ⇒ 按**交易时段**判定（近似）。
-  if (c.is_hk_trading || c.is_hstech_extended) out.push({ k: 'hk', label: '港股' })
-  if (c.is_nikkei_trading) out.push({ k: 'jp', label: '日经' })
-  if (c.is_us_trading) out.push({ k: 'us', label: '美股' })
+  if (c.is_hk_trading || c.is_hstech_extended) out.push({ k: 'hk', label: '港' })
+  if (c.is_nikkei_trading) out.push({ k: 'jp', label: '日' })
+  if (c.is_us_trading) out.push({ k: 'us', label: '美' })
   return out
 })
 // ★ 2026-09-25 P1：隔夜变化的**显示层**（顶栏一格）。后端已按 |变化| 降序 ⇒ 直接取前 2 项；
@@ -3284,6 +3339,8 @@ const statusTitle = computed(() => {
 })
 // ★ 2026-09-28（方案 A）：顶栏「宏观」浮层开关 + hover 说明（放情绪左边那个入口用）。
 const macroOpen = ref(false)
+// ★ 2026-10-23：顶栏「隔夜」明细浮层（用户："布伦特/道指…也做点击显示更多"）
+const overnightOpen = ref(false)
 const macroTip = computed(() => {
   const d = macro.value?.direction
   if (!d) return '宏观方向（未加载）—— 点击展开完整「宏观与环境」卡'
@@ -3451,10 +3508,88 @@ const wsDay = ref(null)
 const wsSummary = ref(null)
 const wsLoading = ref(false)
 const wsErr = ref('')
-const wsOpen = ref(true)
 const wsSel = ref('')
 const wsRows = computed(() => (wsDay.value && wsDay.value.rows) || [])
 const wsPick = computed(() => wsRows.value.find(x => x.slot === wsSel.value) || null)
+
+// ★ 2026-10-23：观察器合并后，4 段折叠状态用 localStorage 记忆（默认全收起）
+const OBS_KEY = 'wb_obs_open'
+const _obs = (() => {
+  try { return JSON.parse(localStorage.getItem(OBS_KEY) || '{}') } catch { return {} }
+})()
+const wsOpen = ref(!!_obs.ws)
+const crowdOpen = ref(!!_obs.crowd)
+const scenOpen = ref(!!_obs.scen)
+const aiOpen = ref(!!_obs.ai)
+function saveObs() {
+  try {
+    localStorage.setItem(OBS_KEY, JSON.stringify({
+      ws: wsOpen.value, crowd: crowdOpen.value,
+      scen: scenOpen.value, ai: aiOpen.value,
+    }))
+  } catch { /* 隐私模式忽略 */ }
+}
+const obsAllOpen = computed(() =>
+  wsOpen.value && crowdOpen.value && scenOpen.value && aiOpen.value)
+function toggleAllObs() {
+  const v = !obsAllOpen.value
+  wsOpen.value = v
+  crowdOpen.value = v
+  scenOpen.value = v
+  aiOpen.value = v
+  saveObs()
+}
+
+// 摘要行：收起时也必须能判断"要不要点开"（数字 + 状态点）
+const wsLine = computed(() => {
+  if (wsLoading.value) return '加载中…'
+  if (wsErr.value) return wsErr.value
+  if (!wsDay.value) return '—'
+  const p = wsPick.value || (wsRows.value.length ? wsRows.value[wsRows.value.length - 1] : null)
+  if (!p) return '当日尚无采样'
+  const stale = (p.reasons || []).some(x => x.tag === 'stale')
+  const head = `${p.slot} · ${stale ? '快照不计分' : (p.worth ? '有料' : '无实质变化')} ${p.score}分`
+  const day = wsDay.value.judged ? ` · 当日 ${wsDay.value.worth_n}/${wsDay.value.judged}` : ''
+  return head + day
+})
+const wsDot = computed(() => {
+  const p = wsPick.value
+  if (!p) return 'bg-slate-500'
+  if ((p.reasons || []).some(x => x.tag === 'stale')) return 'bg-slate-400'
+  return p.worth ? 'bg-amber-400' : 'bg-slate-500'
+})
+const crowdLine = computed(() => {
+  const rows = crowdTop.value || []
+  if (!rows.length) return '—'
+  const n = rows.filter(r => String(r.level || '').includes('退潮')).length
+  const k = (keyLv.value?.rows || [])[0]
+  return `${rows.length} 个赛道` + (n ? ` · ${n} 个退潮` : '') +
+    (k ? ` · ${k.name} ${k.close}` : '')
+})
+const crowdDot = computed(() =>
+  (crowdTop.value || []).some(r => String(r.level || '').includes('退潮'))
+    ? 'bg-rose-400' : 'bg-emerald-400')
+const scenLine = computed(() => {
+  const s = scen.value
+  if (!s) return '加载中…'
+  const a = s.anchor || {}
+  return `${s.scenario || '—'} · ${s.lean || ''} ${s.n_up ?? 0}多/${s.n_down ?? 0}空` +
+    (a.level ? ` · 锚点${a.state || '—'}` : '')
+})
+const scenDot = computed(() => {
+  const s = scen.value
+  if (!s) return 'bg-slate-500'
+  if (s.geo_candidate || s.scenario === '熊市加深') return 'bg-rose-400'
+  if (s.scenario === '提前修复') return 'bg-emerald-400'
+  return 'bg-amber-400'
+})
+const aiLine = computed(() => {
+  const b = aiBasket.value?.basket
+  if (!b) return '—'
+  return `回撤 ${fmtPct(b.dd120)} · 5日 ${fmtPct(b.ret5)} · 30日 ${fmtPct(b.ret30)}`
+})
+const aiDot = computed(() =>
+  (aiBasket.value?.basket?.dd120 || 0) <= -25 ? 'bg-rose-400' : 'bg-slate-500')
 function wsColor(score) {
   const s = Number(score) || 0
   if (s >= 80) return 'bg-rose-500/20 text-rose-300 border-rose-500/40'
