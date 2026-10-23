@@ -308,7 +308,7 @@
               <span class="text-[10px] text-muted shrink-0">{{ wsOpen ? '▾' : '▸' }}</span>
             </button>
 
-          <div v-if="wsOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2">
+          <div v-if="wsOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
           <div v-if="wsLoading" class="text-xs text-muted">加载中…</div>
           <div v-else-if="wsErr" class="text-xs text-muted mt-2">{{ wsErr }}</div>
           <template v-else-if="wsDay">
@@ -359,7 +359,7 @@
               <span class="text-[10px] text-muted truncate flex-1">{{ crowdLine }}</span>
               <span class="text-[10px] text-muted shrink-0">{{ crowdOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="crowdOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2">
+            <div v-if="crowdOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
           <div v-if="riskLoading" class="text-xs text-muted">加载中…</div>
           <div v-else-if="riskErr" class="text-xs text-muted">{{ riskErr }}</div>
           <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
@@ -417,7 +417,7 @@
                  与「盘中变化 / 拥挤与关键位」统一成同一视觉块（圆角+边框+浅底+内边距），
                  信号格拉开 gap，日历/锚点/说明各自用分隔线分组。 -->
             <div v-if="scenOpen"
-                 class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2.5">
+                 class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2.5">
               <div v-if="!scen" class="text-xs text-muted">加载中…</div>
               <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-xs">
                 <div v-for="s in scen.signals" :key="s.key"
@@ -462,7 +462,7 @@
               <span class="text-[10px] text-muted truncate flex-1">{{ aiLine }}</span>
               <span class="text-[10px] text-muted shrink-0">{{ aiOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="aiOpen" class="mt-1.5 text-xs rounded-md border border-border/60 bg-white/[0.02] p-2">
+            <div v-if="aiOpen" class="mt-1.5 text-xs rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div class="flex items-center gap-3 flex-wrap">
                 <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
                   回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
@@ -1729,7 +1729,7 @@
                    数据零新增请求（行情缓存 float_cap + 行业映射 + 宏观面板）。
                    为什么放逐只列表**之前**：风控读法应当"先看整体、再看个股"。 -->
               <div v-if="radarRisk?.available"
-                   class="rounded border border-border/50 px-2.5 py-1.5 space-y-0.5 text-[11px] mb-1">
+                   class="rounded border border-border/50 px-2.5 py-1.5 space-y-0.5 text-[10px] mb-1">
                 <div v-if="radarRisk.style" class="flex items-center gap-2 flex-wrap">
                   <span class="text-muted">风格暴露</span>
                   <b class="font-mono text-gray-200">{{ radarRisk.style.band }}</b>
@@ -1747,20 +1747,20 @@
               <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
                    写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
               <div v-for="it in radarItems" :key="it.code"
-                   class="border border-border/60 rounded-lg px-3 py-2.5">
+                   class="border border-border/60 rounded-lg px-2.5 py-2">
                 <!-- 主行：名称 + 盈亏大字 -->
                 <div class="flex items-center gap-2 flex-wrap">
                   <a :href="stockHref(it.code)" target="_blank"
-                     class="font-semibold hover:text-accent">{{ it.name || it.code }}</a>
+                     class="text-sm font-semibold hover:text-accent">{{ it.name || it.code }}</a>
                   <a :href="xqUrl(it.code)" target="_blank"
-                     class="text-muted text-xs font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
+                     class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
                   <span v-if="it.industry"
                         class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
-                  <span class="ml-auto text-2xl font-bold font-mono"
+                  <span class="ml-auto text-lg font-bold font-mono"
                         :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
                 </div>
                 <!-- 价格行 -->
-                <div class="flex items-center gap-2 flex-wrap mt-1 text-xs">
+                <div class="flex items-center gap-2 flex-wrap mt-1 text-[11px]">
                   <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
                   <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
                   <span v-if="it.mv" class="text-muted">市值 {{ fmtNum(it.mv) }} 元</span>
@@ -1768,7 +1768,7 @@
                         class="text-amber-400">距日内高 {{ it.drop_from_high }}%</span>
                 </div>
                 <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
-                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[11px]">
+                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[10px]">
                   <!-- ★ 2026-09-25：改用**共享** `PHASE_STYLE`。原实现只认 `signal`——
                        出货红 / 吸筹绿，**盘整、下跌、拉升、洗盘一律灰** ⇒ 六种阶段实际只呈现两色
                        （用户反馈"主力阶段颜色没生效"，这是真凶之一）。 -->
@@ -1787,7 +1787,7 @@
                 </div>
                 <!-- 风险/机会提示 -->
                 <div v-if="(it.alerts || []).length" class="mt-1 space-y-0.5">
-                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[11px]"
+                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[10px]"
                        :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
                     {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
                   </div>
