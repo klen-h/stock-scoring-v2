@@ -3553,7 +3553,7 @@ const wsLine = computed(() => {
   return head + day
 })
 const wsDot = computed(() => {
-  const p = wsPick.value
+  const p = wsPick.value || (wsRows.value.length ? wsRows.value[wsRows.value.length - 1] : null)
   if (!p) return 'bg-slate-500'
   if ((p.reasons || []).some(x => x.tag === 'stale')) return 'bg-slate-400'
   return p.worth ? 'bg-amber-400' : 'bg-slate-500'
