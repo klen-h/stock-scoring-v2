@@ -245,6 +245,13 @@
   当股票取 qfqday）⇒ 清单③⑥"0 根"。已加东财 push2his 兜底（3 次重试）、key_level 同源；
   ETF 份额 T+1 ⇒ 当日未披露时沿用最近一份 + `backfill(5)`；结构修复改为**连续 2 日** 3674。
   ⚠️ 这些修复在本地**未 push** 时，Actions/Render 仍跑旧代码 —— 必须先推。
+- ★★ **数据包发布纪律**（2026-10-24 事故）：`scripts/publish_packs_local.py` 是 **orphan 重建**
+  （force push 整条 gh-pages 只含本地文件）⇒ **本地包旧就会把线上新包整批删掉**（实测：
+  把工作流刚发的 10-23 K 线包回滚成 10-22）。前端改动直接 push 走 Actions 部署
+  （`keep_files: true` 不动 data/）；只有本地确实有新包才用该脚本，且已加护栏：
+  本地日期 < 线上 → 拒绝（`--force` 绕不过，需 `--allow-downgrade`）。
+  另：`generate_packs` 的 latest 是**符号链接**，`upload-artifact` 不保留 ⇒ 工作流必须
+  先 `cp` 实体化，否则 Pages 的 latest 永远停在上一交易日。
 - ★ **早产简报坑**（2026-10-23）：日批前页面按需生成 ⇒ "日期=今日、candidates_date=昨日"落库，
   日批 `cached` 1s 命中 ⇒ 官方简报+推送双丢。已修：缓存 `candidates_date<今日` 视为过期、
   盘后未就绪返回 `premature` 不落库、日批遇 premature 显式失败、新增 `pushed_at` 补推。
