@@ -474,6 +474,9 @@
           <div class="text-[10px] text-muted mt-1">
             退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
             篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
+            <span class="block mt-0.5 text-muted/80">
+              配色：涨跌幅=红涨绿跌；回撤 ≤-25% 标红（风险）；距支撑 ≤1.5% 标黄（逼近）；状态标签单独着色。
+            </span>
           </div>
         </div>
 
@@ -3247,9 +3250,9 @@ const openMarkets = computed(() => {
   //    用 `!== false` 兼容未升级的后端（字段缺失时不误判为休市）。
   if (c.is_a_stock_trading && c.is_trading_day !== false) out.push({ k: 'cn', label: 'A股' })
   // 港股/日经/美股：项目只有 A 股节假日日历，无对应假期表 ⇒ 按**交易时段**判定（近似）。
-  if (c.is_hk_trading || c.is_hstech_extended) out.push({ k: 'hk', label: '港' })
-  if (c.is_nikkei_trading) out.push({ k: 'jp', label: '日' })
-  if (c.is_us_trading) out.push({ k: 'us', label: '美' })
+  if (c.is_hk_trading || c.is_hstech_extended) out.push({ k: 'hk', label: '港股' })
+  if (c.is_nikkei_trading) out.push({ k: 'jp', label: '日经' })
+  if (c.is_us_trading) out.push({ k: 'us', label: '美股' })
   return out
 })
 // ★ 2026-09-25 P1：隔夜变化的**显示层**（顶栏一格）。后端已按 |变化| 降序 ⇒ 直接取前 2 项；
