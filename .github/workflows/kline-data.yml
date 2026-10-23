@@ -89,6 +89,20 @@ jobs:
           echo "::error::增量重试 6 次仍失败"
           exit 1
 
+      # ★★ 2026-10-24：`generate_packs` 在 Linux 上把 latest 做成**符号链接**，
+      #   而 `upload-artifact` 不保留/不上传符号链接 ⇒ 发布目录里没有 latest
+      #   ⇒ peaceiris(keep_files) 保留**旧的** latest ⇒ 前端/观察器永远看到上一交易日的包
+      #   （实测：10-23 的包已生成并发布，线上 latest 仍是 10-22）。
+      #   这里在上传前把 latest **实体化**成真文件。
+      - name: Materialize kline-pack-latest (symlink not preserved by artifact)
+        run: |
+          cd ./data/kline
+          latest=$(ls -1 kline-pack-2*.json.gz | sort | tail -1)
+          echo "materialize: $latest -> kline-pack-latest.json.gz"
+          rm -f kline-pack-latest.json.gz
+          cp -f "$latest" kline-pack-latest.json.gz
+          ls -l "$latest" kline-pack-latest.json.gz
+
       - name: Upload Pages artifacts (kline packs)
         uses: actions/upload-artifact@v4
         with:

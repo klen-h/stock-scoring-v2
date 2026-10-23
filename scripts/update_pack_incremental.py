@@ -318,7 +318,10 @@ def main():
               f"{(new_stocks.get('000001') or {}).get('klines', [['-']])[-1]}")
         return 0
 
-    date_str = beijing_now().strftime("%Y%m%d")
+    # ★★ 2026-10-24：包名/包内 date 用**最近已完成交易日**，不是日历今天。
+    #   原用 `beijing_now()` ⇒ 周六手动重跑会写出 `kline-pack-20261024.json.gz`
+    #   （数据只到 10-23），下游按 date 判断"缺一根"会误判。
+    date_str = expected.replace("-", "")
     gkp.generate_packs(new_stocks, args.pack_dir, date_str, prev)
     print(f"  已写出 {args.pack_dir}（{len(new_stocks)} 只，date={date_str}）")
     print("  下一步: python scripts/publish_packs_local.py")

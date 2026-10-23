@@ -27,11 +27,14 @@ import argparse
 import gzip
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import urllib.request
+import zlib
 
 # ★ Windows GBK 控制台打不出 ✅/⚠️ 会崩 print（2026-09-09 实测：push 都完成了
 #   却在最后的成功提示上 UnicodeEncodeError）。reconfigure 只降级编码不换语义。
@@ -132,12 +135,43 @@ def _pack_info(path: str, kind: str):
     return None, 0
 
 
+KLINE_URL = ("https://klen-h.github.io/stock-scoring-v2/"
+             "data/kline-pack-latest.json.gz")
+
+
+def _remote_pack_date(timeout: int = 60) -> str:
+    """读**线上** K 线包日期（只下载前 128KB 边解压边取 `"date"`）。
+
+    ★★ 2026-10-24（真实事故）：本地 `backend/data/kline` 还是 10-22 的包，
+      用 `--force` 跑了本脚本 → orphan 重建 force push 把整条 gh-pages 换成
+      本地旧包 ⇒ **把当天工作流刚发布的 2026-10-23 包整批删掉**，
+      线上 latest 回退到 10-22（前端/观察器全部看到昨天）。
+      教训：`--force` 能绕过"本地包日期太旧"的护栏，却看不见线上已经有更新的包。
+      ⇒ 这里补一道**连 --force 都绕不过**的护栏（需显式 --allow-downgrade）。
+    """
+    try:
+        req = urllib.request.Request(KLINE_URL, headers={
+            "User-Agent": "publish-packs-local/1.0",
+            "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            chunk = r.read(131072)
+        txt = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(chunk).decode(
+            "utf-8", "ignore")
+        m = re.search(r'"date"\s*:\s*"(\d{8})"', txt)
+        return m.group(1) if m else ""
+    except Exception as e:
+        print(f"  ⚠️ 读线上包日期失败（跳过回滚护栏）: {str(e)[:80]}")
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default=DATA_DIR, help="包所在目录")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true",
                     help="跳过包规模/日期一致性护栏（仅在明确知道自己在发什么时用）")
+    ap.add_argument("--allow-downgrade", action="store_true",
+                    help="允许把线上数据包**回退**到更早日期（默认禁止；orphan 重建会整批覆盖）")
     args = ap.parse_args()
 
     url = _git(["remote", "get-url", "origin"], cwd=REPO_DIR).stdout.strip()
@@ -229,6 +263,25 @@ def main():
                 problems.append(
                     f"{fn} 日期 {date} 早于上一个工作日 {floor_date}"
                     f"——缺交易日数据，疑似本地残留旧包")
+
+        # ── 护栏 4/4：**不得回滚线上包**（2026-10-24 事故，--force 也绕不过）──
+        #   `--force` 本来只表示"我知道本地包日期旧"，但 orphan 重建是**整批覆盖**，
+        #   会把线上更新的包一起删掉 ⇒ 必须单独确认（--allow-downgrade）。
+        if not args.dry_run:
+            remote_date = _remote_pack_date()
+            kline_date = dates.get("kline-pack-latest.json.gz") or ""
+            if remote_date and kline_date and kline_date < remote_date:
+                msg = (f"线上 K 线包已是 {remote_date}，本次要发 {kline_date}"
+                       f" —— orphan 重建会整批覆盖 gh-pages，等于把线上新包回滚掉。")
+                if not args.allow_downgrade:
+                    print("\n⛔ 发布前护栏拦截（--force 不能绕过）：")
+                    print(f"   - {msg}")
+                    print("   处理：① 先把本地包更新到最新（scripts/update_pack_incremental.py）；"
+                          "② 只改前端的话直接 push，交给 Actions 部署"
+                          "（keep_files=true，不会动 data/）；"
+                          "③ 确认要回滚再加 --allow-downgrade。")
+                    return
+                print(f"  ⚠️ 已指定 --allow-downgrade：{msg}")
 
         if problems:
             print("\n⚠️  发布前护栏拦截：")
