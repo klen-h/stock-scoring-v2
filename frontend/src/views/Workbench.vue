@@ -302,7 +302,7 @@
                 </div>
                 <div v-if="!(wsPick.reasons || []).length" class="text-muted">—（无触发项）</div>
                 <div v-for="(x, i) in (wsPick.reasons || [])" :key="i" class="flex gap-2">
-                  <span class="text-muted font-mono w-24 shrink-0">{{ x.tag }}</span>
+                  <span class="text-muted font-mono w-24 shrink-0" :title="x.tag">{{ wsTagCn(x.tag) }}</span>
                   <span class="flex-1">{{ x.text }}</span>
                   <span v-if="x.pts" class="text-accent font-mono shrink-0">+{{ x.pts }}</span>
                 </div>
@@ -335,7 +335,7 @@
                 <div v-for="r in crowdTop" :key="r.industry" class="flex items-center gap-2">
                   <span class="w-16 shrink-0 truncate" :title="(r.leaders || []).join('、')">{{ r.industry }}</span>
                   <span class="w-14 text-right font-mono"
-                        :class="(r.ret30 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">{{ fmtPct(r.ret30) }}</span>
+                        :class="(r.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">{{ fmtPct(r.ret30) }}</span>
                   <span class="w-12 text-right font-mono text-muted"
                         :title="'pos120≥0.9 的成员占比'">{{ Math.round((r.pos_high || 0) * 100) }}%</span>
                   <span class="w-14 text-right font-mono"
@@ -368,9 +368,9 @@
               <span class="text-[11px] text-muted">AI 硬件篮子</span>
               <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
                 回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
-              <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">
+              <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-rise' : 'text-fall'">
                 5日 {{ fmtPct(aiBasket.basket.ret5) }}</span>
-              <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">
+              <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">
                 30日 {{ fmtPct(aiBasket.basket.ret30) }}</span>
               <span class="text-muted">高位占比
                 {{ Math.round((aiBasket.basket.pos120 || 0) * 100) }}%</span>
@@ -3463,6 +3463,15 @@ function wsColor(score) {
   if (s >= 20) return 'bg-sky-500/20 text-sky-300 border-sky-500/40'
   return 'bg-slate-500/10 text-muted border-border'
 }
+// ★ 2026-10-23（用户："以上的英文改为中文"）：/workbench-scan 的 reason tag 是英文，
+//   展示层统一映射成中文（title 里保留原 tag，便于对照后端规则）。
+const WS_TAG_CN = {
+  idx_move: '指数急动', breadth_shift: '宽度变化', breadth_flip: '宽度翻转',
+  limit_up: '涨停变化', limit_down: '跌停变化', sector_leader: '领涨切换',
+  sector_rotate: '板块轮动', volume: '区间放量', news: '快讯密集',
+  news_key: '关键快讯', gap: '跳点', baseline: '基线', stale: '快照',
+}
+function wsTagCn(t) { return WS_TAG_CN[t] || t || '—' }
 async function loadWorkbenchScan() {
   wsLoading.value = true
   wsErr.value = ''
