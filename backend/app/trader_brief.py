@@ -45,6 +45,16 @@ MAX_ITEMS_PER_SECTION = 3
 MARGIN_DRAIN_ALERT = float(os.environ.get("MARGIN_DRAIN_ALERT_YI", "-200") or -200)
 
 
+def mark_pushed(day: str, phase: str) -> None:
+    """标记某日简报已推送（日批补推去重用；失败静默）。"""
+    try:
+        db.execute("UPDATE trader_briefs SET pushed_at=%s WHERE date=%s AND phase=%s",
+                   (beijing_now().isoformat(timespec="seconds"),
+                    str(day)[:10], phase))
+    except Exception as e:
+        print(f"[trader_brief] 标记推送失败: {str(e)[:80]}")
+
+
 def current_phase() -> str:
     now = beijing_now()
     t = now.hour * 60 + now.minute
@@ -61,10 +71,17 @@ def init_trader_brief_table():
             phase TEXT NOT NULL,
             markdown TEXT NOT NULL,
             data_json TEXT,
+            pushed_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(date, phase)
         )
     """)
+    # ★ 2026-10-23：补列（老表没有 pushed_at）——用于区分"已生成"与"已推送"：
+    #   用户在日批前打开页面按需生成时，日批会命中缓存 ⇒ 原先**永远不会推送**。
+    try:
+        db.execute("ALTER TABLE trader_briefs ADD COLUMN pushed_at TEXT")
+    except Exception:
+        pass
 
 
 init_trader_brief_table()
@@ -430,11 +447,28 @@ def generate_trader_brief(phase: str = None, force: bool = False,
     today = date or beijing_now().strftime("%Y-%m-%d")
 
     if not force:
-        row = db.fetch_one("SELECT markdown FROM trader_briefs "
+        row = db.fetch_one("SELECT markdown, data_json FROM trader_briefs "
                            "WHERE date=%s AND phase=%s", (today, phase))
         if row:
-            return {"ok": True, "date": today, "phase": phase,
-                    "markdown": row["markdown"], "cached": True}
+            # ★★ 2026-10-23（用户实测："数据窗口 10-22，点重新生成才是 23 日"）：
+            #   用户在日批**跑到 score_snapshot 之前**打开页面 ⇒ 按需生成出一份
+            #   "日期=今日、候选=昨日"的早产简报并落库；日批 task_trader_brief 随后
+            #   `cached`（1s 命中）⇒ 官方简报永远不会生成、也不会推送。
+            #   修法：缓存里 data_window < today ⇒ 视为**过期**，不当作已完成。
+            stale = False
+            _cd = ""
+            try:
+                _d = json.loads(row.get("data_json") or "{}")
+                _cd = str(_d.get("candidates_date") or "")
+                stale = bool(phase == "postmarket" and _cd and _cd < today)
+            except Exception:
+                pass
+            if stale:
+                print(f"[trader_brief] {today}/{phase} 缓存数据窗口 {_cd} < {today}"
+                      f" ⇒ 视为过期，重新生成")
+            else:
+                return {"ok": True, "date": today, "phase": phase,
+                        "markdown": row["markdown"], "cached": True}
 
     blocked = llm_blocked_reason()
     if reuse_data:
@@ -451,6 +485,18 @@ def generate_trader_brief(phase: str = None, force: bool = False,
             data = collect_brief_data(phase, date=today)
     else:
         data = collect_brief_data(phase, date=today)
+
+    # ★★ 2026-10-23：盘后简报必须等到**当日**评分快照。否则会出现
+    #   "日期=今日、数据窗口=昨日"的错位（用户实测），且会污染幂等键。
+    _cd = str((data or {}).get("candidates_date") or "")
+    if phase == "postmarket" and not force and (not _cd or _cd < today):
+        reason = f"评分候选未就绪（candidates_date={_cd or '空'} < {today}）"
+        print(f"[trader_brief] {reason} ⇒ 不生成、不落库（避免早产简报）")
+        return {"ok": False, "date": today, "phase": phase,
+                "premature": True, "reason": reason, "cached": False,
+                "markdown": (f"> 数据未就绪：{reason}\n"
+                             f"> 日批 `score_snapshot` 完成后会自动生成盘后简报。")}
+
     actions_md = _render_actions_md(data.get("actions") or [])
     degraded = None
     if blocked:
@@ -481,10 +527,11 @@ def generate_trader_brief(phase: str = None, force: bool = False,
           f"> 数据窗口：{data.get('candidates_date', today)}")
 
     data_json = json.dumps(data, ensure_ascii=False)
-    db.execute("INSERT INTO trader_briefs (date, phase, markdown, data_json) "
-               "VALUES (%s, %s, %s, %s) ON CONFLICT (date, phase) "
+    db.execute("INSERT INTO trader_briefs (date, phase, markdown, data_json, pushed_at) "
+               "VALUES (%s, %s, %s, %s, NULL) ON CONFLICT (date, phase) "
                "DO UPDATE SET markdown=EXCLUDED.markdown, "
-               "data_json=EXCLUDED.data_json, created_at=CURRENT_TIMESTAMP",
+               "data_json=EXCLUDED.data_json, created_at=CURRENT_TIMESTAMP, "
+               "pushed_at=NULL",
                (today, phase, md, data_json))
     print(f"[trader_brief] {today}/{phase} 简报已生成"
           + (f"（降级: {degraded}）" if degraded else ""))

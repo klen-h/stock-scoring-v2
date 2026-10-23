@@ -957,17 +957,36 @@ def task_trader_brief():
       · **推送失败不影响主流程**：正文已落库，前端 /report 照常可见
     """
     d = _batch_trading_day()
-    from app.trader_brief import generate_trader_brief
+    from app.trader_brief import generate_trader_brief, mark_pushed
     force = _force_requested()
     res = generate_trader_brief(phase="postmarket", force=force, date=d.isoformat())
-    # ★ 命中已有 ⇒ 立即收口：不重烧 LLM、**不重复推送**（见 docstring ★★②）。
-    #   需要重推时用日批 `--force` —— 那是唯一的重生成+重推通道。
-    if res.get("cached"):
-        return (f"交易员简报: {res.get('date')} postmarket 命中已有简报"
-                f"（未重烧 LLM、未重复推送；重推请加 --force）")
+
+    # ★★ 2026-10-23：数据未就绪必须**显式失败**，不能静默"命中"。
+    #   实测事故：用户在日批跑到 score_snapshot 之前打开页面 ⇒ 按需生成出
+    #   "日期=今日、候选=昨日"的早产简报 ⇒ 日批 cached（1s）⇒ 这天既没有官方简报、也没推送。
+    if res.get("premature"):
+        raise RuntimeError(f"简报数据未就绪：{res.get('reason')}")
+
     md = res.get("markdown") or ""
     if not md:
         raise RuntimeError("交易员简报生成异常（正文为空）")
+
+    cached = bool(res.get("cached"))
+    head = "交易员简报:"
+    if cached:
+        # 命中已有：已推送过 ⇒ 收口；从未推送（页面按需生成）⇒ **补推**
+        try:
+            from app.database import db
+            row = db.fetch_one("SELECT pushed_at FROM trader_briefs "
+                               "WHERE date=%s AND phase=%s",
+                               (res.get("date"), "postmarket"))
+            if row and row.get("pushed_at"):
+                return (f"交易员简报: {res.get('date')} postmarket 命中已有且已推送"
+                        f"（{row['pushed_at']}；重生成请加 --force）")
+        except Exception:
+            pass
+        head = "交易员简报: 补推"
+
     push_note = "未推送"
     try:
         from app.flash import wechat
@@ -978,12 +997,12 @@ def task_trader_brief():
         else:
             wechat.push_markdown_batched("🧭 交易员决策简报（盘后）", md)
             push_note = "已推送企微"
+            mark_pushed(res.get("date") or d.isoformat(), "postmarket")
     except Exception as e:
         push_note = f"推送失败（不影响简报）: {str(e)[:80]}"
         print(f"  企微推送失败（不影响简报）: {e}")
     flag = f"降级({res['degraded']})" if res.get("degraded") else "正常"
-    # （原 `cached` 分支已被上面的短路 return 取代 —— 走到这里必定是新生成，保留会误导）
-    return (f"交易员简报: {res.get('date')} postmarket {len(md)} 字"
+    return (f"{head} {res.get('date')} postmarket {len(md)} 字"
             f"（LLM {flag}；{push_note}）")
 
 
