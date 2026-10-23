@@ -55,7 +55,9 @@
                          ? 'text-amber-400' : 'text-gray-100'">
               {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}
             </div>
-            <div class="text-[10px] text-muted whitespace-nowrap">事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</div>
+            <div class="text-[10px] text-muted max-w-[200px] truncate"
+                 :title="`事件诊断 · ${fullDiagType(flashDiag?.correlation_diagnosis?.d_state_type)}`">
+              事件诊断 · {{ shortDiagType(flashDiag?.correlation_diagnosis?.d_state_type) }}</div>
           </div>
           <!-- ★ 2026-09-25 用户要求：文字部分同一 div 上下布局（叙事上 / 仓位·详情下） -->
           <div class="flex-1 min-w-0 text-xs">
@@ -222,6 +224,18 @@ const props = defineProps({
   //      —— 那是 2026-09-25 用户明确要求的，**不能顺手改掉**（两处诉求不同）。
   full: { type: Boolean, default: false },
 })
+
+// ★ 2026-10-23（用户："文字过长导致卡片溢出以及弹窗被撑开"）：
+//   `d_state_type` 会带一长串括注（"D1供给驱动（地缘风险未实质升级，油价高位震荡…VIX 19.387…）"）
+//   ⇒ 内联卡与浮层都只展示**标签**（截断前 14 字），全文放 `title`。
+function shortDiagType(s) {
+  const t = String(s || '').split(/[（(]/)[0].trim()
+  if (!t) return '不适用'
+  return t.length > 14 ? `${t.slice(0, 14)}…` : t
+}
+function fullDiagType(s) {
+  return String(s || '') || '不适用'
+}
 
 // ★ 2026-09-28：原来定义在 `Workbench.vue`，只被本卡用 ⇒ 随卡一起内聚到这里。
 // 组合周回撤熔断（`sizing.portfolio_drawdown`）：悬停给完整路径与口径说明。

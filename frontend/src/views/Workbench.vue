@@ -2439,8 +2439,9 @@
                   :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
                           ? 'text-amber-400' : 'text-gray-100'">
               {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}</span>
-            <span class="text-[10px] text-muted whitespace-nowrap">
-              事件诊断 · {{ flashDiag?.correlation_diagnosis?.d_state_type || '不适用' }}</span>
+            <span class="text-[10px] text-muted max-w-[240px] truncate"
+                  :title="`事件诊断 · ${String(flashDiag?.correlation_diagnosis?.d_state_type || '不适用')}`">
+              事件诊断 · {{ shortDiagType(flashDiag?.correlation_diagnosis?.d_state_type) }}</span>
             <span class="ml-auto text-[10px] text-muted whitespace-nowrap">
               仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
               <template v-if="sizing && sizing.total_limit_pct != null">
@@ -3912,6 +3913,13 @@ async function loadFlashDiag() {
     const { data } = await getFlashDiagnosis({ limit: 1 })
     flashDiag.value = data?.latest?.output || null
   } catch { flashDiag.value = null }
+}
+// ★ 2026-10-23：`d_state_type` 可能带一长串括注（…VIX 19.387…）⇒ 只显示标签，
+//   全文放 title；否则会把内联卡撑破（用户实测）。
+function shortDiagType(s) {
+  const t = String(s || '').split(/[（(]/)[0].trim()
+  if (!t) return '不适用'
+  return t.length > 14 ? `${t.slice(0, 14)}…` : t
 }
 // ★ A2 隔夜与今日：财经日历今日事件（防御性渲染，字段以接口实际返回为准）
 async function loadDecisionCard() {

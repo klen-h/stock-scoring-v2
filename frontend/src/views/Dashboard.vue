@@ -32,7 +32,9 @@
       <span class="text-muted flex-shrink-0">事件诊断</span>
       <span class="font-bold text-sm" :class="flashDiag.correlation_diagnosis?.correlation_state === 'D状态' ? 'text-amber-400' : 'text-gray-200'">
         {{ flashDiag.correlation_diagnosis?.correlation_state || '—' }}
-        <span class="text-muted font-normal text-[11px]">{{ flashDiag.correlation_diagnosis?.d_state_type || '' }}</span>
+        <span class="text-muted font-normal text-[11px] max-w-[220px] truncate align-bottom inline-block"
+              :title="flashDiag.correlation_diagnosis?.d_state_type || ''">
+          {{ shortDiagType(flashDiag.correlation_diagnosis?.d_state_type) }}</span>
       </span>
       <span class="text-gray-300 flex-1 min-w-[180px] truncate" :title="flashDiag.dominant_narrative?.narrative">
         {{ flashDiag.dominant_narrative?.narrative || flashDiag.market_mood || '' }}
@@ -196,6 +198,12 @@ const memTrend = computed(() => {
 const temp = ref({})
 const macro = ref({})
 const flashDiag = ref(null)
+// ★ 2026-10-23：d_state_type 可能带一长串括注 ⇒ 只显示标签，全文进 title
+function shortDiagType(s) {
+  const t = String(s || '').split(/[（(]/)[0].trim()
+  if (!t) return ''
+  return t.length > 14 ? `${t.slice(0, 14)}…` : t
+}
 const indexChartRef = ref(null)
 let charts = []
 
