@@ -268,15 +268,18 @@ def evaluate(day: str = None) -> Dict:
         sigs.append(_sig("brent", "布伦特", round(oil, 1), "$", lean,
                          f"≤{SC_BRENT_LOW:g} 修复 / ≥{SC_BRENT_HIGH:g} 熊市触发"))
 
-    # 5 银行补跌（磨底末段信号）
+    # 5 银行补跌（磨底末段信号）—— value=连续逆势跌天数，避免 UI 只显示 "—"
     bank = items.get("bank_catchdown") or {}
-    sigs.append(_sig("bank_catchdown", "强势股补跌", None, "",
+    sigs.append(_sig("bank_catchdown", "强势股补跌",
+                     (None if bank.get("insufficient")
+                      else bank.get("streak", 0)), "日",
                      "多" if bank.get("checked") else "中性",
                      bank.get("detail") or ""))
 
-    # 6 创业板周线止跌
+    # 6 创业板周线止跌 —— value=本周涨跌幅（%），避免 UI 只显示 "—"
     cw = items.get("chinext_weekly") or {}
-    sigs.append(_sig("chinext_weekly", "创业板周线", None, "",
+    sigs.append(_sig("chinext_weekly", "创业板周线",
+                     (None if cw.get("insufficient") else cw.get("value")), "%",
                      "多" if cw.get("checked") else "中性",
                      cw.get("detail") or ""))
 
@@ -305,11 +308,15 @@ def evaluate(day: str = None) -> Dict:
                           f" / <{SC_SH_LAST:.0f} 锚点失守（下看 {SC_SH_REDLINE:.0f}/3400）"
                           + (f"；数据截至 {kl_date}" if kl_date and kl_date != day else ""))))
 
-    # 8 汇金 ETF
+    # 8 汇金 ETF —— value=当日最大份额增幅（%），避免 UI 只显示 "—"
     etf_conf = bool(etf.get("confirmed"))
-    sigs.append(_sig("etf_share", "汇金 ETF 份额", None, "",
-                     "多" if etf_conf else "中性",
-                     "连续 2 日份额放大=确认" if etf_conf else "未确认"))
+    etf_rows = etf.get("rows") or []
+    etf_max = max((_num(r.get("chg_pct")) or 0 for r in etf_rows), default=None)
+    etf_note = ("连续 2 日份额放大=确认" if etf_conf else "未确认")
+    if etf.get("fallback") and etf.get("data_date"):
+        etf_note += f"（当日未披露，截至 {etf['data_date']}）"
+    sigs.append(_sig("etf_share", "汇金 ETF 份额", etf_max, "%",
+                     "多" if etf_conf else "中性", etf_note))
 
     # 9 地缘事件（金十快讯：伊朗/中东）
     geo = _geo_signal(day)
