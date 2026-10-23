@@ -132,8 +132,11 @@ export const getWeeklyReview = (days = 7, end = null) =>
 // ★ 2026-09-25 工作台：加可选 phase（premarket/intraday/postmarket），原调用兼容
 // ★ 2026-09-30：`refresh=true` 是**同步重新生成（消耗 1 次 LLM）** ⇒ 超时给足 180s，
 //   否则慢响应会被前端默认超时砍掉、看起来像"永远失败"。
+// ★ 2026-10-23：`refresh`（"重新生成"按钮）同时带 `push=true` ⇒ 盘后简报生成后补推企微
+//   （后端按 pushed_at 去重，当天最多推一次；盘前/盘中 phase 不推）。
 export const getTraderBrief = (refresh, phase) => http.get('/system/trader-brief',
-  { params: { ...(refresh ? { refresh: true } : {}), ...(phase ? { phase } : {}) },
+  { params: { ...(refresh ? { refresh: true, push: true } : {}),
+              ...(phase ? { phase } : {}) },
     ...(refresh ? { timeout: 180000 } : {}) })
 
 // 矛盾扫描引擎

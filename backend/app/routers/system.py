@@ -289,14 +289,43 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
 
 @router.get("/trader-brief")
 def trader_brief(phase: str = Query(None), refresh: bool = False,
+                 push: bool = False,
                  user: dict = Depends(get_current_user)):
     """交易员决策简报（PLAN_TRADER_WORKFLOW Phase 1）。
 
     按当前时间自动选 phase（premarket/intraday/postmarket）；
     默认读取当日已生成简报（幂等），refresh=true 强制重新生成（消耗 1 次 LLM 调用）。
+
+    ★ 2026-10-23：`push=true`（前端"重新生成"按钮会带）⇒ 盘后简报生成后**补推企微**。
+      用户实测："点重新生成的时候没有自动补上" —— 原先该路由只写库、从不推送，
+      推送只发生在日批 `task_trader_brief` 里。
+      去重：按 `trader_briefs.pushed_at`，**当天最多推一次**（防反复点击刷屏）。
     """
-    from app.trader_brief import generate_trader_brief, current_phase
-    return generate_trader_brief(phase or current_phase(), force=refresh)
+    from app.trader_brief import generate_trader_brief, current_phase, mark_pushed
+    ph = phase or current_phase()
+    res = generate_trader_brief(ph, force=refresh)
+
+    if push and ph == "postmarket" and res.get("ok") and not res.get("premature"):
+        try:
+            from app.database import db
+            row = db.fetch_one("SELECT pushed_at FROM trader_briefs "
+                               "WHERE date=%s AND phase=%s",
+                               (res.get("date"), ph))
+            if not (row and row.get("pushed_at")):
+                from app.flash import wechat
+                if wechat.WECHAT_WEBHOOK and wechat.BUSINESS_ALERTS_ENABLED \
+                        and res.get("markdown"):
+                    wechat.push_markdown_batched(
+                        "🧭 交易员决策简报（盘后·重新生成）", res["markdown"])
+                    mark_pushed(res.get("date"), ph)
+                    res["pushed"] = True
+                else:
+                    res["push_skipped"] = "未配置 webhook 或业务推送开关已关"
+            else:
+                res["push_skipped"] = f"今日已推送过（{row['pushed_at']}）"
+        except Exception as e:
+            res["push_error"] = str(e)[:80]
+    return res
 
 
 # ══════════════════════════════════════════════════════════════════════════
