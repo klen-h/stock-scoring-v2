@@ -389,7 +389,7 @@
                   <span class="w-14 shrink-0 truncate">{{ r.name }}</span>
                   <span class="w-16 text-right font-mono">{{ r.close }}</span>
                   <span class="w-14 text-right font-mono"
-                        :class="(r.chg_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'">{{ fmtPct(r.chg_pct) }}</span>
+                        :class="(r.chg_pct || 0) >= 0 ? 'text-rise' : 'text-fall'">{{ fmtPct(r.chg_pct) }}</span>
                   <span class="w-20 text-right text-muted" :title="r.detail">{{ r.support_type }} {{ r.support }}</span>
                   <span class="w-12 text-right font-mono"
                         :class="(r.dist_pct ?? 99) <= 1.5 ? 'text-amber-300' : 'text-muted'">{{ fmtPct(r.dist_pct) }}</span>
