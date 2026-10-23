@@ -298,7 +298,7 @@
 
           <div class="flex-1 min-h-0 overflow-y-auto pr-1">
           <!-- ① 盘中变化 -->
-          <div class="border-t border-border/40 py-1">
+          <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     :title="wsPick?.reasons?.map(x => x.text).join('；') || ''"
                     @click="wsOpen = !wsOpen; saveObs()">
@@ -351,7 +351,7 @@
           </div>
 
           <!-- ② 拥挤与关键位（AI 篮子在④） -->
-          <div class="border-t border-border/40 py-1">
+          <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="crowdOpen = !crowdOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="crowdDot"></span>
@@ -400,48 +400,61 @@
           </div>
 
           <!-- ③ 推演证伪 -->
-          <div class="border-t border-border/40 py-1">
+          <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="scenOpen = !scenOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="scenDot"></span>
               <span class="text-xs font-semibold shrink-0">推演证伪</span>
+              <span v-if="scen" class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                    :class="scenBadgeClass">{{ scen.scenario }}</span>
+              <span v-if="scen && scen.scenario_candidate"
+                    class="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300"
+                    :title="scen.scenario_candidate">候选</span>
               <span class="text-[10px] text-muted truncate flex-1">{{ scenLine }}</span>
               <span class="text-[10px] text-muted shrink-0">{{ scenOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="scenOpen" class="mt-1.5">
-          <div v-if="!scen" class="text-xs text-muted">加载中…</div>
-          <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-1 text-xs">
-            <div v-for="s in scen.signals" :key="s.key" class="flex items-center gap-1.5">
-              <span class="w-2 h-2 rounded-full shrink-0" :class="leanDot(s.lean)"></span>
-              <span class="text-muted shrink-0">{{ s.label }}</span>
-              <span class="font-mono" :title="s.note">{{ scenVal(s) }}</span>
-            </div>
-          </div>
-          <div class="mt-2 pt-2 border-t border-border/40 text-[11px] text-muted flex flex-wrap gap-x-3 gap-y-0.5">
-            <span v-for="e in scen.events" :key="e.date"
-                  :class="e.soon ? 'text-amber-300' : ''"
-                  :title="e.note">{{ e.name }}
-              <span class="font-mono">{{ e.t_minus == null ? '' : (e.t_minus < 0 ? '已过' : 'T-' + e.t_minus + 'd') }}</span>
-            </span>
-          </div>
-          <div v-if="scen.anchor" class="text-[10px] mt-1"
-               :class="scen.anchor.state === '跌破' ? 'text-rose-300' : 'text-emerald-300'">
-            锚点 {{ scen.anchor.level }}：{{ scen.anchor.state }}
-            <span v-if="scen.anchor.close">（收盘 {{ scen.anchor.close }}）</span>；
-            跌破 → 下看 {{ scen.anchor.downside }}；{{ scen.anchor.fix }}
-          </div>
-          <div v-if="scen.geo_alert" class="text-[10px] text-rose-300 mt-1">
-            ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
-          </div>
-          <div v-if="scen.geo_candidate" class="text-[10px] text-rose-300 mt-1">
-            ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
-          </div>
-          <div class="text-[10px] text-muted mt-1">{{ scen.note }}</div>
+            <!-- ★ 2026-10-24（用户："展开内容没有边框和背景色、不明显、边距太挤"）：
+                 与「盘中变化 / 拥挤与关键位」统一成同一视觉块（圆角+边框+浅底+内边距），
+                 信号格拉开 gap，日历/锚点/说明各自用分隔线分组。 -->
+            <div v-if="scenOpen"
+                 class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2.5">
+              <div v-if="!scen" class="text-xs text-muted">加载中…</div>
+              <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-xs">
+                <div v-for="s in scen.signals" :key="s.key"
+                     class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.03]">
+                  <span class="w-2 h-2 rounded-full shrink-0" :class="leanDot(s.lean)"></span>
+                  <span class="text-muted shrink-0">{{ s.label }}</span>
+                  <span class="font-mono text-gray-200" :title="s.note">{{ scenVal(s) }}</span>
+                </div>
+              </div>
+              <div v-if="scen"
+                   class="mt-2.5 pt-2 border-t border-border/50 text-[11px] text-muted flex flex-wrap gap-x-3 gap-y-1">
+                <span v-for="e in scen.events" :key="e.date"
+                      :class="e.soon ? 'text-amber-300' : ''"
+                      :title="e.note">{{ e.name }}
+                  <span class="font-mono">{{ e.t_minus == null ? '' : (e.t_minus < 0 ? '已过' : 'T-' + e.t_minus + 'd') }}</span>
+                </span>
+              </div>
+              <div v-if="scen" class="mt-2 pt-2 border-t border-border/50 space-y-1">
+                <div v-if="scen.anchor" class="text-[10px]"
+                     :class="scen.anchor.state === '跌破' ? 'text-rose-300' : 'text-emerald-300'">
+                  锚点 {{ scen.anchor.level }}：{{ scen.anchor.state }}
+                  <span v-if="scen.anchor.close">（收盘 {{ scen.anchor.close }}）</span>；
+                  跌破 → 下看 {{ scen.anchor.downside }}；{{ scen.anchor.fix }}
+                </div>
+                <div v-if="scen.geo_alert" class="text-[10px] text-rose-300">
+                  ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
+                </div>
+                <div v-if="scen.geo_candidate" class="text-[10px] text-rose-300">
+                  ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
+                </div>
+                <div class="text-[10px] text-muted leading-relaxed">{{ scen.note }}</div>
+              </div>
             </div>
           </div>
 
           <!-- ④ AI 硬件篮子 -->
-          <div v-if="aiBasket && aiBasket.basket" class="border-t border-border/40 py-1">
+          <div v-if="aiBasket && aiBasket.basket" class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="aiOpen = !aiOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="aiDot"></span>
@@ -3664,11 +3677,19 @@ const crowdLine = computed(() => {
 const crowdDot = computed(() =>
   (crowdTop.value || []).some(r => String(r.level || '').includes('退潮'))
     ? 'bg-rose-400' : 'bg-emerald-400')
+// ★ 2026-10-24：情景从摘要文字里抽成**彩色徽标**（收起时也能一眼看出倾向）
+const scenBadgeClass = computed(() => {
+  const s = scen.value
+  if (!s) return 'bg-slate-500/20 text-slate-300'
+  if (s.geo_candidate || s.scenario === '熊市加深') return 'bg-rose-500/20 text-rose-300'
+  if (s.scenario === '提前修复') return 'bg-emerald-500/20 text-emerald-300'
+  return 'bg-amber-500/20 text-amber-300'
+})
 const scenLine = computed(() => {
   const s = scen.value
   if (!s) return '加载中…'
   const a = s.anchor || {}
-  return `${s.scenario || '—'} · ${s.lean || ''} ${s.n_up ?? 0}多/${s.n_down ?? 0}空` +
+  return `${s.lean || '—'} ${s.n_up ?? 0}多/${s.n_down ?? 0}空` +
     (a.level ? ` · 锚点${a.state || '—'}` : '')
 })
 const scenDot = computed(() => {
