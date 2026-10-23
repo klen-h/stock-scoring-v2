@@ -1080,6 +1080,22 @@ def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return ab.load(date)
 
 
+@router.get("/observer-review")
+def observer_review(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                    refresh: bool = Query(False, description="强制重算（消耗 1 次 LLM）"),
+                    user: dict = Depends(get_current_user)) -> Dict:
+    """观察器 LLM 解读（反弹/反转定性 + 验证条件）。**只解读，不进决策链**。
+
+    ★ 按日缓存 + 数据指纹：30 分钟内且读数未变 ⇒ 读缓存（免费）；
+      `refresh=true` 强制重算。前端默认**点按钮才请求**，避免开页面就烧 LLM。
+    """
+    from app import observer_review as orv
+    r = orv.analyze(date, refresh=refresh)
+    if r.get("ok"):
+        return r
+    return {"ok": False, "date": r.get("date"), "error": r.get("error")}
+
+
 @router.get("/scenario-watch")
 def scenario_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                    user: dict = Depends(get_current_user)) -> Dict:

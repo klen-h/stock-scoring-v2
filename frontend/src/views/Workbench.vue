@@ -482,6 +482,52 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-10-24（用户："观察器什么时候能加上 llm 分析？"）：⑤ AI 解读。
+               默认收起、点开才请求（同步 LLM）；按日缓存 + 数据指纹，读数变了会自动重算。
+               定位：**只做性质判断（反弹/反转）+ 推翻条件**，不给仓位/买卖建议。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="toggleObsAI"
+                    :title="obsAIOpen ? '点击收起' : '点开让 AI 解读今天的观察器读数（首次会调用 LLM）'">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                    :class="obsAI.loading ? 'bg-sky-400 animate-pulse'
+                            : (obsAI.error ? 'bg-amber-400'
+                               : (obsAI.conclusion ? 'bg-accent' : 'bg-slate-500'))"></span>
+              <span class="text-xs font-semibold shrink-0">AI 解读</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ obsAISummary }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ obsAIOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="obsAIOpen"
+                 class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2.5">
+              <div class="flex items-center gap-2 flex-wrap text-[10px] text-muted mb-1">
+                <span v-if="obsAI.as_of">数据截至 {{ obsAI.as_of }}</span>
+                <span v-if="obsAI.cached">· 当日缓存</span>
+                <span v-if="obsAI.loading">· 分析中…</span>
+                <button class="ml-auto px-2 py-0.5 rounded border border-border text-[10px]
+                               text-accent hover:border-accent/50 disabled:opacity-50"
+                        :disabled="obsAI.loading"
+                        title="强制重算（消耗 1 次 LLM 调用）"
+                        @click="loadObsAI(true)">
+                  {{ obsAI.loading ? '分析中…' : '重新解读' }}
+                </button>
+              </div>
+              <div v-if="obsAI.loading" class="text-[11px] text-muted">
+                分析中…（LLM 同步调用，约十几秒）
+              </div>
+              <div v-else-if="obsAI.error" class="text-[11px] text-amber-400">{{ obsAI.error }}</div>
+              <InsightBody v-else-if="obsAI.markdown || obsAI.conclusion"
+                           :text="obsAI.markdown"
+                           :conclusion="obsAI.conclusion" :reasons="obsAI.reasons"
+                           feedback-source="observer"
+                           :feedback-ref="'observer:' + (selectedDate || todayStr)"
+                           collapsible class="text-xs" />
+              <div v-else class="text-[11px] text-muted leading-relaxed">
+                点击「重新解读」让 LLM 读一遍今天的观察器读数：定性（反弹 / 反转 / 无效）、
+                还缺哪几条打勾、以及**看到什么就说明这个判断错了**。
+              </div>
+            </div>
+          </div>
+
           <div class="text-[10px] text-muted mt-1">
             退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
             篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
@@ -2759,6 +2805,8 @@ import {
   getWorkbenchScan, getWorkbenchScanSummary,
   // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch,
+  // ★ 2026-10-24：观察器 AI 解读（LLM）
+  getObserverReview,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
   getUserPositionSizing,
@@ -3807,6 +3855,47 @@ function scenVal(s) {
   const n = Number(v)
   return `${Number.isInteger(n) ? n : n.toFixed(2)}${s.unit || ''}`
 }
+// ★★ 2026-10-24（用户："观察器什么时候能加上 llm 分析"）：观察器 AI 解读。
+//   · **默认收起、点开才请求** —— 它是同步 LLM 调用；按日缓存 + 数据指纹，30 分钟内重复点免费。
+//   · 只做"性质判断 + 推翻条件"，不给仓位/买卖建议（观察器不进决策链）。
+const obsAIOpen = ref(false)
+const obsAI = ref({ loading: false, error: '', markdown: '', conclusion: '', reasons: [],
+                    cached: false, as_of: '', date: '' })
+const obsAISummary = computed(() => {
+  const o = obsAI.value
+  if (o.loading) return '分析中…（LLM，约十几秒）'
+  if (o.error) return '解读失败（点开查看）'
+  if (o.conclusion) return o.conclusion
+  return '点开让 AI 解读今天的变化（反弹 / 反转 + 推翻条件）'
+})
+async function loadObsAI(force = false) {
+  if (obsAI.value.loading) return
+  obsAI.value = { ...obsAI.value, loading: true, error: '' }
+  try {
+    const { data } = await getObserverReview(selectedDate.value, !!force)
+    if (data && data.ok === false) {
+      obsAI.value = { ...obsAI.value, loading: false, error: data.error || '解读失败' }
+      return
+    }
+    obsAI.value = {
+      loading: false, error: '',
+      markdown: data.markdown || '', conclusion: data.conclusion || '',
+      reasons: data.reasons || [], cached: !!data.cached,
+      as_of: data.as_of || '', date: data.date || '',
+    }
+  } catch (e) {
+    obsAI.value = { ...obsAI.value, loading: false,
+                    error: '请求失败：' + (e?.message || e) }
+  }
+}
+function toggleObsAI() {
+  obsAIOpen.value = !obsAIOpen.value
+  if (obsAIOpen.value && !obsAI.value.loading
+      && !obsAI.value.markdown && !obsAI.value.conclusion) {
+    loadObsAI(false)
+  }
+}
+
 async function loadScenario() {
   try {
     const { data } = await getScenarioWatch(selectedDate.value)
@@ -3814,6 +3903,10 @@ async function loadScenario() {
   } catch (e) {
     scen.value = null
   }
+  // 换日 / 回放切日：清掉上一天的 AI 解读（按日缓存，留着会误导）
+  obsAI.value = { loading: false, error: '', markdown: '', conclusion: '', reasons: [],
+                  cached: false, as_of: '', date: '' }
+  if (obsAIOpen.value) loadObsAI(false)
 }
 watch(selectedDate, () => {
   wsSel.value = ''
