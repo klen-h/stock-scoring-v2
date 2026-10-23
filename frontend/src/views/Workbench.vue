@@ -281,13 +281,13 @@
     <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3 items-start">
       <!-- ── 主工作区 ── -->
       <div class="space-y-3 min-w-0">
-        <!-- ★ 2026-10-23：观察器 + 教练卡 左右并排 -->
-        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
+        <!-- ★ 2026-10-23：观察器 + 教练卡 左右并排（3:2，等高） -->
+        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
              原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
-        <div class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1">
+        <div class="bg-card border border-border rounded-lg p-3 h-full xl:h-[min(60vh,480px)] flex flex-col">
+          <div class="flex items-center justify-between mb-1 shrink-0">
             <div class="text-sm font-semibold">观察器
               <span class="text-[10px] text-muted font-normal">（纯观察 · 不进决策链）</span>
             </div>
@@ -296,6 +296,7 @@
                     @click="toggleAllObs">{{ obsAllOpen ? '全部收起 ▴' : '全部展开 ▾' }}</button>
           </div>
 
+          <div class="flex-1 min-h-0 overflow-y-auto pr-1">
           <!-- ① 盘中变化 -->
           <div class="border-t border-border/40 py-1">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -307,7 +308,8 @@
               <span class="text-[10px] text-muted shrink-0">{{ wsOpen ? '▾' : '▸' }}</span>
             </button>
 
-          <div v-if="wsLoading" class="text-xs text-muted mt-2">加载中…</div>
+          <div v-if="wsOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2">
+          <div v-if="wsLoading" class="text-xs text-muted">加载中…</div>
           <div v-else-if="wsErr" class="text-xs text-muted mt-2">{{ wsErr }}</div>
           <template v-else-if="wsDay">
             <div v-if="!wsRows.length" class="text-xs text-muted mt-2">
@@ -346,6 +348,7 @@
             </template>
           </template>
           </div>
+          </div>
 
           <!-- ② 拥挤与关键位（AI 篮子在④） -->
           <div class="border-t border-border/40 py-1">
@@ -356,7 +359,7 @@
               <span class="text-[10px] text-muted truncate flex-1">{{ crowdLine }}</span>
               <span class="text-[10px] text-muted shrink-0">{{ crowdOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="crowdOpen" class="mt-1.5">
+            <div v-if="crowdOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.02] p-2">
           <div v-if="riskLoading" class="text-xs text-muted">加载中…</div>
           <div v-else-if="riskErr" class="text-xs text-muted">{{ riskErr }}</div>
           <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
@@ -446,7 +449,7 @@
               <span class="text-[10px] text-muted truncate flex-1">{{ aiLine }}</span>
               <span class="text-[10px] text-muted shrink-0">{{ aiOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="aiOpen" class="mt-1.5 text-xs">
+            <div v-if="aiOpen" class="mt-1.5 text-xs rounded-md border border-border/60 bg-white/[0.02] p-2">
               <div class="flex items-center gap-3 flex-wrap">
                 <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
                   回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
@@ -474,6 +477,7 @@
             </span>
           </div>
         </div>
+        </div>
 
         <!-- 教练卡（今日）—— 与观察器左右并排（原在常驻右栏） -->
         <div class="bg-card border border-border rounded-lg p-3">
@@ -486,13 +490,13 @@
             </button>
             <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
           </div>
-          <template v-if="todoOpen">
+          <div v-if="todoOpen" class="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
             <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
             <div v-else-if="!todayCoach.length" class="text-muted text-xs">
               {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
             </div>
             <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
-          </template>
+          </div>
           <div v-else class="text-[10px] text-muted">
             已收起（{{ todayCoach.length }} 条<template v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
           </div>
@@ -1305,8 +1309,9 @@
                **① 看盘序 = 全宽长卡，不参与分栏** —— 它内部是 6 格横向指标 + 数行横向信息
                （大小盘风格 / 尾盘承接 / 昨日涨停表现 / 竞价 Top5），天然"横着读"
                ⇒ 挤进半列必然折行。②③④⑤ 才分栏（安排见下方注释）。 -->
-        <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
-          <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
+        <!-- 看盘序 3/5 · 涨停梯队 2/5 -->
+        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-start">
+        <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div v-if="emotion && emotion.trading_day === false"
                  class="text-[11px] text-amber-400 mb-2">⚠ 今日休市——以下为最近交易日快照数据，非实时</div>
