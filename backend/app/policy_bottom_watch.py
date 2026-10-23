@@ -488,7 +488,8 @@ def etf_hint(day: str) -> Dict:
         "etf_status": status,                       # confirmed / watch / clear / none
         "etf_confirmed": bool((ew or {}).get("confirmed")),
         "etf_text": text,
-        "etf_date": (ew or {}).get("date") or "",
+        # 用真实数据日（T+1 未披露时是最近一份，见 etf_share_watch.load）
+        "etf_date": (ew or {}).get("data_date") or (ew or {}).get("date") or "",
     }
 
 

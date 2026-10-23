@@ -1034,9 +1034,15 @@ def task_etf_share_watch():
     """
     from app import etf_share_watch as esw
     day = _batch_trading_day().isoformat()
+    # ★ 2026-10-23：先补最近 5 个交易日的缺口（SSE 是 T+1，漏一天就永久缺行）
+    try:
+        bf = esw.backfill(5, end=day)
+    except Exception as e:
+        bf = {"filled": [], "error": str(e)[:60]}
     r = esw.scan_and_store(day, push=True)
     if not r.get("ok"):
         return (f"ETF 份额异动: WARN {str(r.get('error'))[:70]}"
+                f"（补历史 {len(bf.get('filled') or [])} 天）"
                 "⇒ 清单显示『检查不可用』（不等于没有异动）")
     sus = r.get("suspicious") or []
     extra = f"，疑似申购 {len(sus)} 只" if sus else ""
@@ -1044,6 +1050,9 @@ def task_etf_share_watch():
         extra += "，★ 连续 2 日确认（第①条自动打勾）"
     if r.get("pushed"):
         extra += "，已推企微"
+    bf_n = len(bf.get("filled") or [])
+    if bf_n:
+        extra += f"，补历史 {bf_n} 天"
     return f"ETF 份额异动: 窗口 {r.get('prev_date')}→{r.get('date')}{extra}"
 
 

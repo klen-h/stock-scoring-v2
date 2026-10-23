@@ -106,15 +106,82 @@ def _load_northbound() -> Optional[Dict]:
         return None
 
 
+_EM_INDEX_SECID = {
+    "000001": "1", "000300": "1", "000905": "1", "000985": "1", "000688": "1",
+    "399001": "0", "399006": "0", "399986": "0",
+}
+
+
+def _em_index_kline(symbol: str, count: int) -> List[Dict]:
+    """东财指数日线兜底 —— 腾讯 WAF/返回空时仍能拿到历史（2026-10-23 实测 800 根）。
+
+    返回口径统一成 [{date, open, close, high, low, volume}]。
+    """
+    import json as _json
+    import time as _time
+    import urllib.request
+    market = _EM_INDEX_SECID.get(
+        symbol, "0" if str(symbol).startswith("399") else "1")
+    url = ("https://push2his.eastmoney.com/api/qt/stock/kline/get"
+           f"?secid={market}.{symbol}&fields1=f1,f2,f3,f4,f5,f6"
+           "&fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1"
+           f"&end=20500101&lmt={max(int(count or 30), 60)}")
+    # ★ 东财会偶发 `Remote end closed connection`（实测 1/4 概率）⇒ 必须重试，
+    #   否则"兜底"本身就不稳，清单会时好时坏。
+    last = None
+    for attempt in range(3):
+        try:
+            req = urllib.request.Request(url, headers={
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/120 Safari/537.36"),
+                "Referer": "https://quote.eastmoney.com/"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                d = _json.loads(r.read().decode("utf-8", "ignore"))
+            out = []
+            for line in ((d.get("data") or {}).get("klines") or []):
+                p = str(line).split(",")
+                if len(p) < 6:
+                    continue
+                try:
+                    out.append({"date": p[0], "open": float(p[1]),
+                                "close": float(p[2]), "high": float(p[3]),
+                                "low": float(p[4]), "volume": float(p[5])})
+                except ValueError:
+                    continue
+            if out:
+                return out
+        except Exception as e:
+            last = e
+            _time.sleep(0.6 * (attempt + 1))
+    if last:
+        raise last
+    return []
+
+
 def _load_index_kline(symbol: str = "000001", count: int = 30) -> List[Dict]:
-    """加载指数日 K 线。"""
+    """加载指数日 K 线：腾讯 → 东财兜底。
+
+    ★ 2026-10-23（用户："数据不足没有历史数据补全吗"）：
+      腾讯对 399006/399986 常返回空（WAF 或代码被当股票用 qfqday 取），
+      而清单③/⑥依赖它们 ⇒ 必须**自动补全**。东财 push2his 不共享腾讯的 IP 配额。
+    """
+    rows = []
     try:
         from app.tencent import get_kline
-        rows = get_kline(symbol, period="day", count=count)
-        return rows or []
+        rows = get_kline(symbol, period="day", count=count) or []
     except Exception as e:
         print(f"[contradiction] 读取指数 K 线失败: {e}")
-        return []
+    if rows:
+        return rows
+    try:
+        em = _em_index_kline(symbol, count)
+        if em:
+            print(f"[contradiction] {symbol} 腾讯 K 线为空 → 东财兜底 {len(em)} 根")
+            return em
+    except Exception as e:
+        print(f"[contradiction] {symbol} 东财兜底失败: {str(e)[:60]}")
+    return []
 
 
 def _fmt_money(v) -> str:

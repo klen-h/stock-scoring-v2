@@ -54,6 +54,9 @@ SC_SH_FIX = float(os.environ.get("SC_SH_FIX") or 3674.0)      # 上证收复结�
 SC_SH_LAST = float(os.environ.get("SC_SH_LAST") or 3574.0)    # 上证锚点（2026-10-23 低点）
 SC_SH_REDLINE = float(os.environ.get("SC_SH_REDLINE") or 3500.0)
 SC_SH_ANCHOR = float(os.environ.get("SC_SH_ANCHOR") or 3574.0)  # 多空锚点
+# ★ 2026-10-23（用户："单日 V 型在这个位置已经失效过一次"）：
+#   结构修复必须**连续 2 个交易日**收在 3674 上方，单日不算。
+SC_SH_FIX_DAYS = int(os.environ.get("SC_SH_FIX_DAYS") or 2)
 # ★ 地缘动能候选阈值（2026-10-23 用户）：近 48h 实际动能事件 ≥3 条 ⇒ 熊市情景候选
 SC_GEO_KINETIC = int(os.environ.get("SC_GEO_KINETIC") or 3)
 
@@ -277,18 +280,30 @@ def evaluate(day: str = None) -> Dict:
                      "多" if cw.get("checked") else "中性",
                      cw.get("detail") or ""))
 
-    # 7 上证位置
+    # 7 上证位置（结构修复要求连续 2 日 ≥3674，单日不算）
     sh = kl_rows.get("000001") or {}
     shc = _num(sh.get("close"))
+    prev_sh = None
+    try:
+        from app.database import db as _db
+        _r = _db.fetch_one("SELECT close FROM key_level_watch WHERE code=%s "
+                           "AND date < %s ORDER BY date DESC LIMIT 1",
+                           ("000001", day))
+        prev_sh = _num((_r or {}).get("close"))
+    except Exception:
+        prev_sh = None
+    fixed = bool(shc is not None and shc >= SC_SH_FIX
+                 and prev_sh is not None and prev_sh >= SC_SH_FIX)
     if shc is None:
         sigs.append(_sig("sh_level", "上证位置", None, "", "不足"))
     else:
-        lean = ("多" if shc >= SC_SH_FIX
+        lean = ("多" if fixed
                 else ("空" if shc < SC_SH_LAST else "中性"))
         sigs.append(_sig("sh_level", "上证位置", round(shc, 2), "", lean,
-                         f"≥{SC_SH_FIX:.0f} 结构修复 / <{SC_SH_LAST:.0f} 锚点失守"
-                         f"（下看 {SC_SH_REDLINE:.0f}/3400）"
-                         + (f"；数据截至 {kl_date}" if kl_date and kl_date != day else "")))
+                         (f"≥{SC_SH_FIX:.0f} 且连续 {SC_SH_FIX_DAYS} 日=结构修复"
+                          f"（当前 {1 if shc >= SC_SH_FIX else 0}/{SC_SH_FIX_DAYS} 日）"
+                          f" / <{SC_SH_LAST:.0f} 锚点失守（下看 {SC_SH_REDLINE:.0f}/3400）"
+                          + (f"；数据截至 {kl_date}" if kl_date and kl_date != day else ""))))
 
     # 8 汇金 ETF
     etf_conf = bool(etf.get("confirmed"))
@@ -317,9 +332,9 @@ def evaluate(day: str = None) -> Dict:
         bear = (oil is not None and oil >= SC_BRENT_HIGH) or \
                (us is not None and us >= SC_US10Y_HIGH) or \
                (shc < SC_SH_REDLINE)
-        repair = (oil is not None and oil <= SC_BRENT_LOW) or \
-                 (us is not None and us <= SC_US10Y_LOW) or \
-                 (shc >= SC_SH_FIX)
+        # ★ 修复情景不看 10Y（10Y 是**支持信号**，不是情景触发器）：
+        #   只认 油价≤85 或 上证连续 2 日站上 3674，避免单一宏观读数翻情景。
+        repair = (oil is not None and oil <= SC_BRENT_LOW) or fixed
         scenario = "熊市加深" if bear else ("提前修复" if repair else "基准（磨底）")
 
     # 事件倒计时
@@ -351,7 +366,10 @@ def evaluate(day: str = None) -> Dict:
         "state": ("—" if shc is None
                   else ("守住" if shc >= SC_SH_ANCHOR else "跌破")),
         "downside": "3500/3400",
-        "fix": f"收复 {SC_SH_FIX:.0f}–3681 ⇒ 磨底结构修复（清单进 2/5）",
+        "structure_fix": fixed,
+        "fix": (f"收复 {SC_SH_FIX:.0f}–3681 且连续 {SC_SH_FIX_DAYS} 日"
+                f"（当前 {1 if (shc or 0) >= SC_SH_FIX else 0}/{SC_SH_FIX_DAYS}）"
+                f"⇒ 磨底结构修复（清单进 2/5）"),
     }
     return {"date": day, "signals": sigs, "lean": lean, "scenario": scenario,
             "events": evts, "point_plot": POINT_PLOT, "geo_alert": hard_geo,

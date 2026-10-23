@@ -131,11 +131,13 @@ def _analyze(bars: List[dict]) -> Optional[Dict]:
 
 def compute(day: str = None) -> Dict:
     ensure_table()
-    from app.tencent import get_kline
+    # ★ 2026-10-23：改用带东财兜底的加载器（腾讯对 399006/399986 常空，
+    #   会导致关键位表缺行 → 记分卡"上证位置"退化为数据不足）。
+    from app.contradictions.scanner import _load_index_kline
     rows, errors, datas = [], [], []
     for code, name in INDICES:
         try:
-            bars = get_kline(code, count=300) or []
+            bars = _load_index_kline(code, count=300) or []
         except Exception as e:
             bars = []
             errors.append(f"{name}: {str(e)[:50]}")

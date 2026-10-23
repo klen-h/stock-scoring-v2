@@ -42,6 +42,9 @@ from app.database import db
 # ── 阈值 ──
 ETF_SHARE_CHG_PCT = float(os.environ.get("ETF_SHARE_CHG_PCT") or 8.0)
 ETF_CONFIRM_DAYS = int(os.environ.get("ETF_CONFIRM_DAYS") or 2)
+# ★ 2026-10-23：连续天数原来只算 0/1/2（今天+昨天），用户问"怎么都是 1 天" ——
+#   现在最多回溯 5 个交易日，展示真实连续天数（确认阈值仍是 ETF_CONFIRM_DAYS=2）。
+ETF_STREAK_MAX = int(os.environ.get("ETF_STREAK_MAX") or 5)
 
 # 重点宽基（沪市；汇金申购的主战场）
 WATCH: Dict[str, str] = {
@@ -153,12 +156,28 @@ def load(day: str) -> Optional[Dict]:
                         (day,)) or []
     except Exception:
         return None
+    data_date = day
+    if not rows:
+        # ★ 2026-10-23：上交所份额是 **T+1** 披露，当日日批常常还取不到
+        #   ⇒ 原来直接返回 None，清单显示"尚未运行（日批上线后自动填充）"，
+        #   看起来像没跑。改成**沿用最近一份**并标注 data_date，绝不冒充当日。
+        try:
+            r = db.fetch_one("SELECT MAX(date) AS d FROM etf_share_watch "
+                             "WHERE date <= %s", (day,))
+            data_date = str((r or {}).get("d") or "")[:10]
+            if data_date and data_date != day:
+                rows = db.fetch("SELECT * FROM etf_share_watch WHERE date = %s "
+                                "ORDER BY chg_pct DESC", (data_date,)) or []
+        except Exception:
+            rows = []
     if not rows:
         return None
     out = [dict(r) for r in rows]
     # ★ `ok=True` 必须带上：`summarize()` 用 `not d.get("ok")` 判"不可用"，
     #   漏了就会把"读到正常历史"误报成"检查不可用"（实测踩到）。
-    return {"ok": True, "date": day, "rows": out, "count": len(out),
+    return {"ok": True, "date": day, "data_date": data_date,
+            "fallback": bool(data_date and data_date != day),
+            "rows": out, "count": len(out),
             "suspicious": [r for r in out if r.get("suspicious")],
             "confirmed": any(int(r.get("streak") or 0) >= ETF_CONFIRM_DAYS for r in out),
             "threshold": ETF_SHARE_CHG_PCT, "confirm_days": ETF_CONFIRM_DAYS,
@@ -187,6 +206,17 @@ def scan(day: str) -> Dict:
     except Exception as e:
         return {"ok": False, "date": day, "rows": [],
                 "error": f"前一交易日接口失败: {type(e).__name__}: {str(e)[:60]}"}
+
+    # 逐日份额表缓存：连续天数回溯时按需取（最多再多 3 次请求）
+    _maps = {day: cur, d1: prev, d2: prev2}
+
+    def _vol_of(dd: str, code: str):
+        if dd not in _maps:
+            try:
+                _maps[dd] = _sse_map(dd)
+            except Exception:
+                _maps[dd] = {}
+        return (_maps[dd].get(code) or (None, None))[1]
     if not prev:
         return {"ok": False, "date": day, "rows": [], "error": f"{d1} 无份额数据，无法算增幅"}
 
@@ -204,7 +234,22 @@ def scan(day: str) -> Dict:
         pv2 = (prev2.get(code) or (None, None))[1]
         chg_prev = ((pv / pv2 - 1) * 100) if pv2 else None
         sus_prev = bool(chg_prev is not None and chg_prev >= ETF_SHARE_CHG_PCT)
-        streak = (2 if (sus and sus_prev) else (1 if sus else 0))
+        # ★ 连续天数：从今天往前逐日回溯（最多 ETF_STREAK_MAX 天），
+        #   而不是只判"今天+昨天"⇒ 连续 3 天时能显示 3，而不是永远 1/2。
+        streak = 0
+        if sus:
+            streak = 1
+            cur_vol, dd = vol, day
+            for _ in range(max(0, ETF_STREAK_MAX - 1)):
+                dd = _prev_trading_day(dd)
+                pv_i = _vol_of(dd, code)
+                if not pv_i:
+                    break
+                if (cur_vol / pv_i - 1) * 100 >= ETF_SHARE_CHG_PCT:
+                    streak += 1
+                    cur_vol = pv_i
+                else:
+                    break
         rows.append({
             "code": code, "name": cur[code][0] or name,
             "vol": round(vol, 2), "prev_vol": round(pv, 2),
@@ -251,6 +296,38 @@ def scan_and_store(day: str, push: bool = True) -> Dict:
     return data
 
 
+def backfill(days: int = 5, end: str = None) -> Dict:
+    """补最近 N 个交易日的份额快照（跳过已有日期；**不推送**）。
+
+    ★ 2026-10-23（用户："没有历史数据补全吗"）：上交所支持 `STAT_DATE` 查历史，
+      而日批只在"当天有数据"时落库 ⇒ T+1 未披露的日子永久缺行，连续天数也就
+      永远从 1 起算。这里按交易日往回补齐（默认 5 天 ≈ 15 次请求，仅首次真正发请求）。
+    """
+    if not end:
+        try:
+            from app.flash.rules import latest_completed_trading_day
+            end = latest_completed_trading_day()
+        except Exception:
+            end = datetime.now().strftime("%Y-%m-%d")
+    filled, skipped, failed = [], [], []
+    d = str(end)[:10]
+    for i in range(max(1, days)):
+        if i:
+            d = _prev_trading_day(d)
+        if load(d):
+            skipped.append(d)
+            continue
+        r = scan(d)
+        if r.get("ok"):
+            save(r)
+            filled.append(d)
+        else:
+            failed.append(d)
+    print(f"[etf] backfill {end} 前 {days} 日: 补 {len(filled)} / 已有 {len(skipped)}"
+          f" / 失败 {len(failed)}（{filled[:3]}）")
+    return {"filled": filled, "skipped": skipped, "failed": failed, "end": end}
+
+
 def summarize(data: Dict = None) -> str:
     """一行文案（清单/日报/接口共用）。"""
     d = data or {}
@@ -259,13 +336,18 @@ def summarize(data: Dict = None) -> str:
     if not d.get("ok"):
         return f"份额异动：检查不可用（{d.get('error') or '取数失败'}）**不等于没有异动**"
     sus = d.get("suspicious") or []
+    asof = (f"（当日尚未披露，沿用 {d['data_date']}）"
+            if d.get("fallback") and d.get("data_date") else "")
     if d.get("confirmed"):
         names = "、".join(f"{r['code']}+{r['chg_pct']:.1f}%" for r in sus[:3])
-        return f"🔔 份额异动**连续 {ETF_CONFIRM_DAYS} 日确认**：{names}（疑似国家队申购）"
+        return (f"🔔 份额异动**连续 {ETF_CONFIRM_DAYS} 日确认**：{names}"
+                f"（疑似国家队申购）{asof}")
     if sus:
         n = max(int(r.get("streak") or 0) for r in sus)
         names = "、".join(f"{r['code']}+{r['chg_pct']:.1f}%" for r in sus[:3])
-        return f"份额异动：{names}（≥{ETF_SHARE_CHG_PCT:g}%，已连续 {n} 日，需 {ETF_CONFIRM_DAYS} 日确认）"
+        return (f"份额异动：{names}（≥{ETF_SHARE_CHG_PCT:g}%，已连续 {n} 日，"
+                f"需 {ETF_CONFIRM_DAYS} 日确认）{asof}")
     top = (d.get("rows") or [{}])[0]
-    return (f"份额异动：无（{d.get('date')} 最大增幅 "
-            f"{(top.get('chg_pct') if top else 0) or 0:+.2f}%，门槛 {ETF_SHARE_CHG_PCT:g}%）")
+    return (f"份额异动：无（{d.get('data_date') or d.get('date')} 最大增幅 "
+            f"{(top.get('chg_pct') if top else 0) or 0:+.2f}%，"
+            f"门槛 {ETF_SHARE_CHG_PCT:g}%）{asof}")
