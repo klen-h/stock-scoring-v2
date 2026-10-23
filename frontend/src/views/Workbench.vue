@@ -281,12 +281,12 @@
     <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3 items-start">
       <!-- ── 主工作区 ── -->
       <div class="space-y-3 min-w-0">
-        <!-- ★ 2026-10-23：观察器 + 教练卡 左右并排（3:2，等高） -->
-        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
+        <!-- ★ 2026-10-24（用户："观察器独占一行"）：3:2 并排改为单列，观察器整行铺满；教练卡移回右栏。 -->
+        <div class="grid grid-cols-1 gap-3 items-stretch">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
              原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
-        <div class="bg-card border border-border rounded-lg p-3 h-full xl:h-[min(60vh,480px)] flex flex-col">
+        <div class="bg-card border border-border rounded-lg p-3 h-full flex flex-col">
           <div class="flex items-center justify-between mb-1 shrink-0">
             <div class="text-sm font-semibold">观察器
               <span class="text-[10px] text-muted font-normal">（纯观察 · 不进决策链）</span>
@@ -479,28 +479,6 @@
         </div>
         </div>
 
-        <!-- 教练卡（今日）—— 与观察器左右并排（原在常驻右栏） -->
-        <div class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                    @click="todoOpen = !todoOpen" :title="todoOpen ? '点击收起' : '点击展开'">
-              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>教练卡
-              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
-                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
-            </button>
-            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
-          </div>
-          <div v-if="todoOpen" class="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
-            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
-              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
-            </div>
-            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
-          </div>
-          <div v-else class="text-[10px] text-muted">
-            已收起（{{ todayCoach.length }} 条<template v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
-          </div>
-        </div>
         </div>
 
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
@@ -2430,78 +2408,6 @@
 
       <!-- ── 常驻右栏（全天不变，不被时间轴切走） ── -->
       <aside class="space-y-3 min-w-0">
-        <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：由右栏**最下**移到**最上**
-             —— 它是"系统今天说了什么"的全时段入口，置顶后阅读顺序成：先看系统提示 →
-             再看待办/持仓/评分榜。默认收起、折叠控件在标题行（见卡内注释）。
-             ⚠️ 原位置（右栏最下）的注释与卡体已一并删除，不留第二份（同屏重复＝漂移）。 -->
-        <div class="bg-card border border-border rounded-lg p-4">
-          <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                  @click="pushOpen = !pushOpen"
-                  :title="pushOpen ? '点击收起' : '点击展开'">
-            <span class="text-[10px] text-muted">{{ pushOpen ? '▼' : '▶' }}</span>
-            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}
-          </button>
-          <template v-if="pushOpen">
-            <div v-if="pushConnErr" class="text-[10px] text-amber-400 mt-2">连接中断（保留上次数据）</div>
-            <div v-if="!pushItems.length" class="text-muted text-xs mt-2">—</div>
-            <div v-else class="max-h-80 overflow-y-auto pr-1 mt-2">
-              <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
-                <div class="flex items-center gap-2">
-                  <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
-                  <span class="font-semibold truncate">{{ p.title }}</span>
-                </div>
-                <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="text-[10px] text-muted mt-1">
-            已收起（{{ pushItems.length }} 条）—— 点击标题展开
-          </div>
-
-          <!-- ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）：
-               与上方时间线**同源**（都基于今日系统提示集合）⇒ 放进**同一张卡**，不新开
-               "今日雷达"卡（9/28 刚因"同源两张卡"删过一份，注释原文：留两份只会同屏重复）。
-               ⚠️ **默认折叠 ⇒ 不请求**；展开时 `toggleRadar` 先走 `refresh=false` ——
-                  当日已分析过 ⇒ 直接读后端缓存（免费）；**当日未分析过 ⇒ 仍会真调一次 LLM**。
-               ⚠️ 位置：**必须排在上面 `v-if/v-else` 对之后** —— 插到中间会破坏
-                  `<template v-if="pushOpen">` 与"已收起"`v-else` 的邻接关系。 -->
-          <div class="mt-2 pt-2 border-t border-border/40">
-            <button type="button" class="text-xs font-semibold flex items-center gap-1 hover:text-accent"
-                    @click="toggleRadar"
-                    :title="radarOpen ? '点击收起' : '点击展开。⚠️ 当日已分析过 ⇒ 直接读缓存（免费）；当日尚未分析 ⇒ 会调用一次 LLM（约十几秒）'">
-              <span class="text-[10px] text-muted">{{ radarOpen ? '▼' : '▶' }}</span>
-              系统自洽性审查（LLM）
-            </button>
-            <template v-if="radarOpen">
-              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
-                <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">当日已分析 · 读缓存</span>
-                <span v-if="radarAnalysis.items_used" class="text-[10px] text-muted">
-                  基于 {{ radarAnalysis.items_used }} 条系统提示</span>
-                <button class="px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        :class="radarAnalysis.loading ? 'text-muted' : 'text-accent hover:border-accent/50'"
-                        :disabled="radarAnalysis.loading"
-                        title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒~1 分钟）。同日正常只需读缓存。"
-                        @click="loadRadarAnalysis(true)">
-                  {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
-                </button>
-              </div>
-              <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
-              <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端已把 conclusion/reasons **分开下发**
-                   （L3 结构化），前端按角色渲染：结论条置顶、「依据」默认收起。 -->
-              <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
-                           :text="radarAnalysis.markdown"
-                           :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
-                           feedback-source="radar"
-                           :feedback-ref="'radar:' + (selectedDate || todayStr)"
-                           collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
-              <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
-              <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
-                检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
-                早盘判断被午后自己推翻）。<span class="text-muted/70">与「矛盾扫描」分工不同：后者扫的是**市场数据**层面的矛盾。</span>
-              </div>
-            </template>
-          </div>
-        </div>
 
         <!-- ★ 2026-09-28（方案 C，用户："A+C，快讯诊断单独在右栏常驻一行"）：
              「快讯诊断」（LLM 最新一条）是**高速变量**（随快讯更新），而它原先只出现在
@@ -2534,20 +2440,7 @@
           </div>
         </router-link>
 
-        <!-- 教练卡（今日）—— **全站唯一一份**
-             ★★ 2026-09-28 最终形态（用户："只留一份在右栏即可，只是决策的结果展示在那里即可，
-                无需消失，加上收起展开功能，默认展开"）：
-                ① **唯一一份**：盘中/午盘主区那张「待执行决策」已**删除** —— 两者本是同一份数据，
-                   留两份必然同屏重复（且两处口径曾不一致 ⇒ 用户看到"右栏不跟着变"）。
-                ② **显示今天的全部教练卡**（含已决策）：已执行的**不消失**，而是变成
-                   "已执行/已放弃"**结果徽标**（决策留痕）；**只有未决策的**才给执行/放弃按钮
-                   —— 该判定由 `TodoCard` 按 `alert.executed` 自行完成，不再依赖外层 `readonly`
-                   （漏传 `readonly` 正是上一版"已执行的卡还能重复回写"的成因）。
-                ③ 标题行折叠、**默认展开**（同观察池 / 系统时间线）。
-                ④ 标题由「待办 · 未决策教练卡」改为「**教练卡**」：它现在同时承载
-                   "未决策待办"与"已决策结果"，旧名只说一半（徽标仍标未决策条数）。
-                ⚠️ 回放（isReplay）时 `readonly=true` ⇒ 全部只读 + 状态徽标（历史不可改）。 -->
-        <!-- 市场底确认清单（2026-10-23：从盘中移到原教练卡位置，可收起展开） -->
+        <!-- 市场底确认清单（2026-10-23：从盘中移到右栏；2026-10-24 教练卡挂到本卡下方） -->
         <div v-if="pbw" class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
@@ -2639,6 +2532,32 @@
           </div>
         </div>
 
+        <!-- 教练卡（今日）—— **全站唯一一份**（2026-10-24 用户："移到市场底确认清单下面"）
+             ★ 2026-09-28 起唯一展示位就在右栏；10-23 曾临时挪到主区与观察器并排，
+             10-24 观察器独占一行后移回右栏、紧贴清单下方。
+             ⚠️ 回放（isReplay）时 readonly=true ⇒ 只读 + 状态徽标（历史不可改）。 -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="todoOpen = !todoOpen" :title="todoOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>教练卡
+              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
+                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
+            </button>
+            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
+          </div>
+          <div v-if="todoOpen" class="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
+            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
+            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+            </div>
+            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
+          </div>
+          <div v-else class="text-[10px] text-muted">
+            已收起（{{ todayCoach.length }} 条<template v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
+          </div>
+        </div>
+
         <!-- 持仓摘要
              ★ 2026-09-28（用户："持仓摘要右栏卡片先隐藏吧"）：**暂时隐藏**。
              ⚠️ 卡体**原样保留**、只加 `v-if="false"` —— 要恢复**删掉这个 v-if 即可**
@@ -2672,9 +2591,78 @@
                          :gw-items="gwItems" :gw-meta="gwMeta" :gw-err="gwErr"
                          :gw-prices="gwPrices" />
 
-        <!-- ★ 2026-09-28（用户："今日系统时间线整张卡移到右栏顶部"）：本卡与
-             「名称统一 / 放开条数 + max-h-80 溢出滚动 / 折叠默认收起」等全部注释
-             **已随卡体一起移到 `<aside>` 开头**（同一份内容不留第二处）。 -->
+        <!-- ★ 2026-10-24（用户："今日系统时间线移到最下面"）：由右栏顶部移到最下。
+             ⚠️ 它内含「系统自洽性审查（LLM）」—— 同源同卡，随本卡一起下移。
+             ⚠️ 全站只此一份（主区盘后那张同源卡 2026-09-26 已删）。 -->
+        <div class="bg-card border border-border rounded-lg p-4">
+          <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                  @click="pushOpen = !pushOpen"
+                  :title="pushOpen ? '点击收起' : '点击展开'">
+            <span class="text-[10px] text-muted">{{ pushOpen ? '▼' : '▶' }}</span>
+            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}
+          </button>
+          <template v-if="pushOpen">
+            <div v-if="pushConnErr" class="text-[10px] text-amber-400 mt-2">连接中断（保留上次数据）</div>
+            <div v-if="!pushItems.length" class="text-muted text-xs mt-2">—</div>
+            <div v-else class="max-h-80 overflow-y-auto pr-1 mt-2">
+              <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
+                  <span class="font-semibold truncate">{{ p.title }}</span>
+                </div>
+                <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
+              </div>
+            </div>
+          </template>
+          <div v-else class="text-[10px] text-muted mt-1">
+            已收起（{{ pushItems.length }} 条）—— 点击标题展开
+          </div>
+
+          <!-- ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）：
+               与上方时间线**同源**（都基于今日系统提示集合）⇒ 放进**同一张卡**，不新开
+               "今日雷达"卡（9/28 刚因"同源两张卡"删过一份，注释原文：留两份只会同屏重复）。
+               ⚠️ **默认折叠 ⇒ 不请求**；展开时 `toggleRadar` 先走 `refresh=false` ——
+                  当日已分析过 ⇒ 直接读后端缓存（免费）；**当日未分析过 ⇒ 仍会真调一次 LLM**。
+               ⚠️ 位置：**必须排在上面 `v-if/v-else` 对之后** —— 插到中间会破坏
+                  `<template v-if="pushOpen">` 与"已收起"`v-else` 的邻接关系。 -->
+          <div class="mt-2 pt-2 border-t border-border/40">
+            <button type="button" class="text-xs font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="toggleRadar"
+                    :title="radarOpen ? '点击收起' : '点击展开。⚠️ 当日已分析过 ⇒ 直接读缓存（免费）；当日尚未分析 ⇒ 会调用一次 LLM（约十几秒）'">
+              <span class="text-[10px] text-muted">{{ radarOpen ? '▼' : '▶' }}</span>
+              系统自洽性审查（LLM）
+            </button>
+            <template v-if="radarOpen">
+              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">当日已分析 · 读缓存</span>
+                <span v-if="radarAnalysis.items_used" class="text-[10px] text-muted">
+                  基于 {{ radarAnalysis.items_used }} 条系统提示</span>
+                <button class="px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        :class="radarAnalysis.loading ? 'text-muted' : 'text-accent hover:border-accent/50'"
+                        :disabled="radarAnalysis.loading"
+                        title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒~1 分钟）。同日正常只需读缓存。"
+                        @click="loadRadarAnalysis(true)">
+                  {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
+                </button>
+              </div>
+              <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
+              <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端已把 conclusion/reasons **分开下发**
+                   （L3 结构化），前端按角色渲染：结论条置顶、「依据」默认收起。 -->
+              <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
+                           :text="radarAnalysis.markdown"
+                           :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
+                           feedback-source="radar"
+                           :feedback-ref="'radar:' + (selectedDate || todayStr)"
+                           collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
+              <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
+              <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
+                检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
+                早盘判断被午后自己推翻）。<span class="text-muted/70">与「矛盾扫描」分工不同：后者扫的是**市场数据**层面的矛盾。</span>
+              </div>
+            </template>
+          </div>
+        </div>
+
       </aside>
     </div>
 
