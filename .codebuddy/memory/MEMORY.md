@@ -246,6 +246,8 @@
   盘后未就绪返回 `premature` 不落库、日批遇 premature 显式失败、新增 `pushed_at` 补推。
   另：`GET /system/trader-brief` **原本只写库不推送**；现 `refresh=true` 会带 `push=true`，
   盘后补推一次/天（按 `pushed_at` 去重），盘前盘中不推。
+  ⚠️ 本地 `WECHAT_BUSINESS_ALERTS` 未开（默认 0）；关键补推用 `notify(..., force=True)`
+  走分类群（`WECHAT_HOOK_BRIEF` 已配），并手动 `mark_pushed`。
 - ★ **3574 锚点 / 银行连续补跌**（2026-10-23）：`SC_SH_LAST/SC_SH_ANCHOR=3574`
   （跌破看 3500/3400，收复 3674–3681 才算结构修复）；`PBW_CATCHDOWN_DAYS=2`
   （单日逆势跌只是风格切换尝试）。**当日无指数收盘时情景必须标"待日批"**，
