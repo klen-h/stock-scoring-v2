@@ -3486,6 +3486,18 @@ async function loadOverview() {
 }
 // ★ 2026-10-18：市场底确认清单（观察器）。失败静默保留上次值（铁律 11）。
 const pbw = ref(null)
+// ★ 2026-10-23：清单移到右栏后支持收起展开（默认展开，localStorage 记忆）
+const PBW_KEY = 'wb_pbw_open'
+const pbwOpen = ref((() => {
+  try {
+    const v = localStorage.getItem(PBW_KEY)
+    return v == null ? true : v === '1'
+  } catch { return true }
+})())
+function togglePbw() {
+  pbwOpen.value = !pbwOpen.value
+  try { localStorage.setItem(PBW_KEY, pbwOpen.value ? '1' : '0') } catch { /* ignore */ }
+}
 const PBW_LABELS = {
   nation_team_ann: '国家队公告',
   amount_dry_up: '成交连续地量',
