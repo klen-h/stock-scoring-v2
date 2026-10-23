@@ -50,9 +50,10 @@ SC_US10Y_LOW = float(os.environ.get("SC_US10Y_LOW") or 5.0)
 SC_US10Y_HIGH = float(os.environ.get("SC_US10Y_HIGH") or 5.3)
 SC_BRENT_LOW = float(os.environ.get("SC_BRENT_LOW") or 85.0)
 SC_BRENT_HIGH = float(os.environ.get("SC_BRENT_HIGH") or 120.0)
-SC_SH_FIX = float(os.environ.get("SC_SH_FIX") or 3674.0)      # 上证收复结构
-SC_SH_LAST = float(os.environ.get("SC_SH_LAST") or 3550.0)    # 上证最后缓冲
+SC_SH_FIX = float(os.environ.get("SC_SH_FIX") or 3674.0)      # 上证收复结构（3674–3681）
+SC_SH_LAST = float(os.environ.get("SC_SH_LAST") or 3574.0)    # 上证锚点（2026-10-23 低点）
 SC_SH_REDLINE = float(os.environ.get("SC_SH_REDLINE") or 3500.0)
+SC_SH_ANCHOR = float(os.environ.get("SC_SH_ANCHOR") or 3574.0)  # 多空锚点
 # ★ 地缘动能候选阈值（2026-10-23 用户）：近 48h 实际动能事件 ≥3 条 ⇒ 熊市情景候选
 SC_GEO_KINETIC = int(os.environ.get("SC_GEO_KINETIC") or 3)
 
@@ -173,9 +174,14 @@ def ensure_table() -> None:
             lean TEXT,
             scenario TEXT,
             note TEXT,
+            extra_json TEXT,
             created_at TEXT
         )
     """)
+    try:                     # 老表补列（Postgres/SQLite 均可；已存在则忽略）
+        db.execute("ALTER TABLE scenario_watch ADD COLUMN extra_json TEXT")
+    except Exception:
+        pass
     _READY = True
 
 
@@ -201,6 +207,22 @@ def evaluate(day: str = None) -> Dict:
     items = pb.get("items") or {}
     klv = kl.load(day) or {}
     kl_rows = {r["code"]: r for r in (klv.get("rows") or [])}
+    if "000001" not in kl_rows:
+        # 当日行可能只写入了部分指数（或日批还没跑）⇒ 回退到最近一条**含上证**的记录，
+        # 并在锚点/情景上明确标注 as_of，绝不静默冒充当天。
+        try:
+            from app.database import db
+            prev = db.fetch_one(
+                "SELECT MAX(date) AS d FROM key_level_watch WHERE code = %s",
+                ("000001",))
+            if prev and prev.get("d"):
+                prev = {"date": prev["d"]}
+            if prev:
+                klv = kl.load(prev["date"]) or klv
+                kl_rows = {r["code"]: r for r in (klv.get("rows") or [])}
+        except Exception:
+            pass
+    kl_date = klv.get("date")
     etf = esw.load(day) or {}
 
     sigs: List[Dict] = []
@@ -264,7 +286,9 @@ def evaluate(day: str = None) -> Dict:
         lean = ("多" if shc >= SC_SH_FIX
                 else ("空" if shc < SC_SH_LAST else "中性"))
         sigs.append(_sig("sh_level", "上证位置", round(shc, 2), "", lean,
-                         f"≥{SC_SH_FIX:.0f} 结构修复 / <{SC_SH_LAST:.0f} 最后缓冲之下"))
+                         f"≥{SC_SH_FIX:.0f} 结构修复 / <{SC_SH_LAST:.0f} 锚点失守"
+                         f"（下看 {SC_SH_REDLINE:.0f}/3400）"
+                         + (f"；数据截至 {kl_date}" if kl_date and kl_date != day else "")))
 
     # 8 汇金 ETF
     etf_conf = bool(etf.get("confirmed"))
@@ -284,13 +308,19 @@ def evaluate(day: str = None) -> Dict:
 
     # ★ 情景切换仍按**可交易的市场观测值**（油价/10Y/点位）—— 单条新闻不直接改情景，
     #   只作为 geo_alert 高亮；这是用户推演里"选后打伊朗（油价120+）"的原始口径。
-    bear = (oil is not None and oil >= SC_BRENT_HIGH) or \
-           (us is not None and us >= SC_US10Y_HIGH) or \
-           (shc is not None and shc < SC_SH_REDLINE)
-    repair = (oil is not None and oil <= SC_BRENT_LOW) or \
-             (us is not None and us <= SC_US10Y_LOW) or \
-             (shc is not None and shc >= SC_SH_FIX)
-    scenario = "熊市加深" if bear else ("提前修复" if repair else "基准（磨底）")
+    if shc is None:
+        scenario = "待日批（缺指数收盘）"
+    elif kl_date and kl_date != day:
+        # 只有旧数据 ⇒ 不冒充基准/修复，避免单靠一个 10Y 读数就翻情景
+        scenario = f"待日批（指数截至 {kl_date}）"
+    else:
+        bear = (oil is not None and oil >= SC_BRENT_HIGH) or \
+               (us is not None and us >= SC_US10Y_HIGH) or \
+               (shc < SC_SH_REDLINE)
+        repair = (oil is not None and oil <= SC_BRENT_LOW) or \
+                 (us is not None and us <= SC_US10Y_LOW) or \
+                 (shc >= SC_SH_FIX)
+        scenario = "熊市加深" if bear else ("提前修复" if repair else "基准（磨底）")
 
     # 事件倒计时
     now = datetime.now()
@@ -314,22 +344,39 @@ def evaluate(day: str = None) -> Dict:
                          if e["t_minus"] is not None and 0 <= e["t_minus"] <= 7)
                or "无"))
 
+    anchor = {
+        "level": SC_SH_ANCHOR,
+        "close": shc,
+        "as_of": kl_date,
+        "state": ("—" if shc is None
+                  else ("守住" if shc >= SC_SH_ANCHOR else "跌破")),
+        "downside": "3500/3400",
+        "fix": f"收复 {SC_SH_FIX:.0f}–3681 ⇒ 磨底结构修复（清单进 2/5）",
+    }
     return {"date": day, "signals": sigs, "lean": lean, "scenario": scenario,
             "events": evts, "point_plot": POINT_PLOT, "geo_alert": hard_geo,
             "geo_candidate": geo_cand,
             "scenario_candidate": "熊市加深（地缘候选）" if geo_cand else "",
+            "anchor": anchor, "data_as_of": kl_date,
+            "checklist": {"n_checked": pb.get("n_checked"),
+                          "n_total": pb.get("n_total"),
+                          "hint": pb.get("position_hint")},
             "n_up": n_up, "n_down": n_dn, "note": note}
 
 
 def save(data: Dict) -> bool:
     ensure_table()
     try:
+        extra = {k: data.get(k) for k in
+                 ("anchor", "checklist", "geo_alert", "geo_candidate",
+                  "scenario_candidate")}
         db.upsert(_TABLE, {
             "date": str(data.get("date"))[:10],
             "signals_json": json.dumps(data.get("signals") or [], ensure_ascii=False),
             "lean": data.get("lean") or "",
             "scenario": data.get("scenario") or "",
             "note": data.get("note") or "",
+            "extra_json": json.dumps(extra, ensure_ascii=False),
             "created_at": datetime.now().isoformat(),
         }, conflict_columns=["date"])
         return True
@@ -357,14 +404,31 @@ def load(day: str = None) -> Dict:
         signals = json.loads(row.get("signals_json") or "[]")
     except (ValueError, TypeError):
         signals = []
+    try:
+        extra = json.loads(row.get("extra_json") or "{}")
+    except (ValueError, TypeError):
+        extra = {}
+    # 兼容老行（无 extra_json）：从 sh_level 现价推锚点
+    anchor = extra.get("anchor")
+    if not anchor:
+        shc = next((s.get("value") for s in signals if s.get("key") == "sh_level"),
+                   None)
+        anchor = {"level": SC_SH_ANCHOR, "close": shc,
+                  "state": ("—" if shc is None
+                            else ("守住" if float(shc) >= SC_SH_ANCHOR else "跌破")),
+                  "downside": "3500/3400",
+                  "fix": f"收复 {SC_SH_FIX:.0f}–3681 ⇒ 磨底结构修复（清单进 2/5）"}
+    cand = bool(extra.get("geo_candidate")
+                or any(s.get("candidate") for s in signals))
     return {"date": d, "signals": signals, "lean": row.get("lean"),
             "scenario": row.get("scenario"), "note": row.get("note"),
             "events": EVENTS, "point_plot": POINT_PLOT,
-            "geo_alert": any(s.get("hard") for s in signals),
-            "geo_candidate": any(s.get("candidate") for s in signals),
-            "scenario_candidate": ("熊市加深（地缘候选）"
-                                   if any(s.get("candidate") for s in signals)
-                                   else ""),
+            "geo_alert": bool(extra.get("geo_alert")
+                              or any(s.get("hard") for s in signals)),
+            "geo_candidate": cand,
+            "scenario_candidate": (extra.get("scenario_candidate")
+                                   or ("熊市加深（地缘候选）" if cand else "")),
+            "anchor": anchor, "checklist": extra.get("checklist") or {},
             "n_up": sum(1 for s in signals if s.get("lean") == "多"),
             "n_down": sum(1 for s in signals if s.get("lean") == "空")}
 

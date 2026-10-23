@@ -70,6 +70,8 @@ PBW_POSITION_CAP = float(os.environ.get("PBW_POSITION_CAP") or 30)  # 未达成�
 PBW_BANK_IDX = os.environ.get("PBW_BANK_IDX") or "399986"   # 中证银行
 PBW_MKT_IDX = os.environ.get("PBW_MKT_IDX") or "000985"     # 中证全指
 PBW_CATCHDOWN_LAG = float(os.environ.get("PBW_CATCHDOWN_LAG") or 0.0)  # 银行至少跑输多少 pp 才记 1
+# ★ 2026-10-23：单日逆势跌不算补跌（当天可能只是风格切换尝试），要**连续 2 日**
+PBW_CATCHDOWN_DAYS = int(os.environ.get("PBW_CATCHDOWN_DAYS") or 2)
 
 _TABLE_READY = False
 
@@ -271,7 +273,8 @@ def _chinext_weekly(as_of: str = None) -> Dict:
 def _bank_catchdown(as_of: str = None) -> Dict:
     """⑥ 强势板块（银行）补跌日（2026-10-23，用户提供 2018 年底剧本）。
 
-    · checked = 银行**当日收跌** 且 跑输中证全指（lag > PBW_CATCHDOWN_LAG，默认 0pp）；
+    · checked = 银行**连续 PBW_CATCHDOWN_DAYS（默认 2）日收跌** 且每日跑输中证全指
+      （lag > PBW_CATCHDOWN_LAG，默认 0pp）——单日逆势跌只算"风格切换尝试"，不算补跌；
     · 近 20 日超额一并展示（正 = 此前强势，"补跌"语义才成立），**不参与判定**；
     · `as_of`：回放历史日时只取该日及之前的 K 线（防前视）；两指数最新日期必须
       一致且等于本日（防"一只更新一只滞后"的错位比较）。
@@ -307,15 +310,32 @@ def _bank_catchdown(as_of: str = None) -> Dict:
         return {"checked": False, "insufficient": True, "detail": "K线字段异常"}
     lag = (m_chg - b_chg) * 100
     rs20 = (b20 - m20) * 100
-    checked = bool(b_chg < 0 and lag > PBW_CATCHDOWN_LAG)
+    # ★ 连续天数：按**日期对齐**逐日回溯（bank/mkt 可能有一侧缺行，不能靠索引）
+    bmap = {str(b.get("date"))[:10]: float(b["close"]) for b in bank if b.get("close")}
+    mmap = {str(m.get("date"))[:10]: float(m["close"]) for m in mkt if m.get("close")}
+    dates = sorted(set(bmap) & set(mmap))
+    streak = 0
+    for i in range(len(dates) - 1, 0, -1):
+        d0, d1 = dates[i - 1], dates[i]
+        if not (bmap[d0] and mmap[d0]):
+            break
+        bc = bmap[d1] / bmap[d0] - 1
+        mc = mmap[d1] / mmap[d0] - 1
+        if bc < 0 and (mc - bc) * 100 > PBW_CATCHDOWN_LAG:
+            streak += 1
+        else:
+            break
+    checked = bool(streak >= PBW_CATCHDOWN_DAYS)
     strong = "此前强势" if rs20 > 0 else "此前不强（补跌语义弱）"
     return {
         "checked": checked, "insufficient": False,
         "value": round(b_chg * 100, 2), "unit": "%",
         "bank_chg": round(b_chg * 100, 2), "mkt_chg": round(m_chg * 100, 2),
         "lag_pp": round(lag, 2), "rs20_pp": round(rs20, 2), "kline_date": bd,
+        "streak": streak, "need_days": PBW_CATCHDOWN_DAYS,
         "detail": (f"银行 {b_chg * 100:+.2f}% vs 全指 {m_chg * 100:+.2f}%"
-                   f"（跑输 {lag:+.2f}pp，需银行收跌）；"
+                   f"（跑输 {lag:+.2f}pp）；连续逆势跌 **{streak}** 日"
+                   f"（门槛 ≥{PBW_CATCHDOWN_DAYS}）；"
                    f"近20日超额 {rs20:+.2f}pp（{strong}）"),
     }
 

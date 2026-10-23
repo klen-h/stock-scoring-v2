@@ -41,7 +41,10 @@ INDICES = [
 # ★ 2026-10-23（用户推演）：结构性关键位（前双底/颈线），非整数关口。
 #   格式 env `KEY_LEVELS_EXTRA`：`代码:位1,位2;代码:位1`（默认上证 3674/3681/3750）。
 def _extra_levels() -> Dict[str, List[float]]:
-    raw = (os.environ.get("KEY_LEVELS_EXTRA") or "000001:3674,3681,3750").strip()
+    # ★ 2026-10-23：加入当日低点 **3574**（用户："把 3574 写进触发器"）；
+    #   3674/3681 = 前双底，3750 = 双底颈线。
+    raw = (os.environ.get("KEY_LEVELS_EXTRA")
+           or "000001:3574,3674,3681,3750").strip()
     out: Dict[str, List[float]] = {}
     for seg in raw.split(";"):
         seg = seg.strip()

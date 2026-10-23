@@ -401,6 +401,9 @@
                     class="px-1.5 rounded bg-rose-500/20 text-rose-300"
                     title="近 48h 实际动能事件 ≥3 条；仅提示，不自动改仓">
                 {{ scen.scenario_candidate }}</span>
+              <span v-if="scen && scen.checklist && scen.checklist.n_total"
+                    class="text-muted" :title="scen.checklist.hint || ''">
+                清单 {{ scen.checklist.n_checked }}/{{ scen.checklist.n_total }}</span>
               <span v-if="scen" class="text-muted">{{ scen.lean }} ·
                 {{ scen.n_up }}多 / {{ scen.n_down }}空</span>
             </div>
@@ -419,6 +422,12 @@
                   :title="e.note">{{ e.name }}
               <span class="font-mono">{{ e.t_minus == null ? '' : (e.t_minus < 0 ? '已过' : 'T-' + e.t_minus + 'd') }}</span>
             </span>
+          </div>
+          <div v-if="scen.anchor" class="text-[10px] mt-1"
+               :class="scen.anchor.state === '跌破' ? 'text-rose-300' : 'text-emerald-300'">
+            锚点 {{ scen.anchor.level }}：{{ scen.anchor.state }}
+            <span v-if="scen.anchor.close">（收盘 {{ scen.anchor.close }}）</span>；
+            跌破 → 下看 {{ scen.anchor.downside }}；{{ scen.anchor.fix }}
           </div>
           <div v-if="scen.geo_alert" class="text-[10px] text-rose-300 mt-1">
             ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
