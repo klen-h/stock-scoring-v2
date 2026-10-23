@@ -1711,7 +1711,7 @@ def market_emotion():
         "auction": auction,
         "leader_name": (stocks.get(leader) or {}).get("name") if leader else None,
         "verdict": verdict,
-        "note": "涨停/连板为 >=9.5% 近似口径（10cm 主板），官方口径待 zzshare 接入",
+        "note": "涨停/连板为 >=9.5% 近似口径，官方口径待 zzshare 接入",
     }
     _emotion_light.update(ts=now, val=val)
     _save_emotion_daily(val)         # ★ 2026-09-25：当天首次算成时落库（每日一次，见其注释）
