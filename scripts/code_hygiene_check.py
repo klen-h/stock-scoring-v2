@@ -18,6 +18,7 @@
 口径说明：扫描范围 = backend/app + scripts + frontend/src 的 .py/.vue/.js；
 docs/reports/.codebuddy/dist 不扫。基线文件随代码提交，降基线 = 修好的证据。
 """
+import ast
 import io
 import json
 import os
@@ -36,12 +37,15 @@ PATTERNS = [
     ("naive_now", re.compile(r'datetime\.now\(\)'), 'datetime.now() 无时区（生产 UTC 差 8h）'),
     ("naive_fromtimestamp", re.compile(r'fromtimestamp\((?![^)]*tz)[^)]*\)'),
      'fromtimestamp 未带 tz（BK-08 同型）'),
-    ("except_pass", re.compile(r'except[^:\n]*:\s*pass\b'), 'except...: pass 吞异常（GUARDRAILS #11）'),
+    # except_pass 改用 AST 检测（见 count_all）：同行正则查不到跨行 `except:\n    pass`，
+    # 而 2026-10-24 审查的 4 处静默死亡全是跨行形态
     ("req_no_timeout", re.compile(r'requests\.(get|post|request)\((?![^)]*timeout)[^)]*\)', re.S),
      'requests 缺 timeout'),
     ("sleep_in_request", re.compile(r'time\.sleep\('), '请求路径 time.sleep（Guardrails #3）'),
     ("refresh_all_in_api", re.compile(r'refresh_all_stocks\('), '接口路径全市场刷新（Guardrails #3）'),
 ]
+
+AST_ONLY = ("except_pass", None, 'except 处理体只有 pass（GUARDRAILS #11，AST 检测，.py）')
 
 # sleep/refresh 只在请求路径算红旗；其余路径（调度循环/日批）是合法使用
 PATH_SCOPED = {
@@ -62,6 +66,7 @@ def iter_files():
 
 def count_all():
     counts = {name: [] for name, _rx, _d in PATTERNS}
+    counts[AST_ONLY[0]] = []
     for p in iter_files():
         rel = os.path.relpath(p, ROOT).replace(os.sep, '/')
         try:
@@ -75,6 +80,16 @@ def count_all():
                     if scope and not scope(rel):
                         continue
                     counts[name].append('%s:%d' % (rel, i))
+        # AST 检测（仅 .py）：except 处理体 = [Pass]（含带注释的 pass 行）
+        if p.endswith('.py'):
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 \
+                        and isinstance(node.body[0], ast.Pass):
+                    counts[AST_ONLY[0]].append('%s:%d' % (rel, node.body[0].lineno))
     return counts
 
 
@@ -90,7 +105,8 @@ def main():
         return 0
     baseline = json.load(io.open(BASELINE, encoding='utf-8'))
     failed = False
-    for name, _rx, desc in PATTERNS:
+    all_names = [(n, _rx, d) for n, _rx, d in PATTERNS] + [AST_ONLY]
+    for name, _rx, desc in all_names:
         now_n, base_n = len(counts[name]), int(baseline.get(name, 0))
         mark = 'OK ' if now_n <= base_n else 'FAIL'
         if now_n > base_n:
