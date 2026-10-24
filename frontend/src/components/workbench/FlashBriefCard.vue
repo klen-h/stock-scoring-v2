@@ -11,7 +11,8 @@
             class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] cursor-help"
             :title="'盘中异动：' + triggers.join('、')">异动 {{ triggers.length }}</span>
       <span v-if="asOf" class="text-[10px] text-muted font-mono">数据 {{ asOf }}</span>
-      <router-link to="/monitor" class="ml-auto text-[10px] text-accent hover:underline">全部快讯 ↗</router-link>
+      <router-link to="/monitor" target="_blank" rel="noopener"
+                   class="ml-auto text-[10px] text-accent hover:underline">全部快讯 ↗</router-link>
     </div>
 
     <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息 -->

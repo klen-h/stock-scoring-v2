@@ -10,7 +10,11 @@
             <div class="hidden md:flex gap-1 items-center" ref="navRef">
               <template v-for="group in navGroups" :key="group.label">
                 <!-- 单页组（首页） -->
+                <!-- ★ 2026-10-24（用户："工作台所有的跳转都是新开页面，不然返回又得重新加载"）：
+                     顶部导航一律**新标签**打开 —— 工作台是重页面（十几个接口 + 60s 轮询），
+                     同标签跳走再返回会整页重挂载、重新拉一遍数据。 -->
                 <router-link v-if="group.path" :to="group.path"
+                  target="_blank" rel="noopener"
                   class="px-3 py-1 rounded text-xs transition-colors"
                   :class="isNavItemActive(group.path) ? 'bg-accent/15 text-accent' : 'text-muted hover:text-gray-200'">
                   {{ group.label }}
@@ -28,6 +32,7 @@
                     class="absolute top-full left-0 pt-1 z-50 min-w-[104px]">
                     <div class="bg-card border border-border rounded shadow-lg py-1">
                       <router-link v-for="item in group.items" :key="item.path" :to="item.path"
+                        target="_blank" rel="noopener"
                         @click="openMenu = null"
                         class="block px-3 py-2 text-xs transition-colors"
                         :class="isNavItemActive(item.path) ? 'text-accent bg-accent/10' : 'text-muted hover:text-gray-200 hover:bg-white/5'">
@@ -269,7 +274,9 @@ function doSearch() {
 
 function goStock(code) {
   showSearch.value = false
-  router.push(`/stock/${code}`)
+  // ★ 2026-10-24：搜索跳个股也新开标签（同标签跳走会把工作台整个卸载重载）
+  const href = router.resolve(`/stock/${code}`).href
+  window.open(href, '_blank', 'noopener')
 }
 
 function hideSearch() {
