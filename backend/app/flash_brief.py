@@ -171,8 +171,14 @@ def _market_section() -> Dict:
             down = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) < 0)
             flat = len(stocks) - up - down
             amount = sum((_num(s.get("amount")) or 0) for s in stocks.values())
-            lu = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) >= 9.8)
-            ld = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) <= -9.8)
+            # ★ 2026-10-24：涨跌停用项目唯一口径 `limit_stats`（板幅：ST5/10/20/30cm），
+            #   不再 `>=9.8` 一刀切（20cm 涨 10% 不是涨停，实测会高估近一倍）。
+            try:
+                from app import limit_stats as _ls
+                lu, ld, ls_src, _lm = _ls.counts_best(stocks)
+            except Exception:
+                lu, ld, ls_src = None, None, "unavailable"
+            out["limit_src"] = ls_src
             out.update({"up": up, "down": down, "flat": flat,
                         "amount_yi": round(amount / 1e8) if amount else None,
                         "limit_up": lu, "limit_down": ld,
@@ -363,8 +369,12 @@ SYSTEM = (
     "2) **不给买卖/仓位建议**，不预测点位。\n"
     "3) 快讯与盘面矛盾时（如利好但指数跌），要指出矛盾，不要强行圆场。\n"
     "4) 影响范围要具体到**板块或个股类别**（如「石油石化/油运」「半导体设备」），不要写「市场情绪」这种空话。\n\n"
+    "5) 必须给出**推翻条件**：写出「看到哪些可观测读数就说明我这个结论错了」，"
+    "必须是本输入里能观察到的量（指数涨跌幅/涨跌家数/成交额/涨停家数/板块涨跌），"
+    "不能写「如果走势反转」这类空话。\n\n"
     "★ 只输出一个 JSON 对象（不要 markdown、不要代码围栏）：\n"
     '{"conclusion": "<一句话≤40字，此刻盘面性质>", '
+    '"invalidate": "<推翻条件：≤50字，1~2 条可观测阈值>", '
     '"market": "<一句话，引用指数/涨跌家数/成交额说明大盘>", '
     '"sectors": [{"name":"板块","note":"轮动含义，≤30字"}], '
     '"movers": [{"name":"个股","note":"异动原因，≤30字"}], '
@@ -398,7 +408,8 @@ def _user_prompt(p: Dict) -> str:
     for i, x in enumerate(n.get("rows") or [], 1):
         lines.append(f"{i}. [{x.get('time')}][{x.get('cluster')}] {x.get('text')}")
     lines += ["", "## 请按 system 的 schema 输出 JSON：news 的 idx 必须对应上面快讯的序号；"
-                  "sectors/movers 各最多 3 条，没有就空数组。"]
+                  "sectors/movers 各最多 3 条，没有就空数组；"
+                  "**invalidate 必填**（可观测阈值，不是「走势反转」这种空话）。"]
     return "\n".join(lines)
 
 
@@ -411,8 +422,17 @@ def _fallback_llm(p: Dict) -> Dict:
         concl += f"｜涨跌比 {m.get('ratio')}"
     if m.get("amount_yi"):
         concl += f"｜成交 {m.get('amount_yi')} 亿"
+    _nm = idx.get("name") or "指数"
+    ratio_v = _num(m.get("ratio"))
+    if ratio_v is not None and ratio_v >= 1:
+        inv = f"推翻条件：涨跌比回落至 1 以下，或{_nm}由涨转跌"
+    elif ratio_v is not None:
+        inv = f"推翻条件：涨跌比回升至 1 以上，或{_nm}转涨并站上日内高点"
+    else:
+        inv = f"推翻条件：{_nm}反向运行超过 1%"
     return {
         "conclusion": concl,
+        "invalidate": inv,
         "market": "（模板）" + ("；".join(
             f"{x.get('name')} {x.get('chg_pct')}%" for x in (m.get("indices") or [])) or "数据不足"),
         "sectors": [{"name": x.get("name"), "note": f"{x.get('chg_pct')}%"}

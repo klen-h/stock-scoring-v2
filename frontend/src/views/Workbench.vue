@@ -866,7 +866,7 @@
                      —— 原写法在休市/盘前会把用户带偏（"昨日/今日"相对的是**数据口径日**，
                      不是自然日"今天"）。日期来自后端 `price_date` / `prev_limit_date`。 -->
                 <span class="text-[10px] text-muted font-normal cursor-help"
-                      :title="`数据口径日 = ${emotion?.price_date || '—'}${isTodayPrice() ? '（即今天）' : '（休市/盘前，不是自然日「今天」）'}。涨停/跌停/连板高度均为该日；「昨涨停均」= ${prevLimitLabel()} 涨幅≥9.5% 的股票在${priceDayLabel()}的平均涨跌幅`">{{ isTodayPrice() ? '今日' : '口径 ' + mmdd(emotion?.price_date) }} · 涨停/连板为 ≥9.5% 近似</span>
+                      :title="`数据口径日 = ${emotion?.price_date || '—'}${isTodayPrice() ? '（即今天）' : '（休市/盘前，不是自然日「今天」）'}。涨停/跌停/连板高度均为该日；口径按**板幅**（ST 5% / 主板 10% / 创业板科创 20% / 北交所 30%，rt_k 精确优先，来源 ${emotion?.limit_src || '—'}）；「昨涨停均」= ${prevLimitLabel()} 涨停股在${priceDayLabel()}的平均涨跌幅`">{{ isTodayPrice() ? '今日' : '口径 ' + mmdd(emotion?.price_date) }} · 涨跌停按板幅（ST5/主板10/双创20）</span>
                 <!-- ★ 2026-09-25：原徽标写"显示最近交易日数据"，但休市时行情缓存为空 ⇒
                      实际输出的是 0（不是最近交易日快照）⇒ **徽标承诺与实际不符**。
                      改为按 `has_live` 如实说明：无实时行情 ⇒ 今日字段均不可用（显示"—"）。

@@ -97,6 +97,10 @@
           <span class="text-accent">AI</span> {{ llm.conclusion }}
         </div>
         <div v-if="llm.market" class="text-[10px] text-muted mt-0.5 leading-relaxed">{{ llm.market }}</div>
+        <!-- ★ 2026-10-24（用户："给推翻条件"）：可观测阈值，不是"走势反转"这种空话 -->
+        <div v-if="llm.invalidate" class="text-[10px] text-amber-300/90 mt-1 leading-relaxed">
+          <span class="text-amber-400">推翻条件</span> {{ llm.invalidate }}
+        </div>
         <div class="flex items-center gap-2 mt-1">
           <button type="button"
                   class="px-2 py-0.5 rounded border border-border text-[10px] text-accent

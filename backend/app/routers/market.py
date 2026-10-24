@@ -1185,12 +1185,15 @@ def _breadth_now() -> Dict:
                if s.get("change_pct") is not None]
     if not changes:
         return {}
+    # ★ 2026-10-24：与 `_limit_counts_best` 同口径（原 `>=9.9` 会把 20cm 涨 10% 当涨停）
+    from app import limit_stats as _ls
+    lu, ld, _src, _m = _ls.counts_best(stocks)
     return {
         "total": len(stocks),
         "up": sum(1 for c in changes if c > 0),
         "down": sum(1 for c in changes if c < 0),
-        "limit_up": sum(1 for c in changes if c >= 9.9),
-        "limit_down": sum(1 for c in changes if c <= -9.9),
+        "limit_up": lu,
+        "limit_down": ld,
         "amount": round(sum(float(s.get("amount") or 0) for s in stocks.values()), 2),
     }
 
@@ -1487,10 +1490,23 @@ def market_emotion():
     has_live = bool(stocks)          # 行情缓存非空 ⇒ 有当日（或最近交易日）报价
     up = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) > 0) if has_live else None
     down = sum(1 for s in stocks.values() if (s.get("change_pct") or 0) < 0) if has_live else None
-    limit_up_codes = ([c for c, s in stocks.items() if (s.get("change_pct") or 0) >= 9.5]
-                      if has_live else [])
-    limit_down = (sum(1 for s in stocks.values() if (s.get("change_pct") or 0) <= -9.5)
-                  if has_live else None)
+    # ★★ 2026-10-24（用户："情绪预判的涨跌停数量修正一下取值逻辑"）：
+    #   原实现 `change_pct >= 9.5 / <= -9.5` 是**一刀切 10cm 近似** ⇒
+    #     · 20cm（创业板/科创）涨 10% **不是涨停**，却被计入（高估）；
+    #     · ST 5% 涨 5% 是涨停，却被漏计（低估）；
+    #     · 北交所 30cm 同理。
+    #   现改用项目**唯一口径** `_limit_counts_best`（rt_k 精确 `high_limit` 优先 →
+    #   内存按板幅：ST5/主板10/双创20/北交30，留 0.3pt 容差），与 `overview.stats` /
+    #   `temperature.breadth` / `market_regime` 完全同源 ⇒ 同页不再出现两个涨跌停家数。
+    from app import limit_stats as _ls
+    if has_live:
+        limit_up_n, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
+        # 连板推导需要**名单**：按同一套板幅判据挑（不另写阈值）
+        limit_up_codes = [c for c, s in stocks.items()
+                          if _ls.is_limit_up(dict(s, code=c))]
+    else:
+        limit_up_n, limit_down, limit_src, limit_meta = None, None, "no_data", {}
+        limit_up_codes = []
 
     closes = _emotion_closes_map()
     dates_all = sorted({d for m in closes.values() for d in m})
@@ -1513,9 +1529,9 @@ def market_emotion():
     if d_prev:
         for code, m in closes.items():
             c_prev, c_prev2 = m.get(d_prev), (m.get(d_prev2) if d_prev2 else None)
-            if not c_prev or (c_prev2 and c_prev / c_prev2 - 1 < 0.095):
-                continue
-            if not c_prev2:
+            # ★ 2026-10-24：名单口径同样改按板幅（原 ≥9.5% 会把 20cm 涨 10% 的票当涨停）
+            if not _is_limit_up_close(code, (stocks.get(code) or {}).get("name"),
+                                      c_prev2, c_prev):
                 continue
             prev_limit.append(code)
             q = stocks.get(code) or {}
@@ -1539,7 +1555,9 @@ def market_emotion():
             for i in range(len(seq) - 1, 0, -1):
                 if seq[i][0] > (dates_all[-1] or ""):
                     continue
-                if seq[i - 1][1] and seq[i][1] / seq[i - 1][1] - 1 >= 0.095:
+                # ★ 2026-10-24：连板也按板幅判（原 9.5% 对 20cm/ST 都会算错）
+                if _is_limit_up_close(code, (stocks.get(code) or {}).get("name"),
+                                      seq[i - 1][1], seq[i][1]):
                     streak += 1
                 else:
                     break
@@ -1665,11 +1683,12 @@ def market_emotion():
     # ★ 2026-09-25：把数字翻成两句人话（接力意愿 / 全市场开局）—— 见 `_auction_read` 的边界声明
     auction["verdict"] = _auction_read(auction, has_live)
 
+    _lu_for_verdict = int(limit_up_n or 0) if has_live else 0
     if not has_live:
         verdict = None       # ★ 2026-09-25：无行情 ⇒ 不判读（休市显示"分歧/常态"同样是误导）
-    elif limit_up_codes.__len__() >= 60 or max_streak >= 6:
+    elif _lu_for_verdict >= 60 or max_streak >= 6:
         verdict = "亢奋"
-    elif len(limit_up_codes) < 20 and (money is not None and money < 0):
+    elif _lu_for_verdict < 20 and (money is not None and money < 0):
         verdict = "冰点"
     else:
         verdict = "分歧/常态"
@@ -1704,14 +1723,19 @@ def market_emotion():
         "price_date": _p_day,
         "prev_limit_date": d_prev,
         "up": up, "down": down,
-        "limit_up": (len(limit_up_codes) if has_live else None), "limit_down": limit_down,
+        "limit_up": (limit_up_n if has_live else None), "limit_down": limit_down,
+        # ★ 2026-10-24：口径披露（与 overview.stats.limit_src 同源）——
+        #   "rt_k" = 真值限价精确；"board_approx" = 内存按板幅（ST5/10/20/30cm）
+        "limit_src": limit_src,
+        "limit_data_date": (limit_meta or {}).get("data_date"),
         "prev_limit_count": len(prev_limit),
         "prev_limit_today_pct": round(money, 2) if money is not None else None,
         "max_streak": max_streak, "leader": leader,
         "auction": auction,
         "leader_name": (stocks.get(leader) or {}).get("name") if leader else None,
         "verdict": verdict,
-        "note": "涨停/连板为 >=9.5% 近似口径，官方口径待 zzshare 接入",
+        "note": ("涨跌停/连板按**板幅**判定（ST 5% / 主板 10% / 创业板科创 20% / 北交所 30%，"
+                 "rt_k 精确优先），不再是 >=9.5% 一刀切"),
     }
     _emotion_light.update(ts=now, val=val)
     _save_emotion_daily(val)         # ★ 2026-09-25：当天首次算成时落库（每日一次，见其注释）
@@ -1834,6 +1858,23 @@ def _first_seen_map() -> Dict:
         print(f"[market] first-seen map failed: {e}")          # ASCII（铁律⑥）
     _first_seen_cache.update(ts=now, map=out)
     return out
+
+
+def _is_limit_up_close(code: str, name: str,
+                       prev_close, close) -> bool:
+    """收盘价口径：`prev_close → close` 是否**涨停**（按板幅，留 0.3pt 容差）。
+
+    ★★ 2026-10-24（用户："情绪预判的涨跌停数量修正一下取值逻辑"）：
+      历史收盘算"昨日涨停名单/连板高度"时原先硬编码 `>= 9.5%` ——
+      对 20cm（创业板/科创）会把"涨 10%"误判成涨停、对 ST（5%）会漏判。
+      判据复用 `app.limit_stats._limit_pct`（项目唯一板幅实现），与实时家数同口径。
+    """
+    a, b = _num_or_none(prev_close), _num_or_none(close)
+    if not a or not b or a <= 0:
+        return False
+    from app.limit_stats import _limit_pct
+    lp = _limit_pct(code, name) / 100.0        # 10.0 → 0.10
+    return (b / a - 1) >= (lp - 0.003)
 
 
 def _bucket_of(code: str, name: str) -> str:
