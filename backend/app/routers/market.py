@@ -19,7 +19,8 @@
 
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from app.auth import get_current_user
 from datetime import datetime, timedelta, timezone
 
 def _bj_now():
@@ -555,7 +556,8 @@ def refresh_status():
 
 
 @router.get("/trigger-refresh")
-def trigger_refresh(background_tasks: BackgroundTasks):
+def trigger_refresh(background_tasks: BackgroundTasks,
+                    _user: dict = Depends(get_current_user)):
     """手动触发缓存刷新（force=True，忽略 60 秒冷却）"""
     background_tasks.add_task(refresh_all_stocks, force=True)
     return {"status": "refreshing"}
@@ -581,7 +583,8 @@ def policy_bottom(date: Optional[str] = Query(None, description="交易日，缺
 def policy_bottom_confirm(
         checked: int = Query(1, ge=0, le=1, description="1=打勾 / 0=取消"),
         note: str = Query("", description="备注（哪家、什么公告）"),
-        date: Optional[str] = Query(None, description="交易日，缺省=当天")):
+        date: Optional[str] = Query(None, description="交易日，缺省=当天"),
+        _user: dict = Depends(get_current_user)):
     """第①条（国家队公告）人工打勾 —— 唯一人工项；打勾后**立即重算并落库**。"""
     from app import policy_bottom_watch as pbw
     return pbw.confirm_nation_team((date or "").strip()[:10], bool(checked), note)
@@ -605,7 +608,8 @@ def policy_bottom_announcements(
 
 @router.post("/policy-bottom/announcements/refresh")
 def policy_bottom_announcements_refresh(
-        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日"),
+        _user: dict = Depends(get_current_user)):
     """手动重扫（不推企微）。用于验证链路 / 盘中临时想看有没有新公告。"""
     from app import policy_bottom_watch as pbw
     from app import policy_announcements as pa
@@ -635,7 +639,8 @@ def policy_bottom_etf_shares(
 
 @router.post("/policy-bottom/etf-shares/refresh")
 def policy_bottom_etf_shares_refresh(
-        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日"),
+        _user: dict = Depends(get_current_user)):
     """手动重算份额异动（不推企微）。"""
     from app import policy_bottom_watch as pbw
     from app import etf_share_watch as esw

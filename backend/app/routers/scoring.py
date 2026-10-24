@@ -14,7 +14,8 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query, BackgroundTasks, Body, HTTPException
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, Body, HTTPException
+from app.auth import get_current_user
 import asyncio
 import math
 import os
@@ -765,7 +766,7 @@ def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
 
 
 @router.post("/snapshots/capture")
-async def capture_score_snapshot():
+async def capture_score_snapshot(_user: dict = Depends(get_current_user)):
     """立即记录当日 Top 50 快照（含维度分+快照价格）到 ranking_history，同日幂等覆盖。
     日常由调度器每天 15:15 自动执行；此接口供前端「保存快照」按钮手动触发。"""
     from datetime import datetime as _dt, timezone as _tz
@@ -1187,7 +1188,7 @@ def score_diag(symbol: str, ai: bool = True, refresh: bool = False):
 
 
 @router.post("/ask")
-def score_ask(payload: dict = Body(...)):
+def score_ask(payload: dict = Body(...), _user: dict = Depends(get_current_user)):
     """个股「事实问答」（P2）：对**当前标的**的自然语言问询。
 
     请求体：`{"code": "600000", "q": "现在处于什么阶段？还差什么条件？", "ai": true}`
@@ -1956,7 +1957,7 @@ def ranking_persistence(codes: list = Body(...)):
 
 
 @router.post("/ranking-record")
-def ranking_record(stocks: list = Body(...)):
+def ranking_record(stocks: list = Body(...), _user: dict = Depends(get_current_user)):
     """
     手动记录当日排行榜（供调试或定时任务调用）。
     
@@ -1983,7 +1984,8 @@ def kline_cache_status():
 
 
 @router.post("/kline-cache/refresh")
-def kline_cache_refresh(background_tasks: BackgroundTasks):
+def kline_cache_refresh(background_tasks: BackgroundTasks,
+                        _user: dict = Depends(get_current_user)):
     """
     触发K线缓存刷新（后台执行）。
     
@@ -2020,7 +2022,8 @@ def indicator_cache_status():
 
 
 @router.post("/indicator-cache/refresh")
-def indicator_cache_refresh(background_tasks: BackgroundTasks):
+def indicator_cache_refresh(background_tasks: BackgroundTasks,
+                            _user: dict = Depends(get_current_user)):
     """
     触发指标缓存刷新（后台执行）。
     
@@ -2042,7 +2045,8 @@ def _do_refresh_indicator_cache():
 
 
 @router.post("/indicator-cache/incremental")
-def indicator_incremental_update(data: dict = Body(...)):
+def indicator_incremental_update(data: dict = Body(...),
+                                 _user: dict = Depends(get_current_user)):
     """
     增量更新指标（盘中只拉最新价，无需重算 500 根 K 线）。
     
