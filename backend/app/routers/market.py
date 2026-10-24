@@ -483,6 +483,10 @@ def market_realtime(
     page: int = 1, size: int = 50,
     sort_by: str = "change_pct", order: str = "desc"
 ):
+    # ★ 2026-10-25（BK-31）：参数收口——旧实现 size 无上限，?size=999999 会把
+    #   全市场 ~5400 行整包返回（内存/带宽放大器，匿名可打）。
+    page = max(1, int(page or 1))
+    size = max(1, min(int(size or 50), 200))
     """
     全A股实时行情分页接口。
 
@@ -1222,8 +1226,25 @@ def _breadth_now() -> Dict:
     }
 
 
+_TAIL_IDX_CACHE = {"ts": 0.0, "val": {}}   # ★ BK-31：60s TTL（尾盘判读 120s 轮询减半外呼）
+
+
 def _index_snapshot() -> Dict[str, Dict]:
-    """一次请求取 `_TAIL_INDICES` 全部指数（`{code: {name, price, change_pct}}`）。失败返回 {}。"""
+    """一次请求取 `_TAIL_INDICES` 全部指数（`{code: {name, price, change_pct}}`）。失败返回 {}。
+
+    ★ 2026-10-25（BK-31）：旧实现**每次调用都外呼腾讯**——尾盘判读在 120s 轮询里，
+      页面开一天 = 整夜（现已被 BK-55 门控）/盘中每 2 分钟一次外呼。加 60s TTL。
+    """
+    import time as _t
+    now = _t.time()
+    if now - _TAIL_IDX_CACHE["ts"] < 60:
+        return _TAIL_IDX_CACHE["val"]
+    val = _index_snapshot_fetch()
+    _TAIL_IDX_CACHE.update(ts=now, val=val)
+    return val
+
+
+def _index_snapshot_fetch() -> Dict[str, Dict]:
     try:
         from app.tencent import _fetch_tencent
         codes = ",".join(("sh" if c.startswith("0") else "sz") + c for c, _ in _TAIL_INDICES)
@@ -1863,24 +1884,32 @@ _NEW_STOCK_MIN_DAYS = 60          # 上市不足 60 个交易日视为新股
 _BREAK_TOL = 0.002                # ① 阈值缓冲：板幅 −0.2%
 _SEAL_TOL = 0.001                 # 曾涨停判定容差（最高价触价即可）
 _BIG_LOSS_PCT = 5.0               # ② 大面率定义：炸板且收盘涨幅 < 5%
-_first_seen_cache = {"ts": 0.0, "map": None}   # 每只最早出现日期（日级缓存，防重复扫表）
+_first_seen_cache = {"ts": 0.0, "map": None, "ttl": 3600}   # 每只最早出现日期（日级缓存，防重复扫表）
+_LIMIT_LIVE_CACHE = {"date": None, "ts": 0.0, "out": None}   # ★ BK-31：limit-review 直连回退 300s 冷却
 
 
 def _first_seen_map() -> Dict:
-    """`{code: 最早交易日}` —— 用于剔除新股。**日级进程缓存**（该查询扫全表，不能每次做）。"""
+    """`{code: 最早交易日}` —— 用于剔除新股。**日级进程缓存**（该查询扫全表，不能每次做）。
+
+    ★ 2026-10-25（BK-31）：成功缓存 1h、失败只缓存 10min——旧实现失败也陪葬 1h：
+      空 map = 新股剔除静默失效一整小时（"降级路径也要缓存"但 TTL 要短）。
+    """
     import time as _t
     now = _t.time()
-    if _first_seen_cache["map"] is not None and now - _first_seen_cache["ts"] < 3600:
+    if (_first_seen_cache["map"] is not None
+            and now - _first_seen_cache["ts"] < _first_seen_cache["ttl"]):
         return _first_seen_cache["map"]
     out = {}
+    ok = True
     try:
         from app.database import db
         for r in db.fetch("SELECT code, MIN(date) AS d0 FROM backtest_prices "
                           "GROUP BY code") or []:
             out[str(r.get("code"))] = str(r.get("d0") or "")
     except Exception as e:
+        ok = False
         print(f"[market] first-seen map failed: {e}")          # ASCII（铁律⑥）
-    _first_seen_cache.update(ts=now, map=out)
+    _first_seen_cache.update(ts=now, map=out, ttl=3600 if ok else 600)
     return out
 
 
@@ -2223,20 +2252,31 @@ def market_limit_review(date: str = None):
         out["stats"] = _limit_stats(d)          # ★ 炸板率/大面率（来自 backtest_prices）
         return out
     # ── 回退：直连 zzshare（快照缺失时，拿到的是**动态值**）──
-    try:
-        from app.zzshare_client import get_api
-        api = get_api()
-        df = api.review_uplimit_hot_step(date1=d)
-        if df is not None and hasattr(df, "to_dict"):
-            out["steps"] = df.to_dict("records")[:20]
-        df2 = api.uplimit_stocks(date1=d)
-        if df2 is not None and hasattr(df2, "to_dict"):
-            out["stocks"] = _dedup_uplimit_stocks(df2.to_dict("records"))[:50]   # ★ 同上
-        if out["steps"] or out["stocks"]:
-            out["source"] = "live"
-            out["as_of"] = _now_str
-    except Exception as e:
-        print(f"[market] limit-review live failed: {e}")        # ASCII（铁律⑥）
+    # ★ 2026-10-25（BK-31）：直连回退加**按日期 300s 冷却**——旧实现每请求 2 次
+    #   zzshare 外呼无冷却；快照缺失的日期（如任意历史日）可被循环触发。
+    import time as _t
+    _now_ts = _t.time()
+    if (_LIMIT_LIVE_CACHE["date"] == d
+            and _now_ts - _LIMIT_LIVE_CACHE["ts"] < 300
+            and _LIMIT_LIVE_CACHE["out"] is not None):
+        out.update(_LIMIT_LIVE_CACHE["out"])
+        out["as_of"] = _now_str
+    else:
+        try:
+            from app.zzshare_client import get_api
+            api = get_api()
+            df = api.review_uplimit_hot_step(date1=d)
+            if df is not None and hasattr(df, "to_dict"):
+                out["steps"] = df.to_dict("records")[:20]
+            df2 = api.uplimit_stocks(date1=d)
+            if df2 is not None and hasattr(df2, "to_dict"):
+                out["stocks"] = _dedup_uplimit_stocks(df2.to_dict("records"))[:50]   # ★ 同上
+            if out["steps"] or out["stocks"]:
+                out["source"] = "live"
+                out["as_of"] = _now_str
+        except Exception as e:
+            print(f"[market] limit-review live failed: {e}")    # ASCII（铁律⑥）
+        _LIMIT_LIVE_CACHE.update(date=d, ts=_now_ts, out=dict(out))
     if out["ladder"] or out["stocks"]:
         out["stats"] = _limit_stats(d)
         return out
