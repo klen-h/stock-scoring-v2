@@ -1418,9 +1418,13 @@ async def trade_plan_trigger_loop():
             t = now.hour * 60 + now.minute
             is_open = False
             try:
-                is_open = bool(flash_rules.get_china_market_status().get("is_open"))
-            except Exception:
-                pass
+                # ★ 2026-10-24（BK-51）：此处曾写 `flash_rules.get_china_market_status()`——
+                #   `flash_rules` 从未导入 ⇒ NameError 被下一行 except 吞掉 ⇒ is_open 恒 False
+                #   ⇒ A4 交易计划触发（止损/兑现/买点提醒）整条链静默死亡。
+                is_open = bool(rules.get_china_market_status().get("is_open"))
+            except Exception as e:
+                # 吞异常必须可见（GUARDRAILS #11）：静默 here = 功能死亡且无迹可查
+                print(f"[plan-trigger] market status failed: {str(e)[:80]}")   # ASCII（铁律⑥）
             if now.weekday() < 5 and 570 <= t < 900 and is_open:
                 from app.tencent import _cache as _tcache
                 stocks = _tcache.get("stocks") or {}
