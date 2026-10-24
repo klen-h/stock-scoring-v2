@@ -358,6 +358,7 @@
 - ★★ **新增日批任务前先 grep 任务键与函数名**：`task_sector_snapshot` **已存在**（板块每日快照），
   本次同名 `def` **直接覆盖旧函数**、且 TASKS 里两个键指向同一名字 ⇒ 旧任务被静默替换（编译/启动都不报错）。
   ⇒ 新任务命名先 `grep -n "def task_"` + `grep -n '"<key>"'`，并跑一次 `len(TASKS)/DEFAULT_ORDER` 一致性检查（含重复项检测）。
+- ★ **`",".join("%s"*n)` 是坑**：join 作用在【字符串】上会逐字符迭代 ⇒ 占位符变成 "%,s"（psycopg2 抛 ValueError；mock 掉 psycopg2 的单测漏过）⇒ 一律 `join(["%s"]*n)`（2026-10-25 实测）。
 - **验证**：`py_compile` 查不出 NameError ⇒ 真 import + 真调用 + 独立进程；空数据 0==0 是假绿灯（先校验样本非空）；
   ★★ 同批次不对同一文件连发多编辑（静默丢，分批 + 每批 grep 复验关键行）。
 - **数据/字段**：缺数据 `None` 不填 0；`dict.get(k, default)` 对 None 不生效；跨系统按字段名取不按位置；
