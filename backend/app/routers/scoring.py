@@ -700,7 +700,7 @@ def rank_history(code: str, days: int = Query(default=30, ge=7, le=90)):
 
 
 # 分桶胜率统计缓存（计算涉及批量价格加载，10 分钟复用）
-_bucket_cache = {"ts": 0.0, "data": None}
+_bucket_cache = {"ts": 0.0, "data": None, "key": None}
 _BUCKET_CACHE_TTL = 600
 
 
@@ -715,7 +715,11 @@ def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     """
     import time as _time
     now = _time.time()
-    if _bucket_cache["data"] is not None and now - _bucket_cache["ts"] < _BUCKET_CACHE_TTL:
+    # ★ 2026-10-24（BK-10）：缓存键必须含 days——旧实现单槽无键，改 days 参数
+    #   返回的是上一参数的旧缓存（口径漂移）
+    key = "days=%s" % days
+    if (_bucket_cache["data"] is not None and _bucket_cache["key"] == key
+            and now - _bucket_cache["ts"] < _BUCKET_CACHE_TTL):
         data = dict(_bucket_cache["data"])
         data["cached"] = True
         return data
@@ -724,11 +728,12 @@ def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     result["cached"] = False
     _bucket_cache["ts"] = now
     _bucket_cache["data"] = result
+    _bucket_cache["key"] = key
     return result
 
 
 # 组合因子前瞻统计缓存（复用 bucket-stats 模式：批量价格加载较重，10 分钟复用）
-_composite_cache = {"ts": 0.0, "data": None}
+_composite_cache = {"ts": 0.0, "data": None, "key": None}
 
 
 @router.get("/composite-stats")
@@ -745,7 +750,10 @@ def composite_stats(days: int = Query(default=90, ge=30, le=365),
     """
     import time as _time
     now = _time.time()
-    if _composite_cache["data"] is not None and now - _composite_cache["ts"] < _BUCKET_CACHE_TTL:
+    # ★ 2026-10-24（BK-10）：缓存键含 days/horizon（同 bucket_stats 的单槽无键问题）
+    key = "days=%s,horizon=%s" % (days, horizon)
+    if (_composite_cache["data"] is not None and _composite_cache["key"] == key
+            and now - _composite_cache["ts"] < _BUCKET_CACHE_TTL):
         data = dict(_composite_cache["data"])
         data["cached"] = True
         return data
@@ -754,6 +762,7 @@ def composite_stats(days: int = Query(default=90, ge=30, le=365),
     result["cached"] = False
     _composite_cache["ts"] = now
     _composite_cache["data"] = result
+    _composite_cache["key"] = key
     return result
 
 

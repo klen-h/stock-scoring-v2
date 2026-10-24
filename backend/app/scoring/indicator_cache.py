@@ -701,7 +701,27 @@ def save_incremental_update(code: str, indicators: Dict, name: str = "", market_
         "_state": state,
     }
     
-    indicators_json = json.dumps(indicator_fields, ensure_ascii=False)
+    # ★ 2026-10-24（BK-43）：增量更新只带最新一根的指标值，**不带 _series**（评分引擎
+    #   预计算的指标序列）。旧实现整列覆盖 ⇒ 盘中一次增量调用即抹掉该股 _series
+    #   （前端已接入该端点）⇒ 读旧 JSON 保留 _series 等非增量字段，再合并本次值；
+    #   kline_count 同理保留旧值（旧实现写 0）。
+    old_row = None
+    try:
+        old_row = db.fetch_one("SELECT indicators, kline_count FROM indicator_cache "
+                               "WHERE code = %s", (code,))
+    except Exception:
+        old_row = None
+    old_json = {}
+    old_count = 0
+    if old_row:
+        try:
+            old_json = json.loads(old_row.get("indicators") or "{}") or {}
+        except (ValueError, TypeError):
+            old_json = {}
+        old_count = old_row.get("kline_count") or 0
+    merged = dict(old_json)
+    merged.update(indicator_fields)      # 增量值优先（含最新 _state）
+    indicators_json = json.dumps(merged, ensure_ascii=False)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
@@ -713,6 +733,6 @@ def save_incremental_update(code: str, indicators: Dict, name: str = "", market_
                 indicators = EXCLUDED.indicators,
                 updated_at = EXCLUDED.updated_at,
                 market_cap = EXCLUDED.market_cap
-        """, (code, name, indicators_json, 0, now, market_cap))
+        """, (code, name, indicators_json, old_count, now, market_cap))
     except Exception as e:
         print(f"[indicator_cache] 保存增量更新失败 {code}: {e}")
