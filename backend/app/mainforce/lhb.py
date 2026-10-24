@@ -127,8 +127,11 @@ def fetch_detail_seats(date: str, code: str) -> list | None:
     """单股单日席位明细 → [{trader_name, buy_amount, sell_amount, youzi_icon}]。"""
     try:
         resp = get_api().lhb_detail(date, code)
-        d = (resp or {}).get("detail") if isinstance(resp, dict) else None
-        traders = (resp or {}).get("traders") if isinstance(resp, dict) else None
+        if not isinstance(resp, dict):
+            return None
+        # ★ 2026-10-24（BK-13）：席位可能在顶层 `traders` 或 `detail.traders`——
+        #   旧实现只认顶层（且 `d` 是死变量）⇒ 嵌套形态的席位**静默永不落库**。
+        traders = resp.get("traders") or (resp.get("detail") or {}).get("traders")
         if not traders:
             return None
         seats = []
@@ -170,11 +173,22 @@ def save_rows(rows: list) -> int:
                       r["concepts"], r["turnover_ratio"], seats_json,
                       r.get("circ_mktcap")))
             else:
+                # ★ 2026-10-24（BK-13）：INSERT OR REPLACE 是**整行替换**——seats_json/
+                #   circ_mktcap 为 None 时会抹掉已有历史值（PG 分支有 COALESCE 保护）。
+                #   sqlite ≥3.24 支持 ON CONFLICT DO UPDATE（表已有 UNIQUE(code,date)），
+                #   与 PG 分支同语义。
                 db.execute("""
-                    INSERT OR REPLACE INTO lhb_history (code, name, date, net_buy,
+                    INSERT INTO lhb_history (code, name, date, net_buy,
                         buy_total, sell_total, quote_change, up_reason, concepts,
                         turnover_ratio, seats_json, circ_mktcap)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (code, date) DO UPDATE SET
+                        name=EXCLUDED.name, net_buy=EXCLUDED.net_buy,
+                        buy_total=EXCLUDED.buy_total, sell_total=EXCLUDED.sell_total,
+                        quote_change=EXCLUDED.quote_change, up_reason=EXCLUDED.up_reason,
+                        concepts=EXCLUDED.concepts, turnover_ratio=EXCLUDED.turnover_ratio,
+                        circ_mktcap=COALESCE(EXCLUDED.circ_mktcap, lhb_history.circ_mktcap),
+                        seats_json=COALESCE(EXCLUDED.seats_json, lhb_history.seats_json)
                 """, (r["code"], r["name"], r["date"], r["net_buy"], r.get("buy_total"),
                       r.get("sell_total"), r["quote_change"], r["up_reason"],
                       r["concepts"], r["turnover_ratio"], seats_json,
