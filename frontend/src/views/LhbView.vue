@@ -9,7 +9,7 @@
         </div>
         <div class="flex items-center gap-2">
           <select v-model="date" @change="load()"
-                  class="bg-background border border-border rounded px-2 py-1 text-xs">
+                  class="bg-card border border-border rounded px-2 py-1 text-xs">
             <option v-for="d in dates" :key="d" :value="d">{{ d }}</option>
           </select>
           <button @click="load()" :disabled="loading"
