@@ -828,6 +828,12 @@ def _build_anomaly_user(snap: dict, data_text: str, env_text: str, missing: list
         f"{data_text}\n\n"
         f"{env_text}\n"
         f"## 本次缺失维度（必须体现到 missing 与 confidence 上）\n- {miss_txt}\n\n"
+        "## 历史快讯使用规则（L5）\n"
+        "- 若 L5 有编号条目：support/against 里**引用编号**（如「[2] 10-22 公司公告中标」），"
+        "但只能复述编号条目里出现的事实，不得添加原文没有的数字/日期/主体。\n"
+        "- 若 L5 显示「未检索到相关历史快讯」：**不得**声称有历史依据，也不要写"
+        "「通常/历史上」这类补白。\n"
+        "- 历史快讯只能作为**背景对照**，不能替代本次盘口与资金数据。\n\n"
         "## 任务\n判断这次异动更接近哪种情形，按下方格式输出**合法 JSON**（不要 markdown 围栏、"
         "不要额外解释）：\n"
         f"{_ANOMALY_SCHEMA}\n\n"
@@ -934,6 +940,20 @@ def stock_anomaly_analysis(symbol: str, refresh: bool = False):
         env_text = ""
         print(f"[anomaly] env context failed: {e}")
     data_text, items_used, missing = _anomaly_data_block(snap, hist, mf, _market_desc())
+
+    # ★★ 2026-10-24（用户："异动分析增加历史快讯数据库检索"）：
+    #   在**调 LLM 之前**检索 `flash_news`（代码/名称/行业/关键词/簇 五路打分），
+    #   命中条目以 `[n]` 编号拼进 prompt ⇒ LLM 只能引用这些编号，不许编造历史事件。
+    try:
+        from app import flash_history as fh
+        news_hit = fh.search(symbol, snap.get("name") or "", snap.get("tags") or [])
+        data_text = data_text + "\n\n" + fh.prompt_block(news_hit)
+        if news_hit.get("items"):
+            items_used += 1
+    except Exception as e:
+        news_hit = {"items": [], "query": {}, "note": f"检索异常: {str(e)[:60]}"}
+        print(f"[anomaly] flash history search failed: {e}")
+
     user = _build_anomaly_user(snap, data_text, env_text, missing)
 
     # ③ 调 LLM（失败只回一行错误，不抛）
@@ -1006,6 +1026,10 @@ def stock_anomaly_analysis(symbol: str, refresh: bool = False):
         "filtered_fields": dropped,
         "disclaimer": _DISCLAIMER,
         "items_used": items_used,
+        # ★ 2026-10-24：历史快讯依据（结构化；前端在「支持/反对证据」下方渲染）
+        "news_evidence": news_hit.get("items") or [],
+        "news_query": news_hit.get("query") or {},
+        "news_note": news_hit.get("note") or "",
         "mf_source": mf_src,
         "data_ts": snap.get("data_ts"),
         "from_snapshot": snap.get("from_snapshot"),

@@ -92,7 +92,11 @@ def save_state(state: dict) -> None:
 
 
 # ★ 2026-10-23：快讯保留期（推演证伪要看近 7 日伊朗/中东事件，原先只留 300 条 ≈1~2 天）
-FLASH_KEEP_DAYS = int(os.environ.get("FLASH_KEEP_DAYS") or 7)
+# ★★ 2026-10-24（用户："异动分析要检索历史快讯"）：7 天撑不起"历史依据" ⇒ 默认 **120 天**。
+#   实测 ~38 条/日 ⇒ 120 天约 4.5k 行（几 MB），行数上限 20000 兜底。
+#   历史快讯的**存储结构不变**（`flash_news`：id/time/content/cluster/is_pushed），
+#   检索逻辑见 `app/flash_history.py`（代码/名称/行业/关键词/簇 五路打分）。
+FLASH_KEEP_DAYS = int(os.environ.get("FLASH_KEEP_DAYS") or 120)
 FLASH_KEEP_ROWS = int(os.environ.get("FLASH_KEEP_ROWS") or 20000)
 
 

@@ -436,6 +436,40 @@
               </div>
             </div>
 
+            <!-- ★ 2026-10-24（用户："异动分析增加历史快讯数据库检索"）：
+                 命中条目以 `[n]` 编号喂给 LLM，并在此**原文展示**（可核对，不是 LLM 转述）。
+                 0 命中也如实说明，避免让人以为"有历史依据"。 -->
+            <div v-if="(anomaly.news_evidence || []).length"
+                 class="mt-2 px-3 py-2 rounded-lg bg-white/5">
+              <div class="flex items-center gap-2 mb-1 flex-wrap">
+                <span class="text-[11px] text-muted">历史快讯依据</span>
+                <span class="text-[10px] text-muted/70">
+                  数据库检索 · {{ anomaly.news_query?.days || 90 }} 天窗口 · 命中
+                  {{ anomaly.news_evidence.length }} 条
+                  <template v-if="anomaly.news_query?.keywords?.length">
+                    · 关键词 {{ anomaly.news_query.keywords.slice(0, 4).join('/') }}
+                  </template>
+                </span>
+              </div>
+              <ul class="space-y-1">
+                <li v-for="(n, i) in anomaly.news_evidence" :key="n.id || i"
+                    class="text-[11px] leading-snug">
+                  <span class="text-muted font-mono">[{{ i + 1 }}]</span>
+                  <span class="font-mono text-[10px] text-muted">{{ (n.time || '').slice(5, 16) }}</span>
+                  <span class="px-1 rounded text-[10px] ml-1" :class="newsClusterCls(n.cluster)">{{ n.cluster }}</span>
+                  <span class="ml-1 text-gray-300">{{ n.text }}</span>
+                  <span class="text-[10px] text-muted/70">（{{ (n.match || []).join('、') }}）</span>
+                </li>
+              </ul>
+              <div class="text-[10px] text-muted/70 mt-1">
+                历史快讯仅作背景对照，不替代本次盘口与资金数据。
+              </div>
+            </div>
+            <div v-else-if="anomaly.news_query" class="mt-2 text-[10px] text-muted leading-relaxed">
+              未检索到相关历史快讯（{{ anomaly.news_query.days || 90 }} 天窗口）——
+              本结论仅基于本次盘口与资金数据，未使用历史事件。
+            </div>
+
             <div class="mt-2 flex flex-wrap items-center gap-3 text-[11px]">
               <span v-if="anomaly.watch_levels?.resistance" class="text-muted">上方观察位
                 <span class="font-mono text-gray-200">{{ anomaly.watch_levels.resistance }}</span></span>
@@ -462,7 +496,8 @@
             把此刻的盘口（价 / 量比 / 涨速 / 均价）、主力行为（阶段 / 资金 / 筹码）与近 5 日位置
             一并交给 LLM，判读这次异动更像
             <span class="text-gray-300">拉高出货 / 诱多上套 / 真实突破 / 暂无定论</span>。
-            <span class="text-muted/70">证据不足时它会直接说「暂无定论」——这比硬给一个结论更有用。</span>
+            <span class="text-muted/70">分析前会**先检索历史快讯库**（代码/名称/行业/关键词，默认 90 天），
+              命中的条目作为「历史快讯依据」随结论一起展示；证据不足时它会直接说「暂无定论」。</span>
           </div>
         </template>
       </div>
@@ -1149,6 +1184,15 @@ const confidenceCls = computed(() => ({
   '高': 'bg-emerald-500/10 text-emerald-400',
   '低': 'bg-amber-500/10 text-amber-400',
 }[anomaly.value.confidence] || 'bg-white/5 text-muted'))
+
+// ★ 2026-10-24：历史快讯依据的事件簇配色（与快讯解读卡同口径）
+function newsClusterCls(c) {
+  if (['中东战争', '伊朗局势'].includes(c)) return 'bg-rose-500/15 text-rose-300'
+  if (['美联储利率', '中美贸易'].includes(c)) return 'bg-sky-500/15 text-sky-300'
+  if (['国内政策'].includes(c)) return 'bg-amber-500/15 text-amber-300'
+  if (['原油能源', '黄金贵金属'].includes(c)) return 'bg-orange-500/15 text-orange-300'
+  return 'bg-white/5 text-muted'
+}
 
 async function loadAnomalySignals() {
   // 闸门失败静默（不影响页面其它部分），失败时不显示标签而不是显示"无异动"
