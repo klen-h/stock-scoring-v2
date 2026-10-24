@@ -6,12 +6,13 @@
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.database import db
 from app.flash import rules
 from app.strategies import paper_trading
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -40,7 +41,7 @@ class ManualIngest(BaseModel):
 
 
 @router.post("/positions/manual")
-def manual_ingest(body: ManualIngest):
+def manual_ingest(body: ManualIngest, _user: dict = Depends(get_current_user)):
     """手动把某战法信号的某只股票转为模拟持仓（pending）。"""
     sd = body.signal_date
     if not sd:
@@ -76,7 +77,7 @@ def manual_ingest(body: ManualIngest):
 
 
 @router.post("/positions/{pid}/close")
-def close_position(pid: int):
+def close_position(pid: int, _user: dict = Depends(get_current_user)):
     """手动平仓（用最新收盘/现价）。"""
     row = db.fetch_one("SELECT * FROM paper_positions WHERE id=%s", (pid,))
     if not row or row["status"] != "holding":
@@ -91,7 +92,7 @@ def close_position(pid: int):
 
 
 @router.delete("/positions/{pid}")
-def cancel_position(pid: int):
+def cancel_position(pid: int, _user: dict = Depends(get_current_user)):
     """取消 pending（未确认仓位）。"""
     row = db.fetch_one("SELECT id, status FROM paper_positions WHERE id=%s", (pid,))
     if not row:
@@ -123,8 +124,12 @@ def account():
 
 
 @router.post("/whitelist/refresh")
-def whitelist_refresh(dry_run: bool = True):
-    """模拟盘样本充足后的白名单自动刷新建议（默认 dry_run 只给建议）。"""
+def whitelist_refresh(_user: dict = Depends(get_current_user)):
+    """模拟盘样本充足后的白名单自动刷新建议。
+
+    ★ 2026-10-24：移除形参 dry_run——paper_trading.auto_refresh_whitelist() 无此参数，
+      旧签名声明了却丢弃（BK paper.py:126）；本端点恒为"只出建议"，不落库。
+    """
     return paper_trading.auto_refresh_whitelist()
 
 
@@ -138,6 +143,6 @@ def risk_status():
 
 
 @router.post("/risk/unfreeze")
-def risk_unfreeze():
+def risk_unfreeze(_user: dict = Depends(get_current_user)):
     """人工解除回撤熔断（评估战法是否失效后再解锁）。"""
     return paper_trading.unfreeze()

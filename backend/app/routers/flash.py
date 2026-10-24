@@ -17,13 +17,14 @@ URL 前缀 /api/flash：
 ================================================================================
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 import os
 
 # ★ 2026-09-12：本文件所有时间戳统一走 rules.beijing_now*()（原来混用 datetime.now()，
 #   在 Render 上等于 UTC，与库里的北京时间对不上，见下方通知接口注释）
 from app.database import db
 from app.flash import store, service, scheduler, wechat, rules
+from app.auth import get_current_user
 from app.signals import tracker
 
 router = APIRouter()
@@ -74,7 +75,8 @@ def flash_calendar_ahead(days: int = Query(3, ge=1, le=7)):
 
 
 @router.post("/calendar/refresh")
-def flash_calendar_refresh(days_ahead: int = Query(14, ge=7, le=60)):
+def flash_calendar_refresh(days_ahead: int = Query(14, ge=7, le=60),
+                           _user: dict = Depends(get_current_user)):
     """手动刷新财经日历缓存（测试/应急用；日常由调度器每日 07:00 自动刷新）。"""
     from app.flash import calendar
     n = calendar.refresh(days_ahead=days_ahead)
@@ -127,7 +129,7 @@ def flash_brief_get(date: str = None):
 
 
 @router.post("/brief/refresh")
-def flash_brief_refresh(date: str = None):
+def flash_brief_refresh(date: str = None, _user: dict = Depends(get_current_user)):
     """手动/系统触发的快讯解读（**一次** LLM，重要条打包进同一 prompt）。"""
     from app import flash_brief as fb
     r = fb.analyze(date, refresh=True)
@@ -151,7 +153,7 @@ def flash_review_history(phase: str, limit: int = Query(20, ge=1, le=50)):
 
 
 @router.post("/review/{phase}/run")
-def flash_review_run(phase: str):
+def flash_review_run(phase: str, _user: dict = Depends(get_current_user)):
     """手动触发一次复盘（测试/补跑用；正常由调度器按窗口执行）。"""
     if phase not in ("premarket", "lunchbreak", "postmarket"):
         return {"error": f"未知复盘阶段 {phase}"}
@@ -341,7 +343,7 @@ def flash_audit():
 
 
 @router.post("/ingest")
-def flash_ingest():
+def flash_ingest(_user: dict = Depends(get_current_user)):
     """手动触发一轮快讯轮询（测试用）。"""
     return service.poll_flash_once()
 
@@ -420,7 +422,7 @@ def flash_notifications(since: str = ""):
 
 
 @router.post("/wechat-test")
-def flash_wechat_test():
+def flash_wechat_test(_user: dict = Depends(get_current_user)):
     """企微推送连通性测试：立即向配置的 webhook 发一条验证消息（测试用）。
 
     部署后可用 curl -X POST https://<你的服务地址>/api/flash/wechat-test 验证

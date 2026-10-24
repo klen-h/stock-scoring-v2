@@ -16,9 +16,11 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query, Body
+from fastapi import APIRouter, Depends, BackgroundTasks, Query, Body
+from app.auth import get_current_user
 from datetime import datetime
 import json
+import threading
 import time
 import numpy as np
 from app.database import db
@@ -277,14 +279,42 @@ def finance_stats():
     return stats()
 
 
+_FINANCE_REFRESH_LOCK = threading.Lock()
+_FINANCE_REFRESH_AT = 0.0
+
+
 @router.post("/finance-refresh")
-def finance_refresh(reports: int = 2):
+def finance_refresh(background_tasks: BackgroundTasks, reports: int = 2,
+                    _user: dict = Depends(get_current_user)):
     """
     手动刷新财务数据（正常由调度器每天凌晨自动检查，新报告期才拉取）。
     每期约 27 页 / 14 秒（含批量入库）。reports 为往前拉几期。
+
+    ★ 2026-10-24（BK-04d）：三处加固——
+      ① 挂鉴权（匿名触发 = 全市场财报抓取攻击面）；
+      ② 抓取移入后台任务，接口立即返回（旧实现同步拉最多 8 期 ≈ 2 分钟占用请求）；
+      ③ 单飞锁 + 10 分钟冷却：并发/连点不再叠加全市场抓取。
     """
-    from app.finance import refresh
-    return refresh(min(max(reports, 1), 8))
+    global _FINANCE_REFRESH_AT
+    now = time.time()
+    if now - _FINANCE_REFRESH_AT < 600:
+        return {"status": "skipped", "reason": "cooling-down",
+                "retry_after_sec": int(600 - (now - _FINANCE_REFRESH_AT))}
+    if not _FINANCE_REFRESH_LOCK.acquire(blocking=False):
+        return {"status": "skipped", "reason": "already-running"}
+    _FINANCE_REFRESH_AT = now
+
+    def _run():
+        try:
+            from app.finance import refresh
+            refresh(min(max(reports, 1), 8))
+        except Exception as e:
+            print(f"[finance-refresh] failed: {str(e)[:80]}")   # ASCII（铁律⑥）
+        finally:
+            _FINANCE_REFRESH_LOCK.release()
+
+    background_tasks.add_task(_run)
+    return {"status": "refreshing", "reports": min(max(reports, 1), 8)}
 
 
 @router.post("/finance/batch")
