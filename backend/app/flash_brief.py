@@ -91,7 +91,7 @@ def _ensure() -> None:
         )
     """)
     for _col in ("sig TEXT", "as_of TEXT", "llm_json TEXT", "conclusion TEXT",
-                 "notified_at TEXT"):
+                 "notified_at TEXT", "auto_runs INTEGER DEFAULT 0"):
         try:
             db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN IF NOT EXISTS {_col}")
         except Exception:
@@ -476,7 +476,13 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
         fresh = False
         try:
             ts = datetime.fromisoformat(str(row.get("created_at")))
-            fresh = (_now().replace(tzinfo=None) - ts) < timedelta(minutes=ttl)
+            now = _now()   # aware（北京时间）
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=now.tzinfo)   # 历史行无 tz ⇒ 按北京时间解释
+            # ★ 2026-10-24（BK-52）：旧实现 `_now().replace(tzinfo=None) - ts` =
+            #   naive − aware ⇒ 必抛 TypeError 被吞 ⇒ fresh 恒 False，
+            #   "TTL 内读缓存"永不命中（潜伏成本漏洞）
+            fresh = (now - ts) < timedelta(minutes=ttl)
         except (TypeError, ValueError):
             fresh = False
         if fresh and row.get("sig") == sig and row.get("llm_json"):
@@ -569,8 +575,16 @@ _last_auto_ts = {"ts": 0.0}
 
 
 def _daily_auto_count(d: str) -> int:
+    """当日自动解读已执行次数。
+
+    ★ 2026-10-24（BK-52）：旧实现 `COUNT(*) WHERE date=d`——本表 date 是主键
+      （一天最多一行）⇒ 计数恒 ≤1，`FLASH_BRIEF_DAILY_MAX`（默认 8）**永不生效**，
+      自动解读实际只受冷却约束。⇒ 改为行上 `auto_runs` 计数列（_ensure 幂等补列，
+      每次自动解读成功后 +1）。
+    """
     try:
-        row = db.fetch_one(f"SELECT COUNT(*) AS c FROM {_TABLE} WHERE date = %s", (d,))
+        row = db.fetch_one(f"SELECT COALESCE(auto_runs, 0) AS c FROM {_TABLE} WHERE date = %s",
+                           (d,))
         return int((row or {}).get("c") or 0)
     except Exception:
         return 0
@@ -618,7 +632,7 @@ def maybe_auto_run() -> Optional[Dict]:
         if now_ts - (_last_auto_ts.get("ts") or 0.0) < COOLDOWN_MIN * 60:
             return None
         d = _today()
-        if _daily_auto_count(d) > DAILY_MAX:
+        if _daily_auto_count(d) >= DAILY_MAX:
             print(f"[flash_brief] 当日自动解读已达上限 {DAILY_MAX}，跳过")
             return None
         p = build_snapshot(d)
@@ -630,6 +644,13 @@ def maybe_auto_run() -> Optional[Dict]:
         _last_auto_ts["ts"] = now_ts
         if r.get("ok"):
             mark_notified(d)
+            # ★ BK-52：自动解读成功 ⇒ 计数 +1（PG upsert 不覆盖该列；sqlite 的
+            #   INSERT OR REPLACE 全行替换会重置——单用户本地场景影响可忽略）
+            try:
+                db.execute(f"UPDATE {_TABLE} SET auto_runs = COALESCE(auto_runs, 0) + 1 "
+                           f"WHERE date = %s", (d,))
+            except Exception as e:
+                print(f"[flash_brief] auto_runs 计数失败: {str(e)[:80]}")
             r["trigger"] = reasons
         return r
     except Exception as e:
