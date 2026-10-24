@@ -150,6 +150,12 @@ def ensure_table() -> None:
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_mainflow_date ON mainflow_history (date)
         """)
+        # ★ 2026-10-24（BK-06）：code 索引——逐股读（load_flow/gate 回放）走点查。
+        #   新表有 uq_mainflow(code,date) 兜底，但**生产表建立早于该约束** ⇒
+        #   CREATE TABLE IF NOT EXISTS 是 no-op、约束从未补上 ⇒ 必须显式建索引。
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mainflow_code ON mainflow_history (code, date)
+        """)
     else:
         db.execute("""
             CREATE TABLE IF NOT EXISTS mainflow_history (
@@ -158,6 +164,10 @@ def ensure_table() -> None:
                 main_pct REAL, super_pct REAL, close REAL, pct_chg REAL,
                 UNIQUE (code, date)
             )
+        """)
+        # ★ BK-06：sqlite 分支同样补 code 索引（原来两个索引都没有）
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_mainflow_code ON mainflow_history (code, date)
         """)
 
 

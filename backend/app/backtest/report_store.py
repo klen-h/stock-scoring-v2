@@ -28,16 +28,19 @@ def ensure_table():
     global _TABLE_READY
     if _TABLE_READY:
         return
-    db.execute("""
+    # ★ 2026-10-24（BK-35）：id 列双库分支——SERIAL 是 PG 专有，SQLite 必抛（被吞 ⇒ 表没建）。
+    id_ddl = ("id SERIAL PRIMARY KEY" if db.is_postgres
+              else "id INTEGER PRIMARY KEY AUTOINCREMENT")
+    db.execute(("""
         CREATE TABLE IF NOT EXISTS backtest_reports (
-            id SERIAL PRIMARY KEY,
+            %s,
             name TEXT NOT NULL,
             tag TEXT,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL,
             UNIQUE(name)
         )
-    """)
+    """) % id_ddl)
     db.execute("""
         CREATE INDEX IF NOT EXISTS idx_backtest_reports_created
         ON backtest_reports(created_at DESC)

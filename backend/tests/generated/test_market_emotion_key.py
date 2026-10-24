@@ -31,6 +31,7 @@ def _row(day):
 def clean_today_row():
     from app.database import db
     today = flash_rules.beijing_now().strftime("%Y-%m-%d")
+    market._ensure_emotion_table()   # sqlite 测试库需先建表（PG 由线上建好）
     db.execute("DELETE FROM market_emotion_daily WHERE date = %s", (today,))
     yield today
     db.execute("DELETE FROM market_emotion_daily WHERE date = %s", (today,))

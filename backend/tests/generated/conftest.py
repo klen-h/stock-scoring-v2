@@ -8,7 +8,10 @@
 import os
 import sys
 
-os.environ.pop("DATABASE_URL", None)
+# ★★ 2026-10-24 二次加固：pop 不够——app/__init__ 随后从 backend/.env 把真库
+# URL 重新灌回（实测本机因此把 pytest 跑到了线上 Supabase；万幸 fixture 自带
+# teardown 未留残渣）。必须**强制设定** sqlite（app/__init__ 尊重已存在的 env）。
+os.environ["DATABASE_URL"] = "sqlite:///(local-unit-tests)"
 
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_DIR not in sys.path:
