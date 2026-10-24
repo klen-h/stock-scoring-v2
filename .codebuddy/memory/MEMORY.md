@@ -245,6 +245,12 @@
   当股票取 qfqday）⇒ 清单③⑥"0 根"。已加东财 push2his 兜底（3 次重试）、key_level 同源；
   ETF 份额 T+1 ⇒ 当日未披露时沿用最近一份 + `backfill(5)`；结构修复改为**连续 2 日** 3674。
   ⚠️ 这些修复在本地**未 push** 时，Actions/Render 仍跑旧代码 —— 必须先推。
+- ★★ **快讯解读卡 `app/flash_brief.py`**（2026-10-24）：大盘/板块/个股异动 + 重要快讯规则打分
+  + **一次批量 LLM**（conclusion/market/news[{gist,cause,scope,direction}]）；表 `flash_brief`
+  按日缓存 + sig 指纹；`GET /flash/brief` 只读、`POST /flash/brief/refresh` 才烧 LLM；
+  盘中由 `scheduler.brief_loop` 自动触发（指数±1%/涨跌比极端/30min强快讯≥2，冷却30min、
+  日上限 `FLASH_BRIEF_DAILY_MAX`）→ `notified_at` → `/flash/notifications` 弹浏览器通知。
+  个股异动必须过滤「退」市股；`direction` 要声明是"对 A 股风险偏好"而非对油价。
 - ★★ **数据包发布纪律**（2026-10-24 事故）：`scripts/publish_packs_local.py` 是 **orphan 重建**
   （force push 整条 gh-pages 只含本地文件）⇒ **本地包旧就会把线上新包整批删掉**（实测：
   把工作流刚发的 10-23 K 线包回滚成 10-22）。前端改动直接 push 走 Actions 部署
