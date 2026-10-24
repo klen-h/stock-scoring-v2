@@ -536,7 +536,10 @@ def refresh_status():
     return {
         "stock_count": len(stocks),
         # 时间戳转可读时间；last=0（未刷新）时显示"未刷新"
-        "last_update": datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S") if last else "未刷新",
+        # ★ 2026-10-24（BK-08）：fromtimestamp 不带 tz 走服务器本地时区（生产 UTC）⇒ 显示差 8h
+        #   —— 同文件已两次裁决过此坑，显式给北京时间。
+        "last_update": datetime.fromtimestamp(
+            last, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S") if last else "未刷新",
         "total_codes": len(_ALL_CODES),
     }
 
@@ -991,8 +994,14 @@ def _save_emotion_daily(val: Dict) -> None:
         #   对齐同类实现：`_save_tail_baseline()` 开头就调 `_ensure_tail_table()`。
         #   ⚠️ 本函数幂等（`_EMOTION_TABLE_READY` 缓存 + `CREATE TABLE IF NOT EXISTS`）⇒ 无额外开销。
         _ensure_emotion_table()
-        if not val.get("trading_day"):
-            return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
+        # ★ 2026-10-24（BK-09 收口，"写入时刻≠数据所属时刻"四案之第④案）：
+        #   旧实现 行键=写入自然日 + 只挡 `val.trading_day`（布尔）为空 —— 交易日 00:00-09:15
+        #   时布尔仍 True，而此时行情是"上一交易日回放" ⇒ 旧行会写到「键=今天、数据=昨日」的
+        #   错位行上；休市日同理写假日键行（MEMORY §2④：market_emotion_daily 未修项）。
+        #   ⇒ 锚定 `_price_date()`（行情价格所属交易日）：数据日 != 今天（回放）一律不落库，
+        #     宁缺勿错键——消费方 policy_bottom_watch 对缺失已有 insufficient 显式区分。
+        if _price_date() != _bj_now().strftime("%Y-%m-%d"):
+            return                       # 休市日/盘前 9:15 前的回放数据：不写（见 2026-09-25 注释）
         day = _bj_now().strftime("%Y-%m-%d")
         now = _bj_now()
         hhmm = now.hour * 100 + now.minute
