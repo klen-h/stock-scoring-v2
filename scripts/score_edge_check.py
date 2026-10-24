@@ -240,7 +240,9 @@ def main() -> int:
         due_counts[N] = len([d for d in snaps
                              if d in idx and idx[d] + N + 1 <= len(cal) - 1])
     dates_needed = set(snaps)
-    for N in (5, 10):                      # T+20 未达标 ⇒ 不取价、不出数字
+    mature20 = due_counts[20] >= MIN_DAYS  # ★ T+20 达标 ⇒ 取价并出判定（见 ②③）
+    for N in ((5, 10, 20) if mature20 else (5, 10)):
+        # （T+20 未达标 ⇒ 不取价、不出数字 —— egress 承诺不变）
         for d in snaps:
             if d in idx and idx[d] + N + 1 <= len(cal) - 1:
                 dates_needed.add(cal[idx[d] + 1])
@@ -254,10 +256,17 @@ def main() -> int:
     res10 = run_hold(10, cal, idx, snaps, top50, prices)
     ev5 = evaluate(res5, is_primary=True)
     ev10 = evaluate(res10, is_primary=False, other_mean=ev5["mean"])
-    ev20 = {"verdict": "INSUFFICIENT" if due_counts[20] < MIN_DAYS else None,
-            "days": due_counts[20]}
+    # ★ 2026-10-25：补 T+20 成熟分支——脚本写作时 T+20 未成熟，"达标后由月度复检
+    #   自动判"的分支一直没实现 ⇒ 到点后依然只打 INSUFFICIENT（A1 永远出不了结论）。
+    #   本分支**严格镜像** T+10 的 run_hold/evaluate 调用（同一判据函数、同一门槛
+    #   MIN_DAYS/MIN_OBS、同一成本），不引入任何新参数 —— 是机械执行冻结判据，非改判据。
+    res20 = run_hold(20, cal, idx, snaps, top50, prices) if mature20 else None
+    ev20 = (evaluate(res20, is_primary=False, other_mean=ev5["mean"]) if mature20 else
+            {"verdict": "INSUFFICIENT", "days": due_counts[20],
+             "detail": "样本不足（%d/%d 天）——不打印收益数字" % (due_counts[20], MIN_DAYS)})
 
-    for tag, ev, res in (("T+5（主判据）", ev5, res5), ("T+10（次判据）", ev10, res10)):
+    for tag, ev, res in (("T+5（主判据）", ev5, res5), ("T+10（次判据）", ev10, res10),
+                         ("T+20（次判据）", ev20, res20)):
         if ev["verdict"] == "INSUFFICIENT":
             print("\n[%s] INSUFFICIENT：%s" % (tag, ev["detail"]))
             continue
@@ -270,14 +279,24 @@ def main() -> int:
               % (ev["non_mean"], "一致" if ev["same_dir"] else "★不一致", ev["excl_limitup"],
                  ev["miss"], ev["bench_avg"]))
         print("  ⇒ 判定：**%s**（%s）" % (ev["word"], ev["verdict"]))
-    print("\n[T+20（次判据）] %s：%d/%d 个到期日 —— 达标后由月度复检自动判，本轮不出数字"
-          % (ev20["verdict"], ev20["days"], MIN_DAYS))
+    if not mature20:
+        print("\n[T+20（次判据）] INSUFFICIENT：%d/%d 个到期日 —— 达标后由月度复检自动判，本轮不出数字"
+              % (ev20["days"], MIN_DAYS))
+    else:
+        dirs = [ev5["verdict"], ev10["verdict"], ev20["verdict"]]
+        print("\n[三持有期方向] T+5/T+10/T+20 = %s ⇒ %s"
+              % ("/".join(dirs),
+                 "同向" if len(set(dirs)) == 1 else "★存在分歧（如实记录，见 PLAN §9）"))
     print("（口径提醒：基准=可取价池等权（941 只，占评分宇宙 42%）；窗口无 offensive 市况；"
           "signal='buy' 恒 0 ⇒ 测的是「禁买市里最不差的 50 只」，不是买入信号。）")
 
     overall = ev5["verdict"]
     detail = ("T+5 超额 %+.2fpt（%d 到期日），单侧 P=%.4f，95%%上界 %+.2fpt ⇒ %s"
               % (ev5["mean"], ev5["days"], ev5["p_pos"], ev5["up95"], ev5["verdict"]))
+    if mature20:
+        dirs = "/".join((ev5["verdict"], ev10["verdict"], ev20["verdict"]))
+        detail += ("；T+20 超额 %+.2fpt（%d 到期日）⇒ %s；三持有期方向 %s"
+                   % (ev20["mean"], ev20["days"], ev20["verdict"], dirs))
     print("\n[verdict] %s ｜ %s" % (overall, detail))
     if args.json:
         print(json.dumps({"script": "score_edge_check", "verdict": overall,
