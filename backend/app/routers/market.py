@@ -325,19 +325,28 @@ def market_overview(background_tasks: BackgroundTasks):
     # ── 第二部分：全市场涨跌统计（从内存缓存读取）──
     stocks = _cache.get("stocks", {})
     if stocks:
+        # ★ 2026-10-24（BK-03）：改 None 安全取值——池内个股的 change_pct/amount 可为
+        #   None（scoring.py:1329 自认池内存在 None；快照恢复路径也可能缺列），
+        #   旧裸下标 `s["change_pct"]` 会 KeyError ⇒ 整个 overview 接口 500
+        #   （fail-closed 反例）。⇒ 缺失值不参与统计（家数口径不变，缺失≠平盘但
+        #   归入 flat 的误差远小于整接口 500）。
+        def _num(v):
+            return v if isinstance(v, (int, float)) else None
+
         total = len(stocks)
-        # 生成器表达式 + sum()：统计涨/跌/平的家数
-        up = sum(1 for s in stocks.values() if s["change_pct"] > 0)     # 上涨家数
-        down = sum(1 for s in stocks.values() if s["change_pct"] < 0)   # 下跌家数
-        flat = total - up - down                                        # 平盘家数
+        # 生成器表达式 + sum()：统计涨/跌/平的家数（change_pct 缺失的个股不参与涨跌判定）
+        up = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) > 0)     # 上涨家数
+        down = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) < 0)   # 下跌家数
+        flat = total - up - down                                        # 平盘家数（含缺失）
         # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
         #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
         #   创业板/科创板（20cm）⇒ 会系统性误判（涨 10% 的 20cm 票不算涨停）。
         # ★★ 2026-09-30（#3 轻量切换）：**优先 rt_k 精确口径**（全市场含北交所/ST、
         #   用 `high_limit` 精确判定），失败自动回退上面的内存近似 —— 见 `_limit_counts_best`。
         limit_up, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
-        # 所有股票的涨跌幅列表，用于算平均/中位数
-        changes = [s["change_pct"] for s in stocks.values()]
+        # 所有股票的涨跌幅列表，用于算平均/中位数（缺失值剔除，不冒充 0）
+        changes = [_c for _c in (_num(s.get("change_pct")) for s in stocks.values())
+                   if _c is not None]
         result["stats"] = {
             "total": total,
             "up_count": up,
@@ -355,7 +364,8 @@ def market_overview(background_tasks: BackgroundTasks):
             "limit_age_sec": limit_meta.get("age_sec"),
             "avg_change_pct": round(sum(changes) / len(changes), 2) if changes else 0,         # 平均涨跌幅
             "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
-            "total_amount": round(sum(s["amount"] for s in stocks.values()), 2),   # 总成交额
+            "total_amount": round(sum(_num(s.get("amount")) or 0
+                                      for s in stocks.values()), 2),   # 总成交额（缺失按 0 计）
         }
         # ★ 2026-09-25（用户需求 1）：大小盘风格 / 黄白线背离 —— 复用**同一份**内存缓存
         #   （零新增请求、零新增数据源）。看盘序"9:30-10:00 定方向"缺的那一层。
