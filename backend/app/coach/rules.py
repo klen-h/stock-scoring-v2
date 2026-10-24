@@ -352,7 +352,8 @@ def _ev_stop_loss_hit(pos, params, ctx):
     return {
         "message": (f"【止损触发】{tag}{pos['name']} {pos['code']}：止损位 "
                     f"{stop:.2f} 已破（现价 {price:.2f}，浮盈亏 {pos['pnl_pct']:+.1f}%）。\n"
-                    f"按纪律离场；若要放弃请填理由（回写供周报复盘）。"),
+                    f"预设纪律线已被触发（以上为事实）。执行与否由你决定；"
+                    f"选择放弃请填理由（回写供周报复盘）。"),
         "numbers": {"stop_loss": stop, "price": price, "pnl_pct": pos["pnl_pct"],
                     "source": pos.get("source")},
     }
@@ -398,7 +399,8 @@ def _ev_crowded_trim(pos, params, ctx):
     return {
         "message": (f"【拥挤赛道借反弹减仓】{pos['name']} {pos['code']} 近 20 日涨幅 "
                     f"{r:+.1f}%（>{thr:.0f}%），现价 {pos['price']:.2f}/浮盈亏 "
-                    f"{pos['pnl_pct']:+.1f}%。优先在反弹中减仓，不追加。"),
+                    f"{pos['pnl_pct']:+.1f}%。高位+拥挤组合的历史样本后续以回撤为主"
+                    f"（观察结论，非指令）；处置由你决定。"),
         "numbers": {"ret20": r, "threshold": thr, "pnl_pct": pos["pnl_pct"]},
     }
 
@@ -426,7 +428,8 @@ def _ev_gate_no_add(pos, params, ctx):
     return {
         "message": (f"【环境不支持加仓】当前 regime = {st}"
                     f"（ma_trend={(ctx.get('regime') or {}).get('ma_trend')}）。"
-                    f"准空仓运行、只减不加；等 regime 修复自动恢复。"),
+                    f"该环境下 regime 闸门当前禁止战法新入场（准入矩阵现状）；"
+                    f"存量持仓的处置由你自行决定。"),
         "numbers": {"regime": st},
     }
 
@@ -584,7 +587,7 @@ def _ev_gate_add(pos, params, ctx):
             return {
                 "message": (f"【加仓条件确认（连续 {need_days} 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
                             f"且跌停 {ld} 家（<{thr_ld}），此前已连续命中 → 确认成立。"
-                            f"按计划从准空仓向中性加仓。"),
+                            f"预设剧本的加仓条件已满足（是否执行由你决定）。"),
                 "numbers": {"up_down_ratio": ratio, "limit_down": ld,
                             "confirmed": True, "consecutive_days": need_days},
             }

@@ -632,14 +632,19 @@ def backtest_macro() -> dict:
 #  工具：基准区间收益
 # ================================================================
 
-def _benchmark_ret(start: str, end: str, prices_map: dict = None) -> float:
-    """沪深300 区间收益（start 日开盘 → end 日收盘）。prices_map 含 sh000300 时直接复用，免远程查询。"""
+def _benchmark_ret(start: str, end: str, prices_map: dict = None):
+    """沪深300 区间收益（start 日开盘 → end 日收盘）。prices_map 含 sh000300 时直接复用，免远程查询。
+
+    ★ 2026-10-24（BK-34）：指数数据不足（<2 根）⇒ 返回 **None**（缺失）而非 0.0——
+      旧实现把"缺基准"渲染成"基准 0.00%、超额=全部收益"（违反缺失≠0 红线；
+      同文件 _equal_weight_ret 本就返回 None）。compute_metrics 已同步支持 None。
+    """
     if prices_map is not None and "sh000300" in prices_map:
         bars = [b for b in prices_map["sh000300"] if start <= b["date"] <= end]
     else:
         bars = data.load_prices("sh000300", start, end)
     if len(bars) < 2:
-        return 0.0
+        return None
     return bars[-1]["close"] / bars[0]["open"] - 1
 
 
