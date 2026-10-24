@@ -104,6 +104,36 @@ def flash_diagnosis(limit: int = Query(5, ge=1, le=20)):
             "latest": analyses[0] if analyses else None}
 
 
+@router.get("/brief")
+def flash_brief_get(date: str = None):
+    """快讯解读卡（大盘/板块/个股 + 重要快讯），**只读缓存，绝不触发 LLM**。
+
+    · 有当日解读 ⇒ 返回缓存（含 llm 结构化字段）；
+    · 没有 ⇒ 返回**实时快照 + 规则标签**（LLM 字段为 null），前端显示「AI 解读」按钮；
+    · 需要重新解读 ⇒ `POST /flash/brief/refresh`（一次批量 LLM）。
+    """
+    from app import flash_brief as fb
+    r = fb.load(date)
+    if r.get("ok"):
+        try:
+            r["trigger"] = fb.detect_trigger(r.get("snapshot") or {})
+        except Exception:
+            r["trigger"] = []
+        return r
+    p = fb.build_snapshot(date)
+    return {"ok": True, "date": p["date"], "cached": False, "as_of": p["as_of"],
+            "sig": p["sig"], "snapshot": p, "llm": None, "conclusion": "",
+            "source": "snapshot", "trigger": fb.detect_trigger(p)}
+
+
+@router.post("/brief/refresh")
+def flash_brief_refresh(date: str = None):
+    """手动/系统触发的快讯解读（**一次** LLM，重要条打包进同一 prompt）。"""
+    from app import flash_brief as fb
+    r = fb.analyze(date, refresh=True)
+    return r
+
+
 @router.get("/review/{phase}")
 def flash_review(phase: str):
     """最新复盘（markdown + 信号）。phase: premarket / lunchbreak / postmarket。"""
@@ -372,6 +402,14 @@ def flash_notifications(since: str = ""):
                         "type": "signal", "time": e.get("time"), "title": title,
                         "body": f"{s.get('etfName')} @ {e.get('price')}（{e.get('reason', '')}）",
                     })
+
+    # 4. ★ 2026-10-24：盘中异动解读（`flash_brief` 自动触发后标记 notified_at）
+    #    —— 用户要求「系统级：盘中异动可直接触发 LLM 并浏览器通知」。
+    try:
+        from app import flash_brief as fb
+        events.extend(fb.recent_notifications(since_dt, _newer))
+    except Exception as e:
+        print(f"[flash] brief 通知读取失败（不影响其它事件）: {str(e)[:80]}")
 
     events.sort(key=lambda x: x.get("time") or "")
     # 数据源健康告警/恢复事件也进通知管道（页面铃铛自动弹）

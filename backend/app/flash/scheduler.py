@@ -309,6 +309,30 @@ async def realtime_uplimit_loop():
         await asyncio.sleep(REALTIME_UPLIMIT_INTERVAL)
 
 
+FLASH_BRIEF_INTERVAL = 120      # 盘中异动判读检查（轻：只读缓存，命中才烧 LLM）
+
+
+def _brief_tick():
+    from app import flash_brief
+    return flash_brief.maybe_auto_run()
+
+
+async def brief_loop():
+    """★★ 2026-10-24（用户："盘中变化异动的可直接触发 LLM，并浏览器通知"）。
+
+    **系统级**自动解读：每 2 分钟醒一次，交易时段内若命中异动阈值
+    （指数 |涨跌| ≥1% / 涨跌比极端 / 30min 内强快讯 ≥2 条）且冷却与日上限允许，
+    就生成一次解读 → `/flash/notifications` 会把它变成浏览器通知。
+    闸门全在 `flash_brief.maybe_auto_run()` 内部（交易时段 + 冷却 + 日上限）。
+    """
+    while True:
+        try:
+            await _run_sync(_brief_tick)
+        except Exception as e:
+            print(f"[scheduler] brief_loop error: {str(e)[:100]}")
+        await asyncio.sleep(FLASH_BRIEF_INTERVAL)
+
+
 async def health_loop():
     """
     健康探针循环：定期调用各数据源（内部自带埋点），保证健康状态持续刷新——
@@ -2368,6 +2392,8 @@ async def start():
              # ★ 2026-09-29：盘中实时涨停/炸板统计预热（rt_k，全市场精确口径）——
              #   与 stock_cache 同为「用户交互路径依赖」，只读模式保留。
              asyncio.create_task(realtime_uplimit_loop()),
+             # ★ 2026-10-24：盘中异动 → 自动快讯解读（命中才烧 LLM；冷却+日上限自门控）
+             asyncio.create_task(brief_loop()),
              asyncio.create_task(open_confirmation_loop()),
              asyncio.create_task(paper_fill_loop()),
              asyncio.create_task(paper_track_loop()),

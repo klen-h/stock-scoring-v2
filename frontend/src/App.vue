@@ -207,7 +207,11 @@ async function pollNotifications() {
     }
     for (const ev of data.events) {
       const n = new Notification(ev.title, { body: ev.body, tag: `${ev.type}-${ev.time}` })
-      n.onclick = () => { window.focus(); router.push('/monitor') }
+      // ★ 2026-10-24：盘中异动解读（brief）点开去工作台看那张卡；其余仍去监控页
+      n.onclick = () => {
+        window.focus()
+        router.push(ev.type === 'brief' ? '/' : '/monitor')
+      }
     }
     notifSince = data.now
   } catch (e) { /* 后端未起或网络抖动，静默重试 */ }

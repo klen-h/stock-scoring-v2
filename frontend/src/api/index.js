@@ -107,6 +107,11 @@ export const runFlashReview = (phase) =>
 export const getFlashSignals = () => http.get('/flash/signals')
 export const triggerFlashIngest = () => http.post('/flash/ingest')
 export const getFlashStatus = () => http.get('/flash/status')
+// ★ 2026-10-24：快讯解读卡（大盘/板块/个股 + 重要快讯）
+//   GET 只读库/快照（不烧 LLM）；POST 才真解读（一次批量 LLM，30 分钟内重复点读缓存）
+export const getFlashBrief = (date) => http.get('/flash/brief', { params: { date }, timeout: 30000 })
+export const refreshFlashBrief = (date) =>
+  http.post('/flash/brief/refresh', {}, { params: { date }, timeout: 120000 })
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })
 export const getFlashAudit = () => http.get('/flash/audit')
 

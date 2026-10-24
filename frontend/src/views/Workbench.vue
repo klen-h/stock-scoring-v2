@@ -2468,36 +2468,16 @@
       <!-- ── 常驻右栏（全天不变，不被时间轴切走） ── -->
       <aside class="space-y-3 min-w-0">
 
-        <!-- ★ 2026-09-28（方案 C，用户："A+C，快讯诊断单独在右栏常驻一行"）：
-             「快讯诊断」（LLM 最新一条）是**高速变量**（随快讯更新），而它原先只出现在
-             「宏观与环境」卡里（且那卡只在盘前渲染）⇒ 单独提到右栏常驻，扫一眼即得：
-             状态（D状态 / 正相关 / 负相关）+ 主导叙事 + 仓位建议与上限。
-             ⚠️ 与顶栏「宏观」浮层**同源**（同一个 `flashDiag` / `sizing`）⇒ 两处不会不一致；
-               完整口径（油金相关性说明、周回撤曲线等）仍在浮层那张卡里。
-             ⚠️ 数据未产出时**整块不渲染** —— 不占位、不假装有结论。 -->
-        <router-link v-if="flashDiag" to="/monitor" target="_blank" rel="noopener"
-                     title="点击新标签打开「快讯监控」"
-                     class="group relative block bg-card border border-border rounded-lg px-4 py-2.5 text-xs hover:border-accent/40 transition-colors">
-          <span class="absolute top-1 right-2 text-[10px] text-muted group-hover:text-accent">↗</span>
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="text-sm font-bold whitespace-nowrap"
-                  :class="flashDiag?.correlation_diagnosis?.correlation_state === 'D状态'
-                          ? 'text-amber-400' : 'text-gray-100'">
-              {{ flashDiag?.correlation_diagnosis?.correlation_state || '无法判断' }}</span>
-            <span class="text-[10px] text-muted max-w-[240px] truncate"
-                  :title="`事件诊断 · ${String(flashDiag?.correlation_diagnosis?.d_state_type || '不适用')}`">
-              事件诊断 · {{ shortDiagType(flashDiag?.correlation_diagnosis?.d_state_type) }}</span>
-            <span class="ml-auto text-[10px] text-muted whitespace-nowrap">
-              仓位 <b class="text-accent">{{ flashDiag?.daily_strategy?.overall_position || '—' }}</b>
-              <template v-if="sizing && sizing.total_limit_pct != null">
-                · 上限 <b class="text-accent font-mono">{{ sizing.total_limit_pct }}%</b></template>
-            </span>
-          </div>
-          <div class="text-gray-300 mt-1 truncate"
-               :title="flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || ''">
-            {{ flashDiag?.dominant_narrative?.narrative || flashDiag?.market_mood || '—' }}
-          </div>
-        </router-link>
+        <!-- ★★ 2026-10-24（用户："快讯卡片过于简略，要看大盘/板块/个股异动 + 原因 + 影响范围"）：
+             原「快讯诊断」一行摘要 → 独立组件 `FlashBriefCard.vue`：
+               · 大盘（指数/涨跌家数/涨跌比/涨停/成交额）
+               · 板块轮动（领涨领跌 + 主力资金）
+               · 个股异动（系统规则命中，带标签）
+               · 重要快讯卡片列表（时间/簇/方向/一句话），点开看 原因 / 影响范围
+               · AI 结论（一次批量 LLM；`GET` 只读缓存，`POST` 才解读）
+             ⚠️ 系统级：盘中异动由调度器 `brief_loop` 自动触发并推浏览器通知。
+             ⚠️ 原诊断信息（D状态/叙事/仓位）保留在卡内首行，不做两处渲染。 -->
+        <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
 
         <!-- 市场底确认清单（2026-10-23：从盘中移到右栏；2026-10-24 教练卡挂到本卡下方） -->
         <div v-if="pbw" class="bg-card border border-border rounded-lg p-3">
@@ -2763,6 +2743,8 @@ import StockListsCards from '../components/workbench/StockListsCards.vue'
 //   「宏观与环境」卡抽成子组件 —— 盘前内联 + 顶栏「宏观」浮层**共用同一份**
 //   （防"同一份数据两处渲染必然漂移"；同理 `dirColor`/`levelColor` 也上移到 displayMeta）。
 import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
+// ★ 2026-10-24：右栏「快讯解读」卡（大盘/板块/个股 + 重要快讯 + AI 解读）
+import FlashBriefCard from '../components/workbench/FlashBriefCard.vue'
 // ★ 2026-10-10（P0-2，见 PLAN_RESERVE_SIGNALS.md §6.2）：央行储备月度面板卡
 //   （月频慢变量、自取数据、非交易信号）。只挂**一处**，避免同一数据两处渲染漂移。
 import ReserveCard from '../components/workbench/ReserveCard.vue'
