@@ -75,9 +75,9 @@
 | BK-26 | 后端 | live_ranking `_build_pool` 注释自称"复刻 score_top 的池子"——复刻即漂移源 | MEMORY §10（快照 22:43 永远赶不上 Actions 精算榜） | P2 | 无 | 1d | 两处池构建抽公共函数，单一实现 |
 | BK-27 | 后端 | LLM 复盘超时（DeepSeek-R1 600s，Render 0.1 CPU） | CONTEXT.md 已知问题#1（缓解：窗口内重试已修）；根因=模型性能 | P2 | 换更快模型决策 | — | 超时率 <10%（月度观测） |
 | BK-28 | 数据流水线 | 战法 × regime 分层样本不足（ADMISSION_MATRIX 仍是专家规则初始版） | CONTEXT.md 已知问题#4（防御市全禁 ⇒ 样本等 regime 转好） | P2 | 等样本（可能数月） | — | 高波动期覆盖后重跑 `--strategy regime_warfare` 校准 |
-| BK-29 | 文档 | 根目录 4 个临时脚本 `_tmp_*.py` 待删（Guardrails/DEV_CHECKLIST 要求用完即删，本次不删只列清单） | `_tmp_dr_check.py`、`_tmp_live_etf.py`、`_tmp_pack_cost.py`、`_tmp_runs_today.py`（manifest buckets） | P2 | 用户确认删除 | 0 | 用户批准后 `git rm`（红线：删除须确认） |
-| BK-30 | 数据流水线 | frontend/dist 构建产物入库（污染全仓 grep/审查；压缩 JS 被 manifest 当源码统计） | `frontend/dist/assets/*.js` 在 git 内（_pattern_scan.md limit 段命中） | P2 | 先查 CI 是否依赖仓内 dist | 0.2d | 若无依赖：用户批准后 `git rm`；有依赖则从 manifest 排除 |
-| BK-31 | 后端 | market_realtime size 无上限 / tail-review、limit-review 每请求外呼无冷却 / `_first_seen_map` 失败缓存 1h | review/P0_routers_scoring_market.md P3（scoring.py/market.py） | P2 | 无 | 1d | size 上限 + 冷却；失败缓存 TTL ≤10min（"降级路径也要缓存"的反例修正） |
+| BK-29 | 文档 | 根目录 4 个临时脚本 `_tmp_*.py` 待删（Guardrails/DEV_CHECKLIST 要求用完即删，本次不删只列清单） | `_tmp_dr_check.py`、`_tmp_live_etf.py`、`_tmp_pack_cost.py`、`_tmp_runs_today.py`（manifest buckets） | P2 | 用户确认删除 | 0 | 用户批准后 `git rm`（红线：删除须确认）✅ 2026-10-25 已执行（commit 42d5ded6：用户批准后 git rm 四个脚本） |
+| BK-30 | 数据流水线 | frontend/dist 构建产物入库（污染全仓 grep/审查；压缩 JS 被 manifest 当源码统计） | `frontend/dist/assets/*.js` 在 git 内（_pattern_scan.md limit 段命中） | P2 | 先查 CI 是否依赖仓内 dist | 0.2d | 若无依赖：用户批准后 `git rm`；有依赖则从 manifest 排除✅ 2026-10-25 判定：**前提不成立**——frontend/dist 从未被 git 跟踪（frontend/.gitignore:5 `dist/`），manifest 的 SKIP_DIRS 也已含 dist；审查与上轮台账均基于文件系统扫描误报，未验证 git 跟踪状态（教训记入勘误） |
+| BK-31 | 后端 | market_realtime size 无上限 / tail-review、limit-review 每请求外呼无冷却 / `_first_seen_map` 失败缓存 1h | review/P0_routers_scoring_market.md P3（scoring.py/market.py） | P2 | 无 | 1d | size 上限 + 冷却；失败缓存 TTL ≤10min（"降级路径也要缓存"的反例修正）✅ 2026-10-25 已修复（commit 1b734824：size 收口 [1,200] + _index_snapshot 60s TTL + limit-review 直连 300s 冷却 + _first_seen_map 失败 600s/成功 1h；冒烟 4/4） |
 | BK-32 | 后端 | 中文日志违反 ASCII 铁律（routers/scoring.py 等） | review/P0_routers_scoring_market.md P3；Guardrails #9（生产 GBK 编码问题） | P2 | 无 | 0.5d | 生产日志抽查无中文（中文提示走返回值） |
 
 ## B. 等时钟 / 等拍板（非开发项，登记防催办）

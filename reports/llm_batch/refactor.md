@@ -88,12 +88,11 @@
 - 收益：price_pos 漂移（审查 P2）与整表读黑洞两个失败模式同时消除。
 - 风险：需验证闸门重算频率上升对 egress 的影响（gate 已有 30min 结果缓存，可控）。
 
-### R7 前端构建产物入库
-- 位置：`frontend/dist/assets/*.js` 在仓库内（manifest 也把它当源码统计）。
-- 建议：确认 Pages 部署是否依赖仓内 dist；若不依赖，列删除清单待用户确认后 `git rm`
-  （Guardrails #0：删除需确认）；若依赖（Render 兜底 dist），至少从 manifest 排除。
-- 收益：检索/审查噪声消除（dist 内压缩 JS 会污染全仓 grep）。
-- 风险：若 CI 依赖仓内 dist，删除会破坏部署——**先查 `.github/workflows` 再动**。
+### R7 前端构建产物入库（**勘误 2026-10-25：前提不成立，已关闭**）
+- ~~位置：`frontend/dist/assets/*.js` 在仓库内~~ —— 核实：`frontend/.gitignore:5 dist/`，
+  **dist 从未被 git 跟踪**（`git ls-files frontend/dist` 为空；manifest 的 SKIP_DIRS 已含 dist）。
+- 教训：文件系统扫描（os.walk）≠ git 跟踪状态；"在仓库内"的判断必须以
+  `git ls-files` 为准（本次误报进入了审查报告与台账，靠 BK-30 执行前的依赖核查才暴露）。
 
 ---
 

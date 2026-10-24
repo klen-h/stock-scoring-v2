@@ -134,7 +134,8 @@
 **需要用户确认/拍板的（未自动处理）**：
 1. **删除文件清单**（红线要求先确认，本次一个未删）：
    - 根目录遗留临时脚本 4 个：`_tmp_dr_check.py`、`_tmp_live_etf.py`、`_tmp_pack_cost.py`、`_tmp_runs_today.py`（DEV_CHECKLIST §7"用完即删"，判定可删）；
-   - `frontend/dist/`（构建产物入库，污染全仓检索；**删除前必须先确认 CI 是否依赖仓内 dist**，见 refactor.md R7）；
+   - ~~`frontend/dist/`~~（**勘误 2026-10-25**：核实 `frontend/.gitignore:5 dist/`——dist **从未入库**，
+     本条为审查误报且未经 git 跟踪状态验证即入清单；BK-30 已按"前提不成立"关闭）；
    - 本次会话的 4 个 `_tmp_*.py` 工具脚本已自行删除（未入库）。
 2. **口径不一致、无法判定哪个是对的**：
    - `events/signal.py:37` 用 `>=9.9` 近似 vs `limit_stats` 真值口径——修正是"对的"，但 **E2 历史结论按旧口径产出，切换须预登记**（建议按 BACKLOG BK-05 走预登记流程，由用户拍板时点）；
