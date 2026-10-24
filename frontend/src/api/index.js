@@ -52,9 +52,15 @@ http.interceptors.response.use(
     if (error.response?.status === 401) {
       // Token 过期或无效，清除本地状态
       removeToken()
-      // 如果不在登录页，跳转到登录
-      if (window.location.hash !== '#/login' && window.location.pathname !== '/login') {
-        window.location.href = '/login'
+      // ★ 2026-10-24（BK-57）：修复旧实现的两个坑——
+      //   ① 本项目是 hash 路由（createWebHashHistory），旧代码 `href='/login'` 跳的是
+      //      path 而非路由，落到静态服务器的 /login 上（404 或空 hash 兜底）；
+      //   ② 旧判断用 `pathname !== '/login'`，一次跳转后 pathname 永远停在 /login
+      //      ⇒ 后续 401 不再跳登录页 = token 过期后接口静默失败（鉴权收紧后此坑
+      //        出现频率大增）。⇒ 改判 hash 前缀 + 只改 hash（不整页重载，
+      //        并发 401 也只会跳一次，由路由守卫接管）。
+      if (!window.location.hash.startsWith('#/login')) {
+        window.location.hash = '#/login'
       }
     }
     return Promise.reject(error)
