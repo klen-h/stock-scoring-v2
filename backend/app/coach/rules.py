@@ -72,6 +72,14 @@ class Advice:
         return asdict(self)
 
 
+def _yaml_available() -> bool:
+    """rules.yaml 可读性（BK-63：import 期读 yaml 的安全闸——文件缺失不炸 import）。"""
+    try:
+        return os.path.isfile(_RULES_PATH)
+    except Exception:
+        return False
+
+
 def load_config() -> dict:
     """读 rules.yaml（按 mtime 缓存，改文件即时生效，无需重启）。"""
     try:
@@ -152,7 +160,10 @@ def _macro() -> dict:
       与「light 层零额外网络」不符 → 结果缓存 10min，盘中至多 6 次重建/小时。
     """
     now = _time.time()
-    if _macro_cache["val"] and now - _macro_cache["ts"] < 600:
+    # ★ 2026-10-25（BK-63）：TTL 判定不再要求 val 非空——失败也占住 600s
+    #   （"只缓存成功"=没缓存：宏观源挂掉时旧实现每 30s 轮询都重新打一轮
+    #   外网多源请求）。持续失败时返回 {}，调用方本就 fail-open。
+    if now - _macro_cache["ts"] < 600:
         return _macro_cache["val"]
     try:
         from app.macro import get_macro_panel
@@ -164,7 +175,8 @@ def _macro() -> dict:
                "nasdaq": nq.get("price"),
                "nasdaq_pct": nq.get("change_pct")}
     except Exception:
-        return _macro_cache["val"]   # 重建失败沿用旧值（fail-open）
+        _macro_cache.update(ts=now)   # 失败也刷新时间戳 = 失败缓存 600s
+        return _macro_cache["val"]    # 重建失败沿用旧值（fail-open）
     _macro_cache.update(ts=now, val=val)
     return val
 
@@ -228,7 +240,12 @@ def _distribution(code: str) -> tuple:
 # 真实持仓默认止损（%）：与前端 usePortfolio.ALERT_CONFIG.stopLossPct 一致，
 # 避免「前端说 -8% 该卖、后端 Coach 说 -7%」的口径冲突。user_portfolio 无止损
 # 字段 → 用成本价 × (1+此值) 生成默认止损（预承诺口径，与模拟盘退出 v2 同思路）。
-REAL_STOP_LOSS_PCT = -8.0
+# ★ 2026-10-25（BK-63）：进 rules.yaml（模块头"阈值一律来自 rules.yaml"的自我约定
+#   ——旧硬编码 -8.0 违反之）；env 可覆盖，读不到 yaml/键时回退 -8.0（原值）。
+REAL_STOP_LOSS_PCT = float(
+    os.environ.get("COACH_REAL_STOP_LOSS_PCT")
+    or (load_config().get("real_stop_loss_pct") if _yaml_available() else None)
+    or -8.0)
 
 
 def _real_holdings() -> List[dict]:
