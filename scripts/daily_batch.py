@@ -860,8 +860,33 @@ def _push_ic_summary(res) -> str:
         return f"推送失败（不影响体检）: {str(e)[:80]}"
 
 
+def _is_month_end_trading_day(d) -> bool:
+    """d 是否为当月**最后一个交易日**（逐日查 is_trading_day，HOLIDAYS 感知）。
+
+    ★ 2026-10-25（A1 闸门错配修复）：月度复核若随**首个**日批交易日跑，则月中到点的
+      预登记样本永远赶不上当月报告（实证：10 月报告生成于 10-08，score_edge_check
+      10-11 才注册、T+20 于 10-23 到点 ⇒ A1 到点无人跑，被幂等闸门挤到下个月）。
+      ⇒ 挪到**月末**跑：报告覆盖当月全部到期样本；跨月漏跑仍由 _monthly_due 自愈。
+    """
+    import datetime as _dt
+    from app.flash.rules import is_trading_day
+    if not is_trading_day(d):
+        return False
+    nxt = d + _dt.timedelta(days=1)
+    while nxt.month == d.month:
+        if is_trading_day(nxt):
+            return False
+        nxt += _dt.timedelta(days=1)
+    return True
+
+
 def task_verify_monthly():
     """预登记验证脚本的**月度自动复核**（2026-09-30）。
+
+    ★★ 2026-10-25（A1 闸门错配修复）：只在**当月最后一个交易日**执行
+      （其余交易日返回跳过文案）——月初跑 + 月中样本到点 = 结论系统性晚一个月
+      （实证见 `_is_month_end_trading_day` 注释）。`--tasks verify_monthly`
+      点名时绕过该时点门（人工补跑不受限）。
 
     ★ 为什么必须做（本轮查出来的真缺口）：三个**预登记**验证脚本 ——
       `scripts/gate_ready_backtest.py`（闸门 ready==3 联合期望值）、
@@ -876,6 +901,13 @@ def task_verify_monthly():
     ★ 时序：纯只读分析（三个脚本都不改生产表）⇒ 位置不敏感；与 `subfactor_ic`
       同放"周期性复核"区。
     """
+
+    # ★★ 时点门（2026-10-25）：只在当月最后交易日执行（强制点名除外）
+    if not _force_requested():
+        _bd = _batch_trading_day()
+        if not _is_month_end_trading_day(_bd):
+            return ("verify_monthly: 非当月最后交易日（%s），跳过——月末统一复核"
+                    % _bd.isoformat())
     d = _batch_trading_day()
     if not _monthly_due("verify_monthly", d) and not _explicitly_requested("verify_monthly"):
         return (f"预登记复核: 本轮交易日 {d:%Y-%m-%d} 所在月份已复核，跳过"
