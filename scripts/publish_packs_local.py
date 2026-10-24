@@ -86,7 +86,7 @@ def _last_weekday_bj(now=None) -> str:
     工作日发布时要求至少是前一天的收盘包（当日新包 16:00 Actions 后才会有）。
     """
     import datetime as _dt
-    d = (now or (_dt.datetime.utcnow() + _dt.timedelta(hours=8))).date()
+    d = (now or _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8)))).date()
     d -= _dt.timedelta(days=1)
     while d.weekday() >= 5:
         d -= _dt.timedelta(days=1)
@@ -135,8 +135,14 @@ def _pack_info(path: str, kind: str):
     return None, 0
 
 
-KLINE_URL = ("https://klen-h.github.io/stock-scoring-v2/"
-             "data/kline-pack-latest.json.gz")
+PAGES_BASE = "https://klen-h.github.io/stock-scoring-v2/"
+# 可部分解压读 date 的 JSON 包（backend-pack.db.gz 是 sqlite，无法部分读 ⇒ 靠
+# 护栏 2 的"同批日期一致"间接覆盖：三包通常同批生成，kline/indicators 任一被
+# 远端判定为旧即整批拦截）
+REMOTE_JSON_PACKS = {
+    "kline-pack-latest.json.gz": PAGES_BASE + "data/kline-pack-latest.json.gz",
+    "indicators-pack.json.gz": PAGES_BASE + "data/indicators-pack.json.gz",
+}
 
 
 def _remote_pack_date(timeout: int = 60) -> str:
@@ -149,8 +155,13 @@ def _remote_pack_date(timeout: int = 60) -> str:
       教训：`--force` 能绕过"本地包日期太旧"的护栏，却看不见线上已经有更新的包。
       ⇒ 这里补一道**连 --force 都绕不过**的护栏（需显式 --allow-downgrade）。
     """
+    return _remote_json_date(REMOTE_JSON_PACKS["kline-pack-latest.json.gz"], timeout)
+
+
+def _remote_json_date(url: str, timeout: int = 60) -> str:
+    """读线上 JSON 包日期（只下载前 128KB 边解压边取 `"date"`，kline 同款技巧）。"""
     try:
-        req = urllib.request.Request(KLINE_URL, headers={
+        req = urllib.request.Request(url, headers={
             "User-Agent": "publish-packs-local/1.0",
             "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -160,7 +171,8 @@ def _remote_pack_date(timeout: int = 60) -> str:
         m = re.search(r'"date"\s*:\s*"(\d{8})"', txt)
         return m.group(1) if m else ""
     except Exception as e:
-        print(f"  ⚠️ 读线上包日期失败（跳过回滚护栏）: {str(e)[:80]}")
+        print(f"  ⚠️ 读线上包日期失败（{url.rsplit('/', 1)[-1]}，跳过该包回滚护栏）: "
+              f"{str(e)[:80]}")
         return ""
 
 
@@ -172,6 +184,9 @@ def main():
                     help="跳过包规模/日期一致性护栏（仅在明确知道自己在发什么时用）")
     ap.add_argument("--allow-downgrade", action="store_true",
                     help="允许把线上数据包**回退**到更早日期（默认禁止；orphan 重建会整批覆盖）")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="允许本地缺失包文件/dist 时继续（危险：orphan 重建会把线上同名文件"
+                         "整批删掉——2026-10-24 事故形态；默认硬失败）")
     args = ap.parse_args()
 
     url = _git(["remote", "get-url", "origin"], cwd=REPO_DIR).stdout.strip()
@@ -213,19 +228,39 @@ def main():
                     n += 1
             print(f"  [站点] frontend/dist 并入 {n} 个文件（页面 + 数据一次发齐）")
         else:
-            print("  ⚠️ frontend/dist 不存在——本次只发数据包，前端页面保持现状"
-                  "（如需页面一起更新：cd frontend && pnpm build 后重跑）")
+            # ★ 2026-10-24（BK-61）：orphan 重建是**整树替换**——不带站点文件 = 整站 404
+            #   （09-09 同款事故）。旧提示"前端页面保持现状"与实际行为相反。
+            msg = ("frontend/dist 不存在——orphan 重建会把线上前端站点整批抹掉（整站 404）。"
+                   "先 cd frontend && pnpm build 再发布。")
+            if args.allow_missing:
+                print(f"  ⚠️ 已指定 --allow-missing：{msg}")
+            else:
+                print(f"\n⛔ 发布前护栏拦截（硬失败）：\n   - {msg}")
+                return
 
         data_dir = os.path.join(tmp, "data")
         os.makedirs(data_dir, exist_ok=True)
 
         prepared = []
+        missing = []
         for fn in PACK_FILES:
             src = os.path.join(args.dir, fn)
             if not os.path.exists(src):
-                print(f"  [跳过] {fn}（本地不存在）")
+                missing.append(fn)
                 continue
             prepared.append((fn, src))
+        # ★ 2026-10-24（BK-61）：旧实现"[跳过]（本地不存在）"继续发布——
+        #   orphan 重建只含 prepared 文件 ⇒ 线上同名包被**整批删除**（10-24 事故形态：
+        #   本地缺 backend/indicators 包 → 线上两包消失，只剩 kline）。
+        if missing:
+            msg = ("本地缺失 %d 个包文件：%s —— orphan 重建会把线上同名包整批删掉。"
+                   "先补齐本地包（update_pack_incremental / update_backend_pack_incremental）"
+                   "再发布。" % (len(missing), "、".join(missing)))
+            if args.allow_missing:
+                print(f"  ⚠️ 已指定 --allow-missing：{msg}")
+            else:
+                print(f"\n⛔ 发布前护栏拦截（硬失败）：\n   - {msg}")
+                return
         if not prepared:
             print("没有可发布的包")
             return
@@ -268,20 +303,30 @@ def main():
         #   `--force` 本来只表示"我知道本地包日期旧"，但 orphan 重建是**整批覆盖**，
         #   会把线上更新的包一起删掉 ⇒ 必须单独确认（--allow-downgrade）。
         if not args.dry_run:
-            remote_date = _remote_pack_date()
-            kline_date = dates.get("kline-pack-latest.json.gz") or ""
-            if remote_date and kline_date and kline_date < remote_date:
-                msg = (f"线上 K 线包已是 {remote_date}，本次要发 {kline_date}"
-                       f" —— orphan 重建会整批覆盖 gh-pages，等于把线上新包回滚掉。")
+            # ★ 2026-10-24（BK-61）：回滚比对从"只看 kline"扩到全部可部分解压的
+            #   JSON 包（kline + indicators）。backend-pack.db.gz 无法部分读，
+            #   由护栏 2（同批日期一致）间接覆盖：三包同批生成，kline/indicators
+            #   任一被判旧 ⇒ 整批拦截。
+            downgrade_msgs = []
+            for fn, url in REMOTE_JSON_PACKS.items():
+                remote_date = _remote_json_date(url)
+                local_date = dates.get(fn) or ""
+                if remote_date and local_date and local_date < remote_date:
+                    downgrade_msgs.append(
+                        f"线上 {fn} 已是 {remote_date}，本次要发 {local_date}"
+                        f" —— orphan 重建会整批覆盖 gh-pages，等于把线上新包回滚掉。")
+            if downgrade_msgs:
                 if not args.allow_downgrade:
                     print("\n⛔ 发布前护栏拦截（--force 不能绕过）：")
-                    print(f"   - {msg}")
+                    for m in downgrade_msgs:
+                        print(f"   - {m}")
                     print("   处理：① 先把本地包更新到最新（scripts/update_pack_incremental.py）；"
                           "② 只改前端的话直接 push，交给 Actions 部署"
                           "（keep_files=true，不会动 data/）；"
                           "③ 确认要回滚再加 --allow-downgrade。")
                     return
-                print(f"  ⚠️ 已指定 --allow-downgrade：{msg}")
+                for m in downgrade_msgs:
+                    print(f"  ⚠️ 已指定 --allow-downgrade：{m}")
 
         if problems:
             print("\n⚠️  发布前护栏拦截：")
