@@ -1284,7 +1284,12 @@ TASKS = {
     "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
-                 "calendar", "mainforce_state", "gate_snapshot", "entry_log",
+                 "calendar",
+                 # ★ 2026-10-24（BK-47 补漏）：risk_calendar 曾注册于 TASKS 却漏进本清单
+                 #   ⇒ 生产唯一路径 --tasks all 从不执行，限售解禁底座静默断档
+                 #   （与 market_regime 09-08 断档同型）。位置按 TASKS 注释意图：紧跟 calendar。
+                 "risk_calendar",
+                 "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "sector_strength",
@@ -1299,6 +1304,17 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "scenario_watch",
                  "daily_report",
                  "trader_brief", "retention"]
+
+# ★ 2026-10-24 加固（docs/BACKLOG.md BK-47 的机制化）：TASKS 与 DEFAULT_ORDER 必须一一对应。
+#   模块级断言 ⇒ 任何 import（含 --list / CI）都立即暴露错配，而不是等日批跑完才发现断档。
+_MISSING = sorted(set(TASKS) - set(DEFAULT_ORDER))
+_EXTRA = sorted(set(DEFAULT_ORDER) - set(TASKS))
+assert not _MISSING and not _EXTRA, (
+    "TASKS/DEFAULT_ORDER 错配：仅注册未排单=" + str(_MISSING)
+    + " / 排单但无任务=" + str(_EXTRA)
+    + " —— 新任务必须同时登记 TASKS 与 DEFAULT_ORDER（BK-47：risk_calendar 曾漏排单静默断档）")
+_DUP_ORDER = sorted({k for k in DEFAULT_ORDER if DEFAULT_ORDER.count(k) > 1})
+assert not _DUP_ORDER, "DEFAULT_ORDER 重复项：" + str(_DUP_ORDER)
 
 
 def ensure_quotes():
