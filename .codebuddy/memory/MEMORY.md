@@ -251,6 +251,9 @@
   盘中由 `scheduler.brief_loop` 自动触发（指数±1%/涨跌比极端/30min强快讯≥2，冷却30min、
   日上限 `FLASH_BRIEF_DAILY_MAX`）→ `notified_at` → `/flash/notifications` 弹浏览器通知。
   个股异动必须过滤「退」市股；`direction` 要声明是"对 A 股风险偏好"而非对油价。
+- ★ **历史快讯检索 `app/flash_history.py`**（2026-10-24）：异动分析调 LLM 前检索 `flash_news`
+  （保留期 120 天），五路打分（代码4/名称3/行业1.5/关键词/强簇）+ 时间衰减，剔聚合稿、去重、Top6；
+  命中以 `[n]` 进 prompt（只许引用编号），返回 `news_evidence`/`news_query` 供前端展示原文。
 - ★★ **数据包发布纪律**（2026-10-24 事故）：`scripts/publish_packs_local.py` 是 **orphan 重建**
   （force push 整条 gh-pages 只含本地文件）⇒ **本地包旧就会把线上新包整批删掉**（实测：
   把工作流刚发的 10-23 K 线包回滚成 10-22）。前端改动直接 push 走 Actions 部署
