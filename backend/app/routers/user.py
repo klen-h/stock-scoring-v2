@@ -206,17 +206,21 @@ def update_plan(plan_id: str, item: dict = Body(...), user: dict = Depends(get_c
     _ensure_plan_columns()      # ★ A4：三处写入口（POST/PUT/GET）都保证列在，避免半新半旧
     # ★ 2026-10-24（BK-04c）：PUT 语义 = 更新**自己已有的**计划
     #   ① 先查属主：不存在/不属于当前用户 ⇒ 404（不泄露他人计划存在性）；
-    #   ② 字段白名单（mass assignment 封死——客户端不能改 created_at 等任意列）。
+    #   ② 字段白名单（mass assignment 封死——客户端不能改 created_at 等任意列）；
+    #   ③ 用 UPDATE 而非 upsert：部分字段更新不再触发"缺 NOT NULL 列的半截 INSERT"
+    #     （HTTP 全链路验证实测 500 的根因），也天然杜绝 ON CONFLICT(id) 的夺舍面。
     owner = _plan_owner(plan_id)
-    if owner is None:
+    if owner is None or owner != user["user_id"]:
         raise HTTPException(404, "计划不存在")
-    if owner != user["user_id"]:
+    sets = {k: item[k] for k in _PLAN_FIELDS if k in item and item[k] is not None}
+    if not sets:
+        return {"success": True, "updated": 0}
+    cols = ", ".join("%s = %%s" % k for k in sets)
+    n = db.execute("UPDATE user_trade_plans SET %s WHERE id = %%s AND user_id = %%s"
+                   % cols, tuple(sets.values()) + (plan_id, user["user_id"]))
+    if not n:
         raise HTTPException(404, "计划不存在")
-    updates = {k: item[k] for k in _PLAN_FIELDS if k in item and item[k] is not None}
-    updates["id"] = plan_id
-    updates["user_id"] = user["user_id"]
-    db.upsert("user_trade_plans", updates, conflict_columns=["id"])
-    return {"success": True}
+    return {"success": True, "updated": n}
 
 
 @router.delete("/plans/{plan_id}")
