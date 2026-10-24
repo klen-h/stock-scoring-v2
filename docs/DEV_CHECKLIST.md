@@ -82,7 +82,17 @@ python -c "import sys; sys.path.insert(0,'backend'); from app import xxx; print(
 # 前端
 cd frontend && npm run build     # 必须 0 error
 # 交互三点：展开/收起、空数据态、缓存命中态
+
+# ★ 三道自动护栏（2026-10-24 起，CI 同款；本地提交前建议先跑）
+python scripts/code_hygiene_check.py            # 代码卫生门（棘轮基线，只拦新增）
+python scripts/daily_batch.py --list            # 日批任务一致性断言随 import 生效
+python -m pytest backend/tests/generated/ -q    # 单元测试（涨跌停口径/交易日历/衰减/CYQ…）
 ```
+
+- **新增日批任务必须同时登记 `TASKS` 与 `DEFAULT_ORDER`**（模块级断言会拦，BK-47）。
+- **新增路由默认挂鉴权**（Guardrails #12）；匿名只读白名单要写理由。
+- 测试脚本 import `app.database` 前设 `DATABASE_URL=sqlite:///...`（否则跑线上 Supabase）；
+  `backend/tests/generated` 的 conftest 已强制摘除该变量。
 
 - 涉及缓存的改动：必须同时验证「首次生成」与「命中缓存」两条路径。
 - 涉及 LLM 的改动：必须验证「LLM 失败 → 降级模板」路径。
