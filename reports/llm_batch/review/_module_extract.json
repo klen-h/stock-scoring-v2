@@ -1,0 +1,2575 @@
+{
+ "ai_basket_watch": {
+  "unit": "ai_basket_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app.crowding_watch",
+   "app.database"
+  ],
+  "defs": [
+   "_basket",
+   "ensure_table",
+   "_num",
+   "_closes",
+   "compute",
+   "load"
+  ],
+  "envs": [
+   "AI_BASKET_CODES"
+  ],
+  "used_by": [],
+  "loc": 174
+ },
+ "auth": {
+  "unit": "auth.py",
+  "doc": "================================================================================\n【文件作用】用户认证工具函数\n================================================================================\n\nJWT Token + bcrypt 密码哈希。\n环境变量：\n  JWT_SECRET  JWT 签名密钥（默认随机生成，重启后旧 token 失效）\n  JWT_EXPIRE_HOURS  Token 有效期（默认 87600 小时 = 10 年，实现\"永久登录\"）\n================================================================================",
+  "imports_proj": [],
+  "defs": [
+   "hash_password",
+   "verify_password",
+   "create_token",
+   "decode_token",
+   "get_current_user",
+   "get_current_user_optional"
+  ],
+  "envs": [
+   "COMPUTERNAME",
+   "HOSTNAME",
+   "JWT_EXPIRE_HOURS",
+   "JWT_SECRET"
+  ],
+  "used_by": [
+   "backend/app/routers/auth.py",
+   "backend/app/routers/coach.py",
+   "backend/app/routers/performance.py",
+   "backend/app/routers/system.py",
+   "backend/app/routers/tasks.py",
+   "backend/app/routers/user.py",
+   "backend/migrate_user_isolation.py"
+  ],
+  "loc": 113
+ },
+ "backtest": {
+  "unit": "backtest/",
+  "doc": "回测体系：历史数据（data）→ 撮合引擎（engine）→ 策略适配（strategies）→ CLI（run）。",
+  "imports_proj": [
+   "app",
+   "app.backtest",
+   "app.backtest.market_regime",
+   "app.backtest.regime_review",
+   "app.backtest.strategies",
+   "app.database",
+   "app.events.signal",
+   "app.flash.rules",
+   "app.macro",
+   "app.mainforce.gate",
+   "app.routers.market",
+   "app.signals.tracker",
+   "app.strategies.base",
+   "app.wechat_fmt"
+  ],
+  "defs": [
+   "crowding_metrics",
+   "crowding_score",
+   "crowding_multiplier",
+   "to_secid",
+   "_tencent_code",
+   "_parse_klines",
+   "fetch_history_tencent",
+   "fetch_history",
+   "save_prices",
+   "invalidate_price_caches",
+   "_prices_cache_get",
+   "_prices_cache_put",
+   "load_prices",
+   "anomalies_in",
+   "has_anomaly",
+   "anomaly_index",
+   "window_has_anomaly",
+   "get_all_codes",
+   "_round_tick",
+   "_limit_pct",
+   "match_signals",
+   "build_equity_curve",
+   "compute_metrics",
+   "MarketState",
+   "_sma"
+  ],
+  "envs": [
+   "WARFARE_EXIT_POLICY"
+  ],
+  "used_by": [
+   "backend/app/coach/rules.py",
+   "backend/app/daily_report.py",
+   "backend/app/edge_verify.py",
+   "backend/app/env_check.py",
+   "backend/app/events/signal.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/limit_stats.py",
+   "backend/app/mainforce/confluence.py",
+   "backend/app/mainforce/gate.py",
+   "backend/app/mainforce/trade_gate.py",
+   "backend/app/routers/backtest.py",
+   "backend/app/routers/market.py",
+   "backend/app/routers/performance.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "backend/app/scoring/decay.py",
+   "backend/app/scoring/engine.py",
+   "backend/app/signals/tracker.py",
+   "backend/app/strategies/backtest.py",
+   "backend/app/strategies/base.py"
+  ],
+  "loc": 3086
+ },
+ "benchmarks": {
+  "unit": "benchmarks.py",
+  "doc": "================================================================================\n【文件作用】**基准收益的唯一事实源**（2026-09-29，P0 双口径系列的**口径收敛**）\n================================================================================\n【为什么需要（本模块的由来）】\n  2026-09-29 做「P0 基准双口径」时，同一个公式（**首末收盘算收益**）被写在 **4 处**：\n    · `daily_report._bench5`            —— 日报「空仓对照」近 5 交易日\n    · `weekly_review._idx_ret`          —— 周复盘「本周绩效」块\n    · `routers.performance._bench_pair` —— 性能页三轨道\n    · `coach.attribution._bench_ret`    —— 教练建议事后归因\n  这是**当天新造的债**，且违反项目「单一事实源」纪律（前车之鉴：本地 68.8 vs\n  后端 72.6 的评分漂移）⇒ 收进本模块，四处共用；**改本文件 = 全项目同步改口径**。\n\n【口",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "index_ret",
+   "recent_ret",
+   "dual_bench",
+   "recent_dual",
+   "ret_in_window",
+   "pick_bench"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 144
+ },
+ "cache_release": {
+  "unit": "cache_release.py",
+  "doc": "================================================================================\n【文件作用】进程内存「主动释放」—— 把按需加载的大缓存还回去，避免 OOM 被杀重启\n================================================================================\n背景（2026-09-28 定位；用户：\"盘后是不是可以将一些不必要的缓存释放掉\"）：\n  Render **500MB** 实例反复 OOM。`memory_probe` 跨重启采样把形态钉死了 ——\n    · 09-24 09:35  RSS 159MB（已知缓存 18MB）\n    · 09-24 09:44  RSS 384MB（已知缓存 **358MB**）← 10 分钟内跳升\n    · 09-24 13:35  RSS 409MB（81.8%）⇒ **企微告警**\n    · 09-24 19:05  RSS 420MB（83.9%，当日峰值）\n    · 09-24 19:31  RSS 105MB  ← **被杀重启**（缓存清零）\n    · 09-24 20:01  RSS 367MB  ← **半小时又填满**\n  ⇒ ① 342MB 全在**已知模块",
+  "imports_proj": [
+   "app.flash",
+   "app.routers.system"
+  ],
+  "defs": [
+   "_clear_one",
+   "_rss_pct",
+   "release",
+   "_tick",
+   "periodic_loop"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 216
+ },
+ "coach": {
+  "unit": "coach/",
+  "doc": "交易员教练（Coach）—— W1 纯规则骨架（2026-09-13）\n\n模块划分（对齐 PLAN §2.4 / 外部研判简报 §3.4）：\n  rules.yaml  # 阈值集中配置（可调、可回滚）\n  rules.py    # 规则求值器（纯代码、可单测、不依赖 LLM）\n  audit.py    # 建议/执行/放弃理由落库 + 执行一致性度量\n  monitor.py  # 持仓轮询（30s，读内存行情缓存）+ 硬警报 + 关键时点体检卡\n\n★ W1 不含 LLM（explainer.py 属 W2）：本阶段全部输出都由代码生成，\n  \"LLM 与规则冲突\"在结构上不可能发生——即评审 ①「事前无权」而非「事后否决」。",
+  "imports_proj": [
+   "app",
+   "app.backtest",
+   "app.backtest.data",
+   "app.coach",
+   "app.coach.position_sizing",
+   "app.database",
+   "app.flash",
+   "app.flash.margin_sentiment",
+   "app.flash.rules",
+   "app.flash.wechat",
+   "app.macro",
+   "app.mainforce.flow",
+   "app.mainforce.overlay",
+   "app.mainforce.phases",
+   "app.mainforce.state"
+  ],
+  "defs": [
+   "_cutoff",
+   "_load_alerts",
+   "_load_phases",
+   "_load_bars",
+   "_pick_bench",
+   "_fwd",
+   "_bench_ret",
+   "_mean",
+   "_build_rows",
+   "_group",
+   "advice_attribution",
+   "_sentence",
+   "_now",
+   "_today",
+   "ensure_tables",
+   "_ensure_columns",
+   "close_plan",
+   "plan_execution_rate",
+   "get_plans",
+   "abandon_plan",
+   "record_advices",
+   "log_entry_candidates",
+   "write_back_execution",
+   "execution_consistency",
+   "abandon_reasons"
+  ],
+  "envs": [
+   "COACH_ENABLED",
+   "COACH_EXPLAINER"
+  ],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/coach.py",
+   "backend/app/routers/user.py",
+   "backend/app/strategies/paper_trading.py",
+   "backend/app/trader_brief.py",
+   "backend/app/weekly_review.py",
+   "backend/test_coach_rules.py",
+   "backend/test_position_sizing.py",
+   "scripts/coach_rule_health.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 2756
+ },
+ "contradictions": {
+  "unit": "contradictions/",
+  "doc": "矛盾扫描引擎（Contradiction Scanner）\n\n基于《Agent知识库_完整操作手册_v3.1》中的三层矛盾模型：\n  L1 预期差（Expected vs Actual）\n  L2 行为背离（Said vs Done / Narrative vs Flow）\n  L3 信息断层（Public vs Private）\n\n本模块先落地 L2 行为背离的纯规则扫描，作为 MVP。",
+  "imports_proj": [
+   "app.contradictions",
+   "app.contradictions.l3_scanner",
+   "app.contradictions.labels",
+   "app.contradictions.scanner",
+   "app.contradictions.store",
+   "app.contradictions.validator",
+   "app.database",
+   "app.eastmoney",
+   "app.flash",
+   "app.flash.margin_sentiment",
+   "app.flash.rules",
+   "app.mainforce.l3_history",
+   "app.tencent"
+  ],
+  "defs": [
+   "_src_fingerprint",
+   "_disk_load",
+   "_disk_save",
+   "_is_financial",
+   "_period_scale",
+   "_load_reports",
+   "scan_financial_gap",
+   "severity_cn",
+   "level_cn",
+   "type_cn",
+   "metric_cn",
+   "_fmt_amount",
+   "fmt_metric_value",
+   "_fmt_money",
+   "_render_markdown",
+   "_llm_summary",
+   "generate_report",
+   "run_report",
+   "_hook_enabled",
+   "breadth_collapse_active",
+   "risk_multiplier",
+   "trend_paused",
+   "reset_cache",
+   "_today",
+   "set_realtime_mode"
+  ],
+  "envs": [
+   "CONTRADICTION_RISK_HOOK"
+  ],
+  "used_by": [
+   "backend/app/daily_report.py",
+   "backend/app/env_check.py",
+   "backend/app/flash/intraday_alerts.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/key_level_watch.py",
+   "backend/app/mainforce/trade_gate.py",
+   "backend/app/policy_bottom_watch.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/routers/contradictions.py",
+   "backend/app/strategies/paper_trading.py",
+   "scripts/breadth_hook_review.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 2097
+ },
+ "crowding_watch": {
+  "unit": "crowding_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app.database",
+   "app.industry_map"
+  ],
+  "defs": [
+   "ensure_table",
+   "_num",
+   "_close",
+   "_date",
+   "_pack",
+   "_PackView",
+   "_industry_of",
+   "compute",
+   "load"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/ai_basket_watch.py"
+  ],
+  "loc": 273
+ },
+ "daily_report": {
+  "unit": "daily_report.py",
+  "doc": "================================================================================\n【文件作用】每日 A 股大盘日报（盘后 16:20 自动生成）\n================================================================================\n\n定位：\n  与三段\"快讯复盘\"(run_review)互补——快讯复盘偏事件流；本日报聚焦\n  「全市场 + 系统状态 + 用户持仓 + 模拟盘」的体系化复盘。\n\n组成（1-3 部分为硬数据直填 DB，LLM 不参与 → 保证准确；仅第 4 部分 LLM 解读）：\n  1. 今日市场脉冲：外围环境 + 指数结构 + ETF + 样本宽度（market_snapshot）\n  2. 系统状态：regime 判定与权重 / 评分榜 Top10 及较昨日变化 / 板块资金流 / 战法命中 / 模拟盘\n  3. 你的持仓：现价 / 浮盈亏（DB user_portfolio × 实时行情）\n  4. LLM 解读：今日主线 → 板块逻辑 → 明日预案 → 持仓观察（R1 单次调用，受日熔断保护）\n\n评审驱动改进（2026-09-03）：\n  - 外围环境必须纳入（macro_snapshot 已有）\n  -",
+  "imports_proj": [
+   "app",
+   "app.backtest.market_regime",
+   "app.contradictions.store",
+   "app.database",
+   "app.eastmoney",
+   "app.events.signal",
+   "app.flash",
+   "app.flash.margin_sentiment",
+   "app.macro",
+   "app.mainforce.confluence",
+   "app.mainforce.state",
+   "app.mainforce.trade_gate",
+   "app.portfolio_scope",
+   "app.signals",
+   "app.strategies.recommendation"
+  ],
+  "defs": [
+   "ensure_table",
+   "_now",
+   "_today",
+   "_yesterday_trading_day",
+   "_macro_snapshot",
+   "_etf_pulse",
+   "_breadth",
+   "_regime",
+   "_ranking_top",
+   "_sector_flow",
+   "_strategy_scan",
+   "_push_status_md",
+   "_paper_summary",
+   "_portfolio",
+   "_fmt_money",
+   "_fmt_pct",
+   "_northbound",
+   "_mainforce_summary",
+   "_lhb_summary",
+   "_holdings_radar",
+   "build_data_md",
+   "_valid_holdings_codes",
+   "_render_llm_json",
+   "_llm_interpret",
+   "_llm_interpret_markdown"
+  ],
+  "envs": [
+   "DAILY_REPORT_PUSH"
+  ],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/stock.py",
+   "scripts/daily_batch.py",
+   "scripts/trigger_daily_report.py"
+  ],
+  "loc": 1142
+ },
+ "data_files": {
+  "unit": "data_files.py",
+  "doc": "================================================================================\n【文件作用】运行时数据清单 + 完整性检查（丢了/烂了要预警，不再静默蒸发）\n================================================================================\n背景（2026-09-12）：\n  为了对抗 Render 免费实例\"每次部署清空文件系统\"，历史上做了「浏览器镜像」兜底：\n  前端每 5 分钟把 backend/data/*.json 拉到 localStorage，服务端清零后自动回传。\n  但数据这些年陆续迁进了数据库，镜像清单里那 9 个文件**全部变成空壳**（flash /\n  analyses / reviews / tracking / macro_history / etf_close / flash_state /\n  schedule_state / strategies）——于是镜像只剩代价（每次为了取 len() 把 50 条\n  诊断正文读出来，实测 40MB/天 Supabase egress），不产生任何保护 → 已退役。\n\n  本模块接管\"盯着点\"的职责，清单按**数据真实存储位置**划分（2026-",
+  "imports_proj": [
+   "app.database",
+   "app.flash",
+   "app.flash.wechat",
+   "app.wechat_fmt"
+  ],
+  "defs": [
+   "_ensure_wm",
+   "_wm_load",
+   "_wm_touch",
+   "_parse_dt",
+   "_specs",
+   "_check_db_calendar",
+   "_check_db_llm_usage",
+   "_check_one",
+   "_pack_detail",
+   "check_all",
+   "_alert_once_per_day",
+   "_notify",
+   "startup_check",
+   "periodic_loop"
+  ],
+  "envs": [
+   "DATA_SOURCE",
+   "RENDER_INSTANCE_ID"
+  ],
+  "used_by": [],
+  "loc": 297
+ },
+ "data_gaps": {
+  "unit": "data_gaps.py",
+  "doc": "================================================================================\n【文件作用】数据底座断档自检 + 板块快照自愈回填（2026-09-30，P0）\n================================================================================\n背景（为什么需要它）：\n  2026-09-30 用户问「前几天的地产、今天的金属拉升，项目似乎察觉不到？」\n  ⇒ 排查发现\"察觉不到\"的**数据层**两个真问题（另有口径层，见《诊断》记忆）：\n    ① `plate_daily_zz`（zzshare 板块快照 —— **前端「板块分化」的数据源**）**停在 09-24**，\n       而它原先只挂在 Render 的 `sector_snapshot_loop`（15:10-16:40）上 ⇒ 循环停摆\n       即**静默断档 5 个交易日**；日批的 `task_sector_snapshot` 只写了东财版 ⇒ 无人发现。\n       （同 `mainforce_state` 09-09 / `weekly_report` 09-11 / `zz_finance` 09-19 的老毛病：\n         ",
+  "imports_proj": [
+   "app.database",
+   "app.flash",
+   "app.flash.rules",
+   "app.flash.wechat",
+   "app.sector_zz"
+  ],
+  "defs": [
+   "trading_days",
+   "lag_trading_days",
+   "plate_missing",
+   "backfill_plate",
+   "check_gaps",
+   "format_markdown",
+   "_ensure_log",
+   "run_gap_check"
+  ],
+  "envs": [],
+  "used_by": [
+   "scripts/backfill_plate_daily.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 266
+ },
+ "database": {
+  "unit": "database.py",
+  "doc": "================================================================================\n【文件作用】数据库核心模块\n================================================================================\n\n支持两种数据库：\n  - SQLite（默认）：本地开发，数据文件存在 backend/data/app.db\n  - PostgreSQL：生产部署（Supabase / Neon 等云数据库）\n\n通过环境变量 DATABASE_URL 切换：\n  - 不设置 / sqlite:///...  → SQLite\n  - postgresql://user:pass@host/db  → PostgreSQL\n\n使用方式：\n  from app.database import db\n  rows = db.fetch(\"SELECT * FROM flash_news ORDER BY time DESC LIMIT 10\")\n  db.execute(\"INSERT INTO flash_news (...) VALUES (...)\", params)\n=======================================",
+  "imports_proj": [],
+  "defs": [
+   "Database"
+  ],
+  "envs": [
+   "DATABASE_URL"
+  ],
+  "used_by": [
+   "backend/_tmp_ml.py",
+   "backend/app/ai_basket_watch.py",
+   "backend/app/backtest/data.py",
+   "backend/app/backtest/market_regime.py",
+   "backend/app/backtest/regime_review.py",
+   "backend/app/backtest/report_store.py",
+   "backend/app/backtest/strategies.py",
+   "backend/app/benchmarks.py",
+   "backend/app/coach/attribution.py",
+   "backend/app/coach/audit.py",
+   "backend/app/coach/explainer.py",
+   "backend/app/coach/position_sizing.py",
+   "backend/app/coach/regime_alert.py",
+   "backend/app/coach/rules.py",
+   "backend/app/contradictions/l3_scanner.py",
+   "backend/app/contradictions/risk_hook.py",
+   "backend/app/contradictions/scanner.py",
+   "backend/app/contradictions/store.py",
+   "backend/app/crowding_watch.py",
+   "backend/app/daily_report.py"
+  ],
+  "loc": 342
+ },
+ "db_retention": {
+  "unit": "db_retention.py",
+  "doc": "================================================================================\n【文件作用】数据库保留期清理（Supabase 500MB 上限治理）—— 2026-09-24 新增\n================================================================================\n背景：Supabase 免费档 **500MB/项目**，用户 2026-09-24 实测已用 **231MB（46%）**，\n增速 ≈ **2.3MB/交易日**（≈48MB/月）⇒ 约 **4~6 个月**撞线。★ 而**超限后果比 Render\nOOM 更严重**：项目进入**只读**（写入全失败）⇒ 日批全挂，且**不会自动恢复**。\n\n真实分表（实测）显示结构是「**大的不涨、涨的不大**」：\n  · **存量层**（占 75%）：`backtest_prices` 100MB / `mainflow_history` 22MB /\n    `kline_cache` 18MB / `stock_finance_zz` 15MB / `indicator_cache` 7.7MB\n    —— 但**日增合计仅 ~0.5MB** ⇒ 它们不威胁撞线，却",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_cutoff",
+   "_cleanup_one",
+   "cleanup",
+   "summarize"
+  ],
+  "envs": [
+   "RETENTION_DAYS"
+  ],
+  "used_by": [],
+  "loc": 123
+ },
+ "earnings_pressure": {
+  "unit": "earnings_pressure.py",
+  "doc": "================================================================================\n【文件作用】盈利承压监测清单（P2-2，PLAN_RESERVE_SIGNALS §6.6）\n================================================================================\n【命题（为什么是\"盈利端\"而不是\"估值端\"）】\n  高油（输入性通胀）+ 高利率（融资成本）最先挤压的是**毛利/净利**，而不是估值倍数；\n  盈利下修一旦发生，估值再便宜也拦不住杀业绩。故本模块盯\"**成本端挤压**\"的可监测清单。\n\n【★ 定位：监测清单，不是买卖信号（不预设方向）】\n  · **不进决策链**：不改评分、不参与排序、不拦闸门、不推\"卖出建议\"。\n  · 只回答\"**哪些票的毛利率正在被挤**、集中在哪些行业\" ⇒ 供人工/LLM 参考。\n  · 要升级为信号必须走预登记 + 预测力检验（项目铁律，见 PLAN §6.3 的范式）。\n  · ⚠️ 高油/高利率**不等于**这些票一定跌（部分公司是**受益方**，如上游资源/油服）——\n    本模块**不做行业方向的先验假设**，只列\"毛利在挤\"的事实 + 行业分布，让读者自己判断。\n\n【数据源（都",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.industry_map"
+  ],
+  "defs": [
+   "_num",
+   "_macro_level",
+   "_periods",
+   "_same_period_last_year",
+   "_load_rows",
+   "_industry_of",
+   "_trim",
+   "scan",
+   "markdown"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/macro.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 332
+ },
+ "eastmoney": {
+  "unit": "eastmoney.py",
+  "doc": "================================================================================\n【文件作用】东方财富数据源 + 内存缓存层（板块 / 资金流）\n================================================================================\n\n整个后端的「第二数据源」，与 tencent.py 并列。专门负责板块和资金流数据：\n  - 行业板块 / 概念板块（列表、资金流排名）\n  - 个股主力资金流向\n  - 北向资金（沪深港通当日净流入）\n\n数据来源：东方财富 push2.eastmoney.com 公开 JSON 接口。\n  这组接口非官方，但已稳定运行多年，也是 AkShare / Tushare 的底层源。\n  字段码（f12/f62/f184 等）东方财富偶有调整，所以下面解析全程防御式：\n  任何字段缺失/类型异常都兜底为 0 或空，绝不让单行异常拖垮整批数据。\n\n对外函数（路由层调用，均带缓存 + 降级）：\n  get_sectors(kind)            行业/概念板块列表\n  get_sector_flow(kind)        板块资金流排名（按主力净流入降序）\n  get_stock_flow(or",
+  "imports_proj": [
+   "app",
+   "app.flash.rules",
+   "app.zzshare_client"
+  ],
+  "defs": [
+   "_to_float",
+   "_to_int",
+   "_get_cached",
+   "_fetch_clist",
+   "_fetch_clist_paged",
+   "get_sectors",
+   "_parse_flow",
+   "get_sector_flow",
+   "get_stock_flow",
+   "get_northbound",
+   "get_lift_stage",
+   "_zzshare_sector_list",
+   "_sina_get",
+   "_sina_sector_list",
+   "_sina_sector_flow"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/contradictions/scanner.py",
+   "backend/app/daily_report.py",
+   "backend/app/flash/llm.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash_brief.py",
+   "backend/app/macro.py",
+   "backend/app/risk_events.py",
+   "backend/app/routers/capital.py",
+   "backend/app/routers/market.py",
+   "backend/app/routers/sector.py",
+   "backend/app/sector_industry.py",
+   "backend/tmp_archive/tmp_sector_probe.py",
+   "scripts/probe_northbound.py",
+   "scripts/verify_northbound_fix.py"
+  ],
+  "loc": 686
+ },
+ "eastmoney_news": {
+  "unit": "eastmoney_news.py",
+  "doc": "================================================================================\n【文件作用】东方财富新闻数据源 + 内存缓存层（7×24 快讯 / 个股新闻）\n================================================================================\n\n后端的「消息面」数据源（阶段 1：东财快讯，不接财联社）。\n\n数据来源（在线验证可用，2026-08）：\n  - 7×24 快讯：np-listapi.eastmoney.com/comm/web/getFastNewsList\n    每条快讯自带 stockList（关联标的，格式 \"市场.代码\"）：\n      \"0.300308\" = 深市A股 300308，\"1.600519\" = 沪市A股 600519，\n      \"90.BK0xxx\" = 板块，其余为港美股/债券/指数（忽略）。\n  - 个股搜索：search-api-web.eastmoney.com/search/jsonp（关键词=代码）\n    覆盖个股深度报道（业绩说明会/研报/公告解读，快讯里没有的内容）。\n    注意：① 必须用 http（https 返回错乱缓存响应）；② 响应是 JSONP 壳\n",
+  "imports_proj": [
+   "app.tencent"
+  ],
+  "defs": [
+   "_get_cached",
+   "_parse_a_stock_codes",
+   "_normalize",
+   "get_global_news",
+   "_strip_jsonp",
+   "_fetch_search_news",
+   "_dedup_similar",
+   "get_stock_news"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "scripts/generate_backend_pack.py"
+  ],
+  "loc": 273
+ },
+ "edge_verify": {
+  "unit": "edge_verify.py",
+  "doc": "================================================================================\n【文件作用】预登记验证脚本的**月度自动复核**（2026-09-30，P1 收尾）\n================================================================================\n【为什么需要（本轮查出来的真缺口）】\n  项目有若干**预登记**验证脚本，判定标准都写死在各自脚本头：\n    · `scripts/gate_ready_backtest.py`      —— 闸门 `ready==3`（**唯一买入入口**）联合期望值\n    · `scripts/sector_momentum_edge_check.py` —— 板块动量延续性（因子层）\n    · `scripts/event_live_review.py`        —— E2 实盘样本复核（能否先行解除 defensive）\n    · `scripts/reversal_composite_edge_check.py` —— 反弹 vs 反转组合（★ 2026-10-10 P1-1 新增）\n  2026-09-30 全仓 grep 发现：**这些脚本当时没有任何调用方** ",
+  "imports_proj": [
+   "app.backtest",
+   "app.flash",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_parse",
+   "run_script",
+   "_verdict_cn",
+   "_progress",
+   "format_markdown",
+   "_save",
+   "run_monthly"
+  ],
+  "envs": [],
+  "used_by": [
+   "scripts/daily_batch.py"
+  ],
+  "loc": 245
+ },
+ "env_check": {
+  "unit": "env_check.py",
+  "doc": "关键业务开关「生效值 vs 部署意图」自检（审查文档 §5.5，2026-09-14）。\n\n为什么需要：**代码默认值兜底 ≠ 部署意图**。09-14 实测 GitHub Actions 的\n`daily-batch.yml` 未配 `WHITELIST_CRITERION` → 日批用代码默认 `win_rate`\n（该体系胜率天花板≈50% < 55% 门槛 → 白名单恒空 → 战法推送静默），而\nRender 配了 `expectancy` → 两端行为分叉，此前**无任何可见性**。\n\n做法：把「部署意图」固化为期望值表，运行时读取**实际生效值**逐一对比，\n不符即在启动日志显著告警，并通过 `/api/health` 暴露（运维/监控可查）。\n期望值可用 `EXPECT_<NAME>` 环境变量覆盖（应急/灰度，避免改代码）。\n\n新增开关时：往 EXPECTED_SWITCHES + _actual 各加一项即可。",
+  "imports_proj": [
+   "app.backtest.strategies",
+   "app.contradictions.risk_hook",
+   "app.flash",
+   "app.mainforce.gate",
+   "app.mainforce.overlay",
+   "app.mainforce.trade_gate",
+   "app.sector_strength",
+   "app.signals.tracker",
+   "app.strategies.market_regime",
+   "app.strategies.recommendation"
+  ],
+  "defs": [
+   "_on_off",
+   "_actual",
+   "switch_report",
+   "llm_chain_report",
+   "log_switch_report"
+  ],
+  "envs": [
+   "ENV_CHECK_SKIP_LLM"
+  ],
+  "used_by": [
+   "backend/app/main.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 193
+ },
+ "etf_share_watch": {
+  "unit": "etf_share_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app.database",
+   "app.flash",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_sse_map",
+   "_prev_trading_day",
+   "ensure_table",
+   "save",
+   "load",
+   "scan",
+   "scan_and_store",
+   "backfill",
+   "summarize"
+  ],
+  "envs": [
+   "ETF_CONFIRM_DAYS",
+   "ETF_SHARE_CHG_PCT",
+   "ETF_STREAK_MAX"
+  ],
+  "used_by": [],
+  "loc": 353
+ },
+ "events": {
+  "unit": "events/",
+  "doc": "事件驱动信号源（event-driven signal）。\n\n唯一通过预登记检验的事件：E2 政策脉冲（极端普涨 + 涨停骤增）。\n详见 app/events/signal.py 头部说明。",
+  "imports_proj": [
+   "app.backtest.market_regime",
+   "app.database",
+   "app.events.signal",
+   "app.flash",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "ensure_table",
+   "_build",
+   "run_alert",
+   "_ensure_table",
+   "detect_events",
+   "get_event_signal",
+   "record_event_snapshot",
+   "event_summary_line"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/backtest/market_regime.py",
+   "backend/app/daily_report.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/market.py",
+   "scripts/event_live_review.py"
+  ],
+  "loc": 474
+ },
+ "exit_advice": {
+  "unit": "exit_advice.py",
+  "doc": "================================================================================\n【文件作用】统一出场建议（「什么时候卖」的**单一事实源**）\n================================================================================\n为什么需要（2026-09-27 用户旅程盘点发现）：\n  项目此前有**三套互不相通**的\"什么时候卖\"口径：\n    ① `strategies/exit_alert.py`      止损 / 支撑 / RSI / 放量   → 只在评分榜 Top tab\n                                                                  与战法观察池出现（**选股页**）\n    ② `portfolio_radar.py`            浮亏 / 浮盈 / 主力 / 闸门   → 工作台「持仓预案」\n    ③ 前端 `usePortfolio.evaluateAlerts`  −8% / +30% / 移动止盈 / 评分 → 「我的持仓」页\n  ⇒ 同一只持仓，在「我的持仓」说\"减仓\"、在工作台说\"持有\"，用户无法判断信谁。\n\n本模块",
+  "imports_proj": [
+   "app",
+   "app.strategies.exit_alert",
+   "app.tencent"
+  ],
+  "defs": [
+   "_enabled",
+   "_tech_alert",
+   "_trailing_from_kline",
+   "advise_for_item",
+   "_warming",
+   "build"
+  ],
+  "envs": [
+   "EXIT_ADVICE"
+  ],
+  "used_by": [
+   "backend/app/routers/user.py"
+  ],
+  "loc": 280
+ },
+ "finance": {
+  "unit": "finance.py",
+  "doc": "================================================================================\n【文件作用】A股财务数据（东财 F10 主要财务指标）\n================================================================================\n\n给评分引擎的「成长」和「质量」因子提供数据源。这两个因子此前完全缺失——\nrouters/stock.py 里明说\"没有独立的财务数据源，只用了实时行情里的 PE/PB/市值\"。\n\n数据源：datacenter-web.eastmoney.com\n  ★ 与 push2.eastmoney.com（实时行情）是不同域名。实测后者被反爬封禁时，\n    本接口依然可用 —— 财务数据这块不受行情域名封禁影响。\n\n为什么不用 AKShare：只要营收增速/利润增速/ROE/负债率等几个字段，\nAKShare 会引入 pandas + 几十个间接依赖，对这点需求性价比太低。\n\n★ 三个必须处理的坑（都是实测踩出来的）：\n\n  1. 结果混有非 A 股：不过滤是 13085 条，加 SECURITY_TYPE_CODE=\"058001001\"\n     后 6236 条。不做过滤会把港股/B股数据写进 A 股因子。",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_now_iso",
+   "_num",
+   "_date",
+   "_fetch_page",
+   "fetch_report",
+   "latest_report_date",
+   "_prev_report",
+   "_save_rows",
+   "refresh",
+   "has_report",
+   "get_finance",
+   "get_finance_asof",
+   "clear_finance_cache",
+   "get_finance_batch",
+   "get_history",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "backend/app/scoring/live_ranking.py",
+   "backend/tmp_archive/tmp_align_test.py",
+   "backend/tmp_archive/tmp_batch_test.py",
+   "backend/tmp_archive/tmp_fin_test.py",
+   "backend/tmp_archive/tmp_gen_input.py",
+   "backend/tmp_archive/tmp_kline_test.py",
+   "scripts/shadow_decay_ranking.py"
+  ],
+  "loc": 369
+ },
+ "flash": {
+  "unit": "flash/",
+  "doc": "================================================================================\n【文件作用】金十财经日历数据源（独立于快讯 source.py）\n================================================================================\n\n接口：https://rili-open-api.jin10.com/data/week_info\n鉴权：x-app-id: fiXF2nOnDycGutVA + x-version: 2.0（★ 无需 Cookie，与快讯不同）\n      实测：缺 x-version 或 app-id 写错 → 网关返回 502（Gm-Error-Code: 81002），\n      且响应体为空、不报业务错 —— 排查时容易误判成\"接口挂了\"。\n\n★ 接口硬限制：单次请求的日期区间不得超过 7 天，超过则**返回 0 条且不报错**\n  （实测 15 天/31 天区间均返回空数组）。因此长区间必须按 7 天分段请求后合并，\n  已封装在 fetch_range() 里，调用方无需感知。\n\n三类数据（type 字段），归一化成统一结构后供前端/LLM 消费：\n  event   会议/讲话/事件：event",
+  "imports_proj": [
+   "app",
+   "app.backtest.market_regime",
+   "app.backtest.run",
+   "app.coach.monitor",
+   "app.contradictions",
+   "app.contradictions.labels",
+   "app.contradictions.report",
+   "app.contradictions.risk_hook",
+   "app.contradictions.scanner",
+   "app.contradictions.store",
+   "app.contradictions.validator",
+   "app.daily_report",
+   "app.database",
+   "app.eastmoney",
+   "app.eastmoney_news"
+  ],
+  "defs": [
+   "_fetch_week",
+   "fetch_range",
+   "_item_key",
+   "_norm_one",
+   "normalize",
+   "_ensure_table",
+   "_read_cache",
+   "_write_cache",
+   "refresh",
+   "load",
+   "get_items",
+   "upcoming",
+   "_fmt_num",
+   "format_for_llm",
+   "a_stock_holidays",
+   "_impact_of",
+   "_classify",
+   "_metric_key",
+   "ensure_table",
+   "upcoming",
+   "_short_date",
+   "run_alert",
+   "get_cb_gold",
+   "cb_gold_line",
+   "_alert_task"
+  ],
+  "envs": [
+   "DEPLOY_READ_ONLY",
+   "ENABLE_HEAVY_JOBS",
+   "FLASH_COOKIE",
+   "FLASH_KEEP_DAYS",
+   "FLASH_KEEP_ROWS",
+   "FLASH_POLL_INTERVAL_SEC",
+   "JIN10_CALENDAR_APP_ID",
+   "JIN10_CALENDAR_URL",
+   "JIN10_CALENDAR_VERSION",
+   "JIN10_FLASH_URL",
+   "JIN10_MP_APP_ID",
+   "LLM_API_KEY",
+   "LLM_BASE_URL",
+   "LLM_DAILY_MAX_CALLS",
+   "LLM_FREE_API_KEY"
+  ],
+  "used_by": [
+   "backend/app/backtest/market_regime.py",
+   "backend/app/cache_release.py",
+   "backend/app/coach/attribution.py",
+   "backend/app/coach/audit.py",
+   "backend/app/coach/explainer.py",
+   "backend/app/coach/monitor.py",
+   "backend/app/coach/regime_alert.py",
+   "backend/app/coach/rules.py",
+   "backend/app/contradictions/report.py",
+   "backend/app/contradictions/risk_hook.py",
+   "backend/app/contradictions/scanner.py",
+   "backend/app/contradictions/store.py",
+   "backend/app/contradictions/validator.py",
+   "backend/app/daily_report.py",
+   "backend/app/data_files.py",
+   "backend/app/data_gaps.py",
+   "backend/app/db_retention.py",
+   "backend/app/eastmoney.py",
+   "backend/app/edge_verify.py",
+   "backend/app/env_check.py"
+  ],
+  "loc": 8025
+ },
+ "flash_brief": {
+  "unit": "flash_brief.py",
+  "doc": "",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.eastmoney",
+   "app.flash",
+   "app.flash.llm",
+   "app.flash.rules",
+   "app.routers.stock",
+   "app.tencent"
+  ],
+  "defs": [
+   "_ensure",
+   "_now",
+   "_today",
+   "_num",
+   "_r2",
+   "_stocks",
+   "_market_section",
+   "_sector_section",
+   "_movers_section",
+   "_score_news",
+   "_news_section",
+   "_template_gist",
+   "_template_direction",
+   "build_snapshot",
+   "_user_prompt",
+   "_fallback_llm",
+   "_parse_json",
+   "analyze",
+   "load",
+   "_daily_auto_count",
+   "detect_trigger",
+   "maybe_auto_run",
+   "mark_notified",
+   "recent_notifications"
+  ],
+  "envs": [
+   "FLASH_BRIEF_AUTO_TTL_MIN",
+   "FLASH_BRIEF_COOLDOWN_MIN",
+   "FLASH_BRIEF_DAILY_MAX",
+   "FLASH_BRIEF_IDX_TRIGGER",
+   "FLASH_BRIEF_NEWS",
+   "FLASH_BRIEF_NEWS_TRIGGER",
+   "FLASH_BRIEF_RATIO_HIGH",
+   "FLASH_BRIEF_RATIO_LOW",
+   "FLASH_BRIEF_SCAN",
+   "FLASH_BRIEF_TTL_MIN"
+  ],
+  "used_by": [],
+  "loc": 676
+ },
+ "flash_history": {
+  "unit": "flash_history.py",
+  "doc": "",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.industry_map"
+  ],
+  "defs": [
+   "_cutoff",
+   "_age_days",
+   "_industry",
+   "search",
+   "prompt_block"
+  ],
+  "envs": [
+   "FLASH_HISTORY_DAYS",
+   "FLASH_HISTORY_LIMIT"
+  ],
+  "used_by": [],
+  "loc": 215
+ },
+ "health": {
+  "unit": "health.py",
+  "doc": "================================================================================\n【文件作用】数据源健康监控（成功率滚动窗口 + 连续失败告警 + 恢复通知）\n================================================================================\n\n监控 5 个外部数据源：金十快讯 / 金十财经日历 / 新浪宏观面板 / 腾讯ETF行情 / 东方财富。\n各源在被调用处埋点（health.record），调度器另有探针循环保证空闲时段也定期采样。\n\n告警规则：\n  - 连续失败 ≥3 次 → 产生告警事件（如\"金十快讯连续失败，检查 Cookie\"）\n  - 恢复成功且此前已告警 → 产生恢复事件\n  告警事件直接进 /api/flash/notifications，前端页面通知铃铛自动弹手机/桌面提醒\n  —— 这解决\"金十 Cookie 过期后事件流悄悄死掉\"的问题。\n\n状态持久化：告警历史存 data/source_health.json（重启不丢），计数器内存即可。\n================================================================================",
+  "imports_proj": [
+   "app.flash",
+   "app.flash.rules",
+   "app.flash.wechat"
+  ],
+  "defs": [
+   "_now",
+   "_load_alerts",
+   "_save_alerts",
+   "record",
+   "_push_wechat_safely",
+   "get_health",
+   "recent_alerts"
+  ],
+  "envs": [
+   "WECHAT_SOURCE_ALERTS"
+  ],
+  "used_by": [],
+  "loc": 221
+ },
+ "industry_map": {
+  "unit": "industry_map.py",
+  "doc": "================================================================================\n【文件作用】个股→行业映射的**唯一缓存入口**（egress 治理，2026-10-19）\n================================================================================\n问题（探针实测）：`SELECT code, main_industry FROM stock_industry`\n（约 5.9 千行 ≈ 1MB/次）此前在 4 处各自整表读：\n  · `mainline.compute_mainline`（日批 + 工作台主线卡）\n  · `stock_moves.snapshot` 的行业聚合（日报/复盘）\n  · `earnings_pressure._industry_of`（日批）\n  · `sector_industry._industry_map`（板块成交额占比，**本来就有 1h 缓存**）\n2026-10-18 13:11 → 10-19 21:28（32h）探针实测：**457 次调用 / 8.9 万行**\n（≈11.6MB，按整行宽算的**上限**）——其中一半是重复的整表读。\n\n口径：映射表由 `sector_",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "get_industry_map",
+   "invalidate"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/crowding_watch.py",
+   "backend/app/earnings_pressure.py",
+   "backend/app/flash_history.py",
+   "backend/app/mainline.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/sector_industry.py",
+   "backend/app/sector_strength.py",
+   "backend/app/stock_moves.py",
+   "scripts/sector_linkage_edge_check.py"
+  ],
+  "loc": 50
+ },
+ "insight": {
+  "unit": "insight.py",
+  "doc": "================================================================================\n【文件作用】「结构化观点」的唯一取用与校验口（L3，2026-10-11）\n================================================================================\n【要解决什么】\n  LLM 的观点输出此前是**一整块 markdown**：前端只能\"读文本猜结构\"（L2 用显式标记\n  `**结论**：` 缓解，但仍要求模型把标记写在第一行）；长度/条数/越界词也只能在 prompt 里\n  \"求\"它遵守，无法机械约束。\n  ⇒ 本模块把口径改成**项目既有的成熟做法**（与 `daily_report` / `contradictions/report` /\n  `routers/stock` 的异动分析同源）：**LLM 出 JSON → 代码逐字段校验 → 由代码组装 markdown**。\n  于是「结论/依据」成为**数据**而不是\"文本里的位置\"，前端可以按角色渲染\n  （结论条 + 依据列表），而不是靠解析第一行。\n\n【三级降级 —— **这是本模块能被安全上线的唯一理由**】\n  ① **结构化**：LLM 给了合法 JSON ⇒ ",
+  "imports_proj": [],
+  "defs": [
+   "_one_line",
+   "parse_insight",
+   "compose_markdown",
+   "section_first_paragraph",
+   "reasons_from_json"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/observer_review.py",
+   "backend/app/routers/daily_report.py",
+   "backend/app/routers/flash.py",
+   "backend/app/stock_diagnosis.py"
+  ],
+  "loc": 160
+ },
+ "intraday_path": {
+  "unit": "intraday_path.py",
+  "doc": "================================================================================\n【文件作用】指数**日内分时路径**归档 + 读取（P2-1，PLAN_RESERVE_SIGNALS §6.5）\n================================================================================\n【为什么必须归档（时钟属性，同 `market_amount` 的教训）】\n  腾讯分时**只有当日**（实测）⇒ 不落库 = 明天永远没有历史 ⇒ 日内研究无从谈起。\n  本项目已多次吃到\"晚一天接入就永远少一天历史\"的亏（`zzshare_daily` 文件头同款说明）。\n  P1-1 的结论里最缺的正是**日内拼图**（日线看不到\"早盘杀跌 → 午后拉升\"这种 V 型），\n  而\"午盘前跌>1% → 午后拉升\"这个命题**必须先有分时归档才可检验**。\n\n【数据源与口径】\n  · 腾讯分时：`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=<code>`\n    —— 与 `market_amount._fetch_intraday` **同一接口**（那边取 `parts[3]",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "ensure_table",
+   "_fetch",
+   "_auto_day",
+   "save_day",
+   "load",
+   "coverage",
+   "days_for"
+  ],
+  "envs": [],
+  "used_by": [
+   "scripts/daily_batch.py",
+   "scripts/intraday_midday_reversal_check.py"
+  ],
+  "loc": 212
+ },
+ "key_level_watch": {
+  "unit": "key_level_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app.contradictions.scanner",
+   "app.database"
+  ],
+  "defs": [
+   "_extra_levels",
+   "ensure_table",
+   "_num",
+   "_analyze",
+   "compute",
+   "load"
+  ],
+  "envs": [
+   "KEY_LEVELS_EXTRA"
+  ],
+  "used_by": [],
+  "loc": 221
+ },
+ "limit_stats": {
+  "unit": "limit_stats.py",
+  "doc": "================================================================================\n【文件作用】涨跌停家数的**唯一口径**（单票判定 + 家数统计）\n================================================================================\n【为什么必须收拢（2026-10-09 事故）】\n  盘中误推「跌停 123 只 / 黑天鹅熔断」，而当日**收盘真值仅 11~13 只**、且是\n  96 涨停的**上涨日**。根因是同一个\"跌停家数\"在系统里有多份实现、三套阈值：\n    · `flash/intraday_alerts` 用 `change_pct <= -9.7` 固定阈值 ⇒ 创业板/科创板（±20%）\n      跌 10%~13% 被当成跌停（早盘普跌 826涨/4044跌 时把计数放大到 123）——**事故主因**；\n    · `coach/rules` 用 `-19.9 / -9.9` 两档 ⇒ 漏**北交所 30cm**、漏 **ST 5%**；\n    · `backtest/market_regime`（→ E2 事件信号）用 `>=9.9 / <=-9.9` 一刀切 ⇒ 20cm 被高估。\n  ⇒ 本",
+  "imports_proj": [
+   "app",
+   "app.backtest.engine",
+   "app.routers.market"
+  ],
+  "defs": [
+   "_limit_pct",
+   "_break_tol",
+   "is_limit_up",
+   "is_limit_down",
+   "counts_from_quotes",
+   "counts_best"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/market.py"
+  ],
+  "loc": 159
+ },
+ "macro": {
+  "unit": "macro.py",
+  "doc": "================================================================================\n【文件作用】宏观数据源 + 规则引擎（全球+国内面板 → 标签 → 今日方向分）\n================================================================================\n\n数据来源：新浪财经公开行情接口（hq.sinajs.cn），一次请求抓全部品种。\n  全球：布伦特/WTI原油、COMEX金银铜、美债2Y/10Y/30Y、纳指期货、日经、恒生科技、\n        美元指数、离岸人民币、VIX\n  国内：富时A50期货、中国10年期国债、在岸人民币、螺纹钢/铁矿石主连（黑色系）\n        （以上国内代码均经实抓验证）\n\n规则引擎：把面板数据按「配置表」逐条评估，输出结构化标签 + 分组加权方向分。\n  设计原则（详见规则表）：\n  - 每条规则 = 一个可说清传导逻辑的假设\n  - 阈值优先用变化率（自我归一），少数用水平值（VIX 等有真实分界线）\n  - 三态输出（偏多/中性/偏空），留中性带防噪声\n  - 规则是数据不是代码：可调、可版本化、可归因\n  - 规则输出叫「参考标签」，回测校准后才配叫「信号」\n\n⚠️ 方向分不进个股评分，",
+  "imports_proj": [
+   "app",
+   "app.eastmoney",
+   "app.flash",
+   "app.flash.margin_sentiment",
+   "app.flash.rules",
+   "app.routers.market"
+  ],
+  "defs": [
+   "_f",
+   "_s",
+   "_fetch_sina",
+   "_parse",
+   "_third_friday",
+   "_front_month_codes",
+   "_basis_codes",
+   "get_index_futures_basis",
+   "get_macro_panel",
+   "_resolve_metric",
+   "_hit",
+   "evaluate_rules",
+   "_pnum",
+   "_overnight_base",
+   "get_overnight_change",
+   "_safe_overnight",
+   "_safe_sentiment",
+   "get_macro_snapshot"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/backtest/market_regime.py",
+   "backend/app/coach/rules.py",
+   "backend/app/daily_report.py",
+   "backend/app/flash/llm.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash/service.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/routers/macro.py",
+   "backend/app/signals/tracker.py",
+   "backend/app/trader_brief.py",
+   "scripts/verify_northbound_fix.py"
+  ],
+  "loc": 926
+ },
+ "macro_daily": {
+  "unit": "macro_daily.py",
+  "doc": "================================================================================\n【文件作用】外盘日频收盘历史表 `macro_daily_history` —— 补 `macro_history` 的短板\n================================================================================\n\n背景（2026-10-10 黄金/商品联动研究，见 .codebuddy/memory/2026-10-10.md §13）：\n  `macro_history` 从 2026-08 起每天记 09:10（盘前）+ 15:03（盘后）两条快照，到当时只有\n  ~32 个收盘点 ⇒ 做不了\"6 个月/多年\"的领先滞后与相关性。本模块落一张**日频收盘表**：\n    · 历史回填：`scripts/backfill_macro_daily.py`（akshare，一次性、幂等）\n    · 逐日增量：`flash/store.append_macro_history` 在 15:03 盘后快照时顺手 upsert\n      （复用既有快照，零新增网络/运行时依赖）\n表：macro_daily_history(code, date, clo",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "ensure_table",
+   "upsert",
+   "bulk_upsert",
+   "load",
+   "upsert_from_panel",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 145
+ },
+ "main": {
+  "unit": "main.py",
+  "doc": "================================================================================\n【文件作用】FastAPI 应用入口（整个后端的\"主文件\"）\n================================================================================\n\n类比前端：\n  - 这个文件相当于 Vue 的 main.js / React 的 App.jsx，是程序启动的起点。\n  - FastAPI 是 Python 的后端框架，地位类似 Node.js 的 Express。\n\n启动方式（见 run.py）：\n  uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload\n  解释：用 uvicorn（一个 ASGI 服务器，类似 nodemon + express）\n        运行 app/main.py 文件里名为 app 的对象。\n\n启动后访问：\n  - http://localhost:8000/docs          → FastAPI 自动生成的接口文档（Swagger UI）\n  - http://localhost:8000/api/health    → 健康检查\n=====",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.env_check",
+   "app.flash",
+   "app.output_feedback",
+   "app.routers",
+   "app.routers.coach",
+   "app.routers.paper",
+   "app.routers.performance",
+   "app.strategies.router",
+   "app.tencent"
+  ],
+  "defs": [
+   "lifespan",
+   "health"
+  ],
+  "envs": [
+   "DATA_SOURCE",
+   "FLASH_COOKIE",
+   "GIT_COMMIT",
+   "RENDER_GIT_COMMIT"
+  ],
+  "used_by": [
+   "backend/tmp_archive/tmp_dbg_weight.py"
+  ],
+  "loc": 318
+ },
+ "mainforce": {
+  "unit": "mainforce/",
+  "doc": "主力行为分析模块（mainforce）\n\n散户思维问\"这只股票好不好\"；主力思维问\"筹码在谁手里、主力现在在做什么\"。\n本模块从三个角度还原主力行为，全部基于可回测验证的数据：\n\n  chips.py   筹码分布（获利盘/成本集中度/价格位置）—— 纯 OHLCV + 流通股本\n  flow.py    主力资金流（东财超大单/大单净流入，120 日历史回填落库）\n  phases.py  主力阶段标签（吸筹/洗盘/拉升/出货/下跌）—— 量价行为规则\n\n设计约束（与 PLAN_CROWDING_FACTOR 一致）：\n  - 纯函数计算与网络/DB 分离，评分引擎与离线回测共用一套实现\n  - 所有因子先经 scripts/mainforce_factor_backtest.py 全池截面验证，\n    IC/分桶有边缘才接入评分（带开关），不达标只留报告",
+  "imports_proj": [
+   "app",
+   "app.backtest.data",
+   "app.backtest.market_regime",
+   "app.backtest.strategies",
+   "app.contradictions.store",
+   "app.database",
+   "app.flash",
+   "app.flash.rules",
+   "app.mainforce.chips",
+   "app.mainforce.flow",
+   "app.mainforce.gate",
+   "app.mainforce.overlay",
+   "app.mainforce.phases",
+   "app.mainforce.state",
+   "app.routers"
+  ],
+  "defs": [
+   "_to_bars_np",
+   "chip_series",
+   "chip_metrics",
+   "_metrics_at",
+   "_verdict",
+   "_env_snapshot",
+   "db_fetch",
+   "db_fetch_one",
+   "_industry_of",
+   "confluence_for_stock",
+   "confluence_line",
+   "_sina_code",
+   "fetch_flow_history_sina",
+   "to_secid",
+   "ensure_table",
+   "fetch_flow_history",
+   "fetch_flow_history_em",
+   "save_flow",
+   "get_all_codes",
+   "backfill_all",
+   "invalidate_fs_cache",
+   "get_float_shares_from_snapshot",
+   "get_float_shares",
+   "_cache_fresh",
+   "_ver_now"
+  ],
+  "envs": [
+   "MAINFORCE_MODE",
+   "STRATEGY_MAINFORCE_GATE",
+   "TRADE_GATE"
+  ],
+  "used_by": [
+   "backend/app/backtest/strategies.py",
+   "backend/app/coach/attribution.py",
+   "backend/app/coach/position_sizing.py",
+   "backend/app/coach/regime_alert.py",
+   "backend/app/coach/rules.py",
+   "backend/app/contradictions/l3_scanner.py",
+   "backend/app/daily_report.py",
+   "backend/app/env_check.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash/store.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/research_cache.py",
+   "backend/app/routers/performance.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "backend/app/scoring/live_ranking.py",
+   "backend/app/stock_diagnosis.py",
+   "backend/app/strategies/paper_trading.py",
+   "backend/app/strategies/recommendation.py",
+   "backend/test_position_sizing.py"
+  ],
+  "loc": 3272
+ },
+ "mainline": {
+  "unit": "mainline.py",
+  "doc": "================================================================================\n【文件作用】行业主线/共振分析 —— 行业映射补齐（新浪全量）后的核心决策功能\n================================================================================\n\n数据源：\n  - ranking_history（每日评分 Top50 快照，rank_pos<=50）\n  - stock_industry（新浪全市场行业映射，Top50 命中率 84%）\n\n核心产出：\n  1. 主线榜：连续多日在 Top50 扎堆的行业（占比 + 趋势 + 候选股）\n  2. 风格切换信号：行业占比相对窗口前半段突变（如 医药 6只→1.2只退出、\n     金融/有色接棒）——这是\"静态榜单\"看不到的资金切换信号\n\n调度：scheduler.mainline_loop 每交易日 16:05 跑（ranking_history 已落库），\n      分析落库 industry_mainline 并推送企微日报。\n==========================================================================",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.flash.wechat",
+   "app.industry_map",
+   "app.scoring.ranking_history"
+  ],
+  "defs": [
+   "_load_bars_for_crowding",
+   "_crowding_flags",
+   "init_mainline_table",
+   "compute_mainline",
+   "get_mainline_summary",
+   "_latest_unknown",
+   "push_mainline_report",
+   "get_mainline_performance",
+   "_excess"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/sector.py",
+   "backend/app/trader_brief.py",
+   "backend/tmp_archive/tmp_mainline_test.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 467
+ },
+ "market_amount": {
+  "unit": "market_amount.py",
+  "doc": "================================================================================\n【文件作用】两市成交额「环比 + 缩量/放量定性」（U 型曲线法，2026-09-29）\n================================================================================\n背景（为什么需要它）：\n  工作台看盘序的\"两市成交额\"只有**绝对值** ⇒ 用户无法回答\"今天放量还是缩量\"\n  （看盘第一问）。而 A 股成交量是 **U 型分布**（开盘/尾盘重、午间轻）⇒\n  **线性外推严重失真**（10:00 累计占 26.1%，线性外推说\"全天 = 当前×1.5\"，\n  真实倍数 1/0.261 ≈ 3.83 倍）。\n  正确做法：`预估全天 = 当前累计 / 曲线(当前时刻)`。\n\n★★ 可靠性边界（实测，**必须据此标注，不可越界吹**）：\n  曲线由 `scripts/build_amount_curve.py` 分层抽样建立（12 只 × 12 天），**留出验证**（n=72）：\n    · 10:00 中位误差 **16.2%**（P90 51.6%）⇒ **上午不可用于定性**（本质限制：\n      不同交易日的早盘热度差异大",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.tencent"
+  ],
+  "defs": [
+   "_bj_now",
+   "load_curve",
+   "_curve_share",
+   "_fetch_intraday",
+   "_base_amount",
+   "_verdict",
+   "estimate",
+   "save_daily"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 265
+ },
+ "memory_watch": {
+  "unit": "memory_watch.py",
+  "doc": "================================================================================\n【文件作用】进程内存看护：采样持久化（跨重启）+ 定时巡检 + 阈值企微告警\n================================================================================\n背景（2026-09-23）：Render **500MB** 实例反复 OOM。监控图显示内存呈**锯齿状** ——\n从 ~10% 缓慢爬升到 80~90% → 骤降（进程被杀 + 自动重启），48 小时内多次；CPU 长期 <5%\n⇒ 不是算力不足，是内存；且形态是「几小时累积爬升」而非瞬时尖峰。\n\n`GET /api/system/memory`（`routers/system.py`）能回答「谁在占内存 / 谁在涨」，但它的 diff\n基准存在**进程内存**里 ⇒ **一 OOM 重启就清零，而那一刻恰恰最需要对比**（重启前的最后\n状态 vs 重启后）。本模块补上这一点：\n\n  · **采样落库**（`memory_probe` 表）⇒ diff 基准取**库里上一条** ⇒ **跨重启连续**\n  · **定时巡检**：每 `SAMPLE_INTERVAL_MIN` 分钟采",
+  "imports_proj": [
+   "app.database",
+   "app.flash",
+   "app.flash.rules",
+   "app.flash.wechat",
+   "app.routers.system"
+  ],
+  "defs": [
+   "_ensure_table",
+   "_to_float",
+   "_fmt_key",
+   "_row_out",
+   "latest",
+   "history",
+   "record_sample",
+   "_maybe_alert",
+   "cleanup",
+   "periodic_loop"
+  ],
+  "envs": [
+   "RENDER_INSTANCE_ID"
+  ],
+  "used_by": [],
+  "loc": 283
+ },
+ "news_history": {
+  "unit": "news_history.py",
+  "doc": "================================================================================\n【文件作用】消息面历史持久化（阶段 3 回测的数据基础）\n================================================================================\n\n每日盘后给「持仓股 + 评分 Top50」算一次新闻分并落库（news_history 表）。\n积累 4~8 周后即可回测验证\"消息分是否预测次日/5日收益\"，决定是否进总分。\n\n表结构（幂等，模块导入即建表，与 ranking_history 同款模式）：\n  (snap_date, code) 唯一 → 同一天可覆盖重写（快照补跑友好）。\n\n对外函数：\n  record_news_snapshot(rows)     批量写入/覆盖某日快照\n  get_news_history(code, days)   读某只股票最近 N 天（升序，画走势图用）\n================================================================================",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "init_news_history_table",
+   "record_news_snapshot",
+   "get_news_history"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/stock.py"
+  ],
+  "loc": 86
+ },
+ "news_sentiment": {
+  "unit": "news_sentiment.py",
+  "doc": "================================================================================\n【文件作用】消息面情绪打分（关键词规则，不引 NLP/LLM）\n================================================================================\n\n把 eastmoney_news 拉来的快讯转成个股「新闻分」（-10 ~ +10）：\n\n  单条新闻分 = Σ(命中关键词权重)，clamp 到 [-2, +2]\n    标题含否定词（终止/取消/搁置…）→ 极性反转（\"终止减持\"不算利空）\n  个股新闻分 = Σ(单条分 × 时间衰减)，clamp 到 [-10, +10]\n    时间衰减 w = max(0, 1 - 小时数/72)：新闻只影响 3 天，越新权重越大\n\n设计边界（阶段 1）：\n  - 只做规则打分：关键词误伤可预期、可调试；LLM 打分成本高且不可复现\n  - 独立维度：本模块产出的分数【不进入】综合总分（需阶段 3 回测验证后再议）\n================================================================================",
+  "imports_proj": [],
+  "defs": [
+   "_beijing_now",
+   "parse_news_time",
+   "decay_weight",
+   "score_news_item",
+   "_level",
+   "score_stock_news"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "backend/tmp_archive/tmp_import_check.py",
+   "scripts/generate_backend_pack.py"
+  ],
+  "loc": 144
+ },
+ "observer_review": {
+  "unit": "observer_review.py",
+  "doc": "",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.flash.llm",
+   "app.insight"
+  ],
+  "defs": [
+   "_ensure",
+   "_fmt",
+   "build_digest",
+   "_user_prompt",
+   "analyze",
+   "_loads"
+  ],
+  "envs": [
+   "OBS_REVIEW_TTL_MIN"
+  ],
+  "used_by": [],
+  "loc": 270
+ },
+ "output_feedback": {
+  "unit": "output_feedback.py",
+  "doc": "================================================================================\n【文件作用】输出消费闭环（C2；判据/规格 = `PLAN_NEXT.md` 【附 B】v0，2026-10-11 立项）\n把「系统输出改变了我什么」从感觉变成**可统计的数据** —— 这是项目第二个\"一直没问的问题\"\n（第一个 = 评分预测力，已于同日检验 FAIL）的最低成本起步。\n================================================================================\n【边界（别放宽）】\n  · 只记 (date, source, ref, action) 四元组，**不存任何内容文本** —— 隐私与 egress 双最小化；\n  · `action` 只有两档：`acted`(有影响) / `dismissed`(没影响) —— 二选一成本低才做得久\n    （PLAN_NEXT 附 B 未决问题1 的结论）；\n  · 同一 `(source, ref)` **幂等覆盖** ⇒ 可改主意，一个输出只保留最新结论；\n  · **不联动**模拟盘/观察池（附 B 未决问题2 的结论：先白嫖分布，再决定要不要闭环到操作）。\n【与 coach_al",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_ensure",
+   "save_feedback",
+   "feedback_summary",
+   "post_feedback",
+   "get_feedback_summary"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/main.py"
+  ],
+  "loc": 92
+ },
+ "pack_source": {
+  "unit": "pack_source.py",
+  "doc": "================================================================================\n【文件作用】数据包（Pack）数据源：肥数据的\"非 Supabase\"读取层（SQLite 版）\n================================================================================\n\n背景：Supabase 免费版 egress 5GB/周期被读爆（10.6GB，2026-09-05），\n大头是 backtest_prices(71MB)/kline_cache(19MB)/indicator_cache(9MB) 被反复读。\n这三类数据本质是\"腾讯行情的本地副本\"，由 GitHub Actions 每日拉取打包成\nSQLite 发 GitHub Pages（零流量费），本模块负责下载与按需查询。\n\n为什么是 SQLite 而不是内存 JSON：45MB JSON 解析成 dict 常驻 150-200MB\n（Render 512MB 直接 OOM，2026-09-05 实测）；SQLite 落磁盘按需查单只（<5ms），\n常驻内存 ≈0。\n\n三档数据源（环境变量 DATA_SOURCE）：\n  db     默认。行为与历史版本完全一致（读 S",
+  "imports_proj": [
+   "app.flash",
+   "app.flash.wechat"
+  ],
+  "defs": [
+   "enabled",
+   "source_name",
+   "pack_file",
+   "_warn_once",
+   "_alert_pack_issue",
+   "_db_fresh",
+   "_download_and_unpack",
+   "_ensure_ready",
+   "_query",
+   "_pack_date",
+   "redownload",
+   "_pack_date_raw",
+   "_parse_pack_date",
+   "_pack_outdated",
+   "_maybe_refresh",
+   "_latest_available_pack_day",
+   "_is_stale",
+   "get_klines",
+   "get_prices",
+   "get_indicators",
+   "get_name_cap",
+   "get_codes",
+   "status"
+  ],
+  "envs": [
+   "DATA_SOURCE",
+   "PACK_URL"
+  ],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/run.py",
+   "scripts/daily_batch.py",
+   "scripts/dev_local.py"
+  ],
+  "loc": 440
+ },
+ "pattern_launch": {
+  "unit": "pattern_launch.py",
+  "doc": "================================================================================\n「缩量调整 → 放量启动」形态 · 每日扫描 + 观察追踪（生产版）\n================================================================================\n2026-10-15 落地（用户需求：每日自动扫描符合走势形态的个股 + 醒目标注 + 持续观察 +\n预留回测条件重设接口）。\n\n★ 研究结论（`scripts/pattern_launch_check.py` / `pattern_launch_grid.py`，已过\n  基准口径修正 + 参数网格 + 成本/可执行性三关）：\n    · T+10 超额 +2.09pp（净 +1.80pp）、网格 12 组合全正且显著 ⇒ **稳健的正边际**；\n    · 但胜率 43~45%、中位收益为负、T+5 全负 ⇒ **正边际但不赚钱**；\n    · ⇒ 本功能定位 = **描述性观察工具（候选清单 + 后续追踪），不构成买卖建议**。\n\n【数据源】`backtest_prices`（989 只回测池、每日更新到昨日）—— 唯一\"每日更新\"的日线源；\n  `zzshare_daily.db` 冻",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "ensure_tables",
+   "get_config",
+   "set_config",
+   "_params_hash",
+   "_now",
+   "load_bars",
+   "load_bars_bulk",
+   "all_codes",
+   "latest_trading_date",
+   "scan_stock",
+   "quality_score",
+   "_board",
+   "_industry",
+   "_name_industry",
+   "scan_latest",
+   "persist_scan",
+   "get_scan",
+   "watch_add",
+   "watch_update",
+   "watch_remove",
+   "update_watch_returns",
+   "get_watch",
+   "highlight_codes"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/sector_strength.py"
+  ],
+  "loc": 518
+ },
+ "policy_announcements": {
+  "unit": "policy_announcements.py",
+  "doc": "",
+  "imports_proj": [
+   "app.database",
+   "app.flash"
+  ],
+  "defs": [
+   "_clean",
+   "_bj_date",
+   "_query",
+   "_classify",
+   "_classify_flow",
+   "scan",
+   "ensure_table",
+   "save",
+   "load",
+   "density",
+   "scan_and_store",
+   "summarize"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 396
+ },
+ "policy_bottom_watch": {
+  "unit": "policy_bottom_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app",
+   "app.contradictions.scanner",
+   "app.database",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_default_day",
+   "ensure_table",
+   "_num",
+   "_amount_series",
+   "_breadth_series",
+   "_chinext_weekly",
+   "_bank_catchdown",
+   "_parse_macro_date",
+   "_macro_snapshot",
+   "_manual_of",
+   "nation_hint",
+   "etf_hint",
+   "evaluate",
+   "_prev_checked",
+   "save",
+   "load",
+   "confirm_nation_team",
+   "render_markdown",
+   "run_daily"
+  ],
+  "envs": [
+   "PBW_AMOUNT_DAYS",
+   "PBW_AMOUNT_YI",
+   "PBW_BANK_IDX",
+   "PBW_BRENT",
+   "PBW_CATCHDOWN_DAYS",
+   "PBW_CATCHDOWN_LAG",
+   "PBW_MKT_IDX",
+   "PBW_PASS",
+   "PBW_POSITION_CAP",
+   "PBW_RATIO",
+   "PBW_RATIO_DAYS",
+   "PBW_US10Y"
+  ],
+  "used_by": [
+   "backend/test_policy_bottom_watch.py",
+   "scripts/pbw_replay.py"
+  ],
+  "loc": 774
+ },
+ "portfolio_radar": {
+  "unit": "portfolio_radar.py",
+  "doc": "================================================================================\n【文件作用】持仓雷达 —— 以**用户持仓**为锚的状态聚合（2026-09-23 新增）\n================================================================================\n\n为什么需要（用户 2026-09-23 提出）：\n  系统此前所有\"看板\"都以**全市场**为主语（榜单/观察池/矛盾/盘中警示），而持仓只在\n  LLM prompt 与教练止损里出现 ⇒ 用户看到的是「156 只候选」，却答不出「我手里那三只\n  怎么样了」。本模块把散落在各处的状态**按持仓聚合**成一个视图。\n\n★ 定位（沿用 `trade_gate.summarize` 的纪律，避免误用）：\n  这是**状态展示 + 提示聚合**，不是买卖信号 —— 不参与排序、不改评分、不新增网络请求。\n  每条 alert 都指向某个**已有模块的既有结论**（闸门就绪 / 主力阶段 / 战法 / 矛盾 /\n  涨跌），不引入新的判据（防止出现\"第五套口径\"）。\n\n数据来源（**全部复用既有单一事实源**，不重算）：\n  · 持仓         `user_portfol",
+  "imports_proj": [
+   "app.contradictions.store",
+   "app.database",
+   "app.flash.rules",
+   "app.macro",
+   "app.mainforce",
+   "app.mainforce.state",
+   "app.portfolio_scope",
+   "app.routers.scoring",
+   "app.tencent"
+  ],
+  "defs": [
+   "invalidate_holdings",
+   "_holdings",
+   "_bj_ts_str",
+   "_tq_cache",
+   "_quotes",
+   "_watch_map",
+   "_latest_rank",
+   "_contradiction_context",
+   "_fundamental_flags",
+   "is_financial",
+   "_alerts_for",
+   "_warming_placeholder",
+   "build",
+   "_cap_band",
+   "_portfolio_risk",
+   "_build_impl"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/trader_brief.py"
+  ],
+  "loc": 678
+ },
+ "portfolio_scope": {
+  "unit": "portfolio_scope.py",
+  "doc": "================================================================================\n【文件作用】「本部署在服务哪个用户」的唯一口径 —— 供 user_portfolio 的全局读取使用\n================================================================================\n\n背景（2026-09-17 实测）：\n  项目从单用户演进到多用户（`migrate_user_isolation.py` 给 user_portfolio 加了\n  `user_id`），**前端接口全部按 user_id 过滤**，但**后台全局组件仍在全表读** →\n  会把别的账号的持仓当成本部署用户的：\n\n    · `coach/rules.py::_real_holdings()`      → 教练盯**所有账号**的持仓\n    · `coach/position_sizing.py`              → 仓位建议含所有账号\n    · `daily_report.py::_portfolio()`         → 日报含所有账号\n    · `flash/scheduler.py`（舆情 / 快照池 ×2） → 推**别人**",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "primary_user_id",
+   "portfolio_where"
+  ],
+  "envs": [
+   "PRIMARY_USER_ID"
+  ],
+  "used_by": [
+   "backend/app/coach/position_sizing.py",
+   "backend/app/coach/rules.py",
+   "backend/app/daily_report.py",
+   "backend/app/flash/llm.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/routers/market.py"
+  ],
+  "loc": 75
+ },
+ "premarket": {
+  "unit": "premarket/",
+  "doc": "",
+  "imports_proj": [],
+  "defs": [],
+  "envs": [],
+  "used_by": [],
+  "loc": 0
+ },
+ "promotion": {
+  "unit": "promotion.py",
+  "doc": "================================================================================\n【文件作用】盘中「晋级率」——昨日涨停股今日的承接力（2026-09-29）\n================================================================================\n\n【为什么做】现有情绪看板只回答\"**今天**有多少涨停/炸板\"，回答不了\"**昨日的涨停\n  今天还活着吗**\"——后者才是情绪周期最灵敏的读数：\n    · 晋级率高 = 接力资金愿意接 → 情绪**延续**；\n    · 昨日涨停股炸板 = 接力资金撤了 → 情绪**退潮**（比全市场炸板率更早、更准，\n      因为分母是\"昨日涨停股\"而非全市场，筛掉了噪声）。\n  用户框架里\"退潮禁接力\"的判据就是它。\n\n【数据源（★ 零新增外部请求、零新增管线）】\n  · 昨日名单 = `zz_daily_snapshots`（日批快照，**早已在库**）的\n    `payload.review_uplimit_reason[].stocks[].code` 去重。\n    ★★ 2026-09-29 实测覆盖率（vs 权威家数 `uplimit_hot.ban_info`）：\n    ",
+  "imports_proj": [
+   "app",
+   "app.database"
+  ],
+  "defs": [
+   "daily_universe",
+   "build_promotion",
+   "_verdict",
+   "snapshot"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 234
+ },
+ "realtime_uplimit": {
+  "unit": "realtime_uplimit.py",
+  "doc": "================================================================================\n【文件作用】盘中实时涨停/跌停/炸板统计（zzshare rt_k 落地，2026-09-29）\n================================================================================\n背景（为什么需要它）：\n  现有涨停口径有三处已知局限，都写在各处注释里，本模块正是为补掉它们而生：\n  1. ~~`routers/market.overview` 的涨跌停家数用 `change_pct >= 9.9` 近似~~\n     **【已于 2026-09-30 修掉】** —— `overview`/`market_temperature` 已切\n     「rt_k 精确优先 + 按板幅回退 + `limit_src` 口径披露」（`routers/market._limit_counts_best`）；\n     **2026-10-10 起该判据进一步收拢为共享模块 `app/limit_stats.py`**\n     （`market_regime` / `coach/rules` / `flash/intraday_alerts` 一并接入",
+  "imports_proj": [
+   "app",
+   "app.routers.market",
+   "app.zzshare_client"
+  ],
+  "defs": [
+   "peek",
+   "_bj_now",
+   "_f",
+   "_fetch_all",
+   "fetch_all",
+   "classify",
+   "compute",
+   "_safe_promotion",
+   "snapshot",
+   "refresh"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 291
+ },
+ "research_cache": {
+  "unit": "research_cache.py",
+  "doc": "================================================================================\n【文件作用】研究脚本的本地数据缓存（避免每次跑脚本都整表拉远程库）\n================================================================================\n背景（2026-09-12，egress 治理第三步）：\n  `scripts/mainforce_factor_backtest.py` 的 `load_ohlc_all()` + `load_flow_map()`、\n  `scripts/strategy_mainforce_filter_test.py` 的逐股 K 线、`scripts/factor_analysis.py`\n  的批量日线——每次运行都要把 backtest_prices（48.9 万行 / 82MB 表）与\n  mainflow_history（8.4 万行 / 21MB 表）整表过一遍网。pg_stat_statements 里\n  \"返回 40 万行/次\"的那几条就是这么来的（21 天累计 ~90MB/次 × 4 次）。\n  而这类数据是\"历史冻结、只追加\"的，本机跑研究完全没必要每次回源。\n\n做法：落到本机 SQ",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.mainforce.flow"
+  ],
+  "defs": [
+   "_conn",
+   "_meta_get",
+   "_meta_set",
+   "_fresh",
+   "_log",
+   "_pack_bars",
+   "ohlc_all",
+   "ohlc_for",
+   "upsert_bars",
+   "flow_map",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 322
+ },
+ "reserve_monthly": {
+  "unit": "reserve_monthly.py",
+  "doc": "================================================================================\n【文件作用】央行储备月度面板：外汇储备 + 黄金储备（慢变量，**非交易信号**）\n================================================================================\n\n定位（见 `PLAN_RESERVE_SIGNALS.md` §6.2）：\n  “减美债、增黄金”是**月频结构变量**，不是日频择时信号。本模块只负责把它落成\n  **可追溯的月度事实**，供面板展示与长期研究引用；**不进决策链、不产生买卖信号**。\n\n数据源：akshare `macro_china_foreign_exchange_gold()`（外管局/央行月度口径）。\n\n⚠️ 单位**照抄源，不换算**（换算一次就容易与官方口径对不上——本项目踩过单位坑）：\n     · fx_reserve_100m_usd  外汇储备（**亿美元**，如 34002.51）\n     · gold_reserve_wan_oz  黄金储备（**万盎司**，如 7747）\n   展示层再换算：吨 = 万盎司 × 1e4 × 31.1035 ÷ 1e6。\n\n⚠️ 已见**源缺口**：",
+  "imports_proj": [
+   "app",
+   "app.database"
+  ],
+  "defs": [
+   "_f",
+   "ensure_table",
+   "bulk_upsert",
+   "gold_reserve_tonnes",
+   "load",
+   "series_with_share",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 145
+ },
+ "risk_events": {
+  "unit": "risk_events.py",
+  "doc": "================================================================================\n【文件作用】风险事件闸门（框架 C1）—— 解禁/减持/质押/问询 ⇒ 命中即\"只减不加\"\n================================================================================\n\n【为什么需要】（《项目专业审视》C2 原话）\n  \"强势股最典型的死亡路径：**大额解禁 / 股东减持公告 / 质押平仓风险 / 商誉减值 /\n   立案调查**。系统目前对这些**零感知** —— 技术面会继续给高分直到崩塌。\"\n  其中**解禁是唯一可前瞻的**（日期提前数月公开）⇒ 先做它，优先级最高。\n\n【本轮实现范围】只做**限售解禁**（数据源已验证可用）：\n  · 减持/问询/立案：暂无结构化数据源（新闻维度可识别，但滞后）⇒ 见文件末尾\"未做\"。\n  · 商誉/净现比：已在 `portfolio_radar._fundamental_flags` 与 `contradictions.l3_scanner` 覆盖。\n\n【★★ 阈值依据 —— 实测回测，不是拍脑袋】（2026-09-25，脚本见当日 daily 记录）\n  方法：过去 12 个月 1778 条",
+  "imports_proj": [
+   "app.database",
+   "app.eastmoney",
+   "app.flash.rules",
+   "app.tencent"
+  ],
+  "defs": [
+   "_ensure_table",
+   "sync_lift_calendar",
+   "upcoming_risks"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/trader_brief.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 174
+ },
+ "routers": {
+  "unit": "routers/",
+  "doc": "【文件作用】routers 包的初始化文件（空文件，声明这是包）\n\n让 from app.routers import market, stock, ... 能正常工作。",
+  "imports_proj": [
+   "app",
+   "app.auth",
+   "app.backtest",
+   "app.backtest.data",
+   "app.backtest.engine",
+   "app.backtest.market_regime",
+   "app.backtest.run",
+   "app.backtest.strategies",
+   "app.coach",
+   "app.coach.position_sizing",
+   "app.contradictions",
+   "app.contradictions.report",
+   "app.contradictions.scanner",
+   "app.contradictions.store",
+   "app.contradictions.validator"
+  ],
+  "defs": [
+   "RegisterRequest",
+   "LoginRequest",
+   "register",
+   "login",
+   "get_current",
+   "_init_cache_table",
+   "_cache_save",
+   "_cache_load",
+   "_trade_light",
+   "_curve_summary",
+   "_build_response",
+   "get_strategy",
+   "_compute_and_cache",
+   "_refresh_background",
+   "preheat_all",
+   "list_reports",
+   "get_report_content",
+   "capital_root",
+   "northbound",
+   "main_flow",
+   "northbound_holdings",
+   "_seats_of",
+   "dragon_tiger",
+   "get_alerts",
+   "execute_alert"
+  ],
+  "envs": [
+   "BATCH_CALLBACK_TOKEN",
+   "BATCH_DONE_WINDOW_HOURS",
+   "DAILY_BATCH_WORKFLOW",
+   "DB_LIMIT_MB",
+   "GATE_SNAPSHOT_MAX_AGE_DAYS",
+   "GITHUB_REF_NAME",
+   "GITHUB_REPO",
+   "GITHUB_TOKEN",
+   "MEM_LIMIT_MB",
+   "NB_COMPOSITE_RANK",
+   "RENDER_INSTANCE_ID",
+   "WECHAT_WECOM_AES_KEY",
+   "WECHAT_WECOM_TOKEN"
+  ],
+  "used_by": [
+   "backend/app/backtest/market_regime.py",
+   "backend/app/cache_release.py",
+   "backend/app/coach/regime_alert.py",
+   "backend/app/coach/rules.py",
+   "backend/app/flash/llm.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash_brief.py",
+   "backend/app/limit_stats.py",
+   "backend/app/macro.py",
+   "backend/app/main.py",
+   "backend/app/mainforce/gate_history.py",
+   "backend/app/memory_watch.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/realtime_uplimit.py",
+   "backend/app/scoring/indicator_cache.py",
+   "backend/app/scoring/live_ranking.py",
+   "backend/app/strategies/recommendation.py",
+   "backend/app/trader_brief.py",
+   "backend/app/workbench_scan.py",
+   "backend/test_engine.py"
+  ],
+  "loc": 9676
+ },
+ "scenario_watch": {
+  "unit": "scenario_watch.py",
+  "doc": "",
+  "imports_proj": [
+   "app",
+   "app.database",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_geo_signal",
+   "_today",
+   "ensure_table",
+   "_num",
+   "_sig",
+   "evaluate",
+   "save",
+   "load",
+   "run_daily"
+  ],
+  "envs": [
+   "SC_AMT_HIGH",
+   "SC_AMT_LOW",
+   "SC_BRENT_HIGH",
+   "SC_BRENT_LOW",
+   "SC_GEO_KINETIC",
+   "SC_RATIO_HIGH",
+   "SC_RATIO_LOW",
+   "SC_SH_ANCHOR",
+   "SC_SH_FIX",
+   "SC_SH_FIX_DAYS",
+   "SC_SH_LAST",
+   "SC_SH_REDLINE",
+   "SC_US10Y_HIGH",
+   "SC_US10Y_LOW"
+  ],
+  "used_by": [],
+  "loc": 470
+ },
+ "scoring": {
+  "unit": "scoring/",
+  "doc": "【文件作用】scoring 包的初始化文件。\n\n把 ScoreEngine 暴露出来，这样外部可以用 from app.scoring import ScoreEngine\n（而不是更长的 from app.scoring.engine import ScoreEngine）。\n\n__all__ 声明这个包对外暴露的名称列表（控制 from app.scoring import * 的行为）。",
+  "imports_proj": [
+   "app",
+   "app.backtest.market_regime",
+   "app.database",
+   "app.finance",
+   "app.flash",
+   "app.flash.rules",
+   "app.mainforce.state",
+   "app.routers.scoring",
+   "app.scoring.engine",
+   "app.scoring.indicator_cache",
+   "app.scoring.kline_cache",
+   "app.tencent"
+  ],
+  "defs": [
+   "resolve_weights",
+   "dim_weight_mult",
+   "decay_total",
+   "_ind_dist_fingerprint",
+   "_ind_dist_src_load",
+   "_ind_dist_src_save",
+   "_fin_sub_industry",
+   "DimensionScore",
+   "ScoreResult",
+   "_clamp",
+   "_round1",
+   "_score_in_range",
+   "ScoreEngine",
+   "_score_flow5",
+   "init_indicator_cache_table",
+   "ensure_indicator_cache_table",
+   "get_cached_indicators",
+   "get_cached_technical",
+   "get_cached_technical_batch",
+   "get_cached_technical_batch_sql",
+   "get_cached_indicators_batch",
+   "save_indicator_cache",
+   "compute_latest_indicators",
+   "refresh_indicator_cache",
+   "get_indicator_cache_status"
+  ],
+  "envs": [
+   "NB_TURNOVER_CAP",
+   "NB_TURNOVER_CAP_PCT",
+   "NB_TURNOVER_CAP_SCORE"
+  ],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/mainforce/gate.py",
+   "backend/app/mainforce/lhb.py",
+   "backend/app/mainforce/state.py",
+   "backend/app/mainline.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/sector_strength.py",
+   "backend/app/strategies/base.py",
+   "backend/app/strategies/paper_trading.py",
+   "backend/app/tencent.py",
+   "backend/test_engine.py",
+   "backend/tests/generated/test_scoring_decay.py",
+   "backend/tmp_archive/tmp_align_test.py",
+   "backend/tmp_archive/tmp_batch_test.py",
+   "backend/tmp_archive/tmp_diag3.py",
+   "backend/tmp_archive/tmp_gen_input.py",
+   "backend/tmp_archive/tmp_import_check.py",
+   "backend/tmp_archive/tmp_kline_test.py",
+   "backend/tmp_archive/tmp_verify_bt.py",
+   "backend/tmp_archive/tmp_verify_persist.py"
+  ],
+  "loc": 4678
+ },
+ "sector_industry": {
+  "unit": "sector_industry.py",
+  "doc": "================================================================================\n【文件作用】板块数据基础设施：① 个股→行业映射 ② 板块每日快照\n================================================================================\n\n两部分共用同一套\"东财数据源校验\"逻辑（板块代码必须是 BK 前缀，否则视为降级新浪）。\n\n  ① 映射（build_map）：个股属于哪个行业，含嵌套层级链\n  ② 每日快照（take_snapshot）：每天记录全部板块的涨跌幅/涨跌家数/资金流，\n     积累板块历史序列，供板块分化、板块动量类因子使用。\n     成本极低——get_sectors + get_sector_flow 各一次请求就覆盖全部板块。\n================================================================================\n\n为什么需要：评分引擎要加\"板块分化\"因子，前提是知道每只股票属于哪个板块，\n才能算\"个股相对所属板块的强弱\"。东财只提供\"板块 → 成分股\"的正向查询，\n没有\"个股 → 所属板块\"的反查接口，所以这里遍历全部板块反向",
+  "imports_proj": [
+   "app.database",
+   "app.eastmoney",
+   "app.flash.rules",
+   "app.industry_map",
+   "app.tencent"
+  ],
+  "defs": [
+   "_now_iso",
+   "_sector_members",
+   "_fetch_sina_sectors",
+   "_fetch_sina_members",
+   "build_map_sina",
+   "_normalize_industry",
+   "cleanup_industry_residual",
+   "reclassify_others",
+   "build_map_full",
+   "backfill_missing",
+   "_main_site_available",
+   "build_map",
+   "_ensure_amount_table",
+   "_industry_map",
+   "industry_amount_share",
+   "save_amount_share",
+   "get_stock_industry",
+   "get_stocks_by_industry",
+   "get_all_codes",
+   "get_stats",
+   "_parse_row",
+   "take_snapshot",
+   "get_sector_history",
+   "get_date_snapshot",
+   "dispersion"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "backend/app/mainforce/confluence.py",
+   "backend/app/routers/sector.py",
+   "backend/app/strategies/paper_trading.py",
+   "backend/app/workbench_scan.py",
+   "backend/tmp_archive/tmp_backfill.py",
+   "backend/tmp_archive/tmp_cleanup.py",
+   "backend/tmp_archive/tmp_full_run.py",
+   "backend/tmp_archive/tmp_gap.py",
+   "backend/tmp_archive/tmp_reclassify.py",
+   "scripts/build_industry_map.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 930
+ },
+ "sector_momentum": {
+  "unit": "sector_momentum.py",
+  "doc": "================================================================================\n【文件作用】板块动量与异动侦测（2026-09-30，P1）\n================================================================================\n背景（为什么需要它）：\n  2026-09-30 用户问「前几天的地产、今天的金属拉升，项目似乎察觉不到？」\n  排查结论（见当日记忆《诊断》）：**不是没数据，是没有规则** ——\n    · `plate_daily_zz`（zzshare 104 板块，含涨跌幅/资金/成交额）**已在库**，\n      却只被用来算「**板块分化度**」（`sector_zz.dispersion`：std_dev / up_ratio）；\n    · `mainline`（行业主线）走的是**评分 Top50 的行业扎堆**，与\"板块涨跌幅\"是**两回事**\n      ⇒ 万科 09-18/09-21 两连涨停时，房地产在 Top50 里只有 **1 只**（价格事实与评分扎堆脱节）。\n  ⇒ 本模块补的就是那一层：**从板块价格/资金序列里认出\"哪个板块在动\"**，\n    并输出成日报/复盘可直接引用的",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "_load",
+   "_cum",
+   "_streak",
+   "_net3_yi",
+   "_amt_ratio",
+   "_metrics",
+   "_hit",
+   "_weak_hit",
+   "_rows_on",
+   "moves_by_date",
+   "snapshot",
+   "format_lines"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 302
+ },
+ "sector_strength": {
+  "unit": "sector_strength.py",
+  "doc": "================================================================================\n【文件作用】行业强度（强势板块判定）—— 评分排行榜「板块联动筛选」的数据层\n================================================================================\n判据**已冻结**：`PLAN_SECTOR_LINKAGE.md` v1.0（2026-10-19）。\n改参数 = 让预登记失效 ⇒ 必须在那份文档里新开一节并说明\"不是事后调参\"。\n\n核心口径（与冻结文档逐条对应）：\n  · 行业维度 = `stock_industry.main_industry`（新浪 49 类，**唯一可与个股精确关联**的\n    taxonomy；zzshare 104 板块与它只有 4 个同名 ⇒ 刻意不桥接）；\n  · 行业指数 = 行业内成分股**日收益等权均值**（当日无价/停牌剔出分母；缺失≠0）；\n  · 强度 = 最近 **5 个交易日**复利累计 `ret5`；\n  · 强势 = `ret5 > 0` 且横截面分位 ≥ 70%（Top 30%），且成分股 ≥ 5 只；\n  · 普涨守卫 = 连续 3 日「池内上涨家数占比 ≥ 70%」⇒ 当日",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.industry_map",
+   "app.pattern_launch",
+   "app.scoring.live_ranking"
+  ],
+  "defs": [
+   "mode",
+   "enabled",
+   "ensure_table",
+   "_industry_of",
+   "_code6",
+   "_pct",
+   "_cum",
+   "compute",
+   "_read_rows",
+   "load",
+   "_code_of",
+   "filter_ranked",
+   "ensure_ranking_table",
+   "save_ranking",
+   "snapshot_from_live"
+  ],
+  "envs": [
+   "SECTOR_LINKAGE_MODE"
+  ],
+  "used_by": [
+   "backend/app/env_check.py",
+   "backend/app/routers/scoring.py",
+   "scripts/daily_batch.py",
+   "scripts/sector_linkage_edge_check.py"
+  ],
+  "loc": 457
+ },
+ "sector_zz": {
+  "unit": "sector_zz.py",
+  "doc": "================================================================================\n【文件作用】zzshare 板块数据源 —— **独立体系**的板块快照 / 分化度\n================================================================================\n【为什么独立成表，而不是并入 `sector_daily`（东财）】\n  ★★ 两套板块 taxonomy **完全不兼容**（2026-09-27 实测）：\n    · 东财：`BK1325` 前缀，**496 个**细分行业（带 Ⅱ/Ⅲ 后缀），如「半导体材料」「非金属材料Ⅲ」\n    · zzshare：`881101` 前缀，**104 个**粗分行业（同花顺体系），如「种植业与林业」「煤炭开采加工」\n  ⇒ 若混入同一张表，同一个板块会出现两个 key、历史序列直接断裂 ——\n    正是 `sector_industry.take_snapshot()` 当初**刻意跳过新浪**所避免的坑。\n  ⇒ 故本模块用**独立表 `plate_daily_zz`**，与东财 `sector_daily` 并存，互不干扰。\n\n【为什么不直接用东财（而是新增 zzshare 源）",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.zzshare_client"
+  ],
+  "defs": [
+   "_ensure_table",
+   "fetch_rank",
+   "take_snapshot",
+   "get_snapshot",
+   "get_history",
+   "latest_date",
+   "dispersion",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/data_gaps.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/sector.py",
+   "scripts/backfill_plate_zz.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 193
+ },
+ "signals": {
+  "unit": "signals/",
+  "doc": "================================================================================\n【文件作用】ETF 信号跟踪（移植自 flash-monitor 的 tracker.js + pro-trader.js + data-layer.js）\n================================================================================\n\n包含：\n  - ETF 持仓池（22 只，宏观周期映射）+ 行情获取（复用 tencent.py）\n  - 风控门槛：持仓数 / 相关性组 / 总风险 / 技术分（RSI+均线）\n  - 信号状态机：waiting → active → closed（入场/止损/止盈/触阻力，含上升沿检测）\n  - 绩效统计（胜率/盈亏比/回撤/夏普）+ 专业交易员报告（Markdown）\n\n【修复原项目缺陷】信号不再来自正则解析 LLM 的 Markdown，而是消费\nllm.extract_structured_signals() 输出的结构化信号（build_signal_from_llm）。\n\n数据文件 tracking.json 与原项目 schema 兼容——旧项目的 public/data/tracking.",
+  "imports_proj": [
+   "app",
+   "app.backtest.market_regime",
+   "app.database",
+   "app.flash",
+   "app.macro",
+   "app.tencent"
+  ],
+  "defs": [
+   "_midday_regime_gate",
+   "holdings_text",
+   "get_etf_quotes",
+   "get_market_data",
+   "calculate_rsi",
+   "check_trend",
+   "filter_signal_by_technical",
+   "calculate_position_size",
+   "_check_position_count",
+   "_check_correlation",
+   "_check_total_risk",
+   "load_tracking",
+   "save_tracking",
+   "build_signal_from_llm",
+   "add_signal_with_validation",
+   "record_price_history",
+   "update_signals",
+   "get_active_signals",
+   "get_history",
+   "get_performance",
+   "calculate_advanced_metrics",
+   "generate_pro_trader_report",
+   "_safe_dt",
+   "build_audit"
+  ],
+  "envs": [
+   "MIDDAY_REGIME_GATE"
+  ],
+  "used_by": [
+   "backend/app/backtest/strategies.py",
+   "backend/app/daily_report.py",
+   "backend/app/env_check.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash/service.py",
+   "backend/app/routers/flash.py",
+   "backend/backfill_history.py",
+   "scripts/generate_backend_pack.py"
+  ],
+  "loc": 884
+ },
+ "spring_festival": {
+  "unit": "spring_festival.py",
+  "doc": "================================================================================\n【文件作用】春节「日历例外」—— 防御市里唯一被验证过的可用窗口（P2-a 落地）\n================================================================================\n\n【为什么有这个东西】\n  项目长期结论：**regime 只看沪深300 均线 => 在 V 型反转处系统性滞后**，\n  而 E2/E3 等宽度事件要么极稀有（2026 年 0 次）、要么无 edge（E3 WEAK）。\n  => 用户在 2026-09-16（反弹第一天）问\"什么情况下会买\"，答案是\"三条路径全失效\"。\n\n  用户随后提出方向：**事件驱动 / 提前预案**。查证发现——\n    · `flash_calendar`（金十）只存 15 天窗口，**无历史积累** => 「财经日历事件 vs 反弹日」\n      的相关性**无法回溯验证**；\n    · 事件\"利好/利空\"方向**无客观映射**（同一 FOMC 随预期差反向）；\n    · 系统**没有任何\"事件前布局\"机制**（`risk_events` 只做负面避险）。\n  => 退化为**日期确定的固定",
+  "imports_proj": [
+   "app.flash",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_d",
+   "_iso",
+   "_festival",
+   "_rules_holiday_range",
+   "_calendar_holidays",
+   "_all_holidays",
+   "_longest_gap",
+   "_is_td",
+   "_prev_td",
+   "_next_td",
+   "resolve_window",
+   "_td_span",
+   "window",
+   "calendar_exception",
+   "rules"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/trader_brief.py",
+   "scripts/test_decision_card_sf.py"
+  ],
+  "loc": 470
+ },
+ "stock_diagnosis": {
+  "unit": "stock_diagnosis.py",
+  "doc": "================================================================================\n【文件作用】个股「一页纸诊断」—— 把既有**结构化事实**聚合成可读结论（P1，2026-10-11）\n================================================================================\n【为什么有它】\n  详情页上躺着十几个标签（评分/主力阶段/连续净流入/闸门就绪/龙虎榜风险/财报断层…），\n  但它们是**散的**：用户要自己拼结论。外部开源项目（PanWatch 的\"多分析师→决策书\"、\n  daily_stock_analysis 的\"决策仪表盘\"）证明这种\"合成呈现\"很被需要。\n  本项目已有全部原料 ⇒ 本模块只做**聚合与表述**。\n\n【三条硬约束（本模块存在的意义，别放宽）】\n  C1 **LLM 只做聚合与表述，不产生新信号**：prompt 里只喂本模块取到的**编号事实**，\n     明令不得引入外部知识/不得预测价格/不得给买卖建议；输出**逐句可回溯到事实编号**。\n  C2 **无 LLM 也完整可用**：`facts` 永远返回（页面靠自己就能读）；`narrative` 只是补充。\n     LLM 未配置 ",
+  "imports_proj": [
+   "app.database",
+   "app.flash.llm",
+   "app.insight",
+   "app.mainforce",
+   "app.mainforce.l3_history",
+   "app.mainforce.lhb",
+   "app.mainforce.state"
+  ],
+  "defs": [
+   "_f",
+   "build_facts",
+   "_render_facts",
+   "_sanitize",
+   "diagnose",
+   "clean_question",
+   "ask"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/scoring.py"
+  ],
+  "loc": 446
+ },
+ "stock_moves": {
+  "unit": "stock_moves.py",
+  "doc": "================================================================================\n【文件作用】个股级\"放量拉升\"侦测 + 行业聚合（2026-09-30，P1 续）\n================================================================================\n背景（为什么需要它）：P1 交付了 `sector_momentum`（**板块层**侦测），但实测留下一个洞 ——\n  2026-09-29 用户感知到\"金属拉升\"（云铝 **+4.34%**、赣锋 **+3.53%**、中国铝业 +3.00%），而：\n    · 板块层：zzshare 104 粗分下 工业金属仅 +2.02%、能源金属 +1.60% ⇒ **进不了任何异动阈值**；\n    · 涨停层：这几只**都没涨停** ⇒ `zz_daily_snapshots.uplimit_stocks` / 工作台「涨停复盘」\n      只覆盖**封板股** ⇒ **看不到它们**。\n  ⇒ 两个既有视角之间存在空白，本模块补的就是这一层。\n\n★ 与既有能力的分工（**别重复造**）\n  · 板块层（哪个板块在动）→ `app/sector_momentum.py`（104 粗",
+  "imports_proj": [
+   "app.flash",
+   "app.industry_map"
+  ],
+  "defs": [
+   "_limit_pct",
+   "_is_limit_up",
+   "_industry_map",
+   "snapshot",
+   "format_lines"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 192
+ },
+ "strategies": {
+  "unit": "strategies/",
+  "doc": "================================================================================\n【文件作用】战法选股模块\n================================================================================\n\n提供多种量化战法的选股扫描功能。\n\n已实现战法：\n  - advance2retreat1: 进二退一（低位放量大阳后缩量回调）\n  - dragon_turnaround: 龙回头（龙头股第一波拉升后缩量回调，止跌反包时介入）\n  - limit_up_boomerang: 涨停回马枪（涨停突破后缩量回调不破实体，放量反包时介入）\n  - wizard_pointer: 仙人指路（强势股拉升途中长上影试盘，次日高开高走确认）\n  - double_cannon: 涨停双响炮（首板涨停后缩量回调，再度涨停启动主升浪）\n\n震荡市备选战法：\n  - single_yang_unbroken: 单阳不破（一根大阳后横盘不破低点，缩量突破时介入）\n  - ma_pullback: 均线回踩（上升趋势中缩量回踩均线不破，放量反弹时低吸）\n  - old_duck_head: 老鸭头（5/10/60日均线多头排列后，缩量回调不破60日线，金叉放量启",
+  "imports_proj": [
+   "app.backtest",
+   "app.backtest.data",
+   "app.backtest.engine",
+   "app.backtest.market_regime",
+   "app.backtest.strategies",
+   "app.coach.audit",
+   "app.coach.monitor",
+   "app.contradictions.risk_hook",
+   "app.database",
+   "app.flash",
+   "app.flash.intraday_alerts",
+   "app.flash.rules",
+   "app.flash.wechat",
+   "app.mainforce.confluence",
+   "app.mainforce.gate"
+  ],
+  "defs": [
+   "Advance2Retreat1Strategy",
+   "get_strategy",
+   "run_backtest",
+   "_enrich_klines",
+   "_backtest_stock",
+   "_track_trade",
+   "_calc_statistics",
+   "save_backtest_result",
+   "get_backtest_result",
+   "get_all_backtest_summary",
+   "_bj_today",
+   "filter_stock_pool",
+   "_expected_latest_trading_day",
+   "_zzshare_conn",
+   "_clear_kline_cache",
+   "_code_with_suffix",
+   "_get_klines_asof",
+   "_add_indicators",
+   "get_kline_with_indicators",
+   "calc_position_in_range",
+   "calc_volume_ratio",
+   "BaseStrategy",
+   "save_scan_result",
+   "get_scan_result",
+   "save_watch_pool"
+  ],
+  "envs": [
+   "STRATEGY_GRIND_GATE",
+   "STRATEGY_WIDE_SCAN",
+   "WHITELIST_CRITERION",
+   "WHITELIST_HALF_LIFE_RATIO",
+   "WHITELIST_MIN_AVG_RET",
+   "WHITELIST_MIN_PROFIT_FACTOR",
+   "WHITELIST_ROLLING",
+   "WHITELIST_ROLLING_DAYS"
+  ],
+  "used_by": [
+   "backend/app/backtest/strategies.py",
+   "backend/app/coach/audit.py",
+   "backend/app/coach/monitor.py",
+   "backend/app/coach/position_sizing.py",
+   "backend/app/coach/rules.py",
+   "backend/app/daily_report.py",
+   "backend/app/env_check.py",
+   "backend/app/exit_advice.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/main.py",
+   "backend/app/routers/paper.py",
+   "backend/app/trader_brief.py",
+   "backend/test_grind_gate.py",
+   "backend/tmp_archive/tmp_check_whitelist.py",
+   "backend/tmp_archive/tmp_ingest_test.py",
+   "backend/tmp_archive/tmp_paper_test.py",
+   "scripts/breadth_hook_review.py",
+   "scripts/coach_rule_health.py",
+   "scripts/rescan_strategies.py",
+   "scripts/strategy_decay_diagnosis.py"
+  ],
+  "loc": 9002
+ },
+ "sync_meta": {
+  "unit": "sync_meta.py",
+  "doc": "================================================================================\n【文件作用】数据集版本号（sync_meta 表）——给\"每天只变一次\"的远端数据做版本门控\n================================================================================\n要解决的问题（2026-09-12，egress 治理第二步）：\n  `mainflow_history` 的整表读是 8.7MB/次，原先只靠 30 分钟 TTL 兜着：\n    · 资金流每天 19:00 回填一次 → TTL 到期后的重拉纯属白烧 egress（4.7 次/天）；\n    · 生产方（GitHub Actions 日批）与消费方（Render 常驻进程）是两个进程，\n      内存缓存互不可见，只能靠\"猜时间\"，既浪费又可能读到旧数据。\n\n机制（比 TTL 更省也更准）：\n  · 生产方写完数据 → `touch(key)` 打一个版本号（就用 updated_at）\n  · 消费方缓存数据 + 记住当时的版本号；TTL 到期时**先查版本号**（十几字节的一行）\n      - 版本没变 → 直接续期，不重拉（数据没变 = 0 流量）\n     ",
+  "imports_proj": [
+   "app.database"
+  ],
+  "defs": [
+   "_ensure_table",
+   "touch",
+   "version",
+   "versions"
+  ],
+  "envs": [],
+  "used_by": [],
+  "loc": 96
+ },
+ "tencent": {
+  "unit": "tencent.py",
+  "doc": "================================================================================\n【文件作用】腾讯行情数据源 + 内存缓存层\n================================================================================\n\n整个后端的\"数据来源\"。它做的事：\n  1. 从腾讯财经公开接口（qt.gtimg.cn）抓取 A股实时行情、K线数据\n  2. 把全量 A股行情缓存到内存，供 /api/score/batch 等批量接口使用\n  3. 对外暴露函数（get_stock / get_kline / search_stocks 等）供路由调用\n\n数据源说明：\n  - 腾讯的接口返回的是一段文本（不是标准 JSON），形如：\n      v_sz000001=\"51~平安银行~000001~10.5~10.3~...\"\n    每个字段用 ~ 分隔，第 N 个字段对应固定含义（价格、成交量、PE 等）。\n    所以代码里有大量 data[3]、data[37] 这种\"按下标取字段\"的操作。\n==========================================================================",
+  "imports_proj": [
+   "app.flash",
+   "app.flash.rules",
+   "app.scoring.kline_cache"
+  ],
+  "defs": [
+   "_is_disabled",
+   "_is_st_stock",
+   "_build_stock_pool",
+   "_parse_ts",
+   "_is_trading_hours",
+   "_is_stale_kline",
+   "_load_kline_cache",
+   "_save_kline_cache",
+   "_fetch_tencent",
+   "refresh_all_stocks",
+   "_record_speed",
+   "speed_pct",
+   "_price_date_now",
+   "save_market_snapshot",
+   "restore_market_snapshot",
+   "sync_snapshot_if_newer",
+   "get_stock",
+   "get_stocks_batch",
+   "get_index",
+   "get_kline",
+   "search_stocks"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/coach/position_sizing.py",
+   "backend/app/contradictions/scanner.py",
+   "backend/app/daily_report.py",
+   "backend/app/eastmoney_news.py",
+   "backend/app/exit_advice.py",
+   "backend/app/flash/intraday_alerts.py",
+   "backend/app/flash/llm.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/flash_brief.py",
+   "backend/app/main.py",
+   "backend/app/market_amount.py",
+   "backend/app/portfolio_radar.py",
+   "backend/app/risk_events.py",
+   "backend/app/routers/market.py",
+   "backend/app/routers/scoring.py",
+   "backend/app/routers/stock.py",
+   "backend/app/scoring/engine.py",
+   "backend/app/scoring/indicator_cache.py",
+   "backend/app/scoring/kline_cache.py",
+   "backend/app/scoring/live_ranking.py"
+  ],
+  "loc": 834
+ },
+ "trader_brief": {
+  "unit": "trader_brief.py",
+  "doc": "================================================================================\n【文件作用】交易员决策简报（PLAN_TRADER_WORKFLOW.md Phase 1）\n================================================================================\n\n核心思想：以资深交易员的视角，按一天的时间线（盘前/盘中/盘后）聚合系统已有\n数据（矛盾/主线/主力/持仓/候选信号），由 LLM 生成三段式决策简报：\n「该关注 / 该做 / 该防」——每条判断必须引用具体数据出处。\n\n原则（见 PLAN_TRADER_WORKFLOW.md，v2 采纳两份外部评审）：\n  1. 只聚合已有表的数据，不为简报新建采集任务\n  2. AI 出观点，数据给出处（引用校验器对 6 位代码做成员检查，未命中标「待核实」）\n  3. LLM 不可用/失败 → 规则骨架简报，绝不用 LLM 常识补写\n  4. 「该做」段 = 确定性规则引擎渲染（LLM 永不发明动作），每条带 rule_id\n  5. 形态定死：每段 ≤3 条 + 严重度排序；边界：简报=面向动作，日报=面向复盘\n\n调度：Phase 1 先做 API 按需生成（前端加载时触发/手",
+  "imports_proj": [
+   "app",
+   "app.backtest.market_regime",
+   "app.backtest.strategies",
+   "app.coach",
+   "app.coach.position_sizing",
+   "app.database",
+   "app.flash",
+   "app.flash.llm",
+   "app.flash.margin_sentiment",
+   "app.flash.rules",
+   "app.macro",
+   "app.mainline",
+   "app.portfolio_radar",
+   "app.risk_events",
+   "app.routers.market"
+  ],
+  "defs": [
+   "mark_pushed",
+   "current_phase",
+   "init_trader_brief_table",
+   "collect_brief_data",
+   "_data_to_markdown",
+   "_strategy_cn",
+   "_cons_tag",
+   "_render_actions_md",
+   "_render_funding_md",
+   "_render_pbw_md",
+   "_fallback_skeleton",
+   "_validate_refs",
+   "generate_trader_brief",
+   "_position_plan",
+   "_raw_industry_label",
+   "signal_industry_cross",
+   "signal_industry_cached",
+   "strategy_quality",
+   "strategy_quality_cached",
+   "_merged_buy_list",
+   "build_decision_card"
+  ],
+  "envs": [
+   "MARGIN_DRAIN_ALERT_YI"
+  ],
+  "used_by": [
+   "backend/app/coach/audit.py",
+   "backend/app/flash/scheduler.py",
+   "backend/app/routers/market.py",
+   "backend/app/routers/system.py",
+   "scripts/daily_batch.py",
+   "scripts/test_decision_card_sf.py"
+  ],
+  "loc": 1229
+ },
+ "verification": {
+  "unit": "verification.py",
+  "doc": "================================================================================\n【文件作用】「数据可信度」单一事实源 —— 哪些结论已验证、哪些没有\n================================================================================\n为什么需要（2026-09-27 用户旅程盘点发现）：\n  项目界面上，「该不该买」（闸门，19.5 年验证过）与「买什么」（评分/战法，\n  **未验证甚至已证伪**）**看起来同样权威** —— 用户无从分辨哪条结论有实证支撑。\n  而这恰恰是最该告诉用户的事（项目本身就以\"敢说自己的信号无效\"为原则）。\n\n本模块**只做一件事**：把散落在各轮研究里的**验证结论**集中成一张表，\n供前端标注（`GET /api/verification`）。**不引入任何新的判据或策略**。\n\n`status` 取值（三档 + 一档中间态）：\n  · `verified`    已通过完整验证（有预登记判据 + 显著性 + 可执行性）\n  · `partial`     部分成立（有实证但存在已知缺陷/边界）\n  · `unverified`  尚未验证（数据不足，或只有一致性对齐而无回测）\n  · `",
+  "imports_proj": [],
+  "defs": [
+   "build",
+   "status_of"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/market.py"
+  ],
+  "loc": 129
+ },
+ "wechat_fmt": {
+  "unit": "wechat_fmt.py",
+  "doc": "企微友好文本渲染（Markdown 表格 → 逐行列表）。\n\n★ 背景（2026-09-15）：企微自定义机器人 markdown **不支持表格**——`| a | b |`\n  会按纯文本渲染，竖线散乱、表头与内容不在一条竖线上。凡是要**推到企微**的\n  表格，都应改用本模块转成「每行一条」的列表式。\n\n设计要点：\n  - 字段用**全角空格**分隔：企微是比例字体，任何\"空格填充对齐\"都不可靠，\n    故不做列对齐，改用全角空格 + 首列加粗做视觉分组。\n  - 不做列名表头（列名重复出现纯属噪音），靠首列锚点定位。\n\n⚠️ 仅用于**推送企微**的内容；前端仍用 Markdown 表格（浏览器渲染正常），\n   `wechat=False` 的默认路径不改。\n\n用法：\n    from app.wechat_fmt import table_to_lines\n    body = \"\\n\".join(table_to_lines(headers, rows, numbered=False, kv=True))",
+  "imports_proj": [],
+  "defs": [
+   "table_to_lines",
+   "_label_col",
+   "_cells",
+   "_convert_block",
+   "markdown_tables_to_lists"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/backtest/run.py",
+   "backend/app/daily_report.py",
+   "backend/app/data_files.py",
+   "backend/app/flash/wechat.py"
+  ],
+  "loc": 123
+ },
+ "weekly_review": {
+  "unit": "weekly_review.py",
+  "doc": "================================================================================\n【文件作用】周复盘（用户视角的「本周回顾」）\n================================================================================\n\nURL：GET /api/report/weekly?days=7&end=YYYY-MM-DD\n\n【为什么做】复盘层此前只有**当日闭环**（日报 + 今日执行回看 + 执行一致性），缺**周期视角**。\n  投资纪律的通行习惯是\"周日晚上看周度\"：本周市场怎么走、我执行得怎么样、系统说了什么。\n  用户框架原话——\"复盘要记录状态/理由/执行偏差，区分逻辑错/时机错/执行错\"：\n  日度做不到这件事，周度才可以。\n\n【口径（★ 必须与展示一起披露）】\n  · 窗口 = `end`（默认今天，北京时间）往前 `days` 个**自然日**（默认 7），闭区间。\n    用**自然日**而非交易日：纪律是\"按周看\"的，跳过周末会把\"7 天\"变成\"9 天\"。\n  · regime 轨迹取自 `market_regime_history`（**日批落库**）⇒ 只含**已落库**的交易日，\n    可能不连续（日批失败/",
+  "imports_proj": [
+   "app",
+   "app.coach",
+   "app.database",
+   "app.flash.calendar_ahead",
+   "app.flash.rules"
+  ],
+  "defs": [
+   "_beijing_today",
+   "_window",
+   "_regime_track",
+   "_regime_sentence",
+   "_exec_sentence",
+   "_alerts_breakdown",
+   "_abandon_reasons",
+   "_reports",
+   "_push_summary",
+   "_next_week",
+   "_perf_sentence",
+   "_performance_block",
+   "_sector_block",
+   "build_weekly_review"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/daily_report.py"
+  ],
+  "loc": 377
+ },
+ "workbench_scan": {
+  "unit": "workbench_scan.py",
+  "doc": "================================================================================\n【文件作用】工作台盘中「变化检测器」——先证明信息量，再决定要不要上 LLM\n================================================================================\n\n背景（用户 2026-10-21）：\n  想在盘中每 30 分钟让 LLM 分析一次工作台。但工作台大半数据是**日频**的\n  （mainforce / 评分快照 / 教练卡 / 行业映射），半小时一报会有大量复读；\n  且 LLM 有额度与熔断成本。⇒ 先上**纯规则、零 LLM** 的变化检测器跑几天，\n  用数据回答：\"8 个采样点里，真正值得说一句的有几个？\"\n\n设计（与用户讨论结论一致）：\n  ① **零外部增量**：宽度/板块/个股全部读 `tencent._cache` 内存行情；\n     只有 3 个核心指数走 1 次腾讯请求（8 次/交易日，可忽略）。\n  ② **零 LLM**：纯规则打分；`score >= WORTH_SCORE` 记为 worth。\n  ③ **只采盘中变量**：指数、宽度（涨跌家数/涨停跌停）、板块强弱、量能、快讯；\n     日频项一律",
+  "imports_proj": [
+   "app.database",
+   "app.flash.rules",
+   "app.flash.store",
+   "app.routers.market",
+   "app.sector_industry",
+   "app.tencent"
+  ],
+  "defs": [
+   "_ensure_table",
+   "_num",
+   "_collect_breadth",
+   "_collect_sectors",
+   "_collect_news",
+   "collect",
+   "_hm",
+   "_trading_minutes",
+   "_diff",
+   "_judge",
+   "_load_prev",
+   "run_slot",
+   "_due_slot",
+   "preview",
+   "day_detail",
+   "summary"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py"
+  ],
+  "loc": 622
+ },
+ "zzshare_client": {
+  "unit": "zzshare_client.py",
+  "doc": "================================================================================\n【文件作用】zzshare 数据源接入封装（单点隔离）\n================================================================================\n说明：\n  - zzshare 仅作低频补充数据源（匿名限流/慢，内部自带超时重试）。\n  - token 通过环境变量 ZZSHARE_TOKEN 提供（可选，官网免费获取；缺省匿名）。\n  - 若 zzshare 库升级导致接口签名变化，只需改本模块，不影响上层。\n\n实测（0.4.11，2026-09-03）：\n  ✅ finance_latest/finance_stock 等 9 个财务接口可用\n  ✅ uplimit_*/plates_*/ths_*/lhb_*/sentiment_*/trade_days 可用\n  ❌ stock_moneyflow / rt_k / market_mf 此版本不存在（README 声明超前）\n================================================================================",
+  "imports_proj": [],
+  "defs": [
+   "get_api",
+   "to_zz_code"
+  ],
+  "envs": [
+   "ZZSHARE_TOKEN"
+  ],
+  "used_by": [
+   "backend/app/eastmoney.py",
+   "backend/app/mainforce/l3_history.py",
+   "backend/app/mainforce/lhb.py",
+   "backend/app/realtime_uplimit.py",
+   "backend/app/routers/market.py",
+   "backend/app/sector_zz.py",
+   "backend/app/zzshare_daily.py",
+   "backend/app/zzshare_finance.py",
+   "scripts/backfill_zzshare_daily.py",
+   "scripts/backtest_rescan_by_regime.py",
+   "scripts/build_amount_curve.py",
+   "scripts/lhb_backfill.py",
+   "scripts/lhb_seats_backfill.py",
+   "scripts/tail_settle_edge_check.py",
+   "scripts/zzshare_probe.py"
+  ],
+  "loc": 55
+ },
+ "zzshare_daily": {
+  "unit": "zzshare_daily.py",
+  "doc": "================================================================================\n【文件作用】zzshare 每日数据积累（涨停生态 / 情绪套件快照，2026-09-21）\n================================================================================\n背景（`zzshare功能盘点与接入建议_20260920.md` §7 复测后的排期决策）：\n  zzshare 的补充功能分两类 —— **分析开发型**（情绪×战法交互回测 / 基本面 PIT 体检，\n  等 10 月体检收口后再做）与**数据积累型**（本模块）。\n  数据积累有时钟属性：**晚一天接入就永远少一天历史**，且每日落库本身就是\n  选型原则要求的「30 天影子验证」载体 ⇒ 先积累、后分析。\n\n内容（每日一行 JSON，date 主键幂等）：\n  sentiment_trend(model=1)      情绪分时序列 —— ② 情绪×战法交互回测的核心原料\n                                ⚠️ model 是整数（README L432），字符串会 0 行\n  market_style(date)         ",
+  "imports_proj": [
+   "app.database",
+   "app.zzshare_client"
+  ],
+  "defs": [
+   "ensure_table",
+   "_slim_uplimit_hot",
+   "_slim_uplimit_reason",
+   "collect_daily",
+   "run_daily",
+   "load_range"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/routers/market.py",
+   "scripts/daily_batch.py"
+  ],
+  "loc": 187
+ },
+ "zzshare_finance": {
+  "unit": "zzshare_finance.py",
+  "doc": "================================================================================\n【文件作用】zzshare 财报扩展因子存储（质量维度的现金流/扣非/商誉等扩展数据源）\n================================================================================\n\n设计：\n  - 独立表 stock_finance_zz（每 code 一行最新快照，含 indicator/balance/cash_flow\n    三表 JSON），不修改现有 stock_finance/engine，杜绝影响线上评分。\n  - 表内保留 pub_date（zzshare statDate/pubDate），供\"无前视\"因子分析过滤。\n  - 合并 key：code 主键。code 统一转内部 6 位。\n\n用法：\n  from app.zzshare_finance import sync_latest_finance\n  sync_latest_finance(codes, chunk=50, verbose=True)\n================================================================",
+  "imports_proj": [
+   "app.database",
+   "app.zzshare_client"
+  ],
+  "defs": [
+   "ensure_table",
+   "_now",
+   "_rows_from_df",
+   "_fetch_table",
+   "sync_latest_finance",
+   "get_extra",
+   "stats"
+  ],
+  "envs": [],
+  "used_by": [
+   "backend/app/flash/scheduler.py",
+   "scripts/daily_batch.py",
+   "scripts/zz_finance_sync.py"
+  ],
+  "loc": 156
+ }
+}

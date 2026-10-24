@@ -1,0 +1,435 @@
+# 全仓模式扫描（确定性，逐条 file:line 可核对）
+
+> 生成：2026-10-24，脚本 _tmp_scan_patterns.py（用完即删）。SKIP：docs/、reports/、.codebuddy/、.zcode/ 等非业务目录。
+
+## limit_up_9.5 — 涨跌停阈值一刀切（Guardrails #7：只允许 app/limit_stats 单实现）（30 处）
+
+- `backend/app/limit_stats.py:11` | `· `backtest/market_regime`（→ E2 事件信号）用 `>=9.9 / <=-9.9` 一刀切 ⇒ 20cm 被高估。`
+- `backend/app/realtime_uplimit.py:7` | `1. ~~`routers/market.overview` 的涨跌停家数用 `change_pct >= 9.9` 近似~~`
+- `backend/app/backtest/market_regime.py:345` | `#   → 板幅容差）。旧实现 `>=9.9 / <=-9.9` 一刀切会把 20cm 涨 10% 当涨停（**高估家数**），`
+- `backend/app/events/signal.py:37` | `2. 生产判定用 `change_pct >= 9.9` 近似涨停（复用 `_market_breadth_now`，实时行情无`
+- `backend/app/events/signal.py:237` | `"note": ("盘中口径：涨停用 change_pct>=9.9 近似（20cm 板块会高估家数），"`
+- `backend/app/routers/market.py:334` | `#   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含`
+- `backend/app/routers/market.py:407` | `#   两处此前各写一遍 `>=9.9`，解屏蔽后会同时错，且"页面两个涨跌停家数不一致"的风险重现。`
+- `backend/app/routers/market.py:1188` | `# ★ 2026-10-24：与 `_limit_counts_best` 同口径（原 `>=9.9` 会把 20cm 涨 10% 当涨停）`
+- `backend/app/routers/market.py:1494` | `#   原实现 `change_pct >= 9.5 / <= -9.5` 是**一刀切 10cm 近似** ⇒`
+- `backend/app/routers/market.py:1571` | `#   **行情缓存里的当日涨幅**（`stocks[...]["change_pct"] >= 9.5`）筛出来的：`
+- `backend/app/routers/market.py:1738` | `"rt_k 精确优先），不再是 >=9.5% 一刀切"),`
+- `backend/app/routers/market.py:1868` | `历史收盘算"昨日涨停名单/连板高度"时原先硬编码 `>= 9.5%` ——`
+- `backend/app/routers/market.py:1897` | ``market_temperature`）都用 `change_pct >= 9.9` 一刀切近似。在"池子只有主板"时`
+- `backend/app/routers/market.py:2077` | `#  为什么需要它：盘中涨跌停此前只能用 `change_pct>=9.9` 近似（20cm 票涨 10% 误判涨停、`
+- `backend/app/strategies/advance2retreat1.py:257` | `if day1["change_pct"] >= 9.5:  # 接近涨停`
+- `backend/app/strategies/dragon_turnaround.py:185` | `limit_up_count = sum(1 for k in wave if k["change_pct"] >= 9.5)`
+- `backend/app/strategies/limit_up_boomerang.py:207` | `if klines[j]["change_pct"] >= 9.5:`
+- `backend/app/strategies/limit_up_boomerang.py:390` | `is_limit_up = today["change_pct"] >= 9.5`
+- `backend/app/strategies/paper_trading.py:75` | `return high == low and (close / prev_close - 1) <= -0.099`
+- `frontend/dist/assets/Strategies-ou4ShgVc.js:2` | ``),p=new Blob(["\uFEFF"+u],{type:"text/csv;charset=utf-8"}),w=URL.createObjectURL(p),j=document.createElement("a");j.href=w,j.download=`${((C=r.value)==null?void 0:C.name)||"战法"}_信号_${new Date().toISO`
+- `frontend/src/views/Strategies.vue:555` | `<span :class="detailStock.details.first_cannon?.first_change >= 9.5 ? 'text-emerald-400' : 'text-muted'">`
+- `frontend/src/views/Workbench.vue:1510` | `⇒ 20cm/ST/北交所板幅不会像 `change_pct>=9.9` 那样误判）`
+- `scripts/build_event_history.py:57` | `SUM(CASE WHEN pct_chg >= 9.9 THEN 1 ELSE 0 END) AS limit_up_99,`
+- `scripts/build_nb_history.py:48` | `"SUM(CASE WHEN pct_chg >= 9.9 THEN 1 ELSE 0 END), "`
+- `scripts/ladder_edge_study.py:39` | `LIMIT_APPR = 0.095          # 涨停近似阈值（与线上市场情绪同口径）`
+- `scripts/lhb_edge_check.py:495` | `hot = [s for s in samples if s["chg"] >= 9.9]`
+- `scripts/lhb_factor_check.py:117` | `hot = [s for s in samples if s["chg"] >= 9.9]`
+- `scripts/verify_hypothesis2.py:70` | `limit_up = sum(1 for s in stocks if s["pct_chg"] >= 9.5)`
+- `scripts/verify_hypothesis2.py:74` | `limit_up_codes = {s["code"] for s in stocks if s["pct_chg"] >= 9.5}`
+- `scripts/verify_hypothesis2.py:93` | `if code in check_stocks and check_stocks[code]["pct_chg"] >= 9.5:`
+
+## utcnow — datetime.utcnow() + 手加时区偏移（坑 7，统一用 rules.beijing_now）（5 处）
+
+- `_tmp_scan_patterns.py:13` | `('utcnow', re.compile(r'datetime\.utcnow\('), 'datetime.utcnow() + 手加时区偏移（坑 7，统一用 rules.beijing_now）'),`
+- `backend/app/auth.py:59` | `"exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),`
+- `backend/app/auth.py:60` | `"iat": datetime.utcnow(),`
+- `backend/app/weekly_review.py:48` | `return (datetime.utcnow() + _BJ).strftime("%Y-%m-%d")`
+- `scripts/publish_packs_local.py:89` | `d = (now or (_dt.datetime.utcnow() + _dt.timedelta(hours=8))).date()`
+
+## naive_now — datetime.now() 无时区（服务器时区差异）（162 处）
+
+- `_tmp_scan_patterns.py:14` | `('naive_now', re.compile(r'datetime\.now\(\)'), 'datetime.now() 无时区（服务器时区差异）'),`
+- `.history/scripts/generate-kline-pack_20260824095437.py:190` | `end_date = datetime.now().strftime("%Y-%m-%d")`
+- `.history/scripts/generate-kline-pack_20260824095437.py:191` | `start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用`
+- `.history/scripts/generate-kline-pack_20260824095437.py:326` | `cutoff = datetime.now() - timedelta(days=keep_days)`
+- `.history/scripts/generate-kline-pack_20260824095437.py:405` | `date_str = datetime.now().strftime("%Y%m%d")`
+- `.history/scripts/generate-kline-pack_20260824095547.py:190` | `end_date = datetime.now().strftime("%Y-%m-%d")`
+- `.history/scripts/generate-kline-pack_20260824095547.py:191` | `start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用`
+- `.history/scripts/generate-kline-pack_20260824095547.py:326` | `cutoff = datetime.now() - timedelta(days=keep_days)`
+- `.history/scripts/generate-kline-pack_20260824095547.py:405` | `date_str = datetime.now().strftime("%Y%m%d")`
+- `backend/migrate.py:209` | `"updated_at": datetime.now().isoformat()`
+- `backend/app/ai_basket_watch.py:127` | `day = str(day or data_day or datetime.now().strftime("%Y-%m-%d"))[:10]`
+- `backend/app/ai_basket_watch.py:128` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/crowding_watch.py:225` | `day = str(day or data_day or datetime.now().strftime("%Y-%m-%d"))[:10]`
+- `backend/app/crowding_watch.py:226` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/data_files.py:82` | `seen = datetime.now().isoformat()`
+- `backend/app/data_files.py:145` | `if age and datetime.now() - age > timedelta(days=_CALENDAR_STALE_DAYS):`
+- `backend/app/data_files.py:147` | `item["detail"] += f"（已 {(datetime.now() - age).days} 天未更新 → 抓取可能失效）"`
+- `backend/app/data_files.py:160` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/data_files.py:233` | `"checked_at": datetime.now().isoformat()}`
+- `backend/app/data_files.py:253` | `f"> **时间：** {datetime.now().strftime('%Y-%m-%d %H:%M')}", ""]`
+- `backend/app/etf_share_watch.py:133` | `ts = datetime.now().isoformat()`
+- `backend/app/etf_share_watch.py:311` | `end = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/key_level_watch.py:158` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/memory_watch.py:265` | `cutoff = (datetime.now() - timedelta(days=keep_days)).isoformat(timespec="seconds")`
+- `backend/app/news_history.py:57` | `d = date or datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/observer_review.py:229` | `fresh = (datetime.now() - ts) < timedelta(minutes=CACHE_TTL_MIN)`
+- `backend/app/observer_review.py:255` | `"created_at": datetime.now().isoformat(timespec="seconds"),`
+- `backend/app/pack_source.py:327` | `now = now or datetime.now()`
+- `backend/app/policy_announcements.py:163` | `day = str(day or "")[:10] or datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/policy_announcements.py:283` | `"created_at": datetime.now().isoformat(),`
+- `backend/app/policy_bottom_watch.py:90` | `return datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/policy_bottom_watch.py:652` | `"created_at": datetime.now().isoformat(),`
+- `backend/app/policy_bottom_watch.py:694` | `ts = datetime.now().isoformat()`
+- `backend/app/research_cache.py:75` | `return datetime.now() - when <= timedelta(hours=max_age_h)`
+- `backend/app/research_cache.py:153` | `_meta_set(conn, "ohlc_updated_at", datetime.now().isoformat())`
+- `backend/app/research_cache.py:291` | `_meta_set(conn, "flow_updated_at", datetime.now().isoformat())`
+- `backend/app/scenario_watch.py:103` | `base = datetime.now()`
+- `backend/app/scenario_watch.py:166` | `return datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/scenario_watch.py:348` | `now = datetime.now()`
+- `backend/app/scenario_watch.py:405` | `"created_at": datetime.now().isoformat(),`
+- `backend/app/sync_meta.py:55` | `now = datetime.now().isoformat()`
+- `backend/app/tencent.py:219` | `now = datetime.now()`
+- `backend/app/tencent.py:395` | `print(f"[{datetime.now().strftime('%H:%M:%S')}] 开始{mode}刷新行情... ({len(scan_pool)} 个代码)")`
+- `backend/app/tencent.py:433` | `print(f"[{datetime.now().strftime('%H:%M:%S')}] {mode}刷新完成: {len(stocks)} 只股票")`
+- `backend/app/tencent.py:729` | `start = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y-%m-%d")`
+- `backend/app/tencent.py:731` | `end = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/zzshare_daily.py:163` | `(date_str, payload, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))`
+- `backend/app/zzshare_finance.py:49` | `return datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/backtest/data.py:91` | `beg = start or (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")`
+- `backend/app/backtest/data.py:92` | `end = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/backtest/regime_review.py:50` | `start = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")`
+- `backend/app/backtest/report_store.py:58` | `"created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/coach/monitor.py:202` | `base = datetime.now()`
+- `backend/app/coach/regime_alert.py:133` | `datetime.now().strftime("%Y-%m-%d %H:%M:%S")))`
+- `backend/app/contradictions/risk_hook.py:68` | `key = date or datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/contradictions/store.py:205` | `cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")`
+- `backend/app/contradictions/validator.py:85` | `① **日期改用北京时间**：原 `datetime.now()` 在 Actions 容器里是 **UTC**`
+- `backend/app/contradictions/validator.py:95` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/contradictions/validator.py:107` | `age = (datetime.now() - datetime.strptime(d, "%Y-%m-%d")).days`
+- `backend/app/events/alert.py:143` | `datetime.now().strftime("%Y-%m-%d %H:%M:%S")))`
+- `backend/app/flash/calendar_ahead.py:135` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/flash/calendar_ahead.py:136` | `end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")`
+- `backend/app/flash/calendar_ahead.py:198` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/flash/calendar_ahead.py:233` | `datetime.now().strftime("%Y-%m-%d %H:%M:%S")))`
+- `backend/app/flash/intraday_alerts.py:57` | `# ★ 2026-09-19：本模块原用 `datetime.now()`（服务器本地时间）——Render 上靠`
+- `backend/app/flash/intraday_alerts.py:86` | `★ 2026-09-19：默认取**北京时间**（原 `datetime.now()` 依赖容器 `TZ=Asia/Shanghai`，`
+- `backend/app/flash/llm.py:218` | `int(v.get("completion_tokens") or 0), datetime.now().isoformat()))`
+- `backend/app/flash/llm.py:234` | `now = datetime.now().isoformat()`
+- `backend/app/flash/signal_bus.py:138` | `cutoff = (datetime.now() - timedelta(days=_KEEP_DAYS)).strftime("%Y-%m-%d")`
+- `backend/app/flash/store.py:127` | `cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/flash/store.py:446` | `if datetime.now().timestamp() - last_ts < 3 * 60:`
+- `backend/app/mainforce/flow.py:113` | `cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")`
+- `backend/app/mainforce/gate_history.py:104` | `(date_str, payload, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))`
+- `backend/app/mainforce/l3_history.py:62` | `today = datetime.now().date()`
+- `backend/app/mainforce/lhb.py:206` | `cutoff_detail = (datetime.now() - timedelta(days=detail_recent)).strftime("%Y-%m-%d")`
+- `backend/app/mainforce/lhb.py:208` | `d = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")`
+- `backend/app/mainforce/lhb.py:373` | `start = (datetime.now() - timedelta(days=int(days))).strftime("%Y-%m-%d")`
+- `backend/app/mainforce/state.py:154` | `cutoff = (datetime.now() - timedelta(days=max(BARS_WINDOW * 8 // 5, 380))`
+- `backend/app/routers/backtest.py:86` | `age = (datetime.now() - datetime.strptime(row["updated_at"], "%Y-%m-%d %H:%M:%S")).total_seconds()`
+- `backend/app/routers/flash.py:23` | `# ★ 2026-09-12：本文件所有时间戳统一走 rules.beijing_now*()（原来混用 datetime.now()，`
+- `backend/app/routers/market.py:372` | `if _is_trading_hours() and (not stocks or datetime.now().timestamp() - _cache.get("last_update", 0) > 120):`
+- `backend/app/routers/performance.py:232` | `"generated_at": datetime.now().isoformat(timespec="seconds"),`
+- `backend/app/routers/system.py:277` | `# ★ 2026-09-28（用户："好几处的时间差 8 小时"）：原 `datetime.now()` 是**服务器本地时间**，`
+- `backend/app/routers/user.py:156` | `plan_id = f"tp_{int(datetime.now().timestamp() * 1000)}"`
+- `backend/app/routers/user.py:322` | `"id": item.get("id", f"tp_{int(datetime.now().timestamp() * 1000)}"),`
+- `backend/app/scoring/indicator_cache.py:104` | `age_hours = (datetime.now() - update_time).total_seconds() / 3600`
+- `backend/app/scoring/indicator_cache.py:189` | `cutoff = (datetime.now() - timedelta(hours=MAX_INDICATOR_AGE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/indicator_cache.py:256` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/indicator_cache.py:507` | `cutoff = (datetime.now() - __import__('datetime').timedelta(hours=MAX_INDICATOR_AGE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/indicator_cache.py:705` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/kline_cache.py:237` | `age_hours = (datetime.now() - update_time).total_seconds() / 3600`
+- `backend/app/scoring/kline_cache.py:351` | `now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/kline_cache.py:543` | `cutoff = (datetime.now() - __import__('datetime').timedelta(hours=MAX_CACHE_AGE_HOURS)).strftime("%Y-%m-%d %H:%M:%S")`
+- `backend/app/scoring/ranking_history.py:37` | `# 若用 datetime.now() 会隐式依赖服务器 TZ 环境，部署环境不一致时 rank_date 会漂移。`
+- `backend/app/strategies/backtest.py:353` | `"backtest_date": datetime.now().strftime("%Y-%m-%d"),`
+- `backend/app/strategies/base.py:28` | `2026-09-08 事故：save_scan_result 原用 datetime.now()（UTC），而`
+- `backend/app/strategies/base.py:77` | `today = datetime.now()`
+- `backend/app/strategies/base.py:471` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `backend/app/strategies/exit_alert.py:217` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/exit_alert.py:246` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/market_regime.py:118` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/market_regime.py:398` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/paper_trading.py:190` | `return datetime.now().isoformat()`
+- `backend/app/strategies/paper_trading.py:752` | `until = (datetime.now() + timedelta(days=COOLDOWN_DAYS)).strftime("%Y-%m-%d")`
+- `backend/app/strategies/router.py:107` | `#   `datetime.now()`（服务器本地时间，Actions/Render 上是 **UTC**）`
+- `backend/app/strategies/router.py:144` | `_scan_status[strategy_name] = {"scanning": True, "started_at": datetime.now().isoformat()}`
+- `backend/app/strategies/router.py:349` | `if cached and cached.get("backtest_date") == datetime.now().strftime("%Y-%m-%d"):`
+- `backend/app/strategies/router.py:372` | `_scan_status[f"{strategy_name}_backtest"] = {"scanning": True, "started_at": datetime.now().isoformat()}`
+- `backend/app/strategies/rsi.py:100` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/rsi.py:332` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/signal_confirmation.py:133` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/signal_confirmation.py:344` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/signal_persistence.py:36` | `# ★ 2026-09-19：原用 datetime.now()（服务器本地时间）→ 与项目「全链路北京时间」`
+- `backend/app/strategies/support_resistance.py:137` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/app/strategies/support_resistance.py:358` | `"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),`
+- `backend/tmp_archive/tmp_check.py:7` | `print("本地 datetime.now():", datetime.now().isoformat())`
+- `backend/tmp_archive/tmp_check.py:11` | `print("本地日期:", datetime.now().strftime("%Y-%m-%d"),`
+- `backend/tmp_archive/tmp_check.py:13` | `" 相同:", datetime.now().strftime("%Y-%m-%d") == rules.beijing_now().strftime("%Y-%m-%d"))`
+- `scripts/accum_pullback_backtest.py:140` | `f"> 生成：{dt.datetime.now():%Y-%m-%d %H:%M} ｜ 低吸信号 {len(low)} 条，"`
+- `scripts/accum_pullback_backtest.py:218` | `f"accum_pullback_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/backfill_lhb_mktcap.py:63` | `since = (datetime.now() - timedelta(days=args.days)).strftime("%Y-%m-%d")`
+- `scripts/backtest_ma_convergence.py:437` | `md.append(f"> 生成时间：{datetime.now():%Y-%m-%d %H:%M} ｜ "`
+- `scripts/cleanup_holiday_keys.py:8` | `项目的"日期键两派"问题 —— 部分日批任务用**运行日**（`datetime.now()`/`_today()`）当键，`
+- `scripts/daily_batch.py:233` | `⇒ 那时 `datetime.now().weekday()` 已变成次日：`
+- `scripts/daily_batch.py:604` | ``datetime.now()` ⇒ **跨午夜补跑不误判**（这两条都是 2026-09-19 修过的坑）；`
+- `scripts/daily_batch.py:1337` | `★ 显式传北京时区：`_latest_available_pack_day()` 默认用 `datetime.now()`，`
+- `scripts/daily_batch.py:1362` | `#     归因（已排除"包内容没更新"）：包内 `pack_date` 由生成脚本按 `datetime.now()``
+- `scripts/daily_batch.py:1454` | `"finished_at": datetime.now().isoformat(),`
+- `scripts/daily_batch.py:1565` | `_notify(f"日批 {datetime.now():%m-%d %H:%M} 完成，失败 {len(fail_list)} 项：\n{lines}")`
+- `scripts/dev_local.py:97` | `now = datetime.now()`
+- `scripts/event_realindex_check.py:103` | `end = datetime.now().strftime("%Y-%m-%d")`
+- `scripts/factor_analysis.py:507` | `return datetime.now().strftime("%Y%m%d_%H%M")`
+- `scripts/flow5_curve_backtest.py:197` | `add(f"> 运行：flow5_curve_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}\n")`
+- `scripts/flow5_curve_backtest.py:236` | `out = os.path.join(out_dir, f"flow5_curve_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/flow5_pos_backtest.py:169` | `add(f"> 运行：flow5_pos_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}"`
+- `scripts/flow5_pos_backtest.py:176` | `out = os.path.join(out_dir, f"flow5_pos_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/generate-kline-pack.py:449` | `end_date = datetime.now().strftime("%Y-%m-%d")`
+- `scripts/generate-kline-pack.py:450` | `start_date = (datetime.now() - timedelta(days=days + 30)).strftime("%Y-%m-%d")  # 多取一些，确保够用`
+- `scripts/generate-kline-pack.py:866` | `cutoff = datetime.now() - timedelta(days=keep_days)`
+- `scripts/generate-kline-pack.py:927` | `today = datetime.now().strftime("%Y-%m-%d")`
+- `scripts/generate-kline-pack.py:1025` | `date_str = datetime.now().strftime("%Y%m%d")`
+- `scripts/generate_backend_pack.py:632` | `date_str = datetime.now().strftime("%Y%m%d")`
+- `scripts/lhb_seats_backfill.py:164` | `stamp = datetime.now().strftime("%Y%m%d_%H%M")`
+- `scripts/lhb_seats_backfill.py:167` | `f"# 龙虎榜席位回填 {'全量' if do_all else '探针'} · {datetime.now():%Y-%m-%d %H:%M}\n\n"`
+- `scripts/mainforce_factor_backtest.py:355` | `add(f"> 运行：mainforce_factor_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}\n")`
+- `scripts/mainforce_factor_backtest.py:466` | `f"mainforce_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/mainline_crowding_backtest.py:188` | `f"> 生成：{dt.datetime.now():%Y-%m-%d %H:%M} ｜ 主线候选 {len(detail)} 条"`
+- `scripts/mainline_crowding_backtest.py:235` | `f"mainline_crowding_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/paper_vs_backtest_check.py:256` | `now = datetime.now().strftime("%Y-%m-%d %H:%M")`
+- `scripts/paper_vs_backtest_check.py:455` | `stamp = datetime.now().strftime("%Y%m%d_%H%M")`
+- `scripts/pbw_replay.py:53` | `end = datetime.now().strftime("%Y-%m-%d")`
+- `scripts/pbw_replay.py:75` | `p = out / f"pbw_replay_{datetime.now().strftime('%Y%m%d_%H%M')}.md"`
+- `scripts/refresh_indicators.py:122` | `now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")`
+- `scripts/strategy_exit_sweep.py:162` | `f"> 生成：{dt.datetime.now():%Y-%m-%d %H:%M} ｜ 信号 {len(signals)} 条",`
+- `scripts/strategy_exit_sweep.py:175` | `f"strategy_exit_sweep_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/strategy_lowvol_admission_test.py:208` | `f"> 生成：{dt.datetime.now():%Y-%m-%d %H:%M} ｜ 信号 {len(signals)} 条，"`
+- `scripts/strategy_lowvol_admission_test.py:259` | `out = os.path.join(out_dir, f"strategy_lowvol_admission_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/strategy_mainforce_filter_test.py:203` | `f"> 生成：{dt.datetime.now():%Y-%m-%d %H:%M} ｜ 信号 {len(signals)} 条，"`
+- `scripts/strategy_mainforce_filter_test.py:233` | `f"strategy_mainforce_filter_{dt.datetime.now():%Y%m%d_%H%M}.md")`
+- `scripts/subfactor_ic_backtest.py:271` | `add(f"> 运行：subfactor_ic_backtest.py ｜ 生成：{dt.datetime.now():%Y-%m-%d %H:%M}"`
+- `scripts/subfactor_ic_backtest.py:363` | `stamp = dt.datetime.now()`
+- `scripts/verify_kline_source.py:77` | `today = datetime.now()`
+
+## sleep_in_req — time.sleep（若在请求路径会阻塞事件循环，Guardrails #3）（0 处）
+
+
+## swallow — except...: pass 吞异常（坑 12：表面全绿实际没产出）（2 处）
+
+- `_tmp_scan_patterns.py:16` | `('swallow', re.compile(r'except[^:\n]*:\s*pass\b'), 'except...: pass 吞异常（坑 12：表面全绿实际没产出）'),`
+- `backend/app/mainforce/confluence.py:135` | `从未 `import db` → 每次调用都抛 `NameError` 被 `except Exception: pass` 吞掉`
+
+## req_no_timeout — requests 调用疑似缺 timeout（1 处）
+
+- `scripts/etf_index_daily.py:57` | `r = requests.get(_TX_URL + ",".join(batch), timeout=15,`
+
+## global_stmt — 隐式全局状态（93 处）
+
+- `backend/backfill_history.py:61` | `global _EM_FAIL_STREAK, _STALE_COUNT`
+- `backend/backfill_history.py:124` | `global _EM_FAIL_STREAK`
+- `backend/backfill_history.py:277` | `global _TARGET_DATE, _STALE_COUNT`
+- `backend/backfill_history.py:436` | `global _EM_FAIL_STREAK`
+- `backend/test_coach_rules.py:63` | `global _passed, _failed`
+- `backend/test_coach_rules.py:74` | `global _passed, _failed`
+- `backend/test_grind_gate.py:62` | `global _passed, _failed`
+- `backend/test_grind_gate.py:72` | `global _passed, _failed`
+- `backend/test_policy_bottom_watch.py:29` | `global PASSES`
+- `backend/test_position_sizing.py:36` | `global _passed, _failed`
+- `backend/test_position_sizing.py:46` | `global _passed, _failed`
+- `backend/app/ai_basket_watch.py:50` | `global _READY`
+- `backend/app/cache_release.py:120` | `global _last_release_ts`
+- `backend/app/crowding_watch.py:38` | `global _READY`
+- `backend/app/data_files.py:50` | `global _WM_READY`
+- `backend/app/data_files.py:64` | `global _WM_CACHE`
+- `backend/app/data_gaps.py:212` | `global _TABLE_READY`
+- `backend/app/etf_share_watch.py:109` | `global _TABLE_READY`
+- `backend/app/flash_brief.py:78` | `global _READY`
+- `backend/app/health.py:83` | `global _alerts`
+- `backend/app/key_level_watch.py:66` | `global _READY`
+- `backend/app/limit_stats.py:46` | `global _limit_pct_fn`
+- `backend/app/limit_stats.py:61` | `global _BREAK_TOL_CACHE`
+- `backend/app/main.py:63` | `global _scheduler_tasks, _snapshot_bootstrap`
+- `backend/app/memory_watch.py:52` | `global _TABLE_READY`
+- `backend/app/observer_review.py:51` | `global _READY`
+- `backend/app/output_feedback.py:30` | `global _TABLE_READY`
+- `backend/app/pack_source.py:67` | `global _load_error`
+- `backend/app/pack_source.py:81` | `global _last_pack_alert_date`
+- `backend/app/pack_source.py:135` | `global _ready_checked`
+- `backend/app/pack_source.py:200` | `global _ready_checked, _stale_cache`
+- `backend/app/pack_source.py:278` | `global _last_fresh_check, _stale_cache`
+- `backend/app/pack_source.py:352` | `global _stale_cache`
+- `backend/app/policy_announcements.py:241` | `global _TABLE_READY`
+- `backend/app/policy_bottom_watch.py:97` | `global _TABLE_READY`
+- `backend/app/scenario_watch.py:170` | `global _READY`
+- `backend/app/sector_zz.py:41` | `global _TABLE_READY`
+- `backend/app/sync_meta.py:38` | `global _READY`
+- `backend/app/sync_meta.py:54` | `global _VER_CACHE`
+- `backend/app/tencent.py:231` | `global KLINE_CACHE`
+- `backend/app/tencent.py:251` | `global _kline_cache_last_save, _kline_cache_dirty`
+- `backend/app/tencent.py:383` | `global _valid_codes`
+- `backend/app/tencent.py:563` | `global _valid_codes`
+- `backend/app/tencent.py:696` | `global _waf_blocked_until, _kline_cache_dirty`
+- `backend/app/workbench_scan.py:67` | `global _TABLE_READY`
+- `backend/app/zzshare_client.py:30` | `global _client`
+- `backend/app/zzshare_daily.py:43` | `global _TABLE_READY`
+- `backend/app/backtest/data.py:87` | `global _tencent_blocked_until`
+- `backend/app/backtest/data.py:121` | `global DISABLE_EASTMONEY, _em_failures`
+- `backend/app/backtest/data.py:339` | `global _ANOMALY_INDEX`
+- `backend/app/backtest/report_store.py:28` | `global _TABLE_READY`
+- `backend/app/coach/audit.py:43` | `global _table_ready, _columns_ready`
+- `backend/app/coach/regime_alert.py:38` | `global _TABLE_READY`
+- `backend/app/contradictions/scanner.py:37` | `global _REALTIME_MODE`
+- `backend/app/events/alert.py:49` | `global _TABLE_READY`
+- `backend/app/flash/calendar.py:198` | `global _CAL_TABLE_READY`
+- `backend/app/flash/calendar_ahead.py:106` | `global _TABLE_READY`
+- `backend/app/flash/intraday_alerts.py:112` | `global _LAST_ANY_PUSH`
+- `backend/app/flash/intraday_alerts.py:136` | `global _LAST_ANY_PUSH`
+- `backend/app/flash/llm.py:161` | `global _USAGE_TABLE_READY`
+- `backend/app/flash/llm.py:203` | `global _USAGE_IMPORTED`
+- `backend/app/flash/llm.py:402` | `global _SHADOW_TABLE_READY`
+- `backend/app/flash/llm.py:525` | `global _last_call_ts`
+- `backend/app/flash/llm.py:549` | `global _last_error`
+- `backend/app/flash/llm.py:625` | `global _last_error`
+- `backend/app/flash/scheduler.py:402` | `global KLINE_CACHE_REFRESHED_TODAY`
+- `backend/app/flash/scheduler.py:474` | `global INDICATOR_CACHE_REFRESHED_TODAY`
+- `backend/app/flash/scheduler.py:944` | `global _backfill_last_try          # 模块级节流时间戳（见 BACKFILL_RETRY_INTERVAL_SEC）`
+- `backend/app/flash/signal_bus.py:56` | `global _table_ready`
+- `backend/app/flash/signal_bus.py:131` | `global _last_cleanup_day`
+- `backend/app/mainforce/gate_history.py:37` | `global _TABLE_READY`
+- `backend/app/routers/flash.py:212` | `global _ANALYSIS_READY`
+- `backend/app/routers/market.py:836` | `global _EMOTION_TABLE_READY`
+- `backend/app/routers/market.py:1159` | `global _TAIL_TABLE_READY`
+- `backend/app/routers/stock.py:607` | `global _STOCK_ANOMALY_READY`
+- `backend/app/routers/user.py:108` | `global _PLAN_COLS_READY`
+- `backend/app/scoring/indicator_cache.py:66` | `global _init_done`
+- `backend/app/scoring/kline_cache.py:75` | `global _init_done`
+- `backend/app/scoring/live_ranking.py:77` | `global _TABLE_READY`
+- `backend/app/strategies/base.py:170` | `global _ZZSHARE_CONN`
+- `backend/app/strategies/recommendation.py:77` | `global _STATE_TABLE_READY`
+- `scripts/event_edge_check.py:202` | `global E2_UP_RATIO, E2_LIMIT_UP, E2_LIMIT_UP_RATIO`
+- `scripts/generate-kline-pack.py:166` | `global _qps_next`
+- `scripts/generate-kline-pack.py:208` | `global _waf_wait_total`
+- `scripts/generate-kline-pack.py:243` | `global _waf_blocked_until, _consecutive_failures, _waf_backoff, _waf_events`
+- `scripts/generate-kline-pack.py:244` | `global _waf_last_event_ts, _waf_success_streak, PACK_QPS`
+- `scripts/generate-kline-pack.py:425` | `global _waf_blocked_until, _consecutive_failures, _proc_t0`
+- `scripts/generate-kline-pack.py:426` | `global _waf_backoff, _waf_success_streak`
+- `scripts/generate-kline-pack.py:959` | `global PACK_SOURCE`
+- `scripts/intraday_midday_reversal_check.py:217` | `global DROP`
+- `scripts/mf_edge_backfill.py:80` | `global _local_conn`
+- `scripts/pattern_launch_grid.py:214` | `global COST`
+- `zzshare/zzshare/__init__.py:16` | `global _default_api`
+
+## llm_usage_daily — 线上日熔断记账表引用（批量任务不得写入）（19 处）
+
+- `_tmp_scan_patterns.py:19` | `('llm_usage_daily', re.compile(r'llm_usage_daily'), '线上日熔断记账表引用（批量任务不得写入）'),`
+- `backend/app/data_files.py:15` | `· LLM 用量/日熔断基线 → DB 表 llm_usage_daily（同日迁库，文件仅作兜底）`
+- `backend/app/data_files.py:153` | `rows = db.fetch("SELECT day, calls FROM llm_usage_daily "`
+- `backend/app/flash/llm.py:118` | `row = db.fetch_one("SELECT calls FROM llm_usage_daily WHERE day = %s", (day,))`
+- `backend/app/flash/llm.py:165` | `CREATE TABLE IF NOT EXISTS llm_usage_daily (`
+- `backend/app/flash/llm.py:213` | `INSERT INTO llm_usage_daily`
+- `backend/app/flash/llm.py:228` | `★ toward_budget=False（影子调用）：token 照记，但不计入 llm_usage_daily.calls`
+- `backend/app/flash/llm.py:241` | `"INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "`
+- `backend/app/flash/llm.py:244` | `"calls = llm_usage_daily.calls + EXCLUDED.calls, "`
+- `backend/app/flash/llm.py:245` | `"prompt_tokens = llm_usage_daily.prompt_tokens "`
+- `backend/app/flash/llm.py:247` | `"completion_tokens = llm_usage_daily.completion_tokens "`
+- `backend/app/flash/llm.py:263` | `"INSERT INTO llm_usage_daily (day, calls, prompt_tokens, "`
+- `backend/app/flash/llm.py:281` | `db.execute("DELETE FROM llm_usage_daily WHERE day < %s", (cutoff,))`
+- `backend/app/flash/llm.py:308` | `"FROM llm_usage_daily ORDER BY day DESC LIMIT 7")`
+- `backend/app/routers/flash.py:34` | `#   ② 不久后连「财经日历 / LLM 用量」也迁进了 DB（flash_calendar / llm_usage_daily），`
+- `scripts/cleanup_holiday_keys.py:19` | `② **自然日键类（运营计数）⇒ 非交易日键 = 设计**：`llm_usage_daily` /`
+- `scripts/cleanup_holiday_keys.py:65` | `("llm_usage_daily", "day", "natural", "LLM 用量按**自然日**统计（周末也有调用）"),`
+- `scripts/daily_batch.py:656` | `· 运营计数表（`llm_usage_daily` / `llm_usage_by_provider` / `push_log`）按**自然日**`
+- `scripts/fix_restored_constraints.py:106` | `("llm_usage_daily", "PK", ["day"]),`
+
+## long_functions（>120 行，共 81 个）
+
+- `backend/app/daily_report.py:536` | `build_data_md` | 381 行
+- `scripts/backtest_ma_convergence.py:256` | `main` | 295 行
+- `backend/app/routers/market.py:1472` | `market_emotion` | 271 行
+- `backend/app/routers/scoring.py:1271` | `score_top` | 251 行
+- `backend/app/trader_brief.py:984` | `build_decision_card` | 246 行
+- `scripts/subfactor_ic_backtest.py:158` | `run` | 245 行
+- `scripts/generate_backend_pack.py:405` | `main` | 241 行
+- `scripts/regime_external_lead_test.py:169` | `main` | 214 行
+- `zzshare/zzshare/client.py:549` | `daily` | 212 行
+- `scripts/update_backend_pack_incremental.py:153` | `main` | 203 行
+- `scripts/lhb_edge_check.py:333` | `main` | 200 行
+- `backend/app/strategies/recommendation.py:142` | `_recompute_whitelist` | 188 行
+- `scripts/rebound_leading_indicators.py:126` | `main` | 187 行
+- `scripts/quality_defense_backtest.py:403` | `main` | 187 行
+- `backend/app/scenario_watch.py:203` | `evaluate` | 187 行
+- `backend/app/routers/scoring.py:978` | `score_single` | 187 行
+- `scripts/lhb_executability_check.py:143` | `main` | 186 行
+- `zzshare/zzshare/cli.py:8` | `main` | 183 行
+- `backend/app/flash/llm.py:1261` | `build_diagnosis_prompt` | 183 行
+- `scripts/pattern_launch_check.py:695` | `main` | 174 行
+- `backend/app/trader_brief.py:94` | `collect_brief_data` | 168 行
+- `scripts/event_edge_check.py:201` | `main` | 161 行
+- `backend/app/routers/stock.py:61` | `stock_technical` | 161 行
+- `scripts/update_pack_incremental.py:169` | `main` | 160 行
+- `backend/app/backtest/engine.py:63` | `match_signals` | 160 行
+- `scripts/pattern_launch_grid.py:199` | `main` | 158 行
+- `backend/app/signals/tracker.py:499` | `update_signals` | 156 行
+- `backend/app/routers/scoring.py:536` | `backtest` | 155 行
+- `backend/app/portfolio_radar.py:525` | `_build_impl` | 154 行
+- `scripts/engine_diagnosis_v0.py:74` | `main` | 153 行
+- `backend/app/routers/stock.py:897` | `stock_anomaly_analysis` | 152 行
+- `backend/app/flash/scheduler.py:2332` | `start` | 152 行
+- `scripts/publish_packs_local.py:167` | `main` | 151 行
+- `backend/app/scoring/indicator_cache.py:523` | `incremental_update` | 151 行
+- `scripts/reversal_composite_edge_check.py:329` | `main` | 150 行
+- `backend/app/routers/scoring.py:362` | `_batch_with_precise_top` | 149 行
+- `backend/app/sector_strength.py:106` | `compute` | 148 行
+- `scripts/intraday_midday_reversal_check.py:213` | `main` | 147 行
+- `scripts/event_threshold_lower.py:198` | `main` | 147 行
+- `scripts/paper_vs_backtest_check.py:255` | `write_report` | 145 行
+- `scripts/gate_ready_backtest.py:350` | `main` | 143 行
+- `scripts/sector_linkage_edge_check.py:271` | `part_b` | 142 行
+- `backend/app/main.py:61` | `lifespan` | 142 行
+- `backend/app/strategies/paper_trading.py:226` | `auto_ingest_signals` | 139 行
+- `backend/app/routers/scoring.py:221` | `_precise_score_sync` | 139 行
+- `scripts/event_threshold_ratio.py:149` | `main` | 138 行
+- `scripts/sector_momentum_edge_check.py:137` | `main` | 137 行
+- `scripts/shrink_rebound_byperiod.py:68` | `main` | 136 行
+- `backend/app/routers/scoring.py:839` | `weight_advice` | 136 行
+- `backend/app/signals/tracker.py:749` | `build_audit` | 135 行
+- `scripts/regime_position_check.py:186` | `main` | 134 行
+- `scripts/generate-kline-pack.py:417` | `fetch_kline` | 133 行
+- `scripts/flow_consec_edge_check.py:285` | `main` | 133 行
+- `scripts/smallcap_pref_check.py:152` | `main` | 132 行
+- `scripts/event_threshold_sensitivity.py:136` | `main` | 131 行
+- `backend/app/routers/system.py:613` | `memory_diag` | 131 行
+- `scripts/shadow_rank_edge_check.py:160` | `main` | 130 行
+- `backend/app/routers/scoring.py:1803` | `_calc_technical_fast` | 130 行
+- `.history/backend/app/routers/scoring_20260824095547.py:866` | `_calc_technical_fast` | 130 行
+- `.history/backend/app/routers/scoring_20260824095347.py:866` | `_calc_technical_fast` | 130 行
+- `backend/app/strategies/exit_alert.py:91` | `check_single_exit` | 128 行
+- `backend/app/backtest/market_regime.py:166` | `detect_market_regime` | 128 行
+- `backend/app/strategies/old_duck_head.py:118` | `_detect_duck_pattern` | 127 行
+- `backend/app/stock_diagnosis.py:111` | `build_facts` | 127 行
+- `scripts/shrink_rebound_strategy.py:105` | `main` | 126 行
+- `backend/app/strategies/paper_trading.py:434` | `fill_pending_positions` | 126 行
+- `backend/app/routers/capital.py:91` | `dragon_tiger` | 126 行
+- `backend/app/policy_bottom_watch.py:496` | `evaluate` | 126 行
+- `backend/app/earnings_pressure.py:171` | `scan` | 126 行
+- `scripts/generate-kline-pack.py:943` | `main` | 125 行
+- `backend/app/scoring/indicator_cache.py:273` | `compute_latest_indicators` | 125 行
+- `scripts/strategy_lowvol_admission_test.py:141` | `main` | 124 行
+- `scripts/accum_pullback_backtest.py:98` | `main` | 124 行
+- `backend/app/tencent.py:683` | `get_kline` | 124 行
+- `scripts/mainforce_factor_backtest.py:213` | `build_samples` | 123 行
+- `scripts/industry_momentum_check.py:164` | `main` | 123 行
+- `scripts/factor_analysis.py:325` | `build_report` | 123 行
+- `backend/backfill_history.py:260` | `backfill_daily` | 121 行
+- `backend/app/scoring/engine.py:1747` | `_calc_trend_health` | 121 行
+- `.history/backend/app/routers/scoring_20260824095547.py:281` | `backtest` | 121 行
+- `.history/backend/app/routers/scoring_20260824095347.py:281` | `backtest` | 121 行
+
+## todo_fixme（共 8 处，BACKLOG 逐条判定输入）
+
+- `_tmp_scan_patterns.py:77` | # TODO/FIXME 盘点输入
+- `_tmp_scan_patterns.py:79` | todo_rx = re.compile(r'\b(TODO|FIXME|XXX|HACK|待补|待办|待做)\b')
+- `backend/app/tencent.py:48` | #     不报错、不崩，但也不产生信号）—— 这是 A2（数据源扩容）待办，需要架构调整。
+- `backend/app/strategies/base.py:118` | # TODO: 实现板块关联查询（需要板块成分股数据）
+- `frontend/src/views/Workbench.vue:2717` | //   - 时间轴只切换主工作区；右栏（待办/持仓/推送摘要）全天常驻
+- `frontend/src/views/Workbench.vue:4064` | //   口径：只取 `status === 'waiting'`（已触发/已完成的不该再叫"待办"）。
+- `frontend/src/workers/indicatorWorker.js:307` | // TODO: 实现真正的增量更新
+- `scripts/news_score_validation.py:4` | 【文件作用】消息分（news_score）vs 未来收益验证（CONTEXT 待办 #5 的固化）
+
