@@ -53,6 +53,21 @@ def macro_rules():
     return {"version": RULES_VERSION, "rules": RULES}
 
 
+@router.get("/liquidity")
+def macro_liquidity(days: int = Query(30, ge=5, le=120,
+                                      description="历史序列天数（趋势用）")):
+    """流动性三件套（两融 / 期指基差 / 中美利差）—— 日批落库的历史序列 + 最新一期。
+
+    匿名理由（AUTH_POLICY §2）：GET 只读、读 liquidity_daily 小表（≤120 行）、
+    无外部请求（**不在请求里现拉**——两融/基差的实时链路另有 margin_sentiment /
+    /macro/panel，本接口只读落库结果，保证口径可审计）。
+    ★ **纯观察器，不进决策链**；两融为 T+1 数据（margin_date 列自证）；
+    基差=现货−期货收盘（正=贴水，当月合约）。口径全文见 `app/liquidity_watch.py`。
+    """
+    from app import liquidity_watch
+    return liquidity_watch.load(days)
+
+
 @router.get("/earnings-pressure")
 def earnings_pressure(limit: int = Query(30, ge=5, le=200), refresh: bool = False,
                       _user: Optional[dict] = Depends(get_current_user_optional)):

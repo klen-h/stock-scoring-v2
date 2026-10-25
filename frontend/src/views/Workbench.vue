@@ -212,7 +212,7 @@
                  现在既然可换行，就用足屏幕 —— 两列 grid（支撑/压制、过热/过冷）也更舒展）。 -->
             <MacroEnvCard full :macro="macro" :macro-err="macroErr" :temperature="temperature"
                           :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
-                          :futures-basis="macroFuturesBasis" />
+                          :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
           </div>
         </Teleport>
       </div>
@@ -968,7 +968,7 @@
                  顶栏浮层让它在**任何阶段**都能看。 -->
           <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
                         :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
-                        :futures-basis="macroFuturesBasis" />
+                        :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
           <!-- ★ 2026-10-10（P0-2）：央行储备月度面板（月频慢变量，非信号）。紧跟宏观卡，
                与「宏观与环境」构成"环境 → 慢变量背景"的阅读顺序；自取数据、不参与轮询。 -->
           <ReserveCard />
@@ -2859,6 +2859,8 @@ import {
   getUserPlans,
   // ★ 2026-10-25：李大霄视角卡（观察器；xiaopage 事件推送，只读）
   getLidaxiaoView,
+  // ★ 2026-10-25：流动性三件套（两融/基差/中美利差 日批落库序列；观察器，只读）
+  getMacroLiquidity,
 } from '../api'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
@@ -3188,6 +3190,17 @@ const macroSentiment = ref(null)
 //     （不含该字段）⇒ 挂上去会"时有时无"（与 `macroSentiment` 同款理由）。
 //   纯展示层、不进决策链（口径与三条边界见后端 `macro.get_index_futures_basis`）。
 const macroFuturesBasis = ref(null)
+// ★ 2026-10-25（eypai 溯源调研）：流动性三件套（两融/中美利差/当月贴水率）的
+//   **日批落库历史序列**（`/macro/liquidity`）—— 基差块的"须先积累历史基线"由此积累。
+//   日频快照 ⇒ 进页面加载一次即可（不挂轮询）；口径见后端 `app/liquidity_watch.py`。
+//   纯展示层、不进决策链。
+const macroLiquidity = ref(null)
+async function loadLiquidity() {
+  try {
+    const { data } = await getMacroLiquidity(30)
+    if (data && data.ok) macroLiquidity.value = data
+  } catch { /* 静默保留上次值 */ }
+}
 // ★ 2026-09-25：仓位建议的**定量上限**（`/api/user/position-sizing` 的 total_limit_pct）。
 //   宏观卡原只显示 LLM 的定性词（如"轻仓观望"），补上引擎算出的具体上限数字。
 const sizing = ref(null)
@@ -4934,7 +4947,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

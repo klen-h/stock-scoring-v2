@@ -174,6 +174,49 @@
           </div>
         </div>
       </div>
+      <!-- ★ 2026-10-25（eypai 溯源调研）：流动性三件套（两融余额 / 中美利差 / 当月贴水率）
+           —— 日批落库（app/liquidity_watch.py），正是上方基差块"须先积累历史基线"的那段历史。
+           ⚠️ 配色纪律：**迷你条一律中性蓝**（水位不是涨跌）；只有两融"当日/5日净变化"
+           用红绿（那是真正的方向量）。两融为 T+1 数据（margin_date 自证）。
+           ⚠️ 纯观察器不进决策链；数据为日批快照，非实时（实时链路另有 /macro/panel）。 -->
+      <div v-if="liq" class="mt-2 pt-2 border-t border-border/40 text-[11px]">
+        <div class="flex items-baseline gap-2 text-muted mb-1">
+          <span>流动性三件套</span>
+          <span class="text-[10px] text-muted/70"
+                title="两融为 T+1 数据（沪+深，亿元；兜底源=沪深北口径）；利差=中债10Y−美债10Y（bp）；贴水率=当月合约基差率（正=贴水）。纯观察器，不进决策链">ⓘ</span>
+          <span v-if="liqDegraded" class="text-[10px] text-amber-400/80"
+                :title="'日批当日缺数据源：' + liqDegraded + '（失败不落值，不填 0）'">缺:{{ liqDegraded }}</span>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+          <div class="flex items-center gap-1.5 min-w-0 cursor-help" :title="liqMarginTitle">
+            <span class="text-muted flex-shrink-0">两融</span>
+            <span class="font-mono text-gray-200">{{ liqMarginWanYi }}</span>
+            <span class="font-mono text-[10px]" :class="dirNumClass(liq.latest?.margin?.add_yi)">
+              {{ fmtSigned(liq.latest?.margin?.add_yi) }}亿</span>
+            <span class="text-[10px] text-muted font-mono">
+              5日 {{ fmtSigned(liq.latest?.margin?.chg5_yi) }}亿</span>
+            <span class="text-[10px] text-muted/70">({{ (liq.latest?.margin?.date || '').slice(5) }})</span>
+          </div>
+          <div class="flex items-center gap-1.5 min-w-0 cursor-help" :title="liqSpreadTitle">
+            <span class="text-muted flex-shrink-0">中美利差</span>
+            <span class="font-mono text-gray-200">{{ fmtSigned(liq.latest?.bonds?.spread_bp) }}bp</span>
+            <span class="text-[10px] text-muted font-mono">
+              中债 {{ liq.latest?.bonds?.cn10y ?? '—' }}% / 美债 {{ liq.latest?.bonds?.us10y ?? '—' }}%</span>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 mt-1">
+          <div v-for="c in liqCharts" :key="'lc' + c.key"
+               class="flex items-center gap-1.5 min-w-0" :title="c.title">
+            <span class="text-[10px] text-muted/80 flex-shrink-0">{{ c.label }}</span>
+            <div class="flex items-end gap-[2px] h-6 flex-1 min-w-0">
+              <div v-for="(h, i) in c.bars" :key="c.key + i"
+                   class="flex-1 min-w-[2px] rounded-t"
+                   :class="i === c.bars.length - 1 ? 'bg-[#58a6ff]' : 'bg-[#58a6ff]/50'"
+                   :style="{ height: h + '%' }"></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -217,6 +260,9 @@ const props = defineProps({
   //   ⚠️ 独立 prop 而非从 `macro` 取：`macro` 可能是 `macro_daily` 的**当日锁定快照**
   //     （不含该字段）⇒ 挂上去会时有时无（与 `sentiment` 同款处理）。
   futuresBasis: { type: Object, default: null },
+  // ★ 2026-10-25：流动性三件套（两融/中美利差/当月贴水率，日批落库 `/macro/liquidity`）。
+  //   日频快照数据 ⇒ Workbench 进页面加载一次即可（不挂轮询）；`latest` 为空整块不渲染。
+  liquidity: { type: Object, default: null },
   // ★ 2026-09-29（用户："你改为展示全部吧，宽度自适应"）：`full = true` ⇒ **展示全部**：
   //   首行允许**换行**、所有长文本**不截断**（顶栏浮层用 —— 浮层里没有"必须单行"的理由，
   //   而截断会让用户看不到 叙事/仓位建议 的全文）。
@@ -290,5 +336,71 @@ const basisRows = computed(() => {
 const basisNote = computed(() => {
   const a = props.futuresBasis?.as_of
   return `当月合约（正=贴水）${a ? ' · ' + a.slice(5, 16) : ''}`
+})
+
+// ★ 2026-10-25：流动性三件套 —— 两融/中美利差/当月贴水率的近 30 日迷你趋势。
+//   【配色纪律】迷你条一律中性蓝（水位不是涨跌）；只有两融"净变化"用红绿（方向量）。
+//   【口径】两融 T+1（沪+深，亿元）；利差 bp；贴水率 = 当月基差率（正=贴水，年化敏感不用于趋势）。
+const liq = computed(() => (props.liquidity && props.liquidity.latest) ? props.liquidity : null)
+const liqDegraded = computed(() => props.liquidity?.degraded || '')
+const liqMarginWanYi = computed(() => {
+  const t = props.liquidity?.latest?.margin?.total_yi
+  return t == null ? '—' : (t / 10000).toFixed(2) + '万亿'
+})
+function fmtSigned(v) {
+  const n = Number(v)
+  if (v == null || Number.isNaN(n)) return '—'
+  const r = Math.abs(n) >= 100 ? Math.round(n) : Math.round(n * 10) / 10
+  return (r > 0 ? '+' : '') + r
+}
+function dirNumClass(v) {
+  const n = Number(v)
+  if (v == null || Number.isNaN(n) || n === 0) return 'text-muted'
+  return n > 0 ? 'text-rise' : 'text-fall'
+}
+// 序列 → 8~100% 归一化高度（null 留 0 = 缺数据不假装）；全平序列给中位高度
+function barHeights(series) {
+  const vals = (series || []).filter(v => v != null)
+  if (!vals.length) return []
+  const mn = Math.min(...vals), mx = Math.max(...vals)
+  const span = (mx - mn) || 1
+  return (series || []).map(v => v == null ? 0 : 8 + Math.round(((v - mn) / span) * 92))
+}
+function _rangeTitle(series, unit) {
+  const vals = (series || []).filter(v => v != null)
+  if (vals.length < 2) return ''
+  return `区间 ${Math.round(Math.min(...vals) * 100) / 100}~${Math.round(Math.max(...vals) * 100) / 100}${unit} · 最新 ${Math.round(vals[vals.length - 1] * 100) / 100}${unit}`
+}
+const liqMarginTitle = computed(() => {
+  const m = props.liquidity?.latest?.margin || {}
+  return [
+    `两融余额（${m.src === 'eastmoney' ? '沪深北' : '沪+深'}，亿元；T+1 数据 ${m.date || '—'}）`,
+    `沪 ${m.sse_yi ?? '—'} / 深 ${m.szse_yi ?? '—'}（东财兜底源无分拆）`,
+    `当日净变化 ${fmtSigned(m.add_yi)}亿 · 5日 ${fmtSigned(m.chg5_yi)}亿`,
+    _rangeTitle((props.liquidity?.history || []).map(h => h.margin_total_yi), '亿'),
+    '两融净增=杠杆资金流入；口径台阶（沪+深 vs 沪深北）以 margin_src 为准',
+  ].join('\n')
+})
+const liqSpreadTitle = computed(() => {
+  const b = props.liquidity?.latest?.bonds || {}
+  return [
+    `中美利差 = 中债10Y − 美债10Y（bp，负=中债低于美债）`,
+    `中债 ${b.cn10y ?? '—'}% / 美债 ${b.us10y ?? '—'}% · 利差 ${fmtSigned(b.spread_bp)}bp`,
+    _rangeTitle((props.liquidity?.history || []).map(h => h.spread_bp), 'bp'),
+  ].join('\n')
+})
+const liqCharts = computed(() => {
+  const hist = props.liquidity?.history || []
+  const pick = fn => hist.map(fn)
+  const mk = (key, label, series, title) => {
+    const bars = barHeights(series)
+    return bars.length ? { key, label, bars, title: title + '\n' + _rangeTitle(series, '') } : null
+  }
+  return [
+    mk('margin', '两融余额', pick(h => h.margin_total_yi), '近30日两融余额（亿元）'),
+    mk('spread', '中美利差', pick(h => h.spread_bp), '近30日中美利差（bp）'),
+    mk('if', 'IF贴水率', pick(h => h.basis_rate?.IF), '近30日 IF 当月贴水率（%），正=贴水'),
+    mk('im', 'IM贴水率', pick(h => h.basis_rate?.IM), '近30日 IM 当月贴水率（%），正=贴水（含雪球/DMA 结构性需求）'),
+  ].filter(Boolean)
 })
 </script>

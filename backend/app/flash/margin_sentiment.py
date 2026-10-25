@@ -125,6 +125,10 @@ def get_margin(days: int = 10) -> dict | None:
         data = {"date": latest.get("date"), "fund_bal": round(fund_bal, 1),
                 "fund_bal_chg5": chg5, "fund_buy": round(fund_buy, 1),
                 "short_bal": round(short_bal, 1), "partial_latest": partial_latest,
+                # ★ 2026-10-25：沪/深分拆（流动性三件套落库用，liquidity_watch）——
+                #   口径 = 最新**完整行**的沪/深两融合计（与 fund_bal 同行，加和自洽）
+                "sse_yi": round(_f(latest.get("sh_fund_stock_bal")) or 0, 1),
+                "szse_yi": round(_f(latest.get("sz_fund_stock_bal")) or 0, 1),
                 "hist": hist}
         _margin_cache.update(data=data, ts=now)
         return data

@@ -251,6 +251,11 @@ export const getPolicyAnnouncements = (date = '') =>
 export const getLidaxiaoView = (limit = 14) =>
   http.get('/market/lidaxiao', { params: { limit } })
 
+// ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差，日批落库的历史序列 + 最新一期；
+// 纯观察器不进决策链，口径见后端 app/liquidity_watch.py）。日频数据，进页面加载即可。
+export const getMacroLiquidity = (days = 30) =>
+  http.get('/macro/liquidity', { params: { days } })
+
 // 手动重扫（不推企微）；网络请求最长约 30~60s（2 个关键词 × 最多 5 页）
 export const refreshPolicyAnnouncements = (date = '') =>
   http.post('/market/policy-bottom/announcements/refresh', null,

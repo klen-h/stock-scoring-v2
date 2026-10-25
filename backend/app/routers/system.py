@@ -198,6 +198,9 @@ _SOURCES = [
     # ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读**事件推送**落库；他非每日发视频，
     #   滞后 2~7 天是常态不是故障 ⇒ 容忍放宽到 15 交易日；断流=推送异常或上游停更）
     ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送（不定期）", 15),
+    # ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差）日批落库——
+    #   两融本身是 T+1 数据（margin_date 列），MAX(date) 取的是落库日
+    ("流动性三件套", "SELECT MAX(date) AS v FROM liquidity_daily", "日批 盘后", 2),
 ]
 
 
