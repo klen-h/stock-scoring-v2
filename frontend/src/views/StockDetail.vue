@@ -242,22 +242,13 @@
             <span class="text-muted font-mono w-4 text-right shrink-0">{{ i + 1 }}</span>
             <span class="px-1 rounded bg-white/5 text-gray-300 shrink-0">{{ f.group }}·{{ f.label }}</span>
             <span class="text-gray-200">{{ f.value }}</span>
-            <span class="text-muted ml-auto shrink-0 font-mono text-[10px]" :title="f.source + (f.as_of ? ' · ' + f.as_of : '')">
-              {{ f.source }}<template v-if="f.as_of"> · {{ f.as_of }}</template>
+            <span class="text-muted ml-auto shrink-0 text-[10px]" :title="f.source + (f.as_of ? ' · ' + f.as_of : '')">
+              {{ f.source_cn || f.source }}<template v-if="f.as_of"> · {{ f.as_of }}</template>
             </span>
           </div>
         </div>
         <div v-if="diag.gaps && diag.gaps.length" class="mt-2 text-xs text-amber-400/80">
           数据缺失（如实披露）：{{ diag.gaps.join('；') }}
-        </div>
-        <div v-if="diag.signal_status && diag.signal_status.length"
-          class="mt-3 pt-3 border-t border-border space-y-1">
-          <div class="text-xs text-muted">各信号的检验状态（决定它能否进决策链）</div>
-          <div v-for="s in diag.signal_status" :key="s.name" class="text-xs flex items-baseline gap-2">
-            <span class="px-1 rounded shrink-0"
-              :class="s.in_decision ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/5 text-muted'">{{ s.name }}</span>
-            <span class="text-muted">{{ s.status }}</span>
-          </div>
         </div>
         <div v-if="diag.disclaimer" class="mt-2 text-xs text-amber-400/70">{{ diag.disclaimer }}</div>
       </div>
@@ -529,6 +520,20 @@
         <div class="mt-3 text-[11px] text-muted">东财 7×24 快讯 + 关键词规则打分（72h 衰减）；独立维度不进总分，仅供参考</div>
       </div>
       <div v-else class="bg-card border border-border rounded-lg p-6 text-xs text-muted text-center">消息面加载中…</div>
+
+      <!-- ★ 2026-10-25（用户）：检验状态块从评分 tab 左栏诊断区迁来——右栏消息面卡下方
+           空间充裕，且左栏一页纸诊断内容过长。文案后端下发（SIGNAL_STATUS 唯一事实源）。 -->
+      <div v-if="diag.signal_status && diag.signal_status.length"
+        class="bg-card border border-border rounded-lg p-4">
+        <div class="text-xs text-muted mb-2">各信号的检验状态（决定它能否进决策链）</div>
+        <div class="space-y-1.5">
+          <div v-for="s in diag.signal_status" :key="s.name" class="text-xs flex items-start gap-2">
+            <span class="px-1 rounded shrink-0"
+              :class="s.in_decision ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/5 text-muted'">{{ s.name }}</span>
+            <span class="text-muted leading-relaxed">{{ s.status }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ④ K 线页签：K线图 + 支撑阻力 + RSI -->
