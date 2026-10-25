@@ -74,15 +74,34 @@
             <td class="px-2 text-center font-mono" :class="cls(r.chg_pct)">{{ fmt(r.chg_pct) }}</td>
             <td class="px-2 text-center font-mono" :class="cls(r.ret5)">{{ fmt(r.ret5) }}</td>
             <td class="px-2 text-center font-mono" :class="cls(r.ret20)">{{ fmt(r.ret20) }}</td>
-            <td class="px-2 text-center font-mono text-muted">{{ r.dist_from_60d_high != null ? r.dist_from_60d_high.toFixed(0) + '%' : '—' }}</td>
-            <td class="px-2 text-center font-mono">{{ r.score_total ?? '—' }}</td>
-            <td class="px-2 text-center font-mono text-muted">{{ r.rank_pos ?? '—' }}</td>
-            <!-- ★ 2026-10-26（用户："主力阶段现在是英文"）：走全站唯一映射 `phaseCn`
-                 （优先后端 phase_cn，缺失回退 displayMeta.PHASE_CN） -->
-            <td class="px-2 text-center">{{ phaseCn(r.phase) || '—' }}</td>
+            <!-- 距高点：贴近高点（≥ −3%）标高亮，越远离越灰 —— 位置感一眼看出 -->
+            <td class="px-2 text-center font-mono" :class="highCls(r.dist_from_60d_high)">
+              {{ r.dist_from_60d_high != null ? r.dist_from_60d_high.toFixed(0) + '%' : '—' }}</td>
+            <!-- 综合分：全站 scoreClass（≥65 红 / ≥45 琥珀 / 其余灰） -->
+            <td class="px-2 text-center font-mono font-bold" :class="scoreClass(r.score_total)">
+              {{ r.score_total ?? '—' }}</td>
+            <td class="px-2 text-center font-mono" :class="rankCls(r.rank_pos)">{{ r.rank_pos ?? '—' }}</td>
+            <!-- ★ 2026-10-26（用户："主力阶段现在是英文"→中文；"颜色区分，如吸筹原是绿色标签"）：
+                 文案走 `phaseCn`（后端 phase_cn 优先），配色复用全站 `PHASE_STYLE`
+                 —— 语义是 **绿=机会 / 红=风险**（吸筹绿、出货红、拉升琥珀=追高、洗盘青、
+                 下跌灰、盘整无底色），与榜单页/观察池同一份映射，不另建一套。 -->
+            <td class="px-2 text-center">
+              <span v-if="r.phase"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-help"
+                    :class="(PHASE_STYLE[r.phase] || {}).cls || 'bg-white/5 text-muted'"
+                    :title="(PHASE_STYLE[r.phase] || {}).tip || ''">{{ phaseCn(r.phase) }}</span>
+              <span v-else class="text-muted">—</span>
+            </td>
             <td class="px-2 text-center font-mono" :class="pct(r.flow5_amt_yi)">
               {{ r.flow5_amt_yi != null ? r.flow5_amt_yi.toFixed(1) : '—' }}</td>
-            <td class="px-2 text-center text-muted">{{ r.gate_ready != null ? r.gate_ready + '/3' : '—' }}</td>
+            <!-- 闸门：与观察池同款 `readyChipCls`（3/3 绿、2/3 琥珀、其余灰；状态展示非信号） -->
+            <td class="px-2 text-center">
+              <span v-if="r.gate_ready != null"
+                    class="px-1 rounded font-mono text-[10px] font-bold cursor-help"
+                    :class="readyChipCls(r.gate_ready)"
+                    title="买入条件就绪度（状态展示，非买入信号）">{{ r.gate_ready }}/3</span>
+              <span v-else class="text-muted">—</span>
+            </td>
             <td class="px-2 text-center">
               <span v-if="r.lhb_big_net_sell" class="text-amber-400" title="最近上榜为大额净卖（PASS-回避）">回避</span>
               <span v-else class="text-muted">—</span></td>
@@ -105,6 +124,24 @@
       <span class="text-muted">{{ page + 1 }} / {{ Math.ceil(total / f.size) }}</span>
       <button @click="page++" :disabled="(page + 1) * f.size >= total" class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">下一页</button>
     </div>
+    <!-- ★ 2026-10-26：配色图例（两套色系并存，必须说明，否则"绿=机会/绿=跌"会打架） -->
+    <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted">
+      <span class="text-gray-300">配色</span>
+      <span>阶段
+        <span class="ml-0.5 px-1 rounded bg-emerald-500/20 text-emerald-400">吸筹</span>
+        <span class="px-1 rounded bg-red-500/20 text-red-400">出货</span>
+        <span class="px-1 rounded bg-amber-500/20 text-amber-400">拉升</span>
+        <span class="px-1 rounded bg-cyan-500/20 text-cyan-300">洗盘</span>
+        <span class="px-1 rounded bg-zinc-500/20 text-zinc-400">下跌</span>
+        <span class="px-1 rounded bg-white/5">盘整</span>
+        <span class="text-muted/70">（绿=机会，红=风险，非涨跌）</span>
+      </span>
+      <span>涨跌/资金流 <span class="text-rise font-mono">+</span>/<span class="text-fall font-mono">−</span>
+        <span class="text-muted/70">（红=涨/净流入）</span></span>
+      <span>闸门 <span class="px-1 rounded bg-emerald-500/20 text-emerald-400 font-mono">3/3</span></span>
+      <span>距高点 <span class="text-amber-300 font-mono">≥−3%</span>
+        <span class="text-muted/70">（贴近 60 日高）</span></span>
+    </div>
     <div class="mt-3 text-[10px] text-muted leading-relaxed">
       徽章口径：评分〔预登记 FAIL 2026-10-11，禁作买入依据〕· 龙虎榜回避〔PASS-回避侧〕· 形态〔预登记中〕· 板块联动〔影子期 PARTIAL〕· 防御组〔H2' 影子中〕· 闸门〔状态展示非信号〕。
       本表 = 事实组合筛选，不含任何加权综合分（加权=新信号须预登记）。
@@ -116,8 +153,10 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 // ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
 import { getStockFactsWide } from '../api'
-// 主力阶段英文枚举 → 中文（唯一映射源后端 phases.PHASE_CN，前端兜底表在 displayMeta）
-import { phaseCn } from '../composables/displayMeta'
+// 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
+// ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
+//   `PHASE_STYLE`（绿=机会/红=风险）与 `scoreClass`、`readyChipCls`，不另建一套配色。
+import { phaseCn, PHASE_STYLE, scoreClass, readyChipCls } from '../composables/displayMeta'
 
 const rows = ref([])
 const total = ref(0)
@@ -180,5 +219,20 @@ function pct(v) {
   const n = Number(v)
   if (!Number.isFinite(n) || n === 0) return 'text-muted'
   return n > 0 ? 'text-rise' : 'text-fall'
+}
+// 距 60 日高点：≥ −3% = 贴近高点（高位区，琥珀提示）；≤ −20% 明显回落（灰淡）；
+// 其余中性 —— 这是**位置事实**，不与「红涨绿跌」混用同一套语义。
+function highCls(v) {
+  if (v == null) return 'text-muted'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 'text-muted'
+  if (n >= -3) return 'text-amber-300'
+  if (n <= -20) return 'text-muted/60'
+  return 'text-gray-300'
+}
+// 名次：精算榜前 50 高亮（在榜前列），其余保持灰
+function rankCls(v) {
+  if (v == null) return 'text-muted'
+  return Number(v) <= 50 ? 'text-gray-200 font-bold' : 'text-muted'
 }
 </script>
