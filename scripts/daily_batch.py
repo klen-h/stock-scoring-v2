@@ -115,10 +115,16 @@ def task_mainflow():
       ⇒ 「主力」列大面积空白。`get_all_codes()` 已改取并集，这里再补一次**当日缺口**
       （增量：日更后通常只剩个位数，成本≈0）。
     """
-    from app.mainforce.flow import backfill_all, backfill_missing
+    from app.mainforce.flow import backfill_all, backfill_missing, backfill_today
     base = backfill_all()
-    gap = backfill_missing()
-    return f"资金流回填: {base}；补洞: {gap}"
+    # ★★ 2026-10-25（用户实测：逐只补 1803 只花了 53 分钟，且**每天都会重来**——
+    #   backfill_all 只覆盖 backtest_prices 的 1032 只，其余 ~1800 只天天"缺当日"）：
+    #   当日缺口改用**全市场批量**（东财 clist，~55 请求 ≈1 分钟）。
+    #   `backfill_missing` 只作"整段没历史"的兜底，并用 env 限流，避免再拖 50 分钟。
+    today = backfill_today()
+    limit = int(os.environ.get("MAINFLOW_GAP_LIMIT") or 0)
+    gap = backfill_missing(limit=limit)
+    return f"资金流回填: {base}；当日批量: {today}；历史兜底: {gap}"
 
 
 def task_market_snapshot():
@@ -1239,6 +1245,29 @@ def task_key_level_watch():
         return f"关键位: WARN {str(e)[:70]}"
 
 
+def task_liquidity_watch():
+    """流动性三件套日度落库（2026-10-25，eypai 溯源调研结论）。**纯观察器，不进决策链**。
+
+    ★ 三件套 = 两融余额 / 期指基差(当月) / 中美利差 —— 实时链路早已存在
+      （金十两融 + macro 面板基差/cn10y），本任务补的是**每日落库**（历史序列从此积累，
+      MacroEnvCard 基差块"须先积累历史基线"的 TODO 由此开始）。
+    ★ 数据直连公开上游，不依赖 eypai：两融=金十(沪+深)→东财 LSHJ(沪深北)兜底；
+      基差/债券=新浪批量（复用 macro 面板，零新增请求路径）。
+    ★ fail-open：单源失败落 NULL + degraded 标注，**绝不抛错**（断档由首页
+      新鲜度面板兜底）；同日重跑幂等（date 主键 upsert）。
+    """
+    try:
+        from app import liquidity_watch as lw
+        r = lw.run_daily()
+        if not r.get("ok"):
+            return f"流动性三件套: WARN {str(r.get('error'))[:70]}"
+        m = r.get("margin_date") or "—"
+        extra = f"，缺:{'/'.join(r.get('degraded'))}" if r.get("degraded") else ""
+        return f"流动性三件套: {r.get('date')} 落库（两融截至 {m}{extra}）"
+    except Exception as e:
+        return f"流动性三件套: WARN {str(e)[:70]}"
+
+
 def task_policy_bottom_watch():
     """市场底确认清单（★ 2026-10-18，**纯观察器，非信号**）。
 
@@ -1372,6 +1401,9 @@ TASKS = {
     "crowding_watch": (task_crowding_watch, "拥挤赛道观察器（行业30日/高位占比）"),
     "key_level_watch": (task_key_level_watch, "指数关键位观察器（前低/整数位）"),
     "ai_basket_watch": (task_ai_basket_watch, "AI硬件篮子回撤观察器"),
+    # ★ 2026-10-25 新增（eypai 溯源调研）：两融/期指基差/中美利差 每日落库——
+    #   实时链路早已有（金十两融 + macro 面板），补的是历史序列；fail-open。
+    "liquidity_watch": (task_liquidity_watch, "流动性三件套日度落库（两融/基差/利差）"),
     "scenario_watch": (task_scenario_watch, "磨底2.0推演证伪记分卡"),
     "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
     "daily_report": (task_daily_report, "每日日报"),
@@ -1395,6 +1427,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "sector_strength",
                  "crowding_watch", "key_level_watch", "ai_basket_watch",
+                 "liquidity_watch",
                  "rank_live", "sector_linkage",
                  "shadow_rank", "shadow_defensive", "pattern_launch_scan",
                 # ★ 2026-10-25 补排单（BK-47 同类错配，被 daily_batch 自检抓住）：

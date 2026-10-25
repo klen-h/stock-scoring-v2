@@ -256,6 +256,134 @@ def get_all_codes() -> list:
     return [{"code": r["code"], "name": r["name"]} for r in rows]
 
 
+# ── 当日全市场批量（★ 2026-10-25：把"逐只 53 分钟"压成"~1 分钟"）─────────────
+#   用户实测：`backfill_missing` 1803 只 × 1.8s ≈ 53 分钟，**而且每天都会重来一遍**
+#   （`backfill_all` 只覆盖 backtest_prices 的 1032 只 ⇒ 其余 ~1800 只天天"缺当日"）。
+#   东财 clist 支持一次按页返回全市场当日资金流（f62 主力净额 / f66 超大单 / f72 大单 /
+#   f184 主力占比）⇒ 全市场 ~55 个请求即可，**只给当日**（历史缺口仍走 backfill_missing）。
+_SNAPSHOT_FS = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048"
+#   f12 代码 / f14 名称 / f2 最新价 / f3 涨跌幅 / f62 主力净额 / f184 主力占比
+#   f66 超大单净额 / f69 超大单占比 / f72 大单净额
+_SNAPSHOT_FIELDS = "f12,f14,f2,f3,f62,f184,f66,f69,f72"
+
+
+def _num(v, div: float = 1.0):
+    try:
+        return float(str(v).replace(",", "")) / div
+    except (TypeError, ValueError):
+        return None
+
+
+def fetch_flow_snapshot_all(max_pages: int = 80, gap: float = 0.15) -> dict:
+    """全市场**当日**主力资金流 `{code: {name, main_net, ...}}`（~55 请求）。"""
+    out = {}
+    pn = 1
+    while pn <= max_pages:
+        params = {
+            "pn": pn, "pz": 100, "po": 0, "np": 1, "fltt": 2,
+            "fs": _SNAPSHOT_FS, "fields": _SNAPSHOT_FIELDS, "fid": "f12",
+        }
+        rows = []
+        for attempt in range(3):        # 单页重试：一次网络抖动不该让整批静默归零
+            try:
+                r = _SESSION.get(_CLIST_URL, params=params, timeout=15)
+                rows = (r.json().get("data") or {}).get("diff") or []
+                break
+            except Exception as e:
+                if attempt == 2:
+                    print(f"[mainflow] 全市场快照第 {pn} 页失败（已重试 3 次）: {str(e)[:60]}")
+                else:
+                    time.sleep(0.8 * (attempt + 1))
+        if not rows:
+            break
+        for row in rows:
+            code = str(row.get("f12") or "")
+            if len(code) != 6:
+                continue
+            out[code] = {
+                "name": row.get("f14") or "",
+                "main_net": _num(row.get("f62")),
+                "super_net": _num(row.get("f66")),
+                "big_net": _num(row.get("f72")),
+                "main_pct": _num(row.get("f184")),
+                "super_pct": _num(row.get("f69")),
+                "close": _num(row.get("f2")),
+                "pct_chg": _num(row.get("f3")),
+            }
+        if len(rows) < 100:
+            break
+        pn += 1
+        time.sleep(gap)
+    print(f"[mainflow] 全市场当日资金流: {len(out)} 只（{pn} 页）")
+    return out
+
+
+def save_flow_bulk(day: str, recs: list) -> int:
+    """一次性写入多只股票的**同一天**资金流（recs 元素需含 code/name/各字段）。"""
+    if not recs:
+        return 0
+    n = 0
+    BATCH = 400
+    for i in range(0, len(recs), BATCH):
+        batch = recs[i:i + BATCH]
+        ph = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(batch))
+        params = []
+        for r in batch:
+            params += [r["code"], r.get("name") or "", day, r["main_net"],
+                       r["super_net"], r["big_net"], r["main_pct"],
+                       r["super_pct"], r["close"], r["pct_chg"]]
+        if db._use_postgres:
+            sql = (f"INSERT INTO mainflow_history (code, name, date, main_net, super_net, "
+                   f"big_net, main_pct, super_pct, close, pct_chg) VALUES {ph} "
+                   f"ON CONFLICT (code, date) DO UPDATE SET main_net=EXCLUDED.main_net, "
+                   f"super_net=EXCLUDED.super_net, big_net=EXCLUDED.big_net, "
+                   f"main_pct=EXCLUDED.main_pct, super_pct=EXCLUDED.super_pct, "
+                   f"close=EXCLUDED.close, pct_chg=EXCLUDED.pct_chg, name=EXCLUDED.name")
+        else:
+            sql = (f"INSERT OR REPLACE INTO mainflow_history (code, name, date, main_net, "
+                   f"super_net, big_net, main_pct, super_pct, close, pct_chg) VALUES {ph}")
+        db.execute(sql, tuple(params))
+        n += len(batch)
+    return n
+
+
+def backfill_today(day: str = None) -> dict:
+    """补齐**当日**资金流缺口（全市场一次批量，~1 分钟）。
+
+    ⇒ 日更稳态成本：`backfill_all`（1032 只历史，~7min）+ 本函数（~55 请求，~1min），
+      不再出现"1800 只逐只拉 ≈53 分钟"。
+    ⚠️ 只写"当日"一行；**历史缺口**（某只整段缺失）仍由 `backfill_missing` 处理。
+    ⚠️ 收盘前快照是**盘中累计**，与 `day` 会错配 ⇒ 15:00 前直接跳过（日批在 20:43 跑）。
+    """
+    ensure_table()
+    if not day:
+        from app.flash.rules import latest_completed_trading_day
+        day = str(latest_completed_trading_day())
+    try:
+        from app.flash.rules import beijing_now
+        if beijing_now().hour < 15:
+            print(f"[mainflow] 未收盘（{beijing_now():%H:%M}），跳过当日批量补洞")
+            return {"day": day, "skipped": True, "written": 0}
+    except Exception as e:
+        print(f"[mainflow] 收盘判断失败（继续执行）: {str(e)[:60]}")
+
+    missing = set(missing_codes(day))
+    if not missing:
+        print(f"[mainflow] {day} 当日无缺口，跳过批量快照（省 ~55 请求）")
+        return {"day": day, "missing": 0, "snapshot": 0, "written": 0}
+    snap = fetch_flow_snapshot_all()
+    recs = []
+    for code in missing:
+        s = snap.get(code)
+        if not s or s.get("main_net") is None:
+            continue
+        recs.append(dict(s, code=code))
+    written = save_flow_bulk(day, recs)
+    print(f"[mainflow] 当日批量补洞: day={day} 缺 {len(missing)} 只 / 快照 {len(snap)} 只 "
+          f"⇒ 写入 {written} 行")
+    return {"day": day, "missing": len(missing), "snapshot": len(snap), "written": written}
+
+
 def missing_codes(day: str = None) -> list:
     """当日「有 mainforce_state 但无 mainflow_history」的代码（补洞用）。
 
@@ -277,31 +405,52 @@ def missing_codes(day: str = None) -> list:
 
 
 def backfill_missing(day: str = None, limit: int = 0, gap: float = _SINA_GAP,
-                     verbose_every: int = 100) -> dict:
-    """只补「当日缺资金流」的代码（增量），返回统计。
+                     verbose_every: int = 100, workers: int = 4) -> dict:
+    """只补「当日缺资金流」的代码（**历史缺口**），返回统计。
 
-    `limit>0` 时分批（夜间任务用 0=全量；手动验证可先跑几十只）。
+    ⚠️ 日更别用它补当日缺口 —— 用 `backfill_today()`（全市场一次批量，~1 分钟）。
+       本函数是"某只整段没历史"的兜底：逐只拉 130 天，单只 ~1.8s。
+    ★ 2026-10-25（用户实测 1803 只 = 53 分钟）：改成**线程池并发**（默认 4 并发，
+       每线程之间仍保留 `gap` 礼貌间隔 ⇒ 总速率 ≈ 4/1.8 ≈ 2.2 请求/秒）。
+      `limit>0` 可分批（夜间任务用 0=全量；手动可先跑几十只）。
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     codes = missing_codes(day)
     total = len(codes)
     if limit and total > limit:
         codes = codes[:limit]
     ok = fail = rows_n = 0
     t0 = time.time()
-    for i, code in enumerate(codes, 1):
+    done = [0]
+
+    def _one(code: str):
         try:
             rows = fetch_flow_history(code)
         except Exception:
             rows = []
-        if rows:
-            rows_n += save_flow(code, "", rows)
-            ok += 1
-        else:
-            fail += 1
-        if verbose_every and i % verbose_every == 0:
-            print(f"[mainflow] 补洞 {i}/{len(codes)} ok={ok} fail={fail} "
-                  f"({time.time() - t0:.0f}s)")   # ASCII
         time.sleep(gap)
+        return code, rows
+
+    if workers <= 1:
+        it = (_one(c) for c in codes)
+    else:
+        ex = ThreadPoolExecutor(max_workers=workers)
+        it = ex.map(_one, codes)
+    try:
+        for code, rows in it:
+            if rows:
+                rows_n += save_flow(code, "", rows)
+                ok += 1
+            else:
+                fail += 1
+            done[0] += 1
+            if verbose_every and done[0] % verbose_every == 0:
+                print(f"[mainflow] 补洞 {done[0]}/{len(codes)} ok={ok} fail={fail} "
+                      f"({time.time() - t0:.0f}s)")   # ASCII
+    finally:
+        if workers > 1:
+            ex.shutdown(wait=True)
     if codes:
         try:
             from app import sync_meta
