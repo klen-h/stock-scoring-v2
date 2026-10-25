@@ -97,7 +97,7 @@ def run_alert(dry_run: bool = False) -> str:
                 f"- **仓位基准**：{from_base}% → **{to_base}%**\n"
                 f"- **买入闸门 C 条件**：✗ → ✓（`defensive` 禁买解除）\n")
         tail = ("⚠️ **转档 ≠ 立即买入**：仍需闸门 3/3（A 主力根据 + B 不追高 + C 市况）"
-                "+ 买入时机「适合介入」。先看观察池里非极端流入的 ready 票。\n")
+                "+ 价格贴近支撑位。先看观察池里非极端流入的 ready 票。\n")
     elif cur_state == "defensive":
         title = f"⚠️ 市况转防御：{prev_state} → defensive（仓位归零）"
         head = (f"**市况转弱**：`{prev_state}` → `defensive`\n"

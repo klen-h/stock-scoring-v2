@@ -1660,7 +1660,7 @@ class ScoreEngine:
           ref_price: 参考买入价（区间中轨）
           current_price: 当前收盘价
           supports: 各支撑位明细
-          buy_timing: '适合介入' / '等回调' / '追高风险'
+          buy_timing: 位置事实描述（'价格处于支撑区内' / '高于支撑位 2%~6%' 等）
         """
         if len(tech_data) < 30:
             return {}
@@ -1712,23 +1712,22 @@ class ScoreEngine:
             if buy_low >= buy_high:
                 buy_low = round(buy_high * 0.97, 2)  # 下界至少比上界低 3%
 
-        # ── 3. 时机判定（基于当前价与买入区间的距离） ──
+        # ── 3. 位置描述（2026-10-25 对齐：三档改事实；旧值"适合介入/等回调/追高风险"
+        #    是 2026-09 前免检的指令式判定，与评分 KILL 披露矛盾——Guardrails #5） ──
         if buy_high is None:
-            # 没有支撑位（价格已在低位或数据不足）
-            timing = "适合介入"
+            timing = "价格处于低位区（无可参考支撑）"
             deviation = 0
         elif price <= buy_high:
-            # 当前价已跌入买入区间内或以下
-            timing = "适合介入"
+            timing = "价格处于支撑区内"
             deviation = round((price - buy_high) / buy_high * 100, 2)
         else:
             deviation = round((price - buy_high) / buy_high * 100, 2)
             if deviation <= 2:
-                timing = "适合介入"  # 离最近支撑 2% 以内，可以介入
+                timing = "贴近支撑位（≤2%）"
             elif deviation <= 6:
-                timing = "等回调"    # 离支撑还有一段距离
+                timing = "高于支撑位 2%~6%"
             else:
-                timing = "追高风险"  # 远离所有支撑
+                timing = "高于支撑位 6% 以上"
 
         # ── 4. 参考买入价（区间中轨） ──
         ref_price = None

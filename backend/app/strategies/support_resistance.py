@@ -320,30 +320,32 @@ def _generate_suggestion(
     position_pct: int,
     levels: List[Dict],
 ) -> str:
-    """根据当前位置生成交易建议"""
-    
-    # 找到最近的支撑和阻力
+    """根据价格在区间中的位置生成**事实描述**（2026-10-25 对齐，无指令式建议）。
+
+    ★ 背景：旧话术含"可分批建仓/轻仓试探/可考虑减仓"等指令——2026-09 前的老逻辑，
+      早于预登记纪律，从未检验；与评分卡结论（如"观望"）同屏矛盾（实测 601398：
+      评分观望+空头排列 vs 支撑阻力"可分批建仓"）。Guardrails #5：只描述位置事实。
+    """
     resistances = [l for l in levels if l["price"] > current_price * 1.01]
     supports = [l for l in levels if l["price"] < current_price * 0.99]
-    
+
     nearest_resistance = min(resistances, key=lambda x: x["price"], default=None)
     nearest_support = max(supports, key=lambda x: x["price"], default=None)
-    
-    # 根据位置生成建议
+
     if position_pct >= 90:
-        return "接近强阻力位，谨慎追高，可考虑减仓"
+        return "价格位于区间高位，贴近强阻力位（历史多次受阻）"
     elif position_pct >= 75:
         if nearest_resistance and nearest_resistance["strength"] == "strong":
-            return "接近阻力位，注意观察突破情况"
-        return "位置偏高，可持有观望"
+            return "位置偏高，上方贴近强阻力位"
+        return "位置偏高（区间上沿附近）"
     elif position_pct >= 50:
-        return "处于区间中部，方向不明确，观望为主"
+        return "处于区间中部，上下都有空间"
     elif position_pct >= 25:
         if nearest_support and nearest_support["strength"] == "strong":
-            return "接近强支撑位，可考虑轻仓试探"
-        return "位置偏低，等待企稳信号"
+            return "位置偏低，下方贴近强支撑位"
+        return "位置偏低（区间下沿附近）"
     else:
-        return "接近强支撑位，超跌反弹机会，可分批建仓"
+        return "价格位于区间底部，贴近最强支撑位（观察：历史上此位常有买盘承接）"
 
 
 def _default_result(code: str, reason: str = "") -> Dict:

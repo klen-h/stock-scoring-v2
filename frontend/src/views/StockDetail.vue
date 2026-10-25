@@ -187,7 +187,7 @@
           </div>
         </div>
         <div class="mt-3 text-[11px] text-muted">
-          ≥4/5 趋势健康，回调大概率为洗盘，耐心持有；≤2/5 趋势恶化，真跌风险高，考虑减仓
+          ≥4/5 趋势健康，历史同类回调多为洗盘；≤2/5 趋势恶化，真跌风险高（观察结论，处置自行决定）
         </div>
       </div>
 
@@ -912,18 +912,13 @@ function strengthText(s) {
   return s === 'strong' ? '强' : s === 'medium' ? '中' : '弱'
 }
 
-// ── 建议文案的着重色：后端 _generate_suggestion() 共 7 种措辞，按情绪分四档着色。
-// 风险类必须优先匹配——"接近强阻力位，谨慎追高，可考虑减仓" 同时含"阻力"和
-// "减仓"，若先判观察色就把最需要警示的情况弱化了
+// ── 位置描述的着色（2026-10-25 对齐：后端已改事实描述，无指令式建议）——
+//    按位置档着色：高位/贴阻力=红，底部/贴支撑=绿，中部/偏高偏低=黄
 const suggestionToneClass = computed(() => {
   const t = supportResistance.value?.suggestion || ''
-  // 风险：接近强阻力位，谨慎追高，可考虑减仓
-  if (/减仓|谨慎追高|强阻力/.test(t)) return 'bg-red-500/10 text-red-400 border-red-500/30'
-  // 机会：接近强支撑位，可考虑轻仓试探 / 超跌反弹机会，可分批建仓
-  if (/强支撑|轻仓试探|分批建仓|超跌反弹/.test(t)) return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-  // 观察：接近阻力位注意突破 / 位置偏高可持有观望 / 位置偏低等待企稳信号
-  if (/阻力|注意观察|位置偏高|等待企稳/.test(t)) return 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-  // 中性：处于区间中部，方向不明确，观望为主
+  if (/高位|强阻力/.test(t)) return 'bg-red-500/10 text-red-400 border-red-500/30'
+  if (/底部|强支撑/.test(t)) return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+  if (/位置偏高|位置偏低|中部/.test(t)) return 'bg-amber-500/10 text-amber-400 border-amber-500/30'
   return 'bg-white/5 text-muted border-border'
 })
 

@@ -898,10 +898,11 @@
             <!-- 买入时机列：仅 Top 50 显示具体价位 + 时机标签 -->
             <td v-if="showTopCols" class="py-2 px-3 text-center">
               <div v-if="item.buy_point?.buy_timing" class="space-y-0.5">
-                <!-- 时机标签：绿=适合介入 黄=等回调 红=追高风险 -->
+                <!-- 位置标签（2026-10-25 对齐：旧'适合介入'等指令式判定改事实描述；
+                     绿=处于支撑区 黄=高于支撑2~6% 红=高于支撑6%以上） -->
                 <span class="px-2 py-0.5 rounded-full text-xs font-medium"
-                  :class="item.buy_point.buy_timing === '适合介入' ? 'bg-emerald-500/20 text-emerald-400' :
-                         item.buy_point.buy_timing === '等回调' ? 'bg-amber-500/20 text-amber-400' :
+                  :class="item.buy_point.buy_timing?.includes('支撑区内') || item.buy_point.buy_timing?.includes('贴近支撑') ? 'bg-emerald-500/20 text-emerald-400' :
+                         item.buy_point.buy_timing?.includes('2%~6%') ? 'bg-amber-500/20 text-amber-400' :
                          'bg-red-500/20 text-red-400'">
                   {{ item.buy_point.buy_timing }}
                 </span>
