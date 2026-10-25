@@ -1123,6 +1123,21 @@ def task_retention():
     return "保留期清理: " + db_retention.summarize(rows)
 
 
+def task_egress_report():
+    """每日数据库流量（egress）归因快照 —— 2026-10-25 新增。
+
+    ★ 起因：Supabase 只给"今天 500MB、数据库占 81%"这种总量，`pg_stat_statements`
+      却是**累计值** ⇒ 事后无法回答"昨天哪条 SQL 最贵"（10-25 那次只能靠推断）。
+    ★ 做法：每天存一份原始计数器（语句 Top300 + 全表读放大），第二天 diff。
+      只读 `pg_stat_*` 视图、写两张小表（100~300 行），**不碰任何业务表**；
+      失败一律降级（不影响日批）。
+    ★ 排最后（retention 之后）：纯观测，不与写入/清理竞争。
+    """
+    from app import egress_monitor
+    r = egress_monitor.snapshot()
+    return f"egress 快照: {r['day']}｜语句 {r['stmts']} 条 / 表 {r['tables']} 张"
+
+
 def task_etf_share_watch():
     """宽基 ETF 份额异动（★ 2026-10-19，国家队行为的 T+1 证据）。
 
@@ -1419,6 +1434,10 @@ TASKS = {
     #   在所有写入任务之后跑（清理不该与写入竞争）。只清「读取点只读最新」的表，
     #   ⚠️ 反直觉：保留期是"先涨到上限再平"，天数宁短勿长（详见 app/db_retention.py）。
     "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
+    # ★ 2026-10-25 新增：每日数据库流量（egress）归因快照 —— 只读 pg_stat_* 计数器，
+    #   写两张小表（各 100~300 行）。第二天 diff 即知"昨天哪条 SQL 最贵"。
+    #   排在 retention 之后：不参与任何清理/写入竞争，纯观测。
+    "egress_report": (task_egress_report, "数据库流量归因快照（只读计数器）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
                  "eq_anchor",
@@ -1446,7 +1465,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
                  "scenario_watch",
                  "daily_report",
-                 "trader_brief", "retention"]
+                 "trader_brief", "retention", "egress_report"]
 
 # ★ 2026-10-24 加固（docs/BACKLOG.md BK-47 的机制化）：TASKS 与 DEFAULT_ORDER 必须一一对应。
 #   模块级断言 ⇒ 任何 import（含 --list / CI）都立即暴露错配，而不是等日批跑完才发现断档。

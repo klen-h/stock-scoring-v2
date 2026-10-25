@@ -48,6 +48,8 @@ ALLOWED_TASKS = {
     # ★ 2026-10-25：宽防御组名单（银行∪高股息代理∪低波）—— 方案 A 对照用；
     #   与 daily_batch.DEFAULT_ORDER 同名，漏登记则该任务无法手动补跑。
     "defensive_group",
+    # ★ 2026-10-25：数据库流量归因快照（只读计数器）—— 与 daily_batch.DEFAULT_ORDER 同名
+    "egress_report",
     # ★ 2026-10-25（eypai 溯源调研）：流动性三件套日度落库（两融/基差/中美利差）；
     #   与 daily_batch.DEFAULT_ORDER 同名，漏登记则无法手动补跑。
     "liquidity_watch",
