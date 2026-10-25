@@ -1604,60 +1604,116 @@ def sector_strength_status(date: str = None):
 
 
 @router.get("/batch/shadow-defensive")
-def shadow_defensive(limit: int = Query(default=50, ge=10, le=100)):
-    """H2' **阴跌防御影子榜**（`shadow_rank_daily.variant='defensive'`，日批落库）。
+async def shadow_defensive(limit: int = Query(default=50, ge=10, le=100),
+                           live: bool = Query(False, description="盘中实时重排（预览；官方影子榜仍以日批为准）")):
+    """H2' **阴跌防御影子榜**（官方 = `shadow_rank_daily.variant='defensive'` 日批快照）。
 
     ★ 2026-10-25（用户："新增阴跌防御影子榜独立标签页 / 工作台防御 Top10"）：
-      只**读日批快照**，不在请求里重算 —— 防御因子依赖等权锚判态（`eq_anchor`），
-      盘中来回触发没有意义；判据冻结在方案 §7 v1.0（银行组 ×1.80、δ=0.80），
-      请求内重算必然与落库口径漂移。
-    ★ 定位：**旁路影子榜，不改生产排序**（生产榜仍由 `/batch/top` 供给）；
-      判定走 `scripts/defensive_edge_check.py`（前瞻段，月度自动复核）。
-    返回 `{ok, date, gate, eq_state, eq_date, group, delta, items[]}`；无数据时
-    `ok=false` + `note`（前端显示「等日批产出」，不伪造空榜）。
+      官方榜**只读日批快照** —— 判定（`defensive_edge_check` 按前瞻阴跌段对比）必须
+      一天一版，否则同一天多个版本无法审计。
+    ★★ 2026-10-25（用户："想让它在盘中变动"）：新增 `live=1` 的**实时预览版** ——
+      用**当前** `/batch/top` 的全市场精算结果（含盘中实时行情、3 分钟缓存）代入
+      **同一冻结公式**（阴跌段内银行组 ×(1+δ)、δ 取落库 meta=0.80）重排。
+      ⇒ 口径没变，只是输入更新；结果标 `live=true`，**不进判定、不改生产排序**。
+    ★ 定位：旁路影子榜；生产榜仍由 `/batch/top` 供给。
+    返回 `{ok, live, date, gate, eq_state, eq_date, group, delta, items[]}`；无数据时
+    `ok=false` + `note`（前端如实显示，不伪造空榜）。
     """
     import json as _json
 
     from app.database import db as _db
+
+    # ── 官方日批快照（live=False 的唯一来源；live 时仅借用其 meta 参数）──
+    _d = ""
+    _items = []
+    meta = {}
     try:
         _row = _db.fetch_one(
             "SELECT MAX(rank_date) AS d FROM shadow_rank_daily WHERE variant = 'defensive'")
         _d = str((_row or {}).get("d") or "")
-        if not _d:
-            return {"ok": False, "date": None, "items": [],
-                    "note": "尚无 defensive 影子榜（等日批 task_shadow_defensive 产出）"}
-        _rows = _db.fetch(
-            "SELECT rank_pos, code, name, total_score, dimensions_json "
-            "FROM shadow_rank_daily WHERE variant = 'defensive' AND rank_date = %s "
-            "ORDER BY rank_pos", (_d,))
+        if _d:
+            _rows = _db.fetch(
+                "SELECT rank_pos, code, name, total_score, dimensions_json "
+                "FROM shadow_rank_daily WHERE variant = 'defensive' AND rank_date = %s "
+                "ORDER BY rank_pos", (_d,))
+            for r in _rows or []:
+                dims = {}
+                try:
+                    dims = _json.loads(r.get("dimensions_json") or "{}")
+                except (TypeError, ValueError):
+                    dims = {}
+                if not meta:
+                    meta = dims.get("_defensive") or {}
+                _items.append({
+                    "rank_pos": r.get("rank_pos"),
+                    "code": r.get("code"),
+                    "name": r.get("name") or "",
+                    "total_score": r.get("total_score"),
+                    "boosted": bool(meta.get("gate")) and "银行" in (r.get("name") or ""),
+                })
     except Exception as e:
         print(f"[shadow_defensive] 读取失败: {e}")
-        return {"ok": False, "date": None, "items": [],
-                "reason": f"读取影子榜失败：{str(e)[:100]}"}
+        if not live:
+            return {"ok": False, "live": False, "date": None, "items": [],
+                    "reason": f"读取影子榜失败：{str(e)[:100]}"}
 
-    meta = {}
-    items = []
-    for r in _rows or []:
-        dims = {}
-        try:
-            dims = _json.loads(r.get("dimensions_json") or "{}")
-        except (TypeError, ValueError):
-            dims = {}
-        if not meta:
-            meta = dims.get("_defensive") or {}
-        items.append({
-            "rank_pos": r.get("rank_pos"),
-            "code": r.get("code"),
-            "name": r.get("name") or "",
-            "total_score": r.get("total_score"),
-            "boosted": bool(meta.get("gate")) and "银行" in (r.get("name") or ""),
+    # δ / 组：唯一事实源是落库 meta（冻结定参）；缺失才回落到方案默认 0.80
+    try:
+        delta = float(meta.get("delta")) if meta.get("delta") is not None else 0.80
+    except (TypeError, ValueError):
+        delta = 0.80
+    group = meta.get("group") or "bank"
+
+    if not live:
+        if not _d:
+            return {"ok": False, "live": False, "date": None, "items": [],
+                    "note": "尚无 defensive 影子榜（等日批 task_shadow_defensive 产出）"}
+        return {
+            "ok": True, "live": False, "date": _d, "gate": bool(meta.get("gate")),
+            "eq_state": meta.get("eq_state") or "", "eq_date": meta.get("eq_date") or "",
+            "group": group, "delta": meta.get("delta"),
+            "n": len(_items), "items": _items[:int(limit)],
+        }
+
+    # ── 实时预览：当前精算榜 + 同一冻结公式 ──
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    from app.backtest.eq_anchor import STATE_BEAR_SLOW, latest_state
+    _eq = latest_state() or {}
+    _gate = _eq.get("state") == STATE_BEAR_SLOW
+    try:
+        _res = await score_top(limit=1000, background_tasks=BackgroundTasks())
+    except Exception as e:
+        print(f"[shadow_defensive] 实时重排失败: {e}")
+        return {"ok": False, "live": True, "items": [],
+                "reason": f"实时重排失败：{str(e)[:100]}"}
+    _data = (_res or {}).get("data") or []
+    if not _data:
+        return {"ok": False, "live": True, "items": [],
+                "note": "实时榜尚未就绪（首次全市场精算约 1 分钟，稍后重试）"}
+    _recs = []
+    for r in _data:
+        _sc = float(r.get("total_score") or 0)
+        _is_grp = (group == "bank" and "银行" in (r.get("name") or ""))
+        _boost = bool(_gate and _is_grp)
+        _recs.append({
+            "code": r.get("code"), "name": r.get("name") or "",
+            "total_score": round(_sc * (1 + delta) if _boost else _sc, 1),
+            "raw_score": round(_sc, 1), "boosted": _boost,
+            "change_pct": r.get("change_pct"),
         })
-    gate = bool(meta.get("gate"))
+    _recs.sort(key=lambda x: x["total_score"], reverse=True)
+    _top = [dict(x, rank_pos=i + 1) for i, x in enumerate(_recs[:int(limit)])]
+    _bj = _dt.now(_tz(_td(hours=8)))
     return {
-        "ok": True, "date": _d, "gate": gate,
-        "eq_state": meta.get("eq_state") or "", "eq_date": meta.get("eq_date") or "",
-        "group": meta.get("group") or "", "delta": meta.get("delta"),
-        "n": len(items), "items": items[:int(limit)],
+        "ok": True, "live": True, "date": _d,
+        "as_of": _bj.strftime("%Y-%m-%d %H:%M"),
+        "gate": _gate,
+        "eq_state": _eq.get("state") or "", "eq_date": str(_eq.get("anchor_date") or ""),
+        "group": group, "delta": delta,
+        "n": len(_top), "items": _top,
+        "note": "实时预览：用当前精算榜代入同一冻结公式（银行组 ×%.2f）重排；"
+                "不是官方影子榜，不改生产排序、不进判定" % (1 + delta),
     }
 
 

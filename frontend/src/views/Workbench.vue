@@ -2628,6 +2628,8 @@
         <StockListsCards :top-items="topItems" :top-err="topErr" :top-mode="topMode"
                          :top-countdown="refreshLeft"
                          :def-items="defTopItems" :def-meta="defMeta" :def-err="defErr"
+                         :def-is-live="defIsLive" :def-live-loading="defLiveLoading"
+                         @toggle-live="toggleDefLive"
                          :gw-items="gwItems" :gw-meta="gwMeta" :gw-err="gwErr"
                          :gw-prices="gwPrices" />
 
@@ -2981,6 +2983,12 @@ const topErr = ref('')
 const defTopItems = ref([])
 const defMeta = ref({})
 const defErr = ref('')
+// ★★ 2026-10-25（用户："想让它在盘中变动"）：工作台这张卡也支持「实时」预览 ——
+//   官方日批（`variant='defensive'` 快照）↔ 实时（当前精算榜代入同一冻结公式重排）。
+//   `defSnap` 存官方那份，点「日批」直接还原（零请求）；实时首次约 1 分钟（后端 3 分钟缓存）。
+const defSnap = ref({ items: [], meta: {} })
+const defIsLive = ref(false)
+const defLiveLoading = ref(false)
 // ★ 2026-09-28：评分榜口径标记（'local'=本地实时 / 'backend'=后端批次）—— 卡片标题旁如实标注
 const topMode = ref('')
 // ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道他在实时刷新"）：
@@ -4024,10 +4032,53 @@ async function loadDefTop() {
       eq_date: (data && data.eq_date) || '',
       delta: (data && data.delta != null) ? data.delta : null,
     }
+    defIsLive.value = false
+    defSnap.value = { items: defTopItems.value, meta: defMeta.value }
     defErr.value = ''
   } catch (e) {
     defErr.value = '读取失败：' + ((e && e.message) || e)   // 保留上次数据
   }
+}
+
+// 实时预览：当前精算榜 + 同一冻结公式（银行组 ×(1+δ)）重排。不改官方榜、不进判定。
+async function loadDefLive() {
+  if (defLiveLoading.value) return
+  defLiveLoading.value = true
+  defErr.value = ''
+  try {
+    const { data } = await getShadowDefensive(10, true)
+    if (!data || data.ok === false) {
+      defErr.value = (data && (data.note || data.reason)) || '实时重排失败'
+      return
+    }
+    defTopItems.value = (data && data.items) || []
+    defMeta.value = {
+      date: (data && data.date) || '',
+      gate: !!(data && data.gate),
+      eq_state: (data && data.eq_state) || '',
+      eq_date: (data && data.eq_date) || '',
+      delta: (data && data.delta != null) ? data.delta : null,
+      live: true,
+      as_of: (data && data.as_of) || '',
+    }
+    defIsLive.value = true
+  } catch (e) {
+    defErr.value = '实时重排失败：' + ((e && e.message) || e)
+  } finally {
+    defLiveLoading.value = false
+  }
+}
+
+function toggleDefLive() {
+  if (defIsLive.value) {
+    // 还原官方日批（内存里就有，零请求）
+    defTopItems.value = defSnap.value.items || []
+    defMeta.value = defSnap.value.meta || {}
+    defIsLive.value = false
+    defErr.value = ''
+    return
+  }
+  loadDefLive()
 }
 
 async function loadTop(force = false) {

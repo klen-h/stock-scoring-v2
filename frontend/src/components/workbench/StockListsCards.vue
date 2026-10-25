@@ -41,6 +41,19 @@
                   : '门控 OFF：当前非阴跌段，本榜 = 生产口径'">
             H2' 防御影子{{ defMeta.date ? ' · ' + defMeta.date : '' }}</span>
           <span v-if="defMeta.eq_state" class="ml-1 font-mono">（{{ defMeta.eq_state }}）</span>
+          <!-- ★ 2026-10-25：日批 ↔ 实时预览 一键切换（实时=当前精算榜代入同一冻结公式） -->
+          <button type="button"
+                  class="ml-1 px-1.5 py-0.5 rounded text-[10px] border transition-colors disabled:opacity-50"
+                  :class="defIsLive
+                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                    : 'bg-white/5 text-muted border-border hover:text-gray-200'"
+                  :disabled="defLiveLoading"
+                  :title="defIsLive
+                    ? '当前为实时预览（' + (defMeta.as_of || '') + '）— 点击还原官方日批榜'
+                    : '用当前全市场精算榜（含盘中行情）按同一冻结公式重排；首次约 1 分钟'"
+                  @click="emit('toggle-live')">
+            {{ defLiveLoading ? '精算…' : (defIsLive ? '● 实时' : '实时') }}
+          </button>
         </template>
       </div>
       <!-- ① 评分 Top10（原卡，未改动行内口径） -->
@@ -116,6 +129,9 @@
                class="font-semibold hover:text-accent truncate">{{ r.name || r.code }}</a>
             <a :href="xqUrl(r.code)" target="_blank"
                class="shrink-0 text-muted font-mono hover:text-accent" title="雪球">{{ r.code }}</a>
+            <!-- 实时预览才带盘中涨跌（日批榜没有该字段 ⇒ 不渲染空列） -->
+            <span v-if="r.change_pct != null" class="shrink-0 font-mono"
+                  :class="pctClass(r.change_pct)">{{ signNum(r.change_pct) }}%</span>
             <span v-if="r.boosted"
                   class="shrink-0 px-1 py-0.5 rounded text-[10px] bg-sky-500/20 text-sky-300 cursor-help"
                   :title="`阴跌段防御加成：银行组 ×${(1 + (defMeta.delta ?? 0)).toFixed(2)}`">防御</span>
@@ -244,7 +260,11 @@ const props = defineProps({
   defItems: { type: Array, default: () => [] },
   defMeta: { type: Object, default: () => ({}) },
   defErr: { type: String, default: '' },
+  // ★ 2026-10-25（用户："想让它在盘中变动"）：实时预览开关（父级负责取数，本组件只发事件）
+  defIsLive: { type: Boolean, default: false },
+  defLiveLoading: { type: Boolean, default: false },
 })
+const emit = defineEmits(['toggle-live'])
 
 // 观察池默认**收起**（用户要求）
 const watchOpen = ref(false)

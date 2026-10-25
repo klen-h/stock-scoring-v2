@@ -785,10 +785,23 @@
         <span class="text-muted">等权锚 <b class="text-gray-200">{{ defEqText }}</b>
           <span v-if="defData.eq_date" class="font-mono">（{{ defData.eq_date }}）</span></span>
         <span class="text-muted">防御组加成 <b class="text-gray-200 font-mono">{{ defDeltaText }}</b></span>
-        <button @click="loadDefShadow" :disabled="defLoading"
-          class="ml-auto px-2 py-1 rounded bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
-          {{ defLoading ? '加载中…' : '刷新' }}
-        </button>
+        <!-- ★ 2026-10-25（用户："想让它在盘中变动"）：官方日批 vs 实时预览，一眼可分 -->
+        <span v-if="defData.live" class="text-amber-300"
+              title="实时预览：当前精算榜代入同一冻结公式重排。不是官方影子榜，不进判定">
+          ● 实时预览 {{ defData.as_of }}</span>
+        <span v-else class="text-muted">● 官方日批</span>
+        <div class="ml-auto flex items-center gap-1.5">
+          <button @click="loadDefLive" :disabled="defLiveLoading"
+            class="px-2 py-1 rounded bg-amber-500/10 text-amber-300 border border-amber-500/30
+                   hover:bg-amber-500/15 transition-colors disabled:opacity-40"
+            title="用当前全市场精算榜（含盘中行情）按同一冻结公式重排；首次约 1 分钟">
+            {{ defLiveLoading ? '精算中…' : '实时重排' }}
+          </button>
+          <button @click="loadDefShadow" :disabled="defLoading"
+            class="px-2 py-1 rounded bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
+            {{ defLoading ? '加载中…' : '日批榜' }}
+          </button>
+        </div>
       </div>
 
       <div class="bg-card border border-border rounded-lg overflow-hidden">
@@ -806,6 +819,7 @@
               <th class="text-left py-2.5 px-3">排名</th>
               <th class="text-left py-2.5 px-3">代码</th>
               <th class="text-left py-2.5 px-3">名称</th>
+              <th class="text-right py-2.5 px-3">涨跌</th>
               <th class="text-right py-2.5 px-3">评分（含加成）</th>
               <th class="text-center py-2.5 px-3">标记</th>
             </tr>
@@ -820,6 +834,12 @@
                    class="hover:underline" title="在雪球查看">{{ it.code }}</a>
               </td>
               <td class="py-2 px-3">{{ it.name }}</td>
+              <td class="py-2 px-3 text-right font-mono text-xs"
+                  :class="it.change_pct == null ? 'text-muted'
+                          : (it.change_pct >= 0 ? 'text-rise' : 'text-fall')">
+                {{ it.change_pct == null ? '—'
+                   : ((it.change_pct > 0 ? '+' : '') + Number(it.change_pct).toFixed(2) + '%') }}
+              </td>
               <td class="py-2 px-3 text-right font-mono">{{ it.total_score }}</td>
               <td class="py-2 px-3 text-center">
                 <span v-if="it.boosted"
@@ -834,6 +854,10 @@
           口径：同一批精算分（`ranking_live`）→ 阴跌段（等权锚 `bear_slow`）内**银行组 {{ defDeltaText }}** 后重排；
           非阴跌段门控 OFF ⇒ 榜单等于生产口径。判据冻结于方案 §7 v1.0，
           <b class="text-gray-300">影子期不改生产排序</b>；前瞻段判定见 `defensive_edge_check`。
+          <template v-if="defData.live">
+            <br /><span class="text-amber-300/90">当前为实时预览</span>：分数取**当前精算榜**
+            （含盘中行情，非日批 `ranking_live`），公式不变；官方影子榜点「日批榜」恢复。
+          </template>
         </div>
       </div>
     </div>
@@ -1575,9 +1599,11 @@ async function loadDefShadow() {
   defLoading.value = true
   defErr.value = ''
   try {
-    const { data } = await getShadowDefensive(50)
+    const { data } = await getShadowDefensive(50, false)
     defData.value = {
       ok: !!(data && data.ok),
+      live: false,
+      as_of: '',
       items: (data && data.items) || [],
       date: (data && data.date) || '',
       gate: !!(data && data.gate),
@@ -1591,6 +1617,41 @@ async function loadDefShadow() {
     defErr.value = '读取失败：' + (e?.message || e)
   } finally {
     defLoading.value = false
+  }
+}
+
+// ★ 2026-10-25（用户："想让它在盘中变动"）：**实时预览** —— 用当前精算榜代入同一冻结
+//   公式（阴跌段内银行组 ×(1+δ)）重排，盘中随行情/评分变化。它不是官方影子榜
+//   （官方仍是日批一版、用于判定），表格里会明确标「实时预览 + 时间」。
+//   ⚠️ 首次会触发全市场精算（~1 分钟；后端有 3 分钟结果缓存）⇒ 只能点按钮触发，
+//      不能挂轮询。
+const defLiveLoading = ref(false)
+async function loadDefLive() {
+  if (defLiveLoading.value) return
+  defLiveLoading.value = true
+  defErr.value = ''
+  try {
+    const { data } = await getShadowDefensive(50, true)
+    if (!data || data.ok === false) {
+      defErr.value = (data && (data.note || data.reason)) || '实时重排失败'
+      return
+    }
+    defData.value = {
+      ok: true,
+      live: true,
+      as_of: (data && data.as_of) || '',
+      items: (data && data.items) || [],
+      date: (data && data.date) || '',
+      gate: !!(data && data.gate),
+      eq_state: (data && data.eq_state) || '',
+      eq_date: (data && data.eq_date) || '',
+      delta: (data && data.delta != null) ? data.delta : null,
+      note: (data && data.note) || '',
+    }
+  } catch (e) {
+    defErr.value = '实时重排失败：' + (e?.message || e)
+  } finally {
+    defLiveLoading.value = false
   }
 }
 
