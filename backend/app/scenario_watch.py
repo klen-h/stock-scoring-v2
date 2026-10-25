@@ -20,7 +20,7 @@ from __future__ import annotations
   · 10Y：≤5.0 多 / ≥5.3 空 / 其余中性
   · 布伦特：≤85 多 / ≥120 空 / 其余中性
   · 银行补跌 = 多（磨底末段信号）；创业板周线止跌 = 多
-  · 上证：≥3674 多（结构修复）/ <3550 空（最后缓冲之下）/ 其余中性
+  · 上证：≥3674 多（结构修复）/ <SC_SH_LAST 空（锚点失守，2026-10-23 起为 3574）/ 其余中性
   · 汇金 ETF 确认 = 多（承接加码）
   · 伊朗/中东：近 7 日金十快讯，升级词 > 缓和词 → 空；硬触发（空袭/开战/布雷/触雷/
     封锁霍尔木兹，且须含"伊朗"）→ 判空 + `geo_alert` 高亮，但**不直接切换情景**
@@ -194,6 +194,16 @@ def _num(v) -> Optional[float]:
     except (TypeError, ValueError):
         return None
 
+def _last_of(v):
+    """pbw item 的 value 历史上两种形态都写过（列表 / 标量）——取"最新观测值"：
+    列表取末元素，标量原样返回，None/空 → None。
+    ★ 2026-10-25（BK-60）：旧实现 `(v or [None])[-1]` 对**标量** value 直接
+    TypeError ⇒ 整张记分卡当日失败。"""
+    if isinstance(v, (list, tuple)):
+        return v[-1] if v else None
+    return v
+
+
 
 def _sig(key, label, value, unit, lean, note=""):
     return {"key": key, "label": label, "value": value, "unit": unit,
@@ -232,8 +242,7 @@ def evaluate(day: str = None) -> Dict:
 
     # 1 成交额（近 N 日里取最新一天）
     a = items.get("amount_dry_up") or {}
-    amt = (a.get("value") or [None])[-1]
-    amt = _num(amt)
+    amt = _num(_last_of(a.get("value")))
     if amt is None:
         sigs.append(_sig("amount", "两市成交额", None, "亿", "不足"))
     else:
@@ -243,7 +252,7 @@ def evaluate(day: str = None) -> Dict:
 
     # 2 涨跌比
     b = items.get("breadth_ratio_2d") or {}
-    br = _num((b.get("values") or [None])[-1])
+    br = _num(_last_of(b.get("values")))
     if br is None:
         sigs.append(_sig("breadth", "涨跌比", None, "", "不足"))
     else:
@@ -269,19 +278,23 @@ def evaluate(day: str = None) -> Dict:
                          f"≤{SC_BRENT_LOW:g} 修复 / ≥{SC_BRENT_HIGH:g} 熊市触发"))
 
     # 5 银行补跌（磨底末段信号）—— value=连续逆势跌天数，避免 UI 只显示 "—"
+    # ★ 2026-10-25（BK-60）：数据不足 ⇒ lean 显式"不足"，不再冒充"中性"
+    #   （缺失 ≠ 中性——中性会拉低记分卡的判读质量）
     bank = items.get("bank_catchdown") or {}
+    bank_lean = ("不足" if bank.get("insufficient")
+                 else ("多" if bank.get("checked") else "中性"))
     sigs.append(_sig("bank_catchdown", "强势股补跌",
                      (None if bank.get("insufficient")
                       else bank.get("streak", 0)), "日",
-                     "多" if bank.get("checked") else "中性",
-                     bank.get("detail") or ""))
+                     bank_lean, bank.get("detail") or ""))
 
     # 6 创业板周线止跌 —— value=本周涨跌幅（%），避免 UI 只显示 "—"
     cw = items.get("chinext_weekly") or {}
+    cw_lean = ("不足" if cw.get("insufficient")
+               else ("多" if cw.get("checked") else "中性"))
     sigs.append(_sig("chinext_weekly", "创业板周线",
                      (None if cw.get("insufficient") else cw.get("value")), "%",
-                     "多" if cw.get("checked") else "中性",
-                     cw.get("detail") or ""))
+                     cw_lean, cw.get("detail") or ""))
 
     # 7 上证位置（结构修复要求连续 2 日 ≥3674，单日不算）
     sh = kl_rows.get("000001") or {}
@@ -311,12 +324,15 @@ def evaluate(day: str = None) -> Dict:
     # 8 汇金 ETF —— value=当日最大份额增幅（%），避免 UI 只显示 "—"
     etf_conf = bool(etf.get("confirmed"))
     etf_rows = etf.get("rows") or []
-    etf_max = max((_num(r.get("chg_pct")) or 0 for r in etf_rows), default=None)
+    # ★ BK-60：缺失 chg_pct 不再 `or 0`（0 会把 max 拉低 ⇒ 低估份额放大）
+    etf_max = max((_num(r.get("chg_pct")) for r in etf_rows
+                   if _num(r.get("chg_pct")) is not None), default=None)
     etf_note = ("连续 2 日份额放大=确认" if etf_conf else "未确认")
     if etf.get("fallback") and etf.get("data_date"):
         etf_note += f"（当日未披露，截至 {etf['data_date']}）"
+    etf_lean = ("不足" if not etf else ("多" if etf_conf else "中性"))
     sigs.append(_sig("etf_share", "汇金 ETF 份额", etf_max, "%",
-                     "多" if etf_conf else "中性", etf_note))
+                     etf_lean, etf_note))
 
     # 9 地缘事件（金十快讯：伊朗/中东）
     geo = _geo_signal(day)

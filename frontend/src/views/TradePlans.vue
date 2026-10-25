@@ -177,7 +177,7 @@
             <!-- ★ A4 触发条件：只显示**已设置**的项；全空 ⇒ 显示"—（仅三维价位）" -->
             <td class="py-2 px-3 text-xs">
               <div class="flex flex-wrap gap-1">
-                <span class="px-1 rounded bg-background border border-border text-muted text-[10px]">
+                <span class="px-1 rounded bg-card border border-border text-muted text-[10px]">
                   {{ row.plan.plan_type === 'add' ? '加仓' : '试仓' }}</span>
                 <span v-if="row.plan.trigger_high_open"
                       class="px-1 rounded bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[10px]"

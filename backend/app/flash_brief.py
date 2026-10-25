@@ -91,7 +91,7 @@ def _ensure() -> None:
         )
     """)
     for _col in ("sig TEXT", "as_of TEXT", "llm_json TEXT", "conclusion TEXT",
-                 "notified_at TEXT"):
+                 "notified_at TEXT", "auto_runs INTEGER DEFAULT 0"):
         try:
             db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN IF NOT EXISTS {_col}")
         except Exception:
@@ -371,9 +371,12 @@ SYSTEM = (
     "4) 影响范围要具体到**板块或个股类别**（如「石油石化/油运」「半导体设备」），不要写「市场情绪」这种空话。\n\n"
     "5) 必须给出**推翻条件**：写出「看到哪些可观测读数就说明我这个结论错了」，"
     "必须是本输入里能观察到的量（指数涨跌幅/涨跌家数/成交额/涨停家数/板块涨跌），"
-    "不能写「如果走势反转」这类空话。\n\n"
+    "不能写「如果走势反转」这类空话；"
+    "**阈值必须由输入数字推导并写明推导式**（如 3690×0.99≈3654），"
+    "不得出现输入中不存在的数（2026-10-25 实测：模型曾编造'跌破3650/低于15000亿'，"
+    "两个数输入里都没有）。\n\n"
     "★ 只输出一个 JSON 对象（不要 markdown、不要代码围栏）：\n"
-    '{"conclusion": "<一句话≤40字，此刻盘面性质>", '
+    '{"conclusion": "<盘面定性；若快讯中有改变 A 股风险偏好的信息，点名最关键的几条（各一句话，不限总字数；快讯与盘面一致时如实说明即可）>", '
     '"invalidate": "<推翻条件：≤50字，1~2 条可观测阈值>", '
     '"market": "<一句话，引用指数/涨跌家数/成交额说明大盘>", '
     '"sectors": [{"name":"板块","note":"轮动含义，≤30字"}], '
@@ -392,7 +395,7 @@ def _user_prompt(p: Dict) -> str:
         lines.append(f"- {x.get('name')} {x.get('price')}（{x.get('chg_pct')}%）")
     lines.append(f"- 涨/跌/平：{m.get('up')}/{m.get('down')}/{m.get('flat')}"
                  f"；涨跌比 {m.get('ratio')}；成交额 {m.get('amount_yi')} 亿")
-    lines.append(f"- 涨停/跌停（按 ≥9.8% 粗算）：{m.get('limit_up')}/{m.get('limit_down')}")
+    lines.append(f"- 涨停/跌停（板幅精确口径 limit_stats）：{m.get('limit_up')}/{m.get('limit_down')}")
     lines += ["", "### 板块（涨跌幅）"]
     lines += [f"- 领涨 {x.get('name')} {x.get('chg_pct')}%（龙头 {x.get('leader')}"
               f" {x.get('leader_chg')}%）" for x in (s.get("top") or [])]
@@ -476,7 +479,13 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
         fresh = False
         try:
             ts = datetime.fromisoformat(str(row.get("created_at")))
-            fresh = (_now().replace(tzinfo=None) - ts) < timedelta(minutes=ttl)
+            now = _now()   # aware（北京时间）
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=now.tzinfo)   # 历史行无 tz ⇒ 按北京时间解释
+            # ★ 2026-10-24（BK-52）：旧实现 `_now().replace(tzinfo=None) - ts` =
+            #   naive − aware ⇒ 必抛 TypeError 被吞 ⇒ fresh 恒 False，
+            #   "TTL 内读缓存"永不命中（潜伏成本漏洞）
+            fresh = (now - ts) < timedelta(minutes=ttl)
         except (TypeError, ValueError):
             fresh = False
         if fresh and row.get("sig") == sig and row.get("llm_json"):
@@ -489,6 +498,7 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
                         "as_of": p["as_of"], "sig": sig,
                         "snapshot": p, "llm": llm,
                         "conclusion": llm.get("conclusion") or "",
+                        "holdings_impact": _holdings_impact(llm.get("news") or []),
                         "source": "cache"}
 
     # ── LLM：一次批量（重要条全进同一个 prompt）──
@@ -522,7 +532,104 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
     return {"ok": True, "date": d, "cached": False, "auto": bool(auto),
             "as_of": p["as_of"], "sig": sig, "snapshot": p, "llm": llm,
             "conclusion": llm.get("conclusion") or "",
+            "holdings_impact": _holdings_impact(llm.get("news") or []),
             "error": err, "source": "llm" if not err else "template"}
+
+
+
+
+# ── 持仓联动（2026-10-25，用户需求：快讯 × 持仓影响分析）────────────────────
+# ★★ 设计红线：
+#   ① 持仓**不出网**——LLM prompt 保持只含快讯（README 披露清单零新增）；
+#     影响分析 = 本机确定性规则联动（消息 scope/原文 × 持仓行业/名称 × 实时行情
+#     × 主力行为状态），不是 LLM 生成。
+#   ② Guardrails #5：只输出【影响方向 + 影响逻辑 + 当前个股状态】，不给买卖/
+#     加减仓指令；措辞为"受益/承压方向（观察）"，决策由人。
+#   ③ 不落库：纯派生数据，读取时现算；60s 进程缓存对齐卡片轮询频次。
+
+_HOLDINGS_CACHE = {"ts": 0.0, "val": []}
+
+
+def _holdings_impact(llm_news: list) -> list:
+    """快讯集合 × 真实持仓 → 每只持仓的影响观察（本机数据联动，60s 进程缓存）。
+
+    匹配规则（任一命中才算关联，中性 direction 不计）：
+      ① 名称命中：news 的 gist/cause/scope 提及持仓名称；
+      ② 行业命中：news 文本提及持仓所属行业（industry_map）。
+    持仓为空 / 无 llm_news ⇒ 返回 []（前端隐藏该区）。
+    """
+    import time as _t
+    now = _t.time()
+    if _HOLDINGS_CACHE["ts"] and now - _HOLDINGS_CACHE["ts"] < 60:
+        return _HOLDINGS_CACHE["val"]
+    out = []
+    try:
+        from app.database import db
+        from app.tencent import _cache as _tq
+        from app.industry_map import get_industry_map
+        from app.mainforce.state import load_latest
+
+        pf = db.fetch("SELECT code, name, created_at FROM user_portfolio "
+                      "ORDER BY code, created_at DESC") or []
+        seen = set()
+        holdings = []
+        for x in pf:
+            c = str(x.get("code") or "")
+            if c and c not in seen:
+                seen.add(c)
+                holdings.append({"code": c, "name": str(x.get("name") or c)})
+        if holdings:
+            codes = [h["code"] for h in holdings]
+            stocks = (_tq.get("stocks") or {})
+            imap = {}
+            try:
+                imap = get_industry_map() or {}
+            except Exception:
+                imap = {}
+            states = {}
+            try:
+                states = load_latest(codes) or {}
+            except Exception:
+                states = {}
+            for h in holdings:
+                code, name = h["code"], h["name"]
+                q = stocks.get(code) or {}
+                st = states.get(code) or {}
+                industry = str(imap.get(code) or "").strip()
+                hits, ben, bear = [], 0, 0
+                for n in (llm_news or []):
+                    d = str(n.get("direction") or "")
+                    if d not in ("利好", "利空"):
+                        continue
+                    hay = " ".join(str(n.get(k) or "") for k in ("gist", "cause", "scope"))
+                    how = None
+                    if name and name in hay:
+                        how = "名称命中"
+                    elif industry and industry in hay:
+                        how = "行业命中"
+                    if not how:
+                        continue
+                    hits.append({"idx": n.get("idx"), "gist": str(n.get("gist") or "")[:60],
+                                 "direction": d, "match": how,
+                                 "cause": str(n.get("cause") or "")[:60]})
+                    if d == "利好":
+                        ben += 1
+                    else:
+                        bear += 1
+                lean = ("受益方向" if ben > bear else
+                        ("承压方向" if bear > ben else
+                         ("多空混合" if hits else "无直接关联")))
+                out.append({
+                    "code": code, "name": name, "industry": industry,
+                    "price": _num(q.get("price")), "chg_pct": _num(q.get("change_pct")),
+                    "phase": st.get("phase"), "signal": st.get("signal"),
+                    "hits": hits, "lean": lean + "（观察）",
+                })
+    except Exception as e:
+        print(f"[flash_brief] 持仓联动失败（不影响解读本体）: {type(e).__name__}: {str(e)[:80]}")
+        out = []
+    _HOLDINGS_CACHE.update(ts=now, val=out)
+    return out
 
 
 def load(day: Optional[str] = None) -> Dict:
@@ -561,7 +668,8 @@ def load(day: Optional[str] = None) -> Dict:
             "sig": row.get("sig"), "snapshot": payload, "llm": llm,
             "conclusion": row.get("conclusion") or "",
             "created_at": row.get("created_at"),
-            "notified_at": row.get("notified_at")}
+            "notified_at": row.get("notified_at"),
+            "holdings_impact": _holdings_impact((llm or {}).get("news") or [])}
 
 
 # ── ⑥ 盘中自动触发（系统级）──────────────────────────────────────────────
@@ -569,8 +677,16 @@ _last_auto_ts = {"ts": 0.0}
 
 
 def _daily_auto_count(d: str) -> int:
+    """当日自动解读已执行次数。
+
+    ★ 2026-10-24（BK-52）：旧实现 `COUNT(*) WHERE date=d`——本表 date 是主键
+      （一天最多一行）⇒ 计数恒 ≤1，`FLASH_BRIEF_DAILY_MAX`（默认 8）**永不生效**，
+      自动解读实际只受冷却约束。⇒ 改为行上 `auto_runs` 计数列（_ensure 幂等补列，
+      每次自动解读成功后 +1）。
+    """
     try:
-        row = db.fetch_one(f"SELECT COUNT(*) AS c FROM {_TABLE} WHERE date = %s", (d,))
+        row = db.fetch_one(f"SELECT COALESCE(auto_runs, 0) AS c FROM {_TABLE} WHERE date = %s",
+                           (d,))
         return int((row or {}).get("c") or 0)
     except Exception:
         return 0
@@ -618,7 +734,7 @@ def maybe_auto_run() -> Optional[Dict]:
         if now_ts - (_last_auto_ts.get("ts") or 0.0) < COOLDOWN_MIN * 60:
             return None
         d = _today()
-        if _daily_auto_count(d) > DAILY_MAX:
+        if _daily_auto_count(d) >= DAILY_MAX:
             print(f"[flash_brief] 当日自动解读已达上限 {DAILY_MAX}，跳过")
             return None
         p = build_snapshot(d)
@@ -630,6 +746,13 @@ def maybe_auto_run() -> Optional[Dict]:
         _last_auto_ts["ts"] = now_ts
         if r.get("ok"):
             mark_notified(d)
+            # ★ BK-52：自动解读成功 ⇒ 计数 +1（PG upsert 不覆盖该列；sqlite 的
+            #   INSERT OR REPLACE 全行替换会重置——单用户本地场景影响可忽略）
+            try:
+                db.execute(f"UPDATE {_TABLE} SET auto_runs = COALESCE(auto_runs, 0) + 1 "
+                           f"WHERE date = %s", (d,))
+            except Exception as e:
+                print(f"[flash_brief] auto_runs 计数失败: {str(e)[:80]}")
             r["trigger"] = reasons
         return r
     except Exception as e:

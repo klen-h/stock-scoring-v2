@@ -764,11 +764,20 @@ def run_daily(day: str = None) -> Dict:
         prev_today = load(day) or {}
         already_crossed = bool(prev_today.get("crossed_4"))
         data = evaluate(day)
-        if already_crossed:
-            data["crossed_4"] = False
+        # ★ 2026-10-25（BK-59，审查 P0）：crossed_4 **只置 True 不回写 False**——
+        #   旧实现"已跨过就强制改 False 落库"，而落库值恰是下次 already_crossed 的
+        #   判据 ⇒ 第 1 次重跑抹掉标记、第 2 次重跑重新判定跨越并再次返回 True
+        #   ⇒ ≥2 次重跑**重复推企微**。语义改为"当日一旦跨过，当日恒为跨过"
+        #   （"首次跨过当日推一次"的口径不变）；推送信号改用独立的 **first_cross**
+        #   （= 本次评估跨过 ∧ 此前当日未标记），调用方（daily_batch）按它推送。
+        first_cross = bool(data.get("crossed_4")) and not already_crossed
+        data["crossed_4"] = bool(data.get("crossed_4")) or already_crossed
         save(data)
         return {"ok": True, "date": data["date"], "n_checked": data["n_checked"],
-                "crossed_4": data["crossed_4"], "already_crossed": already_crossed}
+                # crossed_4 = 首次跨过（推送信号，与日批调用方的历史键名兼容）
+                "crossed_4": first_cross, "first_cross": first_cross,
+                "today_crossed": data["crossed_4"],
+                "already_crossed": already_crossed}
     except Exception as e:
         print(f"[pbw] 每日计算失败: {str(e)[:120]}")
         return {"ok": False, "error": str(e)[:120]}

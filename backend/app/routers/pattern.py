@@ -12,9 +12,10 @@ URL 前缀 /api/pattern：
   GET    /api/pattern/config           → 当前参数
   PUT    /api/pattern/config           → 重设参数（要求④：未来重新设定回测条件）
 """
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 
 from app import pattern_launch as pl
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -42,7 +43,7 @@ def watch():
 
 
 @router.post("/watch")
-def watch_add(payload: dict = Body(...)):
+def watch_add(payload: dict = Body(...), _user: dict = Depends(get_current_user)):
     code = (payload.get("code") or "").strip()
     if not code:
         raise HTTPException(400, "缺少 code")
@@ -53,13 +54,13 @@ def watch_add(payload: dict = Body(...)):
 
 
 @router.patch("/watch/{code}")
-def watch_update(code: str, payload: dict = Body(...)):
+def watch_update(code: str, payload: dict = Body(...), _user: dict = Depends(get_current_user)):
     pl.watch_update(code, status=payload.get("status"), note=payload.get("note"))
     return {"ok": True}
 
 
 @router.delete("/watch/{code}")
-def watch_remove(code: str):
+def watch_remove(code: str, _user: dict = Depends(get_current_user)):
     pl.watch_remove(code)
     return {"ok": True}
 
@@ -70,5 +71,5 @@ def config_get():
 
 
 @router.put("/config")
-def config_set(payload: dict = Body(...)):
+def config_set(payload: dict = Body(...), _user: dict = Depends(get_current_user)):
     return pl.set_config(payload)

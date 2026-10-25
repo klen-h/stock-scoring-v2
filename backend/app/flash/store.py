@@ -14,6 +14,7 @@
 
 import copy
 import json
+import re
 import os
 import sqlite3
 import time
@@ -539,9 +540,40 @@ def load_macro_daily_history(days: int = 30) -> list:
 #  ETF 收盘历史
 # ================================================================
 
+def _normalize_etf_close_dates() -> None:
+    """★ 2026-10-24（BK-37）：本表历史行的 date 是 `_bj_date()` 的非零填充格式
+    （2026/10/9）——TEXT 字典序在 10 月会把 10/9 排到 10/31 之后（跨月更错），
+    保留期的 `ORDER BY date DESC LIMIT 30` 据此**误删真实近期行**。
+    幂等把旧行规范成 ISO（同日双行时保留 ISO 行、删旧行）；表 ≤30 行，代价可忽略。
+    （不改 `_bj_date()` 全局格式——flash_news 等表按旧格式做键，动它会破坏跨表一致性。）
+    """
+    rows = db.fetch("SELECT id, date FROM etf_close") or []
+    iso_seen = set()
+    for r in rows:
+        raw = str(r.get("date") or "")
+        m = re.match(r"^(\d{4})/(\d{1,2})/(\d{1,2})$", raw)
+        if not m:
+            continue
+        iso = "%s-%02d-%02d" % (m.group(1), int(m.group(2)), int(m.group(3)))
+        if iso in iso_seen:
+            db.execute("DELETE FROM etf_close WHERE id = %s", (r["id"],))
+            continue
+        db.execute("UPDATE etf_close SET date = %s WHERE id = %s", (iso, r["id"]))
+        iso_seen.add(iso)
+
+
 def save_etf_close(holdings: list) -> None:
-    """保存今日 ETF 收盘快照（按北京日期去重，保留 30 天）。"""
-    today = _bj_date()
+    """保存今日 ETF 收盘快照（按北京日期去重，保留 30 天）。
+
+    ★ 2026-10-24（BK-37）：行键改用**零填充 ISO**（不再用非零填充的 `_bj_date()`，
+      后者使 TEXT 排序错乱——10 月两位数日期行会被 trim 逻辑误删、
+      load_etf_close 在 10 月返回 9 月上旬快照，直接污染复盘 prompt 的
+      "昨日收盘 ETF 参考"；macro 同款已修、此处漏修）。
+    """
+    _normalize_etf_close_dates()
+    today = _bj_date().replace("/", "-")
+    y, m, d = today.split("-")
+    today = "%s-%02d-%02d" % (y, int(m), int(d))
     entry = {
         "date": today, "timestamp": _now_iso(),
         "holdings": [{"name": h["name"], "code": h["code"], "price": h["price"],

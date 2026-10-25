@@ -13,27 +13,32 @@ JWT Token + bcrypt 密码哈希。
 import os
 import jwt
 import hashlib
-from datetime import datetime, timedelta
+import secrets
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict
-from functools import wraps
 
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 # JWT 配置
+# ★ 2026-10-24（BK-04b，GUARDRAILS #12）：JWT_SECRET 未配置时**不再回退机器名可预测密钥**
+#   （旧实现 sha256("stock-scoring-{机器名}-secret-2026") —— 密钥可被猜出 ⇒ token 可伪造、
+#   鉴权体系整体失效）。改为**每次启动随机生成临时密钥**：
+#     · 不可伪造（fail-closed 的安全语义）；
+#     · 代价：未配置 JWT_SECRET 时每次重启全员重新登录（个人工具可接受）；
+#     · 生产应显式配置 JWT_SECRET（Render 控制台），配置后重启不再掉登录。
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
+JWT_SECRET_CONFIGURED = bool(JWT_SECRET)
 if not JWT_SECRET:
-    # 未配置时生成一个固定密钥（基于机器名 + 固定盐值）
-    # 注意：重启后不会变化，但不同机器会生成不同密钥
-    _machine_id = os.environ.get("COMPUTERNAME", os.environ.get("HOSTNAME", "default"))
-    JWT_SECRET = hashlib.sha256(f"stock-scoring-{_machine_id}-secret-2026".encode()).hexdigest()
+    JWT_SECRET = secrets.token_hex(32)
+    print("[auth] WARNING: JWT_SECRET not set, using ephemeral random secret "
+          "(all tokens invalidated on restart; configure JWT_SECRET in env)")  # ASCII（铁律⑥）
 
 JWT_ALGORITHM = "HS256"
 # 默认 10 年（87600 小时）—— 个人项目无需频繁重新登录；如需调整可在 Render 控制台设 JWT_EXPIRE_HOURS
 JWT_EXPIRE_HOURS = int(os.environ.get("JWT_EXPIRE_HOURS", "87600"))
 
 # 密码哈希（使用 SHA-256 + salt）
-import secrets
 
 def hash_password(password: str) -> str:
     """密码哈希：salt + SHA-256"""
@@ -48,7 +53,7 @@ def verify_password(plain: str, stored: str) -> bool:
         return False
     salt, hashed = stored.split(":", 1)
     check = hashlib.sha256(f"{salt}{plain}".encode()).hexdigest()
-    return check == hashed
+    return secrets.compare_digest(check, hashed)
 
 
 def create_token(user_id: int, username: str) -> str:
@@ -56,8 +61,9 @@ def create_token(user_id: int, username: str) -> str:
     payload = {
         "user_id": user_id,
         "username": username,
-        "exp": datetime.utcnow() + timedelta(hours=JWT_EXPIRE_HOURS),
-        "iat": datetime.utcnow(),
+        # ★ 2026-10-24：utcnow() 已弃用且无时区（坑 7）——显式 UTC aware
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS),
+        "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

@@ -1,0 +1,4 @@
+# 开发 / CI 专用依赖（生产镜像不装——backend/Dockerfile 只用 requirements.txt）
+# 用途：backend/tests/generated 单元测试（.github/workflows/ci.yml backend job）
+# 版本上限：pytest 9 要求 Python >=3.10，生产对齐 3.9 ⇒ 钉在 8.x
+pytest>=8,<9

@@ -27,7 +27,7 @@
 
 | # | 事项 | 当前样本 | 门槛 | 预计时点 | 到点后动作 |
 |---|---|---|---|---|---|
-| A1 | 评分 T+20 次判据（`score_edge_check`，判据 `PLAN_SCORE_EDGE.md` §4 v1.1） | 10/20 到期日 | ≥20 | **≈2026-10-23** | `edge_verify` 月度自动判；结果写回 `PLAN_SCORE_EDGE.md` §9 |
+| A1 | 评分 T+20 次判据（`score_edge_check`，判据 `PLAN_SCORE_EDGE.md` §4 v1.1） | 10/20 到期日 | ≥20 | **≈2026-10-23** | ✅ **2026-10-25 已出结论 = KILL**（T+20 −4.23pt/1000 观测，三持有期同向 FAIL）——因月度闸门错配（10 月报告生成于 10-08、score_edge_check 10-11 才注册）未能自动出，本地补跑并写回 §9；闸门已挪至当月最后交易日（防重演） |
 | A2 | ★ **回避侧反向检验**（判据已冻结：`PLAN_SCORE_EDGE.md` §11） | `ranking_live` 5/20 快照日 | ≥20 且每档 ≥400 观测 | ≈**2026-11 中旬** | ★ 唯一含**小开发动作**的项：实现 `score_edge_check --source=live`（骨架复用、数据源换 `ranking_live` 10 档）+ 接入 `edge_verify`。⚠️ **达标之前不实现、不看任何数字**（§11 纪律） |
 | A3 | `shadow_rank` 权重解冻复检（base vs grad/zero） | 12 快照日（7 到期） | ≥20 | ≈2026-11 中旬 | 自动出结论；**解冻属决策链变更，须人确认**（脚本只出证据） |
 | A4 | 其余月度复检（`reversal_composite` / `flow_consec` / `lhb` / `intraday_midday` 等） | — | 各自脚本头 | 持续 | 已在 `edge_verify.SCRIPTS` 队列，自动 |

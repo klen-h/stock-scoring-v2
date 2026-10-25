@@ -19,7 +19,8 @@
 
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from app.auth import get_current_user
 from datetime import datetime, timedelta, timezone
 
 def _bj_now():
@@ -325,19 +326,28 @@ def market_overview(background_tasks: BackgroundTasks):
     # ── 第二部分：全市场涨跌统计（从内存缓存读取）──
     stocks = _cache.get("stocks", {})
     if stocks:
+        # ★ 2026-10-24（BK-03）：改 None 安全取值——池内个股的 change_pct/amount 可为
+        #   None（scoring.py:1329 自认池内存在 None；快照恢复路径也可能缺列），
+        #   旧裸下标 `s["change_pct"]` 会 KeyError ⇒ 整个 overview 接口 500
+        #   （fail-closed 反例）。⇒ 缺失值不参与统计（家数口径不变，缺失≠平盘但
+        #   归入 flat 的误差远小于整接口 500）。
+        def _num(v):
+            return v if isinstance(v, (int, float)) else None
+
         total = len(stocks)
-        # 生成器表达式 + sum()：统计涨/跌/平的家数
-        up = sum(1 for s in stocks.values() if s["change_pct"] > 0)     # 上涨家数
-        down = sum(1 for s in stocks.values() if s["change_pct"] < 0)   # 下跌家数
-        flat = total - up - down                                        # 平盘家数
+        # 生成器表达式 + sum()：统计涨/跌/平的家数（change_pct 缺失的个股不参与涨跌判定）
+        up = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) > 0)     # 上涨家数
+        down = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) < 0)   # 下跌家数
+        flat = total - up - down                                        # 平盘家数（含缺失）
         # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
         #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
         #   创业板/科创板（20cm）⇒ 会系统性误判（涨 10% 的 20cm 票不算涨停）。
         # ★★ 2026-09-30（#3 轻量切换）：**优先 rt_k 精确口径**（全市场含北交所/ST、
         #   用 `high_limit` 精确判定），失败自动回退上面的内存近似 —— 见 `_limit_counts_best`。
         limit_up, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
-        # 所有股票的涨跌幅列表，用于算平均/中位数
-        changes = [s["change_pct"] for s in stocks.values()]
+        # 所有股票的涨跌幅列表，用于算平均/中位数（缺失值剔除，不冒充 0）
+        changes = [_c for _c in (_num(s.get("change_pct")) for s in stocks.values())
+                   if _c is not None]
         result["stats"] = {
             "total": total,
             "up_count": up,
@@ -355,7 +365,8 @@ def market_overview(background_tasks: BackgroundTasks):
             "limit_age_sec": limit_meta.get("age_sec"),
             "avg_change_pct": round(sum(changes) / len(changes), 2) if changes else 0,         # 平均涨跌幅
             "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
-            "total_amount": round(sum(s["amount"] for s in stocks.values()), 2),   # 总成交额
+            "total_amount": round(sum(_num(s.get("amount")) or 0
+                                      for s in stocks.values()), 2),   # 总成交额（缺失按 0 计）
         }
         # ★ 2026-09-25（用户需求 1）：大小盘风格 / 黄白线背离 —— 复用**同一份**内存缓存
         #   （零新增请求、零新增数据源）。看盘序"9:30-10:00 定方向"缺的那一层。
@@ -472,6 +483,10 @@ def market_realtime(
     page: int = 1, size: int = 50,
     sort_by: str = "change_pct", order: str = "desc"
 ):
+    # ★ 2026-10-25（BK-31）：参数收口——旧实现 size 无上限，?size=999999 会把
+    #   全市场 ~5400 行整包返回（内存/带宽放大器，匿名可打）。
+    page = max(1, int(page or 1))
+    size = max(1, min(int(size or 50), 200))
     """
     全A股实时行情分页接口。
 
@@ -536,13 +551,17 @@ def refresh_status():
     return {
         "stock_count": len(stocks),
         # 时间戳转可读时间；last=0（未刷新）时显示"未刷新"
-        "last_update": datetime.fromtimestamp(last).strftime("%Y-%m-%d %H:%M:%S") if last else "未刷新",
+        # ★ 2026-10-24（BK-08）：fromtimestamp 不带 tz 走服务器本地时区（生产 UTC）⇒ 显示差 8h
+        #   —— 同文件已两次裁决过此坑，显式给北京时间。
+        "last_update": datetime.fromtimestamp(
+            last, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S") if last else "未刷新",
         "total_codes": len(_ALL_CODES),
     }
 
 
 @router.get("/trigger-refresh")
-def trigger_refresh(background_tasks: BackgroundTasks):
+def trigger_refresh(background_tasks: BackgroundTasks,
+                    _user: dict = Depends(get_current_user)):
     """手动触发缓存刷新（force=True，忽略 60 秒冷却）"""
     background_tasks.add_task(refresh_all_stocks, force=True)
     return {"status": "refreshing"}
@@ -568,7 +587,8 @@ def policy_bottom(date: Optional[str] = Query(None, description="交易日，缺
 def policy_bottom_confirm(
         checked: int = Query(1, ge=0, le=1, description="1=打勾 / 0=取消"),
         note: str = Query("", description="备注（哪家、什么公告）"),
-        date: Optional[str] = Query(None, description="交易日，缺省=当天")):
+        date: Optional[str] = Query(None, description="交易日，缺省=当天"),
+        _user: dict = Depends(get_current_user)):
     """第①条（国家队公告）人工打勾 —— 唯一人工项；打勾后**立即重算并落库**。"""
     from app import policy_bottom_watch as pbw
     return pbw.confirm_nation_team((date or "").strip()[:10], bool(checked), note)
@@ -592,7 +612,8 @@ def policy_bottom_announcements(
 
 @router.post("/policy-bottom/announcements/refresh")
 def policy_bottom_announcements_refresh(
-        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日"),
+        _user: dict = Depends(get_current_user)):
     """手动重扫（不推企微）。用于验证链路 / 盘中临时想看有没有新公告。"""
     from app import policy_bottom_watch as pbw
     from app import policy_announcements as pa
@@ -622,7 +643,8 @@ def policy_bottom_etf_shares(
 
 @router.post("/policy-bottom/etf-shares/refresh")
 def policy_bottom_etf_shares_refresh(
-        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日")):
+        date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日"),
+        _user: dict = Depends(get_current_user)):
     """手动重算份额异动（不推企微）。"""
     from app import policy_bottom_watch as pbw
     from app import etf_share_watch as esw
@@ -991,8 +1013,14 @@ def _save_emotion_daily(val: Dict) -> None:
         #   对齐同类实现：`_save_tail_baseline()` 开头就调 `_ensure_tail_table()`。
         #   ⚠️ 本函数幂等（`_EMOTION_TABLE_READY` 缓存 + `CREATE TABLE IF NOT EXISTS`）⇒ 无额外开销。
         _ensure_emotion_table()
-        if not val.get("trading_day"):
-            return                       # 休市日的值是"最近交易日回放"，不写（见上方注释）
+        # ★ 2026-10-24（BK-09 收口，"写入时刻≠数据所属时刻"四案之第④案）：
+        #   旧实现 行键=写入自然日 + 只挡 `val.trading_day`（布尔）为空 —— 交易日 00:00-09:15
+        #   时布尔仍 True，而此时行情是"上一交易日回放" ⇒ 旧行会写到「键=今天、数据=昨日」的
+        #   错位行上；休市日同理写假日键行（MEMORY §2④：market_emotion_daily 未修项）。
+        #   ⇒ 锚定 `_price_date()`（行情价格所属交易日）：数据日 != 今天（回放）一律不落库，
+        #     宁缺勿错键——消费方 policy_bottom_watch 对缺失已有 insufficient 显式区分。
+        if _price_date() != _bj_now().strftime("%Y-%m-%d"):
+            return                       # 休市日/盘前 9:15 前的回放数据：不写（见 2026-09-25 注释）
         day = _bj_now().strftime("%Y-%m-%d")
         now = _bj_now()
         hhmm = now.hour * 100 + now.minute
@@ -1198,8 +1226,25 @@ def _breadth_now() -> Dict:
     }
 
 
+_TAIL_IDX_CACHE = {"ts": 0.0, "val": {}}   # ★ BK-31：60s TTL（尾盘判读 120s 轮询减半外呼）
+
+
 def _index_snapshot() -> Dict[str, Dict]:
-    """一次请求取 `_TAIL_INDICES` 全部指数（`{code: {name, price, change_pct}}`）。失败返回 {}。"""
+    """一次请求取 `_TAIL_INDICES` 全部指数（`{code: {name, price, change_pct}}`）。失败返回 {}。
+
+    ★ 2026-10-25（BK-31）：旧实现**每次调用都外呼腾讯**——尾盘判读在 120s 轮询里，
+      页面开一天 = 整夜（现已被 BK-55 门控）/盘中每 2 分钟一次外呼。加 60s TTL。
+    """
+    import time as _t
+    now = _t.time()
+    if now - _TAIL_IDX_CACHE["ts"] < 60:
+        return _TAIL_IDX_CACHE["val"]
+    val = _index_snapshot_fetch()
+    _TAIL_IDX_CACHE.update(ts=now, val=val)
+    return val
+
+
+def _index_snapshot_fetch() -> Dict[str, Dict]:
     try:
         from app.tencent import _fetch_tencent
         codes = ",".join(("sh" if c.startswith("0") else "sz") + c for c, _ in _TAIL_INDICES)
@@ -1839,24 +1884,32 @@ _NEW_STOCK_MIN_DAYS = 60          # 上市不足 60 个交易日视为新股
 _BREAK_TOL = 0.002                # ① 阈值缓冲：板幅 −0.2%
 _SEAL_TOL = 0.001                 # 曾涨停判定容差（最高价触价即可）
 _BIG_LOSS_PCT = 5.0               # ② 大面率定义：炸板且收盘涨幅 < 5%
-_first_seen_cache = {"ts": 0.0, "map": None}   # 每只最早出现日期（日级缓存，防重复扫表）
+_first_seen_cache = {"ts": 0.0, "map": None, "ttl": 3600}   # 每只最早出现日期（日级缓存，防重复扫表）
+_LIMIT_LIVE_CACHE = {"date": None, "ts": 0.0, "out": None}   # ★ BK-31：limit-review 直连回退 300s 冷却
 
 
 def _first_seen_map() -> Dict:
-    """`{code: 最早交易日}` —— 用于剔除新股。**日级进程缓存**（该查询扫全表，不能每次做）。"""
+    """`{code: 最早交易日}` —— 用于剔除新股。**日级进程缓存**（该查询扫全表，不能每次做）。
+
+    ★ 2026-10-25（BK-31）：成功缓存 1h、失败只缓存 10min——旧实现失败也陪葬 1h：
+      空 map = 新股剔除静默失效一整小时（"降级路径也要缓存"但 TTL 要短）。
+    """
     import time as _t
     now = _t.time()
-    if _first_seen_cache["map"] is not None and now - _first_seen_cache["ts"] < 3600:
+    if (_first_seen_cache["map"] is not None
+            and now - _first_seen_cache["ts"] < _first_seen_cache["ttl"]):
         return _first_seen_cache["map"]
     out = {}
+    ok = True
     try:
         from app.database import db
         for r in db.fetch("SELECT code, MIN(date) AS d0 FROM backtest_prices "
                           "GROUP BY code") or []:
             out[str(r.get("code"))] = str(r.get("d0") or "")
     except Exception as e:
+        ok = False
         print(f"[market] first-seen map failed: {e}")          # ASCII（铁律⑥）
-    _first_seen_cache.update(ts=now, map=out)
+    _first_seen_cache.update(ts=now, map=out, ttl=3600 if ok else 600)
     return out
 
 
@@ -2199,20 +2252,31 @@ def market_limit_review(date: str = None):
         out["stats"] = _limit_stats(d)          # ★ 炸板率/大面率（来自 backtest_prices）
         return out
     # ── 回退：直连 zzshare（快照缺失时，拿到的是**动态值**）──
-    try:
-        from app.zzshare_client import get_api
-        api = get_api()
-        df = api.review_uplimit_hot_step(date1=d)
-        if df is not None and hasattr(df, "to_dict"):
-            out["steps"] = df.to_dict("records")[:20]
-        df2 = api.uplimit_stocks(date1=d)
-        if df2 is not None and hasattr(df2, "to_dict"):
-            out["stocks"] = _dedup_uplimit_stocks(df2.to_dict("records"))[:50]   # ★ 同上
-        if out["steps"] or out["stocks"]:
-            out["source"] = "live"
-            out["as_of"] = _now_str
-    except Exception as e:
-        print(f"[market] limit-review live failed: {e}")        # ASCII（铁律⑥）
+    # ★ 2026-10-25（BK-31）：直连回退加**按日期 300s 冷却**——旧实现每请求 2 次
+    #   zzshare 外呼无冷却；快照缺失的日期（如任意历史日）可被循环触发。
+    import time as _t
+    _now_ts = _t.time()
+    if (_LIMIT_LIVE_CACHE["date"] == d
+            and _now_ts - _LIMIT_LIVE_CACHE["ts"] < 300
+            and _LIMIT_LIVE_CACHE["out"] is not None):
+        out.update(_LIMIT_LIVE_CACHE["out"])
+        out["as_of"] = _now_str
+    else:
+        try:
+            from app.zzshare_client import get_api
+            api = get_api()
+            df = api.review_uplimit_hot_step(date1=d)
+            if df is not None and hasattr(df, "to_dict"):
+                out["steps"] = df.to_dict("records")[:20]
+            df2 = api.uplimit_stocks(date1=d)
+            if df2 is not None and hasattr(df2, "to_dict"):
+                out["stocks"] = _dedup_uplimit_stocks(df2.to_dict("records"))[:50]   # ★ 同上
+            if out["steps"] or out["stocks"]:
+                out["source"] = "live"
+                out["as_of"] = _now_str
+        except Exception as e:
+            print(f"[market] limit-review live failed: {e}")    # ASCII（铁律⑥）
+        _LIMIT_LIVE_CACHE.update(date=d, ts=_now_ts, out=dict(out))
     if out["ladder"] or out["stocks"]:
         out["stats"] = _limit_stats(d)
         return out

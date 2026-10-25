@@ -342,17 +342,22 @@ def _trust_grade(trust_score: int) -> str:
 
 
 def _trust_advice(trust_grade: str, consecutive_days: int) -> str:
-    """根据可信度等级返回操作建议"""
-    if trust_grade == "A+":
-        return "放心买，极强共识"
-    elif trust_grade == "A":
-        return "可重仓，持续强势"
-    elif trust_grade == "B":
-        return "可轻仓，初步确认"
-    elif trust_grade == "C":
-        return "建议观望，观察期"
-    else:
-        return "不建议操作"
+    """可信度等级的**事实描述**（不含任何买卖/仓位指令）。
+
+    ★ 2026-10-24（BK-42）：旧文案"放心买，极强共识/可重仓/可轻仓/建议观望/不建议操作"
+      是 2026-08-21 引入的遗留（git 可考），评分预登记 KILL（2026-10-11，
+      `docs/plans/PLAN_SCORE_EDGE.md` §9：Top50 防御/禁买市 T+5 −1.43pt）落地时未回收，
+      经 `POST /ranking-persistence` 直出前端 ⇒ 与 SIGNAL_STATUS 披露直接冲突。
+      ⇒ 本函数只描述"该股信号的历史一致性档位"；买卖含义一律不出现（GUARDRAILS #5）。
+      【留痕】consecutive_days 参数历史上就未参与文案，保留签名以兼容调用方。
+    """
+    _desc = {
+        "A+": "信号一致性：极强（可信度 A+）",
+        "A": "信号一致性：较强（可信度 A）",
+        "B": "信号一致性：初步确认（可信度 B）",
+        "C": "信号一致性：弱（可信度 C，观察期）",
+    }
+    return _desc.get(trust_grade, "信号一致性：无评级（样本不足）")
 
 
 # ── 供调度器调用的自动记录函数 ──

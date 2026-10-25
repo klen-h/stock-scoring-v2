@@ -20,7 +20,7 @@
 > −1.43/−2.21pt（P<0.0001）⇒ 评分当前**不构成买入依据**；"回避侧价值"验证中
 > （`PLAN_SCORE_EDGE.md` / `PLAN_NEXT.md`）。
   已被它砍掉的东西比加进去的更有价值（例：`flow_consec` 首验即 FAIL；战法体系 24 格矩阵 19 负）。
-  详见 [`开发文档.md`](开发文档.md)。
+  详见 [`开发文档.md`](docs/architecture/开发文档.md)。
 
 ## 二、三条产品红线（**不可动摇**）
 
@@ -31,7 +31,7 @@
 | **R3** | **判据先写死再看结果**，禁止事后调参 | 事后调参 = 自我欺骗（覆盖率不足时**禁止**判 KILL 就是这条的产物） |
 
 > 另有 3 条**工程红线**（egress 预算 / 日期键一律交易日 / 文案与口径由后端下发），
-> 以及各条背后的真实事故，见 [`开发文档.md`](开发文档.md) §1。
+> 以及各条背后的真实事故，见 [`开发文档.md`](docs/architecture/开发文档.md) §1。
 
 ## 三、⚠️ 数据会出网的地方（**LLM 披露清单**）
 
@@ -58,18 +58,18 @@
 ## 四、明确**不做**（别按这些提需求）
 
 实盘对接（QMT / easytrader）、因子 DSL / 平台化、桌面端、为"毫秒级扫描"换技术栈、订阅制推送。
-理由见 [`开发文档.md`](开发文档.md) §5「明确不做」——多数与本项目的**证伪成果**直接冲突。
+理由见 [`开发文档.md`](docs/architecture/开发文档.md) §5「明确不做」——多数与本项目的**证伪成果**直接冲突。
 
 ## 五、文档地图（**先看哪份取决于你要干什么**）
 
 | 你想做 | 看这份 |
 |---|---|
-| **动手改代码**（不犯错 / 怎么验证） | [`开发文档.md`](开发文档.md) ← **首选** |
-| 部署与运行 | [`DEPLOY.md`](DEPLOY.md)、[`EGRESS.md`](EGRESS.md)（免费额度治理）、[`交易日全流程.md`](交易日全流程.md) |
-| 了解在做的计划 | [`PLAN_RESERVE_SIGNALS.md`](PLAN_RESERVE_SIGNALS.md) |
-| 板块联动筛选（评分榜强势板块过滤） | [`PLAN_SECTOR_LINKAGE.md`](PLAN_SECTOR_LINKAGE.md) —— **影子期**：`SECTOR_LINKAGE_MODE=shadow`，只并行落库、不改榜单；切 `on` 须预登记 GO + 拍板 |
+| **动手改代码**（不犯错 / 怎么验证） | [`开发文档.md`](docs/architecture/开发文档.md) ← **首选** |
+| 部署与运行 | [`DEPLOY.md`](DEPLOY.md)、[`EGRESS.md`](EGRESS.md)（免费额度治理）、[`交易日全流程.md`](docs/architecture/交易日全流程.md) |
+| 了解在做的计划 | [`PLAN_RESERVE_SIGNALS.md`](docs/plans/PLAN_RESERVE_SIGNALS.md) |
+| 板块联动筛选（评分榜强势板块过滤） | [`PLAN_SECTOR_LINKAGE.md`](docs/plans/PLAN_SECTOR_LINKAGE.md) —— **影子期**：`SECTOR_LINKAGE_MODE=shadow`，只并行落库、不改榜单；切 `on` 须预登记 GO + 拍板 |
 | 了解当时怎么想的 | `PLAN_*.md` / `*_202609*.md`（⚠️ **多为当时快照，别当现状读**，如 `CONTEXT.md` 停在 2026-09-06） |
-| 上线观测 | [`上线观测单_20260930.md`](上线观测单_20260930.md) |
+| 上线观测 | [`上线观测单_20260930.md`](docs/ops/上线观测单_20260930.md) |
 
 **本地跑起来**（详见 `DEPLOY.md`）：
 

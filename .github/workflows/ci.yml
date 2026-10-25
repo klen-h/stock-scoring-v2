@@ -21,7 +21,20 @@ jobs:
         with:
           python-version: '3.9'
       - name: 安装依赖
-        run: pip install -r backend/requirements.txt -q
+        run: pip install -r backend/requirements.txt -r requirements-dev.txt -q
+      # ★ 2026-10-24（清理收口，docs/CLEANUP_REPORT.md）：三道新护栏——
+      #   ① 代码卫生门（棘轮基线，只拦新增不追存量）；
+      #   ② 日批 TASKS/DEFAULT_ORDER 一致性（BK-47：risk_calendar 曾漏排单静默断档，
+      #      模块级断言随 import 生效，--list 即验证）；
+      #   ③ backend/tests/generated 单元测试（涨跌停口径/交易日历/衰减/CYQ 等业务语义）。
+      - name: 代码卫生门（棘轮基线）
+        run: python scripts/code_hygiene_check.py
+      - name: 日批任务一致性（TASKS == DEFAULT_ORDER）
+        run: python scripts/daily_batch.py --list
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+      - name: 单元测试（backend/tests/generated）
+        run: python -m pytest backend/tests/generated/ -q
       - name: 全模块编译 + 导入检查
         run: |
           cd backend

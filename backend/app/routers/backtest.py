@@ -19,7 +19,8 @@ import threading
 import time
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
+from app.auth import get_current_user
 
 from app.backtest import strategies
 from app.database import db
@@ -157,7 +158,8 @@ def _build_response(name: str, result: dict) -> dict:
 
 
 @router.get("/strategy")
-def get_strategy(name: str = Query(..., description="signals / warfare / macro")):
+def get_strategy(name: str = Query(..., description="signals / warfare / macro"),
+                 _user: dict = Depends(get_current_user)):
     """计算并返回某策略回测结果。
 
     三层缓存：内存 10 分钟 → DB 持久缓存（秒回 stale + 后台刷新）→ 同步计算（仅首次部署）。"""

@@ -279,8 +279,13 @@ def compute_metrics(trades: list, curve: list, benchmark_ret: float = None) -> d
         "annual_return": round(annual * 100, 2),
         "max_drawdown": round(mdd * 100, 2),
         "sharpe": round(sharpe, 2),
-        "excess_return": round((total_ret - (benchmark_ret or 0)) * 100, 2),
-        "benchmark_return": round((benchmark_ret or 0) * 100, 2),
+        # ★ 2026-10-24（BK-34）：benchmark_ret=None = 基准数据缺失 ⇒ 超额/基准都输出 None
+        #   （下游 _fmt/pct 已按缺失渲染"—"）。旧实现 `or 0` 会把"缺基准"渲染成
+        #   "基准 0.00%、超额=全部收益"——缺失≠0 红线。
+        "excess_return": (round((total_ret - benchmark_ret) * 100, 2)
+                          if benchmark_ret is not None else None),
+        "benchmark_return": (round(benchmark_ret * 100, 2)
+                             if benchmark_ret is not None else None),
         "period_days": days,
         "exit_reasons": {r: sum(1 for t in trades if t["exit_reason"] == r)
                          for r in sorted({t["exit_reason"] for t in trades})},

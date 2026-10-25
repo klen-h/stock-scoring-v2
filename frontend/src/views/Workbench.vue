@@ -16,7 +16,7 @@
         <label class="flex items-center gap-2">
           <span class="text-muted text-xs">日期</span>
           <select v-model="selectedDate"
-                  class="bg-background border border-border rounded px-2 py-1 text-xs">
+                  class="bg-card border border-border rounded px-2 py-1 text-xs">
             <option v-for="d in dayList" :key="d.date" :value="d.date">
               {{ d.date === todayStr ? '今天 ' + d.date : d.date }}
             </option>
@@ -1801,7 +1801,7 @@
                   <a :href="xqUrl(it.code)" target="_blank"
                      class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
                   <span v-if="it.industry"
-                        class="text-[10px] px-1 rounded bg-background border border-border text-muted">{{ it.industry }}</span>
+                        class="text-[10px] px-1 rounded bg-card border border-border text-muted">{{ it.industry }}</span>
                   <span class="ml-auto text-lg font-bold font-mono"
                         :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
                 </div>
@@ -4009,7 +4009,13 @@ async function loadTop(force = false) {
       let rows = feScoringResult.value || []
       // ★ 2026-09-28：`force=true`（轮询调用）**跳过 5 分钟复用窗口** —— 否则界面写着
       //   "120s 后刷新"而数据几分钟不动（复用窗口本是为"切阶段别重算"设的，轮询语义不同）。
-      if (!rows.length || force || !_fresh) rows = await computeRanking({ mode: 'top', limit: 10 })
+      // ★ 2026-10-24（BK-56）：复用窗口失效只在**交易时段**触发重算——夜间行情不变，
+      //   "过期"的本地结果就是最新可得；旧实现 `!_fresh` 无条件重算 ⇒ 本地模式下
+      //   夜间每 5 分钟一次全市场 computeRanking（很重），与注释意图相反。
+      //   force=true 只在 isLivePhase() 时由 120s 轮询传入 ⇒ 语义不变。
+      if (!rows.length || force || (!_fresh && isLivePhase())) {
+        rows = await computeRanking({ mode: 'top', limit: 10 })
+      }
       topItems.value = (rows || []).slice(0, 10)
       topMode.value = 'local'
       topErr.value = ''
@@ -4623,12 +4629,17 @@ function startPolling() {
     //   主工作区**永不自动切换**；提示见模板里的「● 已进入，点击切换」。
     //   （此前 dbdb3cf 声称已"回退温和提示"，但这段 P0-7 实际还在 ⇒ 本次真正移除。）
     livePhase.value = computePhase()
-    loadOverview(); loadTemperature(); loadEmotion(); loadGlobals(); loadTailReview()
+    // ★ 2026-10-24（BK-55）：主轮询按变量时效分两组——
+    //   夜间（!isLivePhase）只保留 **24h 变量**：外盘四件套 loadGlobals()（美股时段
+    //   21:30-04:00 正在走）与快讯诊断 loadFlashDiag()（金十夜间照发，尤其美联储窗口）；
+    //   A股变量（overview/temperature/emotion/tailReview/policyBottom/sectorTop/
+    //   amountShare/events/gwPrices）夜间不会变 ⇒ 停轮询（挂载时的首次加载不受影响）。
+    //   旧实现十余个加载器整夜每 2 分钟空转（"页面开一天"的 egress 白付），
+    //   与本组上方自注释"仅交易时段真发请求"不符。
+    loadGlobals(); loadFlashDiag()
+    if (!isLivePhase()) { refreshLeft.value = 0; return }
+    loadOverview(); loadTemperature(); loadEmotion(); loadTailReview()
 loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
-    // ★ 2026-09-28（方案 C）：快讯诊断（LLM 最新一条）是**高速变量** ⇒ 纳入轮询，
-    //   否则右栏那行常驻内容会停在"打开页面那一刻"。`loadGlobals()` 已顺带刷新
-    //   `macro`（未锁定时）/`sentiment`，故顶栏宏观摘要不必再单独拉。
-    loadFlashDiag()
     // ★★ 2026-09-28（用户："主线板块 Top5 也不是实时的" —— 真因就在这里）：
     //   `loadSectorTop` 原先**只在切阶段时调一次**，切进盘中后就不再刷新
     //   ⇒ 页面上的板块排名停在"进入该阶段那一刻"（尽管接口本身是实时的）。

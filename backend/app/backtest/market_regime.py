@@ -599,9 +599,12 @@ _REGIME_CACHE: dict = {"date": None, "state": None, "weights": None, "detail": N
 def _ensure_history_table() -> None:
     """确保市场状态追踪表存在（幂等，兼容 PostgreSQL / SQLite）。"""
     from app.database import db
-    db.execute("""
+    # ★ 2026-10-24（BK-35）：id 列双库分支——SERIAL 是 PG 专有，SQLite 必抛
+    #   （异常被吞 ⇒ 表没建出来，报告归档/nb 两日确认整体失效）。
+    id_ddl = "id SERIAL PRIMARY KEY" if db.is_postgres         else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    db.execute(("""
         CREATE TABLE IF NOT EXISTS market_regime_history (
-            id SERIAL PRIMARY KEY,
+            %s,
             date TEXT NOT NULL UNIQUE,
             state TEXT NOT NULL,
             regime_score REAL,
@@ -612,13 +615,22 @@ def _ensure_history_table() -> None:
             weights_json TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+    """) % id_ddl)
     # 2026-09-13：nb 两日确认需要知道昨日 raw 条件；老表无此列则幂等补加
+    # ★ 2026-10-24（BK-35）：ADD COLUMN IF NOT EXISTS 是 PG 专有 ⇒ sqlite 分支
+    #   改查 PRAGMA table_info 再补列（同款吞异常曾让 nb 两日确认退化单日）。
     try:
-        db.execute("""
-            ALTER TABLE market_regime_history
-            ADD COLUMN IF NOT EXISTS bearish_refine_raw BOOLEAN
-        """)
+        if db.is_postgres:
+            db.execute("""
+                ALTER TABLE market_regime_history
+                ADD COLUMN IF NOT EXISTS bearish_refine_raw BOOLEAN
+            """)
+        else:
+            cols = {r["name"] for r in db.fetch(
+                "PRAGMA table_info(market_regime_history)") or []}
+            if "bearish_refine_raw" not in cols:
+                db.execute("ALTER TABLE market_regime_history "
+                           "ADD COLUMN bearish_refine_raw BOOLEAN")
     except Exception:
         pass
 

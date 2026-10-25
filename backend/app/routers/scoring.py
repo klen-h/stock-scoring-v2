@@ -14,7 +14,8 @@
 ================================================================================
 """
 
-from fastapi import APIRouter, Query, BackgroundTasks, Body, HTTPException
+from fastapi import APIRouter, Depends, Query, BackgroundTasks, Body, HTTPException
+from app.auth import get_current_user
 import asyncio
 import math
 import os
@@ -699,7 +700,7 @@ def rank_history(code: str, days: int = Query(default=30, ge=7, le=90)):
 
 
 # 分桶胜率统计缓存（计算涉及批量价格加载，10 分钟复用）
-_bucket_cache = {"ts": 0.0, "data": None}
+_bucket_cache = {"ts": 0.0, "data": None, "key": None}
 _BUCKET_CACHE_TTL = 600
 
 
@@ -714,7 +715,11 @@ def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     """
     import time as _time
     now = _time.time()
-    if _bucket_cache["data"] is not None and now - _bucket_cache["ts"] < _BUCKET_CACHE_TTL:
+    # ★ 2026-10-24（BK-10）：缓存键必须含 days——旧实现单槽无键，改 days 参数
+    #   返回的是上一参数的旧缓存（口径漂移）
+    key = "days=%s" % days
+    if (_bucket_cache["data"] is not None and _bucket_cache["key"] == key
+            and now - _bucket_cache["ts"] < _BUCKET_CACHE_TTL):
         data = dict(_bucket_cache["data"])
         data["cached"] = True
         return data
@@ -723,11 +728,12 @@ def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     result["cached"] = False
     _bucket_cache["ts"] = now
     _bucket_cache["data"] = result
+    _bucket_cache["key"] = key
     return result
 
 
 # 组合因子前瞻统计缓存（复用 bucket-stats 模式：批量价格加载较重，10 分钟复用）
-_composite_cache = {"ts": 0.0, "data": None}
+_composite_cache = {"ts": 0.0, "data": None, "key": None}
 
 
 @router.get("/composite-stats")
@@ -744,7 +750,10 @@ def composite_stats(days: int = Query(default=90, ge=30, le=365),
     """
     import time as _time
     now = _time.time()
-    if _composite_cache["data"] is not None and now - _composite_cache["ts"] < _BUCKET_CACHE_TTL:
+    # ★ 2026-10-24（BK-10）：缓存键含 days/horizon（同 bucket_stats 的单槽无键问题）
+    key = "days=%s,horizon=%s" % (days, horizon)
+    if (_composite_cache["data"] is not None and _composite_cache["key"] == key
+            and now - _composite_cache["ts"] < _BUCKET_CACHE_TTL):
         data = dict(_composite_cache["data"])
         data["cached"] = True
         return data
@@ -753,6 +762,7 @@ def composite_stats(days: int = Query(default=90, ge=30, le=365),
     result["cached"] = False
     _composite_cache["ts"] = now
     _composite_cache["data"] = result
+    _composite_cache["key"] = key
     return result
 
 
@@ -765,7 +775,7 @@ def score_snapshots(days: int = Query(default=30, ge=1, le=90)):
 
 
 @router.post("/snapshots/capture")
-async def capture_score_snapshot():
+async def capture_score_snapshot(_user: dict = Depends(get_current_user)):
     """立即记录当日 Top 50 快照（含维度分+快照价格）到 ranking_history，同日幂等覆盖。
     日常由调度器每天 15:15 自动执行；此接口供前端「保存快照」按钮手动触发。"""
     from datetime import datetime as _dt, timezone as _tz
@@ -1187,7 +1197,7 @@ def score_diag(symbol: str, ai: bool = True, refresh: bool = False):
 
 
 @router.post("/ask")
-def score_ask(payload: dict = Body(...)):
+def score_ask(payload: dict = Body(...), _user: dict = Depends(get_current_user)):
     """个股「事实问答」（P2）：对**当前标的**的自然语言问询。
 
     请求体：`{"code": "600000", "q": "现在处于什么阶段？还差什么条件？", "ai": true}`
@@ -1956,7 +1966,7 @@ def ranking_persistence(codes: list = Body(...)):
 
 
 @router.post("/ranking-record")
-def ranking_record(stocks: list = Body(...)):
+def ranking_record(stocks: list = Body(...), _user: dict = Depends(get_current_user)):
     """
     手动记录当日排行榜（供调试或定时任务调用）。
     
@@ -1983,7 +1993,8 @@ def kline_cache_status():
 
 
 @router.post("/kline-cache/refresh")
-def kline_cache_refresh(background_tasks: BackgroundTasks):
+def kline_cache_refresh(background_tasks: BackgroundTasks,
+                        _user: dict = Depends(get_current_user)):
     """
     触发K线缓存刷新（后台执行）。
     
@@ -2020,7 +2031,8 @@ def indicator_cache_status():
 
 
 @router.post("/indicator-cache/refresh")
-def indicator_cache_refresh(background_tasks: BackgroundTasks):
+def indicator_cache_refresh(background_tasks: BackgroundTasks,
+                            _user: dict = Depends(get_current_user)):
     """
     触发指标缓存刷新（后台执行）。
     
@@ -2042,7 +2054,8 @@ def _do_refresh_indicator_cache():
 
 
 @router.post("/indicator-cache/incremental")
-def indicator_incremental_update(data: dict = Body(...)):
+def indicator_incremental_update(data: dict = Body(...),
+                                 _user: dict = Depends(get_current_user)):
     """
     增量更新指标（盘中只拉最新价，无需重算 500 根 K 线）。
     

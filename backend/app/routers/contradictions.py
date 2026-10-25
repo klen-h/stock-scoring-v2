@@ -12,12 +12,13 @@ URL 前缀 /api/contradictions
   POST /api/contradictions/resolve    → 标记某条矛盾已兑现/失效
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from typing import Optional
 
 from app.contradictions.scanner import scan_all
 from app.contradictions.report import generate_report, run_report
 from app.contradictions import store
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -64,7 +65,7 @@ def get_report(date: Optional[str] = Query(None)):
 
 
 @router.post("/scan")
-def trigger_scan(date: Optional[str] = Query(None)):
+def trigger_scan(date: Optional[str] = Query(None), _user: dict = Depends(get_current_user)):
     """手动触发一次扫描，结果落库（同日幂等覆盖）。"""
     from app.contradictions.store import _today
     target = date or _today()
@@ -74,7 +75,7 @@ def trigger_scan(date: Optional[str] = Query(None)):
 
 
 @router.post("/report")
-def trigger_report(date: Optional[str] = Query(None)):
+def trigger_report(date: Optional[str] = Query(None), _user: dict = Depends(get_current_user)):
     """手动生成某日矛盾报告并落库。"""
     result = run_report(date=date)
     return result
@@ -83,6 +84,7 @@ def trigger_report(date: Optional[str] = Query(None)):
 @router.post("/resolve")
 def mark_resolved(
     date: str = Query(..., description="矛盾日期"),
+    _user: dict = Depends(get_current_user),
     ctype: str = Query(..., description="矛盾类型 type"),
     note: str = Query("", description="备注"),
 ):
@@ -92,7 +94,7 @@ def mark_resolved(
 
 
 @router.post("/validate")
-def trigger_validate():
+def trigger_validate(_user: dict = Depends(get_current_user)):
     """手动触发矛盾验证闭环（用次日行情验证历史矛盾的方向预判）。"""
     from app.contradictions.validator import validate_yesterday, render_stats_markdown
     stats = validate_yesterday()

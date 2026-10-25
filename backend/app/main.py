@@ -61,6 +61,16 @@ _snapshot_bootstrap = None   # 首份快照引导任务句柄（仅快照建立�
 async def lifespan(app: FastAPI):
     """启动时初始化数据库 + 拉起快讯/复盘/信号跟踪三个后台循环，关闭时优雅取消。"""
     global _scheduler_tasks, _snapshot_bootstrap
+    # ★★ 2026-10-25（内存 OOM 对症，memory_probe 实证）：同步端点线程池**封顶 8**。
+    #   【证据】memory_probe 表 210 条采样：每次 RSS 大跳都与线程数 9→19~30 一比一对应
+    #   （例：10-23 11:50，13→24 线程，rss 158→405MB/30min；12:50 到 524MB 即被杀重启），
+    #   而具名缓存全程只有 34~38MB ⇒ 涨的是【多线程 glibc arena 的碎片高水位】——
+    #   每个并发线程一个独立 arena，释放的内存别的线程复用不了，且不归还 OS。
+    #   anyio 默认容量 40 ⇒ 请求突发时线程数翻 3 倍 ⇒ arena 碎片翻 3 倍 ⇒ OOM 循环。
+    #   【代价】同步端点最多 8 个并发执行（CPU 只有 0.1~0.5 核，本无意义）；超出排队。
+    #   【配套】Render 控制台加 `MALLOC_ARENA_MAX=2`（render.yaml 已登记，双保险）。
+    import anyio.to_thread
+    anyio.to_thread.current_default_thread_limiter().total_tokens = 8
     # 初始化数据库表结构
     from app.database import db
     db.init_tables()

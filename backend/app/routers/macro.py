@@ -13,7 +13,9 @@ URL 前缀 /api/macro，数据源：新浪财经（见 app/macro.py）。
 ================================================================================
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
+from app.auth import get_current_user, get_current_user_optional
 from app.macro import get_macro_snapshot, get_macro_panel, RULES, RULES_VERSION
 
 router = APIRouter()
@@ -52,7 +54,11 @@ def macro_rules():
 
 
 @router.get("/earnings-pressure")
-def earnings_pressure(limit: int = Query(30, ge=5, le=200), refresh: bool = False):
+def earnings_pressure(limit: int = Query(30, ge=5, le=200), refresh: bool = False,
+                      _user: Optional[dict] = Depends(get_current_user_optional)):
+    # ★ 2026-10-24（BK-40）：refresh=true 绕过 6h 缓存触发东财/财报重算 ⇒ 必须登录
+    if refresh and not _user:
+        raise HTTPException(401, "refresh=true 触发重算需要登录（GUARDRAILS #12）")
     """盈利承压监测清单（P2-2，滞胀 → 盈利端）。
 
     ★ **这是监测清单，不是卖出信号**：不改评分、不参与排序、不进闸门。
@@ -68,7 +74,7 @@ def earnings_pressure(limit: int = Query(30, ge=5, le=200), refresh: bool = Fals
 
 
 @router.get("/reserves")
-def macro_reserves(months: int = Query(24, ge=6, le=120)):
+def macro_reserves(months: int = Query(24, ge=6, le=120), _user: dict = Depends(get_current_user)):
     """央行储备月度面板（外储 / 黄金储备 / 黄金占储备比重）——**慢变量，非交易信号**。
 
     定位见 `PLAN_RESERVE_SIGNALS.md` §6.2：把“减美债、增黄金”的月度事实落成可追溯数据，

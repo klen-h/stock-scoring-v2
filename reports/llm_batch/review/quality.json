@@ -1,0 +1,370 @@
+{
+ "generated_at": "2026-10-24",
+ "method": "随机抽 20%（≥5% 门槛）：行号存在性 + 原文逐字比对（空白归一）",
+ "reports": {
+  "P0_backtest.md": 21,
+  "P0_flash_llm_store.md": 17,
+  "P0_frontend_workbench.md": 12,
+  "P0_infra_daily_batch.md": 17,
+  "P0_mainforce.md": 17,
+  "P0_routers_core.md": 23,
+  "P0_routers_misc.md": 14,
+  "P0_routers_scoring_market.md": 19,
+  "P0_scoring.md": 17,
+  "P1_coach_watchers.md": 22,
+  "P1_flash_scheduler.md": 15,
+  "P1_pack_scripts.md": 19
+ },
+ "total_findings": 213,
+ "sampled": 43,
+ "line_exists_rate": 1.0,
+ "quote_match_rate": 1.0,
+ "hallucination_rate": 0.0,
+ "samples": [
+  {
+   "file": "backend/app/coach/audit.py",
+   "line": 520,
+   "title": "T+5 回填每次只扫最新 200 条，永久 NULL 行会饿死旧警报",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "\"ORDER BY id DESC LIMIT 200\")"
+  },
+  {
+   "file": "backend/app/flash/llm.py",
+   "line": 471,
+   "title": "`_shadow_threads` 只增不清，常驻进程慢性泄漏",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "_shadow_threads.append(t)"
+  },
+  {
+   "file": "backend/app/backtest/data.py",
+   "line": 217,
+   "title": "回填失效钩子漏掉 market_regime 的指数 30 分钟缓存",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "_st.invalidate_prices_cache()"
+  },
+  {
+   "file": "backend/app/flash_brief.py",
+   "line": 479,
+   "title": "缓存新鲜度判断 aware/naive 相减必抛 TypeError，\"TTL 内读缓存\"永不命中",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "fresh = (_now().replace(tzinfo=None) - ts) < timedelta(minutes=ttl)"
+  },
+  {
+   "file": "backend/app/mainforce/trade_gate.py",
+   "line": 158,
+   "title": "市场状态未知时仍给 30% 基准仓位（fail-open）",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "pct = REGIME_POSITION.get(regime, 30 if regime else 30)"
+  },
+  {
+   "file": "scripts/daily_batch.py",
+   "line": 416,
+   "title": "矛盾验证失败只进返回文案，不进 fail_list（validate_yesterday 本身确已被调用）",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "vinfo = f\"；⚠ 验证失败（不影响扫描）: {e}\""
+  },
+  {
+   "file": "backend/app/database.py",
+   "line": 47,
+   "title": "postgres:// 旧式 scheme 会被静默误判为 SQLite",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "self._use_postgres = DATABASE_URL.startswith(\"postgresql://\")"
+  },
+  {
+   "file": "backend/app/flash/store.py",
+   "line": 323,
+   "title": "`load_review`/`load_review_history` 的 json.loads 无异常保护",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "\"signals\": json.loads(row[\"signals_json\"]) if row.get(\"signals_json\") else []"
+  },
+  {
+   "file": "backend/app/flash_brief.py",
+   "line": 621,
+   "title": "盘中自动解读的\"日上限\"统计在 date 主键表上计数，恒≤1，DAILY_MAX 永不生效",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if _daily_auto_count(d) > DAILY_MAX:"
+  },
+  {
+   "file": "backend/app/flash/llm.py",
+   "line": 695,
+   "title": "429 重试耗尽仍标记熔断，持续限流会把唯一 provider 熔断 30 分钟",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "_provider_mark(pkey, False, _last_error)"
+  },
+  {
+   "file": "backend/app/scenario_watch.py",
+   "line": 70,
+   "title": "事件日历文案宣称\"T-1 自动降档\"，但系统并无该自动化",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "\"note\": \"选后伊朗决策窗口=最大尾部风险；T-1 自动降档\"},"
+  },
+  {
+   "file": "scripts/update_pack_incremental.py",
+   "line": 129,
+   "title": "factor 为空/0 的行会跳过因子校验直接追加",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if f and abs(float(f) / f_last - 1.0) > 1e-4:"
+  },
+  {
+   "file": "backend/app/routers/market.py",
+   "line": 2205,
+   "title": "limit-review 快照缺失时每请求直连 zzshare，无负缓存/冷却",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "df = api.review_uplimit_hot_step(date1=d)"
+  },
+  {
+   "file": "backend/app/flash/llm.py",
+   "line": 705,
+   "title": "`_call_json` 不校验顶层 JSON 类型，非 dict 会让诊断链路抛 TypeError",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "return json.loads(text)"
+  },
+  {
+   "file": "backend/app/scoring/engine.py",
+   "line": 737,
+   "title": "_score_boll 的\"带宽收窄\"占位代码恒为假（死代码）",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if len(bw_history := [d.get(\"boll_upper\", 0) - d.get(\"boll_lower\", 0)"
+  },
+  {
+   "file": "backend/app/routers/capital.py",
+   "line": 198,
+   "title": "龙虎榜统计 SQL 使用 PG 专有 `::text`，违反同函数内自述的双库兼容铁律",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "\"SUM(CASE WHEN seats_json IS NOT NULL AND seats_json::text NOT IN ('[]', 'null') \""
+  },
+  {
+   "file": "backend/app/backtest/crowding.py",
+   "line": 43,
+   "title": "px() 用 `or` 兜底会把 0/None 收盘价替换成首根收盘价，且全 None 时 float(None) 崩溃",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "return float(bars[-n][\"close\"] or bars[0][\"close\"])"
+  },
+  {
+   "file": "backend/app/backtest/data.py",
+   "line": 181,
+   "title": "save_prices 跨模块读取 db._use_postgres 私有属性做方言分支",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if db._use_postgres:"
+  },
+  {
+   "file": "backend/app/flash/llm.py",
+   "line": 52,
+   "title": "`or 50` 把显式配置 0 吞成默认值，LLM_DAILY_MAX_CALLS=0 无法\"全停\"",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "LLM_DAILY_MAX_CALLS = int(os.environ.get(\"LLM_DAILY_MAX_CALLS\", \"50\") or 50)"
+  },
+  {
+   "file": "backend/app/database.py",
+   "line": 258,
+   "title": "SQLite 的 upsert 用 INSERT OR REPLACE，与 PG ON CONFLICT 语义不一致",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "sql = f\"INSERT OR REPLACE INTO {table} ({col_str}) VALUES ({placeholders})\""
+  },
+  {
+   "file": "backend/app/database.py",
+   "line": 281,
+   "title": "SQLite 批量 upsert 逐条单事务，与 PG 单事务行为不一致",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "self.upsert(table, r, conflict_columns)"
+  },
+  {
+   "file": "backend/app/routers/scoring.py",
+   "line": 1297,
+   "title": "榜单缓存按首次请求的 limit 截断",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "sliced = cached_data[:limit]"
+  },
+  {
+   "file": "backend/app/scoring/indicator_cache.py",
+   "line": 570,
+   "title": "incremental_update 无\"同日只推进一次\"守卫，重复调用按多根新 bar 平滑",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "ema12_new = new_price * alpha12 + ema12_old * (1 - alpha12)"
+  },
+  {
+   "file": "scripts/update_backend_pack_incremental.py",
+   "line": 342,
+   "title": "包内 date 仍用 beijing_now() 日历今天——2026-10-24 在 update_pack_incr",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "date_str = beijing_now().strftime(\"%Y%m%d\")"
+  },
+  {
+   "file": "backend/app/scoring/ranking_history.py",
+   "line": 138,
+   "title": "replace_day 先删后逐行插非事务，中途失败固化\"半日快照\"",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "db.execute(\"DELETE FROM ranking_history WHERE rank_date = %s\", (today,))"
+  },
+  {
+   "file": "backend/app/tencent.py",
+   "line": 313,
+   "title": "字段数守卫(50)与实际访问的最大下标(51)不匹配，短格式行整行静默丢弃",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if len(data) < 50:"
+  },
+  {
+   "file": "backend/app/flash/scheduler.py",
+   "line": 549,
+   "title": "daily_report_loop 失败重试无节流，与 RETRY_INTERVAL_SEC 修复模式不一致",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "await asyncio.sleep(120)"
+  },
+  {
+   "file": "backend/app/coach/position_sizing.py",
+   "line": 65,
+   "title": "降档触发阈值硬编码，与 rules.yaml gate_reduce 是同一纪律的两套定义",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if us10y is not None and us10y > 5.0:"
+  },
+  {
+   "file": "backend/app/flash/scheduler.py",
+   "line": 1421,
+   "title": "trade_plan_trigger_loop 引用未定义的 flash_rules，整条 A4 交易计划触发功能静默死",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "is_open = bool(flash_rules.get_china_market_status().get(\"is_open\"))"
+  },
+  {
+   "file": "scripts/generate-kline-pack.py",
+   "line": 1025,
+   "title": "包内/包名 date 用日历今天（Actions runner 上是 UTC），不是最近已完成交易日",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "date_str = datetime.now().strftime(\"%Y%m%d\")"
+  },
+  {
+   "file": "backend/app/routers/backtest.py",
+   "line": 187,
+   "title": "匿名 GET 可在缓存全空时触发全量回测重算，且无单飞锁",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "return _compute_and_cache(name)"
+  },
+  {
+   "file": "backend/app/database.py",
+   "line": 169,
+   "title": "lock_timeout 只对 DDL 设置，DML/批量写仍是默认 0（无界等锁），连接也无 statement_ti",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "cur.execute(\"SET LOCAL lock_timeout = '15s'\")"
+  },
+  {
+   "file": "backend/app/routers/paper.py",
+   "line": 143,
+   "title": "模拟盘全部端点无鉴权，平仓/取消/解除熔断可被匿名操作",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "return paper_trading.unfreeze()"
+  },
+  {
+   "file": "backend/app/scoring/engine.py",
+   "line": 1886,
+   "title": "_score_flow5 ≥+20 返回 0，与函数 docstring 锚点\"+20→5\"矛盾",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if flow5 >= pts[-1][0]:"
+  },
+  {
+   "file": "backend/app/mainforce/chips.py",
+   "line": 96,
+   "title": "无流通股本兜底路径 MA120 在序列两端被零填充低估",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "ma_vol = np.convolve(vols, np.ones(120) / 120.0, mode=\"same\")"
+  },
+  {
+   "file": "backend/app/backtest/engine.py",
+   "line": 175,
+   "title": "数据未走完的截断交易被标成\"持有到期\"并全额计入指标，无任何标记",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "exit_i, exit_price, reason = last_i, bars[last_i][\"close\"], \"持有到期\""
+  },
+  {
+   "file": "frontend/src/views/Workbench.vue",
+   "line": 19,
+   "title": "`bg-background` 不是 Tailwind 令牌，日期下拉无底色（深色主题违例）",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "class=\"bg-background border border-border rounded px-2 py-1 text-xs\">"
+  },
+  {
+   "file": "scripts/publish_packs_local.py",
+   "line": 163,
+   "title": "读线上日期失败即静默跳过回滚护栏（fail-open），断网/404 时 10-24 护栏整体失效",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "print(f\"  ⚠️ 读线上包日期失败（跳过回滚护栏）: {str(e)[:80]}\")"
+  },
+  {
+   "file": "backend/app/routers/stock.py",
+   "line": 351,
+   "title": "消息面失败伪装成\"中性 0 分\"并缓存",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "result = {\"score\": 0, \"level\": 0, \"level_text\": \"中性\", \"items\": []}"
+  },
+  {
+   "file": "backend/app/policy_bottom_watch.py",
+   "line": 409,
+   "title": "_manual_of 读库异常返回空 dict，人工打勾静默回落为自动判定",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "return {}"
+  },
+  {
+   "file": "frontend/src/views/Workbench.vue",
+   "line": 4012,
+   "title": "本地评分模式在非交易时段仍每 5 分钟做一次全市场精算",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "if (!rows.length || force || !_fresh) rows = await computeRanking({ mode: 'top', limit: 10 })"
+  },
+  {
+   "file": "backend/app/flash/rules.py",
+   "line": 333,
+   "title": "HOLIDAYS 仅收录 2026，2027-01-01 起节假日识别静默失效",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "2026: ["
+  },
+  {
+   "file": "backend/app/routers/stock.py",
+   "line": 236,
+   "title": "基本面缺失字段回 0（缺失≠0）",
+   "line_exists": true,
+   "quote_matches": true,
+   "actual_line": "\"市盈率(动态)\": info.get(\"pe\", 0),"
+  }
+ ],
+ "usable_judgement": "每条 sampled 的 问题/影响/建议 均含具体定位与可执行动作（无\"建议加强错误处理\"式泛论）⇒ 可用率 100%（人工复核记录于 CLEANUP_REPORT §3）"
+}

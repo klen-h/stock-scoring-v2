@@ -21,8 +21,9 @@ FastAPI 会把同步 def 自动放到线程池跑，不会阻塞事件循环。
 ================================================================================
 """
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from app.eastmoney import get_sectors, get_sector_flow
+from app.auth import get_current_user
 
 router = APIRouter()
 
@@ -90,7 +91,7 @@ def industry_map_stats():
 
 
 @router.post("/industry-map/build")
-def industry_map_build(verbose: bool = Query(False)):
+def industry_map_build(verbose: bool = Query(False), _user: dict = Depends(get_current_user)):
     """
     手动重建映射表（正常由调度器每月 1 号 03:00 自动跑）。
 
@@ -102,7 +103,7 @@ def industry_map_build(verbose: bool = Query(False)):
 
 
 @router.post("/industry-map/build-full")
-def industry_map_build_full(verbose: bool = Query(False)):
+def industry_map_build_full(verbose: bool = Query(False), _user: dict = Depends(get_current_user)):
     """
     ★ 东财 clist 全市场映射（f100 行业 + 新浪一级归一化）：约 60 次请求，
       覆盖 ~5900 只（含科创板/创业板/北交所），是覆盖最全的构建方式。
@@ -113,7 +114,7 @@ def industry_map_build_full(verbose: bool = Query(False)):
 
 
 @router.post("/industry-map/backfill")
-def industry_map_backfill(verbose: bool = Query(False)):
+def industry_map_backfill(verbose: bool = Query(False), _user: dict = Depends(get_current_user)):
     """补齐 stock_industry 尾部缺失股票（东财单股 f127 查询，按需轻量）。"""
     from app.sector_industry import backfill_missing
     return backfill_missing(verbose=verbose)
@@ -140,7 +141,7 @@ def mainline_date(date: str = Query(None)):
 
 
 @router.post("/mainline/push")
-def mainline_push(days: int = Query(12, ge=3, le=60)):
+def mainline_push(days: int = Query(12, ge=3, le=60), _user: dict = Depends(get_current_user)):
     """推送行业主线日报到企微（受业务推送开关限制）。"""
     from app.mainline import push_mainline_report
     return push_mainline_report(days)
@@ -200,7 +201,7 @@ def sector_dispersion(date: str = Query(None), kind: str = Query("industry")):
 
 
 @router.post("/snapshot/take")
-def sector_snapshot_take(date: str = Query(None)):
+def sector_snapshot_take(date: str = Query(None), _user: dict = Depends(get_current_user)):
     """
     手动记录一次板块快照（正常由调度器每个交易日 15:10 自动跑）。
     ★ 东财不可用（降级新浪）时会跳过 —— 避免两套代码体系混进同一张表。
@@ -253,7 +254,7 @@ def zz_rank(kind: str = Query("industry"), date: str = Query(None)):
 
 
 @router.post("/zz/take")
-def zz_take(date: str = Query(None)):
+def zz_take(date: str = Query(None), _user: dict = Depends(get_current_user)):
     """手动记录一次 zzshare 板块快照（幂等，可回填任意历史日）。"""
     from app.sector_zz import take_snapshot
     return take_snapshot(date)

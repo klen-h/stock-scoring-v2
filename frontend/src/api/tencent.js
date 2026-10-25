@@ -84,7 +84,13 @@ export async function fetchRealtimeQuotes(codes) {
  */
 async function fetchBatch(codes) {
   const symbols = codes.map(code => {
-    const prefix = code.startsWith('6') ? 'sh' : 'sz'
+    // ★ 2026-10-24（BK-57）：前缀映射补北交所——旧实现只认 6→sh，其余一律 sz，
+    //   北交所 43/82/83/87/88/92 开头的代码拼成 szxxxxxx 后被 length<50 守卫
+    //   静默丢弃 ⇒ 本地评分池悄悄缺票。号段与后端 backtest.engine._limit_pct 对齐；
+    //   顺带补 sh ETF(5)/B股(9) 与 sz 基金(1) 的归属。
+    const prefix = /^(43|82|83|87|88|92)/.test(code) ? 'bj'
+        : /^[569]/.test(code) ? 'sh'
+        : 'sz'
     return `${prefix}${code}`
   }).join(',')
 

@@ -43,7 +43,7 @@
     <div v-if="canAct && mode === 'abandon'" class="mt-1.5">
       <textarea v-model="reason" rows="2"
                 placeholder="放弃理由（必填，回写供周报复盘）"
-                class="w-full bg-background border border-border rounded px-2 py-1 text-[11px]"></textarea>
+                class="w-full bg-card border border-border rounded px-2 py-1 text-[11px]"></textarea>
       <div v-if="err" class="text-red-400 text-[11px]">{{ err }}</div>
       <div class="flex gap-2 mt-1">
         <button class="px-2 py-0.5 rounded bg-amber-500 text-black font-semibold disabled:opacity-50"

@@ -860,8 +860,33 @@ def _push_ic_summary(res) -> str:
         return f"推送失败（不影响体检）: {str(e)[:80]}"
 
 
+def _is_month_end_trading_day(d) -> bool:
+    """d 是否为当月**最后一个交易日**（逐日查 is_trading_day，HOLIDAYS 感知）。
+
+    ★ 2026-10-25（A1 闸门错配修复）：月度复核若随**首个**日批交易日跑，则月中到点的
+      预登记样本永远赶不上当月报告（实证：10 月报告生成于 10-08，score_edge_check
+      10-11 才注册、T+20 于 10-23 到点 ⇒ A1 到点无人跑，被幂等闸门挤到下个月）。
+      ⇒ 挪到**月末**跑：报告覆盖当月全部到期样本；跨月漏跑仍由 _monthly_due 自愈。
+    """
+    import datetime as _dt
+    from app.flash.rules import is_trading_day
+    if not is_trading_day(d):
+        return False
+    nxt = d + _dt.timedelta(days=1)
+    while nxt.month == d.month:
+        if is_trading_day(nxt):
+            return False
+        nxt += _dt.timedelta(days=1)
+    return True
+
+
 def task_verify_monthly():
     """预登记验证脚本的**月度自动复核**（2026-09-30）。
+
+    ★★ 2026-10-25（A1 闸门错配修复）：只在**当月最后一个交易日**执行
+      （其余交易日返回跳过文案）——月初跑 + 月中样本到点 = 结论系统性晚一个月
+      （实证见 `_is_month_end_trading_day` 注释）。`--tasks verify_monthly`
+      点名时绕过该时点门（人工补跑不受限）。
 
     ★ 为什么必须做（本轮查出来的真缺口）：三个**预登记**验证脚本 ——
       `scripts/gate_ready_backtest.py`（闸门 ready==3 联合期望值）、
@@ -876,6 +901,13 @@ def task_verify_monthly():
     ★ 时序：纯只读分析（三个脚本都不改生产表）⇒ 位置不敏感；与 `subfactor_ic`
       同放"周期性复核"区。
     """
+
+    # ★★ 时点门（2026-10-25）：只在当月最后交易日执行（强制点名除外）
+    if not _force_requested():
+        _bd = _batch_trading_day()
+        if not _is_month_end_trading_day(_bd):
+            return ("verify_monthly: 非当月最后交易日（%s），跳过——月末统一复核"
+                    % _bd.isoformat())
     d = _batch_trading_day()
     if not _monthly_due("verify_monthly", d) and not _explicitly_requested("verify_monthly"):
         return (f"预登记复核: 本轮交易日 {d:%Y-%m-%d} 所在月份已复核，跳过"
@@ -1284,7 +1316,12 @@ TASKS = {
     "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
-                 "calendar", "mainforce_state", "gate_snapshot", "entry_log",
+                 "calendar",
+                 # ★ 2026-10-24（BK-47 补漏）：risk_calendar 曾注册于 TASKS 却漏进本清单
+                 #   ⇒ 生产唯一路径 --tasks all 从不执行，限售解禁底座静默断档
+                 #   （与 market_regime 09-08 断档同型）。位置按 TASKS 注释意图：紧跟 calendar。
+                 "risk_calendar",
+                 "mainforce_state", "gate_snapshot", "entry_log",
                  "sector_snapshot", "strategy_scan", "contradiction_scan",
                  "contradiction_report", "score_snapshot", "mainline",
                  "news_snapshot", "sector_strength",
@@ -1299,6 +1336,17 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "scenario_watch",
                  "daily_report",
                  "trader_brief", "retention"]
+
+# ★ 2026-10-24 加固（docs/BACKLOG.md BK-47 的机制化）：TASKS 与 DEFAULT_ORDER 必须一一对应。
+#   模块级断言 ⇒ 任何 import（含 --list / CI）都立即暴露错配，而不是等日批跑完才发现断档。
+_MISSING = sorted(set(TASKS) - set(DEFAULT_ORDER))
+_EXTRA = sorted(set(DEFAULT_ORDER) - set(TASKS))
+assert not _MISSING and not _EXTRA, (
+    "TASKS/DEFAULT_ORDER 错配：仅注册未排单=" + str(_MISSING)
+    + " / 排单但无任务=" + str(_EXTRA)
+    + " —— 新任务必须同时登记 TASKS 与 DEFAULT_ORDER（BK-47：risk_calendar 曾漏排单静默断档）")
+_DUP_ORDER = sorted({k for k in DEFAULT_ORDER if DEFAULT_ORDER.count(k) > 1})
+assert not _DUP_ORDER, "DEFAULT_ORDER 重复项：" + str(_DUP_ORDER)
 
 
 def ensure_quotes():

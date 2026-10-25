@@ -24,7 +24,7 @@ URL 前缀 /api/user：
 """
 
 import json
-from datetime import datetime
+import time
 from fastapi import APIRouter, HTTPException, Body, Depends
 from typing import Optional
 
@@ -32,6 +32,25 @@ from app.database import db
 from app.auth import get_current_user
 
 router = APIRouter()
+
+# ★ 2026-10-24（BK-04c，GUARDRAILS #12）：交易计划的**可更新字段白名单**。
+#   旧 PUT /plans/{id} 把请求体原样 upsert（mass assignment）：客户端可改 created_at 等
+#   任意列；且 `updates["user_id"] = 当前用户` 会把**别人的计划夺舍**成自己的
+#   （database.py 生成的 ON CONFLICT(id) DO UPDATE SET user_id=EXCLUDED.user_id）。
+_PLAN_FIELDS = ("code", "name", "buy_price", "stop_loss", "target", "reason", "expected",
+                "status", "hit_at", "plan_type", "trigger_high_open",
+                "trigger_volume_break")
+
+
+def _plan_owner(plan_id: str) -> Optional[int]:
+    """计划属主（不存在 → None）。"""
+    row = db.fetch_one("SELECT user_id FROM user_trade_plans WHERE id = %s", (plan_id,))
+    return None if not row else row.get("user_id")
+
+
+def _new_plan_id() -> str:
+    # ★ 2026-10-24：datetime.now()（naive，卫生门计数项）→ time.time()（唯一性用途无需时区）
+    return "tp_%d" % int(time.time() * 1000)
 
 
 # ================================================================
@@ -152,8 +171,14 @@ def upsert_plan(item: dict = Body(...), user: dict = Depends(get_current_user)):
     """添加或更新交易计划"""
     _ensure_plan_columns()
     plan_id = item.get("id")
-    if not plan_id:
-        plan_id = f"tp_{int(datetime.now().timestamp() * 1000)}"
+    if plan_id:
+        # ★ 2026-10-24（BK-04c）：客户端自带 id 时必须校验属主——旧实现直接 upsert
+        #   （ON CONFLICT(id) 会把别人的行连 user_id 一起改成本用户 = 跨用户夺舍）
+        owner = _plan_owner(str(plan_id))
+        if owner is not None and owner != user["user_id"]:
+            raise HTTPException(404, "计划不存在")
+    else:
+        plan_id = _new_plan_id()
 
     db.upsert("user_trade_plans", {
         "id": plan_id,
@@ -179,12 +204,23 @@ def upsert_plan(item: dict = Body(...), user: dict = Depends(get_current_user)):
 def update_plan(plan_id: str, item: dict = Body(...), user: dict = Depends(get_current_user)):
     """更新交易计划"""
     _ensure_plan_columns()      # ★ A4：三处写入口（POST/PUT/GET）都保证列在，避免半新半旧
-    # 构建更新字段
-    updates = {k: v for k, v in item.items() if v is not None}
-    updates["id"] = plan_id
-    updates["user_id"] = user["user_id"]
-    db.upsert("user_trade_plans", updates, conflict_columns=["id"])
-    return {"success": True}
+    # ★ 2026-10-24（BK-04c）：PUT 语义 = 更新**自己已有的**计划
+    #   ① 先查属主：不存在/不属于当前用户 ⇒ 404（不泄露他人计划存在性）；
+    #   ② 字段白名单（mass assignment 封死——客户端不能改 created_at 等任意列）；
+    #   ③ 用 UPDATE 而非 upsert：部分字段更新不再触发"缺 NOT NULL 列的半截 INSERT"
+    #     （HTTP 全链路验证实测 500 的根因），也天然杜绝 ON CONFLICT(id) 的夺舍面。
+    owner = _plan_owner(plan_id)
+    if owner is None or owner != user["user_id"]:
+        raise HTTPException(404, "计划不存在")
+    sets = {k: item[k] for k in _PLAN_FIELDS if k in item and item[k] is not None}
+    if not sets:
+        return {"success": True, "updated": 0}
+    cols = ", ".join("%s = %%s" % k for k in sets)
+    n = db.execute("UPDATE user_trade_plans SET %s WHERE id = %%s AND user_id = %%s"
+                   % cols, tuple(sets.values()) + (plan_id, user["user_id"]))
+    if not n:
+        raise HTTPException(404, "计划不存在")
+    return {"success": True, "updated": n}
 
 
 @router.delete("/plans/{plan_id}")
@@ -317,9 +353,19 @@ def batch_sync(data: dict = Body(...), user: dict = Depends(get_current_user)):
     # 交易计划
     if "plans" in data:
         db.execute("DELETE FROM user_trade_plans WHERE user_id = %s", (uid,))
+        imported = 0
+        skipped = 0
         for item in data["plans"]:
+            pid = str(item.get("id") or _new_plan_id())
+            # ★ 2026-10-24（BK-04c）：DELETE 只清了**本用户**的计划；若客户端带来的 id
+            #   已存在且属于别人，旧实现的 upsert 会把它连 user_id 一起改成本用户（夺舍）。
+            #   ⇒ 属主冲突的条目跳过并在响应里报告（不中断整个同步）。
+            owner = _plan_owner(pid)
+            if owner is not None and owner != uid:
+                skipped += 1
+                continue
             db.upsert("user_trade_plans", {
-                "id": item.get("id", f"tp_{int(datetime.now().timestamp() * 1000)}"),
+                "id": pid,
                 "user_id": uid,
                 "code": item.get("code", ""),
                 "name": item.get("name", ""),
@@ -331,7 +377,10 @@ def batch_sync(data: dict = Body(...), user: dict = Depends(get_current_user)):
                 "status": item.get("status", "waiting"),
                 "hit_at": item.get("hit_at"),
             }, conflict_columns=["id"])
-        result["plans"] = len(data["plans"])
+            imported += 1
+        result["plans"] = imported
+        if skipped:
+            result["plans_skipped_foreign"] = skipped
     
     # 持仓
     if "portfolio" in data:

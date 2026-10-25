@@ -78,3 +78,25 @@
 - 前端改动：`npm run build` 通过 + 关键交互点一次（展开/折叠/空数据态）。
 - 后端改动：`python -m py_compile <file>` + 至少一次真实调用（缓存命中路径与被拦截路径各一次）。
 - 清理类改动：`git mv` 保历史；改完后全仓 grep 一遍旧路径引用。
+
+## 11. 吞异常必须可见（2026-10-24 追加）
+
+- **禁止 `except...: pass`**（同except 块内至少要有：计数、ASCII 日志、或显式 reason 字段三选一）。
+  依据：2026-10-24 全量审查发现**同一形态静默死亡 ×4** —— `scheduler.py` A4 交易计划触发门
+  （NameError 被吞 ⇒ is_open 恒 False，整条止损/兑现/买点提醒链不跑）、反静默巡检兜底分支、
+  flash_brief 缓存 TTL 判断、database DDL 假成功。`scripts/code_hygiene_check.py` 的
+  `except_pass` 棘轮基线拦新增。
+- **失败必须可观测**：日批任务失败必须进 fail_list（exit 1 + 告警）；循环内关键判断被吞时
+  至少 print 一行 ASCII，让"功能为什么没跑"能被 grep 到。
+
+## 12. 鉴权默认化（2026-10-24 追加）
+
+- **新增路由默认挂鉴权依赖**（`routers/auth.py` 的 verify_token 机制）；匿名可用的只读端点
+  必须显式加入白名单并在 docstring 写明理由。
+- **写操作/重计算/外呼端点一律不允许匿名**：烧 LLM、推企微、触发抓取（东财/新浪/巨潮）、
+  回测重算、模拟盘 close/cancel 等——匿名触发即资源滥用/封 IP 攻击面
+  （审查实证：`routers/flash.py`、`routers/paper.py`、`routers/sector.py`、
+  `routers/backtest.py`、`routers/stock.py /finance-refresh` 等 5 组曾全裸奔，见
+  `docs/BACKLOG.md` BK-04a~d / BK-39 / BK-40）。
+- JWT_SECRET 未配置时**不得回退可预测值**（机器名）——宁可启动失败（fail-closed），
+  也不伪造一个能被猜出密钥的鉴权体系（审查实证 BK-04b）。

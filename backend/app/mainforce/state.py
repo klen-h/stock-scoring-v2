@@ -277,7 +277,13 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
                   f"fail={failed} ({time.time() - t0:.0f}s)")
 
     total = len(bars_map)
-    if total and failed > total * 0.2:
+    # ★ 2026-10-24（BK-12）：空跑必须显式失败——bars_map 全空 = 上游数据断档，
+    #   旧实现 `if total and ...` 短路 ⇒ 空跑**静默标记成功**（表面全绿实际没产出，
+    #   与"日批任务失败必须显式 raise"纪律冲突）。
+    if total == 0:
+        raise RuntimeError(
+            "主力行为状态计算空跑：bars_map 为空（上游数据断档？）——本轮不标记完成")
+    if failed > total * 0.2:
         # 大面积失败 ⇒ 连接/数据源级问题：**不标记完成**，让下一轮断点续传接着补
         raise RuntimeError(
             f"主力行为状态计算失败率过高：{failed}/{total}（已写入 {n}、跳过已存在 "

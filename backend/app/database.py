@@ -54,6 +54,12 @@ class Database:
             self._db_path = os.path.join(DATA_DIR, "app.db")
             print(f"[database] 使用 SQLite 数据库: {self._db_path}")
     
+    @property
+    def is_postgres(self) -> bool:
+        """后端类型（★ 2026-10-24 BK-35 公开化）：模块级 DDL 分支用本属性，
+        不要再读私有 `_use_postgres`（审查已把外部读私有属性记为问题）。"""
+        return self._use_postgres
+
     # ── 连接管理 ──
     
     def _get_sqlite_conn(self) -> sqlite3.Connection:
@@ -141,6 +147,7 @@ class Database:
         #   建表语句均为 IF NOT EXISTS 幂等，进程内执行一次就够，重复调用直接跳过。
         _s = (sql or "").lstrip().upper()
         _is_ddl = _s.startswith(("CREATE TABLE", "CREATE INDEX", "ALTER TABLE"))
+        _key = None
         if _is_ddl:
             _key = " ".join((sql or "").split())
             if _key in _DDL_DONE:
@@ -173,9 +180,16 @@ class Database:
                         cur = conn.execute(sql, params or ())
                         return cur.rowcount
             except Exception:
+                # ★ 2026-10-24（BK-35）：失败的 DDL 必须移出 _DDL_DONE——旧实现
+                #   执行**前**就登记，失败后同一条建表语句本进程永不重试（假成功：
+                #   SQLite 模式下 SERIAL 建表必抛 ⇒ 报告归档整体失效且无迹可查）。
+                if _is_ddl and _key is not None and attempt > 0:
+                    _DDL_DONE.discard(_key)
                 if self._use_postgres and attempt == 0:
                     self._reset_pg_conn()  # 丢弃死连接，重试一次
                     continue
+                if _is_ddl and _key is not None:
+                    _DDL_DONE.discard(_key)
                 raise
         return 0
 
