@@ -70,6 +70,12 @@
           <span class="text-sm font-bold font-mono tabular-nums" :style="{ color: srBarBg }">{{ supportResistance.position_pct }}%</span>
         </div>
 
+        <!-- RSI 一句话（2026-10-25 用户：K线 tab 的大卡简化至此） -->
+        <span v-if="rsiSignals" class="text-xs shrink-0" title="相对强弱指标（14 日）；>70 超买 / <30 超卖">
+          RSI <b class="font-mono" :class="rsiColor">{{ rsiSignals.current_rsi }}</b>
+          <span :class="rsiColor">· {{ rsiZoneText }}</span>
+        </span>
+
         <!-- 支撑位（由近及远） -->
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-xs text-muted shrink-0">支撑</span>
@@ -196,63 +202,6 @@
            纪律：① 事实永远先渲染（AI 只是补充，未配置/失败/越界时自动降级为纯事实）；
                  ② 每条依据可追溯（标签 + 值 + 来源 + 数据日期）；③ 缺失事实如实披露；
                  ④ 底部固定展示**各信号的检验状态**与免责声明（后端下发，前端不自行推导）。 -->
-      <div class="mt-4 pt-4 border-t border-border">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold">一页纸诊断
-            <span class="text-xs text-muted font-normal ml-1">既有事实的聚合，不是投资建议</span>
-          </h3>
-          <span v-if="diag.loading" class="text-xs text-muted">加载中…</span>
-          <button v-else-if="!diag.narrative" @click="loadDiag(true)"
-            class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300">
-            生成 AI 解读
-          </button>
-        </div>
-        <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端下发**结构化**结论/依据（L3），
-             结论条置顶；「现状 / 风险 / 还差什么」三段作为依据默认收起
-             （**真正的依据另有下方带 source 的事实列表**，所以收起不会藏掉数据）。 -->
-        <InsightBody v-if="diag.narrative || diag.conclusion" :text="diag.narrative"
-                     :conclusion="diag.conclusion" :reasons="diag.reasons"
-                     feedback-source="diag" :feedback-ref="'diag:' + code"
-                     collapsible class="text-xs bg-white/5 rounded-lg p-3" />
-        <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
-          {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}
-        </div>
-        <!-- ★ 2026-10-11（P2）：事实问答 = 对**当前标的**提问（只答既有事实范围内的问题）。
-             边界与后端同源：只读、不落库、不做交易动作；问别的票/要求预测 ⇒ 模型会明说
-             "事实中没有这项"，且**输出侧机械拦截**买卖话术（越界即丢弃整段）。 -->
-        <div class="mt-3 flex gap-2 items-start">
-          <textarea v-model="diagQ" rows="1" :maxlength="200" :disabled="diag.asking"
-            placeholder="问一句这只票（如：现在处于什么阶段？还差什么条件？上榜情况如何？）"
-            class="flex-1 text-xs bg-white/5 rounded px-2 py-1.5 resize-none outline-none focus:bg-white/10"></textarea>
-          <button @click="askDiag" :disabled="diag.asking || !diagQ.trim()"
-            class="px-2 py-1 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-40 shrink-0">
-            {{ diag.asking ? '思考中…' : '提问' }}
-          </button>
-        </div>
-        <div v-if="diag.answer" class="mt-2 bg-white/5 rounded-lg p-3">
-          <div class="text-xs text-muted mb-1">问：{{ diag.question }}</div>
-          <!-- ★ 2026-10-11（L1/L2）：与诊断同一套渲染。问答回答是自由文本（prompt 未约定结论行）
-               ⇒ 通常没有结论标记，行为与普通 md 渲染一致；一旦模型自发写了 `**结论**：` 也会被置顶。 -->
-          <InsightBody :text="diag.answer" class="text-xs" />
-        </div>
-        <div v-else-if="diag.ask_note" class="mt-2 text-xs text-muted">{{ diag.ask_note }}</div>
-        <div v-if="diag.facts && diag.facts.length" class="mt-3 space-y-1">
-          <div class="text-xs text-muted">依据（可追溯）</div>
-          <div v-for="(f, i) in diag.facts" :key="i" class="text-xs flex items-baseline gap-2 flex-wrap">
-            <span class="text-muted font-mono w-4 text-right shrink-0">{{ i + 1 }}</span>
-            <span class="px-1 rounded bg-white/5 text-gray-300 shrink-0">{{ f.group }}·{{ f.label }}</span>
-            <span class="text-gray-200">{{ f.value }}</span>
-            <span class="text-muted ml-auto shrink-0 text-[10px]" :title="f.source + (f.as_of ? ' · ' + f.as_of : '')">
-              {{ f.source_cn || f.source }}<template v-if="f.as_of"> · {{ f.as_of }}</template>
-            </span>
-          </div>
-        </div>
-        <div v-if="diag.gaps && diag.gaps.length" class="mt-2 text-xs text-amber-400/80">
-          数据缺失（如实披露）：{{ diag.gaps.join('；') }}
-        </div>
-        <div v-if="diag.disclaimer" class="mt-2 text-xs text-amber-400/70">{{ diag.disclaimer }}</div>
-      </div>
-
       <div v-if="scoreData.mainforce" class="mt-4 pt-4 border-t border-border">
         <div class="flex items-center justify-between mb-3">
           <h3 class="text-sm font-semibold">主力行为</h3>
@@ -504,7 +453,7 @@
           </div>
         </div>
         <div v-if="newsData.items?.length" class="space-y-1.5">
-          <div v-for="n in newsData.items.slice(0, 6)" :key="n.time + n.title"
+          <div v-for="n in newsData.items.slice(0, 3)" :key="n.time + n.title"
             class="flex items-start gap-2 px-3 py-2 rounded-lg text-xs bg-white/5">
             <span class="font-mono shrink-0" :class="n.score < 0 ? 'text-red-400' : 'text-emerald-400'">{{ n.score > 0 ? '+' : '' }}{{ n.score }}</span>
             <span class="leading-snug">{{ n.title }}</span>
@@ -518,22 +467,20 @@
         </div>
         <div v-else class="mt-2 text-[10px] text-muted">历史走势：数据积累中（首个快照于工作日 15:20 后生成）</div>
         <div class="mt-3 text-[11px] text-muted">东财 7×24 快讯 + 关键词规则打分（72h 衰减）；独立维度不进总分，仅供参考</div>
-      </div>
-      <div v-else class="bg-card border border-border rounded-lg p-6 text-xs text-muted text-center">消息面加载中…</div>
 
-      <!-- ★ 2026-10-25（用户）：检验状态块从评分 tab 左栏诊断区迁来——右栏消息面卡下方
-           空间充裕，且左栏一页纸诊断内容过长。文案后端下发（SIGNAL_STATUS 唯一事实源）。 -->
-      <div v-if="diag.signal_status && diag.signal_status.length"
-        class="bg-card border border-border rounded-lg p-4">
-        <div class="text-xs text-muted mb-2">各信号的检验状态（决定它能否进决策链）</div>
-        <div class="space-y-1.5">
-          <div v-for="s in diag.signal_status" :key="s.name" class="text-xs flex items-start gap-2">
+        <!-- ★ 2026-10-25（用户）：检验状态并入消息面卡（独立卡取消；文案后端
+             SIGNAL_STATUS 唯一事实源，紧凑单行显示） -->
+        <div v-if="diag.signal_status && diag.signal_status.length"
+          class="mt-3 pt-3 border-t border-border/60 space-y-1">
+          <div class="text-[10px] text-muted">各信号的检验状态（决定它能否进决策链）</div>
+          <div v-for="s in diag.signal_status" :key="s.name" class="text-[10px] flex items-start gap-1.5 leading-relaxed">
             <span class="px-1 rounded shrink-0"
               :class="s.in_decision ? 'bg-emerald-500/15 text-emerald-400' : 'bg-white/5 text-muted'">{{ s.name }}</span>
-            <span class="text-muted leading-relaxed">{{ s.status }}</span>
+            <span class="text-muted">{{ s.status }}</span>
           </div>
         </div>
       </div>
+      <div v-else class="bg-card border border-border rounded-lg p-6 text-xs text-muted text-center">消息面加载中…</div>
     </div>
 
     <!-- ④ K 线页签：K线图 + 支撑阻力 + RSI -->
@@ -552,45 +499,6 @@
         <div ref="klineChartRef" class="h-[500px]"></div>
       </div>
 
-      <!-- RSI（支撑阻力已上移到头部常驻区，这里独占整行，内部横向三栏） -->
-      <div v-if="rsiSignals" class="bg-card border border-border rounded-lg p-4">
-        <h3 class="text-sm font-semibold text-muted mb-3">RSI 指标</h3>
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <!-- ① 当前值 + 刻度条 -->
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs text-muted">当前 RSI</span>
-              <span class="text-2xl font-bold font-mono tabular-nums" :class="rsiColor">{{ rsiSignals.current_rsi }}</span>
-            </div>
-            <div class="relative h-3 rounded-full overflow-hidden"
-              style="background: linear-gradient(to right, #22c55e 0%, #22c55e 20%, #f59e0b 30%, #8b949e 50%, #f59e0b 70%, #ef4444 80%, #ef4444 100%)">
-              <div class="absolute top-0 h-full w-1 bg-white shadow" :style="{ left: rsiSignals.current_rsi + '%' }"></div>
-            </div>
-            <div class="flex justify-between text-[10px] text-muted mt-1">
-              <span>超卖 30</span>
-              <span>中性 50</span>
-              <span>超买 70</span>
-            </div>
-          </div>
-          <!-- ② 区间 / 信号 -->
-          <div class="space-y-2 text-xs md:px-4 md:border-x md:border-border">
-            <div class="flex justify-between">
-              <span class="text-muted">区间</span>
-              <span :class="rsiColor">{{ rsiZoneText }}</span>
-            </div>
-            <div v-if="rsiSignals.signal" class="flex justify-between gap-2">
-              <span class="text-muted shrink-0">信号</span>
-              <span class="text-right" :class="rsiSignals.signal.type === 'buy' ? 'text-emerald-400' : rsiSignals.signal.type === 'sell' ? 'text-red-400' : 'text-amber-400'">
-                {{ rsiSignals.signal.description }}
-              </span>
-            </div>
-          </div>
-          <!-- ③ 解读 -->
-          <div class="text-xs text-muted leading-relaxed">
-            {{ rsiSignals.interpretation }}
-          </div>
-        </div>
-      </div>
     </template>
 
     <!-- ⑤ 评分验证页签：评分 vs 价格 -->
@@ -621,7 +529,8 @@
     </div>
 
     <!-- ⑦ 基本面页签 -->
-    <div v-else-if="activeTab === 'fund'" class="bg-card border border-border rounded-lg p-4">
+    <template v-else-if="activeTab === 'fund'">
+    <div class="bg-card border border-border rounded-lg p-4">
       <h3 class="text-sm font-semibold text-muted mb-3">基本面数据</h3>
       <div v-if="fundamental.valuation && fundamental.valuation['市盈率(动态)'] !== undefined" class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
         <div class="text-center p-3 bg-bg rounded-lg">
@@ -643,6 +552,66 @@
       </div>
       <div v-else class="text-xs text-muted text-center py-4">暂无基本面数据</div>
     </div>
+
+    <!-- ★ 2026-10-25（用户）：一页纸诊断从评分 tab 左栏迁来（评分 tab 过长；
+         诊断的事实主体=财报/主力/闸门，与基本面同属"事实"层） -->
+    <div class="mt-4 bg-card border border-border rounded-lg p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-semibold">一页纸诊断
+          <span class="text-xs text-muted font-normal ml-1">既有事实的聚合，不是投资建议</span>
+        </h3>
+          <span v-if="diag.loading" class="text-xs text-muted">加载中…</span>
+          <button v-else-if="!diag.narrative" @click="loadDiag(true)"
+            class="px-2 py-0.5 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300">
+            生成 AI 解读
+          </button>
+        </div>
+        <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端下发**结构化**结论/依据（L3），
+             结论条置顶；「现状 / 风险 / 还差什么」三段作为依据默认收起
+             （**真正的依据另有下方带 source 的事实列表**，所以收起不会藏掉数据）。 -->
+        <InsightBody v-if="diag.narrative || diag.conclusion" :text="diag.narrative"
+                     :conclusion="diag.conclusion" :reasons="diag.reasons"
+                     feedback-source="diag" :feedback-ref="'diag:' + code"
+                     collapsible class="text-xs bg-white/5 rounded-lg p-3" />
+        <div v-else-if="diag.loaded" class="text-xs text-muted bg-white/5 rounded-lg p-3">
+          {{ diag.llm_note || '（未生成 AI 解读；以下为依据）' }}
+        </div>
+        <!-- ★ 2026-10-11（P2）：事实问答 = 对**当前标的**提问（只答既有事实范围内的问题）。
+             边界与后端同源：只读、不落库、不做交易动作；问别的票/要求预测 ⇒ 模型会明说
+             "事实中没有这项"，且**输出侧机械拦截**买卖话术（越界即丢弃整段）。 -->
+        <div class="mt-3 flex gap-2 items-start">
+          <textarea v-model="diagQ" rows="1" :maxlength="200" :disabled="diag.asking"
+            placeholder="问一句这只票（如：现在处于什么阶段？还差什么条件？上榜情况如何？）"
+            class="flex-1 text-xs bg-white/5 rounded px-2 py-1.5 resize-none outline-none focus:bg-white/10"></textarea>
+          <button @click="askDiag" :disabled="diag.asking || !diagQ.trim()"
+            class="px-2 py-1 rounded text-xs bg-white/5 hover:bg-white/10 text-gray-300 disabled:opacity-40 shrink-0">
+            {{ diag.asking ? '思考中…' : '提问' }}
+          </button>
+        </div>
+        <div v-if="diag.answer" class="mt-2 bg-white/5 rounded-lg p-3">
+          <div class="text-xs text-muted mb-1">问：{{ diag.question }}</div>
+          <!-- ★ 2026-10-11（L1/L2）：与诊断同一套渲染。问答回答是自由文本（prompt 未约定结论行）
+               ⇒ 通常没有结论标记，行为与普通 md 渲染一致；一旦模型自发写了 `**结论**：` 也会被置顶。 -->
+          <InsightBody :text="diag.answer" class="text-xs" />
+        </div>
+        <div v-else-if="diag.ask_note" class="mt-2 text-xs text-muted">{{ diag.ask_note }}</div>
+        <div v-if="diag.facts && diag.facts.length" class="mt-3 space-y-1">
+          <div class="text-xs text-muted">依据（可追溯）</div>
+          <div v-for="(f, i) in diag.facts" :key="i" class="text-xs flex items-baseline gap-2 flex-wrap">
+            <span class="text-muted font-mono w-4 text-right shrink-0">{{ i + 1 }}</span>
+            <span class="px-1 rounded bg-white/5 text-gray-300 shrink-0">{{ f.group }}·{{ f.label }}</span>
+            <span class="text-gray-200">{{ f.value }}</span>
+            <span class="text-muted ml-auto shrink-0 text-[10px]" :title="f.source + (f.as_of ? ' · ' + f.as_of : '')">
+              {{ f.source_cn || f.source }}<template v-if="f.as_of"> · {{ f.as_of }}</template>
+            </span>
+          </div>
+        </div>
+        <div v-if="diag.gaps && diag.gaps.length" class="mt-2 text-xs text-amber-400/80">
+          数据缺失（如实披露）：{{ diag.gaps.join('；') }}
+        </div>
+        <div v-if="diag.disclaimer" class="mt-2 text-xs text-amber-400/70">{{ diag.disclaimer }}</div>
+    </div>
+    </template>
   </div>
   <div v-else class="flex items-center justify-center py-32"><div class="loading-spinner"></div></div>
 </template>
