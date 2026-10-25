@@ -20,8 +20,10 @@ H2' 原组只是"银行"（`name` 含"银行"），δ=0.80 也是按银行为组
               且 流通市值 ≥ 300 亿（高股息集中在这些"类债"行业）
 · low_vol     流通市值 ≥ 300 亿 且 60 日年化波动率（日收益标准差 ×√252）全池最低 60 只
               （再要求低于全池中位数，避免普涨市里"低波"名不副实）
-⇒ 三组并集，落 `defensive_group_daily`；日批算一次（读 kline_cache 全表 ≈41MB，
-  与用户点击无关），API 只读 ~120 行（≈15KB）。
+⇒ 三组并集，落 `defensive_group_daily`；日批算一次。
+   **只读候选代码的 kline_data**（市值≥300亿 ∪ 银行 ≈300 只，分块 150，≈4~5MB）——
+   不整表读（整表 41MB 且 PG 有 statement timeout 风险，`mainforce/state.py` 早有注释）。
+   API 只读 ~137 行（≈15KB）。
 ================================================================================
 """
 import json
@@ -76,12 +78,13 @@ def _vol60(kline_json: str):
     return round(math.sqrt(var) * math.sqrt(252) * 100, 2)
 
 
-def _cap_map() -> dict:
-    """流通市值（元）：market_snapshot.float_cap（万元）→ 元。
+def _snap_maps():
+    """行情快照 → ({code: 流通市值元}, {code: 名称})。
 
     ⚠️ `stocks` 是 **{code: {...}} 字典**（不是 list）——实测 5257 只，
        `float_cap` 单位万元（平安银行 21,734,400 万 = 2173 亿）。按 list 解析会
        得到空 map ⇒ dividend/low_vol 两组恒为 0（这个坑本节记录一次）。
+    ★ 名称也直接取自快照 ⇒ 不必为了"名字含银行"去读 kline_cache 全表。
     """
     try:
         from app.flash import store as _store
@@ -89,20 +92,51 @@ def _cap_map() -> dict:
         raw = snap.get("stocks")
         rows = json.loads(raw) if isinstance(raw, str) else (raw or {})
     except Exception as e:
-        print(f"[defensive_group] 行情快照读取失败（市值按空处理）: {str(e)[:80]}")
-        return {}
-    out = {}
+        print(f"[defensive_group] 行情快照读取失败（市值/名称按空处理）: {str(e)[:80]}")
+        return {}, {}
+    caps, names = {}, {}
     items = rows.items() if isinstance(rows, dict) else []
     for code, s in items:
         if not isinstance(s, dict):
             continue
+        code = str(code)
+        nm = s.get("name")
+        if nm:
+            names[code] = nm
         fc = s.get("float_cap") or s.get("market_cap")
         if not fc:
             continue
         try:
-            out[str(code)] = float(fc) * 1e4      # 万元 → 元
+            caps[code] = float(fc) * 1e4      # 万元 → 元
         except (TypeError, ValueError):
             continue
+    return caps, names
+
+
+def _vol_map(codes) -> dict:
+    """只对**候选代码**读 kline_data（分块 150），算 60 日年化波动率。
+
+    ★ 2026-10-25（用户："读 kline_cache 全表是之前就有还是这次新增？"）：
+      第一版是 `SELECT code, name, kline_data FROM kline_cache` **整表**（41MB），
+      既多烧 egress，也踩了 `state.py` 早就写过的坑——"整表一次查会 statement
+      timeout ⇒ 分块 + 限列"。现在：候选 = 市值≥300亿 ∪ 银行（≈300 只），
+      按 150 一只分块读 ⇒ **≈4~5MB**，语义不变（低波本来就只在这些大市值里选）。
+    """
+    out = {}
+    lst = [c for c in codes if c]
+    for i in range(0, len(lst), 150):
+        chunk = lst[i:i + 150]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = db.fetch(f"SELECT code, kline_data FROM kline_cache "
+                            f"WHERE code IN ({ph})", tuple(chunk))
+        except Exception as e:
+            print(f"[defensive_group] K 线读取失败（块 {i // 150}）: {str(e)[:80]}")
+            continue
+        for r in rows or []:
+            v = _vol60(r.get("kline_data"))
+            if v is not None:
+                out[r["code"]] = v
     return out
 
 
@@ -111,13 +145,7 @@ def build(day: str = None, apply: bool = True) -> dict:
     ensure_table()
     day = day or datetime.now(_BJ).strftime("%Y-%m-%d")
 
-    kl = db.fetch("SELECT code, name, kline_data FROM kline_cache")
-    vol, names = {}, {}
-    for r in kl:
-        v = _vol60(r.get("kline_data"))
-        if v is not None:
-            vol[r["code"]] = v
-        names[r["code"]] = r.get("name") or ""
+    caps, names = _snap_maps()
 
     try:
         ind = {r["code"]: r.get("main_industry") or ""
@@ -125,8 +153,6 @@ def build(day: str = None, apply: bool = True) -> dict:
     except Exception as e:
         print(f"[defensive_group] 行业映射读取失败（dividend 组退化为空）: {str(e)[:80]}")
         ind = {}
-
-    caps = _cap_map()
 
     bank, div, low = [], [], []
     for code, name in names.items():
@@ -139,11 +165,14 @@ def build(day: str = None, apply: bool = True) -> dict:
         if ind.get(code) in DIV_INDUSTRIES:
             div.append(code)
 
-    # 低波：先按市值筛，再取波动率最低 N 只（且低于全池中位）
+    # 低波：候选限定为"市值≥300亿"（∪银行，防止银行没进快照市值），再取波动最低 N 只
+    cand = {c for c, cap in caps.items() if cap >= LOWVOL_MIN_CAP} | set(bank)
+    vol = _vol_map(sorted(cand))
     pool = [(c, v) for c, v in vol.items() if caps.get(c, 0) >= LOWVOL_MIN_CAP]
     pool.sort(key=lambda x: x[1])
     if pool:
-        med = sorted(vol.values())[len(vol) // 2]
+        vals = sorted(v for _, v in pool)
+        med = vals[len(vals) // 2]
         low = [c for c, v in pool[:LOWVOL_TOP_N] if v <= med]
 
     recs, seen = [], set()
