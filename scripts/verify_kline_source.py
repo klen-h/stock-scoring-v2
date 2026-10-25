@@ -41,7 +41,7 @@ import argparse
 import statistics
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -74,7 +74,9 @@ def em_klines(secid, beg="0", lmt="750", fqt="1"):
 
 def tx_klines(sym, days=1100, count=800):
     """腾讯（与 generate-kline-pack.fetch_kline 同参数），返回 [date, open, close, ...]。"""
-    today = datetime.now()
+    # ★ 2026-10-25（合并前 CI 修复）：naive now 在 UTC 服务器上会得到"昨天"，
+    #   导致 beg/end 少一天。统一用北京时间显式时区（与全项目 `beijing_now()` 同口径）。
+    today = datetime.now(timezone(timedelta(hours=8)))
     st = (today - timedelta(days=days + 30)).strftime("%Y-%m-%d")
     en = today.strftime("%Y-%m-%d")
     r = _session("https://gu.qq.com/").get(
