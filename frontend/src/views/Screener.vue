@@ -59,7 +59,8 @@
       <button @click="apply" :disabled="loading"
         class="px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-40">
         {{ loading ? '查询中…' : '应用' }}</button>
-      <span class="text-muted ml-auto">共 {{ total }} 只（NULL = 不在榜/无数据，非 0）</span>
+      <!-- ★ 2026-10-26（用户："共 N 只（NULL = 不在榜/无数据，非 0）放到分页那里"）：
+           计数与 NULL 口径移到下方分页条，筛选区不再重复占位。 -->
     </div>
 
     <!-- 表 -->
@@ -166,8 +167,8 @@
     </div>
     <!-- 分页（★ 2026-10-26：每页 20 只；2000+ 只 ⇒ 必须能直接跳首/末页，不然要点几十次） -->
     <div class="flex items-center gap-2 mt-3 text-xs flex-wrap" v-if="total > 0">
-      <span class="text-muted">共 <b class="text-gray-200 font-mono">{{ total }}</b> 只 ·
-        每页 {{ f.size }} 只</span>
+      <span class="text-muted">共 <b class="text-gray-200 font-mono">{{ total }}</b> 只
+        （NULL = 不在榜/无数据，非 0） · 每页 {{ f.size }} 只</span>
       <template v-if="total > f.size">
         <button @click="goPage(0)" :disabled="page <= 0"
           class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">« 首页</button>
