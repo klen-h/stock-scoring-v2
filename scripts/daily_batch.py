@@ -1397,6 +1397,10 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "crowding_watch", "key_level_watch", "ai_basket_watch",
                  "rank_live", "sector_linkage",
                  "shadow_rank", "shadow_defensive", "pattern_launch_scan",
+                # ★ 2026-10-25 补排单（BK-47 同类错配，被 daily_batch 自检抓住）：
+                #   宽防御组名单（方案 A，对照用）。只读候选 K 线、写小表，
+                #   与 shadow_defensive 同批即可；漏排会导致名单永远停在手跑那天。
+                "defensive_group",
                  "backtest_preheat",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
