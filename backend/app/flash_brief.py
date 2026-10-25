@@ -371,9 +371,12 @@ SYSTEM = (
     "4) 影响范围要具体到**板块或个股类别**（如「石油石化/油运」「半导体设备」），不要写「市场情绪」这种空话。\n\n"
     "5) 必须给出**推翻条件**：写出「看到哪些可观测读数就说明我这个结论错了」，"
     "必须是本输入里能观察到的量（指数涨跌幅/涨跌家数/成交额/涨停家数/板块涨跌），"
-    "不能写「如果走势反转」这类空话。\n\n"
+    "不能写「如果走势反转」这类空话；"
+    "**阈值必须由输入数字推导并写明推导式**（如 3690×0.99≈3654），"
+    "不得出现输入中不存在的数（2026-10-25 实测：模型曾编造'跌破3650/低于15000亿'，"
+    "两个数输入里都没有）。\n\n"
     "★ 只输出一个 JSON 对象（不要 markdown、不要代码围栏）：\n"
-    '{"conclusion": "<一句话≤40字，此刻盘面性质>", '
+    '{"conclusion": "<盘面定性；若快讯中有改变 A 股风险偏好的信息，点名最关键的几条（各一句话，不限总字数；快讯与盘面一致时如实说明即可）>", '
     '"invalidate": "<推翻条件：≤50字，1~2 条可观测阈值>", '
     '"market": "<一句话，引用指数/涨跌家数/成交额说明大盘>", '
     '"sectors": [{"name":"板块","note":"轮动含义，≤30字"}], '
@@ -392,7 +395,7 @@ def _user_prompt(p: Dict) -> str:
         lines.append(f"- {x.get('name')} {x.get('price')}（{x.get('chg_pct')}%）")
     lines.append(f"- 涨/跌/平：{m.get('up')}/{m.get('down')}/{m.get('flat')}"
                  f"；涨跌比 {m.get('ratio')}；成交额 {m.get('amount_yi')} 亿")
-    lines.append(f"- 涨停/跌停（按 ≥9.8% 粗算）：{m.get('limit_up')}/{m.get('limit_down')}")
+    lines.append(f"- 涨停/跌停（板幅精确口径 limit_stats）：{m.get('limit_up')}/{m.get('limit_down')}")
     lines += ["", "### 板块（涨跌幅）"]
     lines += [f"- 领涨 {x.get('name')} {x.get('chg_pct')}%（龙头 {x.get('leader')}"
               f" {x.get('leader_chg')}%）" for x in (s.get("top") or [])]
