@@ -1402,9 +1402,28 @@ async def score_top(
         _stored = {"date": None, "data": []}
         _cand_full = []          # 过滤版榜单的候选全池（有当日 rank_live 时 ≈1000 行）
         try:
-            from app.scoring.live_ranking import _today_bj, load as _load_live_ranking
+            from app.scoring.live_ranking import load as _load_live_ranking
             _stored = _load_live_ranking(limit=1000)  # 组合分排序需更大池（覆盖基本面强但总分中游的票）
-            if (_stored.get("data") or []) and _stored.get("date") == _today_bj():
+            # ★★ 2026-10-25（egress 归因后的修复）：原判据 `_stored.date == _today_bj()`
+            #   在**周末/节假日/盘前**必然为 False（库里是上一交易日，自然日是今天）
+            #   ⇒ 每次缓存过期（3 分钟）都跑一遍**在线全市场精算**（读 backtest_prices /
+            #   kline_cache，单次数 MB~十几 MB）。页面挂着过周末就能烧掉几百 MB。
+            #   改为：库内榜 == `latest_completed_trading_day()` 且**当前不在交易时段**
+            #   ⇒ 直接服务（零计算、只读 1000 行 ≈1MB）。盘中仍在线精算（当日榜还没产出）。
+            _serve_stored = False
+            try:
+                from app.flash.rules import beijing_now as _bj_now
+                from app.flash.rules import is_trading_day as _is_td
+                from app.flash.rules import latest_completed_trading_day as _lctd
+                _now = _bj_now()
+                _hm = (_now.hour, _now.minute)
+                _in_session = _is_td(_now) and (9, 15) <= _hm <= (15, 5)
+                _serve_stored = (str(_stored.get("date") or "")[:10] == str(_lctd(_now))
+                                 and not _in_session)
+            except Exception as _e:
+                print(f"[rank] 交易时段判定失败（按在线精算）: {str(_e)[:60]}")
+                _serve_stored = False
+            if (_stored.get("data") or []) and _serve_stored:
                 _cand = [SimpleNamespace(**r) for r in _stored["data"]]
                 _cand_full = _cand
                 # ★ nb 市组合分重排（2026-09-15）：同 _batch_with_precise_top 口径
