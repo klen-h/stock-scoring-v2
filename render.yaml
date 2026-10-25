@@ -22,6 +22,12 @@ services:
     envVars:
       - key: TZ
         value: Asia/Shanghai
+      # ★ 2026-10-25（内存 OOM 对症，需在 Render 控制台手动加——本文件只是变量清单）：
+      #   glibc arena 数封顶 2。memory_probe 实证 RSS 大跳与 anyio 线程数 9→19~30 一比一
+      #   （每线程一个独立 arena，碎片不归还 OS ⇒ 爬到 512MB 被杀）；与
+      #   main.py lifespan 的线程池封顶 8 双保险。
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       # ★ 2026-09-25：服务端**没设 DATA_SOURCE ⇒ 默认 db（读 Supabase）**。
       #   实测（egress 探针，14 天窗口）：`backtest_prices` 的"大 IN 全历史 OHLCV"查询
       #   约 105 次 / ≤500MB 就来自这里（以及本地不带 pack 的脚本）——日批那边
