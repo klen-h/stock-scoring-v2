@@ -112,6 +112,25 @@ def _f(v):
         return None
 
 
+def _jload(v):
+    """JSONB / TEXT 双兼容解析（★ 2026-10-26）。
+
+    Postgres 的 `jsonb` 列经 psycopg2 返回的就是 **dict/list**；`json.loads(dict)`
+    抛 `TypeError` 且被调用方 `except ...: pass` 吞掉 ⇒ **静默变空**。
+    实测事故：`mainforce_state.chip_json` 是 jsonb ⇒ 宽表 `chip_price_pos` /
+    `chip_winner_ratio` 全 0（2861 行无一非空），其它列都用 TEXT 才幸免。
+    所有 JSON 列一律过这里，不再假设字符串。
+    """
+    if v is None:
+        return {}
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        return json.loads(v) or {}
+    except (ValueError, TypeError):
+        return {}
+
+
 def build(day: str) -> Dict:
     """合成一日宽表（幂等覆盖）。返回统计。只读各产物表，不外呼。"""
     ensure_table()
@@ -120,12 +139,7 @@ def build(day: str) -> Dict:
     # ── A 基础行情：market_snapshot 收盘定稿（data_date=day）──
     snap = db.fetch_one("SELECT stocks_json FROM market_snapshot "
                         "WHERE data_date = %s ORDER BY saved_at DESC LIMIT 1", (day,))
-    stocks = {}
-    if snap and snap.get("stocks_json"):
-        try:
-            stocks = json.loads(snap["stocks_json"]) or {}
-        except (ValueError, TypeError):
-            stocks = {}
+    stocks = _jload(snap.get("stocks_json")) if snap else {}
 
     # 行业映射（唯一入口 industry_map 的底表直读——日批时点缓存已过期无妨）
     imap = {str(r["code"]): str(r.get("main_industry") or "其它行业")
@@ -163,15 +177,10 @@ def build(day: str) -> Dict:
                     f"WHERE code IN ({_ph})", tuple(_chunk)) or []:
                 _cl = []
                 if r.get("closes61"):
-                    try:
-                        _cl = [("", float(c)) for c in json.loads(r["closes61"])]
-                    except (ValueError, TypeError):
-                        _cl = []
+                    _cl = [("", float(c)) for c in _jload(r["closes61"])
+                           if isinstance(c, (int, float))]
                 elif r.get("kd"):
-                    try:
-                        _bars = json.loads(r["kd"])
-                    except (ValueError, TypeError):
-                        _bars = []
+                    _bars = _jload(r["kd"])
                     _cl = [(str(b.get("date"))[:10], _f(b.get("close")))
                            for b in (_bars or [])[-70:] if isinstance(b, dict)]
                     _cl = [(d, c) for d, c in _cl if c]
@@ -221,13 +230,10 @@ def build(day: str) -> Dict:
     gate = {}
     g = db.fetch_one("SELECT payload FROM gate_snapshot_history WHERE date = %s "
                      "ORDER BY created_at DESC LIMIT 1", (day,))
-    if g and g.get("payload"):
-        try:
-            _pl = json.loads(g["payload"]) or {}
-            for it in (_pl.get("candidates") or []):
-                gate[str(it.get("code"))] = it
-        except (ValueError, TypeError) as e:
-            print(f"[stock_facts] 闸门 payload 解析失败（gate 列置空）: {str(e)[:80]}")
+    if g:
+        for it in (_jload(g.get("payload")).get("candidates") or []):
+            if isinstance(it, dict) and it.get("code"):
+                gate[str(it["code"])] = it
 
     # ── E 龙虎榜：近 10 日**最近一次**上榜是否「大额净卖」──
     # ★★ 2026-10-26（审查 P2）：原判据是 `net_buy < 0`（任何净卖）⇒ 18 只里混进
@@ -278,10 +284,7 @@ def build(day: str) -> Dict:
     try:
         for r in db.fetch("SELECT strategy_name, results_json FROM strategy_results "
                           "WHERE scan_date = %s", (day,)) or []:
-            try:
-                _items = json.loads(r.get("results_json") or "[]")
-            except (ValueError, TypeError):
-                continue
+            _items = _jload(r.get("results_json"))
             if not isinstance(_items, list):
                 continue
             _sn = str(r.get("strategy_name") or "")
@@ -323,21 +326,16 @@ def build(day: str) -> Dict:
         name = r.get("name") or m.get("name") or st.get("name") or code
         ind = imap.get(code, "其它行业")
         srow = sec.get(ind) or {}
-        chip = {}
-        try:
-            chip = json.loads(m.get("chip_json") or "{}") or {}
-        except (ValueError, TypeError):
-            pass
+        # ★ 2026-10-26：`chip_json` 是 **jsonb**（psycopg2 返回 dict）⇒ 必须走 `_jload`；
+        #   旧代码 `json.loads(dict)` 抛 TypeError 被吞 ⇒ chip_price_pos/winner_ratio 全空（实测事故）。
+        chip = _jload(m.get("chip_json"))
         gt = gate.get(code) or {}
         lh = lhb.get(code) or {}
         # 三维分：ranking_live payload.dimensions（若为 dict 拆列；口径以产物为准）
-        dims = {}
-        try:
-            dims = (json.loads(r.get("payload") or "{}") or {}).get("dimensions") or {}
-            if isinstance(dims, list):      # 兼容数组形态 [{name,score}]
-                dims = {str(d.get("name")): d.get("score") for d in dims if isinstance(d, dict)}
-        except (ValueError, TypeError):
-            pass
+        # 三维分：ranking_live payload.dimensions（若为 dict 拆列；口径以产物为准）
+        dims = _jload(r.get("payload")).get("dimensions") or {}
+        if isinstance(dims, list):      # 兼容数组形态 [{name,score}]
+            dims = {str(d.get("name")): d.get("score") for d in dims if isinstance(d, dict)}
         fb = _facts_basic(code, st)
         _f5 = _f(m.get("flow5_amt_yuan"))
         # 闸门的"还差什么"：payload.candidates 里就是 `missing: [label...]`（已算好，别重推）
