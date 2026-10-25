@@ -195,6 +195,9 @@ _SOURCES = [
     ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2),
     # ★ 2026-09-12：交易员决策简报（日批盘后生成 + 企微推送；此前只有前端按需生成）
     ("交易员决策简报", "SELECT MAX(date) AS v FROM trader_briefs", "日批 盘后", 2),
+    # ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读**事件推送**落库；他非每日发视频，
+    #   滞后 2~7 天是常态不是故障 ⇒ 容忍放宽到 15 交易日；断流=推送异常或上游停更）
+    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送（不定期）", 15),
 ]
 
 

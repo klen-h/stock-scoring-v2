@@ -23,9 +23,14 @@
 判定标准：**GET 只读 ∧ 读内存缓存/有 TTL 缓存的表 ∧ 无外部请求 ∧ 不写库 ∧ 不触发重算**。
 
 - **auth.py**：`POST /register`、`POST /login`（认证入口本身必须匿名）。
+- **外部机器回调**（共享密钥鉴权，无用户态 JWT；同 `POST /system/batch-done` 模式）：
+  **POST /market/lidaxiao/push**（★ 2026-10-25：xiaopage GitHub Actions 在 LLM 输出解读的
+  时刻回调；`X-Lidx-Token` = `LIDX_PUSH_TOKEN` 共享密钥，未配置 env 一律 403；落库幂等
+  （entry_id 主键 upsert）⇒ 重放无害）。
 - **行情/宏观读**（market、macro、capital、sector 全部 GET）：overview/temperature/emotion/
   realtime/uplimit-realtime/amount-realtime/limit-review/refresh-status/policy-bottom 三读、
-  sector 18 个 GET、macro snapshot/daily/panel、capital 4 个 GET。
+  **GET /market/lidaxiao**（★ 2026-10-25：读 lidaxiao_views 小表前 15 行，无外呼无写库；
+  60s 轮询响应 ~3KB）、sector 18 个 GET、macro snapshot/daily/panel、capital 4 个 GET。
 - **评分/榜单读**（scoring）：batch/top、{symbol}、diag、batch/* 各榜、kline-cache/status、
   weights、以及 **POST /ranking-persistence**（POST 形态的只读查询：连续上榜天数+可信度，
   无写库无 LLM）；⚠️ `POST /weight-advice` 暂留匿名（纯计算读侧，无外呼），若日后接 LLM 必须挂鉴权。

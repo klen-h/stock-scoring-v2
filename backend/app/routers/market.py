@@ -19,7 +19,8 @@
 
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Depends, Query, BackgroundTasks
+from fastapi import (APIRouter, Depends, Query, BackgroundTasks,
+                     Body, Header, HTTPException)
 from app.auth import get_current_user
 from datetime import datetime, timedelta, timezone
 
@@ -2310,3 +2311,48 @@ def market_limit_review(date: str = None):
         print(f"[market] limit-review stale fallback failed: {e}")   # ASCII（铁律⑥）
     out["stats"] = _limit_stats(d)
     return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  李大霄视角卡（★ 2026-10-25，xiaopage LLM 解读推送接入，**纯展示参考**）
+#  设计/口径见 `app/lidaxiao_views.py` 模块头（含预登记声明：不进任何决策链）。
+#  ★ 为什么是"推送"而不是"轮询"：xiaopage 在 LLM 输出解读的时刻主动回调
+#    （事件驱动，与 /system/batch-done 同一模式）；且该时刻 GitHub raw 尚未
+#    commit（Actions 末尾才提交）⇒ 回拉必拿旧数据，payload 必须直接带内容。
+# ══════════════════════════════════════════════════════════════════════════
+_LIDX_TOKEN = os.environ.get("LIDX_PUSH_TOKEN", "")
+
+
+@router.post("/lidaxiao/push")
+def lidaxiao_push(payload: dict = Body(default={}),
+                  x_lidx_token: str = Header(default="")):
+    """xiaopage（GitHub Actions）LLM 解读产出时刻的实时回调。
+
+    匿名理由（AUTH_POLICY §2）：调用方是外部机器（无用户态 JWT），鉴权走共享密钥
+    `LIDX_PUSH_TOKEN`（Render env 与 xiaopage GitHub secret 各配一次同一个值）——
+    与 /system/batch-done 的 `BATCH_CALLBACK_TOKEN` 同一模式。未配置该 env 时一律
+    403（安全默认）。payload = {entries: [新解读, 前一条, 再前一条]}（前两条自愈：
+    偶发推送失败由下一条视频的推送补上）；逐条防御校验，坏条目只 skip 不炸整请求。
+    """
+    if not _LIDX_TOKEN or x_lidx_token != _LIDX_TOKEN:
+        # 不透露细节（不区分"未配置"与"token 不对"，避免探测）
+        raise HTTPException(status_code=403, detail="invalid token")
+    entries = (payload or {}).get("entries")
+    if not isinstance(entries, list) or not entries:
+        return {"ok": False, "error": "entries required"}
+    from app import lidaxiao_views as lv
+    r = lv.ingest_entries(entries)
+    print(f"[lidaxiao] push: stored={r['stored']} skipped={r['skipped']}")  # ASCII（铁律⑥）
+    return {"ok": True, **r}
+
+
+@router.get("/lidaxiao")
+def lidaxiao_view(limit: int = Query(14, ge=1, le=60,
+                                     description="轨迹期数（最新一期之外）")):
+    """读李大霄视角卡数据：最新一期 + 近 N 期情绪轨迹 + 滞后/过期标记。
+
+    匿名理由（AUTH_POLICY §2）：GET 只读、读小表（~490 行取前 15）、无外部请求、
+    不写库、不触发重算（60s 轮询一次，响应 ~3KB，不构成 egress 负担）。
+    """
+    from app import lidaxiao_views as lv
+    return lv.load(limit)

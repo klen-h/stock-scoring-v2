@@ -2479,6 +2479,48 @@
              ⚠️ 原诊断信息（D状态/叙事/仓位）保留在卡内首行，不做两处渲染。 -->
         <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
 
+        <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
+             事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
+             卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
+        <div v-if="lidx && lidx.latest" class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+            <div class="text-sm font-semibold">李大霄视角
+              <span class="text-[10px] text-muted font-normal">外部观点参考</span>
+            </div>
+            <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
+                  :title="lidx.stale ? '上游可能停更或推送异常' : ''">
+              数据截至 {{ (lidx.latest.date || '').slice(5, 16) }} · 落后{{ lidx.lag_days }}天<template v-if="lidx.stale"> ⚠</template>
+            </span>
+          </div>
+          <div class="flex items-center gap-2 text-xs mb-1 flex-wrap">
+            <span class="font-semibold text-gray-200">{{ lidx.latest.title }}</span>
+            <a v-if="lidx.latest.video_url" :href="lidx.latest.video_url" target="_blank"
+               class="text-accent hover:underline flex-shrink-0">{{ lidx.latest.bvid }} ↗</a>
+            <span class="text-muted flex-shrink-0">{{ lidx.latest.date }}</span>
+          </div>
+          <div class="text-xs mb-1.5">
+            情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidx.latest.sentiment_level)">{{ lidx.latest.sentiment_score ?? '—' }}</span>
+            <span :class="lidxLevelColor(lidx.latest.sentiment_level)">· {{ lidx.latest.sentiment_level || '—' }}</span>
+            <span class="text-muted"> · 防御话术 {{ lidx.latest.disclaimer_level ?? '—' }}/5</span>
+          </div>
+          <div v-if="lidx.latest.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
+            ▸ {{ lidx.latest.final_conclusion }}
+          </div>
+          <div v-if="lidx.latest.sectors && lidx.latest.sectors.length" class="flex flex-wrap gap-1 mb-2">
+            <span v-for="s in lidx.latest.sectors" :key="s"
+                  class="px-1.5 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-300 border border-blue-500/20">{{ s }}</span>
+          </div>
+          <div v-if="lidx.trend && lidx.trend.length" class="flex items-end gap-[3px] h-8">
+            <div v-for="(t, i) in lidx.trend" :key="i"
+                 class="flex-1 min-w-[4px] rounded-t"
+                 :style="{ height: Math.max(6, t.score || 0) + '%', background: lidxBarColor(t.score) }"
+                 :title="`${t.date} · 情绪${t.score} · ${t.title}`"></div>
+          </div>
+          <div v-if="lidx.trend && lidx.trend.length" class="text-[10px] text-muted mt-1">
+            近{{ lidx.trend.length }}期情绪（0~100，越高越乐观）
+          </div>
+        </div>
+
         <!-- 市场底确认清单（2026-10-23：从盘中移到右栏；2026-10-24 教练卡挂到本卡下方） -->
         <div v-if="pbw" class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
@@ -2815,6 +2857,8 @@ import {
   //   （`/user/plans`，含 status / plan_type / trigger_high_open / trigger_volume_break），
   //   此前工作台从未用过 ⇒ 复盘的结论没有被转成"明日待办"，一天的首尾没接上。
   getUserPlans,
+  // ★ 2026-10-25：李大霄视角卡（观察器；xiaopage 事件推送，只读）
+  getLidaxiaoView,
 } from '../api'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
@@ -3601,6 +3645,29 @@ async function loadPolicyBottom() {
     const { data } = await getPolicyBottom()
     if (data && data.items) pbw.value = data
   } catch { /* 静默保留上次值 */ }
+}
+// ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送；**观察器，静默失败保留上次值**）。
+//   数据由 xiaopage 在 LLM 输出解读的时刻 POST /market/lidaxiao/push 落库（事件驱动，
+//   非"通知后回拉"——该时刻 GitHub raw 尚未 commit，回拉必拿旧数据），本卡只读。
+const lidx = ref(null)
+async function loadLidaxiao() {
+  try {
+    const { data } = await getLidaxiaoView()
+    if (data && data.latest) lidx.value = data
+  } catch { /* 静默保留上次值 */ }
+}
+// 情绪六级配色（口径=后端 sentiment_level，移植自 xiaopage sentiment.ts；多→红系，空→蓝青系）
+function lidxLevelColor(level) {
+  return { '极度狂热': 'text-red-400', '乐观': 'text-orange-400', '谨慎偏多': 'text-amber-400',
+           '谨慎偏空': 'text-cyan-400', '悲观': 'text-blue-400', '极度恐慌': 'text-blue-300' }[level] || 'text-muted'
+}
+function lidxBarColor(score) {
+  const s = Number(score) || 0
+  if (s >= 76) return '#ef4444'
+  if (s >= 56) return '#f97316'
+  if (s >= 46) return '#f59e0b'
+  if (s >= 36) return '#06b6d4'
+  return '#3b82f6'
 }
 // ★ 2026-10-19：手动重扫公告（后端 scan_and_store(push=False)，不推企微）。
 //   重扫完必须重拉清单 —— 提示挂在清单第①条里，不重拉会显示旧结果。
@@ -4757,7 +4824,9 @@ function startPolling() {
   //   ⇒ 这是"**推**"而不是"拉"：页面不必轮询、不必一直开着，用户收到通知再打开即可。
   //   ⚠️ 此处**刻意不加**自动重试定时器 —— 保留本注释是防止日后有人"好心补回来"
   //     （那会重新制造"开着页面等"的体验，且用户已明确否决）。
-  timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
+  timers.push(setInterval(() => { loadCoach(); loadRadar(); loadLidaxiao() }, 60000))
+  //   ↑ ★ 2026-10-25：李大霄视角卡并入教练卡 60s 轮询（用户拍板"跟教练一起轮训"）——
+  //     接口只读小表前 15 行（~3KB/次），页面开一整天也不构成 egress 负担。
   // ★ 2026-09-29（P1）：盘中实时涨停/炸板 60s 轮询（与后端 rt_k 预热 120s 错频，
   //   一半会命中同一份后端缓存，无额外外部请求）——⚠️ 仅交易时段真发请求。
   timers.push(setInterval(() => { if (isLivePhase()) loadRealtimeUplimit() }, 60000))
@@ -4865,7 +4934,7 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
   loadPhaseData(selectedPhase.value)
   startPolling()
 })

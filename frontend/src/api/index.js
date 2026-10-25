@@ -245,6 +245,12 @@ export const confirmPolicyBottom = (checked, note = '', date = '') =>
 export const getPolicyAnnouncements = (date = '') =>
   http.get('/market/policy-bottom/announcements', { params: date ? { date } : {} })
 
+// ★ 2026-10-25：李大霄视角卡（**纯展示参考，非信号**；口径见后端 app/lidaxiao_views.py）。
+//   数据由 xiaopage 在 LLM 输出解读的时刻事件推送落库（POST /market/lidaxiao/push），
+//   本接口只读最新一期 + 近 14 期轨迹；工作台 60s 随教练卡轮询，响应 ~3KB。
+export const getLidaxiaoView = (limit = 14) =>
+  http.get('/market/lidaxiao', { params: { limit } })
+
 // 手动重扫（不推企微）；网络请求最长约 30~60s（2 个关键词 × 最多 5 页）
 export const refreshPolicyAnnouncements = (date = '') =>
   http.post('/market/policy-bottom/announcements/refresh', null,
