@@ -24,6 +24,7 @@
 ================================================================================
 """
 
+import threading
 import time
 
 from app.mainforce.chips import chip_metrics, chip_series
@@ -195,14 +196,20 @@ def _mode_on() -> bool:
 
 
 # ★ BK-02：闸门数据缺失计数器（放行+可见）——按类型计数，每满 50 次打一条 ASCII 日志。
-_GATE_MISS = {"no_bars": 0, "no_chip_phase": 0, "_warned": set()}
+# ★★ 2026-10-26（审查 P2 修）：原条件 `n % 50 == 0 and kind not in _warned or n == 50`
+#   与注释"每满 50 次一条"**矛盾**（`_warned` 一旦记入就永不再打印，实际只在第 50 次出现一次），
+#   且 `or n == 50` 被前半覆盖、纯冗余。现明确语义 = **持续告警**：每满 50 次打一条
+#   （50/100/150…），不再维护 `_warned`。
+#   计数用锁保护：本函数在 FastAPI 线程池里并发调用，`+=` 非原子会丢计数。
+_GATE_MISS = {"no_bars": 0, "no_chip_phase": 0}
+_GATE_MISS_LOCK = threading.Lock()
 
 
 def _miss_watch(kind: str) -> None:
-    _GATE_MISS[kind] = _GATE_MISS.get(kind, 0) + 1
-    n = _GATE_MISS[kind]
-    if n % 50 == 0 and kind not in _GATE_MISS["_warned"] or n == 50:
-        _GATE_MISS["_warned"].add(kind)
+    with _GATE_MISS_LOCK:
+        _GATE_MISS[kind] = _GATE_MISS.get(kind, 0) + 1
+        n = _GATE_MISS[kind]
+    if n % 50 == 0:
         print(f"[gate] data-miss pass-through: {kind} x{n} (fail-open by design, "
               f"visible counter)")                     # ASCII（铁律⑥）
 

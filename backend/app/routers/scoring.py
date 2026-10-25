@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Query, BackgroundTasks, Body, HTTPExcept
 from app.auth import get_current_user
 import asyncio
 import math
+from functools import partial
 import os
 import time
 from types import SimpleNamespace
@@ -1404,7 +1405,9 @@ async def score_top(
         try:
             from app.scoring.live_ranking import load as _load_live_ranking
             # ★ 2026-10-26（BK-04b）：同步 DB 读（1000 行 payload）挪线程池
-            _stored = await asyncio.to_thread(_load_live_ranking, 1000)  # 组合分排序需更大池
+            #   ★ 用 partial 传**关键字**：签名若改名/加参数，位置传参会静默错位（审查 P3）
+            _stored = await asyncio.to_thread(
+                partial(_load_live_ranking, limit=1000))  # 组合分排序需更大池
             # ★★ 2026-10-25（egress 归因后的修复）：原判据 `_stored.date == _today_bj()`
             #   在**周末/节假日/盘前**必然为 False（库里是上一交易日，自然日是今天）
             #   ⇒ 每次缓存过期（3 分钟）都跑一遍**在线全市场精算**（读 backtest_prices /
@@ -1785,7 +1788,8 @@ async def shadow_rank(limit: int = Query(default=50, ge=10, le=100)):
     # ★ 2026-10-26（BK-04b）：每请求必打的同步 DB（财报批查+权重解析）挪线程池
     def _load_fin_w():
         return get_finance_batch(codes) or {}, resolve_weights()
-    fin, (__, weights) = await asyncio.to_thread(_load_fin_w)
+    # ★ 审查 P3：`(__, weights)` 的 `__` 占位可读性差 ⇒ 命名 `_name`
+    fin, (_name, weights) = await asyncio.to_thread(_load_fin_w)
 
     _bj = timezone(timedelta(hours=8))
     today = datetime.now(_bj).strftime("%Y-%m-%d")

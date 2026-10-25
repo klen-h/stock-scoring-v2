@@ -366,8 +366,18 @@ def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
 
 # ★ 2026-10-26（BK-01）：请求路径触发刷新的**单飞闸**——冷启动 2-4 分钟的全量扫描期间，
 #   30s 轮询的 N 个并发请求会各自 add_task 排队（tencent._cache["lock"] 被串行持有，
-#   任务在线程池里堆成串行长队）⇒ 用进程内标志直接合并为一次。
-_REFRESH_INFLIGHT = {"running": False, "ts": 0.0}
+#   任务在线程池里堆成串行长队）⇒ 进程内合并为一次。
+# ★★ 2026-10-26（审查 P1 修）：第一版是"**丢弃**"（在跑就直接 return）——但调用方
+#   `strategies/backtest.py:86` / `flash/scheduler.py:1195` 是「缓存空 → 刷新 → 读缓存」，
+#   冷启动窗口内会读到**空池**。现改为"**等它跑完再返回**"（不排队、不丢弃）：
+#     · 非强制：`Event.wait(超时)` 等 owner 完成，然后返回缓存；
+#     · 强制（手动刷新）：等完再自己跑一次（语义仍是"我要新数据"）；
+#     · 僵死兜底：owner 卡超过 `_REFRESH_STALE_SEC` 视为死锁，允许接管
+#       （原版标志一旦卡住就永久 True ⇒ 行情永久停更，且无任何日志）。
+_REFRESH_INFLIGHT = {"running": False, "ts": 0.0, "event": None, "owner": None}
+_REFRESH_GATE = threading.Lock()
+_REFRESH_STALE_SEC = 600     # 僵死判定：全量扫描正常 2~4 分钟
+_REFRESH_WAIT_SEC = 300      # 非 owner 最长等待
 
 
 def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
@@ -386,18 +396,56 @@ def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
     这样既保证日常刷新快，又能在手动刷新时发现新股（IPO）。
     代价：后端重启后首次仍需全量扫描（_valid_codes 是内存缓存）。
     """
-    global _valid_codes
-    # ★ BK-01：单飞闸——已有一次刷新在跑且本次非强制 ⇒ 直接返回（排队等锁只会
-    #   在线程池里堆积串行任务；缓存 60s 冷却本来就会在完成后挡住后续触发）。
-    import time as _t
-    if _dedupe and not force and _REFRESH_INFLIGHT["running"]:
-        return
-    _REFRESH_INFLIGHT["running"] = True
-    _REFRESH_INFLIGHT["ts"] = _t.time()
+    if not _dedupe:
+        return _refresh_all_stocks_inner(force)
+
+    waited = None
+    owner = object()          # ★ owner token：只有真正的 owner 才能清标志/唤醒等待者
+    with _REFRESH_GATE:
+        now = time.time()
+        if _REFRESH_INFLIGHT["running"]:
+            age = now - float(_REFRESH_INFLIGHT["ts"] or 0)
+            if age > _REFRESH_STALE_SEC:
+                print(f"[tencent] 刷新僵死 {age:.0f}s ⇒ 允许接管（原标志强制清除）")
+                old = _REFRESH_INFLIGHT.get("event")
+                if old is not None:
+                    old.set()     # 别让等旧 owner 的线程白等到超时
+                _REFRESH_INFLIGHT["running"] = False
+                _REFRESH_INFLIGHT["owner"] = None
+            else:
+                waited = _REFRESH_INFLIGHT["event"]
+        if waited is None:
+            _REFRESH_INFLIGHT["running"] = True
+            _REFRESH_INFLIGHT["ts"] = now
+            _REFRESH_INFLIGHT["event"] = threading.Event()
+            _REFRESH_INFLIGHT["owner"] = owner
+
+    if waited is not None:
+        ok = waited.wait(timeout=_REFRESH_WAIT_SEC)
+        if not ok:
+            print(f"[tencent] 等待在跑刷新超时 {_REFRESH_WAIT_SEC}s ⇒ 返回当前缓存")
+            return _cache["stocks"]
+        if not force:
+            return _cache["stocks"]
+        # 强制刷新：等完再自己跑一次（不与自己并发）
+        with _REFRESH_GATE:
+            _REFRESH_INFLIGHT["running"] = True
+            _REFRESH_INFLIGHT["ts"] = time.time()
+            _REFRESH_INFLIGHT["event"] = threading.Event()
+            _REFRESH_INFLIGHT["owner"] = owner
+
     try:
-        _refresh_all_stocks_inner(force)
+        return _refresh_all_stocks_inner(force)
     finally:
-        _REFRESH_INFLIGHT["running"] = False
+        with _REFRESH_GATE:
+            # ★ 只有自己仍是 owner 才复位：并发 force 路径换过 owner 时，
+            #   旧 owner 的 finally 不能把新 owner 的"在跑"状态清掉（审查 P1-②）
+            if _REFRESH_INFLIGHT.get("owner") is owner:
+                _REFRESH_INFLIGHT["running"] = False
+                _REFRESH_INFLIGHT["owner"] = None
+                ev = _REFRESH_INFLIGHT.get("event")
+                if ev is not None:
+                    ev.set()      # 唤醒所有等待者
 
 
 def _refresh_all_stocks_inner(force: bool = False):
