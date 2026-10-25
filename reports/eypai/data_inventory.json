@@ -1,0 +1,1072 @@
+[
+ {
+  "file": "core_snapshot.json",
+  "status": 200,
+  "bytes": 977,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "399006",
+   "399106",
+   "399975",
+   "ts",
+   "000001",
+   "000300",
+   "basis",
+   "indices",
+   "saved_at",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "core_today.json",
+  "status": 200,
+  "bytes": 15270,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "day",
+   "series",
+   "updated",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "ts",
+   "indices"
+  ],
+  "n_items": 59
+ },
+ {
+  "file": "data/basis_conv.json",
+  "status": 200,
+  "bytes": 1348,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "updated",
+   "main_sym",
+   "by_sym",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/basis_daily.json",
+  "status": 200,
+  "bytes": 12659,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "generated_at",
+   "date",
+   "basis_date",
+   "partial",
+   "degraded",
+   "basis",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/basis_today.json",
+  "status": 200,
+  "bytes": 21401,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "day",
+   "pts",
+   "updated",
+   "pre_open",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/bfi.json",
+  "status": 200,
+  "bytes": 11520,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "generated_at",
+   "latest",
+   "history",
+   "note",
+   "eval",
+   "history_n",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "date",
+   "tc",
+   "ic",
+   "style_amt_ratio",
+   "style_pct_gap"
+  ],
+  "n_items": 120
+ },
+ {
+  "file": "data/buyflow_live.json",
+  "status": 200,
+  "bytes": 175,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "points",
+   "updated",
+   "last",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/cup_state.json",
+  "status": 200,
+  "bytes": 1392,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "count",
+   "total",
+   "items",
+   "tier",
+   "time",
+   "date",
+   "v2",
+   "primary_src",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "name",
+   "ok"
+  ],
+  "n_items": 5
+ },
+ {
+  "file": "data/dhx_today.json",
+  "status": 200,
+  "bytes": 479,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "generated",
+   "date",
+   "time",
+   "teacher",
+   "title",
+   "direction",
+   "stance",
+   "object",
+   "signal",
+   "note",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/emo_series.json",
+  "status": 200,
+  "bytes": 425927,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "meta",
+   "days",
+   "ser",
+   "idx",
+   "date",
+   "updated_at",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": "str",
+  "n_items": 2867
+ },
+ {
+  "file": "data/etf_nt_daily.json",
+  "status": 200,
+  "bytes": 34761,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "date",
+   "generated_at",
+   "meta",
+   "pool",
+   "score",
+   "state",
+   "ind",
+   "calibration",
+   "reduction",
+   "quarterly",
+   "history",
+   "burst_axis",
+   "selfcheck",
+   "advice",
+   "notes"
+  ],
+  "item_keys": "str",
+  "n_items": 4
+ },
+ {
+  "file": "data/event_cal.json",
+  "status": 200,
+  "bytes": 72659,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "as_of",
+   "trade_date",
+   "degraded",
+   "cal_degraded",
+   "data_warnings",
+   "cats",
+   "month_alias",
+   "today",
+   "by_date",
+   "year_grid",
+   "range",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "date",
+   "impact",
+   "time",
+   "title",
+   "cat",
+   "imp",
+   "src",
+   "note"
+  ],
+  "n_items": 1
+ },
+ {
+  "file": "data/event_results.json",
+  "status": 200,
+  "bytes": 18040,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "as_of",
+   "series",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/fusion_daily.json",
+  "status": 200,
+  "bytes": 211,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "label",
+   "band",
+   "power",
+   "phase",
+   "risk_pct",
+   "mainline_n",
+   "cup",
+   "generated_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": "int",
+  "n_items": 2
+ },
+ {
+  "file": "data/guard_heat.json",
+  "status": 200,
+  "bytes": 14014,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "version",
+   "quad",
+   "quad_cn",
+   "hint",
+   "zone",
+   "zone_cn",
+   "gs",
+   "hs",
+   "gl",
+   "reduce",
+   "final",
+   "hs_partial",
+   "guard_level",
+   "guard_level_cn",
+   "axes_same_day",
+   "inputs_date"
+  ],
+  "item_keys": [
+   "date",
+   "quad",
+   "gs",
+   "gs_full",
+   "hs",
+   "hs_full",
+   "gl",
+   "gl_full",
+   "level"
+  ],
+  "n_items": 120
+ },
+ {
+  "file": "data/guard_intraday.json",
+  "status": 200,
+  "bytes": 1178,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "date",
+   "level",
+   "level_cn",
+   "hint",
+   "zone",
+   "zone_note",
+   "axes",
+   "push",
+   "generated_at",
+   "latched",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/guard_stage.json",
+  "status": 200,
+  "bytes": 3247,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "version",
+   "date",
+   "stage",
+   "stage_cn",
+   "stage_cn_full",
+   "stage_cn_plain",
+   "long_cn",
+   "long_tone",
+   "instant",
+   "instant_cn",
+   "hint",
+   "evolved",
+   "reduce",
+   "reduce_suspect",
+   "reduce_quality"
+  ],
+  "item_keys": [
+   "ts",
+   "src",
+   "title",
+   "how"
+  ],
+  "n_items": 5
+ },
+ {
+  "file": "data/heavy_kill.json",
+  "status": 200,
+  "bytes": 6394,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "generated_at",
+   "latest",
+   "history",
+   "pool_names",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "day",
+   "signal",
+   "n_kill",
+   "amt_ratio",
+   "up_share",
+   "hit_pools",
+   "n_dip",
+   "n_recover"
+  ],
+  "n_items": 23
+ },
+ {
+  "file": "data/heavy_kill_intraday.json",
+  "status": 200,
+  "bytes": 519,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "hm",
+   "killed",
+   "pools_hit",
+   "hit_pools",
+   "mkt_amt_yi",
+   "progress",
+   "amt_ratio_est",
+   "shrink_est",
+   "alert",
+   "signal",
+   "date",
+   "generated_at",
+   "mkt_ma5_yi",
+   "pool_names",
+   "zq_limit_events",
+   "_shield"
+  ]
+ },
+ {
+  "file": "data/hkliq_summary.json",
+  "status": 200,
+  "bytes": 144,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "verdict",
+   "report_date",
+   "tone",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/hotwords.json",
+  "status": 200,
+  "bytes": 1106,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "updated",
+   "hotwords",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "word",
+   "score",
+   "count",
+   "platforms"
+  ],
+  "n_items": 14
+ },
+ {
+  "file": "data/hstech_ss_daily.json",
+  "status": 200,
+  "bytes": 3333,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "generated_at",
+   "date",
+   "metrics",
+   "track1",
+   "track2",
+   "advice",
+   "history",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/idx_volume_daily.json",
+  "status": 200,
+  "bytes": 7576,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "generated_at",
+   "vol",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/logbias_snapshot.json",
+  "status": 200,
+  "bytes": 1502,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "generated_at",
+   "trade_date",
+   "items",
+   "missing",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "name",
+   "type",
+   "missing",
+   "bias",
+   "band",
+   "advice",
+   "alert"
+  ],
+  "n_items": 9
+ },
+ {
+  "file": "data/mainline_daily.json",
+  "status": 200,
+  "bytes": 28948,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "generated_at",
+   "market",
+   "sectors",
+   "bias_reversal",
+   "meta",
+   "history",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "name",
+   "sw",
+   "pool_src",
+   "sw_mapped",
+   "tier",
+   "tier_label",
+   "share_l2",
+   "mcap_cap",
+   "eyupai",
+   "earletf",
+   "cross",
+   "prob"
+  ],
+  "n_items": 8
+ },
+ {
+  "file": "data/market_leader.json",
+  "status": 200,
+  "bytes": 48501,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "gen_at",
+   "data_date",
+   "k_coverage",
+   "k_gap",
+   "k_basis",
+   "styles",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/market_leader_live.json",
+  "status": 200,
+  "bytes": 3637,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "gen_at",
+   "gen_hm",
+   "src",
+   "day",
+   "nh_basis",
+   "pool_leader",
+   "pool_gaobiao",
+   "styles",
+   "sentiment",
+   "outlook",
+   "banner",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/news_flash.json",
+  "status": 200,
+  "bytes": 1298548,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "as_of",
+   "today",
+   "degraded",
+   "items",
+   "imp_today",
+   "by_day",
+   "by_day_meta",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "id",
+   "ts",
+   "imp",
+   "src",
+   "title",
+   "text",
+   "tags"
+  ],
+  "n_items": 200
+ },
+ {
+  "file": "data/score_settled.json",
+  "status": 200,
+  "bytes": 420,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "generated_at",
+   "src",
+   "date",
+   "rate",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/sentiment.json",
+  "status": 200,
+  "bytes": 7557,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "day",
+   "score100",
+   "score100_v1",
+   "level",
+   "algo",
+   "n_items",
+   "n_scored",
+   "bull_ratio",
+   "bear_ratio",
+   "extreme_ratio",
+   "ext_bull",
+   "ext_bear",
+   "top_bull",
+   "top_bear",
+   "platforms",
+   "date"
+  ],
+  "item_keys": [
+   "day",
+   "score100",
+   "v1",
+   "n",
+   "live"
+  ],
+  "n_items": 53
+ },
+ {
+  "file": "data/ta_daily.json",
+  "status": 200,
+  "bytes": 1345973,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "generated_at",
+   "data_day",
+   "bars",
+   "source",
+   "codes",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/ta_live.json",
+  "status": 200,
+  "bytes": 1345898,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "generated_at",
+   "data_day",
+   "bars",
+   "source",
+   "codes",
+   "live",
+   "as_of",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/tech_linkage_daily.json",
+  "status": 200,
+  "bytes": 3648,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "asof",
+   "latest",
+   "recent",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "date",
+   "tli",
+   "state",
+   "state_label",
+   "es",
+   "gl",
+   "il",
+   "di",
+   "di_z"
+  ],
+  "n_items": 23
+ },
+ {
+  "file": "data/tech_linkage_intraday.json",
+  "status": 200,
+  "bytes": 933,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "asof",
+   "kind",
+   "latest",
+   "inputs",
+   "alerts_today",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "t",
+   "state",
+   "label",
+   "tli"
+  ],
+  "n_items": 4
+ },
+ {
+  "file": "data/trade_cal.json",
+  "status": 200,
+  "bytes": 114494,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "fetched",
+   "src",
+   "first",
+   "last",
+   "n",
+   "dates",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": "str",
+  "n_items": 8797
+ },
+ {
+  "file": "data/tuanyuan.json",
+  "status": 200,
+  "bytes": 1901,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "conditions",
+   "overall",
+   "asof_date",
+   "derived",
+   "us_cutoff",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/watch_cards_public.json",
+  "status": 200,
+  "bytes": 3984,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "asof",
+   "market_state",
+   "selection",
+   "disclaimer",
+   "article",
+   "article_status",
+   "cards",
+   "source_version",
+   "updated",
+   "data_version",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "key",
+   "theme",
+   "status",
+   "title",
+   "takeaway",
+   "metrics",
+   "points",
+   "risk"
+  ],
+  "n_items": 4
+ },
+ {
+  "file": "data/watch_cards_public_history.json",
+  "status": 200,
+  "bytes": 11855,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "schema",
+   "updated",
+   "max_days",
+   "days",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "data/xiue_intraday.json",
+  "status": 200,
+  "bytes": 679,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "ts",
+   "day",
+   "text",
+   "xs",
+   "rs",
+   "gs",
+   "cr20",
+   "panel",
+   "states",
+   "zt_n",
+   "max_height",
+   "tot_pct",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": "str",
+  "n_items": 1
+ },
+ {
+  "file": "eyupai_score_result_v8.json",
+  "status": 200,
+  "bytes": 411,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "version",
+   "date",
+   "veto",
+   "veto_reason",
+   "soft_warns",
+   "vix_mild",
+   "_lhb_warn",
+   "total",
+   "full_available",
+   "rate",
+   "state",
+   "e1_style",
+   "e1_note",
+   "_shield",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": "str",
+  "n_items": 1
+ },
+ {
+  "file": "hist_server.json",
+  "status": 200,
+  "bytes": 238058,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "days",
+   "updated",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "lhb_score_result.json",
+  "status": 200,
+  "bytes": 168,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "score",
+   "full",
+   "date",
+   "rate",
+   "regime",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "lhb_snapshot.json",
+  "status": 200,
+  "bytes": 4249,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "missing",
+   "roll_day",
+   "symbols",
+   "saved_at",
+   "legs",
+   "_published_at",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "manifest.json",
+  "status": 200,
+  "bytes": 704,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "name",
+   "short_name",
+   "description",
+   "id",
+   "start_url",
+   "scope",
+   "display",
+   "orientation",
+   "background_color",
+   "theme_color",
+   "icons",
+   "_src",
+   "_fp"
+  ],
+  "item_keys": [
+   "src",
+   "sizes",
+   "type",
+   "purpose"
+  ],
+  "n_items": 4
+ },
+ {
+  "file": "market_snapshot.json",
+  "status": 200,
+  "bytes": 41716,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "updated",
+   "asof_date",
+   "margin",
+   "basis",
+   "gov_bond",
+   "new_high",
+   "turnover_cmp",
+   "amount60",
+   "indices",
+   "leading_pct",
+   "leading_pct_src",
+   "breadth",
+   "industry_flow",
+   "industry_flow_out",
+   "amount_top",
+   "zt_top"
+  ],
+  "item_keys": [
+   "code",
+   "name",
+   "price",
+   "change_pct",
+   "change_amt",
+   "amount_yi",
+   "date",
+   "src"
+  ],
+  "n_items": 15
+ },
+ {
+  "file": "risk_aversion.json",
+  "status": 200,
+  "bytes": 2175,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "version",
+   "generated_at",
+   "date",
+   "total",
+   "full_total",
+   "pct",
+   "position",
+   "dims",
+   "external",
+   "vix_momentum_warn",
+   "emo_cap",
+   "missing",
+   "sentiment_combo",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "tr_snapshot.json",
+  "status": 200,
+  "bytes": 169,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "ratio_b",
+   "ratio_b_pct",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "v92_live.json",
+  "status": 200,
+  "bytes": 501,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "date",
+   "updated",
+   "rate",
+   "score",
+   "full_available",
+   "j",
+   "y",
+   "s",
+   "w",
+   "g",
+   "cycle",
+   "power",
+   "_published_at",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ },
+ {
+  "file": "wx_buyflow.json",
+  "status": 200,
+  "bytes": 402,
+  "ctype": "application/json; charset=utf-8",
+  "keys": [
+   "stage",
+   "reason",
+   "final",
+   "ts",
+   "url",
+   "title",
+   "published_at",
+   "value",
+   "value_raw",
+   "confidence",
+   "label_text",
+   "date",
+   "_shield",
+   "_src",
+   "_fp"
+  ]
+ }
+]

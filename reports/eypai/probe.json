@@ -1,0 +1,308 @@
+{
+ "data": {
+  "/data/sentiment.json": {
+   "status": 200,
+   "bytes": 7557,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "day",
+    "score100",
+    "score100_v1",
+    "level",
+    "algo",
+    "n_items",
+    "n_scored",
+    "bull_ratio",
+    "bear_ratio",
+    "extreme_ratio",
+    "ext_bull",
+    "ext_bear",
+    "top_bull",
+    "top_bear"
+   ],
+   "sample_item_keys": [
+    "day",
+    "score100",
+    "v1",
+    "n",
+    "live"
+   ],
+   "sample": "{\"day\": \"2026-10-23\", \"score100\": 13, \"score100_v1\": 7, \"level\": \"亢奋\", \"algo\": \"v2\", \"n_items\": 4357, \"n_scored\": 1975, \"bull_ratio\": 0.467, \"bear_ratio\": 0.367, \"extreme_ratio\": 0.21, \"ext_bull\": 0.1121, \"ext_bear\": 0.0"
+  },
+  "/data/market_leader_live.json": {
+   "status": 200,
+   "bytes": 3637,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "gen_at",
+    "gen_hm",
+    "src",
+    "day",
+    "nh_basis",
+    "pool_leader",
+    "pool_gaobiao",
+    "styles",
+    "sentiment",
+    "outlook",
+    "banner",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample": "{\"gen_at\": \"2026-10-23 15:04:42\", \"gen_hm\": \"15:04:42\", \"src\": \"qmt\", \"day\": \"2026-10-23\", \"nh_basis\": \"盘中实时(最高价口径)\", \"pool_leader\": 370, \"pool_gaobiao\": 60, \"styles\": {\"gaobiao\": {\"title\": \"高标榜（板基因池·天梯审美）\", \"latest\": [{"
+  },
+  "/data/mainline_daily.json": {
+   "status": 200,
+   "bytes": 28948,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "date",
+    "generated_at",
+    "market",
+    "sectors",
+    "bias_reversal",
+    "meta",
+    "history",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample_item_keys": [
+    "name",
+    "sw",
+    "pool_src",
+    "sw_mapped",
+    "tier",
+    "tier_label",
+    "share_l2",
+    "mcap_cap",
+    "eyupai",
+    "earletf",
+    "cross",
+    "prob"
+   ],
+   "sample": "{\"date\": \"2026-10-23\", \"generated_at\": \"2026-10-23 19:33:35\", \"market\": {\"zt_count\": 88, \"lianban\": 12, \"max_h\": 6, \"yest_lianban_mean\": -1.8, \"rotation\": {\"pct\": 89.16666666666667, \"score\": 0, \"label\": \"轮动高位(分位89%)·无序\","
+  },
+  "/data/emo_series.json": {
+   "status": 200,
+   "bytes": 425927,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "meta",
+    "days",
+    "ser",
+    "idx",
+    "date",
+    "updated_at",
+    "_src",
+    "_fp"
+   ],
+   "sample_item_keys": "<class 'str'>",
+   "sample": "{\"meta\": {\"built_at\": \"2026-10-23 18:20:34\", \"src\": \"eyupai.db: ashare_daily + bt_ashare_k + bt_ashare_kv + bt_derived_daily + idx_daily\", \"first\": \"2015-01-05\", \"last\": \"2026-10-23\", \"n\": 2867, \"cols\": {\"red\": \"上涨家数(ash"
+  },
+  "/data/etf_share_hist.json": {
+   "status": 404,
+   "bytes": 28088,
+   "ctype": "text/html"
+  },
+  "/data/buyflow_live.json": {
+   "status": 200,
+   "bytes": 175,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "date",
+    "points",
+    "updated",
+    "last",
+    "_published_at",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample": "{\"date\": \"2026-10-23\", \"points\": [], \"updated\": \"2026-10-23 09:05:00\", \"last\": null, \"_published_at\": \"2026-10-23T01:05:00.935Z\", \"_shield\": \"public\", \"_src\": \"eypai.net\", \"_fp\": \"0a3022ba\"}"
+  },
+  "/data/basis_daily.json": {
+   "status": 200,
+   "bytes": 12659,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "schema",
+    "generated_at",
+    "date",
+    "basis_date",
+    "partial",
+    "degraded",
+    "basis",
+    "_src",
+    "_fp"
+   ],
+   "sample": "{\"schema\": 1, \"generated_at\": \"2026-10-23T19:33:38\", \"date\": \"2026-10-23\", \"basis_date\": \"2026-10-23\", \"partial\": [], \"degraded\": false, \"basis\": {\"IF\": [{\"d\": \"2026-07-10\", \"basis\": 94.1, \"oi\": 228527}, {\"d\": \"2026-07-1"
+  },
+  "/data/event_cal.json": {
+   "status": 200,
+   "bytes": 72659,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "trade_date",
+    "degraded",
+    "cal_degraded",
+    "data_warnings",
+    "cats",
+    "month_alias",
+    "today",
+    "by_date",
+    "year_grid",
+    "range",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample_item_keys": [
+    "date",
+    "impact",
+    "time",
+    "title",
+    "cat",
+    "imp",
+    "src",
+    "note"
+   ],
+   "sample": "{\"as_of\": \"2026-10-23T17:21:03+08:00\", \"trade_date\": \"2026-10-23\", \"degraded\": false, \"cal_degraded\": false, \"data_warnings\": [], \"cats\": {\"政策会议\": \"#4472c4\", \"经济数据\": \"#2eb8a6\", \"资金机制\": \"#e8a33d\", \"海外事件\": \"#8464c8\", \"业绩期\""
+  },
+  "/data/event_results.json": {
+   "status": 200,
+   "bytes": 18040,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "series",
+    "_src",
+    "_fp"
+   ],
+   "sample": "{\"as_of\": \"2026-10-23T21:30:32+08:00\", \"series\": {\"cn_pmi_official\": {\"title\": \"官方制造业PMI\", \"unit\": \"%\", \"rows\": [{\"period\": \"2026-09\", \"actual\": 50.1, \"forecast\": null, \"previous\": null}, {\"period\": \"2026-08\", \"actual\": "
+  },
+  "/data/hk_four_factor.json": {
+   "status": 404,
+   "bytes": 28088,
+   "ctype": "text/html"
+  },
+  "/data/hkliq_daily.json": {
+   "status": 404,
+   "bytes": 28088,
+   "ctype": "text/html"
+  },
+  "/data/position_v2.json": {
+   "status": 404,
+   "bytes": 28088,
+   "ctype": "text/html"
+  },
+  "/data/news_flash.json": {
+   "status": 200,
+   "bytes": 1298548,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "as_of",
+    "today",
+    "degraded",
+    "items",
+    "imp_today",
+    "by_day",
+    "by_day_meta",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample_item_keys": [
+    "id",
+    "ts",
+    "imp",
+    "src",
+    "title",
+    "text",
+    "tags"
+   ],
+   "sample": "{\"as_of\": \"2026-10-25T12:12:45+08:00\", \"today\": \"2026-10-25\", \"degraded\": false, \"items\": [{\"id\": \"jin10:20261025024815771800\", \"ts\": \"2026-10-25 02:48:15\", \"imp\": 0, \"src\": \"jin10\", \"title\": \"\", \"text\": \"TASNIM NEWS quo"
+  },
+  "/data/data_source_health.json": {
+   "status": 404,
+   "bytes": 28088,
+   "ctype": "text/html"
+  },
+  "/data/cup_state.json": {
+   "status": 200,
+   "bytes": 1392,
+   "ctype": "application/json; charset=utf-8",
+   "type": "dict",
+   "keys": [
+    "count",
+    "total",
+    "items",
+    "tier",
+    "time",
+    "date",
+    "v2",
+    "primary_src",
+    "_shield",
+    "_src",
+    "_fp"
+   ],
+   "sample_item_keys": [
+    "name",
+    "ok"
+   ],
+   "sample": "{\"count\": 3, \"total\": 5, \"items\": [{\"name\": \"三指数普涨共振(上证/创/2000)\", \"ok\": false}, {\"name\": \"买盘≥P60分位\", \"ok\": false}, {\"name\": \"基差收敛\", \"ok\": true}, {\"name\": \"放量≥60日中枢\", \"ok\": true}, {\"name\": \"券商涨停≥1\", \"ok\": true}], \"tier\": "
+  }
+ },
+ "api": {
+  "/api/health": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/public_url": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/me": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/bundle": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/situ": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/rev": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/replay/days": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  },
+  "/api/src?mod=leader": {
+   "status": 404,
+   "bytes": 28088,
+   "head": "<!doctype html> <html lang=\"en\">   <head>     <meta charset=\"UTF-8\" />     <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />     <link rel=\"icon\" href=\"https://www.cloudflare.co"
+  }
+ }
+}

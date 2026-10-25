@@ -1,0 +1,371 @@
+{
+ "/data/sentiment.json": {
+  "status": 200,
+  "bytes": 7557,
+  "shape": {
+   "day": "str",
+   "score100": "int",
+   "score100_v1": "int",
+   "level": "str",
+   "algo": "str",
+   "n_items": "int",
+   "n_scored": "int",
+   "bull_ratio": "float",
+   "bear_ratio": "float",
+   "extreme_ratio": "float"
+  }
+ },
+ "/data/mainline_daily.json": {
+  "status": 200,
+  "bytes": 28948,
+  "shape": {
+   "date": "str",
+   "generated_at": "str",
+   "market": {
+    "zt_count": "int",
+    "lianban": "int",
+    "max_h": "int",
+    "yest_lianban_mean": "float",
+    "rotation": "{...}",
+    "prism": "{...}"
+   },
+   "sectors": [
+    "list[8] of",
+    "{...}"
+   ],
+   "bias_reversal": {
+    "asof": "str",
+    "regime": "{...}",
+    "items": "list[31]",
+    "notes": "list[0]"
+   },
+   "meta": {
+    "pool_top_n": "int",
+    "mcap_gate": "bool",
+    "mcap_asof": "str",
+    "sw_last_date": "str",
+    "snapshot_updated": "str"
+   },
+   "history": {
+    "dates": "list[24]",
+    "sectors": "list[24]",
+    "rotation_pct": "list[24]"
+   },
+   "_shield": "str",
+   "_src": "str",
+   "_fp": "str"
+  }
+ },
+ "/data/market_leader_live.json": {
+  "status": 200,
+  "bytes": 3637,
+  "shape": {
+   "gen_at": "str",
+   "gen_hm": "str",
+   "src": "str",
+   "day": "str",
+   "nh_basis": "str",
+   "pool_leader": "int",
+   "pool_gaobiao": "int",
+   "styles": {
+    "gaobiao": "{...}",
+    "leader": "{...}"
+   },
+   "sentiment": {
+    "gt": "float",
+    "it": "float",
+    "state": "str",
+    "digest": "str",
+    "gt_prev": "float",
+    "it_prev": "float",
+    "max_lb": "int",
+    "promote": "float",
+    "high_low_switch": "bool",
+    "ice": "{...}"
+   },
+   "outlook": {
+    "conditions": "list[2]",
+    "active": "list[1]",
+    "active_n": "int",
+    "disclaimer": "str",
+    "headline": "str",
+    "headline_short": "str"
+   }
+  }
+ },
+ "/data/emo_series.json": {
+  "status": 200,
+  "bytes": 425927,
+  "shape": {
+   "meta": {
+    "built_at": "str",
+    "src": "str",
+    "first": "str",
+    "last": "str",
+    "n": "int",
+    "cols": "{...}",
+    "coverage": "{...}"
+   },
+   "days": "list[2867]",
+   "ser": {
+    "red": "list[2867]",
+    "green": "list[2867]",
+    "zt": "list[2867]",
+    "dt": "list[2867]",
+    "zb": "list[2867]",
+    "zbr": "list[2867]",
+    "lb": "list[2867]",
+    "lb2": "list[2867]",
+    "lb3": "list[2867]",
+    "lb4": "list[2867]"
+   },
+   "idx": {
+    "2015-01-05": "{...}",
+    "2015-01-06": "{...}",
+    "2015-01-07": "{...}",
+    "2015-01-08": "{...}",
+    "2015-01-09": "{...}",
+    "2015-01-12": "{...}",
+    "2015-01-13": "{...}",
+    "2015-01-14": "{...}",
+    "2015-01-15": "{...}",
+    "2015-01-16": "{...}"
+   },
+   "date": "str",
+   "updated_at": "str",
+   "_src": "str",
+   "_fp": "str"
+  }
+ },
+ "/market_snapshot.json": {
+  "status": 200,
+  "bytes": 41716,
+  "shape": {
+   "updated": "str",
+   "asof_date": "str",
+   "margin": {
+    "date": "str",
+    "sse_date": "str",
+    "szse_date": "str",
+    "sse_yi": "float",
+    "szse_yi": "float",
+    "rzye_yi": "int",
+    "total_yi": "int",
+    "add_yi": "int",
+    "add_pct": "float",
+    "src": "str"
+   },
+   "basis": {
+    "items": "list[4]",
+    "date": "str",
+    "time": "str",
+    "src": "str"
+   },
+   "gov_bond": {
+    "fut": "{...}",
+    "yield": "{...}"
+   },
+   "new_high": {
+    "items": "{...}",
+    "src": "str",
+    "realtime": "bool",
+    "updated": "str"
+   },
+   "turnover_cmp": {
+    "cutoff": "str",
+    "date": "str",
+    "mode": "str",
+    "today_yi": "float",
+    "est_full_yi": "float",
+    "w_pct": "int",
+    "yest_full_yi": "float",
+    "yest_cut_yi": "NoneType",
+    "yest_date": "str",
+    "rel_pct": "float"
+   },
+   "amount60": {
+    "avg_yi": "float",
+    "days": "int",
+    "scope": "str",
+    "today_yi": "NoneType",
+    "start": "str",
+    "end": "str"
+   },
+   "indices": [
+    "list[15] of",
+    "{...}"
+   ],
+   "leading_pct": "float"
+  }
+ },
+ "/data/news_flash.json": {
+  "status": 200,
+  "bytes": 1298548,
+  "shape": {
+   "as_of": "str",
+   "today": "str",
+   "degraded": "bool",
+   "items": [
+    "list[200] of",
+    "{...}"
+   ],
+   "imp_today": [
+    "list[18] of",
+    "{...}"
+   ],
+   "by_day": {
+    "2026-10-25": "list[18]",
+    "2026-10-24": "list[46]",
+    "2026-10-23": "list[362]",
+    "2026-10-22": "list[383]",
+    "2026-10-21": "list[332]",
+    "2026-10-20": "list[378]",
+    "2026-10-19": "list[315]",
+    "2026-10-18": "list[25]",
+    "2026-10-17": "list[53]",
+    "2026-10-16": "list[120]"
+   },
+   "by_day_meta": {
+    "2026-10-25": "{...}",
+    "2026-10-24": "{...}",
+    "2026-10-23": "{...}",
+    "2026-10-22": "{...}",
+    "2026-10-21": "{...}",
+    "2026-10-20": "{...}",
+    "2026-10-19": "{...}",
+    "2026-10-18": "{...}",
+    "2026-10-17": "{...}",
+    "2026-10-16": "{...}"
+   },
+   "_shield": "str",
+   "_src": "str",
+   "_fp": "str"
+  }
+ },
+ "/data/event_cal.json": {
+  "status": 200,
+  "bytes": 72659,
+  "shape": {
+   "as_of": "str",
+   "trade_date": "str",
+   "degraded": "bool",
+   "cal_degraded": "bool",
+   "data_warnings": "list[0]",
+   "cats": {
+    "政策会议": "str",
+    "经济数据": "str",
+    "资金机制": "str",
+    "海外事件": "str",
+    "业绩期": "str",
+    "节假日": "str"
+   },
+   "month_alias": {
+    "1": "str",
+    "2": "str",
+    "3": "str",
+    "4": "str",
+    "5": "str",
+    "6": "str",
+    "7": "str",
+    "8": "str",
+    "9": "str",
+    "10": "str"
+   },
+   "today": [
+    "list[1] of",
+    "{...}"
+   ],
+   "by_date": {
+    "2026-01-01": "list[2]",
+    "2026-01-02": "list[1]",
+    "2026-01-03": "list[1]",
+    "2026-01-05": "list[1]",
+    "2026-01-09": "list[1]",
+    "2026-01-10": "list[1]",
+    "2026-01-12": "list[1]",
+    "2026-01-13": "list[2]",
+    "2026-01-14": "list[1]",
+    "2026-01-15": "list[1]"
+   },
+   "year_grid": [
+    "list[12] of",
+    "{...}"
+   ]
+  }
+ },
+ "/data/watch_cards_public.json": {
+  "status": 200,
+  "bytes": 3984,
+  "shape": {
+   "schema": "str",
+   "asof": "str",
+   "market_state": {
+    "lede": "str",
+    "summary": "str"
+   },
+   "selection": {
+    "items": "list[3]",
+    "note": "str"
+   },
+   "disclaimer": "str",
+   "article": {
+    "title": "str",
+    "published": "str",
+    "source": "str",
+    "url": "str"
+   },
+   "article_status": "str",
+   "cards": [
+    "list[4] of",
+    "{...}"
+   ],
+   "source_version": "str",
+   "updated": "str"
+  }
+ },
+ "/hist_server.json": {
+  "status": 200,
+  "bytes": 238058,
+  "shape": {
+   "days": {
+    "2026-10-23": "list[174]",
+    "2026-10-22": "list[146]",
+    "2026-10-21": "list[186]",
+    "2026-10-20": "list[142]",
+    "2026-10-19": "list[133]",
+    "2026-10-16": "list[199]",
+    "2026-10-15": "list[120]",
+    "2026-10-14": "list[138]",
+    "2026-10-13": "list[193]",
+    "2026-10-12": "list[143]"
+   },
+   "updated": "str",
+   "_src": "str",
+   "_fp": "str"
+  }
+ },
+ "/data/ta_daily.json": {
+  "status": 200,
+  "bytes": 1345973,
+  "shape": {
+   "generated_at": "str",
+   "data_day": "str",
+   "bars": "int",
+   "source": "str",
+   "codes": {
+    "CYB": "{...}",
+    "HS300": "{...}",
+    "HSTECHI": "{...}",
+    "HSTECH_ETF": "{...}",
+    "KC100": "{...}",
+    "KC50": "{...}",
+    "KCZ": "{...}",
+    "SEC": "{...}",
+    "SH": "{...}",
+    "SZ50": "{...}"
+   },
+   "_src": "str",
+   "_fp": "str"
+  }
+ }
+}

@@ -1,0 +1,262 @@
+{
+ "generated_at": "2026-10-25 12:36:49",
+ "pages": {
+  "https://eypai.net/emo.html": {
+   "status": 200,
+   "bytes": 45334,
+   "title": "市场情绪监控表 · 鳄鱼派",
+   "scripts": [
+    "/ey-mode.js?v=26",
+    "/theme_follow.js?v=2",
+    "echarts.min.js"
+   ],
+   "apis": [],
+   "datas": [
+    "/data/emo_series.json"
+   ],
+   "text_len": 23785
+  },
+  "https://eypai.net/events.html": {
+   "status": 200,
+   "bytes": 41630,
+   "title": "鳄鱼派 · 事件日历",
+   "scripts": [
+    "/ey-mode.js?v=26",
+    "chat_widget.js?v=46",
+    "ey_beacon.js?v=1",
+    "src-tag.js?v=2",
+    "theme_follow.js?v=2"
+   ],
+   "apis": [],
+   "datas": [
+    "/data/event_cal.json",
+    "/data/event_results.json",
+    "/data/news_flash.json"
+   ],
+   "text_len": 27842
+  },
+  "https://eypai.net/index-v9.html": {
+   "status": 200,
+   "bytes": 112944,
+   "title": "鳄鱼罗盘 V9.3 · 实时看板",
+   "scripts": [
+    "/app-core.js?v=b5c8b6630c",
+    "/ey-mode.js?v=26",
+    "/replay.js?v=6",
+    "chat_widget.js?v=46",
+    "echarts.min.js",
+    "qrcode.min.js",
+    "refresh_registry.js?v=4"
+   ],
+   "apis": [
+    "/api/activate",
+    "/api/bundle",
+    "/api/health",
+    "/api/login",
+    "/api/me",
+    "/api/register",
+    "/api/ts-verify"
+   ],
+   "datas": [
+    "/data/data_source_health.json",
+    "/data/etf_share_hist.json",
+    "/data/event_cal.json",
+    "/data/hk_four_factor.json",
+    "/data/hkliq_daily.json",
+    "/data/mainline_daily.json",
+    "/data/market_leader_live.json",
+    "/data/position_v2.json",
+    "/data/sentiment.json",
+    "/data/tech_linkage_daily.json",
+    "/data/top20_conc.json",
+    "/data/tuanyuan.json"
+   ],
+   "text_len": 38474
+  },
+  "https://eypai.net/leader.html": {
+   "status": 200,
+   "bytes": 31680,
+   "title": "鳄鱼派 · 市场龙头双榜",
+   "scripts": [
+    "/ey-mode.js?v=26",
+    "ey_beacon.js?v=1",
+    "theme_follow.js?v=2"
+   ],
+   "apis": [],
+   "datas": [
+    "/data/market_leader.json",
+    "/data/market_leader_live.json"
+   ],
+   "text_len": 19163
+  },
+  "https://eypai.net/lhb.html": {
+   "status": 200,
+   "bytes": 29636,
+   "title": "股指期货龙虎榜",
+   "scripts": [
+    "/ey-mode.js?v=26",
+    "chat_widget.js?v=46",
+    "ey_beacon.js?v=1",
+    "html2canvas.min.js",
+    "source-guard.js?v=2",
+    "theme_follow.js?v=2"
+   ],
+   "apis": [],
+   "datas": [],
+   "text_len": 16493
+  },
+  "https://eypai.net/mobile.html": {
+   "status": 200,
+   "bytes": 36587,
+   "title": "鳄鱼派 · 移动端",
+   "scripts": [
+    "/ey-mode.js?v=26"
+   ],
+   "apis": [
+    "/api/bundle",
+    "/api/rev"
+   ],
+   "datas": [
+    "/data/basis_daily.json",
+    "/data/basis_today.json",
+    "/data/buyflow_live.json",
+    "/data/cup_state.json",
+    "/data/mainline_daily.json",
+    "/data/position_v2.json",
+    "/data/sentiment.json",
+    "/data/trade_cal.json"
+   ],
+   "text_len": 22279
+  },
+  "https://eypai.net/contact.html": {
+   "status": 200,
+   "bytes": 6968,
+   "title": "联系方式 · 鳄鱼派",
+   "scripts": [
+    "/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js",
+    "/ey-mode.js?v=26"
+   ],
+   "apis": [],
+   "datas": [],
+   "text_len": 3847
+  },
+  "https://eypai.net/privacy.html": {
+   "status": 200,
+   "bytes": 10365,
+   "title": "隐私政策 · 鳄鱼派",
+   "scripts": [
+    "/ey-mode.js?v=26"
+   ],
+   "apis": [],
+   "datas": [],
+   "text_len": 5078
+  },
+  "https://eypai.net/terms.html": {
+   "status": 200,
+   "bytes": 8982,
+   "title": "服务条款与免责声明 · 鳄鱼派",
+   "scripts": [
+    "/ey-mode.js?v=26"
+   ],
+   "apis": [],
+   "datas": [],
+   "text_len": 4500
+  },
+  "https://eypai.net/watch-cards-public.html": {
+   "status": 200,
+   "bytes": 41850,
+   "title": "鳄鱼派 · 今日盘面",
+   "scripts": [
+    "/ey-mode.js?v=26"
+   ],
+   "apis": [],
+   "datas": [],
+   "text_len": 27183
+  }
+ },
+ "js": {
+  "https://www.eypai.net/app-core.js?v=b5c8b6630c": {
+   "bytes": 462167
+  },
+  "https://www.eypai.net/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js": {
+   "bytes": 1239
+  },
+  "https://www.eypai.net/chat_widget.js?v=46": {
+   "bytes": 12117
+  },
+  "https://www.eypai.net/echarts.min.js": {
+   "bytes": 1024740
+  },
+  "https://www.eypai.net/ey-mode.js?v=26": {
+   "bytes": 21192
+  },
+  "https://www.eypai.net/html2canvas.min.js": {
+   "bytes": 198689
+  },
+  "https://www.eypai.net/qrcode.min.js": {
+   "bytes": 56694
+  },
+  "https://www.eypai.net/refresh_registry.js?v=4": {
+   "bytes": 10010
+  },
+  "https://www.eypai.net/replay.js?v=6": {
+   "bytes": 33878
+  },
+  "https://www.eypai.net/source-guard.js?v=2": {
+   "bytes": 1829
+  },
+  "https://www.eypai.net/src-tag.js?v=2": {
+   "bytes": 5923
+  },
+  "https://www.eypai.net/theme_follow.js?v=2": {
+   "bytes": 2300
+  }
+ },
+ "api_paths": [
+  "/api/activate",
+  "/api/ask",
+  "/api/bundle",
+  "/api/export_xlsx",
+  "/api/health",
+  "/api/login",
+  "/api/me",
+  "/api/public_url",
+  "/api/register",
+  "/api/replay",
+  "/api/replay/",
+  "/api/replay/days",
+  "/api/rev",
+  "/api/situ",
+  "/api/src",
+  "/api/src?mod=",
+  "/api/src?mod=X",
+  "/api/ts-verify"
+ ],
+ "data_paths": [
+  "/data/basis_conv.json",
+  "/data/basis_daily.json",
+  "/data/basis_today.json",
+  "/data/buyflow_live.json",
+  "/data/cup_state.json",
+  "/data/data_source_health.json",
+  "/data/emo_series.json",
+  "/data/etf_share_hist.json",
+  "/data/event_cal.json",
+  "/data/event_results.json",
+  "/data/hk_four_factor.json",
+  "/data/hkliq_daily.json",
+  "/data/mainline_daily.json",
+  "/data/market_leader.json",
+  "/data/market_leader_live.json",
+  "/data/news_flash.json",
+  "/data/position_v2.json",
+  "/data/sentiment.json",
+  "/data/ta_daily/",
+  "/data/tech_linkage_",
+  "/data/tech_linkage_daily.json",
+  "/data/tech_linkage_intraday.json",
+  "/data/top20_conc.json",
+  "/data/trade_cal.json",
+  "/data/tuanyuan.json"
+ ]
+}
