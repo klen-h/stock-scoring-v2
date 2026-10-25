@@ -1007,8 +1007,9 @@ def _rank_context(code: str) -> dict:
         if cut:
             return {"covered": False, "cutoff_score": cut.get("total_score"),
                     "date": str(cut.get("rank_date"))[:10]}
-    except Exception:
-        pass
+    except Exception as e:
+        # ★ 2026-10-25（卫生门 #11）：辅助信息失败不该中断评分，但要留痕（否则"没定位"永远查不出原因）
+        print(f"[scoring] rank_context 查询失败（返回空）: {str(e)[:80]}")
     return {}
 
 

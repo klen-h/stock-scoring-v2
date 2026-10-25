@@ -27,8 +27,8 @@ import sys
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:      # 老 Python/非 tty：不影响主流程，但要留痕（卫生门 #11）
+    print(f"[warn] stdout reconfigure failed: {_e}", file=sys.stderr)
 
 BACKEND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend")
 sys.path.insert(0, BACKEND)

@@ -33,8 +33,8 @@ from collections import Counter
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:      # 老 Python/非 tty：不影响主流程，但要留痕（卫生门 #11）
+    print(f"[warn] stdout reconfigure failed: {_e}", file=sys.stderr)
 
 BACKEND = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend")
 sys.path.insert(0, BACKEND)
@@ -74,8 +74,8 @@ def load_daily_returns(db_path: str = ZZSHARE_DB):
                     cached = pd.read_csv(cache_csv, index_col=0).sort_index()
                     print(f"  [cache] 命中（源库 {src_key}）")
                     return cached
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [cache] 读取失败，改为重算: {str(e)[:80]}", file=sys.stderr)
     prev_adj = {}
     out = []          # [(date, median, mean, n), ...]
     cur_day = None

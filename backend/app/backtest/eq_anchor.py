@@ -185,12 +185,15 @@ def run_daily(force: bool = False) -> dict:
     from app.database import db
     ensure_table()
     today_row = None
+    # ★ 2026-10-25（卫生门 #11）：原来 `except: pass` 且 today_row 未初始化 ——
+    #   查询一抛异常，下面 `if today_row` 就是 UnboundLocalError（静默变显式崩溃）。
+    today_row = None
     try:
         today_row = db.fetch_one(
             "SELECT anchor_date, universe_n FROM eq_anchor_history "
             "ORDER BY anchor_date DESC LIMIT 1")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[eq_anchor] 读取上次锚点失败（按需重算）: {str(e)[:80]}")
     if today_row and today_row.get("universe_n") and not force:
         return {"date": today_row["anchor_date"], "skipped": True,
                 "note": "当日行已存在（幂等跳过）"}

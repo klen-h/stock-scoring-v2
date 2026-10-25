@@ -47,6 +47,18 @@ PATTERNS = [
 
 AST_ONLY = ("except_pass", None, 'except 处理体只有 pass（GUARDRAILS #11，AST 检测，.py）')
 
+# ★★ 2026-10-25（真实事故两起）：`const [info, fund, sr, rsi] = await Promise.allSettled([...])`
+#   把 `getStockScore` 塞进第二批后没改解构名，下面却写 `score.status` ⇒
+#   `ReferenceError: score is not defined`，onMounted 直接中断、整页白屏。
+#   **构建不会报错**（esbuild 不做未声明变量检查），所以只能靠这条启发式：
+#   解构出来的名字在整文件里只出现 1 次（= 声明处）= 必然没被使用；
+#   若同时有别处引用了"本该叫这个名字"的变量，就是这个事故形态。
+#   `_` 前缀视为有意忽略。
+UNUSED_DESTRUCTURE = ("unused_destructure", None,
+                      'Promise.allSettled 解构名声明后从未使用（错名 ⇒ 运行时 ReferenceError）')
+_DESTRUCT_RE = re.compile(r'const\s*\[([^\]]+)\]\s*=\s*await\s+Promise\.(?:allSettled|all)\(')
+JS_EXT = ('.vue', '.js', '.ts')
+
 # sleep/refresh 只在请求路径算红旗；其余路径（调度循环/日批）是合法使用
 PATH_SCOPED = {
     "sleep_in_request": lambda rel: '/routers/' in rel or rel.endswith('app/main.py'),
@@ -67,6 +79,7 @@ def iter_files():
 def count_all():
     counts = {name: [] for name, _rx, _d in PATTERNS}
     counts[AST_ONLY[0]] = []
+    counts[UNUSED_DESTRUCTURE[0]] = []
     for p in iter_files():
         rel = os.path.relpath(p, ROOT).replace(os.sep, '/')
         try:
@@ -80,6 +93,16 @@ def count_all():
                     if scope and not scope(rel):
                         continue
                     counts[name].append('%s:%d' % (rel, i))
+            # 解构错名（前端，构建查不出）
+            if p.lower().endswith(JS_EXT):
+                m = _DESTRUCT_RE.search(ln)
+                if m:
+                    for nm in [x.strip().split(':')[0].strip()
+                               for x in m.group(1).split(',')]:
+                        if not nm or nm.startswith('_'):
+                            continue
+                        if len(re.findall(r'\b%s\b' % re.escape(nm), src)) <= 1:
+                            counts[UNUSED_DESTRUCTURE[0]].append('%s:%d:%s' % (rel, i, nm))
         # AST 检测（仅 .py）：except 处理体 = [Pass]（含带注释的 pass 行）
         if p.endswith('.py'):
             try:
@@ -105,7 +128,8 @@ def main():
         return 0
     baseline = json.load(io.open(BASELINE, encoding='utf-8'))
     failed = False
-    all_names = [(n, _rx, d) for n, _rx, d in PATTERNS] + [AST_ONLY]
+    all_names = ([(n, _rx, d) for n, _rx, d in PATTERNS]
+                 + [AST_ONLY, UNUSED_DESTRUCTURE])
     for name, _rx, desc in all_names:
         now_n, base_n = len(counts[name]), int(baseline.get(name, 0))
         mark = 'OK ' if now_n <= base_n else 'FAIL'
