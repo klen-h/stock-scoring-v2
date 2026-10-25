@@ -115,16 +115,21 @@ def task_mainflow():
       ⇒ 「主力」列大面积空白。`get_all_codes()` 已改取并集，这里再补一次**当日缺口**
       （增量：日更后通常只剩个位数，成本≈0）。
     """
-    from app.mainforce.flow import backfill_all, backfill_missing, backfill_today
-    base = backfill_all()
+    from app.mainforce.flow import (backfill_all, backfill_missing, backfill_today,
+                                    thin_codes)
     # ★★ 2026-10-25（用户实测：逐只补 1803 只花了 53 分钟，且**每天都会重来**——
     #   backfill_all 只覆盖 backtest_prices 的 1032 只，其余 ~1800 只天天"缺当日"）：
-    #   当日缺口改用**全市场批量**（东财 clist，~55 请求 ≈1 分钟）。
-    #   `backfill_missing` 只作"整段没历史"的兜底，并用 env 限流，避免再拖 50 分钟。
+    #   ① 当日缺口 → **全市场批量**（东财 clist，~55 请求 ≈1 分钟）；
+    #   ② 逐只拉 130 天历史（backfill_all，1032 只 ≈30 分钟）**不再每天跑** ——
+    #      只有当 `MAINFLOW_FULL=1`（首次建库/重构后）才需要；
+    #   ③ 之后唯一需要逐只拉的是"历史行数 <5"的新入池代码（通常个位数）。
+    full = str(os.environ.get("MAINFLOW_FULL") or "").strip() in ("1", "true", "yes")
+    base = backfill_all() if full else "skip（默认只补当日；深层全量回填设 MAINFLOW_FULL=1）"
     today = backfill_today()
+    thin = thin_codes()
     limit = int(os.environ.get("MAINFLOW_GAP_LIMIT") or 0)
-    gap = backfill_missing(limit=limit)
-    return f"资金流回填: {base}；当日批量: {today}；历史兜底: {gap}"
+    gap = backfill_missing(codes=thin, limit=limit) if thin else {"tried": 0, "thin": 0}
+    return f"资金流: {base}；当日批量: {today}；薄历史补洞({len(thin)} 只): {gap}"
 
 
 def task_market_snapshot():

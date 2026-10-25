@@ -404,8 +404,27 @@ def missing_codes(day: str = None) -> list:
         return []
 
 
+def thin_codes(min_rows: int = 5, day: str = None) -> list:
+    """当日有 state、但**历史行数 < min_rows** 的代码（新上市/新入池）⇒ 需要深层回填。
+
+    ★ 2026-10-25：日更改成"只补当日"以后，唯一需要逐只拉历史的就剩这批
+      （没有 5 行就凑不出 flow5/连续净流入）。通常只有个位数。
+    """
+    try:
+        rows = db.fetch(
+            "SELECT m.code AS code, COUNT(f.code) AS c FROM mainforce_state m "
+            "LEFT JOIN mainflow_history f ON f.code = m.code "
+            "WHERE m.date = COALESCE(%s, (SELECT MAX(date) FROM mainforce_state)) "
+            "GROUP BY m.code HAVING COUNT(f.code) < %s ORDER BY m.code",
+            (day, min_rows))
+        return [r["code"] for r in rows if r.get("code")]
+    except Exception as e:
+        print(f"[mainflow] 薄历史名单读取失败: {str(e)[:80]}")
+        return []
+
+
 def backfill_missing(day: str = None, limit: int = 0, gap: float = _SINA_GAP,
-                     verbose_every: int = 100, workers: int = 4) -> dict:
+                     verbose_every: int = 100, workers: int = 4, codes: list = None) -> dict:
     """只补「当日缺资金流」的代码（**历史缺口**），返回统计。
 
     ⚠️ 日更别用它补当日缺口 —— 用 `backfill_today()`（全市场一次批量，~1 分钟）。
@@ -416,7 +435,8 @@ def backfill_missing(day: str = None, limit: int = 0, gap: float = _SINA_GAP,
     """
     from concurrent.futures import ThreadPoolExecutor
 
-    codes = missing_codes(day)
+    if codes is None:
+        codes = missing_codes(day)
     total = len(codes)
     if limit and total > limit:
         codes = codes[:limit]
