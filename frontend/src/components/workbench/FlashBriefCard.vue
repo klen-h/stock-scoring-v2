@@ -166,7 +166,7 @@ import { isTradingTime } from '../../composables/usePortfolio'
 // ★ 2026-10-26（用户："主力阶段现在是英文，改为中文"；"异动加代码跳雪球"）
 //   phaseCn：全站唯一映射（优先后端 phase_cn，缺失回退 displayMeta.PHASE_CN）
 //   xqUrl：个股 → 雪球（SH/SZ/BJ 自动拼前缀）
-import { phaseCn, xqUrl } from '../../composables/displayMeta'
+import { phaseCn, xqUrl, stockHref } from '../../composables/displayMeta'
 
 const props = defineProps({
   date: { type: String, default: '' },
@@ -258,9 +258,8 @@ function hhmm(t) {
   const s = String(t || '')
   return s.length >= 16 ? s.slice(11, 16) : s
 }
-function stockHref(code) {
-  return `/stock/${code}`
-}
+// ★ 2026-10-26：删掉本地 `stockHref`（返回 `/stock/${code}`）—— 路由是 **hash 模式**，
+//   裸路径会落到站点根 ⇒ 打开 404。统一用 `displayMeta.stockHref`（`#/stock/${code}`）。
 
 async function load() {
   try {

@@ -66,10 +66,12 @@
         </tr></thead>
         <tbody>
           <tr v-for="r in rows" :key="r.code" class="border-b border-border/40 hover:bg-white/[0.03]">
-            <!-- ★ 2026-10-26（用户："点击股票代码需要跳到雪球"）：
-                 名称 → 站内详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球） -->
+            <!-- ★ 2026-10-26（用户："点击股票代码需要跳到雪球"；"点击股票名称跳转错误"）：
+                 名称 → 站内详情页（⚠️ 必须用 `stockHref`：路由是 **hash 模式**，
+                 裸写 `/stock/${code}` 会落到站点根路径 ⇒ 打开是 404/首页，这就是"跳转错误"）；
+                 **代码 → 雪球**（全站口径：名称走站内、代码走雪球）。 -->
             <td class="py-1.5 px-2 whitespace-nowrap">
-              <a :href="`/stock/${r.code}`" target="_blank" rel="noopener"
+              <a :href="stockHref(r.code)" target="_blank" rel="noopener"
                  class="hover:text-accent font-medium">{{ r.name }}</a>
               <a :href="xqUrl(r.code)" target="_blank" rel="noopener"
                  class="text-muted font-mono text-[10px] ml-1 hover:text-accent hover:underline"
@@ -172,7 +174,7 @@ import { getStockFactsWide } from '../api'
 // 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
 // ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
 //   `PHASE_STYLE`（绿=机会/红=风险）与 `scoreClass`、`readyChipCls`，不另建一套配色。
-import { phaseCn, PHASE_CN, PHASE_STYLE, scoreClass, readyChipCls, xqUrl } from '../composables/displayMeta'
+import { phaseCn, PHASE_CN, PHASE_STYLE, scoreClass, readyChipCls, stockHref, xqUrl } from '../composables/displayMeta'
 
 const rows = ref([])
 const total = ref(0)
@@ -180,9 +182,9 @@ const dataDate = ref('')
 const loading = ref(false)
 const err = ref('')
 const page = ref(0)
-// ★ 2026-10-26（用户："一页数据太长了，一页25只就好"）：100 → 25（15 列宽表，100 行要滚很久）
+// ★ 2026-10-26（用户："一页数据太长了，一页20只就好"）：100 → 20（15 列宽表，100 行要滚很久）
 const f = reactive({ phase: '', defensive: false, lhbRisk: false, pattern: false,
-                     sectorStrong: false, order: 'rank_pos', size: 25 })
+                     sectorStrong: false, order: 'rank_pos', size: 20 })
 
 const DESC = { ret5: 1, ret20: 1, flow5_amt_yi: 1, turnover_pct: 1 }
 
