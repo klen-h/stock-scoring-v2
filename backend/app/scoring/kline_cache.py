@@ -57,10 +57,77 @@ def init_kline_cache_table():
             kline_data TEXT NOT NULL,
             kline_count INTEGER DEFAULT 0,
             updated_at TEXT NOT NULL,
-            market_cap REAL DEFAULT 0
+            market_cap REAL DEFAULT 0,
+            closes61 TEXT
         )
     """)
+    # ★★ 2026-10-26：**紧凑收盘列**——只存最近 61 根收盘价（JSON 数组，≈450B/行）。
+    #   动机：`kline_data` 每行 ~15KB，任何"要算 ret5/ret20/距 60 日高点"的消费方
+    #   （当前是 `stock_facts` 的行情兜底）整列扫一遍就是 20~27MB/天。有这列后
+    #   ≈0.9MB。维护点只有两处：`save_kline_cache`（写入即算）+ 本函数下面的
+    #   `backfill_closes61`（历史行一次性补齐）。
+    #   PG 支持 `ADD COLUMN IF NOT EXISTS`；SQLite 不支持 ⇒ 退回裸 ADD + 异常留痕。
+    try:
+        db.execute("ALTER TABLE kline_cache ADD COLUMN IF NOT EXISTS closes61 TEXT")
+    except Exception as e:
+        try:
+            db.execute("ALTER TABLE kline_cache ADD COLUMN closes61 TEXT")
+        except Exception as e2:
+            # 已存在（SQLite 重复执行）属正常；仍然打印，避免真的加不上却静默
+            print(f"[kline_cache] closes61 列未新增（可能已存在）: {str(e2)[:70]}")
+        else:
+            print(f"[kline_cache] closes61 列已补（SQLite 路径，先报错后成功: {str(e)[:40]}）")
     print("[kline_cache] kline_cache 表初始化完成")
+
+
+def _closes61(klines: list) -> str:
+    """最近 61 根收盘价 → JSON 数组字符串（无数据返回 "[]"，**绝不返回 NULL**）。
+
+    ★ 用 "[]" 而不是 NULL 的原因：`backfill_closes61` 靠 `WHERE closes61 IS NULL`
+      找待补行 —— 若空数据行保持 NULL，会被**永远反复重扫**。
+    """
+    out = []
+    for b in (klines or [])[-61:]:
+        if not isinstance(b, dict):
+            continue
+        try:
+            c = float(b.get("close"))
+        except (TypeError, ValueError):
+            continue
+        if c > 0:
+            out.append(round(c, 3))
+    return json.dumps(out)
+
+
+def backfill_closes61(limit: int = 0, chunk: int = 200) -> dict:
+    """补齐历史行的 `closes61`（一次性；之后由 `save_kline_cache` 自动维护）。
+
+    ⚠️ 这是**唯一**会整列读 `kline_data` 的地方（≈41MB/次），只跑一次；
+      `limit>0` 可分批（CI 超时/调试用）。已补齐的行不会再被选中。
+    """
+    ensure_kline_cache_table()
+    done = 0
+    tried_batches = 0
+    while True:
+        rows = db.fetch("SELECT code, kline_data FROM kline_cache "
+                        "WHERE closes61 IS NULL LIMIT %s", (chunk,)) or []
+        if not rows:
+            break
+        for r in rows:
+            try:
+                bars = json.loads(r.get("kline_data") or "[]")
+            except (TypeError, ValueError):
+                bars = []
+            db.execute("UPDATE kline_cache SET closes61 = %s WHERE code = %s",
+                       (_closes61(bars), r["code"]))
+            done += 1
+        tried_batches += 1
+        if limit and done >= limit:
+            break
+        if tried_batches > 200:      # 兜底：异常数据不至于死循环
+            break
+    print(f"[kline_cache] closes61 补齐 {done} 行（{tried_batches} 批）")
+    return {"updated": done, "batches": tried_batches}
 
 
 # ★ 2026-09-13 审查 P1-18：DDL 懒执行（原为 import 即建表）——每个进程启动
@@ -348,20 +415,23 @@ def save_kline_cache(code: str, name: str, klines: List[Dict], market_cap: float
         return
     
     kline_json = json.dumps(klines, ensure_ascii=False)
+    # ★ 2026-10-26：写库时**顺手维护紧凑收盘列**（零额外读取；消费方按需读它）
+    closes_json = _closes61(klines)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     try:
         db.execute("""
-            INSERT INTO kline_cache (code, name, kline_data, kline_count, updated_at, market_cap)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO kline_cache (code, name, kline_data, kline_count, updated_at, market_cap, closes61)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (code) DO UPDATE SET
                 name = CASE WHEN kline_cache.name IS NULL OR kline_cache.name = ''
                             THEN EXCLUDED.name ELSE kline_cache.name END,
                 kline_data = EXCLUDED.kline_data,
                 kline_count = EXCLUDED.kline_count,
                 updated_at = EXCLUDED.updated_at,
-                market_cap = EXCLUDED.market_cap
-        """, (code, name, kline_json, len(klines), now, market_cap))
+                market_cap = EXCLUDED.market_cap,
+                closes61 = EXCLUDED.closes61
+        """, (code, name, kline_json, len(klines), now, market_cap, closes_json))
     except Exception as e:
         print(f"[kline_cache] 保存缓存失败 {code}: {e}")
 

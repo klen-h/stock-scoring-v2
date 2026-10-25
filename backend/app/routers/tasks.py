@@ -54,6 +54,8 @@ ALLOWED_TASKS = {
     # ★ 2026-10-26：选股事实宽表（工作台底座）—— 与 daily_batch.DEFAULT_ORDER 同名，
     #   漏登记则前端「远端重算」没有该任务的补跑入口（第三次同类遗漏，已进 checklist）
     "stock_facts_wide",
+    # ★ 2026-10-26：kline_cache 紧凑收盘列维护（与 daily_batch.DEFAULT_ORDER 同名）
+    "kline_closes",
     # ★ 2026-10-25（eypai 溯源调研）：流动性三件套日度落库（两融/基差/中美利差）；
     #   与 daily_batch.DEFAULT_ORDER 同名，漏登记则无法手动补跑。
     "liquidity_watch",

@@ -106,6 +106,20 @@ def task_backfill():
     return txt
 
 
+def task_kline_closes():
+    """`kline_cache.closes61`（最近 61 根收盘的紧凑列）维护。
+
+    ★ 2026-10-26 新增（egress）：`stock_facts` 要算 ret5/ret20/距 60 日高点，原来只能
+      整列读 `kline_data`（15KB/行 × 1800 只 ≈ 27MB/日）。有紧凑列后 ≈0.9MB。
+    ★ 常态零成本：写入方 `save_kline_cache` 已顺手维护；本任务只在**历史行还没补**
+      （`closes61 IS NULL`）时才读 `kline_data`（一次性 ≈41MB），之后每次都是 0 行。
+    ★ 排在 backfill 之后（新 bar 已入库）。
+    """
+    from app.scoring.kline_cache import backfill_closes61
+    r = backfill_closes61()
+    return f"closes61: 补 {r['updated']} 行（{r['batches']} 批）"
+
+
 def task_mainflow():
     """主力资金流回填（筹码/主力行为因子的输入）。逐股限速，全池约 7 分钟。
 
@@ -1332,6 +1346,9 @@ def task_stock_facts_wide():
 
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
+    # ★ 2026-10-26：kline_cache 紧凑收盘列（61 根，≈450B/行）——消费方 stock_facts
+    #   用它算 ret5/ret20/距高点，避免整列读 15KB 的 kline_data（27MB/日 → 0.9MB）。
+    "kline_closes": (task_kline_closes, "K线紧凑收盘列维护（closes61）"),
     # ★ 2026-09-11 迁入：原 Render 15:40 循环被只读模式关闭且日批漏配 → regime 停在 09-08。
     #   依赖 backfill 的沪深300当日数据，且被 strategy_scan/score_snapshot 消费 → 紧排其后。
     "market_regime": (task_market_regime, "市场状态判定（评分权重/准入/闸门来源）"),
@@ -1451,7 +1468,11 @@ TASKS = {
     #   排在 retention 之后：不参与任何清理/写入竞争，纯观测。
     "egress_report": (task_egress_report, "数据库流量归因快照（只读计数器）"),
 }
-DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
+DEFAULT_ORDER = ["backfill",
+                 # ★ 2026-10-26：紧凑收盘列（closes61）维护——排在 backfill 之后
+                 #   （新 bar 已入库）；常态 0 行，历史行一次性补齐。
+                 "kline_closes",
+                 "market_regime", "regime_alert", "mainflow", "market_snapshot",
                  "eq_anchor",
                  "calendar",
                  # ★ 2026-10-24（BK-47 补漏）：risk_calendar 曾注册于 TASKS 却漏进本清单

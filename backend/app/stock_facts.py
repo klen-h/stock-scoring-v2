@@ -140,15 +140,26 @@ def build(day: str) -> Dict:
         for _i in range(0, len(_miss), 150):
             _chunk = _miss[_i:_i + 150]
             _ph = ",".join(["%s"] * len(_chunk))
-            for r in db.fetch(f"SELECT code, kline_data FROM kline_cache "
-                              f"WHERE code IN ({_ph})", tuple(_chunk)) or []:
-                try:
-                    _bars = json.loads(r.get("kline_data") or "[]")
-                except (ValueError, TypeError):
-                    continue
-                _cl = [(str(b.get("date"))[:10], _f(b.get("close")))
-                       for b in (_bars or [])[-70:] if isinstance(b, dict)]
-                _cl = [(d, c) for d, c in _cl if c]
+            # ★★ 2026-10-26：优先读**紧凑列** `closes61`（≈450B/行）；只有历史行还没补齐
+            #   （closes61 IS NULL）时才回退读 15KB 的 kline_data ⇒ 日常 egress 27MB → ~0.9MB。
+            for r in db.fetch(
+                    f"SELECT code, closes61, CASE WHEN closes61 IS NULL "
+                    f"THEN kline_data END AS kd FROM kline_cache "
+                    f"WHERE code IN ({_ph})", tuple(_chunk)) or []:
+                _cl = []
+                if r.get("closes61"):
+                    try:
+                        _cl = [("", float(c)) for c in json.loads(r["closes61"])]
+                    except (ValueError, TypeError):
+                        _cl = []
+                elif r.get("kd"):
+                    try:
+                        _bars = json.loads(r["kd"])
+                    except (ValueError, TypeError):
+                        _bars = []
+                    _cl = [(str(b.get("date"))[:10], _f(b.get("close")))
+                           for b in (_bars or [])[-70:] if isinstance(b, dict)]
+                    _cl = [(d, c) for d, c in _cl if c]
                 if _cl:
                     px[str(r["code"])] = _cl
         print(f"[stock_facts] 行情序列: kline_cache 兜底 {len(_miss)} 只"
@@ -156,7 +167,10 @@ def build(day: str) -> Dict:
 
     def _facts_basic(code, st):
         """A 组 8 个事实（返回 dict，但**调用方按显式键取值**，不依赖 dict 顺序）。"""
-        closes = sorted(px.get(code) or [])
+        # `closes61` 兜底路径没有日期（date=""）⇒ **保持原顺序**（kline 本就是升序）；
+        # 有日期的（backtest_prices）才按日期排序。不能对 ("", close) 排序——那会按价格重排。
+        _series = px.get(code) or []
+        closes = sorted(_series) if _series and _series[0][0] else list(_series)
         n = len(closes)
         c_now = closes[-1][1] if n else None
         ret5 = (c_now / closes[-6][1] - 1) * 100 if n >= 6 and closes[-6][1] else None
