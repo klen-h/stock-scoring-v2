@@ -63,8 +63,9 @@ def q(sql, params=None, retries=4):
             last = e
             try:
                 db._reset_pg_conn()
-            except Exception:
-                pass
+            except Exception as e:
+                # 连接重置失败不致命（下一轮重试会再建连），但要留痕（卫生门 #11）
+                print(f"  [db] 重置连接失败（继续重试）: {type(e).__name__}: {str(e)[:60]}")
             time.sleep(1.5 * (i + 1))
     raise last
 

@@ -620,10 +620,13 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
                      desc: bool = False, limit: int = 100, offset: int = 0,
                      defensive: int = None, lhb_risk: int = None,
                      pattern: int = None, sector_strong: int = None,
-                     phase: str = None, min_cap: float = None):
+                     phase: str = None, min_cap: float = None,
+                     user: dict = Depends(get_current_user)):
     """选股工作台·事实宽表（只读，分页+单列排序+等值筛选；**不做任何加权**）。
 
     ★ 徽章/口径由前端 SIGNAL_STATUS 渲染；排序维度须带检验状态展示。
+    ★ 2026-10-26（审查 P2）：补 `get_current_user` 鉴权（同文件其余端点一致）；
+      `min_cap` 落地（流通市值下限，单位**亿**）。
     """
     from app import stock_facts as sf
     filters = {}
@@ -638,7 +641,8 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
     if phase:
         filters["phase"] = phase
     out = sf.latest(day=date, filters=filters or None, order_by=order_by,
-                    limit=max(1, min(limit, 300)), offset=max(0, offset), desc=desc)
+                    limit=max(1, min(limit, 300)), offset=max(0, offset), desc=desc,
+                    min_cap=min_cap)
     out["columns_note"] = "NULL=不在榜/无数据（≠0）；加权综合分不在此表（=新信号须预登记）"
     return out
 

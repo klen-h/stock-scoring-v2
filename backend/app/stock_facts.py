@@ -21,6 +21,7 @@
 ================================================================================
 """
 import json
+import os
 from typing import Dict, List, Optional
 
 from app.database import db
@@ -116,15 +117,45 @@ def build(day: str) -> Dict:
             for r in db.fetch("SELECT code, main_industry FROM stock_industry") or []}
 
     # 收盘价序列（ret5/ret20/距60日高点）——backtest_prices 窗口读
+    # ★★ 2026-10-26（审查 P1-⑥）：窗口 -60 **自然日** ≈ 40 个交易日 ⇒ `closes[-60:]`
+    #   实际只有 40 根，"距 60 日高点"名不副实。改 -95 自然日（≈65 交易日）才够 60 根。
     px = {}
     for r in db.fetch(
             "SELECT code, date, close FROM backtest_prices WHERE date >= %s "
             "AND code IN (SELECT DISTINCT code FROM ranking_live WHERE rank_date = %s "
             "UNION SELECT code FROM mainforce_state WHERE date = %s)",
-            (_shift(day, -60), day, day)) or []:
+            (_shift(day, -95), day, day)) or []:
         px.setdefault(str(r["code"]), []).append((str(r["date"])[:10], _f(r["close"])))
 
+    # ★★ 2026-10-26（审查 P1-⑤）：`backtest_prices` 只覆盖 ~1032 只 ⇒ 其余 1800 只
+    #   `ret5/ret20/dist_from_60d_high` 全为 NULL（实测 1029/2861 = 36%，连工行都缺）。
+    #   用 `kline_cache`（2719 只 × 484 根）**分块兜底**，只补缺失 code。
+    #   成本 ≈ 1800 × 15KB ≈ 20~27MB/日（Actions 侧 egress）；`FACTS_PX_FALLBACK=0` 可关。
+    if os.environ.get("FACTS_PX_FALLBACK", "1").strip() != "0":
+        _miss = [str(r["code"]) for r in db.fetch(
+            "SELECT code FROM (SELECT code FROM ranking_live WHERE rank_date = %s "
+            "UNION SELECT code FROM mainforce_state WHERE date = %s) t",
+            (day, day)) or []]
+        _miss = [c for c in _miss if c not in px]
+        for _i in range(0, len(_miss), 150):
+            _chunk = _miss[_i:_i + 150]
+            _ph = ",".join(["%s"] * len(_chunk))
+            for r in db.fetch(f"SELECT code, kline_data FROM kline_cache "
+                              f"WHERE code IN ({_ph})", tuple(_chunk)) or []:
+                try:
+                    _bars = json.loads(r.get("kline_data") or "[]")
+                except (ValueError, TypeError):
+                    continue
+                _cl = [(str(b.get("date"))[:10], _f(b.get("close")))
+                       for b in (_bars or [])[-70:] if isinstance(b, dict)]
+                _cl = [(d, c) for d, c in _cl if c]
+                if _cl:
+                    px[str(r["code"])] = _cl
+        print(f"[stock_facts] 行情序列: kline_cache 兜底 {len(_miss)} 只"
+              f"（共 {len(px)} 只有序列）")
+
     def _facts_basic(code, st):
+        """A 组 8 个事实（返回 dict，但**调用方按显式键取值**，不依赖 dict 顺序）。"""
         closes = sorted(px.get(code) or [])
         n = len(closes)
         c_now = closes[-1][1] if n else None
@@ -132,8 +163,13 @@ def build(day: str) -> Dict:
         ret20 = (c_now / closes[-21][1] - 1) * 100 if n >= 21 and closes[-21][1] else None
         hi60 = max(c for _, c in closes[-60:]) if n else None
         dist = (c_now / hi60 - 1) * 100 if c_now and hi60 else None
+        # ★★ 2026-10-26（审查 P0-②）：**单位换算**。源头单位与列名不一致，必须在此归一：
+        #   · `market_snapshot.float_cap` = **万元**（工行 224,317,000 → 22431.7 亿）
+        #   · `mainforce_state.flow5_amt_yuan` = **元**（−46,296,800,000 → −462.97 亿）
+        cap_yi = _f(st.get("float_cap"))
         return {"close": st.get("price"), "chg_pct": st.get("change_pct"),
-                "float_cap_yi": st.get("float_cap"), "turnover_pct": st.get("turnover_rate"),
+                "float_cap_yi": (cap_yi / 1e4 if cap_yi is not None else None),
+                "turnover_pct": st.get("turnover_rate"),
                 "vol_ratio": st.get("volume_ratio"),
                 "ret5": ret5, "ret20": ret20, "dist_from_60d_high": dist}
 
@@ -148,25 +184,41 @@ def build(day: str) -> Dict:
         "FROM mainforce_state WHERE date = %s", (day,)) or []}
 
     # ── D 闸门：gate_snapshot_history.payload 当日（按票拆）──
+    # ★★ 2026-10-26（审查 P0-③）：payload 的真实结构是
+    #   `{regime, counts, evaluated, strategy_date, candidates:[...]}`，
+    #   原代码读 `.get("items")` ⇒ **恒为空**（2861 行 gate_ready 全 NULL，冒烟也没发现）。
+    #   ⚠️ candidates 只含 **ready≥2** 的候选（约 248 只），不是全宇宙 evaluated(2974)
+    #   ⇒ 其余行的 gate 列必须是 **NULL（"未达 ready≥2/未评估"），不能填 0**（0 表示"评估过且 0/3"）。
     gate = {}
     g = db.fetch_one("SELECT payload FROM gate_snapshot_history WHERE date = %s "
                      "ORDER BY created_at DESC LIMIT 1", (day,))
     if g and g.get("payload"):
         try:
-            for it in (json.loads(g["payload"]) or {}).get("items", []):
+            _pl = json.loads(g["payload"]) or {}
+            for it in (_pl.get("candidates") or []):
                 gate[str(it.get("code"))] = it
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError) as e:
+            print(f"[stock_facts] 闸门 payload 解析失败（gate 列置空）: {str(e)[:80]}")
 
-    # ── E 龙虎榜：近 10 日最近一次上榜是否大额净卖 ──
+    # ── E 龙虎榜：近 10 日**最近一次**上榜是否「大额净卖」──
+    # ★★ 2026-10-26（审查 P2）：原判据是 `net_buy < 0`（任何净卖）⇒ 18 只里混进
+    #   小额卖出，与 `lhb.recent_summary` 的"大额净卖（big_sell）"口径不一致。
+    #   现复用**同一事实源** `_event_bucket`（优先用行内 circ_mktcap，零额外取数；
+    #   缺该列才回退本地包 → 与详情页徽章完全同口径）。
     lhb = {}
+    try:
+        from app.mainforce.lhb import _event_bucket as _lhb_bucket
+    except Exception as e:
+        _lhb_bucket = None
+        print(f"[stock_facts] 龙虎榜分档不可用（该列置空）: {str(e)[:80]}")
     for r in db.fetch(
-            "SELECT DISTINCT ON (code) code, date, net_buy, sell_total "
+            "SELECT DISTINCT ON (code) code, date, net_buy, sell_total, circ_mktcap "
             "FROM lhb_history WHERE date >= %s AND date <= %s ORDER BY code, date DESC",
             (_shift(day, -10), day)) or []:
         code = str(r["code"])
-        big = (r.get("sell_total") or 0) > 0 and (r.get("net_buy") or 0) < 0
-        lhb[code] = {"lhb_big_net_sell": 1 if big else 0,
+        bucket = (_lhb_bucket(code, str(r["date"])[:10], r.get("net_buy"),
+                              r.get("circ_mktcap")) if _lhb_bucket else None)
+        lhb[code] = {"lhb_big_net_sell": 1 if bucket == "big_sell" else 0,
                      "lhb_latest_date": str(r["date"])[:10]}
 
     # ── F 形态：pattern_scan_daily 当日命中 ──
@@ -181,18 +233,18 @@ def build(day: str) -> Dict:
     sector_keep = {str(r["code"]) for r in db.fetch(
         "SELECT code FROM ranking_history_sector WHERE rank_date = %s", (day,)) or []}
 
-    # ── H 防御组：与防御影子榜同源清单（银行∪高股息代理∪低波——读防御组当日产物）──
+    # ── H 防御组：宽防御组当日清单（银行 ∪ 高股息代理 ∪ 低波）──
+    # ★★ 2026-10-26（审查 P0-④）：原代码读 `payload` 列，但该表**没有 payload**
+    #   （实际列 date/code/name/grp/vol60/mktcap/industry）⇒ 异常被 `except: pass`
+    #   吞掉后**静默回退**成"名称含银行"的 38 只，与 144 只宽组口径分叉（冒烟也未察觉）。
+    #   现直接读 `code` 列；**当日无行 ⇒ 该列全部 NULL（无数据），不再拿银行顶替**
+    #   （顶替会让本表与防御影子榜对同一概念给出两个答案）。
     defen = set()
     try:
-        d = db.fetch_one("SELECT payload FROM defensive_group_daily WHERE date = %s", (day,))
-        if d and d.get("payload"):
-            defen = {str(x) for x in (json.loads(d["payload"]) or {}).get("codes", [])}
-    except Exception:
-        pass
-    if not defen:
-        # 兜底：银行（名称含银行）——与防御组首版口径一致
         defen = {str(r["code"]) for r in db.fetch(
-            "SELECT code FROM stock_industry WHERE name LIKE %s", ("%银行%",)) or []}
+            "SELECT code FROM defensive_group_daily WHERE date = %s", (day,)) or []}
+    except Exception as e:
+        print(f"[stock_facts] 防御组读取失败（该列置空）: {str(e)[:80]}")
 
     # ── 合成（宇宙 = 精算榜 ∪ 主力状态 = 全评分宇宙 ~2136）──
     universe = sorted(set(rl) | set(mf))
@@ -219,21 +271,33 @@ def build(day: str) -> Dict:
                 dims = {str(d.get("name")): d.get("score") for d in dims if isinstance(d, dict)}
         except (ValueError, TypeError):
             pass
+        fb = _facts_basic(code, st)
+        _f5 = _f(m.get("flow5_amt_yuan"))
+        # 闸门的"还差什么"：payload.candidates 里就是 `missing: [label...]`（已算好，别重推）
+        _gmiss = gt.get("missing")
+        if isinstance(_gmiss, list):
+            _gmiss = "、".join(str(x) for x in _gmiss) or None
+        elif _gmiss:
+            _gmiss = str(_gmiss)
+        else:
+            _gmiss = None
         rows.append((
             day, code, name, ind, _board(code),
-            *_facts_basic(code, st).values(),
+            fb["close"], fb["chg_pct"], fb["float_cap_yi"], fb["turnover_pct"],
+            fb["vol_ratio"], fb["ret5"], fb["ret20"], fb["dist_from_60d_high"],
             r.get("total_score"), r.get("signal"), r.get("rank_pos"),
             _f(dims.get("技术面")), _f(dims.get("资金面")), _f(dims.get("基本面")),
-            m.get("phase"), m.get("signal"), _f(m.get("flow5_amt_yuan")),
+            m.get("phase"), m.get("signal"),
+            (_f5 / 1e8 if _f5 is not None else None),      # 元 → 亿（审查 P0-②）
             m.get("flow_consec"), _f(chip.get("price_pos")), _f(chip.get("winner_ratio")),
-            gt.get("ready"), "、".join(x.get("label", "") for x in (gt.get("items") or [])
-                                       if not x.get("ok")) or None, gt.get("position_label"),
+            gt.get("ready"), _gmiss, gt.get("label"),
             lh.get("lhb_big_net_sell"), lh.get("lhb_latest_date"),
             1 if code in pat else 0,
             _f(srow.get("ret5")),
             1 if srow.get("is_strong") else (0 if srow else None),
             (1 if code in sector_keep else None),
-            1 if code in defen else 0,
+            # 无当日防御组数据 ⇒ NULL（无数据 ≠ 不在组内）
+            (1 if code in defen else (0 if defen else None)),
         ))
 
     # 幂等覆盖写入
@@ -257,8 +321,8 @@ def _shift(day: str, n: int) -> str:
 
 def latest(day: Optional[str] = None, filters: Optional[Dict] = None,
            order_by: str = "rank_pos", limit: int = 100, offset: int = 0,
-           desc: bool = False) -> Dict:
-    """只读查询：宽表当日行（分页 + 单列排序 + 等值筛选）。**不做任何加权。**"""
+           desc: bool = False, min_cap: Optional[float] = None) -> Dict:
+    """只读查询：宽表当日行（分页 + 单列排序 + 等值筛选 + 最小市值）。**不做任何加权。**"""
     ensure_table()
     if not day:
         r = db.fetch_one(f"SELECT MAX(date) AS d FROM {_TABLE}")
@@ -266,6 +330,10 @@ def latest(day: Optional[str] = None, filters: Optional[Dict] = None,
     if not day:
         return {"date": None, "rows": [], "total": 0}
     where, params = ["date = %s"], [day]
+    # ★ 2026-10-26（审查 P2）：接口早就声明了 min_cap 却没用 ⇒ 前端传了也无效（死参数）
+    if min_cap is not None:
+        where.append("float_cap_yi >= %s")
+        params.append(float(min_cap))
     ALLOWED = {c for c in _COLS.replace(" ", "").split(",")}
     for k, v in (filters or {}).items():
         if k in ALLOWED:

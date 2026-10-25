@@ -126,8 +126,9 @@ def _load_prev_db(pack_dir):
             if n > 500000:
                 print(f"  上一份后端包: 缓存（{n} 行，pack_date={d[0] if d else '?'}）")
                 return tmp
-        except Exception:
-            pass
+        except Exception as e:
+            # 缓存包损坏/半截 ⇒ 删掉重下（不是业务错误，但要留痕：卫生门 #11）
+            print(f"  上一份后端包缓存不可用（{type(e).__name__}: {str(e)[:60]}），将重新下载")
         os.remove(tmp)
     if os.path.exists(gz) and os.path.getsize(gz) > 5 * 1024 * 1024:
         try:

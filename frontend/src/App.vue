@@ -138,6 +138,7 @@ const navGroups = [
   ]},
   { label: '选股', items: [
     { path: '/score', label: '评分排行' },
+    { path: '/screener', label: '选股工作台' },
     { path: '/strategies', label: '战法选股' },
     { path: '/score/stats', label: '评分验证' },
   ]},

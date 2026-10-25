@@ -36,7 +36,7 @@
           <option value="float_cap_yi">流通市值↑</option>
         </select>
       </label>
-      <button @click="load" :disabled="loading"
+      <button @click="apply" :disabled="loading"
         class="px-3 py-1 rounded bg-accent/20 text-accent hover:bg-accent/30 disabled:opacity-40">
         {{ loading ? '查询中…' : '应用' }}</button>
       <span class="text-muted ml-auto">共 {{ total }} 只（NULL = 不在榜/无数据，非 0）</span>
@@ -93,8 +93,8 @@
           </tr>
         </tbody>
       </table>
-      <div v-else class="p-8 text-center text-muted text-xs">
-        {{ loading ? '加载中…' : '无匹配（宽表首批数据由今晚日批生成；此前显示上一交易日）' }}
+      <div v-else class="p-8 text-center text-xs" :class="err ? 'text-amber-400' : 'text-muted'">
+        {{ loading ? '加载中…' : (err || '无匹配（宽表首批数据由今晚日批生成；此前显示上一交易日）') }}
       </div>
     </div>
     <!-- 分页 -->
@@ -112,13 +112,14 @@
 
 <script setup>
 import { ref, reactive, onMounted, watch } from 'vue'
-import axios from 'axios'
-const http = axios.create({ baseURL: import.meta.env.VITE_API_BASE_URL || '/api', timeout: 30000 })
+// ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
+import { getStockFactsWide } from '../api'
 
 const rows = ref([])
 const total = ref(0)
 const dataDate = ref('')
 const loading = ref(false)
+const err = ref('')
 const page = ref(0)
 const f = reactive({ phase: '', defensive: false, lhbRisk: false, pattern: false,
                      sectorStrong: false, order: 'rank_pos', size: 100 })
@@ -127,24 +128,35 @@ const DESC = { ret5: 1, ret20: 1, flow5_amt_yi: 1, turnover_pct: 1 }
 
 async function load() {
   loading.value = true
+  err.value = ''
   try {
-    const { data } = await http.get('/system/stock-facts/wide', {
-      params: {
-        order_by: f.order, desc: !!DESC[f.order],
-        limit: f.size, offset: page.value * f.size,
-        ...(f.phase ? { phase: f.phase } : {}),
-        ...(f.defensive ? { defensive: 1 } : {}),
-        ...(f.lhbRisk ? { lhb_risk: 1 } : {}),
-        ...(f.pattern ? { pattern: 1 } : {}),
-        ...(f.sectorStrong ? { sector_strong: 1 } : {}),
-      } })
-    rows.value = data.rows || []
-    total.value = data.total || 0
-    dataDate.value = data.date || ''
+    const { data } = await getStockFactsWide({
+      order_by: f.order, desc: !!DESC[f.order],
+      limit: f.size, offset: page.value * f.size,
+      ...(f.phase ? { phase: f.phase } : {}),
+      ...(f.defensive ? { defensive: 1 } : {}),
+      ...(f.lhbRisk ? { lhb_risk: 1 } : {}),
+      ...(f.pattern ? { pattern: 1 } : {}),
+      ...(f.sectorStrong ? { sector_strong: 1 } : {}),
+    })
+    rows.value = (data && data.rows) || []
+    total.value = (data && data.total) || 0
+    dataDate.value = (data && data.date) || ''
   } catch (e) {
+    // ★ 审查 P2：失败要**如实说**，不能清空后伪装成"无匹配"
     rows.value = []
+    total.value = 0
+    err.value = '加载失败：' + (e && e.response && e.response.status
+      ? `HTTP ${e.response.status}` : ((e && e.message) || e))
   } finally { loading.value = false }
 }
+
+// 改筛选后必须回到第 1 页（否则可能停在第 3 页看到空白）
+function apply() {
+  page.value = 0
+  load()
+}
+
 watch(page, load)
 onMounted(load)
 
@@ -155,5 +167,14 @@ function fmt(v) {
 function cls(v) {
   const n = Number(v) || 0
   return n > 0 ? 'text-rise' : (n < 0 ? 'text-fall' : 'text-muted')
+}
+// ★★ 2026-10-26（审查 P0-①）：模板里一直在用 `pct()`，但本文件从未定义
+//   ⇒ 运行时 `pct is not a function`，整表渲染中断（构建不报错，同 pbwOpen 教训）。
+//   语义与 `cls` 一致：A 股习惯 **红=净流入/上涨，绿=净流出/下跌**，缺失=灰。
+function pct(v) {
+  if (v == null) return 'text-muted'
+  const n = Number(v)
+  if (!Number.isFinite(n) || n === 0) return 'text-muted'
+  return n > 0 ? 'text-rise' : 'text-fall'
 }
 </script>
