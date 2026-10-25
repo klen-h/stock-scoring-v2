@@ -1753,6 +1753,16 @@ def main():
             cost = time.time() - t0
             ok_list.append((desc, cost))
             print(f"  ✅ {desc} 完成（{cost:.0f}s）: {summary}", flush=True)
+            # ★★ 2026-10-26（⑦ 推广 sync_meta）：每个任务**成功后**统一打版本号。
+            #   key=任务名；note 以**数据日**开头（与 pattern_scan / mainflow / defensive_group
+            #   同一约定：消费方 note[:10] 即数据日），后接结果摘要（截 160 字）。
+            #   失败的任务**不写** ⇒ sync_meta 里该 key 保持上次成功值（"最后一次成功"语义）。
+            #   代价 ≈ 每任务一次 10 字节 upsert；换来了"全产物新鲜度一张表可查"。
+            try:
+                from app import sync_meta as _sm
+                _sm.touch(name, note=f"{_batch_trading_day().isoformat()} | {str(summary)[:160]}")
+            except Exception as e:
+                print(f"  [sync_meta] {name} 版本写入失败（不影响数据）: {str(e)[:80]}")
         except Exception as e:
             cost = time.time() - t0
             fail_list.append((desc, str(e)[:200]))

@@ -141,9 +141,21 @@ def _vol_map(codes) -> dict:
 
 
 def build(day: str = None, apply: bool = True) -> dict:
-    """算当日宽防御组并落库（幂等：只替换当日行）。"""
+    """算当日宽防御组并落库（幂等：只替换当日行）。
+
+    ★★ 2026-10-26（⑥ 日期键修复）：`day` 缺省**不再用自然日**，改「最近已完成
+      交易日」（15:00 分界 + 跳过周末/节假日，`rules.latest_completed_trading_day`，
+      与 `strategies/base.save_scan_result` 同一口径）。
+      实测事故：周日（2026-10-25）补跑写出了「10-25 幽灵行」——其它产物都是 10-23，
+      跨表按日期对齐就错位（事实宽表读 `WHERE date = 交易日` 会漏掉它）。
+    ★ 2026-10-26（⑦ 推广 sync_meta）：落库成功后 touch 版本号（note 以数据日开头，
+      与 pattern_scan / mainflow 同一约定），消费方可据此做版本门控/新鲜度展示。
+    """
     ensure_table()
-    day = day or datetime.now(_BJ).strftime("%Y-%m-%d")
+    if not day:
+        from app.flash.rules import latest_completed_trading_day
+        day = latest_completed_trading_day()
+    day = str(day)[:10]
 
     caps, names = _snap_maps()
 
@@ -196,6 +208,13 @@ def build(day: str = None, apply: bool = True) -> dict:
     db.execute(f"DELETE FROM {_TABLE} WHERE date = %s", (day,))
     if recs:
         db.upsert_many(_TABLE, recs, ["date", "code"])
+    # ★ 2026-10-26（⑦ 推广 sync_meta）：note 以**数据日**开头（消费方 note[:10] 即数据日）
+    try:
+        from app import sync_meta
+        sync_meta.touch("defensive_group", rows=len(recs),
+                        note=f"{day} bank={len(bank)} div={len(div)} low={len(low)}")
+    except Exception as e:
+        print(f"[defensive_group] 版本号写入失败（不影响数据）: {str(e)[:80]}")
     print(f"[defensive_group] {day} 宽防御组 {len(recs)} 只 "
           f"(bank={len(bank)} div={len(div)} low={len(low)})")
     return summary
