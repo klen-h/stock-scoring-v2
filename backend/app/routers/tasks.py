@@ -45,6 +45,9 @@ ALLOWED_TASKS = {
     # ★ 2026-10-25（评分分市况重构 H2'/H3）：等权锚日增量 + 阴跌防御影子榜
     #   （与 daily_batch.DEFAULT_ORDER 同名；补跑入口防"漏跑一天断档"）
     "eq_anchor", "shadow_defensive",
+    # ★ 2026-10-25：宽防御组名单（银行∪高股息代理∪低波）—— 方案 A 对照用；
+    #   与 daily_batch.DEFAULT_ORDER 同名，漏登记则该任务无法手动补跑。
+    "defensive_group",
     # ★ 2026-09-12：决策简报进日批（盘后 + 企微推送），补上手动补跑入口
     "trader_brief",
     # ★ 2026-09-30（P0）：数据底座断档自检 + 板块快照自愈（plate_daily_zz 断档 5 天
