@@ -11,6 +11,7 @@ const routes = [
   { path: '/mainline', name: 'Mainline', component: () => import('../views/MainlineView.vue') },
   { path: '/stock/:code', name: 'StockDetail', component: () => import('../views/StockDetail.vue') },
   { path: '/score', name: 'ScoreRank', component: () => import('../views/ScoreRank.vue') },
+  { path: '/screener', name: 'Screener', component: () => import('../views/Screener.vue') },
   { path: '/score/stats', name: 'BucketStats', component: () => import('../views/BucketStats.vue') },
   { path: '/strategies', name: 'Strategies', component: () => import('../views/Strategies.vue') },
   { path: '/monitor', name: 'Monitor', component: () => import('../views/MonitorView.vue') },
