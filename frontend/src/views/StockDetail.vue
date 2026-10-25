@@ -1224,7 +1224,11 @@ onMounted(async () => {
   try {
     // ★ 本地优先：实时行情（轻）先行，评分/K线尝试全本地（零后端重接口）；
     //   支撑阻力/RSI 为轻量查询照常并行。本地不可用再回退后端精算。
-    const [info, fund, sr, rsi] = await Promise.allSettled([
+    // ★ 2026-10-25（线上白屏修复）：第二项是 `getStockScore`，解构名却写成 `fund`
+    //   ⇒ 下面 `score.status` 引用了一个不存在的变量，运行时 `ReferenceError: score is not defined`
+    //   整页脚本中断（评分/异动等全部不渲染）。改名回 `score`，与调用顺序一一对应：
+    //   info=行情 / score=评分 / sr=支撑阻力 / rsi=RSI。
+    const [info, score, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
       // ★ 2026-10-25（提速 1/2）：评分并入第一批并行（旧实现排在整批之后串行 2.2s——
       //    本地包命中则丢弃后端结果，只保留 rank_context 等本地没有的字段）
