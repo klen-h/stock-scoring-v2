@@ -6,17 +6,24 @@
        系统级：盘中异动由调度器 `brief_loop` 自动触发 → 浏览器通知（/flash/notifications）。 -->
   <div class="bg-card border border-border rounded-lg p-3 text-xs">
     <div class="flex items-center gap-2 flex-wrap">
-      <span class="text-sm font-semibold">快讯解读</span>
+      <button type="button" class="flex items-center gap-2"
+              :title="bodyOpen ? '收起' : '展开'"
+              @click="bodyOpen = !bodyOpen">
+        <span class="text-sm font-semibold">快讯解读</span>
+        <span class="text-[10px] text-muted">{{ bodyOpen ? '▾' : '▸' }}</span>
+      </button>
       <span v-if="triggers.length"
             class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] cursor-help"
             :title="'盘中异动：' + triggers.join('、')">异动 {{ triggers.length }}</span>
       <span v-if="asOf" class="text-[10px] text-muted font-mono">数据 {{ asOf }}</span>
-      <router-link to="/monitor" target="_blank" rel="noopener"
+      <router-link v-if="bodyOpen" to="/monitor" target="_blank" rel="noopener"
                    class="ml-auto text-[10px] text-accent hover:underline">全部快讯 ↗</router-link>
     </div>
 
-    <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息 -->
-    <div v-if="flashDiag" class="mt-1 text-[10px] text-muted truncate"
+    <template v-if="bodyOpen">
+    <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息。
+         ★ 2026-10-25（用户）：去掉 truncate 省略号 ⇒ 换行完整展示。 -->
+    <div v-if="flashDiag" class="mt-1 text-[10px] text-muted leading-relaxed"
          :title="diagnosisLine">
       {{ diagnosisLine }}
     </div>
@@ -66,8 +73,9 @@
         </span>
       </div>
 
-      <!-- ④ 快讯卡片列表（点击展开原因 / 影响范围） -->
-      <div v-if="cards.length" class="mt-2 space-y-1">
+      <!-- ④ 快讯卡片列表（点击展开原因 / 影响范围）
+           ★ 2026-10-25（用户）：列表限高 + 溢出滚动，避免撑爆右栏 -->
+      <div v-if="cards.length" class="mt-2 space-y-1 max-h-80 overflow-y-auto pr-1">
         <div v-for="(n, i) in cards" :key="n.key"
              class="rounded border border-border/60 bg-white/[0.04]">
           <button type="button" class="w-full text-left px-2 py-1.5"
@@ -82,7 +90,10 @@
             <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
           </button>
           <div v-if="open === i" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
-            <div><span class="text-muted">原因　</span>{{ n.cause || '数据不足' }}</div>
+            <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
+                 的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
+                 ⇒ 按来源显示诚实文案。 -->
+            <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
             <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
             <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
           </div>
@@ -118,12 +129,14 @@
         </div>
       </div>
     </template>
+    </template>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { getFlashBrief, refreshFlashBrief } from '../../api'
+import { isTradingTime } from '../../composables/usePortfolio'
 
 const props = defineProps({
   date: { type: String, default: '' },
@@ -135,6 +148,7 @@ const busy = ref(false)
 const loadErr = ref('')
 let timer = null
 const open = ref(-1)
+const bodyOpen = ref(true)   // ★ 2026-10-25（用户）：整卡支持收起/展开
 
 const snapshot = computed(() => data.value?.snapshot || null)
 const market = computed(() => snapshot.value?.market || {})
@@ -146,6 +160,13 @@ const asOf = computed(() => data.value?.as_of || '')
 const source = computed(() => data.value?.source || '')
 const cached = computed(() => !!data.value?.cached)
 const triggers = computed(() => data.value?.trigger || [])
+
+// ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：cause 空 = 该条**尚无 AI 逐条解读**
+//   （休市日 source=snapshot 属预期；或 source=template 规则兜底）——按来源给诚实文案。
+const causeFallback = computed(() => {
+  if (source.value === 'llm') return '—'
+  return '尚未 AI 解读——点击下方「AI 解读」生成'
+})
 
 const diagnosisLine = computed(() => {
   const d = props.flashDiag || {}
@@ -242,7 +263,10 @@ watch(() => props.date, () => { data.value = null; open.value = -1; load() })
 onMounted(() => {
   load()
   // 轻量轮询：`GET /flash/brief` 只读库，不烧 LLM ⇒ 盘中自动触发的新解读会自动出现
-  timer = setInterval(load, 60000)
+  // ★ 2026-10-25（用户："休市不需要轮询的都关掉"）：自动解读仅在盘中触发
+  //   （flash_brief 内部 is_open 门）⇒ 休市时 brief 不会变化，轮询纯浪费 ⇒ 停。
+  //   挂载时的首次加载保留（休市打开页面仍能看到已有解读）。
+  timer = setInterval(() => { if (isTradingTime()) load() }, 60000)
 })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 </script>
