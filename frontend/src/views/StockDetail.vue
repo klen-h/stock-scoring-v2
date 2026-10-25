@@ -1224,28 +1224,38 @@ onMounted(async () => {
     //   支撑阻力/RSI 为轻量查询照常并行。本地不可用再回退后端精算。
     const [info, fund, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
-      getStockFundamental(code),
+      // ★ 2026-10-25（提速 1/2）：评分并入第一批并行（旧实现排在整批之后串行 2.2s——
+      //    本地包命中则丢弃后端结果，只保留 rank_context 等本地没有的字段）
+      getStockScore(code),
       getSupportResistance(code),
       getRSISignals(code),
     ])
     if (info.status === 'fulfilled') stockInfo.value = info.value.data || {}
-    if (fund.status === 'fulfilled') fundamental.value = fund.value.data || {}
     if (sr.status === 'fulfilled' && sr.value.data) supportResistance.value = sr.value.data.data
     if (rsi.status === 'fulfilled' && rsi.value.data) rsiSignals.value = rsi.value.data.data
 
     const local = await tryLoadLocalAll()
+    const remoteScore = score.status === 'fulfilled' ? (score.value.data || null) : null
     if (local.score) {
-      scoreData.value = local.score
-    } else {
-      // 本地不可用（未下 K 线包/该股不在包内）→ 后端精算兜底
-      const score = await getStockScore(code).catch(() => null)
-      if (score && score.data) scoreData.value = score.data
+      // 本地评分与后端同源；rank_context（精算榜定位）只有后端响应里有 → 补挂
+      scoreData.value = { ...local.score,
+        rank_context: remoteScore?.rank_context ?? local.score.rank_context }
+    } else if (remoteScore) {
+      // 本地不可用（未下 K 线包/该股不在包内）→ 用已并行的后端精算结果
+      scoreData.value = remoteScore
     }
     if (local.klines) {
       klineData.value = local.klines
       technicalData.value = local.technical
     }
   } catch (e) { console.error(e) }
+
+  // ★ 2026-10-25（提速 2/2）：基本面挪出关键路径——它只渲染"基本面"页签（非默认），
+  //    却曾是第一批并行里最慢的一个（实测 2.25s 拖高整墙）。改为首屏放开后预取
+  //    （不 await），切到基本面页签时大概率已就绪；失败静默（tab 有空态兜底）。
+  getStockFundamental(code)
+    .then(({ data }) => { fundamental.value = data || {} })
+    .catch(() => {})
 
   // 先放开首屏（默认页签是"评分"，不依赖 K 线容器）；K 线数据并行加载，
   // 切到 K 线页签时由 watch(activeTab) 补渲染——数据已就绪则立即出图，
