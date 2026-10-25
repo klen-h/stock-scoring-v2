@@ -513,14 +513,52 @@ async def _batch_with_precise_top(
 
 
 @router.get("/batch-prices")
-def batch_prices(codes: str = Query(..., description="逗号分隔的股票代码")):
+def batch_prices(codes: str = Query(..., description="逗号分隔的股票代码"),
+                 cached: int = Query(0, ge=0, le=1,
+                                     description="1=只读后端行情内存缓存（零上游请求）")):
     """
-    批量获取股票当前价格（用于前端快照/胜率回查）。
-    返回：{code, name, price, change_pct} 列表。
+    批量获取股票当前价格（用于前端快照/胜率回查/选股台盘中刷新）。
+
+    - `cached=0`（默认，老行为）：**直连腾讯**取最新，返回 `[{code,name,price,change_pct}]`
+      —— 每次调用都是一次外部请求，高频轮询会撞 WAF（项目有前车之鉴）⇒ 新代码优先用 1。
+    - `cached=1`（★ 2026-10-26）：只读调度器维护的**全市场内存缓存**
+      （`stock_cache_refresh_loop` 每 ~120s 刷新），**上游请求 = 0**；返回
+      `{ok, cached, rows:[…], as_of, data_ts, data_date, from_snapshot, age_sec, n}`。
+
+    ★ 为什么 `cached=1` 单独一种返回结构（对象而非数组）：必须把**行情时刻/是否快照**
+      一起给前端 —— 休市日缓存里是**上一交易日收盘快照**（`from_snapshot=true`），
+      直接当"今日现价"渲染就是谎报（本项目踩过 09-24 快照事故）。
     """
     code_list = [c.strip() for c in codes.split(",") if c.strip()]
     if not code_list:
-        return []
+        return ({"ok": True, "cached": True, "rows": [], "n": 0} if cached else [])
+
+    if cached:
+        from app.tencent import get_stocks_batch_cached, cache_meta
+        m = get_stocks_batch_cached(code_list)
+        meta = cache_meta()
+        rows = []
+        for c in code_list:
+            s = m.get(c)
+            if not s:
+                continue
+            rows.append({
+                "code": c,
+                "name": s.get("name", ""),
+                "price": s.get("price", 0),
+                "change_pct": s.get("change_pct", 0),
+            })
+        as_of = ""
+        if meta.get("data_ts"):
+            try:
+                from datetime import datetime, timedelta, timezone
+                as_of = datetime.fromtimestamp(
+                    float(meta["data_ts"]),
+                    timezone(timedelta(hours=8))).strftime("%m-%d %H:%M")
+            except (TypeError, ValueError, OSError):
+                as_of = ""
+        return {"ok": True, "cached": True, "rows": rows, "as_of": as_of, **meta}
+
     stocks = get_stocks_batch(code_list)
     return [{
         "code": s.get("code", c),

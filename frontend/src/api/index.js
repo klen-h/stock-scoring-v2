@@ -283,6 +283,15 @@ export const getRadarAnalysis = (date, refresh = false) => http.get('/flash/rada
 export const getScoreBottom = (params) => http.get('/score/batch/bottom', { params, timeout: 60000 })
 export const getScoreBySignal = (params) => http.get('/score/batch/signal', { params, timeout: 60000 })
 export const getBatchPrices = (codes) => http.get('/score/batch-prices', { params: { codes: codes.join(',') } })
+// ★ 2026-10-26（用户："盘中实时刷新涨跌幅会加大流量吗"→"可以"）：
+//   **只读后端行情内存缓存**的批量报价（`cached=1`）——调度器每 ~120s 已刷全市场，
+//   这里 **上游请求 = 0**，只花本机 CPU；20 只响应 ≈1.6KB（gzip 0.57KB）。
+//   返回 `{ok, cached, rows:[{code,name,price,change_pct}], as_of, data_ts,
+//          data_date, from_snapshot, age_sec, n}` —— 结构是**对象**（老接口是数组），
+//   因为必须把「行情时刻 / 是否收盘快照」一起带上，否则休市日会把上一交易日
+//   收盘价当"今日现价"渲染（本项目踩过快照事故）。
+export const getBatchPricesCached = (codes) =>
+  http.get('/score/batch-prices', { params: { codes: codes.join(','), cached: 1 }, timeout: 10000 })
 // ★ 板块归属（细分主行业 + 层级链）—— 榜单三 tab 共用一份，前端页面级缓存，按需拉取
 export const getBatchIndustry = (codes) => http.get('/score/batch/industry-map', { params: { codes: codes.join(',') }, timeout: 15000 })
 // ★ 缩量启动形态扫描 / 观察（2026-10-15）：候选清单 + 观察追踪，描述性观察，非信号

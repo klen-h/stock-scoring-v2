@@ -4,7 +4,18 @@
     <div class="flex items-center gap-3 flex-wrap mb-3">
       <h2 class="text-base font-semibold">选股工作台</h2>
       <span class="text-xs text-muted">事实筛选，不是买入清单；排序维度须看检验徽章</span>
-      <span v-if="dataDate" class="ml-auto text-xs text-muted font-mono">数据截至 {{ dataDate }}（日批定稿）</span>
+      <span class="ml-auto flex items-center gap-2 text-xs flex-wrap">
+        <!-- ★ 2026-10-26：盘中实时口径**主动标注**（涨跌幅/现价来自后端行情缓存） -->
+        <span v-if="liveOn"
+              class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] cursor-help"
+              :title="`盘中实时：现价与涨跌幅来自后端行情内存缓存${liveMeta.age_sec != null ? '（' + liveMeta.age_sec + 's 前采集）' : ''}，约 2 分钟随调度器刷新；5 日/20 日涨幅与距高点已按现价重算。零外部请求（没有向腾讯多发一次）`">
+          盘中实时 {{ liveAsOf || '—' }}
+        </span>
+        <span v-else class="text-[10px]" :class="liveEmpty && tradingNow ? 'text-amber-400/80' : 'text-muted'">
+          {{ liveNote }}
+        </span>
+        <span v-if="dataDate" class="text-muted font-mono">数据截至 {{ dataDate }}（日批定稿）</span>
+      </span>
     </div>
 
     <!-- 筛选器 -->
@@ -50,11 +61,11 @@
         <thead><tr class="text-muted border-b border-border">
           <th class="py-2 px-2 text-left">代码/名称</th>
           <th class="px-2">行业</th>
-          <th class="px-2">收盘</th>
-          <th class="px-2">日涨跌</th>
-          <th class="px-2">5日涨幅</th>
-          <th class="px-2">20日涨幅</th>
-          <th class="px-2" title="相对最近 60 个交易日最高收盘的偏离（负数=低于高点）">距60日高点</th>
+          <th class="px-2" title="交易时段＝实时现价（后端行情缓存，约 2 分钟一刷）；休市＝当日收盘（日批定稿）">现价</th>
+          <th class="px-2" title="交易时段随现价走；休市为日批定稿值">日涨跌</th>
+          <th class="px-2" title="基准＝日批收盘；交易时段已按现价重算（×当日涨跌）">5日涨幅</th>
+          <th class="px-2" title="基准＝日批收盘；交易时段已按现价重算（×当日涨跌）">20日涨幅</th>
+          <th class="px-2" title="相对最近 60 个交易日最高收盘的偏离（负数=低于高点）；交易时段已按现价重算">距60日高点</th>
           <th class="px-2" title="评分=展示工具（预登记 FAIL）：高分≠会涨">综合分 ⚠</th>
           <th class="px-2">名次</th>
           <th class="px-2">主力阶段</th>
@@ -78,13 +89,18 @@
                  :title="`雪球 ${r.code}`">{{ r.code }}</a>
             </td>
             <td class="px-2 text-center text-muted">{{ r.industry || '—' }}</td>
-            <td class="px-2 text-center font-mono">{{ r.close ?? '—' }}</td>
-            <td class="px-2 text-center font-mono" :class="cls(r.chg_pct)">{{ fmt(r.chg_pct) }}</td>
-            <td class="px-2 text-center font-mono" :class="cls(r.ret5)">{{ fmt(r.ret5) }}</td>
-            <td class="px-2 text-center font-mono" :class="cls(r.ret20)">{{ fmt(r.ret20) }}</td>
+            <!-- ★ 2026-10-26：以下四列交易时段用**实时值**（`q()/lv()` 派生），
+                 休市或取不到 ⇒ 回退日批值（缺数据不填 0，也不假装实时）。 -->
+            <td class="px-2 text-center font-mono">
+              <span :class="q(r) ? 'text-gray-200' : ''">{{ q(r) ? q(r).price : (r.close ?? '—') }}</span>
+            </td>
+            <td class="px-2 text-center font-mono" :class="cls(q(r) ? q(r).change_pct : r.chg_pct)">
+              {{ fmt(q(r) ? q(r).change_pct : r.chg_pct) }}</td>
+            <td class="px-2 text-center font-mono" :class="cls(lv(r, r.ret5))">{{ fmt(lv(r, r.ret5)) }}</td>
+            <td class="px-2 text-center font-mono" :class="cls(lv(r, r.ret20))">{{ fmt(lv(r, r.ret20)) }}</td>
             <!-- 距高点：贴近高点（≥ −3%）标高亮，越远离越灰 —— 位置感一眼看出 -->
-            <td class="px-2 text-center font-mono" :class="highCls(r.dist_from_60d_high)">
-              {{ r.dist_from_60d_high != null ? r.dist_from_60d_high.toFixed(0) + '%' : '—' }}</td>
+            <td class="px-2 text-center font-mono" :class="highCls(lv(r, r.dist_from_60d_high))">
+              {{ pct0(lv(r, r.dist_from_60d_high)) }}</td>
             <!-- 综合分：全站 scoreClass（≥65 红 / ≥45 琥珀 / 其余灰） -->
             <td class="px-2 text-center font-mono font-bold" :class="scoreClass(r.score_total)">
               {{ r.score_total ?? '—' }}</td>
@@ -126,7 +142,7 @@
         {{ loading ? '加载中…' : (err || '无匹配（宽表首批数据由今晚日批生成；此前显示上一交易日）') }}
       </div>
     </div>
-    <!-- 分页（★ 2026-10-26：每页 25 只；2000+ 只 ⇒ 必须能直接跳首/末页，不然要点几十次） -->
+    <!-- 分页（★ 2026-10-26：每页 20 只；2000+ 只 ⇒ 必须能直接跳首/末页，不然要点几十次） -->
     <div class="flex items-center gap-2 mt-3 text-xs flex-wrap" v-if="total > 0">
       <span class="text-muted">共 <b class="text-gray-200 font-mono">{{ total }}</b> 只 ·
         每页 {{ f.size }} 只</span>
@@ -168,9 +184,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 // ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
-import { getStockFactsWide } from '../api'
+// ★ 2026-10-26（用户批准"盘中实时涨跌幅"）：`getBatchPricesCached` = 只读后端内存缓存，
+//   上游请求 0；`isTradingTime` 保证只在交易时段轮询（休市一分钟都不发）。
+import { getStockFactsWide, getBatchPricesCached } from '../api'
+import { isTradingTime } from '../composables/usePortfolio'
 // 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
 // ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
 //   `PHASE_STYLE`（绿=机会/红=风险）与 `scoreClass`、`readyChipCls`，不另建一套配色。
@@ -223,8 +242,84 @@ function apply() {
   load()
 }
 
-watch(page, load)
-onMounted(load)
+// ── 盘中实时（★ 2026-10-26，用户批准）─────────────────────────────────────────
+//   数据源 = **后端行情内存缓存**（`/score/batch-prices?cached=1`，调度器每 ~120s
+//   刷全市场）⇒ **上游请求 = 0**，只花本机 CPU；20 只 ≈1.6KB/次（gzip 0.57KB）。
+//   纪律（与全站一致）：
+//     ① 只在交易时段轮询（`isTradingTime` 已排周末/午休），休市一分钟都不发；
+//     ② 页面在后台（`document.hidden`）不请求 —— 省电省流量；
+//     ③ 失败/无数据 ⇒ **保留上一次的值**（不闪「—」、不填 0），只降级为日批口径；
+//     ④ 后端若报 `from_snapshot=true`（休市日缓存是上一交易日收盘快照）⇒ **拒用**，
+//        否则会把昨天收盘当"今日现价"（本项目踩过快照谎报事故）。
+const live = ref({})        // {code: {price, change_pct}}
+const liveMeta = ref({})    // {as_of, data_ts, data_date, from_snapshot, age_sec, n}
+const liveEmpty = ref(false)   // 缓存没覆盖到这批票（冷启动/冷门票）⇒ 如实说明，不装"正在取"
+const tradingNow = ref(isTradingTime())
+let liveTimer = null
+
+const liveOn = computed(() => Object.keys(live.value).length > 0)
+const liveAsOf = computed(() => liveMeta.value.as_of || '')
+// 未拿到实时值时的**诚实**说明（不写"正在加载"糊过去）
+const liveNote = computed(() => {
+  if (!tradingNow.value) return '休市 · 日批口径'
+  if (liveMeta.value.rejected === 'snapshot') return '行情为收盘快照 · 日批口径'
+  if (liveEmpty.value) return '行情缓存未就绪 · 日批口径'
+  return '取实时行情中…'
+})
+
+function q(r) { return live.value[(r && r.code) || ''] || null }
+
+// 基准换算：日批的 ret5/ret20/距高点都以**日批收盘**为基准，
+// 换成现价只需整体 ×(1+当日涨跌) —— 不需要重新取任何历史数据。
+function lv(r, v) {
+  if (v == null) return v
+  const m = q(r)
+  if (!m || m.change_pct == null) return v
+  const g = Number(m.change_pct) / 100
+  if (!Number.isFinite(g)) return v
+  return ((1 + Number(v) / 100) * (1 + g) - 1) * 100
+}
+function pct0(v) {
+  return v == null ? '—' : Number(v).toFixed(0) + '%'
+}
+
+async function loadLive() {
+  tradingNow.value = isTradingTime()
+  const codes = (rows.value || []).map(r => r.code).filter(Boolean)
+  if (!tradingNow.value || !codes.length) return
+  if (typeof document !== 'undefined' && document.hidden) return
+  try {
+    const { data } = await getBatchPricesCached(codes)
+    if (!data || data.from_snapshot) {
+      liveMeta.value = { ...(data || {}), rejected: 'snapshot' }
+      live.value = {}
+      liveEmpty.value = true
+      return
+    }
+    const m = {}
+    for (const s of (data.rows || [])) {
+      if (s && s.code && Number(s.price) > 0) m[s.code] = s
+    }
+    if (Object.keys(m).length) {
+      live.value = m
+      liveMeta.value = data
+      liveEmpty.value = false
+    } else {
+      liveEmpty.value = true     // 缓存没覆盖这批票（冷启动期/极冷门票）⇒ 保留日批值
+    }
+  } catch (e) {
+    console.warn('[screener] 实时行情刷新失败（保留上次）', (e && e.message) || e)
+  }
+}
+
+// 行/页变化：先清掉旧页的实时值（否则会把上一页价格贴到新票上），再取新页
+watch(rows, () => { live.value = {}; liveEmpty.value = false; loadLive() })
+watch(page, () => { live.value = {}; liveEmpty.value = false; load() })
+onMounted(() => {
+  load()
+  liveTimer = setInterval(() => { if (isTradingTime()) loadLive() }, 60000)
+})
+onBeforeUnmount(() => { if (liveTimer) clearInterval(liveTimer) })
 
 function fmt(v) {
   if (v == null) return '—'

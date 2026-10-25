@@ -734,6 +734,45 @@ def get_stocks_batch(codes: list) -> list:
     return list(data.values())
 
 
+def get_stocks_batch_cached(codes: list) -> dict:
+    """**只读内存缓存**取批量行情（★ 2026-10-26 新增；**不发任何外部请求**）。
+
+    为什么要它：调度器 `stock_cache_refresh_loop` 本来就每 ~120s 把全市场刷进
+    `_cache["stocks"]`（增量扫描，只请求已知有效代码）。选股工作台盘中要刷 20 只
+    的涨跌幅，走 `get_stocks_batch()` 会**每次直连腾讯**（多标签页 ⇒ 请求翻倍，
+    项目有 501/WAF 前车之鉴）；读内存则**上游请求恒为 0**，只花本机 CPU。
+
+    返回 `{code: info}`，**缺失的 code 不出现在结果里**（调用方按"没有就保留原值"
+    处理 —— 缺数据 ≠ 0，不拿 0 冒充平盘）。
+    """
+    stocks = _cache.get("stocks") or {}
+    if not isinstance(stocks, dict):     # 防御：缓存被误写成 list ⇒ 视为无数据（不炸请求）
+        return {}
+    out = {}
+    for c in codes or []:
+        key = str(c)
+        info = stocks.get(key)
+        if info:
+            out[key] = info
+    return out
+
+
+def cache_meta() -> dict:
+    """行情内存缓存的自述（不触发刷新）：条数 / 数据时刻 / 是否来自收盘快照。
+
+    消费方（如 `/score/batch-prices?cached=1`）**必须**看 `from_snapshot` 与
+    `data_date`：休市日缓存里是**上一交易日收盘快照**，直接当"今日现价"展示会谎报。
+    """
+    ts = _cache.get("data_ts") or 0
+    return {
+        "n": len(_cache.get("stocks") or {}),
+        "data_ts": ts,
+        "data_date": _cache.get("data_date"),
+        "from_snapshot": bool(_cache.get("from_snapshot")),
+        "age_sec": (round(time.time() - ts) if ts else None),
+    }
+
+
 def get_index(code: str) -> dict:
     """
     获取指数行情（如上证指数 000001、深证成指 399001）。
