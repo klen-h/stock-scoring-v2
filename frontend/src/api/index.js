@@ -198,6 +198,10 @@ export const getStockScore = (symbol) => http.get(`/score/${symbol}`)
 export const getScoreTop = (params) => http.get('/score/batch/top', { params, timeout: 90000 })
 // 旁路衰减灰度对比（生产 vs 公告后衰减 两套 top N，日批快照，非实时）
 export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank', { params: { limit }, timeout: 15000 })
+// ★ 2026-10-25（用户："阴跌防御影子榜独立标签页 + 工作台防御 Top10"）：
+//   H2' 旁路影子榜（`shadow_rank_daily.variant='defensive'`，日批落库，**不改生产排序**）。
+//   只读快照、零重算 ⇒ 轻请求；无数据时后端返回 `ok=false` + note（前端如实说明）。
+export const getShadowDefensive = (limit = 50) => http.get('/score/batch/shadow-defensive', { params: { limit }, timeout: 20000 })
 // ★ 买入闸门观察池（ready≥2 的「等状态」候选 + 还差什么条件）—— 2026-09-22
 //   ⚠️ 路径是 `/score/batch/gate-watch`（**两段**）：后端 `/{symbol}` 单段通配路由
 //   注册在前、会吞掉单段静态路径 ⇒ 原先 `/score/gate-watch` 恒返回

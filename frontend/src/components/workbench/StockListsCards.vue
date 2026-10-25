@@ -4,28 +4,47 @@
   <div class="space-y-4">
     <!-- ① 评分榜 Top10 -->
     <div class="bg-card border border-border rounded-lg p-4">
-      <div class="flex items-center justify-between mb-2">
-        <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                @click="toggleTop" :title="topOpen ? '点击收起' : '点击展开'">
-          <span class="text-[10px] text-muted">{{ topOpen ? '▼' : '▶' }}</span>评分榜 Top10
-          <!-- ★ 口径如实标注：本地实时（前端引擎，盘中可实时）vs 后端批次 -->
-          <!-- ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道
-               他在实时刷新"）：盘中（含竞价/盘中/午盘）显示**距下次刷新的秒数**。
-               由父级 `refreshLeft`（每 1s 递减、轮询触发时重置）传入；非交易时段传 0 ⇒ 不显示
-               （数据不变时显示倒计时是误导）。 -->
-          <span v-if="topMode" class="text-[10px] font-normal"
-                :class="topMode === 'local' ? 'text-emerald-400' : 'text-muted'"
+      <!-- ★★ 2026-10-25（用户："评分榜区域新增「防御Top10」标签页，与现有 Top10 自由切换"；
+           "查看完整版改文案为详情"；"移除预登记 FAIL 那段文字"）：
+           ① 标题行改为**两个标签页**（评分Top10 / 防御Top10），与榜单页 tab 同款观感
+              （选中 = `bg-accent/20 text-accent`），点击即切、共享下方的展开/收起；
+           ② 右侧链接文案 `查看完整榜` → `详情`（右栏仅 320px，省空间）；
+           ③ FAIL 披露整段移除（用户明确要求不在界面展示；口径仍在后端/方案文档留痕）。 -->
+      <div class="flex items-center justify-between mb-2 gap-2">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <button type="button" class="text-[10px] text-muted hover:text-accent shrink-0"
+                  @click="toggleTop" :title="topOpen ? '点击收起' : '点击展开'">
+            {{ topOpen ? '▼' : '▶' }}
+          </button>
+          <button v-for="t in cardTabs" :key="t.key" type="button"
+                  class="px-2 py-0.5 rounded text-xs transition-colors shrink-0"
+                  :class="cardTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+                  :title="t.tip"
+                  @click="cardTab = t.key">{{ t.label }}</button>
+        </div>
+        <router-link target="_blank" :to="detailTo" class="text-xs text-accent hover:underline shrink-0">详情</router-link>
+      </div>
+      <!-- 口径如实标注：本地实时（前端引擎，盘中可实时）vs 后端批次；防御榜为日批快照 -->
+      <div class="mb-1.5 text-[10px] text-muted leading-relaxed">
+        <template v-if="cardTab === 'score'">
+          <span v-if="topMode" :class="topMode === 'local' ? 'text-emerald-400' : ''"
                 :title="topMode === 'local'
                   ? '本地计算：前端 K 线包 + 实时行情、本地精算 ⇒ 盘中为实时（与榜单页同源）。K 线包 2026-10-11 起扩容纳入科创板；包未覆盖的票自动缺席'
-                  : '后端批次：/score/batch/top（盘中通常是上一交易日快照）。全市场口径（含创业板/科创板）；科创/创业已用行内标签标注'">
-            （{{ topMode === 'local' ? '本地实时' : '后端批次' }}<template
-              v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template>）</span></button>
-        <router-link target="_blank" to="/score" class="text-xs text-accent hover:underline">查看完整榜</router-link>
+                  : '后端批次：/score/batch/top（盘中通常是上一交易日快照）。全市场口径（含创业板/科创板）'">
+            {{ topMode === 'local' ? '本地实时' : '后端批次' }}<template
+              v-if="topCountdown > 0"> · {{ topCountdown }}s 后刷新</template></span>
+        </template>
+        <template v-else>
+          <span :class="defMeta.gate ? 'text-sky-300' : ''"
+                :title="defMeta.gate
+                  ? '阴跌段门控 ON：银行组总分 ×' + (1 + (defMeta.delta ?? 0)).toFixed(2) + ' 后重排'
+                  : '门控 OFF：当前非阴跌段，本榜 = 生产口径'">
+            H2' 防御影子{{ defMeta.date ? ' · ' + defMeta.date : '' }}</span>
+          <span v-if="defMeta.eq_state" class="ml-1 font-mono">（{{ defMeta.eq_state }}）</span>
+        </template>
       </div>
-      <!-- ★ 2026-10-11（B1 拍板）：FAIL 披露（PLAN_SCORE_EDGE.md §9）—— 一行成本防误读 -->
-      <div class="mb-1.5 text-[10px] text-amber-400/90 leading-relaxed">
-        ⚠️ 评分选股方向预登记 FAIL（防御市 T+5 −1.43pt，2026-10-11）⇒ 本榜不构成买入依据（验证中）
-      </div>
+      <!-- ① 评分 Top10（原卡，未改动行内口径） -->
+      <template v-if="cardTab === 'score'">
       <div v-if="topErr" class="text-muted text-xs">—（加载失败）</div>
       <div v-else-if="!topItems.length" class="text-muted text-xs">—（暂无数据）</div>
       <div v-else-if="!topOpen" class="text-[11px] text-muted truncate">
@@ -76,6 +95,35 @@
             {{ r.total_score }}</span>
         </div>
       </div>
+      </template>
+
+      <!-- ② 防御 Top10（H2' 阴跌防御影子榜；日批快照，不改生产排序）
+           ★ 只显示"排名 / 名称 / 防御加成标记 / 分数" —— 该榜没有 mainforce/gate 字段
+             （影子榜只存分数与名次），硬塞会变成一排 "-"，反而不如不给。 -->
+      <template v-else>
+        <div v-if="defErr" class="text-muted text-xs">—（{{ defErr }}）</div>
+        <div v-else-if="!defItems.length" class="text-muted text-xs">—（暂无数据，等日批产出）</div>
+        <div v-else-if="!topOpen" class="text-[11px] text-muted truncate">
+          Top1 {{ defItems[0].name || defItems[0].code }}
+          <b class="font-mono text-gray-200">{{ defItems[0].total_score }}</b>
+          · 共 {{ defItems.length }} 只
+        </div>
+        <div v-else class="space-y-1 text-xs">
+          <div v-for="(r, i) in defItems" :key="r.code"
+               class="flex items-center gap-1.5 border-b border-border/40 py-1.5">
+            <span class="w-5 shrink-0 text-muted font-mono">{{ i + 1 }}</span>
+            <a :href="stockHref(r.code)" target="_blank"
+               class="font-semibold hover:text-accent truncate">{{ r.name || r.code }}</a>
+            <a :href="xqUrl(r.code)" target="_blank"
+               class="shrink-0 text-muted font-mono hover:text-accent" title="雪球">{{ r.code }}</a>
+            <span v-if="r.boosted"
+                  class="shrink-0 px-1 py-0.5 rounded text-[10px] bg-sky-500/20 text-sky-300 cursor-help"
+                  :title="`阴跌段防御加成：银行组 ×${(1 + (defMeta.delta ?? 0)).toFixed(2)}`">防御</span>
+            <span class="ml-auto shrink-0 font-mono font-bold" :class="scoreClass(r.total_score)">
+              {{ r.total_score }}</span>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- ② 观察池（买入闸门候选）—— **默认收起**，点击标题展开 -->
@@ -172,7 +220,7 @@
 // ⚠️ 口径：观察池来自**晚间日批快照** ⇒ 盘中/15:00 看到的是**上一交易日**的池子
 //    （`gwMeta.data_date` 显示实际日期）；评分榜的口径由 `topMode` 标注（本地实时/后端批次）。
 // ==============================================================================
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   PHASE_STYLE as MF_PHASE_STYLE, CONSEC_STYLE, strategyShort, phaseCn, readyChipCls,
   stockHref, xqUrl, pctClass, signNum, scoreClass, boardChip,
@@ -190,6 +238,12 @@ const props = defineProps({
   // ★ 2026-09-30：观察池**实时涨跌幅** `{code: {price, change_pct}}`（父级用
   //   `getBatchPrices` 拉，60s/120s 刷新）；未到达的 code ⇒ 显示「—」。
   gwPrices: { type: Object, default: () => ({}) },
+  // ★ 2026-10-25（用户："评分榜区域新增防御 Top10 标签页"）：
+  //   H2' 阴跌防御影子榜（`/score/batch/shadow-defensive`，日批快照）。
+  //   父级与 topItems **同批加载**（一次轻请求），失败只影响该 tab（各自 err）。
+  defItems: { type: Array, default: () => [] },
+  defMeta: { type: Object, default: () => ({}) },
+  defErr: { type: String, default: '' },
 })
 
 // 观察池默认**收起**（用户要求）
@@ -206,6 +260,24 @@ function toggleTop() {
   topOpen.value = !topOpen.value
   try { localStorage.setItem(TOP_KEY, topOpen.value ? '1' : '0') } catch { /* ignore */ }
 }
+
+// ── 卡内两个标签页（2026-10-25）────────────────────────────────────────────────
+//   与榜单页 tab 同款切换体验；**选中态也记忆**（用户下次进来还是那张榜）。
+//   `detailTo` 随之切换：防御榜带 `?tab=defensive` 直达榜单页对应标签。
+const cardTabs = [
+  { key: 'score', label: '评分Top10', tip: '生产评分榜 Top10（与榜单页同源）' },
+  { key: 'def', label: '防御Top10', tip: '阴跌防御影子榜 Top10（银行组阴跌段加权；影子期不改生产排序）' },
+]
+const CARD_TAB_KEY = 'wb_score_card_tab'
+const cardTab = ref((() => {
+  try { return localStorage.getItem(CARD_TAB_KEY) === 'def' ? 'def' : 'score' } catch { return 'score' }
+})())
+watch(cardTab, (v) => {
+  try { localStorage.setItem(CARD_TAB_KEY, v) } catch (e) { console.warn('[top10] tab 记忆失败', e?.message) }
+})
+const detailTo = computed(() => (cardTab.value === 'def'
+  ? { path: '/score', query: { tab: 'defensive' } }
+  : { path: '/score' }))
 
 /**
  * 主力阶段（六档全覆盖）：本地模式来自 `mainforce.phase`（K 线包），

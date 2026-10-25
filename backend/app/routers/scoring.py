@@ -1603,6 +1603,64 @@ def sector_strength_status(date: str = None):
     return out
 
 
+@router.get("/batch/shadow-defensive")
+def shadow_defensive(limit: int = Query(default=50, ge=10, le=100)):
+    """H2' **阴跌防御影子榜**（`shadow_rank_daily.variant='defensive'`，日批落库）。
+
+    ★ 2026-10-25（用户："新增阴跌防御影子榜独立标签页 / 工作台防御 Top10"）：
+      只**读日批快照**，不在请求里重算 —— 防御因子依赖等权锚判态（`eq_anchor`），
+      盘中来回触发没有意义；判据冻结在方案 §7 v1.0（银行组 ×1.80、δ=0.80），
+      请求内重算必然与落库口径漂移。
+    ★ 定位：**旁路影子榜，不改生产排序**（生产榜仍由 `/batch/top` 供给）；
+      判定走 `scripts/defensive_edge_check.py`（前瞻段，月度自动复核）。
+    返回 `{ok, date, gate, eq_state, eq_date, group, delta, items[]}`；无数据时
+    `ok=false` + `note`（前端显示「等日批产出」，不伪造空榜）。
+    """
+    import json as _json
+
+    from app.database import db as _db
+    try:
+        _row = _db.fetch_one(
+            "SELECT MAX(rank_date) AS d FROM shadow_rank_daily WHERE variant = 'defensive'")
+        _d = str((_row or {}).get("d") or "")
+        if not _d:
+            return {"ok": False, "date": None, "items": [],
+                    "note": "尚无 defensive 影子榜（等日批 task_shadow_defensive 产出）"}
+        _rows = _db.fetch(
+            "SELECT rank_pos, code, name, total_score, dimensions_json "
+            "FROM shadow_rank_daily WHERE variant = 'defensive' AND rank_date = %s "
+            "ORDER BY rank_pos", (_d,))
+    except Exception as e:
+        print(f"[shadow_defensive] 读取失败: {e}")
+        return {"ok": False, "date": None, "items": [],
+                "reason": f"读取影子榜失败：{str(e)[:100]}"}
+
+    meta = {}
+    items = []
+    for r in _rows or []:
+        dims = {}
+        try:
+            dims = _json.loads(r.get("dimensions_json") or "{}")
+        except (TypeError, ValueError):
+            dims = {}
+        if not meta:
+            meta = dims.get("_defensive") or {}
+        items.append({
+            "rank_pos": r.get("rank_pos"),
+            "code": r.get("code"),
+            "name": r.get("name") or "",
+            "total_score": r.get("total_score"),
+            "boosted": bool(meta.get("gate")) and "银行" in (r.get("name") or ""),
+        })
+    gate = bool(meta.get("gate"))
+    return {
+        "ok": True, "date": _d, "gate": gate,
+        "eq_state": meta.get("eq_state") or "", "eq_date": meta.get("eq_date") or "",
+        "group": meta.get("group") or "", "delta": meta.get("delta"),
+        "n": len(items), "items": items[:int(limit)],
+    }
+
+
 @router.get("/batch/shadow-rank")
 async def shadow_rank(limit: int = Query(default=50, ge=10, le=100)):
     """影子榜：生产 / 公告后衰减（两种口径）三套 top N，实时读 ranking_live 精算结果重加权。

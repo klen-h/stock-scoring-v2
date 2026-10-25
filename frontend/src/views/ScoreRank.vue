@@ -266,7 +266,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'linkage'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'linkage' && activeTab !== 'defensive'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -768,8 +768,78 @@
       </button>
     </div>
 
+    <!-- ★★ 2026-10-25（用户："新增阴跌防御影子榜独立标签页，与板块联动并列"）：
+         H2' 旁路影子榜。**只读日批快照**（不重算），布局/交互与「板块联动」同构：
+         顶部一条状态条（门控态 + 等权锚 + 加成系数 + 刷新），下面一张卡表。
+         ⚠️ 影子期纪律：本榜不改生产 Top50、不改 ranking_history、不进决策链；
+            能否动生产由 `defensive_edge_check`（前瞻阴跌段）判定后另行拍板。 -->
+    <div v-if="activeTab === 'defensive'" class="space-y-3">
+      <div class="bg-card border border-border rounded-lg px-3 py-2 text-xs flex items-center gap-x-4 gap-y-1 flex-wrap">
+        <span class="px-1.5 py-0.5 rounded border text-[10px]"
+              :class="defData.gate ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                                   : 'bg-white/5 text-muted border-border'">
+          H2' 阴跌防御
+        </span>
+        <span class="text-muted">数据日 <b class="text-gray-300">{{ defData.date || '—' }}</b></span>
+        <span :class="defData.gate ? 'text-sky-300' : 'text-muted'">{{ defGateText }}</span>
+        <span class="text-muted">等权锚 <b class="text-gray-200">{{ defEqText }}</b>
+          <span v-if="defData.eq_date" class="font-mono">（{{ defData.eq_date }}）</span></span>
+        <span class="text-muted">防御组加成 <b class="text-gray-200 font-mono">{{ defDeltaText }}</b></span>
+        <button @click="loadDefShadow" :disabled="defLoading"
+          class="ml-auto px-2 py-1 rounded bg-white/5 text-muted hover:text-gray-200 transition-colors disabled:opacity-40">
+          {{ defLoading ? '加载中…' : '刷新' }}
+        </button>
+      </div>
+
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02]">
+          防御影子榜 Top {{ defData.items.length || 50 }} ·
+          与生产榜同池同分，仅对<b class="text-gray-300">银行组</b>在阴跌段内加权后重排
+        </div>
+        <div v-if="defErr" class="p-6 text-center text-xs text-amber-400">{{ defErr }}</div>
+        <div v-else-if="defLoading && !defData.items.length" class="p-6 text-center text-xs text-muted">加载中…</div>
+        <div v-else-if="!defData.ok && !defData.items.length"
+             class="p-6 text-center text-xs text-muted">{{ defData.note || '尚无数据（等日批产出）' }}</div>
+        <table v-else class="w-full text-sm">
+          <thead>
+            <tr class="border-b border-border text-muted text-xs">
+              <th class="text-left py-2.5 px-3">排名</th>
+              <th class="text-left py-2.5 px-3">代码</th>
+              <th class="text-left py-2.5 px-3">名称</th>
+              <th class="text-right py-2.5 px-3">评分（含加成）</th>
+              <th class="text-center py-2.5 px-3">标记</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in defData.items" :key="it.code"
+                class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
+                @click="goDetail(it.code)">
+              <td class="py-2 px-3 text-muted font-mono text-xs">{{ it.rank_pos }}</td>
+              <td class="py-2 px-3 font-mono text-xs text-accent">
+                <a :href="getXueqiuUrl(it.code)" target="_blank" rel="noopener" @click.stop
+                   class="hover:underline" title="在雪球查看">{{ it.code }}</a>
+              </td>
+              <td class="py-2 px-3">{{ it.name }}</td>
+              <td class="py-2 px-3 text-right font-mono">{{ it.total_score }}</td>
+              <td class="py-2 px-3 text-center">
+                <span v-if="it.boosted"
+                      class="px-1.5 py-0.5 rounded text-[10px] bg-sky-500/20 text-sky-300 cursor-help"
+                      :title="`阴跌段防御加成：银行组总分 ${defDeltaText}（δ 已 in-sample 定参）`">防御加成</span>
+                <span v-else class="text-[10px] text-muted">-</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="px-3 py-2 text-[11px] text-muted border-t border-border leading-relaxed">
+          口径：同一批精算分（`ranking_live`）→ 阴跌段（等权锚 `bear_slow`）内**银行组 {{ defDeltaText }}** 后重排；
+          非阴跌段门控 OFF ⇒ 榜单等于生产口径。判据冻结于方案 §7 v1.0，
+          <b class="text-gray-300">影子期不改生产排序</b>；前瞻段判定见 `defensive_edge_check`。
+        </div>
+      </div>
+    </div>
+
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'defensive'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
@@ -1390,7 +1460,7 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getShadowDefensive, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
   // ★ 2026-09-25 修复：`checkMarketAlerts()` 一直在调 `getMarketOverview()` 却**从未 import**
   //   ⇒ 运行时抛 ReferenceError 被 `try/catch` 吞掉 ⇒ `marketAlerts` 恒为空数组
   //   ⇒ **异动监控的市场警示规则（_ALERT_RULES）从来没生效过**，且构建/日志都看不出。
@@ -1432,6 +1502,10 @@ const tabs = [
   // ★ 2026-10-20：板块联动筛选（强势板块 + 联动版 Top50）。影子期也照常展示，
   //   但不改主榜/ranking_history —— 用户要看的是"这套规则会选出什么"。
   { key: 'linkage', label: '板块联动' },
+  // ★ 2026-10-25（用户："新增阴跌防御影子榜独立标签页，与板块联动并列"）：
+  //   H2' 旁路影子榜（银行组 ×1.80，阴跌段门控）。与「板块联动」同为**影子期对照**，
+  //   不改生产榜/ranking_history、不进决策链 ⇒ 放在联动旁边，交互与布局保持一致。
+  { key: 'defensive', label: '防御影子榜' },
   { key: 'verify', label: '胜率回查' },
   { key: 'backtest', label: '历史回测' },
   { key: 'optimize', label: '权重优化' },
@@ -1478,6 +1552,48 @@ const linkageMeta = ref({})
 const showTopCols = computed(() => activeTab.value === 'top' || activeTab.value === 'linkage')
 const displayRows = computed(() =>
   activeTab.value === 'linkage' ? linkageRows.value : tableData.value)
+// ── 阴跌防御影子榜（2026-10-25；H2' 判据冻结 §7 v1.0）──────────────────────────
+//   数据只读日批快照（`shadow_rank_daily.variant='defensive'`）——不重算，理由见后端
+//   `/batch/shadow-defensive` 注释（防御因子依赖等权锚判态，请求内重算必然漂移）。
+//   定位与「板块联动」同级：**影子期对照**，不改生产榜、不进决策链。
+const defLoading = ref(false)
+const defErr = ref('')
+const defData = ref({ ok: false, items: [], date: '', gate: false,
+                       eq_state: '', eq_date: '', delta: null, note: '' })
+const defEqText = computed(() => {
+  const s = defData.value.eq_state
+  return ({ bear_slow: '阴跌', bear_fast: '急跌', bull_slow: '慢牛', bull_fast: '快牛',
+            sideways: '震荡' })[s] || s || '—'
+})
+const defGateText = computed(() => (defData.value.gate
+  ? `门控 ON（${defEqText.value}段 ⇒ 防御组加成生效）`
+  : `门控 OFF（当前${defEqText.value}段 ⇒ 榜 = 生产口径）`))
+const defDeltaText = computed(() => (defData.value.delta == null
+  ? '—' : `×${(1 + Number(defData.value.delta)).toFixed(2)}`))
+
+async function loadDefShadow() {
+  defLoading.value = true
+  defErr.value = ''
+  try {
+    const { data } = await getShadowDefensive(50)
+    defData.value = {
+      ok: !!(data && data.ok),
+      items: (data && data.items) || [],
+      date: (data && data.date) || '',
+      gate: !!(data && data.gate),
+      eq_state: (data && data.eq_state) || '',
+      eq_date: (data && data.eq_date) || '',
+      delta: (data && data.delta != null) ? data.delta : null,
+      note: (data && (data.note || data.reason)) || '',
+    }
+  } catch (e) {
+    // 失败保留上次值（铁律 11），只标错
+    defErr.value = '读取失败：' + (e?.message || e)
+  } finally {
+    defLoading.value = false
+  }
+}
+
 const linkageReasonCN = {
   ok: '过滤生效', bull_market: '普涨日（行业选择无增量）', no_strong: '今日无强势板块',
   unavailable: '强度数据不可用', insufficient_days: '历史数据不足',
@@ -2444,6 +2560,7 @@ function switchTab(tab) {
   else if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()
   else if (tab === 'linkage') loadLinkage()
+  else if (tab === 'defensive') loadDefShadow()
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口
     if (shadowLocal()) loadData()
