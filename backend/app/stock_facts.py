@@ -44,6 +44,9 @@ _COLS = (
     "lhb_big_net_sell, lhb_latest_date, "
     # F 形态（预登记中）
     "pattern_hit, "
+    # F2 战法命中（★ 2026-10-26 新增）：英文 key 逗号分隔，如 "ma_pullback,single_yang_unbroken"；
+    #    NULL = 当日该股未被任何战法扫中（不是"没扫"—— 扫描宇宙见 strategy_results）
+    "strategy_hit, "
     # G 板块（影子期 PARTIAL）
     "sector_ret5, sector_top30, sector_pass_filter, "
     # H 防御组（H2' 影子中）
@@ -70,12 +73,24 @@ def ensure_table() -> None:
             gate_ready INTEGER, gate_missing TEXT, gate_pos_label TEXT,
             lhb_big_net_sell INTEGER, lhb_latest_date TEXT,
             pattern_hit INTEGER,
+            strategy_hit TEXT,
             sector_ret5 REAL, sector_top30 INTEGER, sector_pass_filter INTEGER,
             defensive_group INTEGER,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (date, code)
         )
     """)
+    # ★ 2026-10-26（加列不加义）：`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表补列 ——
+    #   线上表早已建好，新列必须显式 ALTER，否则 `INSERT` 立刻报列数不匹配（整批失败）。
+    try:
+        if db.is_postgres:
+            db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN IF NOT EXISTS strategy_hit TEXT")
+        else:
+            _cols = {str(r.get("name")) for r in db.fetch(f"PRAGMA table_info({_TABLE})") or []}
+            if "strategy_hit" not in _cols:
+                db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN strategy_hit TEXT")
+    except Exception as e:
+        print(f"[stock_facts] 补列 strategy_hit 失败（将致写入异常）: {str(e)[:100]}")
     _READY = True
 
 
@@ -236,8 +251,46 @@ def build(day: str) -> Dict:
                      "lhb_latest_date": str(r["date"])[:10]}
 
     # ── F 形态：pattern_scan_daily 当日命中 ──
+    # ★★ 2026-10-26（用户问"形态命中加入的难点"）：难点不在字段，在**上游产物太稀疏**——
+    #   ① `pattern_launch.scan_latest()` 只在 `backtest_prices`（~1032 只）宇宙里扫，
+    #      评分宇宙另外 ~1800 只**结构上不可能命中**；
+    #   ② 形态判据苛刻（缩量调整+放量启动+max_results 截断）⇒ 单日 0~1 只（实测 10-22 仅 1 只、
+    #      10-23 为 0）⇒ 勾上「形态命中」经常是空表，看着像坏了；
+    #   ③ `persist_scan` 旧实现在 **0 命中时直接不落库** ⇒ 事实表无法区分
+    #      "扫过但没中"（0）与"根本没扫"（NULL）。
+    #   ⇒ 现改为：`sync_meta['pattern_scan'].note` 记当日（persist_scan 已补留痕），
+    #      当日扫过才写 0/1，否则 **NULL（无数据）**。
     pat = {str(r["code"]) for r in db.fetch(
         "SELECT code FROM pattern_scan_daily WHERE date = %s", (day,)) or []}
+    _pat_scanned = False
+    try:
+        _pm = db.fetch_one("SELECT note FROM sync_meta WHERE key = 'pattern_scan'")
+        _pat_scanned = str((_pm or {}).get("note") or "")[:10] == day
+    except Exception as e:
+        print(f"[stock_facts] 形态扫描留痕读取失败（pattern_hit 全部置空）: {str(e)[:80]}")
+
+    # ── F2 战法命中（★ 2026-10-26 新增，用户："还有加个战法命中"）──
+    #   源头 = `strategy_results`（日批各战法扫描产物，`scan_date` = 最近已完成交易日）。
+    #   ⚠️ `results_json` 里**带 klines**（当日 10 个战法合计 ≈190KB）⇒ 只取 `code`，
+    #      不必也不该把整包塞进事实表；命中战法以**英文 key** 逗号分隔落库
+    #      （前端 `strategyShort()` 负责显示中文，未登记就回退英文，不隐藏）。
+    strat = {}
+    try:
+        for r in db.fetch("SELECT strategy_name, results_json FROM strategy_results "
+                          "WHERE scan_date = %s", (day,)) or []:
+            try:
+                _items = json.loads(r.get("results_json") or "[]")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(_items, list):
+                continue
+            _sn = str(r.get("strategy_name") or "")
+            for it in _items:
+                c = str((it or {}).get("code") or "") if isinstance(it, dict) else ""
+                if c:
+                    strat.setdefault(c, set()).add(_sn)
+    except Exception as e:
+        print(f"[stock_facts] 战法结果读取失败（该列置空）: {str(e)[:80]}")
 
     # ── G 板块：sector_strength_daily（is_strong=强势前30%∧ret5>0∧成员≥5）──
     sec = {str(r.get("industry") or ""): r for r in db.fetch(
@@ -306,7 +359,9 @@ def build(day: str) -> Dict:
             m.get("flow_consec"), _f(chip.get("price_pos")), _f(chip.get("winner_ratio")),
             gt.get("ready"), _gmiss, gt.get("label"),
             lh.get("lhb_big_net_sell"), lh.get("lhb_latest_date"),
-            1 if code in pat else 0,
+            # 形态：扫过才写 0/1；当日未产出扫描 ⇒ NULL（无数据 ≠ 未命中）
+            (1 if code in pat else (0 if _pat_scanned else None)),
+            (",".join(sorted(strat.get(code) or [])) or None),
             _f(srow.get("ret5")),
             1 if srow.get("is_strong") else (0 if srow else None),
             (1 if code in sector_keep else None),
@@ -317,7 +372,7 @@ def build(day: str) -> Dict:
     # 幂等覆盖写入
     n = 0
     db.execute(f"DELETE FROM {_TABLE} WHERE date = %s", (day,))
-    marks = ",".join(["%s"] * len(rows[0]))   # 列数按首行元组自适应（35）
+    marks = ",".join(["%s"] * len(rows[0]))   # 列数按首行元组自适应（36）
     for i in range(0, len(rows), 200):
         chunk = rows[i:i + 200]
         db.execute(f"INSERT INTO {_TABLE} ({_COLS}) VALUES "
@@ -335,8 +390,14 @@ def _shift(day: str, n: int) -> str:
 
 def latest(day: Optional[str] = None, filters: Optional[Dict] = None,
            order_by: str = "rank_pos", limit: int = 100, offset: int = 0,
-           desc: bool = False, min_cap: Optional[float] = None) -> Dict:
-    """只读查询：宽表当日行（分页 + 单列排序 + 等值筛选 + 最小市值）。**不做任何加权。**"""
+           desc: bool = False, min_cap: Optional[float] = None,
+           where_extra: Optional[List] = None) -> Dict:
+    """只读查询：宽表当日行（分页 + 单列排序 + 等值筛选 + 最小市值）。**不做任何加权。**
+
+    `where_extra`：额外的 `[(SQL 片段, 参数序列), …]` —— 用于等值筛选表达不了的谓词
+    （如 `strategy_hit IS NOT NULL` / `strategy_hit LIKE %x%`）。
+    ⚠️ 片段**只能由后端代码构造**，绝不接受前端原始 SQL（防注入）。
+    """
     ensure_table()
     if not day:
         r = db.fetch_one(f"SELECT MAX(date) AS d FROM {_TABLE}")
@@ -353,6 +414,9 @@ def latest(day: Optional[str] = None, filters: Optional[Dict] = None,
         if k in ALLOWED:
             where.append(f"{k} = %s")
             params.append(v)
+    for frag, prm in (where_extra or []):
+        where.append(frag)
+        params.extend(list(prm or []))
     total = (db.fetch_one(f"SELECT COUNT(*) AS n FROM {_TABLE} WHERE "
                           + " AND ".join(where), tuple(params)) or {}).get("n", 0)
     ob = order_by if order_by in ALLOWED else "rank_pos"

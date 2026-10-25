@@ -621,6 +621,7 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
                      defensive: int = None, lhb_risk: int = None,
                      pattern: int = None, sector_strong: int = None,
                      phase: str = None, min_cap: float = None,
+                     strategy: str = None,
                      user: dict = Depends(get_current_user)):
     """选股工作台·事实宽表（只读，分页+单列排序+等值筛选；**不做任何加权**）。
 
@@ -635,9 +636,22 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
     if lhb_risk is not None:
         filters["lhb_big_net_sell"] = lhb_risk
     if pattern is not None:
+        # ★ 2026-10-26：`pattern_hit` 现在是 **0/1/NULL** 三态 —— 1=命中、0=当日扫过但没中、
+        #   NULL=当日根本没扫描（上游只在 backtest_prices 宇宙扫，且 0 命中旧版不落库）。
         filters["pattern_hit"] = pattern
     if sector_strong is not None:
         filters["sector_top30"] = sector_strong
+    # ★ 2026-10-26（用户："还有加个战法命中"）：`strategy_hit` 是**逗号分隔的英文 key**，
+    #   等值筛选表达不了 ⇒ 走 where_extra：
+    #     `strategy=any`（或 1）→ 任意战法命中（IS NOT NULL）
+    #     其它值 → 具体战法 key（如 ma_pullback）模糊匹配
+    _extra = []
+    _sv = str(strategy or "").strip()
+    if _sv:
+        if _sv.lower() in ("any", "1"):
+            _extra.append(("strategy_hit IS NOT NULL", []))
+        else:
+            _extra.append(("strategy_hit LIKE %s", [f"%{_sv}%"]))
     if phase:
         # ★ 2026-10-26（实测 bug）：`stock_facts.phase` 落的是 `mainforce_state.phase`
         #   —— **英文枚举**（accumulation/…），而前端下拉曾直接传中文「吸筹」⇒ 等值匹配
@@ -648,7 +662,7 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
         filters["phase"] = {v: k for k, v in _PCN.items()}.get(_raw, _raw)
     out = sf.latest(day=date, filters=filters or None, order_by=order_by,
                     limit=max(1, min(limit, 300)), offset=max(0, offset), desc=desc,
-                    min_cap=min_cap)
+                    min_cap=min_cap, where_extra=_extra or None)
     out["columns_note"] = "NULL=不在榜/无数据（≠0）；加权综合分不在此表（=新信号须预登记）"
     return out
 

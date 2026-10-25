@@ -376,10 +376,24 @@ def scan_latest(date: str = None) -> dict:
 
 
 def persist_scan(result: dict) -> int:
-    """把 scan_latest 结果落库（幂等）。返回写入行数。"""
+    """把 scan_latest 结果落库（幂等）。返回写入行数。
+
+    ★ 2026-10-26（用户问"形态命中加入的难点"）：**0 命中也要留痕**。
+      旧实现在 `not items` 时直接 return 0、什么都不写 ⇒ `pattern_scan_daily` 里
+      没有当日行，事实宽表无法区分「扫过但没中」与「当日根本没扫」（两者都成了 0）。
+      现在把扫描日写进 `sync_meta['pattern_scan'].note`，事实表据此决定
+      `pattern_hit` 写 0 还是 NULL（无数据 ≠ 未命中）。
+    """
     cfg = get_config()
     h = _params_hash(cfg)
     day = result.get("date")
+    if day:
+        try:
+            from app import sync_meta
+            sync_meta.touch("pattern_scan", rows=len(result.get("items") or []),
+                            note=str(day)[:10])
+        except Exception as e:
+            print(f"[pattern] 扫描留痕写入失败（不影响扫描）: {str(e)[:80]}")
     if not day or not result.get("items"):
         return 0
     n = 0

@@ -33,8 +33,15 @@
         <span>防御组 <span class="text-sky-300/80">〔H2' 影子中〕</span></span></label>
       <label class="flex items-center gap-1.5"><input type="checkbox" v-model="f.lhbRisk">
         <span>龙虎榜回避 <span class="text-emerald-300/80">〔PASS-回避〕</span></span></label>
-      <label class="flex items-center gap-1.5"><input type="checkbox" v-model="f.pattern">
+      <label class="flex items-center gap-1.5"
+             title="缩量启动形态（预登记中：正边际但不赚钱）。⚠️ 只在上游 backtest_prices 宇宙（~1032 只）扫描，判据苛刻 ⇒ 单日常 0~1 只；勾上后空表属正常，不是坏了">
+        <input type="checkbox" v-model="f.pattern">
         <span>形态命中 <span class="text-amber-300/80">〔预登记中〕</span></span></label>
+      <!-- ★ 2026-10-26（用户："还有加个战法命中"）：任意战法命中（日批 strategy_results） -->
+      <label class="flex items-center gap-1.5"
+             title="当日被任一战法扫中（ma_pullback / single_yang_unbroken / ma_convergence_breakout 等 10 个）。数据来自日批扫描结果，实测单日约 50~60 只；未命中 = 空，不是没扫">
+        <input type="checkbox" v-model="f.strategy">
+        <span>战法命中 <span class="text-emerald-300/80">〔日批扫描〕</span></span></label>
       <label class="flex items-center gap-1.5"><input type="checkbox" v-model="f.sectorStrong">
         <span>强势板块 <span class="text-amber-300/80">〔影子 PARTIAL〕</span></span></label>
       <label class="flex flex-col gap-1">
@@ -73,6 +80,7 @@
           <th class="px-2" title="状态展示，非买入信号">闸门</th>
           <th class="px-2">龙虎榜</th>
           <th class="px-2">板块</th>
+          <th class="px-2" title="当日命中的战法（日批 strategy_results）；形态命中另以「形态」chip 标注">战法</th>
           <th class="px-2">防御</th>
         </tr></thead>
         <tbody>
@@ -133,6 +141,20 @@
               <span v-if="r.sector_top30 === 1" class="text-rise">强</span>
               <span v-else-if="r.sector_top30 === 0" class="text-muted">·</span>
               <span v-else class="text-muted">—</span></td>
+            <!-- ★ 2026-10-26（用户："还有加个战法命中"）：命中的战法 chips（中文短名）＋形态 chip。
+                 无命中但当日扫过 ⇒ 「·」；当日根本没产出扫描 ⇒ 「—」（无数据 ≠ 未命中）。 -->
+            <td class="px-2 text-center whitespace-nowrap">
+              <template v-if="strategyList(r).length || r.pattern_hit === 1">
+                <span v-for="s in strategyList(r)" :key="s"
+                      class="px-1 rounded text-[10px] bg-emerald-500/15 text-emerald-300 mr-0.5 cursor-help"
+                      :title="`战法命中：${strategyShort(s)}（${s}）｜ 来源：日批 strategy_results`">{{ strategyShort(s) }}</span>
+                <span v-if="r.pattern_hit === 1"
+                      class="px-1 rounded text-[10px] bg-amber-500/15 text-amber-300 cursor-help"
+                      title="缩量启动形态命中（预登记中：正边际但不赚钱，仅候选观察）">形态</span>
+              </template>
+              <span v-else-if="r.pattern_hit === 0" class="text-[10px] text-muted">·</span>
+              <span v-else class="text-muted">—</span>
+            </td>
             <td class="px-2 text-center"><span v-if="r.defensive_group" class="text-sky-300">◆</span>
               <span v-else class="text-muted">·</span></td>
           </tr>
@@ -177,8 +199,11 @@
         <span class="text-muted/70">（贴近 60 日高）</span></span>
     </div>
     <div class="mt-3 text-[10px] text-muted leading-relaxed">
-      徽章口径：评分〔预登记 FAIL 2026-10-11，禁作买入依据〕· 龙虎榜回避〔PASS-回避侧〕· 形态〔预登记中〕· 板块联动〔影子期 PARTIAL〕· 防御组〔H2' 影子中〕· 闸门〔状态展示非信号〕。
+      徽章口径：评分〔预登记 FAIL 2026-10-11，禁作买入依据〕· 龙虎榜回避〔PASS-回避侧〕· 形态〔预登记中〕· 板块联动〔影子期 PARTIAL〕· 防御组〔H2' 影子中〕· 闸门〔状态展示非信号〕· 战法命中〔日批扫描，单日约 50~60 只〕。
       本表 = 事实组合筛选，不含任何加权综合分（加权=新信号须预登记）。
+      <br>
+      ⚠️ 「形态命中」稀疏属正常：上游只在 backtest_prices 宇宙（约 1032 只）扫描、判据苛刻，
+      单日常 0~1 只；「战法」列 `—` 表示当日未产出扫描数据（NULL），`·` 表示扫过但未命中。
     </div>
   </div>
 </template>
@@ -193,7 +218,8 @@ import { isTradingTime } from '../composables/usePortfolio'
 // 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
 // ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
 //   `PHASE_STYLE`（绿=机会/红=风险）与 `scoreClass`、`readyChipCls`，不另建一套配色。
-import { phaseCn, PHASE_CN, PHASE_STYLE, scoreClass, readyChipCls, stockHref, xqUrl } from '../composables/displayMeta'
+import { phaseCn, PHASE_CN, PHASE_STYLE, scoreClass, readyChipCls, stockHref,
+         strategyShort, xqUrl } from '../composables/displayMeta'
 
 const rows = ref([])
 const total = ref(0)
@@ -203,7 +229,13 @@ const err = ref('')
 const page = ref(0)
 // ★ 2026-10-26（用户："一页数据太长了，一页20只就好"）：100 → 20（15 列宽表，100 行要滚很久）
 const f = reactive({ phase: '', defensive: false, lhbRisk: false, pattern: false,
-                     sectorStrong: false, order: 'rank_pos', size: 20 })
+                     strategy: false, sectorStrong: false, order: 'rank_pos', size: 20 })
+
+// 战法命中列：`strategy_hit` 是英文 key 逗号分隔（如 "ma_pullback,single_yang_unbroken"）
+function strategyList(r) {
+  const s = (r && r.strategy_hit) || ''
+  return s ? String(s).split(',').filter(Boolean) : []
+}
 
 const DESC = { ret5: 1, ret20: 1, flow5_amt_yi: 1, turnover_pct: 1 }
 
@@ -222,6 +254,7 @@ async function load() {
       ...(f.defensive ? { defensive: 1 } : {}),
       ...(f.lhbRisk ? { lhb_risk: 1 } : {}),
       ...(f.pattern ? { pattern: 1 } : {}),
+      ...(f.strategy ? { strategy: 'any' } : {}),
       ...(f.sectorStrong ? { sector_strong: 1 } : {}),
     })
     rows.value = (data && data.rows) || []
