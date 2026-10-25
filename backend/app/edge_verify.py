@@ -103,6 +103,18 @@ SCRIPTS = (
     #   （对照：mf_edge_check 与两个 LHB 脚本因依赖本地大库而**刻意不注册**，见文末说明）。
     #   日均命中约 0~2 只（995 只池）⇒ 初期必然 INSUFFICIENT（正确行为）。
     ("pattern_launch_edge_check", "缩量启动形态（前瞻预登记）", 120, "T+10 到期观测"),
+    # ★★ 2026-10-25 新增（评分分市况重构 §7 判据冻结 v1.0 / 用户拍板）：**H2' 阴跌防御
+    #   影子榜**前瞻判定。判据：前瞻阴跌段（eq_anchor=bear_slow，上线日 2026-10-23 起）
+    #   defensive 榜 vs base 榜超额差 ≥ +0.10pt/日 且段聚类 P≤0.05 ⇒ GO(=PASS，动生产
+    #   仍须用户拍板)；95%CI 上界 ≤0 ⇒ KILL(=FAIL)；样本闸 ≥10 前瞻阴跌段。
+    #   历史段仅 in-sample 定参（δ=0.80 银行组，reports/insample_defensive_params_*），
+    #   不作判。全链路只读 Postgres（shadow_rank_daily/eq_anchor_history/backtest_prices）。
+    ("defensive_edge_check", "阴跌防御影子榜（前瞻段 GO/KILL）", 10, "前瞻阴跌段"),
+    # ★★ 2026-10-25 新增（同方案 H3）：**市况锚双口径**并跑对比——机制指标非收益指标。
+    #   判据：双锚交集 ≥60 日 且 方向错配率（offensive↔defensive 对撞）≥30% ⇒
+    #   PASS（=切锚必要性成立；切评分权重挂点须用户拍板）；无 KILL 语义（持续跟踪）。
+    #   只读 Postgres（market_regime_history + eq_anchor_history）。
+    ("eq_anchor_check", "市况锚双口径（300锚 vs 等权锚错配率）", 60, "双锚交集日"),
     # ★★ 2026-10-14：**`mf_edge_check`（主力节奏）刻意【不】注册** —— 已评估后移除。
     #   理由（环境错配，不是判据问题）：本模块的 `run_monthly` 由**日批在 Render 上**调用，
     #   而该脚本依赖本地回填库 `backend/data/mf_edge_daily.db`（~300MB，**gitignore**）

@@ -984,9 +984,14 @@ def weight_advice(data: dict):
     }
 
 
-@router.get("/{symbol}")
 def _rank_context(code: str) -> dict:
-    """该股在全量精算榜（ranking_live，每日前 1000）中的最新定位（两次点查，失败返回空）。"""
+    """该股在全量精算榜（ranking_live，每日前 1000）中的最新定位（两次点查，失败返回空）。
+
+    ★ 内部辅助函数（score_single 调用，结果挂 rank_context 字段）——无路由。
+      2026-10-25 修复：本函数曾被插在 `@router.get("/{symbol}")` 装饰器与
+      score_single 之间，装饰器被抢走 ⇒ `/score/{symbol}` 详情页评分 422
+      （code 被当成必填 query 参数）、score_single 无路由。
+    """
     from app.database import db
     try:
         row = db.fetch_one(
@@ -1007,6 +1012,7 @@ def _rank_context(code: str) -> dict:
     return {}
 
 
+@router.get("/{symbol}")
 def score_single(symbol: str):
     """
     ★ 单只股票综合评分（最完整的评分，前端"个股详情页"调用）。

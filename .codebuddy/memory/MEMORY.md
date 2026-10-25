@@ -6,13 +6,17 @@
 > 阅读顺序：本文件 → 最近 1~2 天 daily → `PLAN_NEXT.md` 顶部「开工摘要」。
 > ★ 本文件只放**跨会话必须记住的结论与铁律**；完整经过、证据、逐条验证记录在各日 daily 里，此处不重抄。
 
-## 0. 当前状态（2026-10-19）
+## 0. 当前状态（2026-10-25）
+- 评分分市况重构 **H2'/H3 已开工上线**（§9 用户拍板，详见 daily §148 与方案 §8）：
+  等权锚 `eq_anchor_history`（判态=中位口径，当前 bear_slow）+ 日批 `eq_anchor`/`shadow_defensive` +
+  两 check 进 edge_verify 月度自动复核。**H2' 影子期自 2026-10-23 起算**，等前瞻阴跌段 ≥10 才可判。
 - 未提交：`scripts/daily_batch.py` —— `_batch_already_done()` 判据由 `daily_reports` 改为**自建 `batch_runs` 表**。
   原因：Render 的日报兜底 loop 19:30 就写了 `date=10-19` 的日报，早于日批 20:17 ⇒ 第一版守卫把**当天整批跳过**
   （实测 10-19 只剩 19:31 那条日报，`market_snapshot`/`contradictions`/`gate_snapshot_history` 全停在 10-16）。
   ⇒ **"批次是否完成"必须用只有日批会写的表**，`daily_reports` 有多个写入方。
 - 权威待办 = `PLAN_NEXT.md` 顶部「开工摘要」；**B 类待拍板 = 0**。
-- 只能等时钟：A1 评分 T+20（≈10-23）、A2 回避侧 / A3 影子榜解冻（≈11 月中）、C4/C5 等前瞻样本、C6 未立项。
+- 只能等时钟：A1 评分 T+20（≈10-23）、A2 回避侧 / A3 影子榜解冻（≈11 月中）、C4/C5 等前瞻样本、
+  H2' 防御影子榜前瞻阴跌段（月度自动）、C6 未立项。
 
 ## 1. 架构与运行形态
 - 单进程 FastAPI（`backend/app/main.py`）`/api/*` + 前端静态；生产 `uvicorn 0.0.0.0:8000`，**不要 `--reload`**。

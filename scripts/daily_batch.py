@@ -121,6 +121,39 @@ def task_market_snapshot():
     return "行情收盘快照已保存"
 
 
+def task_eq_anchor():
+    """等权锚（市况第二锚）日增量：全池中位/均值日收益 → eq_anchor_history → 判态。
+
+    ★ 2026-10-25 新增（评分分市况重构 §7 判据冻结 v1.0 的 H3 双锚 / H2' 阴跌门控）：
+      历史已由 scripts/backfill_eq_anchor.py 一次灌入（2005 起，含 state 回填）；
+      本任务从全市场行情缓存取当日收益（零新增 egress），60 日窗口判态后供
+      shadow_defensive（H2' 门控）与 eq_anchor_check（H3 双锚）消费。
+      依赖：行情缓存已刷新（market_snapshot 之后）；缺数据日跳过保留旧行（不抛）。
+    """
+    from app.backtest.eq_anchor import run_daily
+    r = run_daily()
+    if r.get("ok"):
+        return (f"等权锚: {r['date']} 中位 {r['ret_median']:+.3%}"
+                f"(n={r['universe_n']}) → {r.get('state')}")
+    if r.get("skipped"):
+        return f"等权锚: {r.get('note')}"
+    return f"等权锚: {r.get('note')}（跳过，保留旧行）"
+
+
+def task_shadow_defensive():
+    """H2' 阴跌防御影子榜（variant=defensive）：旁路落库，不改生产排序。
+
+    ★ 2026-10-25 新增（判据冻结 §7/用户拍板②）：阴跌段（eq_anchor=bear_slow）
+      银行组总分 ×1.80（in-sample 定参 δ=0.80，见
+      reports/insample_defensive_params_20261025.md）；非阴跌段榜=base。
+      判定走 scripts/defensive_edge_check.py（前瞻段才判，月度自动复核）。
+      依赖 rank_live 落库 + eq_anchor 判态，故排两者之后；与衰减榜共表但只动
+      variant='defensive' 行。
+    """
+    from shadow_defensive_ranking import run
+    return run(top=50, apply=True)
+
+
 def task_calendar():
     """财经日历刷新（金十）——原 Render 每日 07:00 循环（calendar_loop）被只读模式关闭，
     缓存文件停在 09-04；而它是 LLM 复盘的「事件排期」输入（非农/CPI/FOMC 的时间与前值/预期），
@@ -1222,6 +1255,9 @@ TASKS = {
     "regime_alert": (task_regime_alert, "市况转档提醒（切换日推企微）"),
     "mainflow": (task_mainflow, "主力资金流回填"),
     "market_snapshot": (task_market_snapshot, "全市场行情快照"),
+    # ★ 2026-10-25 新增：等权锚日增量（H3 双锚 / H2' 阴跌门控的单一事实源）。
+    #   紧排 market_snapshot 之后（行情缓存已刷新）；历史已回填 2005 起。
+    "eq_anchor": (task_eq_anchor, "等权锚日增量（市况第二锚，H2'/H3 数据源）"),
     # ★ 2026-09-12 迁入：原 Render 每日 07:00 循环被只读模式关闭 → 日历停在 09-04。
     #   放在 LLM 类任务（矛盾报告/日报）之前，保证复盘 prompt 里的事件排期是新的。
     "calendar": (task_calendar, "财经日历刷新（LLM 事件排期来源）"),
@@ -1258,6 +1294,10 @@ TASKS = {
     "sector_linkage": (task_sector_linkage_snapshot, "板块联动过滤榜（平行表，原榜不动）"),
     # ★ 2026-09-17：旁路衰减榜——依赖 rank_live 落库，读其精算五维分做公告后衰减
     "shadow_rank": (task_shadow_rank, "旁路衰减榜（生产 vs 衰减 top30 落库）"),
+    # ★ 2026-10-25 新增：H2' 阴跌防御影子榜（评分分市况重构 §7 判据冻结）。
+    #   依赖 rank_live（分数源）与 eq_anchor（阴跌门控），排两者之后；
+    #   判定由 defensive_edge_check 月度自动复核（edge_verify）。
+    "shadow_defensive": (task_shadow_defensive, "阴跌防御影子榜（variant=defensive）"),
     # ★ 2026-10-15：缩量启动形态每日扫描（描述性观察，非信号）。依赖 backfill 已回填。
     "pattern_launch_scan": (task_pattern_launch_scan, "缩量启动形态扫描 + 观察回填"),
     # ★ 2026-10-18：回测缓存预热（原 Render _heavy 组，只读模式从未跑过 ⇒ 缓存长期陈旧）
@@ -1316,6 +1356,7 @@ TASKS = {
     "retention": (task_retention, "数据库保留期清理（Supabase 500MB 治理）"),
 }
 DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "market_snapshot",
+                 "eq_anchor",
                  "calendar",
                  # ★ 2026-10-24（BK-47 补漏）：risk_calendar 曾注册于 TASKS 却漏进本清单
                  #   ⇒ 生产唯一路径 --tasks all 从不执行，限售解禁底座静默断档
@@ -1327,7 +1368,7 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "news_snapshot", "sector_strength",
                  "crowding_watch", "key_level_watch", "ai_basket_watch",
                  "rank_live", "sector_linkage",
-                 "shadow_rank", "pattern_launch_scan",
+                 "shadow_rank", "shadow_defensive", "pattern_launch_scan",
                  "backtest_preheat",
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
