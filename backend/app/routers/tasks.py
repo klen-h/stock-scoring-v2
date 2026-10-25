@@ -18,6 +18,7 @@ Render 全程只承担一次 HTTPS 出网请求（<1KB）。
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import requests
@@ -95,8 +96,11 @@ async def trigger_task(body: TriggerIn, user: dict = Depends(get_current_user)):
                             detail=f"未知任务 {task}；可选: {sorted(ALLOWED_TASKS)}")
 
     url = f"https://api.github.com/repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches"
-    try:
-        r = requests.post(
+
+    def _post():
+        # ★ 2026-10-26（BK-04a）：async 端点内同步 requests 会阻塞事件循环（stock.py
+        #   头注释记载的同款事故——15s 超时期间所有请求停摆）⇒ 挪线程池执行。
+        return requests.post(
             url,
             headers={
                 "Authorization": f"Bearer {token}",
@@ -109,6 +113,9 @@ async def trigger_task(body: TriggerIn, user: dict = Depends(get_current_user)):
             }},
             timeout=15,
         )
+
+    try:
+        r = await asyncio.to_thread(_post)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"调用 GitHub API 失败: {e}")
 

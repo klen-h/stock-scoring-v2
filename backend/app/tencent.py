@@ -364,7 +364,13 @@ def _fetch_tencent(codes_str: str, timeout: int = 10) -> dict:
     return result
 
 
-def refresh_all_stocks(force: bool = False):
+# ★ 2026-10-26（BK-01）：请求路径触发刷新的**单飞闸**——冷启动 2-4 分钟的全量扫描期间，
+#   30s 轮询的 N 个并发请求会各自 add_task 排队（tencent._cache["lock"] 被串行持有，
+#   任务在线程池里堆成串行长队）⇒ 用进程内标志直接合并为一次。
+_REFRESH_INFLIGHT = {"running": False, "ts": 0.0}
+
+
+def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
     """
     刷新全量 A股行情缓存。
 
@@ -381,6 +387,20 @@ def refresh_all_stocks(force: bool = False):
     代价：后端重启后首次仍需全量扫描（_valid_codes 是内存缓存）。
     """
     global _valid_codes
+    # ★ BK-01：单飞闸——已有一次刷新在跑且本次非强制 ⇒ 直接返回（排队等锁只会
+    #   在线程池里堆积串行任务；缓存 60s 冷却本来就会在完成后挡住后续触发）。
+    import time as _t
+    if _dedupe and not force and _REFRESH_INFLIGHT["running"]:
+        return
+    _REFRESH_INFLIGHT["running"] = True
+    _REFRESH_INFLIGHT["ts"] = _t.time()
+    try:
+        _refresh_all_stocks_inner(force)
+    finally:
+        _REFRESH_INFLIGHT["running"] = False
+
+
+def _refresh_all_stocks_inner(force: bool = False):
     with _cache["lock"]:   # with 语法：进入时自动加锁，退出时自动释放（类似 try-finally）
         # 冷却判断：未强制且 60 秒内刷新过 → 直接返回旧数据
         if not force and time.time() - _cache["last_update"] < 60:

@@ -1403,7 +1403,8 @@ async def score_top(
         _cand_full = []          # 过滤版榜单的候选全池（有当日 rank_live 时 ≈1000 行）
         try:
             from app.scoring.live_ranking import load as _load_live_ranking
-            _stored = _load_live_ranking(limit=1000)  # 组合分排序需更大池（覆盖基本面强但总分中游的票）
+            # ★ 2026-10-26（BK-04b）：同步 DB 读（1000 行 payload）挪线程池
+            _stored = await asyncio.to_thread(_load_live_ranking, 1000)  # 组合分排序需更大池
             # ★★ 2026-10-25（egress 归因后的修复）：原判据 `_stored.date == _today_bj()`
             #   在**周末/节假日/盘前**必然为 False（库里是上一交易日，自然日是今天）
             #   ⇒ 每次缓存过期（3 分钟）都跑一遍**在线全市场精算**（读 backtest_prices /
@@ -1504,7 +1505,9 @@ async def score_top(
         # ★ 排行榜标注：批量算消息面情绪分（快讯源 1 次请求），不参与综合分，仅作参考
         # ★ 2026-10-19：标注对象 = 原版 + 过滤版（两份可能大部分重合，重复标注无副作用）。
         _ann_items = result_data + sector_data
-        news_scores = _batch_news_scores([x["code"] for x in _ann_items])
+        # ★ 2026-10-26（BK-04b）：东财同步 HTTP（miss 时 ~22s）挪线程池，不占事件循环
+        news_scores = await asyncio.to_thread(
+            _batch_news_scores, [x["code"] for x in _ann_items])
         for item in _ann_items:
             item["news_score"] = news_scores.get(item["code"], 0)
 
@@ -1779,8 +1782,10 @@ async def shadow_rank(limit: int = Query(default=50, ge=10, le=100)):
         return {"date": None, "base": [], "zero": [], "grad": [], "overlap": {},
                 "note": "ranking_live 为空（等日批先产出全量精算榜）"}
     codes = [r["code"] for r in data]
-    fin = get_finance_batch(codes) or {}
-    _, weights = resolve_weights()
+    # ★ 2026-10-26（BK-04b）：每请求必打的同步 DB（财报批查+权重解析）挪线程池
+    def _load_fin_w():
+        return get_finance_batch(codes) or {}, resolve_weights()
+    fin, (__, weights) = await asyncio.to_thread(_load_fin_w)
 
     _bj = timezone(timedelta(hours=8))
     today = datetime.now(_bj).strftime("%Y-%m-%d")

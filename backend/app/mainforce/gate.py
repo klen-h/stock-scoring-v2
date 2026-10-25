@@ -193,6 +193,19 @@ def _mode_on() -> bool:
     return (os.environ.get("STRATEGY_MAINFORCE_GATE") or "on").strip().lower() == "on"
 
 
+
+# ★ BK-02：闸门数据缺失计数器（放行+可见）——按类型计数，每满 50 次打一条 ASCII 日志。
+_GATE_MISS = {"no_bars": 0, "no_chip_phase": 0, "_warned": set()}
+
+
+def _miss_watch(kind: str) -> None:
+    _GATE_MISS[kind] = _GATE_MISS.get(kind, 0) + 1
+    n = _GATE_MISS[kind]
+    if n % 50 == 0 and kind not in _GATE_MISS["_warned"] or n == 50:
+        _GATE_MISS["_warned"].add(kind)
+        print(f"[gate] data-miss pass-through: {kind} x{n} (fail-open by design, "
+              f"visible counter)")                     # ASCII（铁律⑥）
+
 def _float_map() -> dict:
     if _fs_cache["map"] is None or time.time() - _fs_cache["ts"] > 6 * 3600:
         try:
@@ -233,11 +246,16 @@ def strategy_gate(code: str, name: str = "") -> dict:
     if not _mode_on():
         return {**empty, "reason": "gate off"}
     bars = _load_bars(code)
+    # ★ 2026-10-26（BK-02，用户拍板"放行+可见"）：数据缺失日维持保守放行（fail-closed
+    #   会让闸门在数据差的日子全停），但不再静默——进程内计数 + 超阈值 ASCII 日志告警，
+    #   让"放行了多少只无数据股"在排障时可查（日批日志/egress 探针对照）。
     if not bars:
+        _miss_watch("no_bars")
         return {**empty, "reason": "no bars"}          # 无数据不拦截（保守放行）
     chip = chip_metrics(bars, float_shares=_float_map().get(code))
     phase = detect_phase(bars)
     if not chip or not phase:
+        _miss_watch("no_chip_phase")
         return {**empty, "reason": "no chip/phase"}
 
     flow5 = None
