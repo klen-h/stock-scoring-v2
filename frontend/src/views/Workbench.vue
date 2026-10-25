@@ -2755,7 +2755,7 @@ import ReserveCard from '../components/workbench/ReserveCard.vue'
 //   用户："评分榜之前不就是实时的吗?我都是使用本地计算的" ⇒ 工作台原先恒走后端
 //   `/score/batch/top`（盘中通常是昨日快照），与榜单页的**本地实时**结果口径不一致
 //   （榜单页注释原话："避免前后端榜单不一致被误认为 bug"）。
-import { useFrontendScoring, computeRanking } from '../composables/useFrontendScoring'
+import { useFrontendScoring, computeRanking, scoreCodeList } from '../composables/useFrontendScoring'
 const {
   dbReady: feDbReady,
   useFrontendMode,
@@ -2773,6 +2773,8 @@ import {
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   // ★ 2026-10-25：H2' 阴跌防御影子榜（工作台「防御 Top10」标签页的数据源，日批快照）
   getShadowDefensive,
+  // ★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组名单（小表 ≈15KB/日）
+  getDefensiveGroup,
  getPolicyBottom, confirmPolicyBottom,
   // ★ 2026-10-19：清单第①条的**自动提示**（巨潮公告；只提示不打勾）
   getPolicyAnnouncements, refreshPolicyAnnouncements,
@@ -2989,6 +2991,9 @@ const defErr = ref('')
 const defSnap = ref({ items: [], meta: {} })
 const defIsLive = ref(false)
 const defLiveLoading = ref(false)
+// ★★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组**名单**（日批小表）。
+//   本地实时 = 名单（≈15KB/日）+ 浏览器内精算 ⇒ 后端零精算 egress、也不读 kline_cache。
+const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, eq_state: '' })
 // ★ 2026-09-28：评分榜口径标记（'local'=本地实时 / 'backend'=后端批次）—— 卡片标题旁如实标注
 const topMode = ref('')
 // ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道他在实时刷新"）：
@@ -4041,8 +4046,72 @@ async function loadDefTop() {
 }
 
 // 实时预览：当前精算榜 + 同一冻结公式（银行组 ×(1+δ)）重排。不改官方榜、不进判定。
+// 宽防御组名单（银行 ∪ 高股息代理 ∪ 低波）：日批落库，读一次 ≈15KB，失败静默
+async function loadDefGroup() {
+  try {
+    const { data } = await getDefensiveGroup()
+    defGroup.value = {
+      ok: !!(data && data.ok),
+      date: (data && data.date) || '',
+      items: (data && data.items) || [],
+      counts: (data && data.counts) || {},
+      gate: !!(data && data.gate),
+      eq_state: (data && data.eq_state) || '',
+    }
+  } catch (e) {
+    console.warn('[workbench] 宽防御组读取失败:', e?.message || e)
+  }
+}
+
 async function loadDefLive() {
   if (defLiveLoading.value) return
+  // ① **本地引擎优先**（用户拍板）：名单内的 137 只逐只在浏览器精算
+  //    ⇒ 不调 /batch/top、不读 kline_cache，后端只剩 15KB 名单 +
+  //      （首次的）财报批量接口。
+  if (useFrontendMode.value && feDbReady.value && (defGroup.value.items || []).length) {
+    defLiveLoading.value = true
+    defErr.value = ''
+    try {
+      const codes = defGroup.value.items.map(x => x.code)
+      const rows = await scoreCodeList(codes)
+      if (!rows || !rows.length) {
+        defErr.value = '本地精算无结果（K 线包未覆盖组内代码？可先下载 K 线包）'
+        return
+      }
+      const delta = defMeta.value.delta != null ? Number(defMeta.value.delta) : 0.80
+      const gate = !!defGroup.value.gate
+      const items = rows
+        .map(r => ({
+          code: r.code, name: r.name || '',
+          raw_score: r.total_score,
+          total_score: gate
+            ? Math.round(Number(r.total_score || 0) * (1 + delta) * 10) / 10
+            : r.total_score,
+          change_pct: r.change_pct,
+          boosted: gate,
+        }))
+        .sort((a, b) => (b.total_score || 0) - (a.total_score || 0))
+        .slice(0, 10)
+        .map((x, i) => ({ ...x, rank_pos: i + 1 }))
+      defTopItems.value = items
+      defMeta.value = {
+        ...defMeta.value,
+        date: defGroup.value.date || defMeta.value.date,
+        gate,
+        eq_state: defGroup.value.eq_state || defMeta.value.eq_state,
+        live: true, local: true,
+        as_of: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        group_n: codes.length,
+      }
+      defIsLive.value = true
+    } catch (e) {
+      defErr.value = '本地精算失败：' + ((e && e.message) || e)
+    } finally {
+      defLiveLoading.value = false
+    }
+    return
+  }
+  // ② 回退：后端实时重排（本地引擎未就绪时；首次约 1 分钟、10~15MB）
   defLiveLoading.value = true
   defErr.value = ''
   try {
@@ -4641,7 +4710,7 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-30（P2 续）：补 `loadAmountShare()` —— 「行业成交额占比」原先**只在盘中/午盘**
   //   加载（见本函数末段）⇒ 盘后这张卡缺一半（成交占比块整块不渲染，而它正是"资金此刻
   //   集中在哪"的答案）。盘后该接口走 `tencent._cache` 的**收盘快照** ⇒ 数据是定稿口径。
-  else if (phase === 'postmarket') { await loadTop(); await loadDefTop(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadAmountShare(); await loadTodayExec(); await loadBrief('postmarket') }
+  else if (phase === 'postmarket') { await loadTop(); await loadDefTop(); await loadDefGroup(); await loadGateWatch(); await loadEmotion(); await loadSectorTop(); await loadAmountShare(); await loadTodayExec(); await loadBrief('postmarket') }
   // ★ 2026-09-25 用户需求 2：复盘也拉仓位（含**组合周回撤**）—— 复盘正是检视
   //   "本周组合回撤了多少、是否该降仓"的时点。⚠️ 刻意**不加进盘中**：该接口会为每只
   //   持仓取一次历史 K 线（有缓存），盘中 120s 轮询没必要反复算慢变量。
@@ -4655,7 +4724,7 @@ async function loadPhaseData(phase) {
     //      与"板块 Top5 走实时东财接口"不同。卡内 `data_date` 已标实际日期，不假装是今天。
     await Promise.all([loadEmotion(), loadLimitReview(), loadRealtimeUplimit(),
                        loadSectorTop(), loadGlobals(),
-                       loadAmountShare(), loadTop(), loadDefTop(), loadGateWatch()])
+                       loadAmountShare(), loadTop(), loadDefTop(), loadDefGroup(), loadGateWatch()])
   }
   // intraday/midday 的 overview 与 radar 已由常驻轮询覆盖
 }

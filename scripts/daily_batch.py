@@ -163,6 +163,22 @@ def task_shadow_defensive():
     return run(top=50, apply=True)
 
 
+def task_defensive_group():
+    """宽防御组（方案 A：银行 ∪ 高股息代理 ∪ 低波）—— **对照用，未定参**。
+
+    ★ 2026-10-25 新增（用户："把银行组扩成高股息/低波组"）：
+      日批算一次落 `defensive_group_daily`（读 `kline_cache` 全表 ≈41MB 算 60 日波动率，
+      与用户点击无关）；前端「本地实时」只读这份组名单（≈15KB）后在**浏览器**里逐只
+      精算 —— 零后端 egress。
+      ⚠️ 本组不改 `variant='defensive'`（银行组 δ=0.80 是冻结定参），只作对照；
+         要动判定须重新定参 + 预登记。
+    """
+    from app.scoring import defensive_group as dg
+    r = dg.build(apply=True)
+    return (f"宽防御组: {r['date']} 共 {r['n']} 只"
+            f"（银行 {r['bank']} / 高股息代理 {r['dividend_proxy']} / 低波 {r['low_vol']}）")
+
+
 def task_calendar():
     """财经日历刷新（金十）——原 Render 每日 07:00 循环（calendar_loop）被只读模式关闭，
     缓存文件停在 09-04；而它是 LLM 复盘的「事件排期」输入（非农/CPI/FOMC 的时间与前值/预期），
@@ -1307,6 +1323,9 @@ TASKS = {
     #   依赖 rank_live（分数源）与 eq_anchor（阴跌门控），排两者之后；
     #   判定由 defensive_edge_check 月度自动复核（edge_verify）。
     "shadow_defensive": (task_shadow_defensive, "阴跌防御影子榜（variant=defensive）"),
+    # ★ 2026-10-25 新增：宽防御组（银行 ∪ 高股息代理 ∪ 低波）—— 方案 A，**对照用、未定参**。
+    #   只算组名单落小表（≈120 行）；前端「本地实时」在浏览器逐只精算 ⇒ 零后端 egress。
+    "defensive_group": (task_defensive_group, "宽防御组名单（银行/高股息代理/低波）"),
     # ★ 2026-10-15：缩量启动形态每日扫描（描述性观察，非信号）。依赖 backfill 已回填。
     "pattern_launch_scan": (task_pattern_launch_scan, "缩量启动形态扫描 + 观察回填"),
     # ★ 2026-10-18：回测缓存预热（原 Render _heavy 组，只读模式从未跑过 ⇒ 缓存长期陈旧）

@@ -204,6 +204,9 @@ export const getShadowRank = (limit = 50) => http.get('/score/batch/shadow-rank'
 //   `live=true` ⇒ 盘中实时预览（用当前精算榜代入同一冻结公式重排；官方榜仍为日批快照）。
 //   ⚠️ live 首次会触发全市场精算（~1 分钟，后端 3 分钟缓存）⇒ 超时给足。
 export const getShadowDefensive = (limit = 50, live = false) => http.get('/score/batch/shadow-defensive', { params: { limit, live }, timeout: live ? 120000 : 20000 })
+// ★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组**名单**（日批小表 ≈15KB）。
+//   前端拿名单后在浏览器逐只精算 ⇒ 后端零精算 egress；官方影子榜仍走 shadow-defensive。
+export const getDefensiveGroup = (day) => http.get('/score/batch/defensive-group', { params: { day }, timeout: 20000 })
 // ★ 买入闸门观察池（ready≥2 的「等状态」候选 + 还差什么条件）—— 2026-09-22
 //   ⚠️ 路径是 `/score/batch/gate-watch`（**两段**）：后端 `/{symbol}` 单段通配路由
 //   注册在前、会吞掉单段静态路径 ⇒ 原先 `/score/gate-watch` 恒返回

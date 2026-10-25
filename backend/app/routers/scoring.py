@@ -1603,6 +1603,24 @@ def sector_strength_status(date: str = None):
     return out
 
 
+@router.get("/batch/defensive-group")
+def defensive_group_api(day: str = Query(None, description="YYYY-MM-DD，默认最新")):
+    """宽防御组（方案 A：银行 ∪ 高股息代理 ∪ 低波）—— **对照用，未定参、不进判定**。
+
+    ★ 2026-10-25（用户："把银行组扩成高股息/低波组"）：日批算一次落
+      `defensive_group_daily`（≈120 行），本接口只读小表 ⇒ **≈15KB**。
+      ⚠️ 前端「本地实时」用它做**组名单**，逐只精算在浏览器完成（零后端 egress）；
+      官方影子榜（`variant='defensive'`，银行组 δ=0.80）仍是判定口径，本组不改它。
+    返回 `{ok, date, n, counts{bank,dividend_proxy,low_vol}, items[{code,name,grp,vol60,mktcap,industry}]}`。
+    """
+    from app.scoring import defensive_group as _dg
+    try:
+        return _dg.load(day)
+    except Exception as e:
+        print(f"[defensive_group] 读取失败: {e}")
+        return {"ok": False, "date": None, "items": [], "reason": str(e)[:120]}
+
+
 @router.get("/batch/shadow-defensive")
 async def shadow_defensive(limit: int = Query(default=50, ge=10, le=100),
                            live: bool = Query(False, description="盘中实时重排（预览；官方影子榜仍以日批为准）")):

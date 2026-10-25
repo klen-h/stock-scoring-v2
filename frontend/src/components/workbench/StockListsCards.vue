@@ -49,10 +49,14 @@
                     : 'bg-white/5 text-muted border-border hover:text-gray-200'"
                   :disabled="defLiveLoading"
                   :title="defIsLive
-                    ? '当前为实时预览（' + (defMeta.as_of || '') + '）— 点击还原官方日批榜'
-                    : '用当前全市场精算榜（含盘中行情）按同一冻结公式重排；首次约 1 分钟'"
+                    ? (defMeta.local
+                      ? '本地引擎精算（浏览器，零后端精算流量）· ' + (defMeta.as_of || '') + ' — 点击还原官方日批榜'
+                      : '实时预览（' + (defMeta.as_of || '') + '）— 点击还原官方日批榜')
+                    : (defMeta.local === undefined
+                      ? '用本地引擎精算宽防御组（银行∪高股息∪低波）；首次需 K 线包就绪'
+                      : '实时重排：本地引擎优先，未就绪时回退后端（首次约 1 分钟）')"
                   @click="emit('toggle-live')">
-            {{ defLiveLoading ? '精算…' : (defIsLive ? '● 实时' : '实时') }}
+            {{ defLiveLoading ? '精算…' : (defIsLive ? (defMeta.local ? '● 本地' : '● 实时') : '实时') }}
           </button>
         </template>
       </div>

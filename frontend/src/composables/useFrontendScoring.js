@@ -1270,6 +1270,60 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
 
 // ── 导出响应式状态 ──
 
+/**
+ * 按**指定代码清单**精算（2026-10-25，用户选"前端本地引擎算组内 100 只"）。
+ *
+ * 为什么需要它：`computeRanking` 是全市场漏斗（2000 只 → 粗排 → 候选 150 → 精算），
+ * 而"宽防御组"只有 ~137 只，且**多数不在粗排前 150**（银行/高股息分数中游）
+ * ⇒ 走全市场漏斗会白算 1800 只、且可能漏掉组内成员。
+ * 本函数只对名单内的股票：拉行情 → 补财报 → `preciseScoreBatch` 精算（含 mainforce/gate），
+ * **零后端精算请求**（行情/财报本就在本地或轻接口）。
+ *
+ * @param {string[]} codes 代码清单（宽防御组）
+ * @returns {Promise<Array>} 与 `computeRanking` 同构的行（含 total_score / dimensions / mainforce / gate）
+ */
+export async function scoreCodeList(codes = []) {
+  const list = (codes || []).filter(Boolean)
+  if (!dbReady.value || !list.length) return []
+  // 权重 / regime / 闸门判据：与 computeRanking 同一来源（后端下发，前端不自造）
+  let weights = null
+  try {
+    const wres = await getScoreWeights()
+    const wdata = (wres && wres.data) || wres || {}
+    weights = wdata.weights || null
+    setRegimeState(wdata.regime_state)
+    setGateRules(wdata.gate)
+  } catch {
+    weights = null
+    setRegimeState(null)
+    setGateRules(null)
+  }
+  const want = new Set(list)
+  const all = await getAllStocks()
+  const picked = all.filter(s => want.has(s.code))
+  if (!picked.length) return []
+  let quotes = {}
+  try {
+    quotes = await fetchRealtimeQuotes(picked.map(s => s.code)) || {}
+  } catch (e) {
+    console.warn('[本地评分] 行情拉取失败:', e?.message)
+  }
+  const merged = picked
+    .map(s => ({ ...s, ...(quotes[s.code] || {}) }))
+    .filter(s => s.price > 0)
+  let finMap = {}
+  try {
+    const part = await getFinanceBatch(merged.map(s => s.code))
+    finMap = (part && typeof part === 'object' && 'data' in part) ? (part.data || {}) : (part || {})
+  } catch (e) {
+    console.warn('[本地评分] 财报加载失败（成长/质量不参与加权）:', e?.message)
+  }
+  const withFin = merged.map(s => ({ ...s, finance: finMap[s.code] || null }))
+  const results = await preciseScoreBatch(withFin, weights)
+  results.sort((a, b) => (b.total_score || 0) - (a.total_score || 0))
+  return results
+}
+
 export function useFrontendScoring() {
   // 初始化时加载用户偏好
   loadFrontendModePreference()

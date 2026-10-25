@@ -788,7 +788,7 @@
         <!-- ★ 2026-10-25（用户："想让它在盘中变动"）：官方日批 vs 实时预览，一眼可分 -->
         <span v-if="defData.live" class="text-amber-300"
               title="实时预览：当前精算榜代入同一冻结公式重排。不是官方影子榜，不进判定">
-          ● 实时预览 {{ defData.as_of }}</span>
+          ● {{ defData.local ? '本地实时' : '实时预览' }} {{ defData.as_of }}</span>
         <span v-else class="text-muted">● 官方日批</span>
         <div class="ml-auto flex items-center gap-1.5">
           <button @click="loadDefLive" :disabled="defLiveLoading"
@@ -1484,7 +1484,7 @@
 import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { upsertUserWatch, getUserWatchlist } from '../api'
-import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getShadowDefensive, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
+import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, getBatchPrices, getBacktest, getSectorIndustry, getIndustryFlow, getWeightAdvice, getAnomalies, getRankingPersistence, checkExitAlerts, getKlineCacheStatus, triggerDailyBatch, getSnapshots, captureScoreSnapshot, getShadowRank, getShadowDefensive, getDefensiveGroup, getGateWatch, getBatchIndustry, getPortfolioRadar, getPushLog, getRadarAnalysis,
   // ★ 2026-09-25 修复：`checkMarketAlerts()` 一直在调 `getMarketOverview()` 却**从未 import**
   //   ⇒ 运行时抛 ReferenceError 被 `try/catch` 吞掉 ⇒ `marketAlerts` 恒为空数组
   //   ⇒ **异动监控的市场警示规则（_ALERT_RULES）从来没生效过**，且构建/日志都看不出。
@@ -1503,7 +1503,7 @@ import { PHASE_STYLE, CONSEC_STYLE, STRATEGY_SHORT, strategyShort, readyCls, boa
 //   星号外露、看不出重点）；现统一交给「观点卡」（内含全站唯一渲染器 `composables/markdown`）。
 import InsightBody from '../components/InsightBody.vue'
 import { addPosition, usePortfolio, isTradingTime, getRefreshInterval } from '../composables/usePortfolio'
-import { useFrontendScoring, runLocalBacktest } from '../composables/useFrontendScoring'
+import { useFrontendScoring, runLocalBacktest, scoreCodeList } from '../composables/useFrontendScoring'
 // ★ 2026-09-27 数据可信度标注（本页主商品是「评分」，需明确其未验证状态）
 import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVerification'
 
@@ -1626,8 +1626,66 @@ async function loadDefShadow() {
 //   ⚠️ 首次会触发全市场精算（~1 分钟；后端有 3 分钟结果缓存）⇒ 只能点按钮触发，
 //      不能挂轮询。
 const defLiveLoading = ref(false)
+// ★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组名单（日批小表 ≈15KB）
+const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, eq_state: '' })
+async function loadDefGroup() {
+  try {
+    const { data } = await getDefensiveGroup()
+    defGroup.value = {
+      ok: !!(data && data.ok),
+      date: (data && data.date) || '',
+      items: (data && data.items) || [],
+      counts: (data && data.counts) || {},
+      gate: !!(data && data.gate),
+      eq_state: (data && data.eq_state) || '',
+    }
+  } catch (e) {
+    console.warn('[defensive] 宽防御组读取失败:', e?.message || e)
+  }
+}
+
 async function loadDefLive() {
   if (defLiveLoading.value) return
+  // ① 本地引擎优先（零后端精算 egress）：名单内 ~137 只逐只精算
+  if (useFrontendMode.value && frontendDbReady.value && (defGroup.value.items || []).length) {
+    defLiveLoading.value = true
+    defErr.value = ''
+    try {
+      const rows = await scoreCodeList(defGroup.value.items.map(x => x.code))
+      if (!rows || !rows.length) {
+        defErr.value = '本地精算无结果（K 线包未覆盖组内代码？可先在页面内下载 K 线包）'
+        return
+      }
+      const delta = defData.value.delta != null ? Number(defData.value.delta) : 0.80
+      const gate = !!defGroup.value.gate
+      const items = rows
+        .map(r => ({
+          code: r.code, name: r.name || '', raw_score: r.total_score,
+          total_score: gate
+            ? Math.round(Number(r.total_score || 0) * (1 + delta) * 10) / 10
+            : r.total_score,
+          change_pct: r.change_pct, boosted: gate,
+        }))
+        .sort((a, b) => (b.total_score || 0) - (a.total_score || 0))
+        .slice(0, 50)
+        .map((x, i) => ({ ...x, rank_pos: i + 1 }))
+      defData.value = {
+        ...defData.value,
+        ok: true, live: true, local: true,
+        gate, eq_state: defGroup.value.eq_state || defData.value.eq_state,
+        date: defGroup.value.date || defData.value.date,
+        as_of: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+        items, n: items.length,
+        note: '本地引擎精算（浏览器内，零后端精算流量）；宽防御组，非官方影子榜',
+      }
+    } catch (e) {
+      defErr.value = '本地精算失败：' + (e?.message || e)
+    } finally {
+      defLiveLoading.value = false
+    }
+    return
+  }
+  // ② 回退：后端实时重排（本地引擎未就绪；首次约 1 分钟）
   defLiveLoading.value = true
   defErr.value = ''
   try {
@@ -2621,7 +2679,7 @@ function switchTab(tab) {
   else if (tab === 'watch') loadGateWatch().then(loadWatchPrices)
   else if (tab === 'sector') loadSectorData()
   else if (tab === 'linkage') loadLinkage()
-  else if (tab === 'defensive') loadDefShadow()
+  else if (tab === 'defensive') { loadDefShadow(); loadDefGroup() }
   else if (tab === 'shadow') {
     // 本地模式：走 loadData（算主榜时顺带产出同源影子榜）；否则走后端接口
     if (shadowLocal()) loadData()
