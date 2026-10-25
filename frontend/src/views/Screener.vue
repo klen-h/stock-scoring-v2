@@ -11,9 +11,11 @@
     <div class="bg-card border border-border rounded-lg p-3 mb-3 flex flex-wrap gap-x-5 gap-y-2 items-end text-xs">
       <label class="flex flex-col gap-1">
         <span class="text-muted">主力阶段</span>
+        <!-- ★ 2026-10-26：**值必须是英文枚举**（`stock_facts.phase` 存的就是枚举）——
+             原来直接传中文「吸筹」⇒ 后端等值匹配恒空、筛选静默 0 行；文案仍显示中文。 -->
         <select v-model="f.phase" class="bg-white/5 border border-border rounded px-2 py-1">
           <option value="">全部</option>
-          <option v-for="p in ['吸筹', '洗盘', '拉升', '出货', '下跌', '盘整']" :key="p" :value="p">{{ p }}</option>
+          <option v-for="p in PHASE_OPTIONS" :key="p.key" :value="p.key">{{ p.cn }}</option>
         </select>
       </label>
       <label class="flex items-center gap-1.5"><input type="checkbox" v-model="f.defensive">
@@ -64,10 +66,14 @@
         </tr></thead>
         <tbody>
           <tr v-for="r in rows" :key="r.code" class="border-b border-border/40 hover:bg-white/[0.03]">
-            <td class="py-1.5 px-2">
+            <!-- ★ 2026-10-26（用户："点击股票代码需要跳到雪球"）：
+                 名称 → 站内详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球） -->
+            <td class="py-1.5 px-2 whitespace-nowrap">
               <a :href="`/stock/${r.code}`" target="_blank" rel="noopener"
                  class="hover:text-accent font-medium">{{ r.name }}</a>
-              <span class="text-muted font-mono text-[10px] ml-1">{{ r.code }}</span>
+              <a :href="xqUrl(r.code)" target="_blank" rel="noopener"
+                 class="text-muted font-mono text-[10px] ml-1 hover:text-accent hover:underline"
+                 :title="`雪球 ${r.code}`">{{ r.code }}</a>
             </td>
             <td class="px-2 text-center text-muted">{{ r.industry || '—' }}</td>
             <td class="px-2 text-center font-mono">{{ r.close ?? '—' }}</td>
@@ -118,11 +124,21 @@
         {{ loading ? '加载中…' : (err || '无匹配（宽表首批数据由今晚日批生成；此前显示上一交易日）') }}
       </div>
     </div>
-    <!-- 分页 -->
-    <div class="flex items-center gap-3 mt-3 text-xs" v-if="total > f.size">
-      <button @click="page--" :disabled="page <= 0" class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">上一页</button>
-      <span class="text-muted">{{ page + 1 }} / {{ Math.ceil(total / f.size) }}</span>
-      <button @click="page++" :disabled="(page + 1) * f.size >= total" class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">下一页</button>
+    <!-- 分页（★ 2026-10-26：每页 25 只；2000+ 只 ⇒ 必须能直接跳首/末页，不然要点几十次） -->
+    <div class="flex items-center gap-2 mt-3 text-xs flex-wrap" v-if="total > 0">
+      <span class="text-muted">共 <b class="text-gray-200 font-mono">{{ total }}</b> 只 ·
+        每页 {{ f.size }} 只</span>
+      <template v-if="total > f.size">
+        <button @click="goPage(0)" :disabled="page <= 0"
+          class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">« 首页</button>
+        <button @click="page--" :disabled="page <= 0"
+          class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">上一页</button>
+        <span class="text-muted font-mono">{{ page + 1 }} / {{ totalPages }}</span>
+        <button @click="page++" :disabled="page + 1 >= totalPages"
+          class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">下一页</button>
+        <button @click="goPage(totalPages - 1)" :disabled="page + 1 >= totalPages"
+          class="px-2 py-1 rounded bg-white/5 disabled:opacity-40">末页 »</button>
+      </template>
     </div>
     <!-- ★ 2026-10-26：配色图例（两套色系并存，必须说明，否则"绿=机会/绿=跌"会打架） -->
     <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-muted">
@@ -150,13 +166,13 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 // ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
 import { getStockFactsWide } from '../api'
 // 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
 // ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
 //   `PHASE_STYLE`（绿=机会/红=风险）与 `scoreClass`、`readyChipCls`，不另建一套配色。
-import { phaseCn, PHASE_STYLE, scoreClass, readyChipCls } from '../composables/displayMeta'
+import { phaseCn, PHASE_CN, PHASE_STYLE, scoreClass, readyChipCls, xqUrl } from '../composables/displayMeta'
 
 const rows = ref([])
 const total = ref(0)
@@ -164,10 +180,15 @@ const dataDate = ref('')
 const loading = ref(false)
 const err = ref('')
 const page = ref(0)
+// ★ 2026-10-26（用户："一页数据太长了，一页25只就好"）：100 → 25（15 列宽表，100 行要滚很久）
 const f = reactive({ phase: '', defensive: false, lhbRisk: false, pattern: false,
-                     sectorStrong: false, order: 'rank_pos', size: 100 })
+                     sectorStrong: false, order: 'rank_pos', size: 25 })
 
 const DESC = { ret5: 1, ret20: 1, flow5_amt_yi: 1, turnover_pct: 1 }
+
+// 主力阶段下拉：**value=英文枚举 / 文案=中文**（与库里 `stock_facts.phase` 对齐）
+const PHASE_ORDER = ['accumulation', 'shakeout', 'markup', 'distribution', 'decline', 'sideways']
+const PHASE_OPTIONS = PHASE_ORDER.map(k => ({ key: k, cn: PHASE_CN[k] }))
 
 async function load() {
   loading.value = true
@@ -214,6 +235,11 @@ function cls(v) {
 // ★★ 2026-10-26（审查 P0-①）：模板里一直在用 `pct()`，但本文件从未定义
 //   ⇒ 运行时 `pct is not a function`，整表渲染中断（构建不报错，同 pbwOpen 教训）。
 //   语义与 `cls` 一致：A 股习惯 **红=净流入/上涨，绿=净流出/下跌**，缺失=灰。
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / f.size)))
+// 直接跳页（首/末页按钮用）；`watch(page, load)` 负责真正请求
+function goPage(p) {
+  page.value = Math.min(Math.max(0, p), totalPages.value - 1)
+}
 function pct(v) {
   if (v == null) return 'text-muted'
   const n = Number(v)

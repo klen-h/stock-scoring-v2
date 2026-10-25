@@ -639,7 +639,13 @@ def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
     if sector_strong is not None:
         filters["sector_top30"] = sector_strong
     if phase:
-        filters["phase"] = phase
+        # ★ 2026-10-26（实测 bug）：`stock_facts.phase` 落的是 `mainforce_state.phase`
+        #   —— **英文枚举**（accumulation/…），而前端下拉曾直接传中文「吸筹」⇒ 等值匹配
+        #   恒空，筛选静默返回 0 行。这里做一次**中文→枚举**反向归一，两种写法都收
+        #   （旧书签/外部调用不至于踩空）；前端已同步改为传枚举值。
+        from app.mainforce.phases import PHASE_CN as _PCN
+        _raw = str(phase).strip()
+        filters["phase"] = {v: k for k, v in _PCN.items()}.get(_raw, _raw)
     out = sf.latest(day=date, filters=filters or None, order_by=order_by,
                     limit=max(1, min(limit, 300)), offset=max(0, offset), desc=desc,
                     min_cap=min_cap)
