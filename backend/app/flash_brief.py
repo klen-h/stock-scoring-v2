@@ -498,6 +498,7 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
                         "as_of": p["as_of"], "sig": sig,
                         "snapshot": p, "llm": llm,
                         "conclusion": llm.get("conclusion") or "",
+                        "holdings_impact": _holdings_impact(llm.get("news") or []),
                         "source": "cache"}
 
     # ── LLM：一次批量（重要条全进同一个 prompt）──
@@ -531,7 +532,104 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
     return {"ok": True, "date": d, "cached": False, "auto": bool(auto),
             "as_of": p["as_of"], "sig": sig, "snapshot": p, "llm": llm,
             "conclusion": llm.get("conclusion") or "",
+            "holdings_impact": _holdings_impact(llm.get("news") or []),
             "error": err, "source": "llm" if not err else "template"}
+
+
+
+
+# ── 持仓联动（2026-10-25，用户需求：快讯 × 持仓影响分析）────────────────────
+# ★★ 设计红线：
+#   ① 持仓**不出网**——LLM prompt 保持只含快讯（README 披露清单零新增）；
+#     影响分析 = 本机确定性规则联动（消息 scope/原文 × 持仓行业/名称 × 实时行情
+#     × 主力行为状态），不是 LLM 生成。
+#   ② Guardrails #5：只输出【影响方向 + 影响逻辑 + 当前个股状态】，不给买卖/
+#     加减仓指令；措辞为"受益/承压方向（观察）"，决策由人。
+#   ③ 不落库：纯派生数据，读取时现算；60s 进程缓存对齐卡片轮询频次。
+
+_HOLDINGS_CACHE = {"ts": 0.0, "val": []}
+
+
+def _holdings_impact(llm_news: list) -> list:
+    """快讯集合 × 真实持仓 → 每只持仓的影响观察（本机数据联动，60s 进程缓存）。
+
+    匹配规则（任一命中才算关联，中性 direction 不计）：
+      ① 名称命中：news 的 gist/cause/scope 提及持仓名称；
+      ② 行业命中：news 文本提及持仓所属行业（industry_map）。
+    持仓为空 / 无 llm_news ⇒ 返回 []（前端隐藏该区）。
+    """
+    import time as _t
+    now = _t.time()
+    if _HOLDINGS_CACHE["ts"] and now - _HOLDINGS_CACHE["ts"] < 60:
+        return _HOLDINGS_CACHE["val"]
+    out = []
+    try:
+        from app.database import db
+        from app.tencent import _cache as _tq
+        from app.industry_map import get_industry_map
+        from app.mainforce.state import load_latest
+
+        pf = db.fetch("SELECT code, name, created_at FROM user_portfolio "
+                      "ORDER BY code, created_at DESC") or []
+        seen = set()
+        holdings = []
+        for x in pf:
+            c = str(x.get("code") or "")
+            if c and c not in seen:
+                seen.add(c)
+                holdings.append({"code": c, "name": str(x.get("name") or c)})
+        if holdings:
+            codes = [h["code"] for h in holdings]
+            stocks = (_tq.get("stocks") or {})
+            imap = {}
+            try:
+                imap = get_industry_map() or {}
+            except Exception:
+                imap = {}
+            states = {}
+            try:
+                states = load_latest(codes) or {}
+            except Exception:
+                states = {}
+            for h in holdings:
+                code, name = h["code"], h["name"]
+                q = stocks.get(code) or {}
+                st = states.get(code) or {}
+                industry = str(imap.get(code) or "").strip()
+                hits, ben, bear = [], 0, 0
+                for n in (llm_news or []):
+                    d = str(n.get("direction") or "")
+                    if d not in ("利好", "利空"):
+                        continue
+                    hay = " ".join(str(n.get(k) or "") for k in ("gist", "cause", "scope"))
+                    how = None
+                    if name and name in hay:
+                        how = "名称命中"
+                    elif industry and industry in hay:
+                        how = "行业命中"
+                    if not how:
+                        continue
+                    hits.append({"idx": n.get("idx"), "gist": str(n.get("gist") or "")[:60],
+                                 "direction": d, "match": how,
+                                 "cause": str(n.get("cause") or "")[:60]})
+                    if d == "利好":
+                        ben += 1
+                    else:
+                        bear += 1
+                lean = ("受益方向" if ben > bear else
+                        ("承压方向" if bear > ben else
+                         ("多空混合" if hits else "无直接关联")))
+                out.append({
+                    "code": code, "name": name, "industry": industry,
+                    "price": _num(q.get("price")), "chg_pct": _num(q.get("change_pct")),
+                    "phase": st.get("phase"), "signal": st.get("signal"),
+                    "hits": hits, "lean": lean + "（观察）",
+                })
+    except Exception as e:
+        print(f"[flash_brief] 持仓联动失败（不影响解读本体）: {type(e).__name__}: {str(e)[:80]}")
+        out = []
+    _HOLDINGS_CACHE.update(ts=now, val=out)
+    return out
 
 
 def load(day: Optional[str] = None) -> Dict:
@@ -570,7 +668,8 @@ def load(day: Optional[str] = None) -> Dict:
             "sig": row.get("sig"), "snapshot": payload, "llm": llm,
             "conclusion": row.get("conclusion") or "",
             "created_at": row.get("created_at"),
-            "notified_at": row.get("notified_at")}
+            "notified_at": row.get("notified_at"),
+            "holdings_impact": _holdings_impact((llm or {}).get("news") or [])}
 
 
 # ── ⑥ 盘中自动触发（系统级）──────────────────────────────────────────────

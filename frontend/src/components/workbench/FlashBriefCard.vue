@@ -128,6 +128,28 @@
           <span v-if="cached" class="text-[10px] text-muted">· 缓存</span>
         </div>
       </div>
+
+      <!-- ⑥ 持仓影响（2026-10-25，用户需求）：后端规则联动（消息 × 持仓行业/名称 ×
+           实时行情 × 主力状态）——观察参考，非交易建议（Guardrails #5） -->
+      <div v-if="holdingsImpact.length" class="mt-2 pt-2 border-t border-border/40">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-accent text-[11px] font-semibold">持仓影响</span>
+          <span class="text-[10px] text-muted">规则联动 · 观察参考，非交易建议</span>
+        </div>
+        <div v-for="h in holdingsImpact" :key="h.code" class="mt-1.5 text-[11px] leading-relaxed">
+          <a :href="stockHref(h.code)" target="_blank" rel="noopener"
+             class="font-semibold hover:text-accent">{{ h.name }}</a>
+          <b class="font-mono ml-1" :class="pctCls(h.chg_pct)">{{ fmtPct(h.chg_pct) }}</b>
+          <span v-if="h.industry" class="text-[10px] text-muted ml-1">{{ h.industry }}</span>
+          <span v-if="h.phase" class="text-[10px] text-muted ml-1">主力·{{ h.phase }}</span>
+          <span class="text-[10px] ml-1"
+                :class="h.lean.startsWith('受益') ? 'text-rise'
+                        : h.lean.startsWith('承压') ? 'text-fall' : 'text-muted'">{{ h.lean }}</span>
+          <div v-for="(hit, j) in h.hits" :key="j" class="text-[10px] text-muted leading-relaxed">
+            · 快讯[{{ hit.idx }}] {{ hit.direction }}（{{ hit.match }}）：{{ hit.cause || hit.gist }}
+          </div>
+        </div>
+      </div>
     </template>
     </template>
   </div>
@@ -167,6 +189,10 @@ const causeFallback = computed(() => {
   if (source.value === 'llm') return '—'
   return '尚未 AI 解读——点击下方「AI 解读」生成'
 })
+
+// ⑥ 持仓影响（2026-10-25，用户需求）：后端规则联动（消息 × 持仓行业/名称 ×
+//    实时行情 × 主力状态）——持仓不出网，本机确定性计算，观察参考非交易建议
+const holdingsImpact = computed(() => data.value?.holdings_impact || [])
 
 const diagnosisLine = computed(() => {
   const d = props.flashDiag || {}
