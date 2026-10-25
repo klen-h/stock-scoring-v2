@@ -615,6 +615,34 @@ def diff_caches(caches: list, prev_map: Optional[Dict], top: int = 15) -> list:
     return growth[:top]
 
 
+@router.get("/stock-facts/wide")
+def stock_facts_wide(date: str = None, order_by: str = "rank_pos",
+                     desc: bool = False, limit: int = 100, offset: int = 0,
+                     defensive: int = None, lhb_risk: int = None,
+                     pattern: int = None, sector_strong: int = None,
+                     phase: str = None, min_cap: float = None):
+    """选股工作台·事实宽表（只读，分页+单列排序+等值筛选；**不做任何加权**）。
+
+    ★ 徽章/口径由前端 SIGNAL_STATUS 渲染；排序维度须带检验状态展示。
+    """
+    from app import stock_facts as sf
+    filters = {}
+    if defensive is not None:
+        filters["defensive_group"] = defensive
+    if lhb_risk is not None:
+        filters["lhb_big_net_sell"] = lhb_risk
+    if pattern is not None:
+        filters["pattern_hit"] = pattern
+    if sector_strong is not None:
+        filters["sector_top30"] = sector_strong
+    if phase:
+        filters["phase"] = phase
+    out = sf.latest(day=date, filters=filters or None, order_by=order_by,
+                    limit=max(1, min(limit, 300)), offset=max(0, offset), desc=desc)
+    out["columns_note"] = "NULL=不在榜/无数据（≠0）；加权综合分不在此表（=新信号须预登记）"
+    return out
+
+
 @router.get("/memory")
 def memory_diag(types: int = 1, top: int = 15, history: int = 0,
                 user: dict = Depends(get_current_user)) -> Dict:

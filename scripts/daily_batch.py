@@ -1319,6 +1319,17 @@ def task_policy_bottom_watch():
 
 
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总
+def task_stock_facts_wide():
+    """选股事实宽表合成（设计=docs/plans/20261026_选股事实宽表设计_v0.md）。
+
+    ★ 排在 rank_live/sector_linkage/gate_snapshot 之后（消费它们的当日产物）；
+      失败不拖垮整批（宽表缺日=工作台显示上一日，as_of 如实披露）。
+    """
+    from app import stock_facts
+    r = stock_facts.build(_batch_trading_day().isoformat())
+    return f"选股宽表: {r['rows']} 只（宇宙 {r['universe']}）"
+
+
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
     # ★ 2026-09-11 迁入：原 Render 15:40 循环被只读模式关闭且日批漏配 → regime 停在 09-08。
@@ -1363,6 +1374,7 @@ TASKS = {
     # ★ 2026-09-11 新增：全量精算榜（ranking_live）——后端 /batch/top 直接读。
     #   依赖 mainforce_state（资金面第 5 因子 flow5）与全市场行情缓存。
     "rank_live": (task_rank_live, "全量精算榜单（后端榜直接读）"),
+    "stock_facts_wide": (task_stock_facts_wide, "选股事实宽表（选股工作台底座）"),
     # ★ 2026-10-19 新增：过滤版 Top50 落平行表（ranking_history_sector）——
     #   必须紧跟 rank_live（才能从 ~1000 行里"排除后递补满员"）；原表一字不动。
     "sector_linkage": (task_sector_linkage_snapshot, "板块联动过滤榜（平行表，原榜不动）"),
@@ -1462,7 +1474,9 @@ DEFAULT_ORDER = ["backfill", "market_regime", "regime_alert", "mainflow", "marke
                  "lhb", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
-                 "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
+                 # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
+    "stock_facts_wide",
+    "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
                  "scenario_watch",
                  "daily_report",
                  "trader_brief", "retention", "egress_report"]
