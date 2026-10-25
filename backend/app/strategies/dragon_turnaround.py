@@ -81,7 +81,9 @@ class DragonTurnaroundStrategy(BaseStrategy):
         cfg = self.CONFIG
         
         # 获取K线（需要足够长以检测第一波+回调）
-        klines = get_kline_with_indicators(code, count=30)
+        # ★ 2026-10-26（僵尸战法排查）：30 → 60 —— 旧值使结果里 `position_pct` 恒为
+        #   中性值 50（`calc_position_in_range` 数据不足兜底），展示失真；命中数不受影响。
+        klines = get_kline_with_indicators(code, count=60)
         if len(klines) < 20:
             return None
         

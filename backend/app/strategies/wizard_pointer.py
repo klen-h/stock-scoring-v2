@@ -87,7 +87,11 @@ class WizardPointerStrategy(BaseStrategy):
         cfg = self.CONFIG
         
         # 获取K线
-        klines = get_kline_with_indicators(code, count=30)
+        # ★★ 2026-10-26（僵尸战法排查）：30 → 60。旧值 30 配 `lookback=60` 的位置过滤
+        #   ⇒ `calc_position_in_range` 恒返回 50（数据不足的中性值），而
+        #   `max_position_pct=50` ⇒ `50 > 50` 恰好 False ⇒ **位置过滤完全失效**
+        #   （结果里的 position_pct 也恒为 50，纯误导）。
+        klines = get_kline_with_indicators(code, count=60)
         if len(klines) < 15:
             return None
         

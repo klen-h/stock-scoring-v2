@@ -70,7 +70,12 @@ class MorningStarStrategy(BaseStrategy):
     
     def _check_stock(self, code: str, stock: Dict) -> Optional[Dict]:
         cfg = self.CONFIG
-        klines = get_kline_with_indicators(code, count=30)
+        # ★★ 2026-10-26（僵尸战法排查）：count 必须 ≥ 60 ——
+        #   旧值 30 配 `_calc_position(klines, lookback=60)` ⇒ `calc_position_in_range`
+        #   里 `len(klines) < lookback: return 50`（中性值），而过滤条件是
+        #   `position > max_position_pct(30) ⇒ 拦掉` ⇒ **50>30 恒成立，每只必拦**。
+        #   实测后果：36 次扫描 0 命中（2026-08-20 起从未开张）。
+        klines = get_kline_with_indicators(code, count=60)
         if len(klines) < 15:
             return None
         
