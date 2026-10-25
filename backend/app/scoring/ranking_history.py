@@ -423,6 +423,35 @@ def get_rank_history(code: str, days: int = 30, fwd_days: int = 5) -> Dict:
         WHERE code = %s AND rank_date >= %s
         ORDER BY rank_date ASC
     """, (code, since))
+    source = "top50" if rows else ""
+    # ★ 2026-10-25（A，用户批准——零新增流量/内存：单股点查，几十行）：
+    #   Top50 快照没有该股 ⇒ 降级读 ranking_live（全量精算榜前 1000）——
+    #   让 500~1000 名（含 44 只金融股）也能看"分 vs 价格"走势。
+    if not rows:
+        rows = db.fetch("""
+            SELECT rank_date, total_score, 0 AS price, rank_pos
+            FROM ranking_live
+            WHERE code = %s AND rank_date >= %s
+            ORDER BY rank_date ASC
+        """, (code, since))
+        source = "live" if rows else ""
+    elif rows:
+        # ★ 双源合并（同日优先 Top50——它带快照价；live 补 top50 没覆盖的日期，
+        #   如 601169：9-02 进过一次 Top50、其后一直在 live 912 名——合并后曲线连续）
+        try:
+            live = db.fetch("""
+                SELECT rank_date, total_score, 0 AS price, rank_pos
+                FROM ranking_live
+                WHERE code = %s AND rank_date >= %s
+                ORDER BY rank_date ASC
+            """, (code, since))
+            have = {str(r["rank_date"]) for r in rows}
+            extra = [r for r in (live or []) if str(r["rank_date"]) not in have]
+            if extra:
+                rows = sorted(list(rows) + extra, key=lambda r: str(r["rank_date"]))
+                source = "top50+live"
+        except Exception:
+            pass
 
     # 价格序列：kline_cache 优先（36h 内含最新），backtest_prices 兜底
     closes: List = []
@@ -478,10 +507,28 @@ def get_rank_history(code: str, days: int = 30, fwd_days: int = 5) -> Dict:
     ]
 
     note = None
+    coverage = None
     if not points:
-        note = "该股票近期不在评分 Top50 中，无历史评分记录"
+        # ★ 2026-10-25（A）：双源都无 ⇒ 诚实披露"覆盖范围外"（旧文案'还在积累中'是误导——
+        #   601398 类低分股按构造永远不会进快照）。带上精算榜门槛分，让'为什么没有'自解释。
+        try:
+            cut = db.fetch_one(
+                "SELECT rank_date, total_score FROM ranking_live "
+                "ORDER BY rank_date DESC, rank_pos DESC LIMIT 1")
+            if cut:
+                coverage = {"covered": False,
+                            "cutoff_score": cut.get("total_score"),
+                            "cutoff_date": str(cut.get("rank_date"))[:10]}
+                note = (f"该股未进过评分 Top50 快照，也不在精算榜前 1000"
+                        f"（门槛 {cut.get('total_score')} 分，{str(cut.get('rank_date'))[:10]}）"
+                        "——评分验证基于快照宇宙，此股不在覆盖内")
+            else:
+                note = "精算榜尚无数据"
+        except Exception:
+            note = "该股票近期不在评分 Top50 中，无历史评分记录"
     return {"code": code, "points": points, "bucket_stats": bucket_stats,
-            "fwd_days": fwd_days, "note": note}
+            "fwd_days": fwd_days, "note": note, "source": source,
+            "coverage": coverage}
 
 
 # ── 评分分桶 × 持有期 胜率统计（全局验证"评分越高，未来收益越好吗"）──

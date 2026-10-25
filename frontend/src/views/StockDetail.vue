@@ -113,7 +113,17 @@
       <template v-if="scoreData.total_score">
         <div class="flex items-center justify-between mb-4">
           <h3 class="text-sm font-semibold">多因子综合评分</h3>
-          <span class="text-xs text-muted">技术面40% + 资金面25% + 基本面35%</span>
+          <!-- ★ 2026-10-25（B）：精算榜定位——回答"这只股在榜单什么位置/为什么没有快照" -->
+          <span v-if="scoreData.rank_context?.covered" class="text-xs text-muted"
+                title="每日盘后全量精算榜（前 1000）中的最新名次">
+            精算榜第 {{ scoreData.rank_context.rank_pos }}/{{ scoreData.rank_context.pool_total }} 名
+            <span class="text-muted/60">({{ scoreData.rank_context.date }})</span>
+          </span>
+          <span v-else-if="scoreData.rank_context?.cutoff_score" class="text-xs text-amber-400/80"
+                title="该股评分低于精算榜第 1000 名的门槛分——不在快照覆盖内">
+            不在精算榜前 1000（门槛 {{ scoreData.rank_context.cutoff_score }} 分）
+          </span>
+          <span v-else class="text-xs text-muted">技术面40% + 资金面25% + 基本面35%</span>
         </div>
 
         <div class="flex items-center gap-6">
@@ -518,13 +528,18 @@
           </div>
         </div>
         <div ref="rankHistoryRef" class="h-[260px]"></div>
+        <div v-if="rankHistoryData?.source" class="mt-1 text-[10px] text-muted">
+          数据源：{{ rankHistory.source === 'live' ? '全量精算榜（前 1000）'
+            : rankHistory.source === 'top50+live' ? 'Top50 快照 + 全量精算榜（合并）'
+            : '每日 Top50 快照' }}
+        </div>
         <div class="mt-1 text-[10px] text-muted">
           评分是技术结构分（趋势+动量+超买超卖），与当日涨跌天然相关；看分桶更有意义——
           高分桶的未来均值显著高于低分桶，才说明评分有预测力。样本较少时仅供参考。
         </div>
       </div>
-      <div v-else class="bg-card border border-border rounded-lg p-6 text-xs text-muted text-center">
-        该股评分快照还在积累中（每日盘后自动落库，上榜 ≥ 2 天后可看评分 vs 价格走势）
+      <div v-else class="bg-card border border-border rounded-lg p-6 text-xs text-muted text-center leading-relaxed">
+        {{ rankHistoryData?.note || '该股暂无评分快照' }}
       </div>
     </div>
 

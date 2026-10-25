@@ -985,6 +985,28 @@ def weight_advice(data: dict):
 
 
 @router.get("/{symbol}")
+def _rank_context(code: str) -> dict:
+    """该股在全量精算榜（ranking_live，每日前 1000）中的最新定位（两次点查，失败返回空）。"""
+    from app.database import db
+    try:
+        row = db.fetch_one(
+            "SELECT rank_date, rank_pos, pool_total FROM ranking_live "
+            "WHERE code = %s ORDER BY rank_date DESC LIMIT 1", (code,))
+        if row:
+            return {"covered": True, "rank_pos": row.get("rank_pos"),
+                    "pool_total": row.get("pool_total"),
+                    "date": str(row.get("rank_date"))[:10]}
+        cut = db.fetch_one(
+            "SELECT rank_date, total_score FROM ranking_live "
+            "ORDER BY rank_date DESC, rank_pos DESC LIMIT 1")
+        if cut:
+            return {"covered": False, "cutoff_score": cut.get("total_score"),
+                    "date": str(cut.get("rank_date"))[:10]}
+    except Exception:
+        pass
+    return {}
+
+
 def score_single(symbol: str):
     """
     ★ 单只股票综合评分（最完整的评分，前端"个股详情页"调用）。
@@ -1171,6 +1193,9 @@ def score_single(symbol: str):
         "mainforce": mainforce,
         "gate": gate,
         "lhb": lhb,
+        # ★ 2026-10-25（B）：精算榜定位——回答"这只股在榜单什么位置/为什么没有快照"。
+        #   两次单行点查（该股最新行 + 同日门槛行），零缓存零额外加载。
+        "rank_context": _rank_context(symbol),
     }
 
 
