@@ -72,6 +72,17 @@ def ensure_table() -> None:
                 UNIQUE (code, date)
             )
         """)
+    # ★★ 2026-10-25（egress 体检，`egress_report` 首次可用发现）：补 `date` **单列**索引。
+    #   表上只有 `(code, date)` 唯一索引 ⇒ 按日期过滤（`missing_codes` / `thin_codes` /
+    #   日批对账 / 面板取当日快照）只能**整表 seq scan**：实测一次 27,745 行 ≈ 8.85MB，
+    #   日批每天扫 2 次 ≈ 17MB 纯浪费。加索引后同一查询 ≈0.9MB（只读当日 2854 行）。
+    #   `CREATE INDEX IF NOT EXISTS` 两个方言都支持 ⇒ 无需分支。
+    try:
+        db.execute("CREATE INDEX IF NOT EXISTS idx_mf_state_date "
+                   "ON mainforce_state(date)")
+    except Exception as e:
+        print(f"[mainforce_state] date 索引创建失败（不影响主流程）: {str(e)[:80]}")
+
     # ★ 2026-09-17：已有表增列 flow5_amt_yuan（5 日主力净流入金额，元）。
     #   幂等 ALTER：PG 支持 IF NOT EXISTS；SQLite 退回普通 ADD COLUMN + 异常兜底
     #   （列已存在时报错即忽略）。
