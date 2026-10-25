@@ -123,6 +123,8 @@
                 title="该股评分低于精算榜第 1000 名的门槛分——不在快照覆盖内">
             不在精算榜前 1000（门槛 {{ scoreData.rank_context.cutoff_score }} 分）
           </span>
+          <span v-if="scoreData.defensive_attr" class="text-xs px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 cursor-help"
+                :title="scoreData.defensive_attr">防御属性</span>
           <span v-else class="text-xs text-muted">技术面40% + 资金面25% + 基本面35%</span>
         </div>
 
