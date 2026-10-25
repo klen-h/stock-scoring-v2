@@ -876,6 +876,19 @@
                 :title="`${item.mainforce.phase_cn || '盘整'}段 · 现价筹码位置 ${(item.mainforce.price_pos * 100).toFixed(0)}% · 获利盘 ${(item.mainforce.winner_ratio * 100).toFixed(0)}% · 5日主力占额累计 ${item.mainforce.flow5_amt ?? '-'}`">
                 {{ item.mainforce.signal === 'distribution' ? '出货' : '吸筹' }}
               </span>
+              <!-- ★ 2026-10-25（用户："评分 top50 的主力行为怎么是空的"）：
+                   没 signal 不等于"没数据"——原来一律显示 "-"，看起来像功能坏了。
+                   现在退一档显示**主力阶段**，并在 tooltip 里说清"为什么没有吸筹/出货"：
+                     · 无资金流（flow5_amt 为空）⇒ 判据先天不成立（吸筹/出货都要读 flow）；
+                     · 有资金流但没达标 ⇒ 筹码位置或资金方向不同时满足。 -->
+              <span v-else-if="item.mainforce?.phase"
+                class="px-1 py-0.5 rounded text-[10px] cursor-help"
+                :class="mfNoFlow(item.mainforce) ? 'bg-amber-500/10 text-amber-400/80' : 'bg-white/5 text-muted'"
+                :title="mfNoFlow(item.mainforce)
+                  ? `${item.mainforce.phase_cn || phaseText(item.mainforce.phase)}段 · 无资金流数据 ⇒ 无法判定吸筹/出货（mainflow 未覆盖该股）`
+                  : `${item.mainforce.phase_cn || phaseText(item.mainforce.phase)}段 · 未同时满足筹码+资金条件（吸筹=低位筹码密集+净流入；出货=高位高获利+净流出）`">
+                {{ item.mainforce.phase_cn || phaseText(item.mainforce.phase) }}
+              </span>
               <!-- ★ 2026-09-17 买入条件就绪（**状态展示，非买入信号**：不参与排序、不改总分）
                    就绪度由后端 trade_gate.summarize 唯一产出，前端只渲染 -->
               <span v-if="item.gate"
@@ -1534,6 +1547,17 @@ const watchOnlyStrategy = ref(false)
 // ★ 复用语义，不新建第二套：
 //   · 主力阶段 → 全站 `PHASE_STYLE`（绿=机会 / 红=风险）
 //   · 涨跌与盈亏 → **A 股习惯红涨绿跌**（与观察池 `wpColor`、榜单 Top50 同口径）
+// ★ 2026-10-25：主力阶段中文名（`phase_cn` 缺失时的兜底，例如旧指标包/本地缓存）
+const PHASE_CN = {
+  accumulation: '吸筹', markup: '拉升', distribution: '出货',
+  decline: '下跌', sideways: '盘整', shakeout: '洗盘',
+}
+function phaseText(p) { return PHASE_CN[p] || p || '—' }
+// 资金流是否缺失：后端下发 flow_missing；本地包/旧数据回退看 flow5_amt 是否为空
+function mfNoFlow(mf) {
+  return mf ? (mf.flow_missing != null ? mf.flow_missing : mf.flow5_amt == null) : true
+}
+
 function pnlText(v) {
   if (v == null) return '—'
   const n = Number(v)

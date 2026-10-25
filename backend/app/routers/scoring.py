@@ -1520,6 +1520,11 @@ async def score_top(
                 if m:
                     item["mainforce"] = {
                         "date": m["date"], "phase": m["phase"],
+                        # ★ 2026-10-25：把 `phase_cn` 与「资金流是否缺失」一起下发 ——
+                        #   signal 为空时前端不再只显示 "-"，而是显示阶段 + 说明原因
+                        #   （无 flow ⇒ 永远判不出吸筹/出货；有 flow 但条件不满足是另一回事）。
+                        "phase_cn": m.get("phase_cn") or "",
+                        "flow_missing": m.get("flow5_amt") is None,
                         "signal": m["signal"],
                         "mult": DISTRIBUTION_MULT
                         if (_mf_eff and m["signal"] == "distribution") else 1.0,

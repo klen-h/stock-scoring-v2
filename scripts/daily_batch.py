@@ -107,9 +107,18 @@ def task_backfill():
 
 
 def task_mainflow():
-    """主力资金流回填（筹码/主力行为因子的输入）。逐股限速，全池约 7 分钟。"""
-    from app.mainforce.flow import backfill_all
-    return f"资金流回填: {backfill_all()}"
+    """主力资金流回填（筹码/主力行为因子的输入）。逐股限速，全池约 7 分钟。
+
+    ★★ 2026-10-25（用户："评分 top50 的主力行为怎么是空的"）：
+      原来只 `backfill_all()`（回填 `backtest_prices` 的 1032 只），而评分榜宇宙是
+      2854 只 ⇒ 1822 只没有 flow ⇒ `overlay.signal` 恒 NULL（吸筹/出货都要读 flow）
+      ⇒ 「主力」列大面积空白。`get_all_codes()` 已改取并集，这里再补一次**当日缺口**
+      （增量：日更后通常只剩个位数，成本≈0）。
+    """
+    from app.mainforce.flow import backfill_all, backfill_missing
+    base = backfill_all()
+    gap = backfill_missing()
+    return f"资金流回填: {base}；补洞: {gap}"
 
 
 def task_market_snapshot():

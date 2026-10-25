@@ -246,8 +246,72 @@ def save_flow(code: str, name: str, rows: list) -> int:
 
 
 def get_all_codes() -> list:
+    """全量回填的池 = `backtest_prices`（历史最深的一批，~1032 只）。
+
+    ★ 2026-10-25：**不要**把这个池扩到 `mainforce_state` 的全宇宙（2854 只）——
+      那是"每天重拉全部历史"，会凭空多 1800 次请求。宇宙缺口由
+      `backfill_missing()` 增量补（首次补 ~1800 只，之后每天只剩个位数）。
+    """
     rows = db.fetch("SELECT DISTINCT code, name FROM backtest_prices ORDER BY code")
     return [{"code": r["code"], "name": r["name"]} for r in rows]
+
+
+def missing_codes(day: str = None) -> list:
+    """当日「有 mainforce_state 但无 mainflow_history」的代码（补洞用）。
+
+    ★ 与 `get_all_codes()` 的区别：这里只算**当天真正缺的**，日更后通常只剩个位数
+      ⇒ 补洞成本≈0；只有首次并入新宇宙时才会一次补上千只。
+    """
+    ensure_table()
+    try:
+        rows = db.fetch(
+            "SELECT DISTINCT m.code FROM mainforce_state m "
+            "WHERE m.date = COALESCE(%s, (SELECT MAX(date) FROM mainforce_state)) "
+            "  AND NOT EXISTS (SELECT 1 FROM mainflow_history f "
+            "                  WHERE f.code = m.code AND f.date = m.date) "
+            "ORDER BY m.code", (day,))
+        return [r["code"] for r in rows if r.get("code")]
+    except Exception as e:
+        print(f"[mainflow] 补洞名单读取失败: {str(e)[:100]}")
+        return []
+
+
+def backfill_missing(day: str = None, limit: int = 0, gap: float = _SINA_GAP,
+                     verbose_every: int = 100) -> dict:
+    """只补「当日缺资金流」的代码（增量），返回统计。
+
+    `limit>0` 时分批（夜间任务用 0=全量；手动验证可先跑几十只）。
+    """
+    codes = missing_codes(day)
+    total = len(codes)
+    if limit and total > limit:
+        codes = codes[:limit]
+    ok = fail = rows_n = 0
+    t0 = time.time()
+    for i, code in enumerate(codes, 1):
+        try:
+            rows = fetch_flow_history(code)
+        except Exception:
+            rows = []
+        if rows:
+            rows_n += save_flow(code, "", rows)
+            ok += 1
+        else:
+            fail += 1
+        if verbose_every and i % verbose_every == 0:
+            print(f"[mainflow] 补洞 {i}/{len(codes)} ok={ok} fail={fail} "
+                  f"({time.time() - t0:.0f}s)")   # ASCII
+        time.sleep(gap)
+    if codes:
+        try:
+            from app import sync_meta
+            sync_meta.touch("mainflow", rows=rows_n, note=f"gap_fill={ok}/{total}")
+        except Exception as e:      # 版本号失败不影响已写入的数据，但要留痕（卫生门 #11）
+            print(f"[mainflow] 补洞版本号写入失败: {str(e)[:80]}")
+    print(f"[mainflow] gap fill: missing={total} tried={len(codes)} "
+          f"ok={ok} fail={fail} rows={rows_n} ({time.time() - t0:.0f}s)")   # ASCII
+    return {"missing": total, "tried": len(codes), "ok": ok, "fail": fail,
+            "rows": rows_n, "seconds": round(time.time() - t0, 1)}
 
 
 def backfill_all(codes: list = None, gap: float = _SINA_GAP, verbose_every: int = 50) -> dict:
