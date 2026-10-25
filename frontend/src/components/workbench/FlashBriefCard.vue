@@ -63,12 +63,16 @@
       </div>
 
       <!-- ③ 个股异动 -->
+      <!-- ★ 2026-10-26（用户："异动加上股票代码，方便跳转去雪球"）：
+           名称 → 本地详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球）。 -->
       <div v-if="movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
         <span class="text-muted">异动</span>
         <span v-for="m in movers" :key="m.code">
           <a :href="stockHref(m.code)" target="_blank" rel="noopener"
              class="hover:text-accent">{{ m.name }}</a>
-          <b class="font-mono" :class="pctCls(m.chg_pct)">{{ fmtPct(m.chg_pct) }}</b>
+          <a v-if="m.code" :href="xqUrl(m.code)" target="_blank" rel="noopener"
+             class="ml-0.5 font-mono text-muted hover:text-accent" :title="`雪球 ${m.code}`">{{ m.code }}</a>
+          <b class="font-mono ml-0.5" :class="pctCls(m.chg_pct)">{{ fmtPct(m.chg_pct) }}</b>
           <span class="text-muted/80">（{{ (m.tags || []).join('/') }}）</span>
         </span>
       </div>
@@ -141,7 +145,7 @@
              class="font-semibold hover:text-accent">{{ h.name }}</a>
           <b class="font-mono ml-1" :class="pctCls(h.chg_pct)">{{ fmtPct(h.chg_pct) }}</b>
           <span v-if="h.industry" class="text-[10px] text-muted ml-1">{{ h.industry }}</span>
-          <span v-if="h.phase" class="text-[10px] text-muted ml-1">主力·{{ h.phase }}</span>
+          <span v-if="h.phase || h.phase_cn" class="text-[10px] text-muted ml-1">主力·{{ phaseCn(h.phase, h.phase_cn) }}</span>
           <span class="text-[10px] ml-1"
                 :class="h.lean.startsWith('受益') ? 'text-rise'
                         : h.lean.startsWith('承压') ? 'text-fall' : 'text-muted'">{{ h.lean }}</span>
@@ -159,6 +163,10 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { getFlashBrief, refreshFlashBrief } from '../../api'
 import { isTradingTime } from '../../composables/usePortfolio'
+// ★ 2026-10-26（用户："主力阶段现在是英文，改为中文"；"异动加代码跳雪球"）
+//   phaseCn：全站唯一映射（优先后端 phase_cn，缺失回退 displayMeta.PHASE_CN）
+//   xqUrl：个股 → 雪球（SH/SZ/BJ 自动拼前缀）
+import { phaseCn, xqUrl } from '../../composables/displayMeta'
 
 const props = defineProps({
   date: { type: String, default: '' },

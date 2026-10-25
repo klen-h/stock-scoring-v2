@@ -2484,41 +2484,69 @@
              卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
         <div v-if="lidx && lidx.latest" class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
-            <div class="text-sm font-semibold">李大霄视角
+            <!-- ★★ 2026-10-26（用户："李大霄视角卡片加上展开收起功能"）：标题即开关 -->
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
+                    @click="lidxOpen = !lidxOpen" :title="lidxOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ lidxOpen ? '▼' : '▶' }}</span>
+              李大霄视角
               <span class="text-[10px] text-muted font-normal">外部观点参考</span>
-            </div>
+              <span v-if="!lidxOpen && lidxCur.date" class="text-[10px] text-muted font-normal">
+                {{ (lidxCur.date || '').slice(5, 16) }}
+              </span>
+            </button>
             <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
                   :title="lidx.stale ? '上游可能停更或推送异常' : ''">
               数据截至 {{ (lidx.latest.date || '').slice(5, 16) }} · 落后{{ lidx.lag_days }}天<template v-if="lidx.stale"> ⚠</template>
             </span>
           </div>
-          <div class="flex items-center gap-2 text-xs mb-1 flex-wrap">
-            <span class="font-semibold text-gray-200">{{ lidx.latest.title }}</span>
-            <a v-if="lidx.latest.video_url" :href="lidx.latest.video_url" target="_blank"
-               class="text-accent hover:underline flex-shrink-0">{{ lidx.latest.bvid }} ↗</a>
-            <span class="text-muted flex-shrink-0">{{ lidx.latest.date }}</span>
-          </div>
-          <div class="text-xs mb-1.5">
-            情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidx.latest.sentiment_level)">{{ lidx.latest.sentiment_score ?? '—' }}</span>
-            <span :class="lidxLevelColor(lidx.latest.sentiment_level)">· {{ lidx.latest.sentiment_level || '—' }}</span>
-            <span class="text-muted"> · 防御话术 {{ lidx.latest.disclaimer_level ?? '—' }}/5</span>
-          </div>
-          <div v-if="lidx.latest.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
-            ▸ {{ lidx.latest.final_conclusion }}
-          </div>
-          <div v-if="lidx.latest.sectors && lidx.latest.sectors.length" class="flex flex-wrap gap-1 mb-2">
-            <span v-for="s in lidx.latest.sectors" :key="s"
-                  class="px-1.5 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-300 border border-blue-500/20">{{ s }}</span>
-          </div>
-          <div v-if="lidx.trend && lidx.trend.length" class="flex items-end gap-[3px] h-8">
-            <div v-for="(t, i) in lidx.trend" :key="i"
-                 class="flex-1 min-w-[4px] rounded-t"
-                 :style="{ height: Math.max(6, t.score || 0) + '%', background: lidxBarColor(t.score) }"
-                 :title="`${t.date} · 情绪${t.score} · ${t.title}`"></div>
-          </div>
-          <div v-if="lidx.trend && lidx.trend.length" class="text-[10px] text-muted mt-1">
-            近{{ lidx.trend.length }}期情绪（0~100，越高越乐观）
-          </div>
+
+          <template v-if="lidxOpen">
+            <!-- ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换，
+                 支持水平滚动，选中后 tab 自行居中"）：最近 12 条视频各一个 tab。
+                 实测 10-23 就有 3 条（10:52 / 14:18 / 20:33）⇒ 必须能选，不能只显示最新。 -->
+            <div v-if="lidxItems.length > 1"
+                 ref="lidxTabsEl"
+                 class="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1 wb-hscroll">
+              <button v-for="(t, i) in lidxItems" :key="t.entry_id || i"
+                      :ref="(el) => setLidxTab(el, i)"
+                      type="button"
+                      class="shrink-0 px-2 py-0.5 rounded text-[10px] border transition-colors"
+                      :class="i === lidxSel
+                        ? 'bg-accent/20 text-accent border-accent/40'
+                        : 'bg-white/5 text-muted border-border hover:text-gray-200'"
+                      :title="t.title || ''"
+                      @click="selectLidx(i)">
+                {{ lidxTabLabel(t) }}
+              </button>
+            </div>
+            <div class="flex items-center gap-2 text-xs mb-1 mt-1.5 flex-wrap">
+              <span class="font-semibold text-gray-200">{{ lidxCur.title }}</span>
+              <a v-if="lidxCur.video_url" :href="lidxCur.video_url" target="_blank"
+                 class="text-accent hover:underline flex-shrink-0">{{ lidxCur.bvid }} ↗</a>
+              <span class="text-muted flex-shrink-0">{{ lidxCur.date }}</span>
+            </div>
+            <div class="text-xs mb-1.5">
+              情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidxCur.sentiment_level)">{{ lidxCur.sentiment_score ?? '—' }}</span>
+              <span :class="lidxLevelColor(lidxCur.sentiment_level)">· {{ lidxCur.sentiment_level || '—' }}</span>
+              <span class="text-muted"> · 防御话术 {{ lidxCur.disclaimer_level ?? '—' }}/5</span>
+            </div>
+            <div v-if="lidxCur.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
+              ▸ {{ lidxCur.final_conclusion }}
+            </div>
+            <div v-if="lidxCur.sectors && lidxCur.sectors.length" class="flex flex-wrap gap-1 mb-2">
+              <span v-for="s in lidxCur.sectors" :key="s"
+                    class="px-1.5 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-300 border border-blue-500/20">{{ s }}</span>
+            </div>
+            <div v-if="lidx.trend && lidx.trend.length" class="flex items-end gap-[3px] h-8">
+              <div v-for="(t, i) in lidx.trend" :key="i"
+                   class="flex-1 min-w-[4px] rounded-t"
+                   :style="{ height: Math.max(6, t.score || 0) + '%', background: lidxBarColor(t.score) }"
+                   :title="`${t.date} · 情绪${t.score} · ${t.title}`"></div>
+            </div>
+            <div v-if="lidx.trend && lidx.trend.length" class="text-[10px] text-muted mt-1">
+              近{{ lidx.trend.length }}期情绪（0~100，越高越乐观）
+            </div>
+          </template>
         </div>
 
         <!-- 市场底确认清单（2026-10-23：从盘中移到右栏；2026-10-24 教练卡挂到本卡下方） -->
@@ -2765,7 +2793,7 @@
 //     trader_briefs/daily_reports/coach_alerts）；轮询暂停
 //   - 铁律：零评分/策略/回测引擎改动；只读接口已核（§6.1）+ workbench/day*（§6.2）
 // ==============================================================================
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 // ★ 2026-10-11（L1）：markdown 渲染器收拢为**全站唯一实例**（`composables/markdown`）——
 //   原先 5 个页面各自 `new MarkdownIt` 且选项已漂移（本文件是唯一的 `linkify: false`）。
@@ -3669,6 +3697,41 @@ async function loadLidaxiao() {
     if (data && data.latest) lidx.value = data
   } catch { /* 静默保留上次值 */ }
 }
+// ★★ 2026-10-26（用户："李大霄卡片加展开收起；一天可能有几个视频，卡内 tab 切换，
+//   水平滚动，选中后 tab 自行居中"）：
+//   · `items` 由后端下发（最近 12 期精简投影）；缺 items 时回退单条 latest（旧接口兼容）
+//   · 选中态按 `entry_id` 记忆 —— 60s 轮询有新视频插到队首时，不会把用户踢回第一条
+const lidxOpen = ref(true)
+const lidxSel = ref(0)
+const lidxSelId = ref('')
+const lidxTabEls = []
+function setLidxTab(el, i) { if (el) lidxTabEls[i] = el }
+const lidxItems = computed(() => {
+  const arr = (lidx.value && lidx.value.items) || []
+  if (arr.length) return arr
+  return (lidx.value && lidx.value.latest) ? [lidx.value.latest] : []
+})
+const lidxCur = computed(() => lidxItems.value[lidxSel.value] || lidxItems.value[0] || {})
+function lidxTabLabel(t) {
+  const s = String((t && t.date) || '')
+  return s.slice(5, 16) || '—'    // MM-DD HH:MM（同日多条视频靠时刻区分）
+}
+function selectLidx(i) {
+  lidxSel.value = i
+  lidxSelId.value = (lidxItems.value[i] || {}).entry_id || ''
+  // 选中后把自己滚到可视区中央（横向 tab 条可能很长）
+  nextTick(() => {
+    const el = lidxTabEls[i]
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
+  })
+}
+watch(lidxItems, (arr) => {
+  if (!arr.length) return
+  const i = lidxSelId.value ? arr.findIndex(x => x.entry_id === lidxSelId.value) : -1
+  lidxSel.value = i >= 0 ? i : 0
+})
 // 情绪六级配色（口径=后端 sentiment_level，移植自 xiaopage sentiment.ts；多→红系，空→蓝青系）
 function lidxLevelColor(level) {
   return { '极度狂热': 'text-red-400', '乐观': 'text-orange-400', '谨慎偏多': 'text-amber-400',
@@ -4957,3 +5020,9 @@ onUnmounted(stopPolling)
 <!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先本文件有一份副本，
      与另外 4 个页面各自漂移）。新增"观点输出"请直接加 `md-body` 类 + `v-html="renderMd(...)"`。 -->
 
+<style scoped>
+/* 卡内 tab 横向滚动：细滚动条，避免右栏被撑高（2026-10-26 李大霄多视频 tab） */
+.wb-hscroll::-webkit-scrollbar { height: 4px; }
+.wb-hscroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
+.wb-hscroll { scrollbar-width: thin; }
+</style>

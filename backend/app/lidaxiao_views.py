@@ -284,7 +284,17 @@ def load(limit: int = 14) -> Dict:
     trend = [{"date": str(r.get("date") or "")[:10],
               "score": r.get("sentiment_score"),
               "title": r.get("title")} for r in rows[1:n + 1]]
+    # ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换"）：
+    #   增加 `items` = 最近 N 期**精简投影**（只带卡面要渲染的字段，不带 factors/core_views）
+    #   ⇒ 12 期约 5KB，60s 轮询仍可接受；前端用它渲染卡内 tab（选中态按 entry_id 记忆）。
+    _ITEM_FIELDS = ("entry_id", "bvid", "title", "date", "video_url",
+                    "sentiment_score", "sentiment_level", "disclaimer_level",
+                    "final_conclusion", "sectors")
+    items = []
+    for r in rows[:min(n, 12)]:
+        full = _row_to_latest(r)
+        items.append({k: full.get(k) for k in _ITEM_FIELDS})
     lag = _lag_days(latest.get("date"))
-    return {"ok": True, "latest": latest, "trend": trend,
+    return {"ok": True, "latest": latest, "items": items, "trend": trend,
             "lag_days": lag, "stale": lag is not None and lag > _STALE_DAYS,
             "note": _NOTE}

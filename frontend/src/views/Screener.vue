@@ -28,8 +28,8 @@
         <span class="text-muted">排序</span>
         <select v-model="f.order" class="bg-white/5 border border-border rounded px-2 py-1">
           <option value="rank_pos">精算榜名次↑</option>
-          <option value="ret5">5日收益↓</option>
-          <option value="ret20">20日收益↓</option>
+          <option value="ret5">5日涨幅↓</option>
+          <option value="ret20">20日涨幅↓</option>
           <option value="flow5_amt_yi">5日主力净流入↓</option>
           <option value="dist_from_60d_high">距60日高点↑</option>
           <option value="turnover_pct">换手率↓</option>
@@ -50,13 +50,13 @@
           <th class="px-2">行业</th>
           <th class="px-2">收盘</th>
           <th class="px-2">日涨跌</th>
-          <th class="px-2">ret5</th>
-          <th class="px-2">ret20</th>
-          <th class="px-2">距高点</th>
+          <th class="px-2">5日涨幅</th>
+          <th class="px-2">20日涨幅</th>
+          <th class="px-2" title="相对最近 60 个交易日最高收盘的偏离（负数=低于高点）">距60日高点</th>
           <th class="px-2" title="评分=展示工具（预登记 FAIL）：高分≠会涨">综合分 ⚠</th>
           <th class="px-2">名次</th>
           <th class="px-2">主力阶段</th>
-          <th class="px-2">flow5(亿)</th>
+          <th class="px-2" title="5 日主力净流入合计（亿元）">5日主力净流入(亿)</th>
           <th class="px-2" title="状态展示，非买入信号">闸门</th>
           <th class="px-2">龙虎榜</th>
           <th class="px-2">板块</th>
@@ -77,7 +77,9 @@
             <td class="px-2 text-center font-mono text-muted">{{ r.dist_from_60d_high != null ? r.dist_from_60d_high.toFixed(0) + '%' : '—' }}</td>
             <td class="px-2 text-center font-mono">{{ r.score_total ?? '—' }}</td>
             <td class="px-2 text-center font-mono text-muted">{{ r.rank_pos ?? '—' }}</td>
-            <td class="px-2 text-center">{{ r.phase || '—' }}</td>
+            <!-- ★ 2026-10-26（用户："主力阶段现在是英文"）：走全站唯一映射 `phaseCn`
+                 （优先后端 phase_cn，缺失回退 displayMeta.PHASE_CN） -->
+            <td class="px-2 text-center">{{ phaseCn(r.phase) || '—' }}</td>
             <td class="px-2 text-center font-mono" :class="pct(r.flow5_amt_yi)">
               {{ r.flow5_amt_yi != null ? r.flow5_amt_yi.toFixed(1) : '—' }}</td>
             <td class="px-2 text-center text-muted">{{ r.gate_ready != null ? r.gate_ready + '/3' : '—' }}</td>
@@ -114,6 +116,8 @@
 import { ref, reactive, onMounted, watch } from 'vue'
 // ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
 import { getStockFactsWide } from '../api'
+// 主力阶段英文枚举 → 中文（唯一映射源后端 phases.PHASE_CN，前端兜底表在 displayMeta）
+import { phaseCn } from '../composables/displayMeta'
 
 const rows = ref([])
 const total = ref(0)
