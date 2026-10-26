@@ -538,6 +538,99 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-10-27（用户："市场底清单也是按日更新，放进观察器"）：⑤ 市场底确认清单。
+               与其余观察器块**同一时效档**（日频：收盘定稿 / 周线 / 每日宏观；
+               只有①国家队可能盘中变 —— 人工打勾、公告、ETF 份额），
+               ⇒ 轮询固定 **300s**（不进 60s 快组），异动时由 `onIntradayAlert` 立即重拉。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="togglePbw()"
+                    :title="pbwOpen ? '点击收起' : '点击展开（清单 6 条，达成 4 条视为确认）'">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                    :class="!pbw ? 'bg-slate-500'
+                            : (pbw.n_checked >= (pbw.n_pass || 4) ? 'bg-rose-400' : 'bg-amber-400')"></span>
+              <span class="text-xs font-semibold shrink-0">市场底确认清单</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ pbwLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ pbwOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="pbwOpen && pbw" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div class="flex items-center justify-between mb-1 text-[10px]">
+                <span :class="pbw.n_checked >= (pbw.n_pass || 4) ? 'text-red-400' : 'text-amber-400'">
+                  {{ pbw.position_hint }}</span>
+                <span class="text-muted font-mono">{{ pbw.n_checked }}/{{ pbw.n_total }}</span>
+              </div>
+              <div class="space-y-1 text-[11px]">
+                <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
+                  <div class="flex items-start gap-2">
+                    <span class="shrink-0" :class="it.checked ? 'text-emerald-400' : 'text-muted'">
+                      {{ it.checked ? '✅' : '⬜' }}<template
+                        v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                    </span>
+                    <span class="text-muted w-20 shrink-0">{{ it.label }}</span>
+                    <span class="flex-1 break-all">{{ it.detail }}</span>
+                    <span v-if="it.key === 'nation_team_ann' && it.hintCount"
+                          class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
+                          :title="it.hintText">{{ it.hintCount }} 条公告</span>
+                    <button v-if="it.key === 'nation_team_ann'"
+                            class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                            :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
+                            @click.stop="toggleNationTeam">
+                      {{ it.checked ? '取消' : '打勾' }}
+                    </button>
+                  </div>
+                  <!-- ① 三层证据：公告（只提示不打勾）/ ETF 份额（连续 2 日 ≥8% 自动打勾） -->
+                  <div v-if="it.key === 'nation_team_ann'"
+                       class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                    <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
+                       :href="h.url || undefined" target="_blank" rel="noopener"
+                       class="block text-[10px] text-amber-300/90 hover:underline break-all"
+                       :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
+                      🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
+                    </a>
+                    <div class="flex items-center gap-2 text-[10px]"
+                         :class="it.hintStatus === 'unavailable' ? 'text-red-400'
+                                 : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
+                      <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
+                      <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                              :disabled="annRefreshing"
+                              title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
+                              @click.stop="refreshAnnouncements">
+                        {{ annRefreshing ? '扫描中…' : '重扫' }}
+                      </button>
+                    </div>
+                  </div>
+                  <div v-if="it.key === 'nation_team_ann'"
+                       class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
+                    <div class="flex items-center gap-2 text-[10px]"
+                         :class="it.etfStatus === 'confirmed' ? 'text-red-400'
+                                 : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
+                      <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
+                      <button class="shrink-0 hover:text-accent disabled:opacity-50"
+                              :disabled="etfRefreshing"
+                              title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
+                              @click.stop="refreshEtf">
+                        {{ etfRefreshing ? '计算中…' : '重算' }}
+                      </button>
+                    </div>
+                    <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
+                         class="text-[10px] text-muted break-all">
+                      {{ r.code }} {{ r.name }}：今日
+                      <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
+                      <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
+                        ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
+                      </template>
+                      <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
+                    </div>
+                    <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
+                    <div v-if="it.manualDecided" class="text-[10px] text-muted">
+                      （已有人工判断，自动结果不覆盖）
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
         </div>
 
 
@@ -1817,97 +1910,7 @@
           </div>
 
         </div>
-          <!-- ★★ 2026-10-18：**市场底确认清单**（`app/policy_bottom_watch.py`）——
-               把"政策底已现、市场底滞后 1~3 个月"这个判断，变成每天可打勾的 5 条。
-               ⚠️ 它是**观察器，不是信号**：不改分、不进闸门、不碰模拟盘准入（模块头有预登记声明）。
-               ⚠️ 只有第①条（国家队公告）可人工打勾 —— 该类信息无结构化数据源，打勾权在人，
-                  快讯关键词只作辅助；④ 涨跌比在"冻结日"会显示⬜(数据不足)，那是**缺失≠不满足**。 -->
-          <!-- ★ 2026-10-23：已移到右侧常驻栏（原教练卡位置，见 aside）—— 旧块停用 -->
-          <div v-if="false" class="rounded-xl border border-border p-4 bg-panel/60">
-            <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <div class="text-sm font-semibold">市场底确认清单
-                <span class="text-[10px] text-muted font-normal">
-                  （观察器 · 非信号 · {{ pbw.n_checked }}/{{ pbw.n_total }}<template
-                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）
-                </span></div>
-              <span class="text-[10px]"
-                    :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
-                {{ pbw.position_hint }}</span>
-            </div>
-            <div class="space-y-1 text-[11px]">
-              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
-                <div class="flex items-start gap-2">
-                  <span class="shrink-0"
-                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
-                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
-                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
-                  </span>
-                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
-                  <span class="flex-1 break-all">{{ it.detail }}</span>
-                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
-                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
-                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
-                  <button v-if="it.key === 'nation_team_ann'"
-                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
-                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
-                          @click="toggleNationTeam">
-                    {{ it.checked ? '取消' : '打勾' }}
-                  </button>
-                </div>
-                <!-- ★ 2026-10-19 自动提示明细：**只给证据与链接，不打勾**（打勾是人的判断）。
-                     「自动检查不可用」要显式区别于「未发现」——缺失 ≠ 不满足。 -->
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
-                     :href="h.url || undefined" target="_blank" rel="noopener"
-                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
-                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
-                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
-                  </a>
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
-                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="annRefreshing"
-                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
-                            @click="refreshAnnouncements">
-                      {{ annRefreshing ? '扫描中…' : '重扫' }}
-                    </button>
-                  </div>
-                </div>
-                <!-- ★ 2026-10-19 份额异动（行为级证据，比公告更早）：
-                     **连续 2 日 ≥8% 会把第①条自动打勾**（人工点过之后以人工为准）。 -->
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
-                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="etfRefreshing"
-                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
-                            @click="refreshEtf">
-                      {{ etfRefreshing ? '计算中…' : '重算' }}
-                    </button>
-                  </div>
-                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
-                       class="text-[10px] text-muted break-all">
-                    {{ r.code }} {{ r.name }}：今日
-                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
-                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
-                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
-                    </template>
-                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
-                  </div>
-                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
-                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
-                    （已有人工判断，自动结果不覆盖）
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- ★ 2026-10-27：旧的市场底清单块已删除（2026-10-23 搬到右栏时留下 v-if=false 死代码；现并入观察器 ⑤）。 -->
 
           <!-- ★★ 2026-09-25 分栏安排（① 看盘序已全宽，在分栏之外）：
                  · 左列 = **盘面结构**（② 涨停梯队与清单 ③ 主线板块 Top5）
@@ -2530,101 +2533,11 @@
           </template>
         </div>
 
-        <!-- 市场底确认清单（2026-10-23：从盘中移到右栏；2026-10-24 教练卡挂到本卡下方） -->
-        <div v-if="pbw" class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
-                    @click="togglePbw" :title="pbwOpen ? '点击收起' : '点击展开'">
-              <span class="text-[10px] text-muted">{{ pbwOpen ? '▼' : '▶' }}</span>
-              <span>市场底确认清单
-                <span class="text-[10px] text-muted font-normal">
-                  （{{ pbw.n_checked }}/{{ pbw.n_total }}<template
-                    v-if="pbw.n_checked < 4"> · 距 4 条还差 {{ 4 - pbw.n_checked }} 条</template>）</span>
-              </span>
-            </button>
-            <span class="text-[10px]"
-                  :class="pbw.n_checked >= 4 ? 'text-red-400' : 'text-amber-400'">
-              {{ pbw.position_hint }}</span>
-          </div>
-          <template v-if="pbwOpen">
-            <div class="space-y-1 text-[11px]">
-              <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
-                <div class="flex items-start gap-2">
-                  <span class="shrink-0"
-                        :class="it.checked ? 'text-emerald-400' : 'text-muted'">
-                    {{ it.checked ? '✅' : (it.insufficient ? '⬜' : '⬜') }}<template
-                      v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
-                  </span>
-                  <span class="text-muted w-24 shrink-0">{{ it.label }}</span>
-                  <span class="flex-1 break-all">{{ it.detail }}</span>
-                  <span v-if="it.key === 'nation_team_ann' && it.hintCount"
-                        class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
-                        :title="it.hintText">{{ it.hintCount }} 条公告</span>
-                  <button v-if="it.key === 'nation_team_ann'"
-                          class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
-                          :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
-                          @click="toggleNationTeam">
-                    {{ it.checked ? '取消' : '打勾' }}
-                  </button>
-                </div>
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
-                     :href="h.url || undefined" target="_blank" rel="noopener"
-                     class="block text-[10px] text-amber-300/90 hover:underline break-all"
-                     :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
-                    🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
-                  </a>
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.hintStatus === 'unavailable' ? 'text-red-400'
-                               : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="annRefreshing"
-                            title="手动重扫巨潮公告（只更新提示，不推企微、不打勾）"
-                            @click="refreshAnnouncements">
-                      {{ annRefreshing ? '扫描中…' : '重扫' }}
-                    </button>
-                  </div>
-                </div>
-                <div v-if="it.key === 'nation_team_ann'"
-                     class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                  <div class="flex items-center gap-2 text-[10px]"
-                       :class="it.etfStatus === 'confirmed' ? 'text-red-400'
-                               : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
-                    <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
-                    <button class="shrink-0 hover:text-accent disabled:opacity-50"
-                            :disabled="etfRefreshing"
-                            title="手动重算宽基 ETF 份额（上交所官方；连续 2 日 ≥8% 会自动打勾）"
-                            @click="refreshEtf">
-                      {{ etfRefreshing ? '计算中…' : '重算' }}
-                    </button>
-                  </div>
-                  <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
-                       class="text-[10px] text-muted break-all">
-                    {{ r.code }} {{ r.name }}：今日
-                    <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
-                    <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
-                      ｜前一日 {{ Number(r.prev_chg_pct).toFixed(2) }}%
-                    </template>
-                    <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
-                  </div>
-                  <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
-                  <div v-if="it.manualDecided" class="text-[10px] text-muted">
-                    （已有人工判断，自动结果不覆盖）
-                  </div>
-                </div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="text-[10px] text-muted">
-            已收起（{{ pbw.n_checked }}/{{ pbw.n_total }}）—— 点击标题展开
-          </div>
-        </div>
+        <!-- ★ 2026-10-27：市场底清单已并入观察器 ⑤（日频数据，300s 刷新），右栏不再保留副本。 -->
 
-        <!-- 教练卡（今日）—— **全站唯一一份**（2026-10-24 用户："移到市场底确认清单下面"）
-             ★ 2026-09-28 起唯一展示位就在右栏；10-23 曾临时挪到主区与观察器并排，
-             10-24 观察器独占一行后移回右栏、紧贴清单下方。
+        <!-- 教练卡（今日）—— **全站唯一一份**
+             ★ 2026-09-28 起唯一展示位就在右栏；10-24 紧贴清单下方；
+               10-27 清单并入观察器后，右栏首张卡（上方是快讯解读 / 李大霄）。
              ⚠️ 回放（isReplay）时 readonly=true ⇒ 只读 + 状态徽标（历史不可改）。 -->
         <div class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
@@ -3737,6 +3650,17 @@ async function loadLidaxiao() {
     if (data && data.latest) lidx.value = data
   } catch { /* 静默保留上次值 */ }
 }
+// ★ 2026-10-27（市场底清单并入观察器）：摘要行 —— 收起时也能看出"3/6 · 距 4 条还差 1 条"。
+//   `n_pass` 由后端下发（默认 4），不写死，避免阈值调了文案没跟。
+const pbwLine = computed(() => {
+  if (!pbw.value) return '加载中…'
+  const n = Number(pbw.value.n_checked) || 0
+  const total = Number(pbw.value.n_total) || 6
+  const pass = Number(pbw.value.n_pass) || 4
+  const gap = pass - n
+  return `${n}/${total}` + (gap > 0 ? ` · 距 ${pass} 条还差 ${gap} 条` : ' · 已达成')
+})
+
 // ★★ 2026-10-26（用户："李大霄卡片加展开收起；一天可能有几个视频，卡内 tab 切换，
 //   水平滚动，选中后 tab 自行居中"）：
 //   · `items` 由后端下发（最近 12 期精简投影）；缺 items 时回退单条 latest（旧接口兼容）
@@ -3879,17 +3803,20 @@ function saveObs() {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value,
       scen: scenOpen.value, ai: aiOpen.value,
+      pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
 }
 const obsAllOpen = computed(() =>
-  wsOpen.value && crowdOpen.value && scenOpen.value && aiOpen.value)
+  wsOpen.value && crowdOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
   crowdOpen.value = v
   scenOpen.value = v
   aiOpen.value = v
+  pbwOpen.value = v
+  try { localStorage.setItem(PBW_KEY, v ? '1' : '0') } catch { /* ignore */ }
   saveObs()
 }
 
@@ -5105,7 +5032,7 @@ function startPolling() {
     // ★★ 2026-10-26（第④步）：`loadPulse()` **已上移到 60s 快组**（见上方 ticker），
     //   本组（120s）只留"变化慢/外部源"的项 ⇒ 行情新鲜度翻倍，而东财与外盘不增频。
     loadTailReview()
-    loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
+    // ★ 2026-10-27：市场底清单已移出 120s 组（日频数据，改为 300s，见上方 ticker）
     // ★★ 2026-09-28（用户："主线板块 Top5 也不是实时的" —— 真因就在这里）：
     //   `loadSectorTop` 原先**只在切阶段时调一次**，切进盘中后就不再刷新
     //   ⇒ 页面上的板块排名停在"进入该阶段那一刻"（尽管接口本身是实时的）。
