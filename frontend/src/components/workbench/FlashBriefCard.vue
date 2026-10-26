@@ -1,7 +1,9 @@
 <template>
   <!-- ★★ 2026-10-24（用户："快讯卡片过于简略……补充大盘走势、板块轮动、个股异动，
-       突出异动原因和影响范围"）：工作台右栏「快讯解读」卡。
-       数据：`GET /flash/brief`（只读缓存/快照，不烧 LLM）；
+       突出异动原因和影响范围"）：工作台「快讯解读」卡。
+       ★ 2026-10-26：位置已从"右栏"改为**主区右卡**（与「盘面速览」左右并排，均在观察器下方）。
+       数据：`GET /flash/brief`（只读缓存/快照，不烧 LLM）—— 现由 `useFlashBrief` 单例供给，
+             与盘面速览的持仓行共享同一条 60s 轮询；
        解读：`POST /flash/brief/refresh`（一次批量 LLM，重要条全进同一 prompt）。
        系统级：盘中异动由调度器 `brief_loop` 自动触发 → 浏览器通知（/flash/notifications）。 -->
   <div class="bg-card border border-border rounded-lg p-3 text-xs">

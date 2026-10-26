@@ -536,194 +536,198 @@
             </span>
           </div>
         </div>
-        <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
-             置于观察器下方；消除市场涨跌在多处重复）：
-             · 涨跌家数/涨停跌停/成交额/情绪 —— 全站**只此一处**（原盘中看盘序、盘后结算卡各有一份）；
-             · 主线 Top5（含领涨股+代码）与行业成交占比收进左下（占比默认折叠，避免抢注意力）；
-             · 持仓状态收进右下（组合风控一行摘要 + 逐只精简行，滚动区内滚，不撑高整卡）；
-             · 快讯解读原来独占右栏一张卡 ⇒ 现在并入本卡底部（右栏少了 1 张卡）。
-             ⚠️ 数据时刻一律用**数据自身时刻**（ovStyle.data_date / radarQuote），不用请求时刻顶替。 -->
-        <div id="wb-pulse" class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-            <div class="text-sm font-semibold">盘面速览
-              <span class="text-[10px] text-muted font-normal">涨跌 · 主线 · 持仓 · 快讯</span>
-            </div>
-            <span class="text-[10px] font-mono cursor-help"
-                  :class="ovStyle?.from_snapshot ? 'text-amber-400' : 'text-muted'"
-                  :title="ovStyle?.from_snapshot
-                    ? `行情缓存来自收盘快照 ⇒ 数据是 ${ovStyle?.data_date || '上一交易日'} 收盘，不是今天的`
-                    : `行情时刻 ${ovStyle?.as_of || '—'}（后端内存缓存，盘中每 2~3 分钟刷新）`">
-              {{ ovStyle?.from_snapshot ? '收盘快照' : '盘中实时' }}<template
-                v-if="ovStyle?.data_date"> · {{ ovStyle.data_date }}</template><template
-                v-else-if="ovStyle?.as_of"> · {{ ovStyle.as_of }}</template>
-            </span>
-          </div>
 
-          <!-- A 市场涨跌（全站唯一一处） -->
-          <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-2 border-t border-border/40">
-            <div><div class="text-[10px] text-muted">上涨</div>
-              <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
-            <div><div class="text-[10px] text-muted">下跌</div>
-              <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
-            <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
-              <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
-            <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
-              <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
-            <div><div class="text-[10px] text-muted">两市成交额</div>
-              <div class="text-base font-bold font-mono text-gray-200">
-                {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
-                   : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
-              <div v-if="amountRt?.available && amountRt.show_ratio" class="text-[10px] leading-tight">
-                <b :class="amountRt.verdict === '放量' ? 'text-red-400'
-                         : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
-                {{ signNum(amountRt.ratio_pct) }}%
-              </div>
-            </div>
-            <div><div class="text-[10px] text-muted">情绪判读</div>
-              <div class="text-base font-bold"
-                   :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
-                {{ emotion?.verdict || '—' }}</div></div>
-          </div>
 
-          <!-- B 左：主线 Top5 ｜ 右：持仓状态 -->
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-2 border-t border-border/40 pt-2">
-            <div class="min-w-0">
-              <div class="flex items-center justify-between mb-1">
-                <div class="text-xs font-semibold">主线板块 Top5
-                  <span class="text-[10px] text-muted font-normal">
-                    {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
-                       : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
-                       : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
-                <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
+        </div>
+
+        </div>
+
+        <!-- ★★ 2026-10-26（用户：盘面速览与快讯解读从观察器容器里独立出来，左卡/右卡）：
+             原来二者被误嵌在观察器卡内部（插入点落在那张卡的脚注之后、卡闭合之前）⇒ 视觉上是"卡中卡"。
+             现在它们是观察器**同级**的两列：左＝盘面速览（涨跌/主线/持仓），右＝快讯解读（事件驱动）。
+             ⚠️ 断点 xl：窄屏自动上下堆叠（先盘面、后快讯）。 -->
+        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-start">
+          <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
+               置于观察器下方；消除市场涨跌在多处重复）：
+               · 涨跌家数/涨停跌停/成交额/情绪 —— 全站**只此一处**（原盘中看盘序、盘后结算卡各有一份）；
+               · 主线 Top5（含领涨股+代码）与行业成交占比收进左下（占比默认折叠，避免抢注意力）；
+               · 持仓状态收进右下（组合风控一行摘要 + 逐只精简行，滚动区内滚，不撑高整卡）；
+               · 2026-10-26 调整：快讯解读改为**右侧独立卡片**（本卡只留涨跌/主线/持仓）。
+               ⚠️ 数据时刻一律用**数据自身时刻**（ovStyle.data_date / radarQuote），不用请求时刻顶替。 -->
+          <div id="wb-pulse" class="bg-card border border-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+              <div class="text-sm font-semibold">盘面速览
+                <span class="text-[10px] text-muted font-normal">涨跌 · 主线 · 持仓</span>
               </div>
-              <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
-              <div v-else class="space-y-0.5 text-xs">
-                <div v-for="(s, i) in sectorTop.slice(0, 5)" :key="i"
-                     class="flex items-center gap-2 border-b border-border/30 py-0.5">
-                  <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
-                  <span class="font-semibold truncate">{{ s.name || s.industry || s.code || '—' }}</span>
-                  <span v-if="s.up_count != null" class="text-[10px] text-muted shrink-0">
-                    涨{{ s.up_count }}/跌{{ s.down_count }}</span>
-                  <span class="ml-auto font-mono shrink-0" :class="pctClass(s.change_pct ?? s.pct_change)">
-                    {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
-                </div>
-                <!-- 领涨股：Top5 里每个有 leader 的板块各一行（紧凑 10px 行，不额外占卡片高度） -->
-                <div v-for="s in sectorTop.slice(0, 5).filter(x => x.leader)" :key="'ld' + (s.code || s.name)"
-                     class="flex items-center gap-1.5 pl-5 text-[10px] text-muted">
-                  <span>{{ s.name || s.industry }} 领涨</span>
-                  <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
-                     class="hover:text-accent">{{ s.leader }}</a>
-                  <span v-else>{{ s.leader }}</span>
-                  <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
-                     class="font-mono hover:text-accent">{{ s.leader_code }}</a>
-                  <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
+              <span class="text-[10px] font-mono cursor-help"
+                    :class="ovStyle?.from_snapshot ? 'text-amber-400' : 'text-muted'"
+                    :title="ovStyle?.from_snapshot
+                      ? `行情缓存来自收盘快照 ⇒ 数据是 ${ovStyle?.data_date || '上一交易日'} 收盘，不是今天的`
+                      : `行情时刻 ${ovStyle?.as_of || '—'}（后端内存缓存，盘中每 2~3 分钟刷新）`">
+                {{ ovStyle?.from_snapshot ? '收盘快照' : '盘中实时' }}<template
+                  v-if="ovStyle?.data_date"> · {{ ovStyle.data_date }}</template><template
+                  v-else-if="ovStyle?.as_of"> · {{ ovStyle.as_of }}</template>
+              </span>
+            </div>
+
+            <!-- A 市场涨跌（全站唯一一处） -->
+            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-2 border-t border-border/40">
+              <div><div class="text-[10px] text-muted">上涨</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">下跌</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
+                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
+                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
+              <div><div class="text-[10px] text-muted">两市成交额</div>
+                <div class="text-base font-bold font-mono text-gray-200">
+                  {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
+                     : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
+                <div v-if="amountRt?.available && amountRt.show_ratio" class="text-[10px] leading-tight">
+                  <b :class="amountRt.verdict === '放量' ? 'text-red-400'
+                           : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
+                  {{ signNum(amountRt.ratio_pct) }}%
                 </div>
               </div>
-              <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
-              <details v-if="amountShare?.available" class="mt-1">
-                <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
-                  行业成交额占比（Top5 占 {{ amountShare.top5_share_pct }}% · 数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? ' 快照' : '' }}）
-                </summary>
-                <div class="space-y-0.5 text-[11px] mt-1">
-                  <div v-for="(r, i) in amountShare.rows" :key="r.industry"
-                       class="flex items-center gap-2 py-0.5">
+              <div><div class="text-[10px] text-muted">情绪判读</div>
+                <div class="text-base font-bold"
+                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
+                  {{ emotion?.verdict || '—' }}</div></div>
+            </div>
+
+            <!-- B 左：主线 Top5 ｜ 右：持仓状态 -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-2 border-t border-border/40 pt-2">
+              <div class="min-w-0">
+                <div class="flex items-center justify-between mb-1">
+                  <div class="text-xs font-semibold">主线板块 Top5
+                    <span class="text-[10px] text-muted font-normal">
+                      {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
+                         : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
+                         : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
+                  <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
+                </div>
+                <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
+                <div v-else class="space-y-0.5 text-xs">
+                  <div v-for="(s, i) in sectorTop.slice(0, 5)" :key="i"
+                       class="flex items-center gap-2 border-b border-border/30 py-0.5">
                     <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
-                    <span class="font-semibold w-20 truncate" :title="r.industry">{{ r.industry }}</span>
-                    <span class="flex-1 h-1.5 rounded bg-border/40 overflow-hidden min-w-[30px]">
-                      <span class="block h-full bg-accent/70" :style="{ width: barWShare(r.share_pct) }"></span></span>
-                    <span class="font-mono text-gray-300 w-12 text-right">{{ r.share_pct }}%</span>
-                    <span class="font-mono w-12 text-right" :class="pctClass(r.avg_change_pct)">{{ signNum(r.avg_change_pct) }}%</span>
+                    <span class="font-semibold truncate">{{ s.name || s.industry || s.code || '—' }}</span>
+                    <span v-if="s.up_count != null" class="text-[10px] text-muted shrink-0">
+                      涨{{ s.up_count }}/跌{{ s.down_count }}</span>
+                    <span class="ml-auto font-mono shrink-0" :class="pctClass(s.change_pct ?? s.pct_change)">
+                      {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
+                  </div>
+                  <!-- 领涨股：Top5 里每个有 leader 的板块各一行（紧凑 10px 行，不额外占卡片高度） -->
+                  <div v-for="s in sectorTop.slice(0, 5).filter(x => x.leader)" :key="'ld' + (s.code || s.name)"
+                       class="flex items-center gap-1.5 pl-5 text-[10px] text-muted">
+                    <span>{{ s.name || s.industry }} 领涨</span>
+                    <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
+                       class="hover:text-accent">{{ s.leader }}</a>
+                    <span v-else>{{ s.leader }}</span>
+                    <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
+                       class="font-mono hover:text-accent">{{ s.leader_code }}</a>
+                    <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
                   </div>
                 </div>
-              </details>
-            </div>
-
-            <div class="min-w-0">
-              <div class="flex items-center justify-between mb-1">
-                <div class="text-xs font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
-                  风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
-                <span v-if="radarQuote" class="text-[10px] font-mono shrink-0"
-                      :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
-                      :title="radarQuoteTitle">行情 {{ radarQuote.text }}</span>
-                <span v-else-if="radarAsOf" class="text-[10px] text-muted font-mono shrink-0">
-                  计算于 {{ radarAsOf.slice(11, 16) }}</span>
+                <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
+                <details v-if="amountShare?.available" class="mt-1">
+                  <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
+                    行业成交额占比（Top5 占 {{ amountShare.top5_share_pct }}% · 数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? ' 快照' : '' }}）
+                  </summary>
+                  <div class="space-y-0.5 text-[11px] mt-1">
+                    <div v-for="(r, i) in amountShare.rows" :key="r.industry"
+                         class="flex items-center gap-2 py-0.5">
+                      <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
+                      <span class="font-semibold w-20 truncate" :title="r.industry">{{ r.industry }}</span>
+                      <span class="flex-1 h-1.5 rounded bg-border/40 overflow-hidden min-w-[30px]">
+                        <span class="block h-full bg-accent/70" :style="{ width: barWShare(r.share_pct) }"></span></span>
+                      <span class="font-mono text-gray-300 w-12 text-right">{{ r.share_pct }}%</span>
+                      <span class="font-mono w-12 text-right" :class="pctClass(r.avg_change_pct)">{{ signNum(r.avg_change_pct) }}%</span>
+                    </div>
+                  </div>
+                </details>
               </div>
-              <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
-              <div v-else-if="!radarItems.length" class="text-muted text-xs">—（当前无持仓记录）</div>
-              <template v-else>
-                <div v-if="radarRisk?.available" class="text-[10px] text-muted mb-1 truncate"
-                     :title="[(radarRisk.style ? '风格 ' + radarRisk.style.band : ''),
-                              (radarRisk.concentration || []).length ? '板块集中 ' + (radarRisk.concentration || []).map(c => c.industry).join('/') : '',
-                              (radarRisk.overseas || []).length ? '海外敏感 ' + (radarRisk.overseas || []).map(o => o.chain).join('/') : ''
-                             ].filter(Boolean).join(' · ')">
-                  组合风控：{{ radarRisk.style?.band || '—' }}<template
-                    v-if="(radarRisk.concentration || []).length"> · 集中 {{ (radarRisk.concentration || []).length }} 项</template><template
-                    v-if="(radarRisk.overseas || []).length"> · 海外 {{ (radarRisk.overseas || []).length }} 项</template>
+
+              <div class="min-w-0">
+                <div class="flex items-center justify-between mb-1">
+                  <div class="text-xs font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
+                    风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+                  <span v-if="radarQuote" class="text-[10px] font-mono shrink-0"
+                        :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
+                        :title="radarQuoteTitle">行情 {{ radarQuote.text }}</span>
+                  <span v-else-if="radarAsOf" class="text-[10px] text-muted font-mono shrink-0">
+                    计算于 {{ radarAsOf.slice(11, 16) }}</span>
                 </div>
-                <div class="space-y-1 max-h-[190px] overflow-y-auto pr-1">
-                  <div v-for="it in radarItems" :key="it.code"
-                       class="border border-border/50 rounded px-2 py-1">
-                    <div class="flex items-center gap-1.5 flex-wrap text-xs">
-                      <a :href="stockHref(it.code)" target="_blank"
-                         class="font-semibold hover:text-accent truncate">{{ it.name || it.code }}</a>
-                      <a :href="xqUrl(it.code)" target="_blank"
-                         class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
-                      <span v-if="it.industry" class="text-[10px] text-muted truncate">{{ it.industry }}</span>
-                      <span class="ml-auto font-bold font-mono" :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
-                    </div>
-                    <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-muted mt-0.5">
-                      <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
-                      <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
-                      <span v-if="it.phase" class="px-1 rounded"
-                            :class="(MF_PHASE_STYLE[it.phase] || {}).cls || 'bg-white/5'">{{ it.phase_cn || it.phase }}</span>
-                      <span v-if="it.score != null">评分 <b class="text-gray-200 font-mono">{{ it.score }}</b></span>
-                      <span v-if="it.ready_label">闸门 {{ it.ready_label }}</span>
-                      <span v-if="it.in_watch" class="text-sky-400">观察池</span>
-                      <!-- ★ 2026-10-26（第①步：消息面投影）：这只持仓被哪条快讯影响 ——
-                           原来画在「快讯解读」卡里的「持仓影响」块，现在**长在持仓行上**。
-                           唯一性：快讯列表 = 原始流；这里只放"方向 + 条数"，点开看原文。 -->
-                      <button v-if="fbByCode[it.code]" type="button"
-                              class="px-1 rounded border cursor-help"
-                              :class="msgCls(fbByCode[it.code].lean)"
-                              :title="`快讯命中 ${fbByCode[it.code].n} 条 · ${fbByCode[it.code].lean}（观察参考，非交易建议）`"
-                              @click.stop="toggleHoldingMsg(it.code)">
-                        消息{{ fbByCode[it.code].n }}
-                      </button>
-                    </div>
-                    <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-0.5"
-                         :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
-                      {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
-                    </div>
-                    <!-- 展开：命中快讯原文（方向 + 簇/匹配词 + 原因；无原因则给一句概括） -->
-                    <div v-if="fbByCode[it.code] && holdingMsgOpen[it.code]"
-                         class="mt-1 pl-2 border-l border-accent/40 space-y-0.5">
-                      <div v-for="(hit, j) in fbByCode[it.code].hits" :key="j"
-                           class="text-[10px] text-muted leading-relaxed">
-                        <span class="font-mono">[{{ hit.idx }}]</span>
-                        <span class="ml-0.5" :class="hitCls(hit.direction)">{{ hit.direction }}</span>
-                        <span class="ml-0.5">（{{ hit.match }}）</span>
-                        <span class="ml-0.5">{{ hit.cause || hit.gist }}</span>
+                <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
+                <div v-else-if="!radarItems.length" class="text-muted text-xs">—（当前无持仓记录）</div>
+                <template v-else>
+                  <div v-if="radarRisk?.available" class="text-[10px] text-muted mb-1 truncate"
+                       :title="[(radarRisk.style ? '风格 ' + radarRisk.style.band : ''),
+                                (radarRisk.concentration || []).length ? '板块集中 ' + (radarRisk.concentration || []).map(c => c.industry).join('/') : '',
+                                (radarRisk.overseas || []).length ? '海外敏感 ' + (radarRisk.overseas || []).map(o => o.chain).join('/') : ''
+                               ].filter(Boolean).join(' · ')">
+                    组合风控：{{ radarRisk.style?.band || '—' }}<template
+                      v-if="(radarRisk.concentration || []).length"> · 集中 {{ (radarRisk.concentration || []).length }} 项</template><template
+                      v-if="(radarRisk.overseas || []).length"> · 海外 {{ (radarRisk.overseas || []).length }} 项</template>
+                  </div>
+                  <div class="space-y-1 max-h-[190px] overflow-y-auto pr-1">
+                    <div v-for="it in radarItems" :key="it.code"
+                         class="border border-border/50 rounded px-2 py-1">
+                      <div class="flex items-center gap-1.5 flex-wrap text-xs">
+                        <a :href="stockHref(it.code)" target="_blank"
+                           class="font-semibold hover:text-accent truncate">{{ it.name || it.code }}</a>
+                        <a :href="xqUrl(it.code)" target="_blank"
+                           class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
+                        <span v-if="it.industry" class="text-[10px] text-muted truncate">{{ it.industry }}</span>
+                        <span class="ml-auto font-bold font-mono" :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
                       </div>
-                      <div class="text-[10px] text-muted/70">规则联动 · 观察参考，非交易建议</div>
+                      <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-muted mt-0.5">
+                        <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
+                        <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
+                        <span v-if="it.phase" class="px-1 rounded"
+                              :class="(MF_PHASE_STYLE[it.phase] || {}).cls || 'bg-white/5'">{{ it.phase_cn || it.phase }}</span>
+                        <span v-if="it.score != null">评分 <b class="text-gray-200 font-mono">{{ it.score }}</b></span>
+                        <span v-if="it.ready_label">闸门 {{ it.ready_label }}</span>
+                        <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                        <!-- ★ 2026-10-26（第①步：消息面投影）：这只持仓被哪条快讯影响 ——
+                             原来画在「快讯解读」卡里的「持仓影响」块，现在**长在持仓行上**。
+                             唯一性：快讯列表 = 原始流；这里只放"方向 + 条数"，点开看原文。 -->
+                        <button v-if="fbByCode[it.code]" type="button"
+                                class="px-1 rounded border cursor-help"
+                                :class="msgCls(fbByCode[it.code].lean)"
+                                :title="`快讯命中 ${fbByCode[it.code].n} 条 · ${fbByCode[it.code].lean}（观察参考，非交易建议）`"
+                                @click.stop="toggleHoldingMsg(it.code)">
+                          消息{{ fbByCode[it.code].n }}
+                        </button>
+                      </div>
+                      <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-0.5"
+                           :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
+                        {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
+                      </div>
+                      <!-- 展开：命中快讯原文（方向 + 簇/匹配词 + 原因；无原因则给一句概括） -->
+                      <div v-if="fbByCode[it.code] && holdingMsgOpen[it.code]"
+                           class="mt-1 pl-2 border-l border-accent/40 space-y-0.5">
+                        <div v-for="(hit, j) in fbByCode[it.code].hits" :key="j"
+                             class="text-[10px] text-muted leading-relaxed">
+                          <span class="font-mono">[{{ hit.idx }}]</span>
+                          <span class="ml-0.5" :class="hitCls(hit.direction)">{{ hit.direction }}</span>
+                          <span class="ml-0.5">（{{ hit.match }}）</span>
+                          <span class="ml-0.5">{{ hit.cause || hit.gist }}</span>
+                        </div>
+                        <div class="text-[10px] text-muted/70">规则联动 · 观察参考，非交易建议</div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </template>
+                </template>
+              </div>
             </div>
           </div>
 
-          <!-- C 快讯解读（原右栏独占一张卡 ⇒ 并入本卡，右栏少一张） -->
-          <div class="border-t border-border/40 mt-2 pt-2">
-            <div class="text-xs font-semibold mb-1">快讯解读
-              <span class="text-[10px] text-muted font-normal">事件驱动 · 非信号</span>
-            </div>
+          <!-- 右卡：快讯解读（自带卡片外壳） -->
+          <div class="min-w-0">
             <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
           </div>
-        </div>
-
-
-        </div>
-
         </div>
 
         <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
