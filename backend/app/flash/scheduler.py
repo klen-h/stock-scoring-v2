@@ -1948,6 +1948,65 @@ async def market_snapshot_loop():
         await asyncio.sleep(300)  # 每 5 分钟检查一次
 
 
+# ── 盘前全量扫描：重建「有效代码池」（新股盲区修复，2026-10-27）──
+# 【问题】`_valid_codes` 只在 `do_full_scan` 时重建，而
+#   · 盘中 `stock_cache_refresh_loop` 永远 `force=False`（走增量）
+#   · `market_snapshot_loop` 只保存快照、不重建池
+#   ⇒ 新上市代码永远进不了池；更糟的是快照把旧 `_valid_codes` 一起持久化，
+#   重启后 `restore_market_snapshot()` 又把旧池恢复回来 = **盲区跨重启自我延续**。
+# 【修法】交易日盘前跑一次全量（12000 候选 / 150 批 / 2~4 分钟），重建池并落库。
+# 【时刻】窗口 08:30-09:00 —— 必须在 09:15 集合竞价前跑完：
+#   一旦跨过 09:15，`_price_date_now()` 会从「上一交易日」翻成「今天」，而盘前
+#   拿到的其实是昨收 ⇒ 快照的 `data_date` 会被写成今天（本项目最贵的故障类型：
+#   数据时刻错）。⇒ 宁可「今天错过、明天再来」，也不让全量跑进竞价窗口。
+PREMARKET_FULL_SCAN_WINDOW = (510, 540)          # 08:30-09:00（hour*60+minute）
+PREMARKET_FULL_SCAN_KEY = "premarket_full_scan"
+
+
+async def _premarket_full_scan_once() -> bool:
+    """单次判断 + 执行（抽出来便于测试）。返回本轮是否真的跑了全量。"""
+    now = rules.beijing_now()
+    t = now.hour * 60 + now.minute
+    if not (rules.is_trading_day(now)
+            and PREMARKET_FULL_SCAN_WINDOW[0] <= t < PREMARKET_FULL_SCAN_WINDOW[1]):
+        return False
+    if store.is_schedule_done(PREMARKET_FULL_SCAN_KEY):
+        return False
+    from app.tencent import refresh_all_stocks, save_market_snapshot
+    try:
+        # force=True：跳过 60s 冷却 + 走 `_ALL_CODES` 全量（发现新股/复牌）
+        await asyncio.to_thread(refresh_all_stocks, True)
+    except Exception as e:
+        # 失败不 mark ⇒ 窗口内 5 分钟后再试；`_notify_failure` 当日只推一次
+        print(f"[scheduler] 盘前全量扫描失败（窗口内将重试）: {e}")
+        _notify_failure("盘前全量扫描（新股池）", str(e))
+        return False
+    # ★ 落库：否则下次重启又从旧快照恢复旧 `_valid_codes`（盲区复活）
+    ok = False
+    try:
+        ok = await asyncio.to_thread(save_market_snapshot)
+    except Exception as e:
+        print(f"[scheduler] 盘前全量扫描后快照落库异常: {e}")
+    # ★★ 无论落库成败都 mark：全量已经把内存池重建好了（核心目标已达成），
+    #   若因落库失败不 mark ⇒ 窗口内每 5 分钟重跑一次 150 批全量 = WAF 风险。
+    store.mark_schedule_done(PREMARKET_FULL_SCAN_KEY)
+    if not ok:
+        print("[scheduler] 盘前全量扫描：池已重建，但快照落库失败"
+              "（下次重启可能恢复旧池，下个交易日窗口会再重建）")
+    print("[scheduler] 盘前全量扫描完成：有效代码池已重建")
+    return True
+
+
+async def premarket_full_scan_loop():
+    """交易日 08:30-09:00 巡检一次（幂等由 `_premarket_full_scan_once` 判定）。"""
+    while True:
+        try:
+            await _premarket_full_scan_once()
+        except Exception as e:
+            print(f"[scheduler] premarket_full_scan_loop 异常: {e}")
+        await asyncio.sleep(300)
+
+
 # ── 持仓负面消息提醒（消息面阶段 1）──
 NEWS_ALERT_INTERVAL = 600    # 盘中每 10 分钟扫一轮持仓新闻分
 NEWS_ALERT_THRESHOLD = -4    # 新闻分 ≤ -4（强烈负面）才推送，避免噪音刷屏
@@ -2444,6 +2503,8 @@ async def start():
              *_heavy(strategy_scan_loop),
              *_heavy(backtest_report_loop),
              *_heavy(score_snapshot_loop),
+             # ★ 2026-10-27：盘前全量扫描（08:30-09:00，重建有效代码池 ⇒ 解「新股永不进池」）
+             *_heavy(premarket_full_scan_loop),
              *_heavy(market_snapshot_loop),
              # ★ 2026-09-26：日批完成通知**不走调度器**（用户要求事件驱动、不要轮询）
              #   ⇒ 见 `routers/system.py` 的 `POST /api/system/batch-done`，

@@ -449,6 +449,16 @@ def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
 
 
 def _refresh_all_stocks_inner(force: bool = False):
+    # ★★ 2026-10-27（P0 修复，缺失的 global）：本函数在下方会 `_valid_codes = valid_found`
+    #   重建有效代码池。**没有 `global` 时它在编译期就是局部变量**，后果是：
+    #     ① `force=False`（**盘中增量路径**）求值 `force or not _valid_codes` 时，
+    #        局部名尚未赋值 ⇒ `UnboundLocalError` ⇒ 刷新 100% 失败。而
+    #        `stock_cache_refresh_loop` 只打一行 print（日志一滚就没了）⇒ 表现为
+    #        「行情缓存冻结在某个收盘快照」——这正是 `scheduler.py:262-266` 记录的那起
+    #        09-24 事故的形态（缓存冻结、09-28 全天刷新都没成功）。
+    #     ② `force=True`（全量）虽能跑完，但重建结果只写局部变量，模块级 `_valid_codes`
+    #        永远为空 ⇒ 下一轮又是全量扫描（150 批），且增量路径继续崩。
+    global _valid_codes
     with _cache["lock"]:   # with 语法：进入时自动加锁，退出时自动释放（类似 try-finally）
         # 冷却判断：未强制且 60 秒内刷新过 → 直接返回旧数据
         if not force and time.time() - _cache["last_update"] < 60:
@@ -484,6 +494,18 @@ def _refresh_all_stocks_inner(force: bool = False):
             # 每 10 批打印一次进度
             if i % (BATCH_SIZE * 10) == 0 and i > 0:
                 print(f"  进度: {i}/{total}, 已获取 {len(stocks)} 只")
+
+        # ★★ 2026-10-27（新股盲区修复配套护栏）：**全量扫描可能因批次失败而不完整**。
+        #   150 批里若有若干批超时，`stocks` / `valid_found` 会偏小，而本函数会
+        #   `_cache["stocks"] = stocks` 整体替换 + 重建 `_valid_codes`
+        #   ⇒ 一次网络抖动就能把池子永久缩小，涨跌家数/成交额同步腰斩且仍标记为「实时」。
+        #   真实退市不可能一天减少 10% ⇒ 低于旧池 90% 一律判为「扫描不完整」，保留旧缓存。
+        _old_n = len(_cache.get("stocks") or {})
+        _incomplete = bool(do_full_scan and _old_n and len(stocks) < _old_n * 0.9)
+        if _incomplete:
+            print(f"[tencent] 全量扫描仅得 {len(stocks)} 只（旧池 {_old_n} 只，"
+                  f"低于 90%）⇒ 判定扫描不完整，**保留旧缓存**（不覆盖池与有效代码）")
+            return _cache["stocks"]
 
         # 全量扫描后更新有效代码缓存（增量扫描不需要更新，因为池子已经是有效代码）
         if do_full_scan and valid_found:
