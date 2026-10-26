@@ -92,17 +92,17 @@
         <div v-for="(n, i) in cards" :key="n.key"
              class="rounded border border-border/60 bg-white/[0.04]">
           <button type="button" class="w-full text-left px-2 py-1.5"
-                  @click="open = (open === i ? -1 : i)">
+                  @click="openKey = (openKey === n.key ? '' : n.key)">
             <div class="flex items-center gap-1.5">
               <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
               <span class="px-1 rounded text-[10px]" :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
               <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
               <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
-              <span class="ml-auto text-[10px] text-muted">{{ open === i ? '▾' : '▸' }}</span>
+              <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
             </div>
             <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
           </button>
-          <div v-if="open === i" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
+          <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
             <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
                  的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
                  ⇒ 按来源显示诚实文案。 -->
@@ -173,7 +173,7 @@ const fb = useFlashBrief()
 const data = fb.data             // 共享单例（勿在本地再建 ref，否则两处不一致）
 const busy = ref(false)
 const loadErr = fb.err
-const open = ref(-1)
+const openKey = ref('')   // 按条目 key 记忆（60s 刷新后下标会漂移，用 index 会"串行"展开错条）
 const bodyOpen = ref(true)   // ★ 2026-10-25（用户）：整卡支持收起/展开
 
 const snapshot = computed(() => data.value?.snapshot || null)
@@ -331,7 +331,7 @@ async function refresh() {
     } else {
       // ★ 写进**共享状态**（不是本地 ref）：持仓行的消息徽标会同步更新
       fb.apply(d)
-      open.value = -1
+      openKey.value = ''
     }
   } catch (e) {
     loadErr.value = '解读失败：' + (e?.message || e)
@@ -341,7 +341,7 @@ async function refresh() {
 }
 
 // 换日：只改共享源的日期并重取（本组件不再持有独立数据）
-watch(() => props.date, (d) => { open.value = -1; fb.load(d) })
+watch(() => props.date, (d) => { openKey.value = ''; fb.load(d) })
 
 // 轮询的生命周期交给共享单例（引用计数：本组件 + 盘面速览各一份订阅，仍只有一条 60s 定时器）
 onMounted(() => { fb.start(props.date || '') })

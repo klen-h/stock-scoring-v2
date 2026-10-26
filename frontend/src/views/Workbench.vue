@@ -3095,6 +3095,10 @@ const topMode = ref('')
 //   距下次刷新的**秒数**。仅**交易时段**走字（非交易时段数据不变，显示倒计时是误导），
 //   0 = 前端隐藏。与 120s 轮询**同起点注册**（都在 `startPolling()` 里）⇒ 读数相差 ≤1 tick。
 const POLL_SEC = 120
+// ★★ 2026-10-26（第④步）：**行情快组 60s**（pulse），慢组（板块/外盘/评分榜…）仍 120s。
+//   为什么这么分：pulse 读后端内存缓存（零上游），提频只花浏览器往返；
+//   而 `sectorTop`（东财 60s TTL）与外盘若同步提频，会**翻倍外部请求**（红线）。
+const FAST_SEC = 60
 const refreshLeft = ref(0)
 const gwItems = ref([])
 const gwErr = ref('')
@@ -4405,22 +4409,51 @@ async function loadGwPrices() {
 //     合并后**服务端外部请求不变**，只是把浏览器 5 次往返压成 1 次。
 //   【失败语义】按块降级：`blocks.xxx === null` 时**保留该块旧值**（不清空、不显示 0），
 //     其余块照常渲染；整包失败则所有块保持原样。
+// 应用一份 pulse payload（实时取回 / 跨标签缓存复用，走同一条路径）
+function applyPulse(data) {
+  const b = (data && data.blocks) || {}
+  if (b.overview) overview.value = b.overview || {}
+  if (b.temperature) temperature.value = b.temperature
+  if (b.emotion) emotion.value = b.emotion
+  if (b.amount_share) amountShare.value = b.amount_share
+  const gw = b.gw
+  if (gw && (gw.rows || []).length) {
+    const m = {}
+    for (const s of gw.rows) {
+      if (s && s.code && Number(s.price) > 0) m[s.code] = { price: s.price, change_pct: s.change_pct }
+    }
+    if (Object.keys(m).length) gwPrices.value = m
+  }
+}
+
+// 跨标签：60s 快组在多标签下不该翻倍 —— 用 localStorage 租约选一个"抓取者"，
+// 其余标签复用同一份 payload（体积 ~8KB，配额无压力；超过 200KB 就放弃缓存）。
+const PULSE_LEASE = 'wb:pulse:lease'
+const PULSE_CACHE = 'wb:pulse:cache'
+const TAB_ID = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+function _lsGet(k) { try { const r = localStorage.getItem(k); return r ? JSON.parse(r) : null } catch { return null } }
+function _lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true } catch { return false } }
+
 async function loadPulse() {
+  if (typeof document !== 'undefined' && document.hidden) return   // 后台标签不发
   const codes = (gwItems.value || []).map(g => g.code).filter(Boolean)
+  const now = Date.now()
+  const lease = _lsGet(PULSE_LEASE)
+  const otherOwner = lease && lease.id !== TAB_ID && (now - (lease.ts || 0) < FAST_SEC * 1000 - 3000)
+  if (otherOwner) {
+    const c = _lsGet(PULSE_CACHE)
+    if (c && c.payload && (now - (c.ts || 0) < FAST_SEC * 1000 + 5000)) {
+      applyPulse(c.payload)      // 另一个标签刚取过 ⇒ 直接复用，本次零请求
+      return
+    }
+  }
   try {
     const { data } = await getMarketPulse(codes)
-    const b = (data && data.blocks) || {}
-    if (b.overview) overview.value = b.overview || {}
-    if (b.temperature) temperature.value = b.temperature
-    if (b.emotion) emotion.value = b.emotion
-    if (b.amount_share) amountShare.value = b.amount_share
-    const gw = b.gw
-    if (gw && (gw.rows || []).length) {
-      const m = {}
-      for (const s of gw.rows) {
-        if (s && s.code && Number(s.price) > 0) m[s.code] = { price: s.price, change_pct: s.change_pct }
-      }
-      if (Object.keys(m).length) gwPrices.value = m
+    if (data && data.blocks) {
+      applyPulse(data)
+      _lsSet(PULSE_LEASE, { id: TAB_ID, ts: Date.now() })
+      const js = JSON.stringify({ ts: Date.now(), payload: data })
+      if (js.length < 200000) _lsSet(PULSE_CACHE, JSON.parse(js))
     }
   } catch (e) {
     console.warn('[workbench] 盘面脉冲失败（各块保留旧值）', e?.message || e)
@@ -4993,6 +5026,11 @@ function startPolling() {
   //   现在一个 ticker 打 `/market/intraday-lite`（1 次往返），服务端外部请求不变。
   //   失败按块降级（见 `loadIntradayLite`），保留旧值。
   timers.push(setInterval(() => { if (isLivePhase()) loadIntradayLite() }, 60000))
+  // ★★ 2026-10-26（第④步）：**行情快组 60s** —— 只刷 `loadPulse()`（5 块同源行情）。
+  //   · 上游全读后端内存缓存 ⇒ **外部请求不增加**（东财/外盘仍留在 120s 慢组）；
+  //   · 跨标签用 localStorage 租约，多开也只让一个标签真正发请求（见 `loadPulse`）；
+  //   · 后台标签不发（`document.hidden`）。
+  timers.push(setInterval(() => { if (isLivePhase()) loadPulse() }, FAST_SEC * 1000))
   // ★ 2026-10-22：盘中变化检测器 5 分钟刷一次（采样本身 30 分钟一档；
   //   5 分钟足够让新档出现后不久可见，且只读 2 个小查询，不构成 egress 负担）。
   timers.push(setInterval(() => { if (isLivePhase()) loadWorkbenchScan() }, 300000))
@@ -5022,11 +5060,8 @@ function startPolling() {
     //   与本组上方自注释"仅交易时段真发请求"不符。
     loadGlobals(); loadFlashDiag()
     if (!isLivePhase()) { refreshLeft.value = 0; return }
-    // ★★ 2026-10-26（G1 轮询合并）：这里原本并发 5 个请求
-    //   （overview / temperature / emotion / amountShare / gwPrices），
-    //   而它们的上游是**同一份内存行情**（tencent._cache）⇒ 合并成一次 `/market/pulse`：
-    //   单 tick 5 → 1，**服务端外部请求不变**；按块降级（哪块失败只保留哪块的旧值）。
-    loadPulse()
+    // ★★ 2026-10-26（第④步）：`loadPulse()` **已上移到 60s 快组**（见上方 ticker），
+    //   本组（120s）只留"变化慢/外部源"的项 ⇒ 行情新鲜度翻倍，而东财与外盘不增频。
     loadTailReview()
     loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
     // ★★ 2026-09-28（用户："主线板块 Top5 也不是实时的" —— 真因就在这里）：
@@ -5047,13 +5082,14 @@ function startPolling() {
     //      全市场精算没意义（本地模式下 `computeRanking` 很重）。
     //   ⚠️ 也不并入 pulse：评分榜是计算密集项（服务端 3 分钟缓存），与行情块不同性质。
     loadTop(isLivePhase())
-    refreshLeft.value = isLivePhase() ? POLL_SEC : 0
+    refreshLeft.value = isLivePhase() ? FAST_SEC : 0
   }, POLL_SEC * 1000))
   // ★ 2026-09-28：倒计时 1s ticker（与上面 120s 轮询同起点注册 ⇒ 读数差 ≤1 tick）。
   //   非交易时段恒置 0 ⇒ 卡片隐藏倒计时（数据不变时显示倒计时是误导）。
+  //   ★ 2026-10-26（第④步）：读数按**快组 60s**循环（行情每 60s 刷一次）。
   timers.push(setInterval(() => {
     if (!isLivePhase()) { refreshLeft.value = 0; return }
-    refreshLeft.value = refreshLeft.value > 1 ? refreshLeft.value - 1 : POLL_SEC
+    refreshLeft.value = refreshLeft.value > 1 ? refreshLeft.value - 1 : FAST_SEC
   }, 1000))
 }
 function stopPolling() { timers.forEach(clearInterval); timers = [] }
