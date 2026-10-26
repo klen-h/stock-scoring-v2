@@ -13,7 +13,10 @@
 设计（与用户讨论结论一致）：
   ① **零外部增量**：宽度/板块/个股全部读 `tencent._cache` 内存行情；
      只有 3 个核心指数走 1 次腾讯请求（8 次/交易日，可忽略）。
-  ② **零 LLM**：纯规则打分；`score >= WORTH_SCORE` 记为 worth。
+  ② **零 LLM**：纯规则打分；`score >= WORTH_SCORE` 记为 worth（=有实质变化）。
+     ★ 2026-10-27（用户确认）：在 worth 之上再算**方向** `bias = Σ(方向×分值)`，
+       输出 verdict = positive / negative / neutral / none ⇒ 前端显示
+       「正影响 / 反影响 / 中性变化 / 无明显变化」；方向不明的"放量、换主线、快讯条数"只计强度。
   ③ **只采盘中变量**：指数、宽度（涨跌家数/涨停跌停）、板块强弱、量能、快讯；
      日频项一律不进本检测器（它们半小时内不会变）。
   ④ 固定 8 个采样点（见 `SLOTS`），错过的点在宽限内补采，并在 diff 里记
@@ -46,7 +49,14 @@ _BJ = timezone(timedelta(hours=8))
 SLOTS = ("09:45", "10:15", "10:45", "11:15", "13:15", "13:45", "14:15", "14:45")
 
 GRACE_MIN = 35          # 错过采样点的补采宽限（分钟，墙钟）
-WORTH_SCORE = 40        # 达到该分 = "这半小时值得说一句"
+WORTH_SCORE = 40        # 达到该分 = "这半小时有实质变化"（强度，不含方向）
+# ★★ 2026-10-27（用户确认）：把"有料"升级为**正/反影响**（强度 + 方向两维）
+#   · bias = Σ(方向 × 分值)，只累加能判方向的规则（指数/宽度/涨停/跌停）；
+#   · |bias| >= BIAS_MIN ⇒ 正影响 / 反影响；否则"中性变化"（确实在动、方向不明）；
+#   · score < WORTH_SCORE ⇒ 无明显变化。
+BIAS_MIN = 20           # 方向判定门槛（≈ 两条中等信号同向）
+NOTIFY_BIAS = 30        # 浏览器推送门槛（比判定更严，避免半小时一条噪音）
+NOTIFY_DAILY_MAX = 4    # 每天最多推几条
 KEEP_DAYS = 120         # 保留天数（8 行/日 × 2KB ≈ 2MB/120 日，可忽略）
 
 # 交易时段（分钟）：09:30-11:30 / 13:00-15:00
@@ -72,11 +82,20 @@ def _ensure_table() -> None:
             key TEXT PRIMARY KEY,
             date TEXT, slot TEXT, as_of TEXT,
             trading_min TEXT,
-            score TEXT, worth TEXT, reasons TEXT,
+            score TEXT, worth TEXT, bias TEXT, verdict TEXT, reasons TEXT,
             snapshot_json TEXT, diff_json TEXT,
-            created_at TEXT
+            created_at TEXT, notified_at TEXT
         )
     """)
+    # 老库补列（CREATE IF NOT EXISTS 不会给已存在的表加列）
+    for _col in ("bias TEXT", "verdict TEXT", "notified_at TEXT"):
+        try:
+            db.execute(f"ALTER TABLE workbench_scan ADD COLUMN IF NOT EXISTS {_col}")
+        except Exception:
+            try:
+                db.execute(f"ALTER TABLE workbench_scan ADD COLUMN {_col}")
+            except Exception as e2:
+                print(f"[workbench_scan] add column {_col} failed: {str(e2)[:80]}")   # ASCII
     _TABLE_READY = True
 
 
@@ -279,71 +298,89 @@ def _diff(cur: Dict, prev: Optional[Dict], trading_min: int) -> Dict:
     return out
 
 
-def _judge(snap: Dict, d: Dict) -> Tuple[int, bool, List[Dict]]:
-    """规则打分（0~100）。返回 (score, worth, reasons)。
+def _judge(snap: Dict, d: Dict) -> Tuple[int, bool, List[Dict], int, str]:
+    """规则打分（0~100）+ 方向（2026-10-27 改造）。
 
-    ★ 阈值是初值，校准方式见模块头。分档原则：
-      - 指数急动 / 跌停潮 / 宽度翻转 = 高权重（这些是"半小时内真改变了判断"的事）
-      - 板块轮动 / 量能 / 快讯 = 中权重
-      - 单条 5 分的小信号攒不出 40 分 ⇒ 不会因为"有几条普通快讯"就误报
+    返回 `(score, worth, reasons, bias, verdict)`：
+      · score/worth 语义**不变**（强度：这半小时有没有实质变化，阈值 40）；
+      · bias = Σ(方向 × 分值)，只累加"能判方向"的规则（指数/宽度/涨停/跌停）；
+      · verdict ∈ positive / negative / neutral / none：
+          |bias| ≥ BIAS_MIN(20) ⇒ 正/反影响；否则 neutral（在动但方向不明）；
+          score < 40 ⇒ none。
+    每条 reason 带 `dir`（+1/-1/0），前端可逐条显示"利多/利空/中性"。
+
+    ★ 刻意不判方向的规则：成交额放量、领涨切换、快讯条数 —— 它们只说明"有事"，
+      不说明"好坏"（放量下跌也是放量）。
     """
     reasons = []
     score = 0
+    bias = 0
 
-    def add(tag: str, text: str, pts: int) -> None:
-        nonlocal score
+    def add(tag: str, text: str, pts: int, dir_: int = 0) -> None:
+        nonlocal score, bias
         score += pts
-        reasons.append({"tag": tag, "text": text, "pts": int(pts)})
+        bias += int(dir_) * int(pts)
+        reasons.append({"tag": tag, "text": text, "pts": int(pts), "dir": int(dir_)})
 
     if snap.get("from_snapshot"):
-        return 0, False, [{"tag": "stale", "pts": 0,
-                           "text": "行情缓存是收盘快照（非实时）⇒ 本档不计分"}]
+        return 0, False, [{"tag": "stale", "pts": 0, "dir": 0,
+                           "text": "行情缓存是收盘快照（非实时）⇒ 本档不计分"}], 0, "none"
     if d.get("baseline"):
-        return 0, False, [{"tag": "baseline", "pts": 0,
-                           "text": "当日基线采样（无可比上一档）"}]
+        return 0, False, [{"tag": "baseline", "pts": 0, "dir": 0,
+                           "text": "当日基线采样（无可比上一档）"}], 0, "none"
 
     tmin = int(d.get("trading_min") or 0)
     move_ok = 10 <= tmin <= 45
     if not move_ok:
-        reasons.append({"tag": "gap", "pts": 0,
+        reasons.append({"tag": "gap", "pts": 0, "dir": 0,
                         "text": "与上一档相隔 %d 个交易分钟（跳点/停机）⇒ 移动类规则跳过" % tmin})
 
     if move_ok:
         k = (tmin / 30.0) ** 0.5          # 15 分钟档阈值 ×0.71，45 分钟档 ×1.22
         k = min(max(k, 0.7), 1.3)
-        mv = max([abs(x) for x in (d.get("idx_move") or {}).values()] or [0])
+        # 方向：取"绝对变动最大"的那个指数的**带符号**涨跌幅
+        mv_signed = 0.0
+        for _v in (d.get("idx_move") or {}).values():
+            _n = _num(_v)
+            if abs(_n) > abs(mv_signed):
+                mv_signed = _n
+        mv = abs(mv_signed)
+        _dir_idx = 1 if mv_signed > 0 else -1
         if mv >= 1.0 * k:
-            add("idx_move", "核心指数 %.2f%% / %d 分钟（急动）" % (mv, tmin), 35)
+            add("idx_move", "核心指数 %.2f%% / %d 分钟（急动）" % (mv, tmin), 35, _dir_idx)
         elif mv >= 0.6 * k:
-            add("idx_move", "核心指数 %.2f%% / %d 分钟" % (mv, tmin), 25)
+            add("idx_move", "核心指数 %.2f%% / %d 分钟" % (mv, tmin), 25, _dir_idx)
         elif mv >= 0.35 * k:
-            add("idx_move", "核心指数 %.2f%% / %d 分钟（小幅）" % (mv, tmin), 12)
+            add("idx_move", "核心指数 %.2f%% / %d 分钟（小幅）" % (mv, tmin), 12, _dir_idx)
 
-        du = abs(_num(d.get("d_up_ratio")))
+        du_raw = _num(d.get("d_up_ratio"))
+        du = abs(du_raw)
+        _dir_breadth = 1 if du_raw > 0 else -1
         if du >= 0.12:
-            add("breadth_shift", "涨跌家数比变化 %.2f（大幅）" % du, 20)
+            add("breadth_shift", "涨跌家数比变化 %.2f（大幅）" % du, 20, _dir_breadth)
         elif du >= 0.06:
-            add("breadth_shift", "涨跌家数比变化 %.2f" % du, 10)
+            add("breadth_shift", "涨跌家数比变化 %.2f" % du, 10, _dir_breadth)
         up_p, up_c = _num(d.get("up_ratio_prev"), 0.5), _num(d.get("up_ratio"), 0.5)
         if (up_p - 0.5) * (up_c - 0.5) < 0 and du >= 0.04:
             add("breadth_flip", "宽度翻转：%.0f%% → %.0f%%（多空易手）"
-                % (up_p * 100, up_c * 100), 10)
+                % (up_p * 100, up_c * 100), 10, 1 if up_c >= 0.5 else -1)
 
         dlu = int(d.get("d_limit_up") or 0)
         if abs(dlu) >= 10:
-            add("limit_up", "涨停家数 %+d（半小时）" % dlu, 15)
+            add("limit_up", "涨停家数 %+d（半小时）" % dlu, 15, 1 if dlu > 0 else -1)
         elif abs(dlu) >= 5:
-            add("limit_up", "涨停家数 %+d" % dlu, 8)
+            add("limit_up", "涨停家数 %+d" % dlu, 8, 1 if dlu > 0 else -1)
 
         dld = int(d.get("d_limit_down") or 0)
+        # 跌停家数增加 = 利空 ⇒ 方向取反
         if abs(dld) >= 5:
-            add("limit_down", "跌停家数 %+d（半小时）" % dld, 20)
+            add("limit_down", "跌停家数 %+d（半小时）" % dld, 20, -1 if dld > 0 else 1)
         elif abs(dld) >= 2:
-            add("limit_down", "跌停家数 %+d" % dld, 10)
+            add("limit_down", "跌停家数 %+d" % dld, 10, -1 if dld > 0 else 1)
 
         if d.get("leader_switch"):
             add("sector_leader", "领涨板块切换：%s → %s"
-                % (d.get("leader_prev"), d.get("leader_cur")), 15)
+                % (d.get("leader_prev"), d.get("leader_cur")), 15)   # 换主线≠好坏 ⇒ dir=0
         elif d.get("top_overlap") is not None and d["top_overlap"] <= 0.6:
             add("sector_rotate", "强势板块前五换掉 ≥2 个（重叠 %.0f%%）"
                 % (d["top_overlap"] * 100), 10)
@@ -352,7 +389,7 @@ def _judge(snap: Dict, d: Dict) -> Tuple[int, bool, List[Dict]]:
         if _num(d.get("d_amount_yi")) >= need_yi:
             add("volume", "区间成交额 %.0f 亿（放量）" % _num(d.get("d_amount_yi")), 10)
 
-    # 快讯：不受跳点影响（条数本身就是本档的绝对量）
+    # 快讯：不受跳点影响（条数本身就是本档的绝对量）；条数不分方向
     n = int((snap.get("news") or {}).get("n") or 0)
     key_n = int((snap.get("news") or {}).get("key_n") or 0)
     if n >= 25:
@@ -365,7 +402,19 @@ def _judge(snap: Dict, d: Dict) -> Tuple[int, bool, List[Dict]]:
             % "；".join((snap.get("news") or {}).get("samples") or [])[:40], 5)
 
     score = min(score, 100)
-    return score, score >= WORTH_SCORE, reasons
+    # bias 也按同一比例截断，避免"分值截断但方向分虚高"
+    if score >= WORTH_SCORE and bias != 0:
+        bias = int(max(-100, min(100, bias)))
+    worth = score >= WORTH_SCORE
+    if not worth:
+        verdict = "none"
+    elif bias >= BIAS_MIN:
+        verdict = "positive"
+    elif bias <= -BIAS_MIN:
+        verdict = "negative"
+    else:
+        verdict = "neutral"
+    return score, worth, reasons, bias, verdict
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -420,19 +469,21 @@ def run_slot(slot: Optional[str] = None, write: bool = True,
     prev = _load_prev(day, slot)
     tmin = _trading_minutes(prev["slot"], slot) if prev else 0
     diff = _diff(snap, prev["snapshot"] if prev else None, tmin)
-    score, worth, reasons = _judge(snap, diff)
+    score, worth, reasons, bias, verdict = _judge(snap, diff)
 
     row = {
         "key": key, "date": day, "slot": slot,
         "as_of": snap.get("as_of"),
         "trading_min": str(tmin),
         "score": str(score), "worth": "1" if worth else "0",
+        "bias": str(bias), "verdict": verdict,
         "reasons": json.dumps(reasons, ensure_ascii=False),
         "snapshot_json": json.dumps(snap, ensure_ascii=False),
         "diff_json": json.dumps(diff, ensure_ascii=False),
         "created_at": now.isoformat(timespec="seconds"),
     }
     result = {"key": key, "slot": slot, "score": score, "worth": worth,
+              "bias": bias, "verdict": verdict,
               "reasons": reasons, "diff": diff, "snapshot": snap,
               "written": False}
     if not write:
@@ -445,6 +496,16 @@ def run_slot(slot: Optional[str] = None, write: bool = True,
         if slot == SLOTS[0]:
             cutoff = (now - timedelta(days=KEEP_DAYS)).strftime("%Y-%m-%d")
             db.execute("DELETE FROM workbench_scan WHERE date < %s", (cutoff,))
+        # ★ 2026-10-27：**方向明确且足够强**才推送（正/反影响 ≥30，且每天 ≤4 条）。
+        #   语义：方向不明（neutral）不推 —— 用户要的是"利多/利空"，不是"又动了"。
+        if verdict in ("positive", "negative") and abs(bias) >= NOTIFY_BIAS:
+            try:
+                if _daily_notify_count(day) < NOTIFY_DAILY_MAX:
+                    db.execute("UPDATE workbench_scan SET notified_at=%s WHERE key=%s",
+                               (now.isoformat(timespec="seconds"), key))
+                    result["notified"] = True
+            except Exception as e:
+                print(f"[workbench_scan] notify mark failed: {e}")     # ASCII
     except Exception as e:
         print(f"[workbench_scan] save failed: {e}")                # ASCII
         result["error"] = str(e)[:120]
@@ -475,10 +536,58 @@ def preview() -> Dict:
     prev = _load_prev(day, "99:99")
     tmin = _trading_minutes(prev["slot"], slot) if prev else 0
     diff = _diff(snap, prev["snapshot"] if prev else None, tmin)
-    score, worth, reasons = _judge(snap, diff)
+    score, worth, reasons, bias, verdict = _judge(snap, diff)
     return {"ok": True, "date": day, "slot": slot, "prev_slot": (prev or {}).get("slot"),
             "trading_min": tmin, "score": score, "worth": worth,
+            "bias": bias, "verdict": verdict,
             "reasons": reasons, "diff": diff, "snapshot": snap, "written": False}
+
+
+def _daily_notify_count(day: str) -> int:
+    """当日已推送（打标）条数 —— 用于 NOTIFY_DAILY_MAX 限流。"""
+    try:
+        row = db.fetch_one(
+            "SELECT COUNT(*) AS c FROM workbench_scan "
+            "WHERE date=%s AND notified_at IS NOT NULL", (day,))
+        return int((row or {}).get("c") or 0)
+    except Exception:
+        return 0
+
+
+def recent_notifications(since_dt=None, newer_fn=None) -> List[Dict]:
+    """供 `/flash/notifications`：把"已打标"的档位变成浏览器通知事件。
+
+    只在 `run_slot` 判定为**正/反影响且 |bias| ≥ 30** 时打标；
+    `newer_fn(time_str)` 由路由注入（与其它事件同一套时间过滤）。
+    """
+    _ensure_table()
+    try:
+        rows = db.fetch(
+            "SELECT slot, score, bias, verdict, notified_at, reasons FROM workbench_scan "
+            "WHERE notified_at IS NOT NULL ORDER BY notified_at DESC LIMIT 6") or []
+    except Exception:
+        return []
+    out = []
+    for r in rows:
+        t = str(r.get("notified_at") or "")
+        try:
+            if newer_fn and not newer_fn(t):
+                continue
+        except Exception:
+            pass
+        v = str(r.get("verdict") or "")
+        head = ("📈 盘中正影响" if v == "positive"
+                else ("📉 盘中反影响" if v == "negative" else "盘中变化"))
+        try:
+            rs = json.loads(r.get("reasons") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            rs = []
+        top = next((str(x.get("text") or "") for x in rs
+                    if int(x.get("dir") or 0) != 0 and int(x.get("pts") or 0) > 0), "")
+        out.append({"type": "scan", "time": t,
+                    "title": f"{head} · {r.get('slot')}",
+                    "body": f"{top or '（点开看详情）'} · {r.get('score')}分"})
+    return out
 
 
 def day_detail(date: Optional[str] = None) -> Dict:
@@ -487,8 +596,8 @@ def day_detail(date: Optional[str] = None) -> Dict:
     day = date or beijing_now().strftime("%Y-%m-%d")
     try:
         rows = db.fetch(
-            "SELECT key, date, slot, as_of, trading_min, score, worth, reasons, "
-            "diff_json, created_at FROM workbench_scan WHERE date=%s ORDER BY slot",
+            "SELECT key, date, slot, as_of, trading_min, score, worth, bias, verdict, "
+            "reasons, diff_json, created_at FROM workbench_scan WHERE date=%s ORDER BY slot",
             (day,)) or []
     except Exception as e:
         return {"date": day, "rows": [], "error": str(e)[:120]}
@@ -502,11 +611,18 @@ def day_detail(date: Optional[str] = None) -> Dict:
             diff = json.loads(r.get("diff_json") or "{}")
         except (json.JSONDecodeError, TypeError):
             diff = {}
+        _b = int(_num(r.get("bias")))
+        _v = str(r.get("verdict") or "")
+        if not _v:
+            # 老数据（2026-10-27 之前）没有 verdict 列 ⇒ 按同一规则现算，前端不用兼容两套
+            _v = "positive" if _b >= BIAS_MIN else ("negative" if _b <= -BIAS_MIN else
+                  ("neutral" if str(r.get("worth")) == "1" else "none"))
         out.append({
             "slot": r.get("slot"), "as_of": r.get("as_of"),
             "trading_min": int(_num(r.get("trading_min"))),
             "score": int(_num(r.get("score"))),
             "worth": str(r.get("worth")) == "1",
+            "bias": _b, "verdict": _v,
             "reasons": reasons,
             "leader_cur": diff.get("leader_cur"),
             "idx_move": diff.get("idx_move") or {},
@@ -518,8 +634,13 @@ def day_detail(date: Optional[str] = None) -> Dict:
     base_n = sum(1 for x in out if _has(x, "baseline"))
     judged = max(len(out) - stale_n - base_n, 0)
     worth_n = sum(1 for x in out if x["worth"])
+    # ★ 2026-10-27：三档计数（正影响 / 反影响 / 中性变化），worth_rate 保留给老前端
+    pos_n = sum(1 for x in out if x["verdict"] == "positive")
+    neg_n = sum(1 for x in out if x["verdict"] == "negative")
+    neu_n = sum(1 for x in out if x["verdict"] == "neutral")
     return {"date": day, "samples": len(out), "judged": judged,
             "stale_n": stale_n, "baseline_n": base_n, "worth_n": worth_n,
+            "pos_n": pos_n, "neg_n": neg_n, "neu_n": neu_n,
             # ★ 分母只算"真正被判定"的档：stale（快照当实时）与 baseline 不参与，
             #   否则"行情陈旧"会把 worth_rate 稀释成假低值。
             "worth_rate": (round(worth_n / judged, 2) if judged else None),
@@ -537,7 +658,7 @@ def summary(days: int = 7) -> Dict:
     since = (beijing_now() - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         rows = db.fetch(
-            "SELECT date, slot, score, worth, reasons FROM workbench_scan "
+            "SELECT date, slot, score, worth, bias, verdict, reasons FROM workbench_scan "
             "WHERE date >= %s ORDER BY date, slot", (since,)) or []
     except Exception as e:
         return {"days": days, "error": str(e)[:120], "samples": 0, "by_day": []}
@@ -550,9 +671,15 @@ def summary(days: int = 7) -> Dict:
         day = str(r.get("date"))
         g = by_day.setdefault(day, {"date": day, "samples": 0, "judged": 0,
                                     "stale_n": 0, "baseline_n": 0, "worth_n": 0,
+                                    "pos_n": 0, "neg_n": 0, "neu_n": 0,
                                     "worth_slots": [], "score_sum": 0})
         score = int(_num(r.get("score")))
         worth = str(r.get("worth")) == "1"
+        _b = int(_num(r.get("bias")))
+        _v = str(r.get("verdict") or "")
+        if not _v:
+            _v = "positive" if _b >= BIAS_MIN else ("negative" if _b <= -BIAS_MIN else
+                  ("neutral" if worth else "none"))
         g["samples"] += 1
         try:
             reasons = json.loads(r.get("reasons") or "[]")
@@ -571,6 +698,12 @@ def summary(days: int = 7) -> Dict:
             if worth:
                 g["worth_n"] += 1
                 g["worth_slots"].append(r.get("slot"))
+            if _v == "positive":
+                g["pos_n"] += 1
+            elif _v == "negative":
+                g["neg_n"] += 1
+            elif _v == "neutral":
+                g["neu_n"] += 1
             if score < 20:
                 hist["0-19"] += 1
             elif score < 40:
@@ -606,6 +739,9 @@ def summary(days: int = 7) -> Dict:
         "stale_n": sum(g["stale_n"] for g in days_out),
         "baseline_n": sum(g["baseline_n"] for g in days_out),
         "worth_n": worth_n,
+        "pos_n": sum(g.get("pos_n", 0) for g in days_out),
+        "neg_n": sum(g.get("neg_n", 0) for g in days_out),
+        "neu_n": sum(g.get("neu_n", 0) for g in days_out),
         # ★ 分母 = judged（剔除 stale/baseline）：否则"行情陈旧"会稀释成假低值
         "worth_rate": (round(worth_n / judged, 2) if judged else None),
         "avg_score": (round(sum(g["avg_score"] or 0 for g in days_out) / max(len(days_out), 1), 1)

@@ -417,6 +417,15 @@ def flash_notifications(since: str = ""):
     except Exception as e:
         print(f"[flash] brief 通知读取失败（不影响其它事件）: {str(e)[:80]}")
 
+    # 5. ★ 2026-10-27（用户确认）：观察器「盘中变化」的方向性提醒
+    #    —— 只有判定为**正/反影响且 |bias| ≥ 30** 才打标（每天 ≤4 条），
+    #       "在动但方向不明"（neutral）不推，避免半小时一条噪音。
+    try:
+        from app import workbench_scan as ws
+        events.extend(ws.recent_notifications(since_dt, _newer))
+    except Exception as e:
+        print(f"[flash] workbench scan 通知读取失败（不影响其它事件）: {str(e)[:80]}")
+
     events.sort(key=lambda x: x.get("time") or "")
     # 数据源健康告警/恢复事件也进通知管道（页面铃铛自动弹）
     from app import health

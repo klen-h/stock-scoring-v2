@@ -26,6 +26,7 @@
 ================================================================================
 """
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -36,10 +37,8 @@ BACKEND = os.path.join(ROOT, "backend")
 BJ = timezone(timedelta(hours=8))
 
 if hasattr(sys.stdout, "reconfigure"):
-    try:
+    with contextlib.suppress(Exception):      # 老终端不支持 reconfigure 时静默跳过（GUARDRAILS #11）
         sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
 
 
 def _load_env():

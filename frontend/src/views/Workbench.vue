@@ -327,19 +327,22 @@
                         class="px-1.5 py-0.5 rounded border text-[11px] font-mono transition"
                         :class="[wsColor(r.score), wsSel === r.slot ? 'ring-1 ring-accent' : 'opacity-80 hover:opacity-100']"
                         :title="(r.reasons || []).map(x => x.text + (x.pts ? ' +' + x.pts : '')).join('\n')">
-                  {{ r.slot }}<span v-if="r.worth" class="ml-0.5">●</span><span class="ml-1">{{ r.score }}</span>
+                  {{ r.slot }}<span v-if="r.worth" class="ml-0.5" :class="wsVerdict(r).cls">●</span><span class="ml-1">{{ r.score }}</span>
                 </button>
               </div>
 
               <div v-if="wsOpen && wsPick" class="mt-2 border-t border-border/40 pt-2 text-xs space-y-1">
                 <div class="flex items-center justify-between">
                   <span class="text-muted">{{ wsPick.slot }} · 交易 {{ wsPick.trading_min }} 分钟<span v-if="wsPick.as_of"> · {{ wsPick.as_of }}</span></span>
-                  <span :class="wsPick.worth ? 'text-amber-300' : 'text-muted'">
-                    {{ wsPick.worth ? '有料' : '无实质变化' }} · {{ wsPick.score }} 分</span>
+                  <span :class="wsVerdict(wsPick).cls">
+                    {{ wsVerdict(wsPick).cn }}<template v-if="wsPick.bias"> · 方向 {{ wsBiasText(wsPick) }}</template>
+                    · {{ wsPick.score }} 分</span>
                 </div>
                 <div v-if="!(wsPick.reasons || []).length" class="text-muted">—（无触发项）</div>
                 <div v-for="(x, i) in (wsPick.reasons || [])" :key="i" class="flex gap-2">
-                  <span class="text-muted font-mono w-24 shrink-0" :title="x.tag">{{ wsTagCn(x.tag) }}</span>
+                  <span class="text-muted font-mono w-20 shrink-0" :title="x.tag">{{ wsTagCn(x.tag) }}</span>
+                  <!-- 逐条方向：利多/利空（红/绿）或中性；后端 dir 字段（老数据为空 ⇒ 中性） -->
+                  <span class="shrink-0 text-[10px] w-7" :class="wsDirCls(x.dir)">{{ wsDirCn(x.dir) }}</span>
                   <span class="flex-1">{{ x.text }}</span>
                   <span v-if="x.pts" class="text-accent font-mono shrink-0">+{{ x.pts }}</span>
                 </div>
@@ -348,7 +351,9 @@
 
               <div class="text-[10px] text-muted mt-2">
                 判据：指数 30 分钟移动 / 宽度翻转 / 涨跌停变化 / 领涨切换 / 区间成交额 / 快讯；
-                ≥40 分记为「有料」。展示项，不进决策链。
+                ≥40 分为「有变化」，再按方向分 <b class="text-rose-300">正影响</b>/<b class="text-emerald-300">反影响</b>
+                （|方向分|≥20），方向不明记「中性变化」。放量/换主线/快讯条数只算变化、不判方向。
+                展示项，不进决策链。
               </div>
             </template>
           </template>
@@ -3896,15 +3901,23 @@ const wsLine = computed(() => {
   const p = wsPick.value || (wsRows.value.length ? wsRows.value[wsRows.value.length - 1] : null)
   if (!p) return '当日尚无采样'
   const stale = (p.reasons || []).some(x => x.tag === 'stale')
-  const head = `${p.slot} · ${stale ? '快照不计分' : (p.worth ? '有料' : '无实质变化')} ${p.score}分`
-  const day = wsDay.value.judged ? ` · 当日 ${wsDay.value.worth_n}/${wsDay.value.judged}` : ''
+  const v = wsVerdict(p)
+  const head = `${p.slot} · ${stale ? '快照不计分'
+    : (v.cn + (p.bias ? ' ' + wsBiasText(p) : ''))} ${p.score}分`
+  // 当日分布：正/反/中性（后端 2026-10-27 起返回；老响应回退到 worth_n）
+  let day = ''
+  if (wsDay.value.judged) {
+    day = (wsDay.value.pos_n != null)
+      ? ` · 当日 正${wsDay.value.pos_n}/反${wsDay.value.neg_n}/中性${wsDay.value.neu_n}`
+      : ` · 当日 ${wsDay.value.worth_n}/${wsDay.value.judged}`
+  }
   return head + day
 })
 const wsDot = computed(() => {
   const p = wsPick.value || (wsRows.value.length ? wsRows.value[wsRows.value.length - 1] : null)
   if (!p) return 'bg-slate-500'
   if ((p.reasons || []).some(x => x.tag === 'stale')) return 'bg-slate-400'
-  return p.worth ? 'bg-amber-400' : 'bg-slate-500'
+  return wsVerdict(p).dot
 })
 const crowdLine = computed(() => {
   const rows = crowdTop.value || []
@@ -3963,6 +3976,23 @@ const WS_TAG_CN = {
   news_key: '关键快讯', gap: '跳点', baseline: '基线', stale: '快照',
 }
 function wsTagCn(t) { return WS_TAG_CN[t] || t || '—' }
+// ★★ 2026-10-27（用户确认）：把「有料」升级为**正/反影响** —— 强度(score) + 方向(bias) 两维。
+//   positive/negative：|bias| ≥ 20（后端判）；neutral：在动但方向不明（这本身是信息）；
+//   none：score < 40，没有实质变化。颜色沿用全站红涨绿跌（正=红 / 反=绿）。
+const WS_VERDICT = {
+  positive: { cn: '正影响', cls: 'text-rose-300', dot: 'bg-rose-400' },
+  negative: { cn: '反影响', cls: 'text-emerald-300', dot: 'bg-emerald-400' },
+  neutral: { cn: '中性变化', cls: 'text-amber-300', dot: 'bg-amber-400' },
+  none: { cn: '无明显变化', cls: 'text-muted', dot: 'bg-slate-500' },
+}
+function wsVerdict(r) { return WS_VERDICT[(r && r.verdict) || 'none'] || WS_VERDICT.none }
+function wsBiasText(r) {
+  const b = Number((r && r.bias) || 0)
+  return b > 0 ? `+${b}` : String(b)
+}
+// 逐条 reason 的方向（后端 dir：+1 利多 / -1 利空 / 0 中性）
+function wsDirCn(d) { const n = Number(d) || 0; return n > 0 ? '利多' : (n < 0 ? '利空' : '中性') }
+function wsDirCls(d) { const n = Number(d) || 0; return n > 0 ? 'text-rise' : (n < 0 ? 'text-fall' : 'text-muted') }
 async function loadWorkbenchScan() {
   wsLoading.value = true
   wsErr.value = ''
@@ -3973,10 +4003,12 @@ async function loadWorkbenchScan() {
     ])
     wsDay.value = d.data || null
     wsSummary.value = s.data || null
-    // 默认选中**最后一个有料档**（没有则最后一档），点开即看到原因
+    // 默认选中**最后一个"有方向"的档**（正/反影响优先，其次中性变化，最后任意一档）
     if (!wsSel.value && wsRows.value.length) {
-      const worth = wsRows.value.filter(x => x.worth)
-      wsSel.value = (worth[worth.length - 1] || wsRows.value[wsRows.value.length - 1]).slot
+      const dir = wsRows.value.filter(x => x.verdict === 'positive' || x.verdict === 'negative')
+      const any = wsRows.value.filter(x => x.worth)
+      wsSel.value = ((dir[dir.length - 1] || any[any.length - 1]
+        || wsRows.value[wsRows.value.length - 1]) || {}).slot
     }
   } catch (e) {
     wsErr.value = '盘中变化数据加载失败（接口需登录）'
