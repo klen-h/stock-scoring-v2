@@ -5,6 +5,12 @@
       <h2 class="text-base font-semibold">选股工作台</h2>
       <span class="text-xs text-muted">事实筛选，不是买入清单；排序维度须看检验徽章</span>
       <span class="ml-auto flex items-center gap-2 text-xs flex-wrap">
+        <!-- ★ 2026-10-27（用户："批量查询当前页的实时涨跌幅"）：手动刷新按钮。
+             两段式：先读后端行情内存缓存（零外呼），偏旧（>90s）才自动直连腾讯补一次（60s 节流）。 -->
+        <button @click="refreshLiveClick" :disabled="refreshing"
+                class="px-2 py-0.5 rounded border border-border text-[10px] text-muted hover:bg-white/5 hover:text-gray-200 disabled:opacity-40"
+                title="立即刷新当前页的实时现价/涨跌幅：先读后端行情内存缓存（零外部请求，最多 2 分钟延迟）；缓存偏旧（>90s）时自动直连腾讯补一次（60s 节流，连点不会打爆上游）。休市时点击无效（维持日批口径）。">
+          {{ refreshing ? '刷新中…' : '刷新涨跌幅' }}</button>
         <!-- ★ 2026-10-26：盘中实时口径**主动标注**（涨跌幅/现价来自后端行情缓存） -->
         <span v-if="liveOn"
               class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 text-[10px] cursor-help"
@@ -214,7 +220,7 @@ import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 // ★ 2026-10-26（审查 P2）：走统一 http 封装（鉴权头/统一错误拦截），不再自建 axios
 // ★ 2026-10-26（用户批准"盘中实时涨跌幅"）：`getBatchPricesCached` = 只读后端内存缓存，
 //   上游请求 0；`isTradingTime` 保证只在交易时段轮询（休市一分钟都不发）。
-import { getStockFactsWide, getBatchPricesCached } from '../api'
+import { getStockFactsWide, getBatchPricesCached, getBatchPrices } from '../api'
 import { isTradingTime } from '../composables/usePortfolio'
 // 主力阶段中文名 + 配色（唯一映射源后端 phases.PHASE_CN / 前端兜底表在 displayMeta）
 // ★ 2026-10-26（用户："颜色区分，比如吸筹之前是绿色标签"）：**复用**全站同一份
@@ -317,11 +323,12 @@ function pct0(v) {
   return v == null ? '—' : Number(v).toFixed(0) + '%'
 }
 
-async function loadLive() {
+// `mode`：'auto' = 60s 轮询（页面在后台就不发）；'click' = 用户点按钮（正盯着页面，跳过 hidden 检查）
+async function loadLive(mode = 'auto') {
   tradingNow.value = isTradingTime()
   const codes = (rows.value || []).map(r => r.code).filter(Boolean)
   if (!tradingNow.value || !codes.length) return
-  if (typeof document !== 'undefined' && document.hidden) return
+  if (mode === 'auto' && typeof document !== 'undefined' && document.hidden) return
   try {
     const { data } = await getBatchPricesCached(codes)
     if (!data || data.from_snapshot) {
@@ -343,6 +350,57 @@ async function loadLive() {
     }
   } catch (e) {
     console.warn('[screener] 实时行情刷新失败（保留上次）', (e && e.message) || e)
+  }
+}
+
+// ── 手动刷新按钮（★ 2026-10-27，用户："批量查询当前页的实时涨跌幅"）──────────────
+//   两段式：① 先读后端行情内存缓存（cached=1，**零外部请求**，最多 2 分钟延迟）；
+//           ② 若拿到的偏旧（age_sec>90）或压根没拿到（缓存冷）⇒ **自动直连腾讯补一次**
+//             （cached=0；20 只 = 1 批，属"用户点击的按需请求"，全站口径允许）。
+//   【节流】直连 60s 内至多一次 —— 连点按钮不会变成对腾讯的轮询（纪律：按需允许、轮询禁止）。
+//   【休市】isTradingTime=false ⇒ 直接 return（liveNote 已显示"休市 · 日批口径"），
+//           休市直连拿到的也是昨收，没有任何增量信息。
+const refreshing = ref(false)
+let lastDirectAt = 0            // 上次直连腾讯的 ms 时间戳（60s 节流）
+
+async function fetchDirect(codes) {
+  try {
+    const { data } = await getBatchPrices(codes)
+    // 兼容两种返回：cached=0 是老数组结构；万一后端改动成 {rows} 也不至于白屏
+    const arr = Array.isArray(data) ? data : ((data && data.rows) || [])
+    const m = {}
+    for (const s of arr) {
+      if (s && s.code && Number(s.price) > 0) m[s.code] = s
+    }
+    if (Object.keys(m).length) {
+      live.value = m
+      liveMeta.value = {
+        as_of: new Date().toTimeString().slice(0, 5),   // 直连 ⇒ 数据时刻就是现在
+        n: Object.keys(m).length,
+        direct: true,                                    // 徽章 title 会注明"刚刚直连"
+      }
+      liveEmpty.value = false
+    }
+  } catch (e) {
+    console.warn('[screener] 直连取价失败（保留上次）', (e && e.message) || e)
+  }
+}
+
+async function refreshLiveClick() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    if (!isTradingTime()) { tradingNow.value = false; return }
+    await loadLive('click')                              // 第一步：读缓存（0 外呼）
+    const age = Number((liveMeta.value && liveMeta.value.age_sec) || 0)
+    const stale = !liveOn.value || age > 90              // 缓存冷启动 / 超过 90s 未采集
+    if (stale && Date.now() - lastDirectAt >= 60000) {
+      lastDirectAt = Date.now()
+      const codes = (rows.value || []).map(r => r.code).filter(Boolean)
+      if (codes.length) await fetchDirect(codes)
+    }
+  } finally {
+    refreshing.value = false
   }
 }
 
