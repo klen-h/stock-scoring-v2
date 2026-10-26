@@ -30,6 +30,7 @@
 import argparse
 import asyncio
 import os
+import signal
 import sys
 import time
 import traceback
@@ -1513,17 +1514,69 @@ assert not _MISSING and not _EXTRA, (
 _DUP_ORDER = sorted({k for k in DEFAULT_ORDER if DEFAULT_ORDER.count(k) > 1})
 assert not _DUP_ORDER, "DEFAULT_ORDER 重复项：" + str(_DUP_ORDER)
 
+# ★★ 2026-10-26（用户："优化简化日批"）：**核心 / 附加 分层**。
+#   动机：50 个任务串行 ~70 分钟，任一上游抖动（如 10-26 行情缓存为空）就让整批
+#   变"半成品日"，而且**观察器/周月任务**失败会把整批判红、掩盖真正要紧的缺榜。
+#   用法：`--tasks core`（当日数据底座 + 报表，失败=当天真的不可用）、
+#         `--tasks extra`（观察器/周月/推送，失败只影响该功能）、`all`（默认，全跑）。
+CORE_TASKS = [
+    "backfill", "kline_closes",            # 行情回填（所有计算的前提）
+    "market_regime",                       # 市况（评分权重/闸门都依赖）
+    "mainflow", "market_snapshot",         # 资金流 + 收盘定稿
+    "eq_anchor",                            # 等权锚（防御门控）
+    "mainforce_state", "gate_snapshot",     # 主力行为 + 买入闸门
+    "entry_log",
+    "sector_snapshot", "sector_strength",   # 板块
+    "strategy_scan",                        # 战法扫描（strategy_results）
+    "score_snapshot",
+    "rank_live",                            # 精算榜（下游一大批依赖）
+    "shadow_rank", "shadow_defensive", "defensive_group",
+    "lhb", "intraday_path", "zz_daily",     # 时钟属性：晚一天少一天历史
+    "stock_facts_wide",                     # 选股工作台底座
+    "daily_report", "trader_brief",         # 报表/推送
+    "retention",                            # 数据库治理（放最后）
+]
+EXTRA_TASKS = [t for t in DEFAULT_ORDER if t not in set(CORE_TASKS)]
+_UNKNOWN_CORE = [t for t in CORE_TASKS if t not in TASKS]
+assert not _UNKNOWN_CORE, "CORE_TASKS 含未注册任务：" + str(_UNKNOWN_CORE)
 
-def ensure_quotes():
-    """★ 拉一次全市场行情 → 写进 tencent._cache，后续所有任务共享（不再各自拉）。"""
+
+def ensure_quotes(attempts: int = 3, min_codes: int = 1000):
+    """★ 拉一次全市场行情 → 写进 tencent._cache，后续所有任务共享（不再各自拉）。
+
+    ★★ 2026-10-26（10-26 日批事故：`rank_live` 报"行情缓存为空"、后续任务产出半成品日）：
+      旧实现**只试一次、不校验结果**，异常被 `main()` 吞掉后仍继续跑 50 个任务 ⇒
+      当日精算榜/闸门/快照/宽表全缺，只在 [25/50] 处报一句 RuntimeError。
+      现在：
+        · 最多 `attempts` 次（30/60/120s 退避）——上游 WAF/网络抖动常是分钟级恢复；
+        · **成功门槛 = ≥ min_codes 只**（默认 1000）——"返回不抛但 0 只"同样算失败；
+        · 仍不达标 **抛异常**，由 `main()` 中止（`--allow-no-quotes` 才放行）。
+      宁可整批失败退出，也不产出"缺榜的一天"：缺一天立刻就看见，缺几个数字没人发现。
+    """
     from app.tencent import _cache, refresh_all_stocks
-    if _cache.get("stocks"):
-        print(f"  行情缓存已有 {len(_cache['stocks'])} 只，跳过刷新")
+    have = len(_cache.get("stocks") or {})
+    if have >= min_codes:
+        print(f"  行情缓存已有 {have} 只，跳过刷新")
         return
-    print("  刷新全市场行情（唯一一次全市场请求）...")
-    t0 = time.time()
-    refresh_all_stocks()
-    print(f"  行情就绪: {len(_cache.get('stocks') or {})} 只，耗时 {time.time() - t0:.0f}s")
+    last = have
+    for i in range(1, attempts + 1):
+        print(f"  刷新全市场行情（第 {i}/{attempts} 次）...")
+        t0 = time.time()
+        try:
+            refresh_all_stocks()
+        except Exception as e:
+            print(f"  ⚠️ 第 {i} 次刷新异常: {str(e)[:120]}")   # ASCII（铁律⑥）
+        last = len(_cache.get("stocks") or {})
+        print(f"  行情就绪: {last} 只（耗时 {time.time() - t0:.0f}s）")
+        if last >= min_codes:
+            return
+        if i < attempts:
+            wait = 30 * (2 ** (i - 1))
+            print(f"  行情仅 {last} 只（门槛 {min_codes}），{wait}s 后重试")
+            time.sleep(wait)
+    raise RuntimeError(
+        f"全市场行情刷新失败：仅 {last} 只（门槛 {min_codes}），已重试 {attempts} 次"
+        f" —— 上游（腾讯）限流/WAF 或 runner 出网异常；请间隔 30~60 分钟重跑，勿连续猛试")
 
 
 def ensure_pack_fresh(max_wait_min: float):
@@ -1679,6 +1732,12 @@ def main():
                     help="忽略'当日已完成'标记，强制重跑")
     ap.add_argument("--no-quotes", action="store_true",
                     help="跳过全市场行情刷新（调试用）")
+    # ★★ 2026-10-26：行情未就绪时**默认中止整批**。确认要用残缺行情跑（例如只补非行情类任务）
+    #   时才加这个开关——它会让 rank_live 等任务产出空/半成品数据。
+    ap.add_argument("--allow-no-quotes", action="store_true",
+                    help="行情刷新失败也继续（危险：会产出缺榜的半成品日）")
+    ap.add_argument("--task-timeout", type=int, default=1800,
+                    help="单任务超时秒数（默认 1800；0=不限制；仅 POSIX 生效）")
     ap.add_argument("--no-pack-check", action="store_true",
                     help="跳过数据包日期校验（调试用）")
     ap.add_argument("--max-wait", type=float, default=30,
@@ -1687,8 +1746,13 @@ def main():
     args = ap.parse_args()
 
     if args.list:
+        core = set(CORE_TASKS)
         for k in DEFAULT_ORDER:
-            print(f"  {k:<20} {TASKS[k][1]}")
+            tag = "core " if k in core else "extra"
+            print(f"  [{tag}] {k:<20} {TASKS[k][1]}")
+        print(f"\n  共 {len(DEFAULT_ORDER)} 个任务：core {len(CORE_TASKS)} / "
+              f"extra {len(DEFAULT_ORDER) - len(CORE_TASKS)}"
+              f"（--tasks core|extra 可分开跑）")
         return 0
 
     load_env()
@@ -1704,16 +1768,24 @@ def main():
     except Exception as e:
         print(f"  [env_check] 自检失败（不影响日批）: {e}")
 
-    names = DEFAULT_ORDER if args.tasks.strip() == "all" \
-        else [t.strip() for t in args.tasks.split(",") if t.strip()]
+    _sel = args.tasks.strip().lower()
+    if _sel == "all":
+        names = list(DEFAULT_ORDER)
+    elif _sel == "core":
+        names = [t for t in DEFAULT_ORDER if t in set(CORE_TASKS)]
+    elif _sel == "extra":
+        names = list(EXTRA_TASKS)
+    else:
+        names = [t.strip() for t in args.tasks.split(",") if t.strip()]
     unknown = [n for n in names if n not in TASKS]
     if unknown:
-        print(f"::error::未知任务: {unknown}；可选: {list(TASKS)}")
+        print(f"::error::未知任务: {unknown}；可选: {list(TASKS)} 或 all/core/extra")
         return 2
 
     print(f"=== 日批合并 ===")
-    print(f"  任务: {', '.join(names)}")
-    print(f"  数据源: pack（backend-pack.db）  强制重跑: {args.force}")
+    print(f"  任务({len(names)}): {', '.join(names)}")
+    print(f"  数据源: pack（backend-pack.db）  强制重跑: {args.force}"
+          f"  单任务超时: {args.task_timeout or '不限'}s")
 
     # ★★ 2026-10-19：**同日重复触发守卫**（成因见 `_batch_already_done` 注释）。
     #   只拦"全量 + 自动触发(workflow_run) + 非 force"；手动 dispatch / 指定任务 / --force 照常跑。
@@ -1740,8 +1812,25 @@ def main():
             print("\n[0] 准备共享行情...")
             ensure_quotes()
     except Exception as e:
-        print(f"  ⚠️ 行情刷新失败（后续任务可能受影响）: {e}")
+        print(f"  ⚠️ 行情刷新失败: {e}")
         _notify(f"> 全市场行情刷新失败：{e}")
+        # ★★ 2026-10-26：**默认中止**。旧行为是"继续跑 50 个任务"，结果 rank_live 挂掉、
+        #   闸门/快照/宽表全空 ⇒ 一天的数据半成品，且只有一行 RuntimeError 留痕。
+        #   要跑"不依赖行情"的少量任务（如 retention/egress_report）请显式加
+        #   `--no-quotes` 或 `--allow-no-quotes`。
+        if not (args.allow_no_quotes or args.no_quotes):
+            print("::error::行情未就绪 ⇒ 中止本轮日批（避免产出缺榜的半成品日）。"
+                  "确认要用残缺行情继续请加 --allow-no-quotes。")
+            return 4
+
+    # ★ 2026-10-26：单任务超时（POSIX 才有 SIGALRM；Windows 本地跑退化为不限）。
+    #   目的：一个任务卡死（网络无超时/死循环）不至于吃掉 workflow 的 180 分钟上限。
+    _tt = int(args.task_timeout or 0)
+    _use_alarm = _tt > 0 and hasattr(signal, "SIGALRM")
+    if _use_alarm:
+        def _on_alarm(signum, frame):
+            raise TimeoutError(f"单任务超时（>{_tt}s）")
+        signal.signal(signal.SIGALRM, _on_alarm)
 
     ok_list, fail_list = [], []
     for i, name in enumerate(names, 1):
@@ -1749,7 +1838,13 @@ def main():
         print(f"\n[{i}/{len(names)}] {desc}...", flush=True)
         t0 = time.time()
         try:
-            summary = fn()
+            if _use_alarm:
+                signal.alarm(_tt)
+            try:
+                summary = fn()
+            finally:
+                if _use_alarm:
+                    signal.alarm(0)
             cost = time.time() - t0
             ok_list.append((desc, cost))
             print(f"  ✅ {desc} 完成（{cost:.0f}s）: {summary}", flush=True)

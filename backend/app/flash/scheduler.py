@@ -219,7 +219,12 @@ async def review_loop():
 
 
 HEALTH_PROBE_INTERVAL = 300     # 健康探针：空闲时段也定期采样各数据源
-STOCK_CACHE_INTERVAL = 120       # 行情缓存刷新：盘中每 2 分钟刷新全量股票行情（供评分排行使用）
+# ★★ 2026-10-26（用户："找出 cpu/内存猛增的原因"）：两个高频循环改为**环境变量可调**。
+#   实测（memory_probe）：早盘 09:18/09:31 threads 10→17、rss 144→193MB ——
+#   每次全市场刷新都是一次"4000+ 只字典构建 + 上百次上游请求"，CPU 打满数秒；
+#   Render 免费实例只有 0.1~0.5 核 ⇒ 刷新还没跑完下一轮又到，线程/内存叠高。
+#   调大间隔（如 300）可直接降低峰值频率，不影响"看盘近似实时"（3~5 分钟一档）。
+STOCK_CACHE_INTERVAL = int(os.environ.get("STOCK_CACHE_INTERVAL_SEC", "120"))
 
 
 async def stock_cache_refresh_loop():
@@ -287,7 +292,8 @@ async def stock_cache_refresh_loop():
         await asyncio.sleep(STOCK_CACHE_INTERVAL)
 
 
-REALTIME_UPLIMIT_INTERVAL = 120   # 盘中实时涨停/炸板统计预热（与行情缓存同频）
+REALTIME_UPLIMIT_INTERVAL = int(os.environ.get("REALTIME_UPLIMIT_INTERVAL_SEC", "120"))
+# ↑ 盘中实时涨停/炸板统计预热（默认与行情缓存同频；同理由 `*_SEC` 调大降 CPU）
 
 
 async def realtime_uplimit_loop():
