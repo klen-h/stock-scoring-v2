@@ -679,10 +679,32 @@
                       <span v-if="it.score != null">评分 <b class="text-gray-200 font-mono">{{ it.score }}</b></span>
                       <span v-if="it.ready_label">闸门 {{ it.ready_label }}</span>
                       <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                      <!-- ★ 2026-10-26（第①步：消息面投影）：这只持仓被哪条快讯影响 ——
+                           原来画在「快讯解读」卡里的「持仓影响」块，现在**长在持仓行上**。
+                           唯一性：快讯列表 = 原始流；这里只放"方向 + 条数"，点开看原文。 -->
+                      <button v-if="fbByCode[it.code]" type="button"
+                              class="px-1 rounded border cursor-help"
+                              :class="msgCls(fbByCode[it.code].lean)"
+                              :title="`快讯命中 ${fbByCode[it.code].n} 条 · ${fbByCode[it.code].lean}（观察参考，非交易建议）`"
+                              @click.stop="toggleHoldingMsg(it.code)">
+                        消息{{ fbByCode[it.code].n }}
+                      </button>
                     </div>
                     <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-0.5"
                          :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
                       {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
+                    </div>
+                    <!-- 展开：命中快讯原文（方向 + 簇/匹配词 + 原因；无原因则给一句概括） -->
+                    <div v-if="fbByCode[it.code] && holdingMsgOpen[it.code]"
+                         class="mt-1 pl-2 border-l border-accent/40 space-y-0.5">
+                      <div v-for="(hit, j) in fbByCode[it.code].hits" :key="j"
+                           class="text-[10px] text-muted leading-relaxed">
+                        <span class="font-mono">[{{ hit.idx }}]</span>
+                        <span class="ml-0.5" :class="hitCls(hit.direction)">{{ hit.direction }}</span>
+                        <span class="ml-0.5">（{{ hit.match }}）</span>
+                        <span class="ml-0.5">{{ hit.cause || hit.gist }}</span>
+                      </div>
+                      <div class="text-[10px] text-muted/70">规则联动 · 观察参考，非交易建议</div>
                     </div>
                   </div>
                 </div>
@@ -2743,6 +2765,9 @@ import StockListsCards from '../components/workbench/StockListsCards.vue'
 import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
 // ★ 2026-10-24：右栏「快讯解读」卡（大盘/板块/个股 + 重要快讯 + AI 解读）
 import FlashBriefCard from '../components/workbench/FlashBriefCard.vue'
+// ★ 2026-10-26（第①步：动态盘面 × 消息面融合）：快讯解读的**共享数据源**（单例，60s）
+//   —— 快讯卡与本页「持仓状态」的持仓行消费同一份快照 ⇒ 一条轮询、两处投影、零重复请求。
+import { useFlashBrief } from '../composables/useFlashBrief'
 // ★ 2026-10-10（P0-2，见 PLAN_RESERVE_SIGNALS.md §6.2）：央行储备月度面板卡
 //   （月频慢变量、自取数据、非交易信号）。只挂**一处**，避免同一数据两处渲染漂移。
 import ReserveCard from '../components/workbench/ReserveCard.vue'
@@ -2966,6 +2991,32 @@ const radarItems = ref([])
 const radarSummary = ref({})
 const radarNote = ref('')
 const radarAsOf = ref('')
+
+// ★★ 2026-10-26（第①步：动态盘面 × 消息面融合）——
+//   「消息面对持仓的影响」不再单列一块，而是**投影到持仓行**：
+//     · 数据 = 快讯解读共享源（`useFlashBrief`，与快讯卡同一条 60s 轮询，零重复请求）
+//     · 后端 `holdings_impact` 已是"消息 × 持仓行业/名称 × 行情 × 主力状态"的规则联动结果
+//       （持仓不出网、本机确定性计算）
+//     · 行内只放「方向 + 条数」徽标，点开才展开命中原文（避免 60s 刷新时一片文字跳）
+const fb = useFlashBrief()
+const fbByCode = fb.byCode
+const holdingMsgOpen = ref({})
+function toggleHoldingMsg(code) {
+  holdingMsgOpen.value = { ...holdingMsgOpen.value, [code]: !holdingMsgOpen.value[code] }
+}
+// 语义遵循全站「红=利好/上涨、绿=承压/下跌」（panel 里不是涨跌，但方向色保持一致）
+function msgCls(lean) {
+  const s = String(lean || '')
+  if (s.startsWith('受益')) return 'bg-red-500/15 text-red-300 border-red-500/30'
+  if (s.startsWith('承压')) return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+  return 'bg-white/5 text-muted border-border'
+}
+function hitCls(d) {
+  const s = String(d || '')
+  if (s === '多' || s === '利好' || s === '受益') return 'text-rise'
+  if (s === '空' || s === '利空' || s === '承压') return 'text-fall'
+  return 'text-muted'
+}
 // ★ 2026-09-29：行情**数据自身时刻**（后端 `quote_as_of` / `quote_from_snapshot`，来自
 //   `tencent._cache["data_ts"]`）—— 与 `radarAsOf`（= 本次计算时刻）**不是一回事**。
 const radarQuoteAsOf = ref('')
@@ -4967,8 +5018,11 @@ onMounted(async () => {
   await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
   loadPhaseData(selectedPhase.value)
   startPolling()
+  // 快讯共享源：与 <FlashBriefCard> 共用引用计数 ⇒ 仍只有一条 60s 轮询；
+  // 这里 start 是为了「快讯卡被收起/尚未渲染」时持仓行的消息徽标也有数据。
+  fb.start(selectedDate.value || '')
 })
-onUnmounted(stopPolling)
+onUnmounted(() => { stopPolling(); fb.stop() })
 </script>
 
 <!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先本文件有一份副本，

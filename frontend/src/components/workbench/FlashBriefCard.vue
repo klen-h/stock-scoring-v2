@@ -133,27 +133,11 @@
         </div>
       </div>
 
-      <!-- ⑥ 持仓影响（2026-10-25，用户需求）：后端规则联动（消息 × 持仓行业/名称 ×
-           实时行情 × 主力状态）——观察参考，非交易建议（Guardrails #5） -->
-      <div v-if="holdingsImpact.length" class="mt-2 pt-2 border-t border-border/40">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-accent text-[11px] font-semibold">持仓影响</span>
-          <span class="text-[10px] text-muted">规则联动 · 观察参考，非交易建议</span>
-        </div>
-        <div v-for="h in holdingsImpact" :key="h.code" class="mt-1.5 text-[11px] leading-relaxed">
-          <a :href="stockHref(h.code)" target="_blank" rel="noopener"
-             class="font-semibold hover:text-accent">{{ h.name }}</a>
-          <b class="font-mono ml-1" :class="pctCls(h.chg_pct)">{{ fmtPct(h.chg_pct) }}</b>
-          <span v-if="h.industry" class="text-[10px] text-muted ml-1">{{ h.industry }}</span>
-          <span v-if="h.phase || h.phase_cn" class="text-[10px] text-muted ml-1">主力·{{ phaseCn(h.phase, h.phase_cn) }}</span>
-          <span class="text-[10px] ml-1"
-                :class="h.lean.startsWith('受益') ? 'text-rise'
-                        : h.lean.startsWith('承压') ? 'text-fall' : 'text-muted'">{{ h.lean }}</span>
-          <div v-for="(hit, j) in h.hits" :key="j" class="text-[10px] text-muted leading-relaxed">
-            · 快讯[{{ hit.idx }}] {{ hit.direction }}（{{ hit.match }}）：{{ hit.cause || hit.gist }}
-          </div>
-        </div>
-      </div>
+      <!-- ★ 2026-10-26（第①步：动态盘面 × 消息面融合）：
+           原「⑥ 持仓影响」整块**已移除** —— 它讲的是"某只持仓被哪条快讯影响"，
+           与上方「持仓状态」是同一批标的的两半信息 ⇒ 现改为**投影到持仓行**
+           （`盘面速览` 的持仓行显示 利好N/承压N 徽标，展开即命中原文）。
+           规则：快讯列表是原始流，持仓行是它的投影，同一信息只出现一次。 -->
     </template>
     </template>
   </div>
@@ -161,22 +145,25 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { getFlashBrief, refreshFlashBrief } from '../../api'
-import { isTradingTime } from '../../composables/usePortfolio'
-// ★ 2026-10-26（用户："主力阶段现在是英文，改为中文"；"异动加代码跳雪球"）
-//   phaseCn：全站唯一映射（优先后端 phase_cn，缺失回退 displayMeta.PHASE_CN）
-//   xqUrl：个股 → 雪球（SH/SZ/BJ 自动拼前缀）
-import { phaseCn, xqUrl, stockHref } from '../../composables/displayMeta'
+import { refreshFlashBrief } from '../../api'
+// ★ 2026-10-26（第①步：动态盘面 × 消息面融合）：取数上提为**共享单例**
+//   —— 本组件与「盘面速览」的持仓行消费同一份快照（一条 60s 轮询，引用计数），
+//   组件不再自己 GET/自己 setInterval。
+import { useFlashBrief } from '../../composables/useFlashBrief'
+// ★ 2026-10-26（用户："异动加代码跳雪球"）：xqUrl = 个股 → 雪球（SH/SZ/BJ 自动拼前缀）；
+//   stockHref = 站内详情（hash 路由）。`phaseCn` 曾服务于卡内「持仓影响」块，
+//   该块已投影到「盘面速览」的持仓行 ⇒ 本组件不再需要。
+import { xqUrl, stockHref } from '../../composables/displayMeta'
 
 const props = defineProps({
   date: { type: String, default: '' },
   flashDiag: { type: Object, default: null },
 })
 
-const data = ref(null)
+const fb = useFlashBrief()
+const data = fb.data             // 共享单例（勿在本地再建 ref，否则两处不一致）
 const busy = ref(false)
-const loadErr = ref('')
-let timer = null
+const loadErr = fb.err
 const open = ref(-1)
 const bodyOpen = ref(true)   // ★ 2026-10-25（用户）：整卡支持收起/展开
 
@@ -197,10 +184,6 @@ const causeFallback = computed(() => {
   if (source.value === 'llm') return '—'
   return '尚未 AI 解读——点击下方「AI 解读」生成'
 })
-
-// ⑥ 持仓影响（2026-10-25，用户需求）：后端规则联动（消息 × 持仓行业/名称 ×
-//    实时行情 × 主力状态）——持仓不出网，本机确定性计算，观察参考非交易建议
-const holdingsImpact = computed(() => data.value?.holdings_impact || [])
 
 const diagnosisLine = computed(() => {
   const d = props.flashDiag || {}
@@ -261,15 +244,6 @@ function hhmm(t) {
 // ★ 2026-10-26：删掉本地 `stockHref`（返回 `/stock/${code}`）—— 路由是 **hash 模式**，
 //   裸路径会落到站点根 ⇒ 打开 404。统一用 `displayMeta.stockHref`（`#/stock/${code}`）。
 
-async function load() {
-  try {
-    const { data: d } = await getFlashBrief(props.date || undefined)
-    data.value = d || null
-    loadErr.value = ''
-  } catch (e) {
-    loadErr.value = '加载失败：' + (e?.message || e)
-  }
-}
 async function refresh() {
   if (busy.value) return
   busy.value = true
@@ -278,10 +252,8 @@ async function refresh() {
     if (d && d.ok === false) {
       loadErr.value = d.error || '解读失败'
     } else {
-      // 保留 trigger（POST 返回里没有）
-      const trg = data.value?.trigger || []
-      data.value = { ...d, trigger: d.trigger || trg }
-      loadErr.value = ''
+      // ★ 写进**共享状态**（不是本地 ref）：持仓行的消息徽标会同步更新
+      fb.apply(d)
       open.value = -1
     }
   } catch (e) {
@@ -291,15 +263,10 @@ async function refresh() {
   }
 }
 
-watch(() => props.date, () => { data.value = null; open.value = -1; load() })
+// 换日：只改共享源的日期并重取（本组件不再持有独立数据）
+watch(() => props.date, (d) => { open.value = -1; fb.load(d) })
 
-onMounted(() => {
-  load()
-  // 轻量轮询：`GET /flash/brief` 只读库，不烧 LLM ⇒ 盘中自动触发的新解读会自动出现
-  // ★ 2026-10-25（用户："休市不需要轮询的都关掉"）：自动解读仅在盘中触发
-  //   （flash_brief 内部 is_open 门）⇒ 休市时 brief 不会变化，轮询纯浪费 ⇒ 停。
-  //   挂载时的首次加载保留（休市打开页面仍能看到已有解读）。
-  timer = setInterval(() => { if (isTradingTime()) load() }, 60000)
-})
-onBeforeUnmount(() => { if (timer) clearInterval(timer) })
+// 轮询的生命周期交给共享单例（引用计数：本组件 + 盘面速览各一份订阅，仍只有一条 60s 定时器）
+onMounted(() => { fb.start(props.date || '') })
+onBeforeUnmount(() => { fb.stop() })
 </script>
