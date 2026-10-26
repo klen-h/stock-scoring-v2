@@ -1972,6 +1972,11 @@ async def _premarket_full_scan_once() -> bool:
         return False
     if store.is_schedule_done(PREMARKET_FULL_SCAN_KEY):
         return False
+    # ★★ 2026-10-27（线上实测 `DEPLOY_READ_ONLY=1`）：本任务已从 `_heavy` 移出（见注册处），
+    #   只读模式下**也会启动** ⇒ 必须自带降频，否则每天 150 批全量与「只读省资源」的初衷冲突。
+    #   只读 ⇒ **每周一次**（周一盘前；周末无盘中请求，不抢 CPU / 腾讯配额）；非只读 ⇒ 每天一次。
+    if READ_ONLY and now.weekday() != 0:
+        return False
     from app.tencent import refresh_all_stocks, save_market_snapshot
     try:
         # force=True：跳过 60s 冷却 + 走 `_ALL_CODES` 全量（发现新股/复牌）
@@ -2458,6 +2463,10 @@ async def start():
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）
              asyncio.create_task(portfolio_radar_warm_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
+             # ★ 2026-10-27：盘前全量扫描（08:30-09:00，重建有效代码池 ⇒ 解「新股永不进池」）。
+             #   **故意不放 `_heavy`**：线上实测 DEPLOY_READ_ONLY=1，`_heavy` 会直接返回 [] ⇒ 修复失效。
+             #   改为常驻 + 自带降频（只读模式每周一次，非只读每天一次，见 `_premarket_full_scan_once`）。
+             asyncio.create_task(premarket_full_scan_loop()),
              # ★ 2026-09-29：盘中实时涨停/炸板统计预热（rt_k，全市场精确口径）——
              #   与 stock_cache 同为「用户交互路径依赖」，只读模式保留。
              asyncio.create_task(realtime_uplimit_loop()),
@@ -2503,8 +2512,6 @@ async def start():
              *_heavy(strategy_scan_loop),
              *_heavy(backtest_report_loop),
              *_heavy(score_snapshot_loop),
-             # ★ 2026-10-27：盘前全量扫描（08:30-09:00，重建有效代码池 ⇒ 解「新股永不进池」）
-             *_heavy(premarket_full_scan_loop),
              *_heavy(market_snapshot_loop),
              # ★ 2026-09-26：日批完成通知**不走调度器**（用户要求事件驱动、不要轮询）
              #   ⇒ 见 `routers/system.py` 的 `POST /api/system/batch-done`，
