@@ -594,9 +594,13 @@
                   {{ emotion?.verdict || '—' }}</div></div>
             </div>
 
-            <!-- B 左：主线 Top5 ｜ 右：持仓状态 -->
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-2 border-t border-border/40 pt-2">
-              <div class="min-w-0">
+            <!-- B 左：主线 Top5 ｜ 右：持仓状态
+                 ★ 2026-10-26（用户："两块之间加分割线 + 离上面涨跌远点"）：
+                   ① `mt-4 pt-3`：与涨跌条的间距从 8px 拉到 28px（视觉分组更清楚）；
+                   ② `lg:divide-x`：宽屏在**两列之间**画一条竖分割线（窄屏堆叠时不画）；
+                   ③ 右列 `lg:pl-5`：分割线两侧各留呼吸位，文字不贴线。 -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-y-3 lg:gap-x-0 lg:divide-x lg:divide-border/40 border-t border-border/40 mt-4 pt-3">
+              <div class="min-w-0 lg:pr-4">
                 <div class="flex items-center justify-between mb-1">
                   <div class="text-xs font-semibold">主线板块 Top5
                     <span class="text-[10px] text-muted font-normal">
@@ -664,8 +668,8 @@
                 </details>
               </div>
 
-              <div class="min-w-0">
-                <div class="flex items-center justify-between mb-1">
+              <div class="min-w-0 lg:pl-5">
+                <div class="flex items-center justify-between mb-2">
                   <div class="text-xs font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
                     风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
                   <span v-if="radarQuote" class="text-[10px] font-mono shrink-0"
@@ -677,7 +681,7 @@
                 <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
                 <div v-else-if="!radarItems.length" class="text-muted text-xs">—（当前无持仓记录）</div>
                 <template v-else>
-                  <div v-if="radarRisk?.available" class="text-[10px] text-muted mb-1 truncate"
+                  <div v-if="radarRisk?.available" class="text-[10px] text-muted mb-1.5 truncate"
                        :title="[(radarRisk.style ? '风格 ' + radarRisk.style.band : ''),
                                 (radarRisk.concentration || []).length ? '板块集中 ' + (radarRisk.concentration || []).map(c => c.industry).join('/') : '',
                                 (radarRisk.overseas || []).length ? '海外敏感 ' + (radarRisk.overseas || []).map(o => o.chain).join('/') : ''
@@ -686,9 +690,12 @@
                       v-if="(radarRisk.concentration || []).length"> · 集中 {{ (radarRisk.concentration || []).length }} 项</template><template
                       v-if="(radarRisk.overseas || []).length"> · 海外 {{ (radarRisk.overseas || []).length }} 项</template>
                   </div>
-                  <div class="space-y-1 max-h-[190px] overflow-y-auto pr-1">
+                  <!-- ★ 2026-10-26（用户："持仓状态的内容也有点挤"）：
+                       行距 1→1.5、卡片内边距 px-2 py-1 → px-2.5 py-1.5、两行之间 mt-0.5 → mt-1，
+                       可滚动高度 190 → 240（同一屏能舒服看完 3~4 只，不再挤成一坨）。 -->
+                  <div class="space-y-1.5 max-h-[240px] overflow-y-auto pr-1">
                     <div v-for="it in radarItems" :key="it.code"
-                         class="border border-border/50 rounded px-2 py-1">
+                         class="border border-border/50 rounded px-2.5 py-1.5">
                       <div class="flex items-center gap-1.5 flex-wrap text-xs">
                         <a :href="stockHref(it.code)" target="_blank"
                            class="font-semibold hover:text-accent truncate">{{ it.name || it.code }}</a>
@@ -697,7 +704,7 @@
                         <span v-if="it.industry" class="text-[10px] text-muted truncate">{{ it.industry }}</span>
                         <span class="ml-auto font-bold font-mono" :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
                       </div>
-                      <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-muted mt-0.5">
+                      <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-muted mt-1">
                         <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
                         <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
                         <span v-if="it.phase" class="px-1 rounded"
@@ -716,7 +723,7 @@
                           消息{{ fbByCode[it.code].n }}
                         </button>
                       </div>
-                      <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-0.5"
+                      <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-1"
                            :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
                         {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
                       </div>
