@@ -31,12 +31,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from app.database import db
 
 _TABLE = "flash_brief"
+# ★★ 2026-10-26（方案 B：一天多次解读要做 tab 回看）：
+#   主表 `date` 是主键 ⇒ 每次解读都**覆盖**上一份，历史无法回看（只留 auto_runs 计数）。
+#   ⇒ 新增 `flash_brief_runs`：**每次真实解读 append 一条**（不覆盖），供前端按时间切 tab。
+#   主表仍是"最新一份"的权威读源（60s 轮询只读它，避免历史查询放大开销）。
+_RUN_TABLE = "flash_brief_runs"
+RUN_KEEP = int(os.environ.get("FLASH_BRIEF_RUN_KEEP") or 10)   # 每天最多留几条历史
 _READY = False
 
 TTL_MIN = int(os.environ.get("FLASH_BRIEF_TTL_MIN") or 30)          # 手动/读缓存有效期
@@ -99,6 +106,23 @@ def _ensure() -> None:
                 db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {_col}")
             except Exception:
                 pass
+    # 历史解读表（append-only，主键用字符串 run_id ⇒ 不依赖 SERIAL/AUTOINCREMENT 双库差异）
+    db.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_RUN_TABLE} (
+            run_id TEXT PRIMARY KEY,
+            date TEXT,
+            ts TEXT,
+            trigger TEXT,
+            source TEXT,
+            conclusion TEXT,
+            llm_json TEXT,
+            created_at TEXT
+        )
+    """)
+    try:
+        db.execute(f"CREATE INDEX IF NOT EXISTS idx_fbr_date_ts ON {_RUN_TABLE} (date, ts)")
+    except Exception:
+        pass
     _READY = True
 
 
@@ -461,6 +485,91 @@ def _parse_json(txt: str) -> Optional[Dict]:
         return None
 
 
+def _save_run(day: str, llm: Dict, trigger: str, source: str,
+              ts: Optional[str] = None) -> Optional[str]:
+    """把**本次解读**追加到历史表（不覆盖），并裁掉每天超量的旧记录。
+
+    run_id 用"时间戳+4位随机"而非自增：SQLite 是 AUTOINCREMENT、PG 是 SERIAL，
+    本项目已有 `_ensure` 里的双库差异坑，字符串主键可以直接绕开。
+
+    `ts` 可指定**本次解读的真实时刻**：老数据回填时必须传主表的 `created_at`，
+    否则 tab 上会显示"刚补的这一刻"，而内容其实是上午生成的（谎报时刻）。
+    """
+    if not isinstance(llm, dict):
+        return None
+    now = _now()
+    ts_text = str(ts or now.isoformat(timespec="seconds"))
+    rid = now.strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:4]
+    try:
+        db.upsert(_RUN_TABLE, {
+            "run_id": rid,
+            "date": day,
+            "ts": ts_text,
+            "trigger": trigger or "auto",
+            "source": source or "llm",
+            "conclusion": llm.get("conclusion") or "",
+            "llm_json": json.dumps(llm, ensure_ascii=False),
+            "created_at": now.isoformat(timespec="seconds"),
+        }, conflict_columns=["run_id"])
+    except Exception as e:
+        print(f"[flash_brief] 历史解读写入失败（不影响本次返回）: {str(e)[:100]}")
+        return None
+    # 只留最近 RUN_KEEP 条（LIMIT 子查询 SQLite/PG 都支持）
+    try:
+        db.execute(
+            f"DELETE FROM {_RUN_TABLE} WHERE date = %s AND run_id NOT IN "
+            f"(SELECT run_id FROM {_RUN_TABLE} WHERE date = %s ORDER BY ts DESC LIMIT {RUN_KEEP})",
+            (day, day))
+    except Exception as e:
+        print(f"[flash_brief] 历史解读裁剪失败: {str(e)[:80]}")
+    return rid
+
+
+def list_runs(day: str, limit: int = 8) -> List[Dict]:
+    """当日历史解读的**精简列表**（不含正文）：供前端 tab 用。
+
+    ⚠️ 只回 run_id/时间/触发原因/来源/结论摘要 —— 全文另走 `get_run()`，
+      否则 60s 轮询每次都要传 8×几 KB（本项目对 egress 有硬要求）。
+    """
+    try:
+        rows = db.fetch(
+            f"SELECT run_id, ts, trigger, source, conclusion FROM {_RUN_TABLE} "
+            f"WHERE date = %s ORDER BY ts DESC LIMIT {int(limit)}", (day,)) or []
+    except Exception as e:
+        print(f"[flash_brief] 历史解读读取失败: {str(e)[:80]}")
+        return []
+    out = []
+    for r in rows:
+        c = str(r.get("conclusion") or "")
+        out.append({
+            "run_id": r.get("run_id"),
+            "ts": r.get("ts"),
+            "time": str(r.get("ts") or "")[11:16],      # HH:MM（前端 tab 标签直接用）
+            "trigger": r.get("trigger") or "",
+            "source": r.get("source") or "",
+            "conclusion": c[:160],                      # 摘要足够 tab 悬停
+        })
+    return out
+
+
+def get_run(run_id: str) -> Dict:
+    """取某次历史解读的全文（含 llm.news 逐条）。找不到返回 {ok: False}。"""
+    try:
+        row = db.fetch_one(f"SELECT * FROM {_RUN_TABLE} WHERE run_id = %s", (run_id,))
+    except Exception as e:
+        return {"ok": False, "error": f"读取失败: {str(e)[:80]}"}
+    if not row:
+        return {"ok": False, "error": "该解读不存在或已被清理"}
+    try:
+        llm = json.loads(row.get("llm_json") or "{}")
+    except (ValueError, TypeError):
+        llm = {}
+    return {"ok": True, "run_id": row.get("run_id"), "date": row.get("date"),
+            "ts": row.get("ts"), "trigger": row.get("trigger"),
+            "source": row.get("source"), "conclusion": row.get("conclusion") or "",
+            "llm": llm}
+
+
 def analyze(day: Optional[str] = None, refresh: bool = False,
             auto: bool = False) -> Dict:
     """生成/读取快讯解读。`refresh=False` 且缓存新鲜 ⇒ 不烧 LLM。"""
@@ -494,9 +603,13 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
             except (ValueError, TypeError):
                 llm = None
             if isinstance(llm, dict):
+                # ★ 2026-10-26：缓存命中同样带 `runs`（前端 tab 需要历史列表；
+                #   meta 很小 ≈1KB，不破坏 60s 轮询的体积纪律）
+                _runs = list_runs(d)
                 return {"ok": True, "date": d, "cached": True, "auto": bool(auto),
                         "as_of": p["as_of"], "sig": sig,
-                        "snapshot": p, "llm": llm,
+                        "snapshot": p, "llm": llm, "runs": _runs,
+                        "latest_run_id": (_runs[0]["run_id"] if _runs else ""),
                         "conclusion": llm.get("conclusion") or "",
                         "holdings_impact": _holdings_impact(llm.get("news") or []),
                         "source": "cache"}
@@ -529,11 +642,19 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
     except Exception as e:
         print(f"[flash_brief] 落库失败（本次仍返回）: {str(e)[:100]}")
 
+    # ★ 2026-10-26（方案 B）：**只有真正跑了一次解读**才追加历史（缓存命中不追加），
+    #   否则 tab 里会出现一堆内容相同的重复条目。
+    _src = "llm" if not err else "template"
+    _trigger = "auto" if auto else ("manual" if refresh else "read")
+    _rid = _save_run(d, llm, _trigger, _src)
+    _runs = list_runs(d)
+
     return {"ok": True, "date": d, "cached": False, "auto": bool(auto),
             "as_of": p["as_of"], "sig": sig, "snapshot": p, "llm": llm,
+            "runs": _runs, "latest_run_id": _rid or (_runs[0]["run_id"] if _runs else ""),
             "conclusion": llm.get("conclusion") or "",
             "holdings_impact": _holdings_impact(llm.get("news") or []),
-            "error": err, "source": "llm" if not err else "template"}
+            "error": err, "source": _src}
 
 
 
@@ -664,9 +785,18 @@ def load(day: Optional[str] = None) -> Dict:
             payload = build_snapshot(d)
         except Exception:
             pass
+    # ★ 2026-10-26（方案 B）：带上历史解读的**精简列表**（≈1KB）。
+    #   老数据回填：本功能上线前生成的当日解读没有历史行 ⇒ 用主表内容补一条，
+    #   否则用户当天看到"0 个 tab"会以为坏了。
+    _runs = list_runs(d)
+    if not _runs and llm:
+        # 用主表 `created_at` 作为这次"历史解读"的真实时刻（不能用"现在"）
+        _save_run(d, llm, "auto", "backfill", ts=row.get("created_at"))
+        _runs = list_runs(d)
     return {"ok": True, "date": d, "cached": True, "as_of": row.get("as_of"),
             "sig": row.get("sig"), "snapshot": payload, "llm": llm,
             "conclusion": row.get("conclusion") or "",
+            "runs": _runs, "latest_run_id": (_runs[0]["run_id"] if _runs else ""),
             "created_at": row.get("created_at"),
             "notified_at": row.get("notified_at"),
             "holdings_impact": _holdings_impact((llm or {}).get("news") or [])}

@@ -107,14 +107,17 @@ def flash_diagnosis(limit: int = Query(5, ge=1, le=20)):
 
 
 @router.get("/brief")
-def flash_brief_get(date: str = None):
+def flash_brief_get(date: str = None, run_id: str = None):
     """快讯解读卡（大盘/板块/个股 + 重要快讯），**只读缓存，绝不触发 LLM**。
 
-    · 有当日解读 ⇒ 返回缓存（含 llm 结构化字段）；
+    · 有当日解读 ⇒ 返回缓存（含 llm 结构化字段 + `runs` 历史清单 meta）；
     · 没有 ⇒ 返回**实时快照 + 规则标签**（LLM 字段为 null），前端显示「AI 解读」按钮；
+    · `run_id=xxx` ⇒ 返回**那一次历史解读的全文**（tab 回看用；找不到给明确错误）；
     · 需要重新解读 ⇒ `POST /flash/brief/refresh`（一次批量 LLM）。
     """
     from app import flash_brief as fb
+    if run_id:
+        return fb.get_run(run_id)
     r = fb.load(date)
     if r.get("ok"):
         try:
@@ -125,6 +128,7 @@ def flash_brief_get(date: str = None):
     p = fb.build_snapshot(date)
     return {"ok": True, "date": p["date"], "cached": False, "as_of": p["as_of"],
             "sig": p["sig"], "snapshot": p, "llm": None, "conclusion": "",
+            "runs": [], "latest_run_id": "",
             "source": "snapshot", "trigger": fb.detect_trigger(p)}
 
 

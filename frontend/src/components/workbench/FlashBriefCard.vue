@@ -23,6 +23,30 @@
     </div>
 
     <template v-if="bodyOpen">
+    <!-- ★★ 2026-10-26（方案 B）：一天 1~8 次解读 ⇒ 时间 tab 回看。
+         与「李大霄视角」同款交互：水平滚动、选中自动居中、按 run_id 记忆；
+         tab 只承载"历史判断"，当前结论永远是第一个 tab（最新）。 -->
+    <div v-if="runs.length > 1" class="mt-1.5 flex gap-1 overflow-x-auto pb-1 -mx-1 px-1 wb-hscroll">
+      <button v-for="(r, i) in runs" :key="r.run_id"
+              :ref="(el) => setTab(el, i)"
+              type="button"
+              class="shrink-0 px-1.5 py-0.5 rounded border text-[10px] transition-colors"
+              :class="(selRunId ? r.run_id === selRunId : i === 0)
+                ? 'bg-accent/20 text-accent border-accent/40'
+                : 'bg-white/5 text-muted border-border hover:text-gray-200'"
+              :title="`${trigCn(r.trigger)} · ${r.source === 'template' ? '规则兜底（LLM 未就绪）' : r.source === 'backfill' ? '历史回补' : 'AI 解读'}${r.conclusion ? '：' + r.conclusion : ''}`"
+              @click="pickRun(r, i)">
+        <span class="font-mono">{{ r.time || '—' }}</span>
+        <span class="ml-0.5">{{ trigCn(r.trigger) }}</span>
+        <span v-if="r.source === 'template'" class="ml-0.5 opacity-60">规则</span>
+      </button>
+    </div>
+    <div v-if="isHistory && hist" class="mt-1 text-[10px] text-amber-300/90">
+      历史回看 · {{ String(hist.ts || '').slice(11, 16) }} 的判断（只读）；最新结论请点第一个 tab
+    </div>
+    <div v-else-if="histLoading" class="mt-1 text-[10px] text-muted">读取历史解读…</div>
+    <div v-if="histErr" class="mt-1 text-[10px] text-amber-400">{{ histErr }}</div>
+
     <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息。
          ★ 2026-10-25（用户）：去掉 truncate 省略号 ⇒ 换行完整展示。 -->
     <div v-if="flashDiag" class="mt-1 text-[10px] text-muted leading-relaxed"
@@ -40,7 +64,7 @@
                ⇒ 指数在**顶栏**、家数/涨停/成交额在**盘面速览的涨跌条**，全都有了；
              · 原「② 板块轮动」的**领涨 3 个** ⇒ 已由**主线板块 Top5**（含领涨股）覆盖；
            只保留唯一增量：**领跌 3 个**（盘面速览只讲强的一侧，弱的这侧只有这里有）。 -->
-      <div v-if="sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+      <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
         <span class="text-muted">领跌</span>
         <span v-for="s in sectors.bottom.slice(0, 3)" :key="'b' + s.name" class="text-fall">
           {{ s.name }} {{ fmtPct(s.chg_pct) }}
@@ -50,7 +74,7 @@
       <!-- ③ 个股异动 -->
       <!-- ★ 2026-10-26（用户："异动加上股票代码，方便跳转去雪球"）：
            名称 → 本地详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球）。 -->
-      <div v-if="movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+      <div v-if="!isHistory && movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
         <span class="text-muted">异动</span>
         <span v-for="m in movers" :key="m.code">
           <a :href="stockHref(m.code)" target="_blank" rel="noopener"
@@ -129,7 +153,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { refreshFlashBrief } from '../../api'
 // ★ 2026-10-26（第①步：动态盘面 × 消息面融合）：取数上提为**共享单例**
 //   —— 本组件与「盘面速览」的持仓行消费同一份快照（一条 60s 轮询，引用计数），
@@ -157,11 +181,64 @@ const snapshot = computed(() => data.value?.snapshot || null)
 //   （指数看顶栏、家数看盘面速览；保留只会是死代码）。
 const sectors = computed(() => snapshot.value?.sectors || { top: [], bottom: [] })
 const movers = computed(() => (snapshot.value?.movers?.rows || []).slice(0, 4))
-const llm = computed(() => data.value?.llm || {})
-const asOf = computed(() => data.value?.as_of || '')
-const source = computed(() => data.value?.source || '')
+// ★★ 2026-10-26（方案 B：一天可能触发 1~8 次解读 → 做时间 tab 回看）：
+//   · `runs` 来自 `/flash/brief` 的精简 meta（run_id / HH:MM / 触发原因 / 来源 / 结论摘要）；
+//   · 选中历史 tab 才 `loadRun()` 拉全文（不覆盖共享"最新一份"，轮询不会冲掉它）；
+//   · 选中态按 run_id 记忆：60s 轮询来了新解读时，不会把你从历史踢回最新（除非该条被裁掉）。
+const runs = computed(() => (data.value && data.value.runs) || [])
+const latestId = computed(() => (runs.value[0] && runs.value[0].run_id) || '')
+const selRunId = ref('')
+const hist = ref(null)
+const histLoading = ref(false)
+const histErr = ref('')      // 历史读取错误（不复用共享 err，避免污染"最新一份"的错误态）
+const isHistory = computed(() => !!selRunId.value && selRunId.value !== latestId.value)
+const TRIGGER_CN = { auto: '异动', manual: '手动', read: '读取', backfill: '历史' }
+function trigCn(t) { return TRIGGER_CN[t] || '解读' }
+const tabEls = []
+function setTab(el, i) { if (el) tabEls[i] = el }
+
+const llm = computed(() => (isHistory.value ? (hist.value?.llm || {}) : (data.value?.llm || {})))
+const asOf = computed(() => (isHistory.value
+  ? String(hist.value?.ts || '').slice(11, 16)
+  : (data.value?.as_of || '')))
+const source = computed(() => (isHistory.value ? (hist.value?.source || '') : (data.value?.source || '')))
 const cached = computed(() => !!data.value?.cached)
 const triggers = computed(() => data.value?.trigger || [])
+
+async function pickRun(r, i) {
+  if (!r) return
+  if (r.run_id === latestId.value) {
+    selRunId.value = ''
+    hist.value = null
+  } else {
+    selRunId.value = r.run_id
+    histLoading.value = true
+    histErr.value = ''
+    try {
+      const res = await fb.loadRun(r.run_id)
+      hist.value = (res && res.ok) ? res : null
+      if (!hist.value) histErr.value = (res && res.error) || '历史解读读取失败'
+    } finally {
+      histLoading.value = false
+    }
+  }
+  // 选中后把自己滚到中间（tab 条可能很长）
+  nextTick(() => {
+    const el = tabEls[i]
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+    }
+  })
+}
+
+watch(runs, (arr) => {
+  if (!arr.length) { selRunId.value = ''; hist.value = null; return }
+  // 选中的那条被裁掉（超过 RUN_KEEP）⇒ 老实回到最新，避免停留在空白历史
+  if (selRunId.value && !arr.some(x => x.run_id === selRunId.value)) {
+    selRunId.value = ''
+    hist.value = null
+  }
+})
 
 // ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：cause 空 = 该条**尚无 AI 逐条解读**
 //   （休市日 source=snapshot 属预期；或 source=template 规则兜底）——按来源给诚实文案。
@@ -181,7 +258,22 @@ const diagnosisLine = computed(() => {
 })
 
 // 快讯卡：规则条目（snapshot.news）+ LLM 逐条解读（llm.news[idx]）合并
+// ★ 2026-10-26：历史 tab 只有 `llm.news`（没有当时快照的原文行）⇒ 直接用逐条解读渲染，
+//   不伪造"当时快讯列表"（宁可少显示，也不张冠李戴）。
 const cards = computed(() => {
+  if (isHistory.value) {
+    return (hist.value?.llm?.news || []).map((x, i) => ({
+      key: 'h' + i,
+      time: '',
+      cluster: '',
+      score: 0,
+      text: '',
+      gist: x.gist || '',
+      cause: x.cause || '',
+      scope: x.scope || '',
+      direction: x.direction || '',
+    }))
+  }
   const rows = snapshot.value?.news?.rows || []
   const map = {}
   for (const x of (llm.value.news || [])) map[Number(x.idx)] = x
@@ -255,3 +347,10 @@ watch(() => props.date, (d) => { open.value = -1; fb.load(d) })
 onMounted(() => { fb.start(props.date || '') })
 onBeforeUnmount(() => { fb.stop() })
 </script>
+
+<style scoped>
+/* 解读 tab 横向滚动：细滚动条，避免右卡被撑高（与「李大霄视角」同款，2026-10-26） */
+.wb-hscroll::-webkit-scrollbar { height: 4px; }
+.wb-hscroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
+.wb-hscroll { scrollbar-width: thin; }
+</style>

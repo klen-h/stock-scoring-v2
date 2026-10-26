@@ -116,6 +116,10 @@ export const getFlashStatus = () => http.get('/flash/status')
 // ★ 2026-10-24：快讯解读卡（大盘/板块/个股 + 重要快讯）
 //   GET 只读库/快照（不烧 LLM）；POST 才真解读（一次批量 LLM，30 分钟内重复点读缓存）
 export const getFlashBrief = (date) => http.get('/flash/brief', { params: { date }, timeout: 30000 })
+// ★ 2026-10-26（方案 B：一天多次解读 → tab 回看）：取**某一次历史解读的全文**。
+//   列表只随 /flash/brief 返回 meta（≈1KB），点开 tab 才付全文成本（4~6KB）。
+export const getFlashBriefRun = (runId) =>
+  http.get('/flash/brief', { params: { run_id: runId }, timeout: 20000 })
 export const refreshFlashBrief = (date) =>
   http.post('/flash/brief/refresh', {}, { params: { date }, timeout: 120000 })
 export const getFlashNotifications = (params) => http.get('/flash/notifications', { params })

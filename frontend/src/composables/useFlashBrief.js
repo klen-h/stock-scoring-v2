@@ -16,7 +16,7 @@
  */
 
 import { ref, computed, reactive } from 'vue'
-import { getFlashBrief } from '../api'
+import { getFlashBrief, getFlashBriefRun } from '../api'
 import { isTradingTime } from './usePortfolio'
 
 const POLL_MS = 60000
@@ -94,6 +94,20 @@ const byCode = computed(() => {
   return out
 })
 
+/**
+ * 取某一次历史解读的全文（tab 回看用）。
+ * ⚠️ 不进共享 `data`：历史是**按需**拉的，不能覆盖"最新一份"，否则轮询会把它冲掉。
+ */
+async function loadRun(runId) {
+  if (!runId) return null
+  try {
+    const { data: d } = await getFlashBriefRun(runId)
+    return d || null
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || '读取失败' }
+  }
+}
+
 export function useFlashBrief() {
-  return { data, err, loading, state, byCode, load, apply, start, stop }
+  return { data, err, loading, state, byCode, load, loadRun, apply, start, stop }
 }
