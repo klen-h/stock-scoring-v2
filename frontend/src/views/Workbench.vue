@@ -594,6 +594,37 @@
                   {{ emotion?.verdict || '—' }}</div></div>
             </div>
 
+            <!-- ★★ 2026-10-26（用户："大小盘风格 + 涨停赚钱效应 简化描述后放到涨跌下面"）：
+                 从「盘中结构」卡移来，两行压成一行一行的小字：
+                   · 长解释（"大小盘基本同步，无明显风格偏离"、板幅判定 5%/10%/20%/30%）**收进 hover**，
+                     行内只留数字 —— 之前这两段常显文字把涨跌条下面塞满了；
+                   · 快照态只写"快照 10-23"（原为"（10-23 20:38 快照，非实时）"）。 -->
+            <div class="mt-1.5 space-y-0.5 text-[11px] text-muted">
+              <div v-if="ovStyle?.available" class="flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+                <span>风格</span>
+                <b class="cursor-help" :class="styleCls" :title="ovStyle.note || styleTitle">{{ ovStyle.label }}</b>
+                <span class="font-mono">
+                  大 <b :class="pctClass(ovBig?.avg)">{{ signNum(ovBig?.avg) }}%</b><template
+                    v-if="ovMid"> / 中 <b :class="pctClass(ovMid?.avg)">{{ signNum(ovMid?.avg) }}%</b></template>
+                  / 小 <b :class="pctClass(ovSmall?.avg)">{{ signNum(ovSmall?.avg) }}%</b>
+                </span>
+                <span class="cursor-help" title="背离 = 市值加权涨幅 − 等权涨幅；正=权重强于个股（做个股偏逆风），负=个股强于权重">
+                  背离 <b class="font-mono text-gray-300">{{ signNum(ovStyle.spread) }}%</b></span>
+                <span v-if="ovStyle.from_snapshot" class="text-[10px] text-amber-400/80 cursor-help"
+                      title="行情缓存来自数据库收盘快照（盘后/周末不重新抓取）⇒ 不是此刻的实时风格">
+                  快照 {{ String(ovStyle.as_of || '').slice(0, 10) }}</span>
+              </div>
+              <div v-if="emotion" class="flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+                <span>{{ prevLimitLabel() }}涨停 <b class="font-mono text-gray-200">{{ emotion.prev_limit_count ?? '—' }}</b> 只</span>
+                <span>赚钱效应 <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b></span>
+                <span>连板 <b class="font-mono text-gray-200">{{ emotion.max_streak ?? '—' }}</b><template
+                  v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template></span>
+                <!-- 口径说明移到 ⓘ（原来常显一大段"按板幅判定（ST 5% / 主板 10% …），不再是 >=9.5% 一刀切"） -->
+                <span class="text-[10px] cursor-help opacity-70"
+                      :title="emotion.note || '涨跌停/连板按板幅判定：ST 5% / 主板 10% / 创业板·科创 20% / 北交所 30%（rt_k 精确优先）'">口径 ⓘ</span>
+              </div>
+            </div>
+
             <!-- B 左：主线 Top5 ｜ 右：持仓状态
                  ★ 2026-10-26（用户："两块之间加分割线 + 离上面涨跌远点"）：
                    ① `mt-4 pt-3`：与涨跌条的间距从 8px 拉到 28px（视觉分组更清楚）；
@@ -1556,44 +1587,22 @@
         <template v-else-if="selectedPhase === 'intraday' || selectedPhase === 'midday'">
           <!-- ★★ 2026-09-25（用户："同理，你调整一下盘中的布局" + "这个部分我想用一个长卡片展示"）：
                **① 看盘序 = 全宽长卡，不参与分栏** —— 它内部是 6 格横向指标 + 数行横向信息
-               （大小盘风格 / 尾盘承接 / 昨日涨停表现 / 竞价 Top5），天然"横着读"
+               （尾盘承接 / 竞价 Top5；大小盘风格与昨日涨停已移到「盘面速览」涨跌条下方），天然"横着读"
                ⇒ 挤进半列必然折行。②③④⑤ 才分栏（安排见下方注释）。 -->
         <!-- 看盘序 3/5 · 涨停梯队 2/5 -->
         <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-start">
           <!-- ★ 2026-10-26（用户：消除市场涨跌重复）：涨跌家数/涨停跌停/成交额/情绪已上移至「盘面速览」大卡；本卡只保留**风格 / 尾盘 / 昨日涨停 / 竞价**这些盘面速览没有的内容。 -->
           <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-1">盘中结构<span class="text-[10px] text-muted font-normal">（大小盘风格 / 尾盘承接 / 昨日涨停 / 竞价）</span></div>
-            <!-- ★★ 2026-09-25 用户需求 1（框架 C5「盘中 9:30-10:00 定方向：黄白线/权重护盘」）：
-                 看盘序"指数→家数→成交额"之后**必须回答的方向问题** ——
-                 今天涨的是**权重**（指数好看、个股不跟）还是**个股**（题材在扩散）？
-                 两者的操作完全相反：权重护盘时"看指数做个股"最容易亏（指数红、账户绿）；
-                 小盘活跃时个股信号才可信。数据同源 `/market/overview.style`（零新增请求）。
-                 ⚠️ 数据时刻：盘中为实时（≤2 分钟滞后）；**休市/盘后是收盘快照**，已在行内标明。 -->
-            <div v-if="ovStyle?.available" class="text-[11px] mt-1">
-              <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-muted">大小盘风格</span>
-                <span class="font-semibold cursor-help" :class="styleCls" :title="styleTitle">
-                  {{ ovStyle.label }}</span>
-                <span class="text-muted font-mono">
-                  大 <b :class="pctClass(ovBig?.avg)">{{ signNum(ovBig?.avg) }}%</b>
-                  <template v-if="ovMid">/ 中 <b :class="pctClass(ovMid?.avg)">{{ signNum(ovMid?.avg) }}%</b></template>
-                  / 小 <b :class="pctClass(ovSmall?.avg)">{{ signNum(ovSmall?.avg) }}%</b>
-                </span>
-                <!-- 背离用中性色：它是"加权−等权"的差值，正负不直接等于"涨/跌"，
-                     用红绿会被误读成行情涨跌（正=权重强于个股，对做个股其实偏负面） -->
-                <span class="text-muted">· 背离（加权−等权）
-                  <b class="font-mono text-gray-300">{{ signNum(ovStyle.spread) }}%</b></span>
-                <span v-if="ovStyle.from_snapshot" class="text-amber-400/80 text-[10px]"
-                      title="行情缓存来自数据库收盘快照（盘后/周末不重新抓取）">
-                  （{{ ovStyle.as_of }} 快照，非实时）</span>
-              </div>
-              <div class="text-muted mt-0.5">{{ ovStyle.note }}</div>
-            </div>
+            <div class="text-sm font-semibold mb-1">盘中结构<span class="text-[10px] text-muted font-normal">（尾盘承接 / 竞价）</span></div>
+            <div v-if="!tailReview?.available && !(emotion && emotion.auction && emotion.auction.count)"
+                 class="text-[11px] text-muted">—（尾盘承接需 14:30 基线；竞价看板 9:25 后有效）</div>
+            <!-- ★ 2026-10-26（用户）：大小盘风格与"昨日涨停/赚钱效应"已移到「盘面速览」的涨跌条下方，
+                 本卡只留尾盘承接与竞价看板（避免同一读数两处出现）。 -->
             <!-- ★★ 2026-09-25 需求 3（框架 C2「14:30 承接：回封/抢筹/跳水」）：
                  尾盘半小时的承接强度**决定是否持仓过夜** —— 走强=资金愿持股过夜；
                  走弱=有资金尾盘撤退（该减仓过夜）。对比 14:30 基线 vs 现在。
                  ⚠️ 基线需 14:30 时后端在线（由 intraday_alert_loop 落库）；无基线时整块不渲染。 -->
-            <div v-if="tailReview?.available" class="border-t border-border/40 mt-2 pt-2 text-[11px]">
+            <div v-if="tailReview?.available" class="text-[11px]">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-muted">尾盘承接</span>
                 <span class="font-semibold cursor-help" :class="tailCls" :title="tailTitle">
@@ -1610,14 +1619,8 @@
               </div>
               <div class="text-muted mt-0.5">{{ tailReview.advice }}</div>
             </div>
-            <div v-if="emotion" class="text-[11px] text-muted mt-2 border-t border-border/40 pt-2">
-              {{ prevLimitLabel() }}涨停 {{ emotion.prev_limit_count ?? '—' }} 只 · {{ priceDayLabel() }}平均表现
-              <b :class="pctClass(emotion.prev_limit_today_pct)">{{ fmtPct(emotion.prev_limit_today_pct) }}</b>（赚钱效应）
-              <!-- ★ 2026-09-25：无行情时后端返回 None ⇒ 显示「—」（原为 0，会被读成"没有连板"） -->
-              · 连板高度 <b class="text-gray-200 font-mono">{{ emotion.max_streak ?? '—' }}</b>
-              <template v-if="emotion.leader">（{{ emotion.leader_name || emotion.leader }}）</template>
-              <span class="text-[10px]">· {{ emotion.note }}</span>
-            </div>
+            <!-- ★ 2026-10-26：昨日涨停 / 赚钱效应 / 连板高度已移到「盘面速览」涨跌条下方
+                 （口径说明收进 ⓘ 悬停，不再在这一行常显长句）。 -->
             <!-- ★ P1 竞价看板：昨日涨停股今日高开（9:25 竞价定稿后有效；休市日显示最近交易日） -->
             <div v-if="emotion && emotion.auction && emotion.auction.count"
                  class="border-t border-border/40 mt-2 pt-2 text-xs">
