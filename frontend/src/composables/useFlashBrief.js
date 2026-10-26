@@ -108,6 +108,24 @@ async function loadRun(runId) {
   }
 }
 
+/**
+ * 板块投影（★ 2026-10-26 第②步）：`sector_hits` → `{行业: {n, ben, bear, hits[]}}`。
+ * 后端用 industry_map 的行业名做确定性匹配（零外部请求），前端只负责"挂到板块行上"。
+ */
+const byIndustry = computed(() => {
+  const out = {}
+  for (const h of (data.value && data.value.sector_hits) || []) {
+    const k = h.industry
+    if (!k) continue
+    if (!out[k]) out[k] = { n: 0, ben: 0, bear: 0, hits: [] }
+    out[k].n += 1
+    out[k].hits.push(h)
+    if (h.direction === '利好') out[k].ben += 1
+    else if (h.direction === '利空') out[k].bear += 1
+  }
+  return out
+})
+
 export function useFlashBrief() {
-  return { data, err, loading, state, byCode, load, loadRun, apply, start, stop }
+  return { data, err, loading, state, byCode, byIndustry, load, loadRun, apply, start, stop }
 }

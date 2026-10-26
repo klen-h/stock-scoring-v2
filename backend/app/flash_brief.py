@@ -485,6 +485,76 @@ def _parse_json(txt: str) -> Optional[Dict]:
         return None
 
 
+# ── 板块联动（2026-10-26，第②步：消息面投影到「主线板块 Top5」的行上）────────
+#   与 `_holdings_impact` 同一套确定性规则（news 文本 × 行业名），不调 LLM、不查外部：
+#     · 行业名集合 = `industry_map` 的 value（~50 个，模块级 60s 缓存）⇒ 不会每次查库；
+#     · 只匹配「利好/利空」：中性消息不制造"这个板块有消息"的错觉；
+#     · 纯派生数据（不落库），50 行业 × 5 条 = 250 次子串判断，成本可忽略。
+_SECTOR_ALIAS = {
+    "房地产": ["地产"],
+    "非银金融": ["券商", "保险"],
+    "电子": ["半导体", "芯片", "消费电子"],
+    "计算机": ["软件", "信创", "数字经济"],
+    "电力设备": ["光伏", "储能", "新能源"],
+    "食品饮料": ["白酒", "食品"],
+    "医药生物": ["创新药", "医药", "医疗器械"],
+    "国防军工": ["军工", "国防"],
+    "传媒": ["游戏", "影视"],
+    "有色金属": ["黄金", "铜价", "锂矿"],
+    "石油石化": ["原油", "石油"],
+    "煤炭": ["动力煤", "焦煤"],
+    "通信": ["5G", "光模块", "算力"],
+    "汽车": ["整车", "汽车零部件"],
+}
+
+
+def _industry_names() -> List[str]:
+    try:
+        from app.industry_map import get_industry_map
+        vals = {str(v).strip() for v in (get_industry_map() or {}).values()}
+        return [v for v in vals if len(v) >= 2 and v != "其他"]
+    except Exception:
+        return []
+
+
+def _sector_hits(llm_news: list) -> list:
+    """news × 行业 → 板块命中列表（供前端在主线板块行显示「消息N」徽标）。
+
+    返回 `[{industry, idx, direction, match, gist, cause}]`，按 (行业, 快讯序号) 去重。
+    """
+    inds = _industry_names()
+    if not inds:
+        return []
+    out, seen = [], set()
+    for n in (llm_news or []):
+        d = str(n.get("direction") or "")
+        if d not in ("利好", "利空"):
+            continue
+        hay = " ".join(str(n.get(k) or "") for k in ("gist", "cause", "scope"))
+        if not hay.strip():
+            continue
+        for ind in inds:
+            kws = [ind] + _SECTOR_ALIAS.get(ind, [])
+            hit_kw = next((k for k in kws if k and k in hay), None)
+            if not hit_kw:
+                continue
+            key = (ind, n.get("idx"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "industry": ind,
+                "idx": n.get("idx"),
+                "direction": d,
+                "match": ("行业命中" if hit_kw == ind else f"行业命中({hit_kw})"),
+                "gist": str(n.get("gist") or "")[:60],
+                "cause": str(n.get("cause") or "")[:60],
+            })
+            if len(out) >= 30:
+                return out
+    return out
+
+
 def _save_run(day: str, llm: Dict, trigger: str, source: str,
               ts: Optional[str] = None) -> Optional[str]:
     """把**本次解读**追加到历史表（不覆盖），并裁掉每天超量的旧记录。
@@ -612,6 +682,7 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
                         "latest_run_id": (_runs[0]["run_id"] if _runs else ""),
                         "conclusion": llm.get("conclusion") or "",
                         "holdings_impact": _holdings_impact(llm.get("news") or []),
+                        "sector_hits": _sector_hits(llm.get("news") or []),
                         "source": "cache"}
 
     # ── LLM：一次批量（重要条全进同一个 prompt）──
@@ -654,6 +725,7 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
             "runs": _runs, "latest_run_id": _rid or (_runs[0]["run_id"] if _runs else ""),
             "conclusion": llm.get("conclusion") or "",
             "holdings_impact": _holdings_impact(llm.get("news") or []),
+            "sector_hits": _sector_hits(llm.get("news") or []),
             "error": err, "source": _src}
 
 
@@ -799,7 +871,8 @@ def load(day: Optional[str] = None) -> Dict:
             "runs": _runs, "latest_run_id": (_runs[0]["run_id"] if _runs else ""),
             "created_at": row.get("created_at"),
             "notified_at": row.get("notified_at"),
-            "holdings_impact": _holdings_impact((llm or {}).get("news") or [])}
+            "holdings_impact": _holdings_impact((llm or {}).get("news") or []),
+            "sector_hits": _sector_hits((llm or {}).get("news") or [])}
 
 
 # ── ⑥ 盘中自动触发（系统级）──────────────────────────────────────────────

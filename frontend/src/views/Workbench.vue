@@ -608,13 +608,30 @@
                 <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
                 <div v-else class="space-y-0.5 text-xs">
                   <div v-for="(s, i) in sectorTop.slice(0, 5)" :key="i"
-                       class="flex items-center gap-2 border-b border-border/30 py-0.5">
-                    <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
-                    <span class="font-semibold truncate">{{ s.name || s.industry || s.code || '—' }}</span>
-                    <span v-if="s.up_count != null" class="text-[10px] text-muted shrink-0">
-                      涨{{ s.up_count }}/跌{{ s.down_count }}</span>
-                    <span class="ml-auto font-mono shrink-0" :class="pctClass(s.change_pct ?? s.pct_change)">
-                      {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
+                       class="border-b border-border/30 py-0.5">
+                    <div class="flex items-center gap-2">
+                      <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
+                      <span class="font-semibold truncate">{{ s.name || s.industry || s.code || '—' }}</span>
+                      <span v-if="s.up_count != null" class="text-[10px] text-muted shrink-0">
+                        涨{{ s.up_count }}/跌{{ s.down_count }}</span>
+                      <!-- ★ 2026-10-26（第②步）：该板块命中的快讯 —— 与持仓行的「消息N」同一套投影逻辑 -->
+                      <button v-if="sectorMsg(s.name)" type="button"
+                              class="px-1 rounded border text-[10px] shrink-0 cursor-help"
+                              :class="sectorMsgCls(sectorMsg(s.name))"
+                              :title="`命中 ${sectorMsg(s.name).n} 条快讯 · 观察参考，非交易建议`"
+                              @click.stop="toggleSectorMsg(s.name)">消息{{ sectorMsg(s.name).n }}</button>
+                      <span class="ml-auto font-mono shrink-0" :class="pctClass(s.change_pct ?? s.pct_change)">
+                        {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
+                    </div>
+                    <div v-if="sectorMsg(s.name) && sectorMsgOpen[s.name]" class="pl-5 mt-0.5 space-y-0.5">
+                      <div v-for="(hit, j) in sectorMsg(s.name).hits" :key="j"
+                           class="text-[10px] text-muted leading-relaxed">
+                        <span class="font-mono">[{{ hit.idx }}]</span>
+                        <span class="ml-0.5" :class="hitCls(hit.direction)">{{ hit.direction }}</span>
+                        <span class="ml-0.5">（{{ hit.match }}）</span>
+                        <span class="ml-0.5">{{ hit.cause || hit.gist }}</span>
+                      </div>
+                    </div>
                   </div>
                   <!-- 领涨股：Top5 里每个有 leader 的板块各一行（紧凑 10px 行，不额外占卡片高度） -->
                   <div v-for="s in sectorTop.slice(0, 5).filter(x => x.leader)" :key="'ld' + (s.code || s.name)"
@@ -3002,6 +3019,29 @@ const radarAsOf = ref('')
 //     · 行内只放「方向 + 条数」徽标，点开才展开命中原文（避免 60s 刷新时一片文字跳）
 const fb = useFlashBrief()
 const fbByCode = fb.byCode
+// ★ 2026-10-26（第②步）：消息面也投影到**主线板块行** —— 板块为什么涨/跌，一行能看到原因。
+//   匹配用后端给的行业名（industry_map × 快讯文本），前端只在名称不完全一致时做包含匹配。
+const fbByIndustry = fb.byIndustry
+const sectorMsgOpen = ref({})
+function toggleSectorMsg(name) {
+  if (!name) return
+  sectorMsgOpen.value = { ...sectorMsgOpen.value, [name]: !sectorMsgOpen.value[name] }
+}
+function sectorMsg(name) {
+  if (!name) return null
+  const m = fbByIndustry.value || {}
+  if (m[name]) return m[name]
+  for (const k of Object.keys(m)) {
+    if (k && (k.includes(name) || name.includes(k))) return m[k]
+  }
+  return null
+}
+// 方向以"多数票"着色：利好多于利空=红（与全站红涨一致），否则绿
+function sectorMsgCls(m) {
+  return (m && m.ben >= m.bear)
+    ? 'bg-red-500/15 text-red-300 border-red-500/30'
+    : 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+}
 const holdingMsgOpen = ref({})
 function toggleHoldingMsg(code) {
   holdingMsgOpen.value = { ...holdingMsgOpen.value, [code]: !holdingMsgOpen.value[code] }
