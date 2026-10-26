@@ -2172,6 +2172,41 @@ def amount_realtime(refresh: int = 0):
         return {"available": False, "reason": "计算失败"}
 
 
+@router.get("/intraday-lite")
+def intraday_lite(refresh: int = 0):
+    """盘中轻量两块合一：**实时涨停/炸板** + **两市成交额环比**（2026-10-26，G2）。
+
+    为什么合并（而不是两个接口各轮询一次）：
+      · 同门控（前端只在 `isLivePhase()` 里发）、同节奏（60s）、同数据性质（都只读进程缓存）；
+      · 合并后浏览器每次 tick 少一次 HTTP 往返，**服务端外部请求数量不变**
+        （仍分别命中 `realtime_uplimit` 与 `market_amount` 各自的缓存）；
+      · ⚠️ 这不是 L3 上游合并 —— 两者数据源不同（rt_k 全市场 vs 腾讯分时），不能互相替代。
+
+    ★ 失败语义：**按块降级**。单块异常只把该块的 `available` 置 False，
+      另一块照常返回；绝不因一块失败把整包变成 500/空对象
+      （前端两块各自保留上一次值，见 `Workbench.loadIntradayLite`）。
+
+    `refresh=1` 强制两块都绕过缓存刷新（手动按钮用）。
+    """
+    def _uplimit():
+        try:
+            from app import realtime_uplimit
+            return realtime_uplimit.snapshot(force=bool(refresh))
+        except Exception as e:
+            print(f"[market] intraday-lite uplimit failed: {e}")   # ASCII（铁律⑥）
+            return {"available": False, "reason": "计算失败"}
+
+    def _amount():
+        try:
+            from app import market_amount
+            return market_amount.estimate(force=bool(refresh))
+        except Exception as e:
+            print(f"[market] intraday-lite amount failed: {e}")    # ASCII（铁律⑥）
+            return {"available": False, "reason": "计算失败"}
+
+    return {"ok": True, "uplimit": _uplimit(), "amount": _amount()}
+
+
 def _shift_days(day: str, delta: int) -> str:
     """日期加减（自然日，仅用于"上市满 N 个交易日"的宽松近似）。"""
     try:

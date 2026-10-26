@@ -2777,7 +2777,10 @@ import {
   refreshPolicyEtfShares,
   // ★ 2026-09-30（用户："观察池需要展示个股的涨跌幅"）：**复用项目既有批量报价接口**
   //   （榜单页观察池 2026-09-22 起就在用 `getBatchPrices` 做同一件事）。
-  getBatchPrices,
+  // ★ 2026-10-26（P1 修复 + G2 合并）：
+  //   · getBatchPricesCached —— 观察池报价改读后端内存缓存（原来走 getBatchPrices 每 120s 直连腾讯）
+  //   · getIntradayLite      —— 涨停/炸板 + 成交额环比合成一次请求（原来两条 60s 轮询）
+  getBatchPrices, getBatchPricesCached, getIntradayLite,
   // ★ 2026-09-30：**系统自洽性审查（LLM）** —— 与 `getPushLog` **同源**（都基于今日提示集合），
   //   接口早就在（`ScoreRank.vue` 一直在用），本轮接进工作台右栏**同一张**时间线卡内。
   getRadarAnalysis,
@@ -4277,10 +4280,15 @@ async function loadGwPrices() {
   const codes = (gwItems.value || []).map(g => g.code).filter(Boolean)
   if (!codes.length) return
   try {
-    const { data } = await getBatchPrices(codes)
+    // ★ 2026-10-26（P1 修复）：原来用 `getBatchPrices` ⇒ **每次直连腾讯**（120s 组里每 2 分钟
+    //   一次外部请求，多标签页翻倍），与「观察池报价走内存缓存」的登记口径不符。
+    //   改 `cached=1`：只读调度器维护的全市场缓存，**上游请求 = 0**；返回是对象（老的数组结构
+    //   做兜底，防后端未热更时白屏）。
+    const { data } = await getBatchPricesCached(codes)
+    const rows = Array.isArray(data) ? data : ((data && data.rows) || [])
     const m = {}
-    for (const s of data || []) {
-      if (s && s.code) m[s.code] = { price: s.price, change_pct: s.change_pct }
+    for (const s of rows) {
+      if (s && s.code && Number(s.price) > 0) m[s.code] = { price: s.price, change_pct: s.change_pct }
     }
     if (Object.keys(m).length) gwPrices.value = m
   } catch (e) {
@@ -4605,6 +4613,25 @@ async function loadAmountRt() {
     amountRt.value = data?.available ? data : null
   } catch { amountRt.value = null }
 }
+// ★ 2026-10-26（G2 轮询合并）：盘中两块（实时涨停/炸板 + 两市成交额环比）**一次请求拿回**。
+//   【为什么能合】同门控（仅 `isLivePhase()`）、同 60s 节奏、都只读后端进程缓存
+//     ⇒ 服务端外部请求**一次都不多**，只是把浏览器两次往返压成一次。
+//   【失败语义】按块降级：哪块 `available=false` 就把哪块置空（与各自旧实现一致），
+//     网络整体失败时**两块都保留上一次值**（不清空、不互相拖累）。
+//   ⚠️ 首次加载仍走 `loadRealtimeUplimit()` / `loadAmountRt()`（阶段加载路径不变，互不影响）。
+async function loadIntradayLite() {
+  try {
+    const { data } = await getIntradayLite()
+    if (data && data.uplimit) {
+      realtimeUplimit.value = data.uplimit.available ? data.uplimit : null
+    }
+    if (data && data.amount) {
+      amountRt.value = data.amount.available ? data.amount : null
+    }
+  } catch (e) {
+    console.warn('[workbench] 盘中轻量加载失败（保留上次）', e?.message || e)
+  }
+}
 // 主线板块 Top5（★ A1 看盘序第 4-5 层：板块 → **板块内强势股**）
 //   ★ 2026-09-25 改动：**主用实时行业板块列表**（`/sector/industry`），快照仅作回退。
 //   为什么必须改（两个真问题）：
@@ -4830,9 +4857,11 @@ function startPolling() {
   //     接口只读小表前 15 行（~3KB/次），页面开一整天也不构成 egress 负担。
   // ★ 2026-09-29（P1）：盘中实时涨停/炸板 60s 轮询（与后端 rt_k 预热 120s 错频，
   //   一半会命中同一份后端缓存，无额外外部请求）——⚠️ 仅交易时段真发请求。
-  timers.push(setInterval(() => { if (isLivePhase()) loadRealtimeUplimit() }, 60000))
-  // ★ 2026-09-29：成交额环比 60s 轮询（后端 60s 缓存 + 腾讯分时轻量）——同样只在交易时段发。
-  timers.push(setInterval(() => { if (isLivePhase()) loadAmountRt() }, 60000))
+  // ★★ 2026-10-26（G2 + G3）：**两条 60s 轮询合并为一条** —— 涨停/炸板 + 成交额环比
+  //   同门控同节奏，原先各占一个 ticker、各打一个接口（每分钟 2 次往返）；
+  //   现在一个 ticker 打 `/market/intraday-lite`（1 次往返），服务端外部请求不变。
+  //   失败按块降级（见 `loadIntradayLite`），保留旧值。
+  timers.push(setInterval(() => { if (isLivePhase()) loadIntradayLite() }, 60000))
   // ★ 2026-10-22：盘中变化检测器 5 分钟刷一次（采样本身 30 分钟一档；
   //   5 分钟足够让新档出现后不久可见，且只读 2 个小查询，不构成 egress 负担）。
   timers.push(setInterval(() => { if (isLivePhase()) loadWorkbenchScan() }, 300000))

@@ -471,6 +471,11 @@ export const getCalendarAhead = (days = 3) => http.get('/flash/calendar-ahead', 
 // ★ 2026-09-29：两市成交额环比（U 型曲线法）。⚠️ `reliable=false`（14:00 前）时
 //   前端只显示累计，**不得**给缩量/放量结论（早盘预估中位误差 16%）。
 export const getAmountRealtime = () => http.get('/market/amount-realtime', { timeout: 20000 })
+// ★ 2026-10-26（G2 轮询合并）：盘中「涨停/炸板 + 两市成交额环比」一次取回。
+//   两者同门控（仅交易时段）、同 60s 节奏、都只读后端进程缓存 ⇒ 合并后**外部请求不变**，
+//   浏览器每次 tick 少一次往返。返回 `{ok, uplimit:{available,…}|null, amount:{available,…}|null}`，
+//   **按块降级**：单块异常只有该块 available=false，另一块照常（前端各留旧值）。
+export const getIntradayLite = () => http.get('/market/intraday-lite', { timeout: 20000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！
