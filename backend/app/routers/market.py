@@ -336,9 +336,28 @@ def market_overview(background_tasks: BackgroundTasks):
             return v if isinstance(v, (int, float)) else None
 
         total = len(stocks)
-        # 生成器表达式 + sum()：统计涨/跌/平的家数（change_pct 缺失的个股不参与涨跌判定）
-        up = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) > 0)     # 上涨家数
-        down = sum(1 for s in stocks.values() if (_num(s.get("change_pct")) or 0) < 0)   # 下跌家数
+        # ★★ 2026-10-27（P0-2）：**一趟遍历**算完全部宽度指标。
+        #   旧实现对同一份全池跑了 4 遍（up / down / changes / total_amount 求和），
+        #   60s 轮询 ⇒ 每天约 4000 次多余的全池循环（3000+ 只 × 4）。合并后只有 1 遍。
+        #   口径逐项对齐旧实现：
+        #     · change_pct 缺失 ⇒ 不参与涨/跌/均值/中位数（仍归入 flat，与旧 `total-up-down` 一致）
+        #     · change_pct == 0 ⇒ 计入 changes（旧实现同样保留，故 avg/median 含平盘）
+        #     · amount 缺失 ⇒ 按 0 累计（仅 fallback 用）
+        up = 0
+        down = 0
+        changes = []
+        chg_sum = 0.0
+        pool_amount = 0.0
+        for s in stocks.values():
+            chg = _num(s.get("change_pct"))
+            if chg is not None:
+                changes.append(chg)
+                chg_sum += chg
+                if chg > 0:
+                    up += 1
+                elif chg < 0:
+                    down += 1
+            pool_amount += _num(s.get("amount")) or 0
         flat = total - up - down                                        # 平盘家数（含缺失）
         # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
         #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
@@ -346,9 +365,29 @@ def market_overview(background_tasks: BackgroundTasks):
         # ★★ 2026-09-30（#3 轻量切换）：**优先 rt_k 精确口径**（全市场含北交所/ST、
         #   用 `high_limit` 精确判定），失败自动回退上面的内存近似 —— 见 `_limit_counts_best`。
         limit_up, limit_down, limit_src, limit_meta = _limit_counts_best(stocks)
-        # 所有股票的涨跌幅列表，用于算平均/中位数（缺失值剔除，不冒充 0）
-        changes = [_c for _c in (_num(s.get("change_pct")) for s in stocks.values())
-                   if _c is not None]
+
+        # ★★ 2026-10-27（P0-1）：成交额改「**只读**两市指数分时缓存」，不再池内求和。
+        #   【为什么】池子是 3236 只（`EXCLUDE_ST=True` + 不含北交所）⇒ 成交额**实测缺约 40%**
+        #     （见 tencent.py:33-36）；而 `market_amount` 用 sh000001+sz399001 分时给的是
+        #     **真实两市累计**，且 60s TTL 与 overview 轮询同频 ⇒ 正常路径零额外请求。
+        #   【纪律】只允许 `peek()`（读缓存），**绝不在此发起抓取** —— `estimate()` 冷缓存会
+        #     同步抓 2 个指数（各 timeout=10s），首页接口最坏被拖 20s；与
+        #     `_limit_counts_best` 的 peek 纪律同源。
+        #   【fail-open】缓存未就绪/不可用 ⇒ 回退池内求和（与旧行为完全一致），绝不返回 0。
+        #   【单位】`cum_yi` 是「亿」，这里 ×1e8 还原为「元」——前端按元 /1e8 显示，**契约不变**。
+        total_amount = None
+        amount_src = "pool_sum"
+        try:
+            from app import market_amount
+            _amt = market_amount.peek()
+            if _amt and _amt.get("available") and _amt.get("cum_yi") is not None:
+                total_amount = round(float(_amt["cum_yi"]) * 1e8, 2)
+                amount_src = "index_minute"
+        except Exception as e:
+            print(f"[market] overview amount peek failed: {e}")       # ASCII（铁律⑥）
+        if total_amount is None:
+            total_amount = round(pool_amount, 2)
+
         result["stats"] = {
             "total": total,
             "up_count": up,
@@ -364,10 +403,14 @@ def market_overview(background_tasks: BackgroundTasks):
             "limit_src": limit_src,
             "limit_data_date": limit_meta.get("data_date"),
             "limit_age_sec": limit_meta.get("age_sec"),
-            "avg_change_pct": round(sum(changes) / len(changes), 2) if changes else 0,         # 平均涨跌幅
+            "avg_change_pct": round(chg_sum / len(changes), 2) if changes else 0,         # 平均涨跌幅
             "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
-            "total_amount": round(sum(_num(s.get("amount")) or 0
-                                      for s in stocks.values()), 2),   # 总成交额（缺失按 0 计）
+            # 总成交额（元；前端 /1e8 显示为亿）
+            "total_amount": total_amount,
+            # ★ 2026-10-27：口径披露（不参与渲染，排查用）——
+            #   "index_minute" = 沪深指数分时（真实两市额，推荐）；
+            #   "pool_sum" = 内存池求和（分时缓存不可用时的 fallback，⚠️ 缺约 40%）。
+            "total_amount_src": amount_src,
         }
         # ★ 2026-09-25（用户需求 1）：大小盘风格 / 黄白线背离 —— 复用**同一份**内存缓存
         #   （零新增请求、零新增数据源）。看盘序"9:30-10:00 定方向"缺的那一层。

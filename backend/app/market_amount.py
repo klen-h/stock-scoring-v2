@@ -148,6 +148,26 @@ def _verdict(ratio_pct: Optional[float]) -> Optional[str]:
     return "温和"
 
 
+def peek(max_age: Optional[float] = None) -> Optional[Dict]:
+    """**只读**当前缓存（不抓取、不阻塞）——供首页等主路径复用。
+
+    ★ 2026-10-27：`routers/market.market_overview` 的成交额改读本函数。
+      【为什么不能直接调 `estimate()`】它缓存冷时会**同步抓 2 个指数分时**
+      （每个 timeout=10s）⇒ 首页接口最坏被拖 20s。首页主路径只允许读缓存，
+      这与 `limit_stats.peek` / `realtime_uplimit.peek` 是同一条纪律。
+    【fail-open】没有缓存 / 缓存不可用 ⇒ 返回 None，调用方回退自己的兜底口径。
+
+    `max_age`（秒）：可选，给了就只在缓存足够新时返回（默认不限，由数据自带的
+    `data_date` / `as_of` 字段披露时刻，调用方自行判断是否可展示）。
+    """
+    val = _cache.get("val")
+    if not val:
+        return None
+    if max_age is not None and (time.time() - float(_cache.get("ts") or 0)) > max_age:
+        return None
+    return val
+
+
 def estimate(force: bool = False) -> Dict:
     """实时：当前累计 / 预估全天 / 环比昨日 / 定性。fail-open（失败返回 available=False）。"""
     now = time.time()
