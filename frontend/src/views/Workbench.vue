@@ -536,6 +536,170 @@
             </span>
           </div>
         </div>
+        <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
+             置于观察器下方；消除市场涨跌在多处重复）：
+             · 涨跌家数/涨停跌停/成交额/情绪 —— 全站**只此一处**（原盘中看盘序、盘后结算卡各有一份）；
+             · 主线 Top5（含领涨股+代码）与行业成交占比收进左下（占比默认折叠，避免抢注意力）；
+             · 持仓状态收进右下（组合风控一行摘要 + 逐只精简行，滚动区内滚，不撑高整卡）；
+             · 快讯解读原来独占右栏一张卡 ⇒ 现在并入本卡底部（右栏少了 1 张卡）。
+             ⚠️ 数据时刻一律用**数据自身时刻**（ovStyle.data_date / radarQuote），不用请求时刻顶替。 -->
+        <div id="wb-pulse" class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+            <div class="text-sm font-semibold">盘面速览
+              <span class="text-[10px] text-muted font-normal">涨跌 · 主线 · 持仓 · 快讯</span>
+            </div>
+            <span class="text-[10px] font-mono cursor-help"
+                  :class="ovStyle?.from_snapshot ? 'text-amber-400' : 'text-muted'"
+                  :title="ovStyle?.from_snapshot
+                    ? `行情缓存来自收盘快照 ⇒ 数据是 ${ovStyle?.data_date || '上一交易日'} 收盘，不是今天的`
+                    : `行情时刻 ${ovStyle?.as_of || '—'}（后端内存缓存，盘中每 2~3 分钟刷新）`">
+              {{ ovStyle?.from_snapshot ? '收盘快照' : '盘中实时' }}<template
+                v-if="ovStyle?.data_date"> · {{ ovStyle.data_date }}</template><template
+                v-else-if="ovStyle?.as_of"> · {{ ovStyle.as_of }}</template>
+            </span>
+          </div>
+
+          <!-- A 市场涨跌（全站唯一一处） -->
+          <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-2 border-t border-border/40">
+            <div><div class="text-[10px] text-muted">上涨</div>
+              <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
+            <div><div class="text-[10px] text-muted">下跌</div>
+              <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
+            <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
+              <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
+            <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
+              <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
+            <div><div class="text-[10px] text-muted">两市成交额</div>
+              <div class="text-base font-bold font-mono text-gray-200">
+                {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
+                   : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
+              <div v-if="amountRt?.available && amountRt.show_ratio" class="text-[10px] leading-tight">
+                <b :class="amountRt.verdict === '放量' ? 'text-red-400'
+                         : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
+                {{ signNum(amountRt.ratio_pct) }}%
+              </div>
+            </div>
+            <div><div class="text-[10px] text-muted">情绪判读</div>
+              <div class="text-base font-bold"
+                   :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
+                {{ emotion?.verdict || '—' }}</div></div>
+          </div>
+
+          <!-- B 左：主线 Top5 ｜ 右：持仓状态 -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-2 border-t border-border/40 pt-2">
+            <div class="min-w-0">
+              <div class="flex items-center justify-between mb-1">
+                <div class="text-xs font-semibold">主线板块 Top5
+                  <span class="text-[10px] text-muted font-normal">
+                    {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
+                       : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
+                       : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
+                <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
+              </div>
+              <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
+              <div v-else class="space-y-0.5 text-xs">
+                <div v-for="(s, i) in sectorTop.slice(0, 5)" :key="i"
+                     class="flex items-center gap-2 border-b border-border/30 py-0.5">
+                  <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
+                  <span class="font-semibold truncate">{{ s.name || s.industry || s.code || '—' }}</span>
+                  <span v-if="s.up_count != null" class="text-[10px] text-muted shrink-0">
+                    涨{{ s.up_count }}/跌{{ s.down_count }}</span>
+                  <span class="ml-auto font-mono shrink-0" :class="pctClass(s.change_pct ?? s.pct_change)">
+                    {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
+                </div>
+                <!-- 领涨股：Top5 里每个有 leader 的板块各一行（紧凑 10px 行，不额外占卡片高度） -->
+                <div v-for="s in sectorTop.slice(0, 5).filter(x => x.leader)" :key="'ld' + (s.code || s.name)"
+                     class="flex items-center gap-1.5 pl-5 text-[10px] text-muted">
+                  <span>{{ s.name || s.industry }} 领涨</span>
+                  <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
+                     class="hover:text-accent">{{ s.leader }}</a>
+                  <span v-else>{{ s.leader }}</span>
+                  <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
+                     class="font-mono hover:text-accent">{{ s.leader_code }}</a>
+                  <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
+                </div>
+              </div>
+              <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
+              <details v-if="amountShare?.available" class="mt-1">
+                <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
+                  行业成交额占比（Top5 占 {{ amountShare.top5_share_pct }}% · 数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? ' 快照' : '' }}）
+                </summary>
+                <div class="space-y-0.5 text-[11px] mt-1">
+                  <div v-for="(r, i) in amountShare.rows" :key="r.industry"
+                       class="flex items-center gap-2 py-0.5">
+                    <span class="w-3.5 text-muted font-mono">{{ i + 1 }}</span>
+                    <span class="font-semibold w-20 truncate" :title="r.industry">{{ r.industry }}</span>
+                    <span class="flex-1 h-1.5 rounded bg-border/40 overflow-hidden min-w-[30px]">
+                      <span class="block h-full bg-accent/70" :style="{ width: barWShare(r.share_pct) }"></span></span>
+                    <span class="font-mono text-gray-300 w-12 text-right">{{ r.share_pct }}%</span>
+                    <span class="font-mono w-12 text-right" :class="pctClass(r.avg_change_pct)">{{ signNum(r.avg_change_pct) }}%</span>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="min-w-0">
+              <div class="flex items-center justify-between mb-1">
+                <div class="text-xs font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
+                  风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+                <span v-if="radarQuote" class="text-[10px] font-mono shrink-0"
+                      :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
+                      :title="radarQuoteTitle">行情 {{ radarQuote.text }}</span>
+                <span v-else-if="radarAsOf" class="text-[10px] text-muted font-mono shrink-0">
+                  计算于 {{ radarAsOf.slice(11, 16) }}</span>
+              </div>
+              <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
+              <div v-else-if="!radarItems.length" class="text-muted text-xs">—（当前无持仓记录）</div>
+              <template v-else>
+                <div v-if="radarRisk?.available" class="text-[10px] text-muted mb-1 truncate"
+                     :title="[(radarRisk.style ? '风格 ' + radarRisk.style.band : ''),
+                              (radarRisk.concentration || []).length ? '板块集中 ' + (radarRisk.concentration || []).map(c => c.industry).join('/') : '',
+                              (radarRisk.overseas || []).length ? '海外敏感 ' + (radarRisk.overseas || []).map(o => o.chain).join('/') : ''
+                             ].filter(Boolean).join(' · ')">
+                  组合风控：{{ radarRisk.style?.band || '—' }}<template
+                    v-if="(radarRisk.concentration || []).length"> · 集中 {{ (radarRisk.concentration || []).length }} 项</template><template
+                    v-if="(radarRisk.overseas || []).length"> · 海外 {{ (radarRisk.overseas || []).length }} 项</template>
+                </div>
+                <div class="space-y-1 max-h-[190px] overflow-y-auto pr-1">
+                  <div v-for="it in radarItems" :key="it.code"
+                       class="border border-border/50 rounded px-2 py-1">
+                    <div class="flex items-center gap-1.5 flex-wrap text-xs">
+                      <a :href="stockHref(it.code)" target="_blank"
+                         class="font-semibold hover:text-accent truncate">{{ it.name || it.code }}</a>
+                      <a :href="xqUrl(it.code)" target="_blank"
+                         class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
+                      <span v-if="it.industry" class="text-[10px] text-muted truncate">{{ it.industry }}</span>
+                      <span class="ml-auto font-bold font-mono" :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 flex-wrap text-[10px] text-muted mt-0.5">
+                      <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
+                      <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
+                      <span v-if="it.phase" class="px-1 rounded"
+                            :class="(MF_PHASE_STYLE[it.phase] || {}).cls || 'bg-white/5'">{{ it.phase_cn || it.phase }}</span>
+                      <span v-if="it.score != null">评分 <b class="text-gray-200 font-mono">{{ it.score }}</b></span>
+                      <span v-if="it.ready_label">闸门 {{ it.ready_label }}</span>
+                      <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                    </div>
+                    <div v-for="(a, j) in (it.alerts || []).slice(0, 2)" :key="j" class="text-[10px] mt-0.5"
+                         :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
+                      {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <!-- C 快讯解读（原右栏独占一张卡 ⇒ 并入本卡，右栏少一张） -->
+          <div class="border-t border-border/40 mt-2 pt-2">
+            <div class="text-xs font-semibold mb-1">快讯解读
+              <span class="text-[10px] text-muted font-normal">事件驱动 · 非信号</span>
+            </div>
+            <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
+          </div>
+        </div>
+
+
         </div>
 
         </div>
@@ -1348,58 +1512,16 @@
                ⇒ 挤进半列必然折行。②③④⑤ 才分栏（安排见下方注释）。 -->
         <!-- 看盘序 3/5 · 涨停梯队 2/5 -->
         <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-start">
-        <!-- ★ A1 盘中看盘序（框架：指数→涨跌家数/涨跌停→成交额→情绪） -->
+          <!-- ★ 2026-10-26（用户：消除市场涨跌重复）：涨跌家数/涨停跌停/成交额/情绪已上移至「盘面速览」大卡；本卡只保留**风格 / 尾盘 / 昨日涨停 / 竞价**这些盘面速览没有的内容。 -->
           <div class="bg-card border border-border rounded-lg p-4">
-            <div v-if="emotion && emotion.trading_day === false"
-                 class="text-[11px] text-amber-400 mb-2">⚠ 今日休市——以下为最近交易日快照数据，非实时</div>
-            <!-- ★ 2026-09-25 用户："这里可以加个上下边距" ⇒ 6 格指标区加 `py-3`（与下方
-                 风格/尾盘/昨日涨停各行的呼吸感一致；它们各自带 border-t + mt-2 pt-2）。 -->
-            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-3">
-              <div><div class="text-[10px] text-muted">上涨</div>
-                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">下跌</div>
-                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
-                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
-                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">两市成交额
-                  <span v-if="amountRt?.show_ratio" class="cursor-help"
-                        :title="amountRt.note">ⓘ</span></div>
-                <div class="text-base font-bold font-mono text-gray-200">
-                  {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
-                     : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
-                <!-- ★ 2026-09-29：环比/定性只在**可靠**时给（盘中 14:00 后或已收盘定稿）；
-                     14:00 前只显示累计 —— 早盘曲线预估中位误差 16%（见 market_amount.py）。 -->
-                <div v-if="amountRt?.available" class="text-[10px] leading-tight">
-                  <template v-if="amountRt.show_ratio">
-                    <b :class="amountRt.verdict === '放量' ? 'text-red-400'
-                             : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
-                    {{ signNum(amountRt.ratio_pct) }}%
-                    <span v-if="amountRt.is_intraday" class="text-muted">· 预估{{ fmtYi(amountRt.full_day_est_yi) }}</span>
-                    <span v-else class="text-muted">· vs 昨日</span>
-                  </template>
-                  <template v-else-if="amountRt.is_intraday">
-                    截至 {{ (amountRt.as_of || '').slice(0,2) }}:{{ (amountRt.as_of || '').slice(2) }}
-                    <span class="text-muted">（14:00 前不做定性）</span>
-                  </template>
-                  <template v-else>
-                    {{ amountRt.data_date === todayStr ? '今日收盘定稿' : '上一交易日定稿' }}
-                  </template>
-                </div>
-              </div>
-              <div><div class="text-[10px] text-muted">情绪判读</div>
-                <div class="text-base font-bold"
-                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
-                  {{ emotion?.verdict || '—' }}</div></div>
-            </div>
+            <div class="text-sm font-semibold mb-1">盘中结构<span class="text-[10px] text-muted font-normal">（大小盘风格 / 尾盘承接 / 昨日涨停 / 竞价）</span></div>
             <!-- ★★ 2026-09-25 用户需求 1（框架 C5「盘中 9:30-10:00 定方向：黄白线/权重护盘」）：
                  看盘序"指数→家数→成交额"之后**必须回答的方向问题** ——
                  今天涨的是**权重**（指数好看、个股不跟）还是**个股**（题材在扩散）？
                  两者的操作完全相反：权重护盘时"看指数做个股"最容易亏（指数红、账户绿）；
                  小盘活跃时个股信号才可信。数据同源 `/market/overview.style`（零新增请求）。
                  ⚠️ 数据时刻：盘中为实时（≤2 分钟滞后）；**休市/盘后是收盘快照**，已在行内标明。 -->
-            <div v-if="ovStyle?.available" class="border-t border-border/40 mt-2 pt-2 text-[11px]">
+            <div v-if="ovStyle?.available" class="text-[11px] mt-1">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-muted">大小盘风格</span>
                 <span class="font-semibold cursor-help" :class="styleCls" :title="styleTitle">
@@ -1743,104 +1865,15 @@
                生效后：**左列 = ③ 主线板块 Top5**；**右列 = ② 涨停梯队与清单 + ⑤ 持仓状态**。
                （④ 待执行决策 2026-09-28 已删 —— 教练卡统一只在常驻右栏展示一份。）
                ⚠️ 窄屏（单列）不受影响 ⇒ 仍按 DOM 顺序 ②⑤③ 排。 -->
-          <div class="grid grid-cols-1 xl:grid-cols-2 gap-x-4 gap-y-4 items-start">
+          <!-- ★ 2026-10-26：主线/持仓上移后本区只剩「涨停梯队与清单」⇒ 单列铺满。 -->
+          <div class="min-w-0">
           <div class="min-w-0 space-y-4 xl:order-2">
           <!-- ★ 2026-09-25 用户："持仓状态放在涨停梯队与清单下面，主线板块 Top5 移到右边"
                ⇒ 左列 = ② 涨停梯队与清单 + ⑤ 持仓状态；右列 = ③ 主线板块（+ 当时的 ④ 待执行决策）。
                ★ 本次**必须搬内容**（顺序变更无法用"选切点"实现）：先在 ② 之后**插入副本**，
                  再删除 ④ 之后的原块（**先插后删** ⇒ 中途失败也不会丢卡片）。
                ★ 2026-09-28：④ 待执行决策已删 ⇒ 这里的列内容说明以本条后续注释为准。 -->
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
-                风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
-              <!-- ★★ 2026-09-29（用户："昨天 -0.61%，怎么今天还是 -0.61%"）：时点必须显示
-                   **行情自身时刻**，而不是 `as_of`（= 本次计算时刻）—— 后者在行情缓存陈旧时
-                   看着像"刚刷新过"（本页 1354 行早有同条纪律："不用请求时刻顶替数据时刻"）。
-                   实测踩坑：线上行情缓存冻结在 09-24 收盘快照，卡片却写"数据时点 00:21"
-                   ⇒ 用户完全看不出"现价/今日/盈亏"是两天前的。快照态标黄提示非实时。 -->
-              <span v-if="radarQuote" class="text-[10px] font-mono"
-                    :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
-                    :title="radarQuoteTitle">
-                行情 {{ radarQuote.text }}</span>
-              <span v-else-if="radarAsOf" class="text-[10px] text-muted font-mono">计算于 {{ radarAsOf.slice(11, 16) }}</span>
-            </div>
-            <div v-if="radarErr" class="text-muted text-xs">—（加载失败：{{ radarErr }}）</div>
-            <div v-else-if="!radarItems.length" class="text-muted text-xs">
-              —（当前无持仓记录；新增后由写入方主动失效缓存，立即可见）
-            </div>
-            <div v-else class="space-y-2">
-              <!-- ★★ 2026-09-29：**组合层**风控三件（风格暴露/板块集中度/海外敏感链）——
-                   逐只 alerts 之外的整体视角（工作台评价指出的缺口：只有单票风控）。
-                   数据零新增请求（行情缓存 float_cap + 行业映射 + 宏观面板）。
-                   为什么放逐只列表**之前**：风控读法应当"先看整体、再看个股"。 -->
-              <div v-if="radarRisk?.available"
-                   class="rounded border border-border/50 px-2.5 py-1.5 space-y-0.5 text-[10px] mb-1">
-                <div v-if="radarRisk.style" class="flex items-center gap-2 flex-wrap">
-                  <span class="text-muted">风格暴露</span>
-                  <b class="font-mono text-gray-200">{{ radarRisk.style.band }}</b>
-                  <span class="text-muted">流通市值中位
-                    <b class="font-mono">{{ radarRisk.style.median_float_cap_yi }}</b> 亿</span>
-                  <span v-if="radarRisk.style.warn" class="text-amber-400 cursor-help"
-                        :title="radarRisk.style.warn">⚠ 与市况顶风</span>
-                </div>
-                <div v-for="c in radarRisk.concentration" :key="c.industry" class="text-amber-300">
-                  ⚠ 板块集中：<b>{{ c.industry }}</b> ×{{ c.n }}（{{ (c.names || []).join('、') }}）
-                </div>
-                <div v-for="o in radarRisk.overseas" :key="o.chain" class="text-sky-300"
-                     :title="`阈值 ±${o.threshold}%（经验初值）；只做提示、不进决策链`">◈ {{ o.note }}</div>
-              </div>
-              <!-- ★ 2026-09-25 用户反馈：丰富持仓行——此前只显示名称+盈亏（reasons 字段名
-                   写错，实际是 alerts），radar 的价格/今日/主力/评分/闸门/观察池全没用上 -->
-              <div v-for="it in radarItems" :key="it.code"
-                   class="border border-border/60 rounded-lg px-2.5 py-2">
-                <!-- 主行：名称 + 盈亏大字 -->
-                <div class="flex items-center gap-2 flex-wrap">
-                  <a :href="stockHref(it.code)" target="_blank"
-                     class="text-sm font-semibold hover:text-accent">{{ it.name || it.code }}</a>
-                  <a :href="xqUrl(it.code)" target="_blank"
-                     class="text-muted text-[10px] font-mono hover:text-accent" title="雪球">{{ it.code }}</a>
-                  <span v-if="it.industry"
-                        class="text-[10px] px-1 rounded bg-card border border-border text-muted">{{ it.industry }}</span>
-                  <span class="ml-auto text-lg font-bold font-mono"
-                        :class="pctClass(it.pnl_pct)">{{ fmtPct(it.pnl_pct) }}</span>
-                </div>
-                <!-- 价格行 -->
-                <div class="flex items-center gap-2 flex-wrap mt-1 text-[11px]">
-                  <span class="font-mono">现价 {{ it.price ?? '—' }}</span>
-                  <span class="font-mono" :class="pctClass(it.day_pct)">今日 {{ signNum(it.day_pct) }}%</span>
-                  <span v-if="it.mv" class="text-muted">市值 {{ fmtNum(it.mv) }} 元</span>
-                  <span v-if="it.drop_from_high != null && it.drop_from_high <= -3"
-                        class="text-amber-400">距日内高 {{ it.drop_from_high }}%</span>
-                </div>
-                <!-- 标签行：主力 / 评分排名 / 观察池 / 闸门 / 战法 -->
-                <div class="flex items-center gap-1.5 flex-wrap mt-1 text-[10px]">
-                  <!-- ★ 2026-09-25：改用**共享** `PHASE_STYLE`。原实现只认 `signal`——
-                       出货红 / 吸筹绿，**盘整、下跌、拉升、洗盘一律灰** ⇒ 六种阶段实际只呈现两色
-                       （用户反馈"主力阶段颜色没生效"，这是真凶之一）。 -->
-                  <span v-if="it.phase" class="px-1 rounded cursor-help"
-                        :class="(MF_PHASE_STYLE[it.phase] || {}).cls || 'bg-white/5 text-muted'"
-                        :title="(MF_PHASE_STYLE[it.phase] || {}).tip || ''">主力·{{ it.phase_cn || it.phase }}</span>
-                  <span v-else-if="it.phase_cn" class="px-1 rounded text-muted">主力·{{ it.phase_cn }}</span>
-                  <span v-if="it.score != null" class="text-muted">
-                    评分 <b class="text-gray-200 font-mono">{{ it.score }}</b>
-                    <template v-if="it.rank_pos">（{{ it.rank_date }} 榜单第 {{ it.rank_pos }}）</template>
-                  </span>
-                  <span v-if="it.in_watch" class="text-sky-400">观察池</span>
-                  <span v-if="it.ready_label" class="text-muted">闸门 {{ it.ready_label }}</span>
-                  <span v-for="s in (Array.isArray(it.strategies) ? it.strategies : [])" :key="s"
-                        class="px-1 rounded bg-accent/10 text-accent border border-accent/30">{{ s }}</span>
-                </div>
-                <!-- 风险/机会提示 -->
-                <div v-if="(it.alerts || []).length" class="mt-1 space-y-0.5">
-                  <div v-for="(a, j) in it.alerts" :key="j" class="text-[10px]"
-                       :class="a.level === 'risk' ? 'text-red-400' : 'text-emerald-400'">
-                    {{ a.level === 'risk' ? '⚠' : '✦' }} {{ a.text }}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- ★ 2026-10-26：持仓状态已上移至「盘面速览」大卡（观察器下方）⇒ 此处不再渲染，避免同屏两份。 -->
           <!-- ★ 2026-09-28（用户："只留一份在右栏即可"）：原「待执行决策（N）」卡**已删除** ——
                它与常驻右栏那张教练卡是**同一份数据**，留两份必然同屏重复（且两处口径曾不一致
                ⇒ 用户看到"右栏不跟着变"）。教练卡现在的**唯一**展示位 = 右栏（`<aside>`，
@@ -1853,77 +1886,7 @@
           <!-- ★ A1 主线板块 Top5 + **板块内强势股**（看盘序第 4-5 层）
                ★ 2026-09-25：改用实时行业板块列表（原为昨日 15:10 快照）并补上「领涨股」——
                  此前缺的正是"板块内强势股"这一层（东财板块接口自带 leader 字段，零成本）。 -->
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-sm font-semibold">主线板块 Top5
-                <span class="text-[10px] text-muted font-normal">
-                  {{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
-                     : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
-                     : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span></div>
-              <router-link target="_blank" to="/sector" class="text-xs text-accent hover:underline">板块详情</router-link>
-            </div>
-            <div v-if="!sectorTop.length" class="text-muted text-xs">—（板块数据未返回）</div>
-            <div v-else class="space-y-1 text-xs">
-              <div v-for="(s, i) in sectorTop" :key="i" class="border-b border-border/40 py-1">
-                <div class="flex items-center gap-2">
-                  <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
-                  <span class="font-semibold">{{ s.name || s.industry || s.code || '—' }}</span>
-                  <!-- ★ 2026-09-27：改 `!= null`（原 `!== undefined`）—— 东财降级到
-                       zzshare/新浪时无涨跌家数（返回 None）⇒ 不渲染，避免误导性的「涨0/跌0」。 -->
-                  <span v-if="s.up_count != null" class="text-[10px] text-muted">
-                    涨{{ s.up_count }}/跌{{ s.down_count }}</span>
-                  <span class="ml-auto font-mono" :class="pctClass(s.change_pct ?? s.pct_change)">
-                    {{ signNum(s.change_pct ?? s.pct_change) }}%</span>
-                </div>
-                <!-- 板块内强势股（快照回退路径没有 leader 字段 ⇒ 该行不渲染） -->
-                <div v-if="s.leader" class="flex items-center gap-1.5 pl-6 mt-0.5 text-[11px]">
-                  <span class="text-muted">领涨</span>
-                  <a v-if="s.leader_code" :href="stockHref(s.leader_code)" target="_blank"
-                     class="hover:text-accent">{{ s.leader }}</a>
-                  <span v-else>{{ s.leader }}</span>
-                  <!-- ★ 2026-09-26（用户："主线板块 top5 加多一个股票代码，也跳到雪球"）：
-                       后端 `/sector/industry` **本就返回 `leader_code`**（零后端改动），
-                       补上代码并跳雪球 —— 与全站口径一致（名称→本地详情页、代码→雪球）。 -->
-                  <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
-                     class="font-mono text-muted hover:text-accent">{{ s.leader_code }}</a>
-                  <span class="font-mono" :class="pctClass(s.leader_change_pct)">
-                    {{ signNum(s.leader_change_pct) }}%</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- ★★ 2026-09-25 需求 4（框架「板块主线层 · 成交占比」）：
-                 资金此刻**真金白银**集中在哪个板块 —— 与上面的"涨幅榜"互补
-                 （涨得好 ≠ 成交额集中；一个真主线通常两者兼具）。
-                 ⚠️ 数据源**独立于上面的东财接口**：走腾讯内存行情 + 落库行业映射自行聚合
-                 ⇒ 东财被封时上面可能空白，而这块照常显示（这正是它更可靠的原因）。
-                 ⚠️ 行业是**最细分子板块**（一票一行业、不重复计算）⇒ 只展示 Top + Top5 集中度。 -->
-            <div v-if="amountShare?.available" class="border-t border-border/40 mt-3 pt-2">
-              <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-                <div class="text-xs font-semibold">行业成交额占比
-                  <span class="text-[10px] text-muted font-normal">
-                    （{{ amountShare.industry_n }} 个细分行业 · Top5 占 {{ amountShare.top5_share_pct }}%）</span>
-                </div>
-                <span class="text-[10px] text-muted cursor-help" :title="amountShare.note">
-                  数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? '（收盘快照）' : '' }}</span>
-              </div>
-              <div class="space-y-0.5 text-[11px]">
-                <div v-for="(r, i) in amountShare.rows" :key="r.industry"
-                     class="flex items-center gap-2 border-b border-border/30 py-0.5">
-                  <span class="w-4 text-muted font-mono">{{ i + 1 }}</span>
-                  <span class="font-semibold w-24 truncate" :title="r.industry">{{ r.industry }}</span>
-                  <span class="flex-1 h-1.5 rounded bg-border/40 overflow-hidden min-w-[40px]">
-                    <span class="block h-full bg-accent/70"
-                          :style="{ width: barWShare(r.share_pct) }"></span>
-                  </span>
-                  <span class="font-mono text-gray-300 w-14 text-right">{{ r.share_pct }}%</span>
-                  <span class="font-mono text-muted w-16 text-right">{{ r.amount_yi }}亿</span>
-                  <span class="font-mono w-14 text-right" :class="pctClass(r.avg_change_pct)">
-                    {{ signNum(r.avg_change_pct) }}%</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          <!-- ★ 2026-10-26：主线 Top5 与行业成交占比已上移至「盘面速览」大卡 ⇒ 此处不再渲染。 -->
 
           <!-- ★ 2026-09-28：原 ④ 待执行决策卡**已删除**（用户："只留一份在右栏即可"）——
                教练卡唯一展示位 = 常驻右栏 `<aside>`：未决策可交互、已决策显示结果徽标、
@@ -2073,47 +2036,9 @@
               <span v-else-if="emotion && emotion.trading_day === false"
                     class="text-[10px] text-amber-400">⚠ 非交易日（为最近交易日快照）</span>
             </div>
-            <div class="grid grid-cols-3 md:grid-cols-6 gap-2 text-center py-3">
-              <div><div class="text-[10px] text-muted">上涨</div>
-                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.up_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">下跌</div>
-                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.down_count ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">涨停</div>
-                <div class="text-base font-bold text-red-400 font-mono">{{ overview.stats?.limit_up ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted cursor-help" :title="limitTip()">跌停</div>
-                <div class="text-base font-bold text-emerald-400 font-mono">{{ overview.stats?.limit_down ?? '—' }}</div></div>
-              <div><div class="text-[10px] text-muted">两市成交额
-                  <span v-if="amountRt?.show_ratio" class="cursor-help"
-                        :title="amountRt.note">ⓘ</span></div>
-                <div class="text-base font-bold font-mono text-gray-200">
-                  {{ amountRt?.available ? fmtYi(amountRt.cum_yi)
-                     : (overview.stats?.total_amount ? (overview.stats.total_amount / 1e8).toFixed(0) + '亿' : '—') }}</div>
-                <!-- ★ 2026-09-29：环比/定性只在**可靠**时给（盘中 14:00 后或已收盘定稿）；
-                     14:00 前只显示累计 —— 早盘曲线预估中位误差 16%（见 market_amount.py）。 -->
-                <div v-if="amountRt?.available" class="text-[10px] leading-tight">
-                  <template v-if="amountRt.show_ratio">
-                    <b :class="amountRt.verdict === '放量' ? 'text-red-400'
-                             : amountRt.verdict === '缩量' ? 'text-emerald-400' : 'text-gray-400'">{{ amountRt.verdict }}</b>
-                    {{ signNum(amountRt.ratio_pct) }}%
-                    <span v-if="amountRt.is_intraday" class="text-muted">· 预估{{ fmtYi(amountRt.full_day_est_yi) }}</span>
-                    <span v-else class="text-muted">· vs 昨日</span>
-                  </template>
-                  <template v-else-if="amountRt.is_intraday">
-                    截至 {{ (amountRt.as_of || '').slice(0,2) }}:{{ (amountRt.as_of || '').slice(2) }}
-                    <span class="text-muted">（14:00 前不做定性）</span>
-                  </template>
-                  <template v-else>
-                    {{ amountRt.data_date === todayStr ? '今日收盘定稿' : '上一交易日定稿' }}
-                  </template>
-                </div>
-              </div>
-              <div><div class="text-[10px] text-muted">情绪判读</div>
-                <div class="text-base font-bold"
-                     :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
-                  {{ emotion?.verdict || '—' }}</div></div>
-            </div>
+            <!-- ★ 2026-10-26（同上）：涨跌家数已上移至「盘面速览」，此处只留风格。 -->
             <!-- 大小盘风格（决定"今天赚指数还是赚个股"，与盘后结算卡互为解释） -->
-            <div v-if="ovStyle?.available" class="border-t border-border/40 pt-2 text-[11px]">
+            <div v-if="ovStyle?.available" class="text-[11px] mt-1">
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-muted">大小盘风格</span>
                 <span class="font-semibold cursor-help" :class="styleCls" :title="styleTitle">{{ ovStyle.label }}</span>
@@ -2477,7 +2402,7 @@
                · AI 结论（一次批量 LLM；`GET` 只读缓存，`POST` 才解读）
              ⚠️ 系统级：盘中异动由调度器 `brief_loop` 自动触发并推浏览器通知。
              ⚠️ 原诊断信息（D状态/叙事/仓位）保留在卡内首行，不做两处渲染。 -->
-        <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
+        <!-- ★ 2026-10-26：快讯解读已并入「盘面速览」大卡（主区观察器下方）⇒ 右栏不再重复。 -->
 
         <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
              事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
