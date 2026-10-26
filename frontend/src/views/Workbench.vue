@@ -2824,7 +2824,7 @@ import {
   // ★ 2026-10-26（P1 修复 + G2 合并）：
   //   · getBatchPricesCached —— 观察池报价改读后端内存缓存（原来走 getBatchPrices 每 120s 直连腾讯）
   //   · getIntradayLite      —— 涨停/炸板 + 成交额环比合成一次请求（原来两条 60s 轮询）
-  getBatchPrices, getBatchPricesCached, getIntradayLite,
+  getBatchPrices, getBatchPricesCached, getIntradayLite, getMarketPulse,
   // ★ 2026-09-30：**系统自洽性审查（LLM）** —— 与 `getPushLog` **同源**（都基于今日提示集合），
   //   接口早就在（`ScoreRank.vue` 一直在用），本轮接进工作台右栏**同一张**时间线卡内。
   getRadarAnalysis,
@@ -4398,6 +4398,35 @@ async function loadGwPrices() {
   }
 }
 
+// ★★ 2026-10-26（G1 轮询合并）：盘面脉冲 —— 一次请求拿回 5 块同源数据。
+//   【覆盖哪 5 块】overview（涨跌家数/涨停/成交额）、temperature（温度）、emotion（情绪判读）、
+//     amount_share（行业成交额占比）、gw（观察池报价，随 `codes` 传参才有）。
+//   【为什么能合】它们的上游都是 `tencent._cache["stocks"]`（同源同刻），且都只读缓存 ⇒
+//     合并后**服务端外部请求不变**，只是把浏览器 5 次往返压成 1 次。
+//   【失败语义】按块降级：`blocks.xxx === null` 时**保留该块旧值**（不清空、不显示 0），
+//     其余块照常渲染；整包失败则所有块保持原样。
+async function loadPulse() {
+  const codes = (gwItems.value || []).map(g => g.code).filter(Boolean)
+  try {
+    const { data } = await getMarketPulse(codes)
+    const b = (data && data.blocks) || {}
+    if (b.overview) overview.value = b.overview || {}
+    if (b.temperature) temperature.value = b.temperature
+    if (b.emotion) emotion.value = b.emotion
+    if (b.amount_share) amountShare.value = b.amount_share
+    const gw = b.gw
+    if (gw && (gw.rows || []).length) {
+      const m = {}
+      for (const s of gw.rows) {
+        if (s && s.code && Number(s.price) > 0) m[s.code] = { price: s.price, change_pct: s.change_pct }
+      }
+      if (Object.keys(m).length) gwPrices.value = m
+    }
+  } catch (e) {
+    console.warn('[workbench] 盘面脉冲失败（各块保留旧值）', e?.message || e)
+  }
+}
+
 // ★ 2026-09-25（P1「明日准备」）：待触发的交易计划 —— 复盘 → 次日的**交接棒**。
 //   口径：只取 `status === 'waiting'`（已触发/已完成的不该再叫"待办"）。
 //   ⚠️ 这里只把"明天开盘要盯的条件"摆出来，不自动改状态、不催办。
@@ -4993,15 +5022,21 @@ function startPolling() {
     //   与本组上方自注释"仅交易时段真发请求"不符。
     loadGlobals(); loadFlashDiag()
     if (!isLivePhase()) { refreshLeft.value = 0; return }
-    loadOverview(); loadTemperature(); loadEmotion(); loadTailReview()
-loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
+    // ★★ 2026-10-26（G1 轮询合并）：这里原本并发 5 个请求
+    //   （overview / temperature / emotion / amountShare / gwPrices），
+    //   而它们的上游是**同一份内存行情**（tencent._cache）⇒ 合并成一次 `/market/pulse`：
+    //   单 tick 5 → 1，**服务端外部请求不变**；按块降级（哪块失败只保留哪块的旧值）。
+    loadPulse()
+    loadTailReview()
+    loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静默失败）
     // ★★ 2026-09-28（用户："主线板块 Top5 也不是实时的" —— 真因就在这里）：
     //   `loadSectorTop` 原先**只在切阶段时调一次**，切进盘中后就不再刷新
     //   ⇒ 页面上的板块排名停在"进入该阶段那一刻"（尽管接口本身是实时的）。
     //   纳入 120s 轮询即可实时；⚠️ 不会打爆东财：`eastmoney` 的板块列表有 **60s TTL 缓存**
     //   （`TTL_SECTOR=60`）⇒ 最多每 2 分钟一次真实请求，与原来切阶段的用法同量级。
+    //   ⚠️ 它**不并入 pulse**：数据源是东财（外部），与"读内存缓存"那 5 块不是同源，
+    //      合并会把东财的失败语义传染给整包。
     loadSectorTop()
-    loadAmountShare()      // ★ 需求 4：资金在板块间的流动是盘中变量 ⇒ 纳入轮询
     // ★ 2026-09-27：事件状态盘中会变（涨家数占比随行情走）⇒ 纳入 120s 轮询。
     //   ⚠️ 新增的刷新项必须加进本组，否则盘中静默不更新（项目约定）。
     loadEvents()
@@ -5010,10 +5045,8 @@ loadPolicyBottom()   // ★ 2026-10-18：市场底确认清单（观察器；静
     //   ⇒ 盘中两卡（评分榜 Top10 / 观察池）静默不更新，卡片上的"实时"名不副实。
     //   ⚠️ 只在**数据会变**的时段强制（`isLivePhase()`）：非交易时段白跑一次
     //      全市场精算没意义（本地模式下 `computeRanking` 很重）。
+    //   ⚠️ 也不并入 pulse：评分榜是计算密集项（服务端 3 分钟缓存），与行情块不同性质。
     loadTop(isLivePhase())
-    // ★ 2026-09-30：观察池**涨跌幅**是高速变量 ⇒ 纳入 120s 轮询（闸门数据本身是日频、
-    //   且全池重算太慢，**不重算**）—— 项目约定：新增刷新项必须加进本组，否则盘中静默不更新。
-    loadGwPrices()
     refreshLeft.value = isLivePhase() ? POLL_SEC : 0
   }, POLL_SEC * 1000))
   // ★ 2026-09-28：倒计时 1s ticker（与上面 120s 轮询同起点注册 ⇒ 读数差 ≤1 tick）。

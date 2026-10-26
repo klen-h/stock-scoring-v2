@@ -480,6 +480,12 @@ export const getAmountRealtime = () => http.get('/market/amount-realtime', { tim
 //   浏览器每次 tick 少一次往返。返回 `{ok, uplimit:{available,…}|null, amount:{available,…}|null}`，
 //   **按块降级**：单块异常只有该块 available=false，另一块照常（前端各留旧值）。
 export const getIntradayLite = () => http.get('/market/intraday-lite', { timeout: 20000 })
+// ★ 2026-10-26（G1 轮询合并）：盘面脉冲 —— **一次取回 5 块同源数据**
+//   （overview / temperature / emotion / amount_share / 观察池报价），
+//   替代原 120s 组里并发的 5 个 HTTP。返回 `{ok, blocks:{…}, errors:{块:原因}}`，
+//   **按块降级**：某块 null 时前端保留旧值，其余块照常渲染。
+export const getMarketPulse = (codes = []) =>
+  http.get('/market/pulse', { params: { codes: codes.join(',') }, timeout: 25000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 
 // ⚠️⚠️ 2026-09-25 修正：三个路径必须带 `/system` 前缀！

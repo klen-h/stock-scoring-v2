@@ -2172,6 +2172,59 @@ def amount_realtime(refresh: int = 0):
         return {"available": False, "reason": "计算失败"}
 
 
+@router.get("/pulse")
+def market_pulse(codes: str = ""):
+    """盘面脉冲：**一次返回 5 个同源同刻的块**（2026-10-26，G1 轮询合并）。
+
+    合并对象（全部读同一份 `tencent._cache["stocks"]`，即"同源同刻"）：
+      overview（涨跌家数/涨停/成交额）、temperature（温度）、emotion（情绪判读）、
+      amount_share（行业成交额占比）、gw（观察池报价，`codes` 传入时才有）。
+
+    为什么合并：前端 120s 组原本**并发 5 个 HTTP** 取这 5 块，它们的上游都是同一份内存缓存
+    ⇒ 合并后浏览器每次 tick 少 4 次往返，**服务端外部请求不变**（各块仍走自己的 TTL 缓存）。
+
+    ★ 失败语义：**按块降级** —— 单块异常只把该块置 `null` 并在 `errors` 里留原因，
+      其余块照常返回；前端各自保留旧值（绝不因一块失败把整屏清空）。
+    """
+    blocks: Dict[str, object] = {}
+    errors: Dict[str, str] = {}
+
+    def _run(name: str, fn):
+        try:
+            blocks[name] = fn()
+        except Exception as e:
+            blocks[name] = None
+            errors[name] = str(e)[:120]
+            print(f"[market] pulse.{name} failed: {e}")          # ASCII（铁律⑥）
+
+    _run("overview", lambda: market_overview(BackgroundTasks()))
+    _run("temperature", market_temperature)
+    _run("emotion", market_emotion)
+
+    def _share():
+        from app.routers.sector import sector_amount_share
+        return sector_amount_share(15)
+    _run("amount_share", _share)
+
+    code_list = [c.strip() for c in (codes or "").split(",") if c.strip()]
+    if code_list:
+        def _gw():
+            from app.tencent import get_stocks_batch_cached, cache_meta
+            m = get_stocks_batch_cached(code_list)
+            meta = cache_meta()
+            rows = []
+            for c in code_list:
+                s = m.get(c) or {}
+                if s:
+                    rows.append({"code": c, "name": s.get("name", ""),
+                                 "price": s.get("price", 0),
+                                 "change_pct": s.get("change_pct", 0)})
+            return {"rows": rows, **meta}
+        _run("gw", _gw)
+
+    return {"ok": True, "blocks": blocks, "errors": errors}
+
+
 @router.get("/intraday-lite")
 def intraday_lite(refresh: int = 0):
     """盘中轻量两块合一：**实时涨停/炸板** + **两市成交额环比**（2026-10-26，G2）。
