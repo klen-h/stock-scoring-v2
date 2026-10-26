@@ -494,6 +494,22 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
     return { updated: false, message: '数据已是最新' }
   }
 
+  // ★★ 2026-10-26（用户报"一天流量 2.18GB"）：**同一窗口只真正检查一次**。
+  //   【病因】数据包按**交易日**生成，而这里拿 `todayStr`（UTC 自然日）比 ——
+  //     周末/盘前/日批跑完前，`todayStr` 恒 ≠ 包日期 ⇒ 每次进入「工作台 / 榜单」
+  //     都会：增量包 404 → 重下完整包 **3.8MB**（下面的
+  //     `data.date === lastUpdate` 只省了导入，**没省下载**）。
+  //     实测：一天几百次进页面（登录被踢→重进）+ 每次 3.8~5.5MB ≈ 2.18GB。
+  //   【修法】`pack_check_at` 记"上次真正检查的时刻"，6 小时内直接返回；
+  //     时间戳在**下载前**落盘（下载失败也不反复重试，避免失败风暴）。
+  const CHECK_WINDOW_MS = 6 * 3600 * 1000
+  const lastCheckTs = Number(await getMeta('pack_check_at') || 0)
+  if (lastCheckTs && Date.now() - lastCheckTs < CHECK_WINDOW_MS) {
+    const ageMin = Math.max(1, Math.round((Date.now() - lastCheckTs) / 60000))
+    return { updated: false, message: `数据包 ${ageMin} 分钟前检查过（6 小时内不重复下载）` }
+  }
+  await setMeta('pack_check_at', String(Date.now()))
+
   // 首次使用或数据包结构升级，下载完整包（增量包无法补齐历史天数）
   if (!lastUpdate || needFullRedownload) {
     onProgress?.({ stage: 'download', message: needFullRedownload ? '数据结构升级，重新下载完整包...' : '首次加载，下载数据包...' })

@@ -229,8 +229,16 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:4173",
         "http://localhost:3000",
+        # ★ 2026-10-26（用户报"控制台跨域"）：本地用 127.0.0.1 或局域网 IP 打开
+        #   dev server 时，origin 不是 `localhost` ⇒ 原列表不放行 ⇒ 浏览器报 CORS。
+        #   （这是**本地调试**最常见的跨域伪故障；线上 github.io 不受影响。）
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:4173",
+        "http://127.0.0.1:3000",
     ],
-    allow_origin_regex=r"https://[\w-]+\.github\.io",   # GitHub Pages 任意仓库
+    # GitHub Pages 任意仓库 + 本地/局域网调试源（127.0.0.1 / 192.168.x.x / 10.x.x.x）
+    allow_origin_regex=(r"https://[\w-]+\.github\.io"
+                        r"|http://(?:127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+):\d+"),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

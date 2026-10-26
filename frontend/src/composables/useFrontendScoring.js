@@ -97,6 +97,10 @@ function saveFrontendModePreference(value) {
   try { localStorage.setItem(FRONTEND_MODE_KEY, String(value)) } catch {}
 }
 
+// ★ 2026-10-26（2.18GB 流量事故）：静默更新**单飞**（同页多次挂载/连续切路由
+//   不再各下一份 3.8~5.5MB）。模块级 Promise 复用，完成即释放。
+let silentUpdating = null
+
 // Worker 实例（单例）
 let worker = null
 let workerReady = false
@@ -134,7 +138,10 @@ export async function initFrontendScoring() {
     const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     if (lastUpdateDate.value !== todayStr) {
       console.log(`[前端评分] 数据过期（${lastUpdateDate.value}），后台静默更新...`)
-      silentUpdate()
+      // ★ 2026-10-26：单飞——同一页面里并发/重复挂载只跑一次（配合 6h 节流）
+      if (!silentUpdating) {
+        silentUpdating = silentUpdate().finally(() => { silentUpdating = null })
+      }
     } else {
       // K 线包已是今日，但指标包可能缺失（旧版包/首次升级 DB v2）→ 补拉
       const indDate = await getIndicatorsDate()
@@ -195,9 +202,25 @@ export async function ensureIndicatorsPack(baseUrl = KLINE_DATA_BASE_URL) {
       return { updated: false, message: '指标包已是最新' }
     }
 
+    // ★★ 2026-10-26（用户报"一天流量 2.18GB"）：指标包 5.5MB/次，必须节流。
+    //   旧实现 `?t=Date.now()` + `cache:'no-store'` ⇒ 每次都绕过浏览器/CDN 缓存；
+    //   而"klineDate ≠ indDate"在指标导入失败/日期口径不一致时会**每次进页面都成立**
+    //   ⇒ 反复下 5.5MB。现在：
+    //     · 6 小时内只真正检查一次（localStorage 记时刻，成功失败都记）；
+    //     · URL 用**版本参数** `?v=<klineDate>`（版本变了才需要新文件），
+    //       并允许 HTTP 缓存（GitHub Pages 侧 max-age=600）—— 省流且不会取到隔日文件。
+    const IND_KEY = 'ind_pack_check_at'
+    const IND_WINDOW_MS = 6 * 3600 * 1000
+    let lastCheck = 0
+    try { lastCheck = Number(localStorage.getItem(IND_KEY) || 0) } catch { lastCheck = 0 }
+    if (lastCheck && Date.now() - lastCheck < IND_WINDOW_MS) {
+      return { updated: false, message: '指标包 6 小时内已检查过（不重复下载）' }
+    }
+    try { localStorage.setItem(IND_KEY, String(Date.now())) } catch { /* 存储不可用则退化为每次都查 */ }
+
     updateProgress.value = { stage: 'download', message: '下载指标包...', loaded: 0, total: 0 }
-    const packUrl = `${baseUrl}/indicators-pack.json.gz?t=${Date.now()}`
-    const response = await fetch(packUrl, { cache: 'no-store' })
+    const packUrl = `${baseUrl}/indicators-pack.json.gz?v=${klineDate}`
+    const response = await fetch(packUrl, { cache: 'default' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
     updateProgress.value = { stage: 'decompress', message: '解压指标包...', loaded: 0, total: 0 }
