@@ -1345,6 +1345,92 @@ def task_stock_facts_wide():
     return f"选股宽表: {r['rows']} 只（宇宙 {r['universe']}）"
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  【合并任务】2026-10-26（用户："3 观察器 + 3 政策观察 + 2 矛盾任务 → 3 个"）
+#  设计原则：合并的必须是**同一条链**或**同类观察器**，且失败语义不能被稀释：
+#    · 观察器类：单项失败 → 汇总里标 ⚠，整批仍绿（它们本来就不进决策链）；
+#    · 数据链类：主产物（市场底清单）失败 → 任务失败；副产物（LLM 报告）失败 → ⚠。
+#  被合并的 8 个原任务函数**保留不动**（前端按钮/单测/历史调用仍按旧名可用，
+#  见 `ALIAS_TASKS`），本层只做编排 —— 逻辑零重写，风险最小。
+# ══════════════════════════════════════════════════════════════════════════
+
+def _run_sub(fn, label: str, fatal: bool = False):
+    """跑一个子步骤，返回 (文案, 是否异常)。
+
+    `label` 用于异常时的可读前缀（如「关键位」），不要用 `fn.__name__` ——
+    日志里 `task_key_level_watch: ⚠ FAIL …` 对排障没帮助。
+    `fatal=True` 时异常上抛（用于"主产物"子步骤）；否则收敛成 `⚠ FAIL …`。
+    判定 `WARN`/`FAIL` 也算异常 —— 上游模块用 WARN 表达"降级但没抛"。
+    """
+    try:
+        txt = str(fn())
+        return txt, ("WARN" in txt or "FAIL" in txt)
+    except Exception as e:
+        if fatal:
+            raise
+        return f"{label}: ⚠ FAIL {str(e)[:80]}", True
+
+
+def task_market_observers():
+    """【合并】市场观察器三合一：拥挤赛道 + 指数关键位 + AI 硬件篮子。
+
+    【重叠分析】三者数据源/产物**互不重叠**，但性质完全相同：纯只读观察器、
+      各写一张小表、失败都不抛、都在给复盘提供"位置感"。原来占 3 个排单位。
+    【职责与边界】
+      · 拥挤赛道：行业 30 日收益中位数 / 120 日高位占比 / 退潮等级（`app.crowding_watch`）
+      · 指数关键位：前低(60日)/整数位/年内低点，首次跌破才记 broke（`app.key_level_watch`）
+        ⚠️ 其结果被 `scenario_watch`（磨底2.0 记分卡）二次消费 ⇒ 本任务必须在它之前
+      · AI 篮子：6 只龙头等权篮子的 5/30 日收益、距 120 日高点回撤（`app.ai_basket_watch`）
+      · 三者均**不写**评分/排序/闸门/模拟盘（各模块头的预登记声明不变）
+    """
+    parts, bad = [], 0
+    for label, fn in (("拥挤赛道", task_crowding_watch),
+                      ("关键位", task_key_level_watch),
+                      ("AI篮子", task_ai_basket_watch)):
+        txt, is_bad = _run_sub(fn, label)
+        parts.append(txt)
+        bad += 1 if is_bad else 0
+    return "观察器 | " + " | ".join(parts) + (f"（{bad} 项异常）" if bad else "")
+
+
+def task_policy_watch():
+    """【合并】政策/国家队证据链三合一：ETF 份额 → 增持公告 → 市场底清单。
+
+    【重叠分析】这不是三个并列任务，而是**一条链**：
+      ETF 份额（连续 2 日 ≥8% ⇒ 自动打勾清单第①条）与增持公告（只提示、不打勾）
+      都是给「市场底确认清单」第①条供证据，而清单任务**读的就是当天这两张表**。
+      原先靠"必须排在清单之前"的注释维持顺序 —— 排单一旦被改，清单就会读到昨天的证据。
+    【职责与边界】
+      · ETF 份额：上交所官方份额（T+1，先补最近 5 日缺口）；失败 ⇒ 清单显示"检查不可用"
+      · 增持公告：巨潮法定披露（粗召回 + 本地连续字串过滤）；**只提示，打勾权在人**
+      · 市场底清单：读上面两者 + `intraday_path`（② 成交额）+ 情绪快照（④ 涨跌比），
+        首次跨过 4/5 才推一次企微（同日幂等）；**主产物，失败上抛**（保持原语义）
+      · 均不碰评分/闸门/模拟盘
+    """
+    etf, _ = _run_sub(task_etf_share_watch, "ETF份额")
+    ann, _ = _run_sub(task_policy_announcement_watch, "增持公告")
+    bottom = task_policy_bottom_watch()          # 主产物：失败=任务失败
+    return f"政策 | {etf} | {ann} | {bottom}"
+
+
+def task_contradiction():
+    """【合并】矛盾：扫描+验证（落库） → LLM 报告。
+
+    【重叠分析】报告的唯一输入就是扫描刚落库的当日矛盾（`report.generate_report`
+      按 date 读 `contradictions` 表）⇒ 两者是**同一次计算的两个阶段**。
+      分成两个排单位，会出现"扫描成功、报告没跑"的半成品状态，且失败信息要两处找。
+    【职责与边界】
+      · 阶段1 扫描 + 落库 + 验证昨日命中（时钟属性：`max_age_days=10` 会让待验池过期
+        作废 ⇒ 验证必须每天跑）；**失败上抛**（数据产物缺失）
+      · 阶段2 LLM 报告（写 `contradiction_reports`）：**失败只标 ⚠** ——
+        扫描结果已落库，不该让"报告挂了"污染数据层失败语义
+      · 前端按钮仍可单步触发：`contradiction_scan` / `contradiction_report`（ALIAS_TASKS）
+    """
+    scan_txt = task_contradiction_scan()                    # 数据产物：失败上抛
+    rep, _ = _run_sub(task_contradiction_report, "矛盾报告")  # 派生品：失败降级为 ⚠
+    return f"{scan_txt} ｜ {rep}"
+
+
 TASKS = {
     "backfill": (task_backfill, "回测价格回填"),
     # ★ 2026-10-26：kline_cache 紧凑收盘列（61 根，≈450B/行）——消费方 stock_facts
@@ -1378,8 +1464,9 @@ TASKS = {
     "entry_log": (task_entry_log, "买入入口留痕（ready==3，只落库不推送）"),
     "sector_snapshot": (task_sector_snapshot, "板块快照"),
     "strategy_scan": (task_strategy_scan, "战法全量扫描"),
-    "contradiction_scan": (task_contradiction_scan, "矛盾扫描"),
-    "contradiction_report": (task_contradiction_report, "矛盾报告(LLM)"),
+    # ★ 2026-10-26 合并：扫描+验证+LLM 报告合为一个排单位（原 contradiction_scan /
+    #   contradiction_report 保留为 ALIAS，前端单步按钮仍可用）。
+    "contradiction": (task_contradiction, "矛盾扫描+验证+LLM报告（三合一）"),
     "score_snapshot": (task_score_snapshot, "评分快照"),
     # ★ 2026-09-09 迁入：依赖 score_snapshot 的 Top50，排其后
     "mainline": (task_mainline, "行业主线/共振分析"),
@@ -1438,24 +1525,17 @@ TASKS = {
     #   之后、LLM 类日报之前 —— 看得到本轮全部写入的最终状态，又不被慢任务拖累。
     #   ⚠️ 这是"防止数据静默缺日"的兜底闸（本次 plate_daily_zz 断档 5 天没人发现）。
     "data_gap": (task_data_gap, "数据底座断档自检 + 板块快照自愈"),
-    # ★ 2026-10-19：宽基 ETF 份额异动（上交所官方，行为级证据）——必须排在清单之前。
-    #   连续 2 日 ≥8% ⇒ 第①条**自动打勾**（人工可覆盖）；失败不抛。
-    "etf_share_watch": (task_etf_share_watch, "宽基 ETF 份额异动（第①条证据）"),
-    # ★ 2026-10-19：国家队增持公告**自动提示**（巨潮）——必须排在清单之前，
-    #   否则清单第①条读到的是"上一次"的提示。只提示不打勾，失败不抛。
-    "policy_announcement_watch": (task_policy_announcement_watch,
-                                  "国家队增持公告自动提示（巨潮，只提示不打勾）"),
-    # ★ 2026-10-18：市场底确认清单（纯观察器）——必须在 intraday_path 之后（② 用它）、
-    #   daily_report 之前（日报要渲染它）。不参与任何决策链。
-    # ★ 2026-10-23：两个纯观察器（拥挤赛道 / 指数关键位），不进决策链
-    "crowding_watch": (task_crowding_watch, "拥挤赛道观察器（行业30日/高位占比）"),
-    "key_level_watch": (task_key_level_watch, "指数关键位观察器（前低/整数位）"),
-    "ai_basket_watch": (task_ai_basket_watch, "AI硬件篮子回撤观察器"),
+    # ★★ 2026-10-26 合并：市场观察器三合一（拥挤赛道 / 指数关键位 / AI 硬件篮子）。
+    #   三者同为纯只读观察器、失败不抛；合并省 2 个排单位与 2 处失败分支。
+    #   ⚠️ 关键位结果被 scenario_watch 二次消费 ⇒ 必须排在它之前（见 DEFAULT_ORDER）。
+    "market_observers": (task_market_observers, "市场观察器（拥挤赛道/关键位/AI篮子）"),
     # ★ 2026-10-25 新增（eypai 溯源调研）：两融/期指基差/中美利差 每日落库——
     #   实时链路早已有（金十两融 + macro 面板），补的是历史序列；fail-open。
     "liquidity_watch": (task_liquidity_watch, "流动性三件套日度落库（两融/基差/利差）"),
     "scenario_watch": (task_scenario_watch, "磨底2.0推演证伪记分卡"),
-    "policy_bottom_watch": (task_policy_bottom_watch, "市场底确认清单（观察器，非信号）"),
+    # ★★ 2026-10-26 合并：政策/国家队证据链三合一（ETF 份额 → 增持公告 → 市场底清单）。
+    #   三者本是"证据 → 清单"的一条链，靠注释维持顺序不可靠 ⇒ 顺序改由代码保证。
+    "policy_watch": (task_policy_watch, "政策链（ETF份额→增持公告→市场底清单）"),
     "daily_report": (task_daily_report, "每日日报"),
     # ★ 2026-09-12 新增：交易员决策简报（盘后）+ 企微推送 —— 此前只有前端按需生成，
     #   是 TRADER_WORKFLOW Phase 1 的收尾项。依赖前面全部任务产出，排在最后。
@@ -1481,10 +1561,13 @@ DEFAULT_ORDER = ["backfill",
                  #   （与 market_regime 09-08 断档同型）。位置按 TASKS 注释意图：紧跟 calendar。
                  "risk_calendar",
                  "mainforce_state", "gate_snapshot", "entry_log",
-                 "sector_snapshot", "strategy_scan", "contradiction_scan",
-                 "contradiction_report", "score_snapshot", "mainline",
+                 # ★ 2026-10-26 合并：扫描+验证+报告合成一个排单位（原两个任务名保留为别名）
+                 "sector_snapshot", "strategy_scan", "contradiction",
+                 "score_snapshot", "mainline",
                  "news_snapshot", "sector_strength",
-                 "crowding_watch", "key_level_watch", "ai_basket_watch",
+                 # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
+                 #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
+                 "market_observers",
                  "liquidity_watch",
                  "rank_live", "sector_linkage",
                  "shadow_rank", "shadow_defensive", "pattern_launch_scan",
@@ -1498,14 +1581,33 @@ DEFAULT_ORDER = ["backfill",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
     "stock_facts_wide",
-    "etf_share_watch", "policy_announcement_watch", "policy_bottom_watch",
+                # ★ 2026-10-26 合并：政策链（ETF份额→增持公告→市场底清单）一个排单位。
+                #   位置不变（intraday_path 之后、daily_report 之前），链内顺序由代码保证。
+                "policy_watch",
                  "scenario_watch",
                  "daily_report",
                  "trader_brief", "retention", "egress_report"]
 
+# ★★ 2026-10-26：**别名任务**（只注册、不进默认排单）。
+#   合并后前端仍有"单步重算"按钮按旧任务名调用（如 `ContradictionsView` 的
+#   contradiction_scan / contradiction_report）⇒ 保留旧名做单步入口，
+#   但**不能**再排进 DEFAULT_ORDER（否则又变回两次计算）。
+ALIAS_TASKS = {
+    "contradiction_scan": (task_contradiction_scan, "〔别名〕矛盾扫描（单步）"),
+    "contradiction_report": (task_contradiction_report, "〔别名〕矛盾报告（单步）"),
+    # 三个观察器/政策单步（排查用；正常由 market_observers / policy_watch 编排）
+    "crowding_watch": (task_crowding_watch, "〔别名〕拥挤赛道（单步）"),
+    "key_level_watch": (task_key_level_watch, "〔别名〕指数关键位（单步）"),
+    "ai_basket_watch": (task_ai_basket_watch, "〔别名〕AI 硬件篮子（单步）"),
+    "etf_share_watch": (task_etf_share_watch, "〔别名〕宽基 ETF 份额（单步）"),
+    "policy_announcement_watch": (task_policy_announcement_watch, "〔别名〕增持公告（单步）"),
+    "policy_bottom_watch": (task_policy_bottom_watch, "〔别名〕市场底清单（单步）"),
+}
+TASKS.update(ALIAS_TASKS)
+
 # ★ 2026-10-24 加固（docs/BACKLOG.md BK-47 的机制化）：TASKS 与 DEFAULT_ORDER 必须一一对应。
 #   模块级断言 ⇒ 任何 import（含 --list / CI）都立即暴露错配，而不是等日批跑完才发现断档。
-_MISSING = sorted(set(TASKS) - set(DEFAULT_ORDER))
+_MISSING = sorted(set(TASKS) - set(DEFAULT_ORDER) - set(ALIAS_TASKS))
 _EXTRA = sorted(set(DEFAULT_ORDER) - set(TASKS))
 assert not _MISSING and not _EXTRA, (
     "TASKS/DEFAULT_ORDER 错配：仅注册未排单=" + str(_MISSING)
@@ -1750,9 +1852,12 @@ def main():
         for k in DEFAULT_ORDER:
             tag = "core " if k in core else "extra"
             print(f"  [{tag}] {k:<20} {TASKS[k][1]}")
-        print(f"\n  共 {len(DEFAULT_ORDER)} 个任务：core {len(CORE_TASKS)} / "
+        print(f"\n  默认排单 {len(DEFAULT_ORDER)} 个：core {len(CORE_TASKS)} / "
               f"extra {len(DEFAULT_ORDER) - len(CORE_TASKS)}"
               f"（--tasks core|extra 可分开跑）")
+        if ALIAS_TASKS:
+            print(f"  另注册别名 {len(ALIAS_TASKS)} 个（不参与 --tasks all，可单独触发）: "
+                  f"{', '.join(ALIAS_TASKS)}")
         return 0
 
     load_env()
