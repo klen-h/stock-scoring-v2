@@ -288,8 +288,13 @@
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
         <div class="bg-card border border-border rounded-lg p-3 h-full flex flex-col">
           <div class="flex items-center justify-between mb-1 shrink-0">
-            <div class="text-sm font-semibold">观察器
+            <!-- ★ 2026-10-26（用户："这些文字放在一个 ? 里"）：原来卡底常显 2 行判据/配色说明，
+                 占高且每次都在抢注意力 ⇒ 收进标题旁的 `?`（悬停看全文，内容一字不减）。 -->
+            <div class="text-sm font-semibold flex items-center gap-1">
+              <span>观察器</span>
               <span class="text-[10px] text-muted font-normal">（纯观察 · 不进决策链）</span>
+              <span class="text-[10px] text-muted cursor-help border border-border rounded-full px-1 leading-[14px]"
+                    :title="obsHelp">?</span>
             </div>
             <button type="button" class="text-[10px] text-muted hover:text-accent"
                     :title="obsAllOpen ? '全部收起' : '全部展开'"
@@ -528,13 +533,6 @@
             </div>
           </div>
 
-          <div class="text-[10px] text-muted mt-1">
-            退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）；失守=今日跌破且昨日仍在其上；
-            篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点。观察器不构成买卖信号。
-            <span class="block mt-0.5 text-muted/80">
-              配色：涨跌幅=红涨绿跌；回撤 ≤-25% 标红（风险）；距支撑 ≤1.5% 标黄（逼近）；状态标签单独着色。
-            </span>
-          </div>
         </div>
 
 
@@ -3805,6 +3803,15 @@ const _obs = (() => {
   try { return JSON.parse(localStorage.getItem(OBS_KEY) || '{}') } catch { return {} }
 })()
 const wsOpen = ref(!!_obs.ws)
+// ★ 2026-10-26（用户："这些文字放在一个 ? 里"）：观察器标题旁 `?` 的悬停说明。
+//   内容与原先卡底常显的两段文字**完全一致**（判据 + 配色），只是不再占版面。
+//   `\n` 在原生 title 里会换行（浏览器支持）。
+const obsHelp = [
+  '退潮=已从 120 日高点回撤 ≥25% 且近 5 日仍跌（相对行业中位）',
+  '失守=今日跌破且昨日仍在其上；篮子=6 只 AI 硬件龙头等权，回撤为距 120 日高点',
+  '观察器不构成买卖信号',
+  '配色：涨跌幅=红涨绿跌；回撤 ≤-25% 标红（风险）；距支撑 ≤1.5% 标黄（逼近）；状态标签单独着色',
+].join('\n')
 const crowdOpen = ref(!!_obs.crowd)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)

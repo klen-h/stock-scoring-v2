@@ -34,31 +34,14 @@
     <div v-else-if="!snapshot" class="mt-2 text-[11px] text-muted">加载中…</div>
 
     <template v-else>
-      <!-- ① 大盘 -->
-      <div class="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
-        <span v-for="x in indices" :key="x.name">
-          <span class="text-muted">{{ x.name }}</span>
-          <b class="font-mono ml-0.5" :class="pctCls(x.chg_pct)">{{ fmtPct(x.chg_pct) }}</b>
-        </span>
-      </div>
-      <div class="text-[10px] text-muted mt-0.5">
-        <template v-if="market.up != null">
-          涨/跌 {{ market.up }}/{{ market.down }}
-          <template v-if="market.ratio != null"> · 涨跌比 {{ market.ratio }}</template>
-        </template>
-        <template v-if="market.limit_up != null"> · 涨停 {{ market.limit_up }}</template>
-        <template v-if="market.limit_down"> · 跌停 {{ market.limit_down }}</template>
-        <template v-if="market.amount_yi"> · 成交 {{ market.amount_yi }} 亿</template>
-        <span v-if="market.up == null" class="text-amber-400/80"> · 涨跌统计数据不足</span>
-      </div>
-
-      <!-- ② 板块轮动 -->
-      <div v-if="sectors.top.length || sectors.bottom.length"
-           class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
-        <span class="text-muted">板块</span>
-        <span v-for="s in sectors.top.slice(0, 3)" :key="'t' + s.name" class="text-rise">
-          {{ s.name }} {{ fmtPct(s.chg_pct) }}
-        </span>
+      <!-- ★ 2026-10-26（用户："盘面速览的涨跌/主线和快讯解读的相同部分有什么区别"）：
+           答案 = **没有区别**，都是同一份行情换了个位置画。故这里删掉两处重复：
+             · 原「① 大盘」（指数 + 涨/跌 + 涨跌比 + 涨停/跌停 + 成交额）
+               ⇒ 指数在**顶栏**、家数/涨停/成交额在**盘面速览的涨跌条**，全都有了；
+             · 原「② 板块轮动」的**领涨 3 个** ⇒ 已由**主线板块 Top5**（含领涨股）覆盖；
+           只保留唯一增量：**领跌 3 个**（盘面速览只讲强的一侧，弱的这侧只有这里有）。 -->
+      <div v-if="sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+        <span class="text-muted">领跌</span>
         <span v-for="s in sectors.bottom.slice(0, 3)" :key="'b' + s.name" class="text-fall">
           {{ s.name }} {{ fmtPct(s.chg_pct) }}
         </span>
@@ -170,8 +153,8 @@ const open = ref(-1)
 const bodyOpen = ref(true)   // ★ 2026-10-25（用户）：整卡支持收起/展开
 
 const snapshot = computed(() => data.value?.snapshot || null)
-const market = computed(() => snapshot.value?.market || {})
-const indices = computed(() => market.value.indices || [])
+// ★ 2026-10-26：`market` / `indices` 两个 computed 已随「① 大盘」块删除而移除
+//   （指数看顶栏、家数看盘面速览；保留只会是死代码）。
 const sectors = computed(() => snapshot.value?.sectors || { top: [], bottom: [] })
 const movers = computed(() => (snapshot.value?.movers?.rows || []).slice(0, 4))
 const llm = computed(() => data.value?.llm || {})
