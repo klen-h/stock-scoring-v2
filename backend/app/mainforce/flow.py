@@ -369,8 +369,21 @@ def backfill_today(day: str = None) -> dict:
 
     missing = set(missing_codes(day))
     if not missing:
-        print(f"[mainflow] {day} 当日无缺口，跳过批量快照（省 ~55 请求）")
-        return {"day": day, "missing": 0, "snapshot": 0, "written": 0}
+        # ★★ 2026-10-28（护栏，第二道防线）：`missing == 0` **不再被无条件当成好事**。
+        #   历史事故：`missing_codes` 宇宙严格匹配当天 state，而 mainflow 先于
+        #   mainforce_state 跑 ⇒ 名单恒空 ⇒ 每天打印「无缺口」而 4 天没写一行
+        #   （10-24~10-27）。根因已修，但「静默恒空」这种形态必须能被日志抓到：
+        #   若 `mainflow_history` 的最新日期仍 < day，却判「无缺口」，那就是判定失效。
+        #   ⇒ 只打 WARN + 返回 `suspect=True`，**不抛错、不阻断日批**（避免误伤正常运行）。
+        latest = _latest_flow_day()
+        suspect = bool(latest and latest < day)
+        if suspect:
+            print(f"[mainflow] WARN {day} 判为无缺口，但 mainflow_history 最新仅 {latest}"
+                  f" ⇒ 缺口判定可能失效（2026-10-28 曾静默 4 天）")
+        else:
+            print(f"[mainflow] {day} 当日无缺口，跳过批量快照（省 ~55 请求）")
+        return {"day": day, "missing": 0, "snapshot": 0, "written": 0,
+                "latest": latest, "suspect": suspect}
     snap = fetch_flow_snapshot_all()
     recs = []
     for code in missing:
@@ -382,6 +395,21 @@ def backfill_today(day: str = None) -> dict:
     print(f"[mainflow] 当日批量补洞: day={day} 缺 {len(missing)} 只 / 快照 {len(snap)} 只 "
           f"⇒ 写入 {written} 行")
     return {"day": day, "missing": len(missing), "snapshot": len(snap), "written": written}
+
+
+def _latest_flow_day():
+    """`mainflow_history` 里的最新交易日（`YYYY-MM-DD` 字符串），失败返回 None。
+
+    ★ 2026-10-28：`backfill_today` 的「无缺口」自检用 —— 判「无缺口」但库里的最新
+      日期仍落后，说明缺口判定失效（该类 bug 不报错、日志还写「无缺口」）。
+    """
+    try:
+        r = db.fetch_one("SELECT MAX(date) AS d FROM mainflow_history")
+        d = (r or {}).get("d")
+        return str(d) if d else None
+    except Exception as e:
+        print(f"[mainflow] 最新日期自检失败: {str(e)[:60]}")
+        return None
 
 
 def missing_codes(day: str = None) -> list:
