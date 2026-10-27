@@ -385,19 +385,29 @@ def backfill_today(day: str = None) -> dict:
 
 
 def missing_codes(day: str = None) -> list:
-    """当日「有 mainforce_state 但无 mainflow_history」的代码（补洞用）。
+    """当日「有主力状态但无当日资金流」的代码（补洞用）。
 
     ★ 与 `get_all_codes()` 的区别：这里只算**当天真正缺的**，日更后通常只剩个位数
       ⇒ 补洞成本≈0；只有首次并入新宇宙时才会一次补上千只。
+
+    ★★ 2026-10-28（P0：资金流静默滞后，实测 10-26/10-27 两交易日全缺）：
+      原实现用 `m.date = COALESCE(%s, (SELECT MAX(date) FROM mainforce_state))`
+      —— 严格匹配**当天**的 `mainforce_state`。但日批顺序是
+      `mainflow`（第 5）→ `mainforce_state`（第 10）⇒ 跑 mainflow 时当天 state
+      **还没写** ⇒ 名单恒为空 ⇒ `backfill_today` 每天打印「当日无缺口，跳过」
+      而**从未真正补过**。修法：宇宙取 **≤ day 的最新 state**（自然回退到上一交易日），
+      缺口判定仍用「无 day 当日 flow」。
     """
     ensure_table()
+    tgt = "COALESCE(%s, CURRENT_DATE)"
     try:
         rows = db.fetch(
             "SELECT DISTINCT m.code FROM mainforce_state m "
-            "WHERE m.date = COALESCE(%s, (SELECT MAX(date) FROM mainforce_state)) "
-            "  AND NOT EXISTS (SELECT 1 FROM mainflow_history f "
-            "                  WHERE f.code = m.code AND f.date = m.date) "
-            "ORDER BY m.code", (day,))
+            f"WHERE m.date = (SELECT MAX(date) FROM mainforce_state "
+            f"                WHERE date <= {tgt}) "
+            f"  AND NOT EXISTS (SELECT 1 FROM mainflow_history f "
+            f"                  WHERE f.code = m.code AND f.date = {tgt}) "
+            "ORDER BY m.code", (day, day))
         return [r["code"] for r in rows if r.get("code")]
     except Exception as e:
         print(f"[mainflow] 补洞名单读取失败: {str(e)[:100]}")
@@ -414,7 +424,10 @@ def thin_codes(min_rows: int = 5, day: str = None) -> list:
         rows = db.fetch(
             "SELECT m.code AS code, COUNT(f.code) AS c FROM mainforce_state m "
             "LEFT JOIN mainflow_history f ON f.code = m.code "
-            "WHERE m.date = COALESCE(%s, (SELECT MAX(date) FROM mainforce_state)) "
+            # ★ 2026-10-28：与 `missing_codes` 同因修复——宇宙回退到 ≤day 的最新 state
+            #   （日批里 mainflow 先于 mainforce_state 跑，严格匹配当天会恒空）
+            "WHERE m.date = (SELECT MAX(date) FROM mainforce_state "
+            "                WHERE date <= COALESCE(%s, CURRENT_DATE)) "
             "GROUP BY m.code HAVING COUNT(f.code) < %s ORDER BY m.code",
             (day, min_rows))
         return [r["code"] for r in rows if r.get("code")]
