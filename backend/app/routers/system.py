@@ -178,29 +178,56 @@ def _trading_days_ago(n: int) -> str:
 
 
 _SOURCES = [
-    # (名称, 查询SQL取最新日期, 预期节奏说明, 容忍滞后交易日数(默认2))
-    ("行情收盘快照", "SELECT MAX(saved_at) AS v FROM market_snapshot", "每日 15:05", 2),
-    ("回测价格库", "SELECT MAX(date) AS v FROM backtest_prices", "每日 15:40", 2),
-    ("主力资金流", "SELECT MAX(date) AS v FROM mainflow_history", "每日 17:00", 2),
-    ("主力行为状态", "SELECT MAX(date) AS v FROM mainforce_state", "日批 19:00 后", 2),
-    ("龙虎榜", "SELECT MAX(date) AS v FROM lhb_history", "每日 17:45", 2),
-    ("评分快照", "SELECT MAX(rank_date) AS v FROM ranking_history", "每日 18:00", 2),
-    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "日批 19:20 后", 2),
-    ("矛盾扫描", "SELECT MAX(date) AS v FROM contradictions", "每日 15:35", 2),
-    ("每日日报", "SELECT MAX(date) AS v FROM daily_reports", "每日 19:30", 2),
+    # (名称, 查询SQL取最新日期, 预期节奏说明, 容忍滞后交易日数(默认2), sync_meta key(可空))
+    #
+    # ★★ 2026-10-28（用户："统一改成只认数据自身的 MAX(date)，sync_meta 只作辅助"）：
+    #   【铁律】新鲜度**只认数据表自己的日期列**，绝不用 `sync_meta.updated_at` 当"数据新鲜"。
+    #     反例（当天真实事故）：`mainflow` 的 sync_meta 写着 `2026-10-27 19:54`（很新），
+    #     note 里 `missing=0 / written=0`，而 `mainflow_history` 最新只到 10-23
+    #     ⇒ 用 sync_meta 判会显示"新鲜"，用数据自身日期才显示 stale（正确）。
+    #   【修一处】`market_snapshot` 原用 `MAX(saved_at)`（**UTC 时间戳**）⇒ `_to_date`
+    #     截前 10 位得的是 UTC 日期，北京 00:00-08:00 保存的记录会被算成前一天。
+    #     表内本来就有 `data_date`（业务日期）⇒ 改用它。
+    #   【sync_key 的用途】只做**反向自检**：今天确实跑过（sync_meta 更新日 = latest），
+    #     却查不到今天的数据 ⇒ `suspect`（"跑了但没落库"），比 stale 更能指向真故障。
+    ("行情收盘快照", "SELECT MAX(data_date) AS v FROM market_snapshot", "每日 15:05", 2,
+     "market_snapshot"),
+    ("回测价格库", "SELECT MAX(date) AS v FROM backtest_prices", "每日 15:40", 2, "backfill"),
+    ("主力资金流", "SELECT MAX(date) AS v FROM mainflow_history", "日批 mainflow", 2, "mainflow"),
+    ("主力行为状态", "SELECT MAX(date) AS v FROM mainforce_state", "日批 19:00 后", 2,
+     "mainforce_state"),
+    ("龙虎榜", "SELECT MAX(date) AS v FROM lhb_history", "每日 17:45", 2, "lhb"),
+    ("评分快照", "SELECT MAX(rank_date) AS v FROM ranking_history", "日批 score_snapshot", 2,
+     "score_snapshot"),
+    ("消息分快照", "SELECT MAX(snap_date) AS v FROM news_history", "日批 19:20 后", 2,
+     "news_snapshot"),
+    ("矛盾扫描", "SELECT MAX(date) AS v FROM contradictions", "每日 15:35", 2, "contradiction"),
+    ("每日日报", "SELECT MAX(date) AS v FROM daily_reports", "每日 19:30", 2, "daily_report"),
+    # ★ 2026-10-28：补两个核心产物（此前**没有任何新鲜度监控**，断了也看不见）
+    ("战法扫描", "SELECT MAX(scan_date) AS v FROM strategy_results", "日批 strategy_scan", 2,
+     "strategy_scan"),
+    ("选股宽表", "SELECT MAX(date) AS v FROM stock_facts_wide", "日批 stock_facts_wide", 2,
+     "stock_facts_wide"),
     # 周任务：季度数据周更保活，容忍窗口放宽到 8 个交易日（约两周）
-    ("财报扩展(zzshare)", "SELECT MAX(updated_at) AS v FROM stock_finance_zz", "每周一同步", 8),
+    # ⚠️ 这两项用时间戳而非业务日期：财报/周报本身没有"交易日"语义（周更），
+    #    且 `_to_date` 只截日期 ⇒ 容忍窗口 8 天已覆盖时区差，无需改列。
+    ("财报扩展(zzshare)", "SELECT MAX(updated_at) AS v FROM stock_finance_zz", "每周一同步", 8,
+     "zz_finance"),
     # ★ 2026-09-11：周度回测报告（日批周五生成，正文落库 backtest_reports）
-    ("周度回测报告", "SELECT MAX(created_at) AS v FROM backtest_reports", "日批 周五", 8),
-    ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2),
+    ("周度回测报告", "SELECT MAX(created_at) AS v FROM backtest_reports", "日批 周五", 8,
+     "weekly_report"),
+    ("市场状态判定", "SELECT MAX(date) AS v FROM market_regime_history", "每日 15:40", 2,
+     "market_regime"),
     # ★ 2026-09-12：交易员决策简报（日批盘后生成 + 企微推送；此前只有前端按需生成）
-    ("交易员决策简报", "SELECT MAX(date) AS v FROM trader_briefs", "日批 盘后", 2),
+    ("交易员决策简报", "SELECT MAX(date) AS v FROM trader_briefs", "日批 盘后", 2, "trader_brief"),
     # ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读**事件推送**落库；他非每日发视频，
     #   滞后 2~7 天是常态不是故障 ⇒ 容忍放宽到 15 交易日；断流=推送异常或上游停更）
-    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送（不定期）", 15),
+    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送（不定期）", 15,
+     None),
     # ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差）日批落库——
     #   两融本身是 T+1 数据（margin_date 列），MAX(date) 取的是落库日
-    ("流动性三件套", "SELECT MAX(date) AS v FROM liquidity_daily", "日批 盘后", 2),
+    ("流动性三件套", "SELECT MAX(date) AS v FROM liquidity_daily", "日批 盘后", 2,
+     "liquidity_watch"),
 ]
 
 
@@ -231,10 +258,27 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
     t1 = _trading_days_ago(1)
     t2 = _trading_days_ago(2)
 
+    # ★★ 2026-10-28：`sync_meta` 的最近更新日——只作「跑了没落库」的反向自检，
+    #   **不参与**新鲜度判定（新鲜度只认数据表自身的日期列，见 `_SOURCES` 注释）。
+    #   ⚠️ `updated_at` 列是 **TEXT**（`sync_meta.touch` 写 `datetime.now().isoformat()`，
+    #      线上 UTC / 本地北京，取决于部署环境）⇒ 两个坑：
+    #      ① 不能 `AT TIME ZONE`（text 上无此函数，PG 报 `function timezone(unknown, text)`）；
+    #      ② 不能无脑 +8h 转北京（昨天 20:00 会被推成今天 ⇒ **误报** suspect）。
+    #      直接取前 10 位最稳：日批在北京 20:xx（UTC 12:xx）跑，前 10 位恒等于当日业务日。
+    meta_day = {}
+    try:
+        for r in db.fetch("SELECT key, substr(updated_at, 1, 10) AS d FROM sync_meta") or []:
+            if r.get("key") and r.get("d"):
+                meta_day[r["key"]] = str(r["d"])
+    except Exception as e:
+        print(f"[system_status] sync_meta 自检读取失败（不影响新鲜度判定）: {e}")
+
     sources = []
     ok_count = 0
+    suspect_count = 0
     for name, sql, cadence, *rest in _SOURCES:
         max_lag = rest[0] if rest else 2   # 容忍滞后交易日数（周任务放宽）
+        sync_key = rest[1] if len(rest) > 1 else None
         last = None
         try:
             row = db.fetch_one(sql)
@@ -267,9 +311,19 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
             except ValueError:
                 lag = None
             status = "stale"
+
+        # ★★ 2026-10-28：「跑了但没落库」的反向自检（今天真实事故的检测器）——
+        #   当天 `sync_meta` 已更新（说明任务执行过），数据表却查不到当天
+        #   ⇒ 不是"数据源滞后"，是**写库环节失效**（mainflow 曾连续 4 天如此：
+        #   note 写着 10-27、`written=0`、表里最新 10-23）。
+        #   覆盖 `stale`/`missing` 为 `suspect`（更严重、指向更准），`ok` 不动。
+        if status != "ok" and sync_key and meta_day.get(sync_key, "") >= latest:
+            status = "suspect"
+            suspect_count += 1
+
         ok_count += 1 if status == "ok" else 0
         sources.append({"name": name, "last": last, "status": status,
-                        "lag_days": lag, "cadence": cadence})
+                        "lag_days": lag, "cadence": cadence, "sync_key": sync_key})
 
     # 调度器最近运行时间戳（进程内存，未重启才有）
     sched = {}
@@ -284,10 +338,18 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
     #   生产上是 **UTC** ⇒ 顶栏「系统状态 · 截至 HH:MM」会少 8 小时（`hhmm(statusTime)`）。
     #   本项目全链路北京时间 ⇒ 改用 `flash.rules.beijing_now`（本文件其它函数已是同样做法）。
     from app.flash.rules import beijing_now
+    # ★ 2026-10-28：`suspect` 必须在摘要里**单独计数**——它和 stale 看起来都是"没数据"，
+    #   但成因完全相反（stale=上游没给；suspect=我们跑了却没写进去）⇒ 修复动作也不同。
+    summary = f"{ok_count}/{len(sources)} 新鲜"
+    if suspect_count:
+        summary += f" · {suspect_count} 项跑了没落库"
     return {
         "latest_trading_day": latest,
         "generated_at": beijing_now().isoformat(timespec="seconds"),
-        "summary": f"{ok_count}/{len(sources)} 新鲜",
+        "summary": summary,
+        "source_total": len(sources),
+        "source_ok": ok_count,
+        "source_suspect": suspect_count,
         "sources": sources,
         "scheduler": sched,
     }

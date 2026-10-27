@@ -4900,15 +4900,23 @@ async function loadStatus() {
   const brief = { summary: '', dbPct: null, memMb: null }   // 顶栏摘要（见 statusBrief）
   try {
     const { data } = await getSystemStatus()
-    freshnessOk.value = !!data
+    // ★ 2026-10-28（用户："统一只认数据自身的 MAX(date)"）：圆点此前只看**接口有没有返回**
+    //   （`!!data`）⇒ 只要后端活着就是绿的，即使 13 项里 5 项 stale 也照样绿。
+    //   改为看**数据源判定**：任一非 ok 即非绿（浮层里逐项列出，避免"静默健康"）。
+    const srcAll = data?.sources
+    freshnessOk.value = !!data && !(Array.isArray(srcAll) && srcAll.some(v => v.status && v.status !== 'ok'))
     if (data?.generated_at) statusTime.value = String(data.generated_at).slice(11, 16)
     brief.summary = data?.summary || ''
     const src = data?.sources
     if (Array.isArray(src)) {
       const rows = src.slice(0, 12).map(v => {
         const st = v.status || '?'
-        const cls = st === 'ok' ? 'text-emerald-400' : 'text-amber-400'
-        const lag = (v.lag_days != null && v.lag_days !== 0) ? `，滞后 ${v.lag_days} 天` : ''
+        // ★ 2026-10-28：`suspect` = 今天跑过但数据没落库（后端 sync_meta 自检得出），
+        //   与 stale（上游没给数据）成因相反、更严重 ⇒ 红色 + 独立文案。
+        const cls = st === 'ok' ? 'text-emerald-400'
+          : st === 'suspect' ? 'text-rose-400' : 'text-amber-400'
+        const lag = st === 'suspect' ? '，今日已跑但数据未落库'
+          : (v.lag_days != null && v.lag_days !== 0) ? `，滞后 ${v.lag_days} 天` : ''
         return `<div>${v.name}: <b class="${cls}">${st}</b>${lag}</div>`
       }).join('')
       html += `<div class="font-semibold mb-1">${data.summary || ''}</div>` + (rows || '<div>—</div>')
