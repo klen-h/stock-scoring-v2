@@ -260,7 +260,7 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
 
     # ★★ 2026-10-28：`sync_meta` 的最近更新日——只作「跑了没落库」的反向自检，
     #   **不参与**新鲜度判定（新鲜度只认数据表自身的日期列，见 `_SOURCES` 注释）。
-    #   ⚠️ `updated_at` 列是 **TEXT**（`sync_meta.touch` 写 `datetime.now().isoformat()`，
+    #   ⚠️ `updated_at` 列是 **TEXT**（`sync_meta.touch` 写的是**无时区**的 ISO 时间串，
     #      线上 UTC / 本地北京，取决于部署环境）⇒ 两个坑：
     #      ① 不能 `AT TIME ZONE`（text 上无此函数，PG 报 `function timezone(unknown, text)`）；
     #      ② 不能无脑 +8h 转北京（昨天 20:00 会被推成今天 ⇒ **误报** suspect）。
