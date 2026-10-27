@@ -68,6 +68,12 @@ CLUSTER_SCOPE = {
     "中美贸易": "出口链/半导体",
     "黄金贵金属": "黄金股/避险",
     "俄乌局势": "能源/粮食",
+    # ★ 2026-10-28：库里实际有 12 个分类，原先只映射 9 个 ⇒ 下面 3 类的「影响范围」恒为
+    #   `—`（实测各 3/3/2 条）。补上映射即可，**不动打分**（不进 `STRONG_CLUSTERS`，
+    #   避免改变 Top5 口径）。
+    "港股/中概股": "港股/中概互联；外资风险偏好",
+    "农业粮食": "种植/养殖/化肥；粮价链",
+    "美联储人事": "美债/美元；全球风险偏好（政策预期）",
     "其他": "—",
 }
 
@@ -302,7 +308,12 @@ def _score_news(content: str, cluster: str) -> int:
 
 
 def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT) -> Dict:
-    """近 N 条原始快讯 → 规则打分取前 limit 条（带 cluster / 影响范围 / 方向）。"""
+    """近 N 条原始快讯 → 规则打分取前 limit 条（带 cluster / 影响范围 / 方向）。
+
+    ⚠️ `day` 参数**有意不使用**：本函数服务于"最新一份"卡片，语义是"**当前**最重要的几条"。
+       若按 `time >= day` 过滤，凌晨/休市（当天还没有快讯）会直接空列表，反而更差。
+       回放历史判断由 `flash_brief_runs` 负责（存的是当时那份 payload），不靠重算。
+    """
     out = {"rows": [], "scanned": 0, "error": ""}
     try:
         rows = db.fetch("SELECT id, time, content, cluster FROM flash_news "
@@ -329,7 +340,16 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
             "direction": _template_direction(content),
             "source": "rule",
         })
-    scored.sort(key=lambda x: (-x["score"], x["time"]), reverse=False)
+    # ★★ 2026-10-28（用户："最新快讯替换的方式吗？更新了哪里感知不强"）：
+    #   原 `sort(key=lambda x: (-x["score"], x["time"]), reverse=False)` —— 副键 `time`
+    #   是**升序**（旧→新），于是**同分时最旧的高分条排在最前** ⇒ 列表被"最旧的高分新闻"
+    #   长期占满，最新快讯排在队尾被 `[:limit]` 截掉。
+    #   实测（10-28 00:5x）：Top5 全是 score=4 的旧条（最早 10-26 12:05，最新只到 10-27 19:56），
+    #   而 60 条窗口里 10-27 23:49 的最新快讯**根本没进列表** ⇒ 用户"感知不强"。
+    #   修法：两次**稳定**排序 —— 先时间降序（新→旧），再分数降序（同分保持时间降序）。
+    #   ⚠️ 不能写 `sort(..., reverse=True)` 一把梭：那会把分数也弄成升序。
+    scored.sort(key=lambda x: x["time"], reverse=True)
+    scored.sort(key=lambda x: x["score"], reverse=True)
     out["rows"] = scored[:limit]
     return out
 
