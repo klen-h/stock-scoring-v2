@@ -264,7 +264,16 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
 
     today = None
     n = skipped = failed = 0
+    buf = []          # ★ 2026-10-27：批量写缓冲（见 `_save_many` 的性能说明）
     t0 = time.time()
+
+    def _flush():
+        nonlocal n
+        if not buf:
+            return
+        n += _save_many(buf)
+        buf.clear()
+
     for i, (code, (bars, name)) in enumerate(sorted(bars_map.items()), 1):
         if not bars:
             continue
@@ -276,8 +285,9 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
                 ov = mainforce_overlay(bars, flow_rows=flow_map.get(code),
                                        float_shares=fs_map.get(code), regime=regime)
                 if ov:
-                    _save(code, name, today, ov)
-                    n += 1
+                    buf.append((code, name, today, ov))
+                    if len(buf) >= BATCH_SAVE:
+                        _flush()
             except Exception as e:
                 failed += 1
                 if failed <= 5:      # 只打前 5 条，避免刷屏；数量看汇总
@@ -286,6 +296,7 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
         if i % verbose_every == 0:
             print(f"[mainforce_state] {i}/{len(bars_map)} n={n} skip={skipped} "
                   f"fail={failed} ({time.time() - t0:.0f}s)")
+    _flush()          # 尾批
 
     total = len(bars_map)
     # ★ 2026-10-24（BK-12）：空跑必须显式失败——bars_map 全空 = 上游数据断档，
@@ -301,6 +312,43 @@ def refresh_all(codes: list = None, regime: str = None, verbose_every: int = 100
             f"{skipped}）—— 疑似连接/数据源异常，本轮不标记完成，下轮续传")
     return {"codes": total, "saved": n, "skipped": skipped, "failed": failed,
             "date": today, "seconds": round(time.time() - t0, 1)}
+
+
+BATCH_SAVE = 500      # 每批写多少行（10 参数/行 × 500 = 5000，远低于 Postgres 65535 上限）
+
+
+def _save_many(items: list) -> int:
+    """批量写当日状态（多行 VALUES）。返回提交行数。
+
+    ★★ 2026-10-27（实测：单只 `_save` **1207ms** vs overlay 计算 **22ms** ⇒ 写库占 95%+）：
+      2863 只逐条往返在 Actions→Supabase 上要 20+ 分钟；改批量后 6 次往返 ≈ 10 秒。
+      断点续传语义不变：每批**立即提交**，进程中断最多丢一批（下次续传补）。
+    """
+    if not items:
+        return 0
+    cols = ("(code, name, date, phase, signal, mult, chip_json, "
+            "flow5_amt, flow5_amt_yuan, flow_consec)")
+    values_sql = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"] * len(items))
+    params = []
+    for code, name, date, ov in items:
+        params += [code, name, date, ov.get("phase"), ov.get("signal"),
+                   ov.get("mult", 1.0),
+                   json.dumps(ov.get("chip") or {}, ensure_ascii=False),
+                   ov.get("flow5_amt"), ov.get("flow5_amt_yuan"), ov.get("flow_consec")]
+    if db._use_postgres:
+        sql = (f"INSERT INTO mainforce_state {cols} VALUES {values_sql} "
+               f"ON CONFLICT (code, date) DO UPDATE SET "
+               f"name=EXCLUDED.name, phase=EXCLUDED.phase, signal=EXCLUDED.signal, "
+               f"mult=EXCLUDED.mult, chip_json=EXCLUDED.chip_json, "
+               f"flow5_amt=EXCLUDED.flow5_amt, "
+               f"flow5_amt_yuan=EXCLUDED.flow5_amt_yuan, "
+               f"flow_consec=EXCLUDED.flow_consec")
+    else:
+        sql = f"INSERT OR REPLACE INTO mainforce_state {cols} VALUES {values_sql}"
+    db.execute(sql, tuple(params))
+    for code, _n, _d, _ov in items:
+        _latest_cache["data"].pop(code, None)      # 写入即失效（读缓存）
+    return len(items)
 
 
 def _save(code: str, name: str, date: str, ov: dict) -> None:
