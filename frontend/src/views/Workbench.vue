@@ -734,6 +734,7 @@
                   <div class="text-xs font-semibold">主线板块 Top5
                     <span class="text-[10px] text-muted font-normal">
                       {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
+                         : sectorTopSrc === 'local' ? '（实时 · 本地聚合，无领涨股）'
                          : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
                          : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
                   <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
@@ -2122,6 +2123,7 @@
             <div v-if="sectorTop.length" class="border-t border-border/40 mt-2 pt-2">
               <div class="text-[11px] text-muted mb-1">板块主线 Top5
                 <span class="text-[10px]">{{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
+                  : sectorTopSrc === 'local' ? '（实时 · 本地聚合，无领涨股）'
                   : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
                   : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span>
                 <router-link target="_blank" to="/sector" class="text-accent hover:underline ml-1">板块详情</router-link></div>
@@ -4802,6 +4804,27 @@ async function loadSectorTop() {
     if (rows.length) {
       sectorTop.value = rows.slice(0, 5)
       sectorTopSrc.value = 'east'
+      return
+    }
+  } catch { /* 落到本地聚合 */ }
+  // ★★ 2026-10-28（用户："27 日盘中主线 Top5 不是实时的"）：
+  //   东财 clist 盘中常被风控（实测 10-27 主站 + delay 全挂）⇒ 原来直接退到「快照回退」，
+  //   而那是**昨天/更早**的收盘板块数据 ⇒ 盘中看着像"不实时"。
+  //   这里先试**本地内存全市场聚合**：行业均值涨幅来自 `/market/amount-share`
+  //   （读 `_cache` + `industry_map`，**零外部请求**，随行情缓存 120s 刷新）
+  //   ⇒ 至少是"今天盘中"的行业强弱。
+  //   ⚠️ 口径差异（必须如实标注）：本地是**等权平均**、49 个行业分类；
+  //      东财是板块市值加权、90 板块；且本地**没有领涨股**（leader 留空）。
+  try {
+    const { data } = await getSectorAmountShare(10)
+    const rows = ((data && data.rows) || [])
+      .filter(r => r.avg_change_pct != null && (r.stock_n || 0) >= 3)
+      .sort((a, b) => Number(b.avg_change_pct) - Number(a.avg_change_pct))
+      .slice(0, 5)
+      .map(r => ({ name: r.industry, change_pct: r.avg_change_pct, leader: null }))
+    if (rows.length) {
+      sectorTop.value = rows
+      sectorTopSrc.value = 'local'
       return
     }
   } catch { /* 落到快照回退 */ }

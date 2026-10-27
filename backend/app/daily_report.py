@@ -202,23 +202,46 @@ def _sector_flow() -> list:
         return []
 
 
-def _strategy_scan() -> list:
+def _strategy_cn_map() -> dict:
+    """英文 key → 中文名（唯一映射源 `app.strategies.list_strategies`）。"""
+    try:
+        from app.strategies import list_strategies
+        return {c["name_en"]: (c.get("name") or c["name_en"]) for c in list_strategies()}
+    except Exception:
+        return {}
+
+
+def _strategy_scan(day: str = None) -> list:
+    """当日各战法的**实际信号数** + 前 3 只样本（中文名）。
+
+    ★★ 2026-10-28（用户："为什么是 advance2retreat1×1…改为中文"）：
+      ① 原实现 `COUNT(*)` —— 而 `strategy_results` 是**每战法一行**（`results_json` 存数组）
+         ⇒ 计数恒为 1（实测 10-27：dragon_turnaround 实际 10 只却显示 ×1）；
+      ② `strategy_name` 直接展示英文 key；
+      ③ 0 信号的战法也列出来（10 个里 7 个是 0），把真正的命中淹没了。
+      ⇒ 现在：n = `len(results_json)`、中文名、**只列有信号的**、按信号数降序。
+      另外 `day` 由调用方传入（`build_data_md(date)`），避免跨午夜时查错日期。
+    """
+    day = str(day or _today())[:10]
     try:
         rows = db.fetch(
-            "SELECT strategy_name, COUNT(*) AS n, MAX(results_json) AS results_json "
-            "FROM strategy_results WHERE scan_date = %s "
-            "GROUP BY strategy_name ORDER BY n DESC", (_today(),))
+            "SELECT strategy_name, results_json FROM strategy_results WHERE scan_date = %s",
+            (day,))
+        cn = _strategy_cn_map()
         out = []
         for r in rows or []:
-            names = []
+            arr = []
             try:
                 arr = json.loads(r.get("results_json") or "[]") or []
-                for s in arr[:3]:
-                    if s.get("name"):
-                        names.append(str(s["name"]))
             except Exception:
                 pass
-            out.append({"name": r["strategy_name"], "n": r["n"], "samples": names})
+            if not arr:
+                continue                      # 0 信号不展示（不是"没扫"，`skipped_waf` 另有标记）
+            names = [str(s["name"]) for s in arr[:3]
+                     if isinstance(s, dict) and s.get("name")]
+            key = str(r.get("strategy_name") or "")
+            out.append({"name": cn.get(key, key), "n": len(arr), "samples": names})
+        out.sort(key=lambda x: -x["n"])
         return out
     except Exception:
         return []
@@ -838,14 +861,14 @@ def build_data_md(date: str = None) -> str:
             add(f"- ⚠️ 出货嫌疑∩龙虎榜（双重预警，撤退提醒强化）："
                 + "、".join(x["name"] for x in hi[:5]))
 
-    scan = _strategy_scan()
+    scan = _strategy_scan(date)
     if scan:
         add("")
         parts = []
         for s in scan:
-            seg = f"{s['name']}×{s['n']}"
+            seg = f"{s['name']} {s['n']} 只"
             if s.get("samples"):
-                seg += "(" + "、".join(s["samples"]) + ")"
+                seg += "（" + "、".join(s["samples"]) + "）"
             parts.append(seg)
         add("**今日战法扫描命中**：" + "、".join(parts))
     push_line = _push_status_md()
@@ -941,6 +964,43 @@ _SYSTEM = (
 def _valid_holdings_codes() -> set:
     """真实持仓 code 集合（防 LLM 编造持仓观察）。"""
     return {str(p["code"]) for p in _portfolio() if p.get("code")}
+
+
+def _unwrap_llm_text(text: str) -> str:
+    """把 LLM 输出外层可能包着的 JSON 解开（`{"output": "…"}` / ```json 围栏）。
+
+    ★★ 2026-10-28（用户："日报四、AI 解读怎么是 json"）：
+      免费站（SenseNova）部分调用会把正文包进 `{"output": "..."}`；
+      `_render_llm_json` 只认约定字段 ⇒ 返回空 ⇒ 回退 markdown 分支，
+      而 markdown 分支拿到的 `call_llm()` 文本**仍是那层 JSON** ⇒ 原样拼进日报。
+      这里只做**形状解包**（一层、常见字段），解析失败原样返回
+      —— 宁可显示原文，也不吞掉内容。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return ""
+    if t.startswith("```"):
+        parts = t.split("```")
+        t = parts[1] if len(parts) >= 2 else t
+        if t.lstrip().lower().startswith("json"):
+            t = t.lstrip()[4:]
+        t = t.strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return t
+    try:
+        obj = json.loads(t)
+    except Exception:
+        return t
+    if isinstance(obj, dict):
+        for k in ("output", "content", "text", "markdown", "response", "answer", "result"):
+            v = obj.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        if len(obj) == 1:
+            v = next(iter(obj.values()))
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return t
 
 
 def _render_llm_json(data: dict, valid_codes: set) -> str:
@@ -1047,6 +1107,10 @@ def _llm_interpret(data_md: str) -> str:
             md = _render_llm_json(data, valid_codes)
             if md.strip():
                 return "\n" + md
+            # ★ 2026-10-28：字段不匹配但形状是 {"output": …} ⇒ 直接解包当 markdown 用
+            raw = _unwrap_llm_text(json.dumps(data, ensure_ascii=False))
+            if raw and not raw.lstrip().startswith("{"):
+                return "\n" + raw
         return _llm_interpret_markdown(data_md)
     except Exception as e:
         print(f"[daily_report] LLM 解读失败: {e}")
@@ -1074,7 +1138,7 @@ def _llm_interpret_markdown(data_md: str) -> str:
             "如\"跌破X元需警惕\"或\"反弹至Y元观察量能\"；不给买卖指令）\n"
             "最后用 **一句话风险提示** 收尾。")
         text = llm.call_llm(system, user, temperature=0.3)
-        text = (text or "").strip()
+        text = _unwrap_llm_text(text)        # ★ 2026-10-28：解 {"output": …} 外壳
         return "\n" + text if text else ""
     except Exception as e:
         print(f"[daily_report] LLM markdown 兜底失败: {e}")
