@@ -811,6 +811,34 @@ def _snap_disk_save(out: dict) -> None:
         pass
 
 
+def snapshot_meta() -> dict:
+    """**只读两列**（saved_at / data_date）——供「要不要采纳新快照」这类判断用。
+
+    ★★ 2026-10-27（内存 P0，Render 19:30 锯齿的真因）：
+      `tencent.sync_snapshot_if_newer()` 原实现直接调 `load_market_snapshot()`，而后者
+      **即使命中进程缓存也会 `copy.deepcopy()` 整份快照**（5257 只 ≈ 8MB JSON → ~200MB dict，
+      见本文件 `_SNAP_CACHE` 注释）。而非交易时段该循环**每 120s** 醒一次 ⇒
+      每 2 分钟深拷贝 200MB，RSS 冲到 100% 后被 OOM 杀 → 重启再灌一次 → 锯齿。
+      本函数只发一条 `SELECT saved_at, data_date`（单行几十字节），不解析行情、不拷贝。
+    """
+    out = {"saved_at": None, "data_date": None}
+    try:
+        row = db.fetch_one("SELECT saved_at, data_date FROM market_snapshot "
+                           "WHERE key = %s", ("latest",))
+        if row:
+            out["saved_at"] = row.get("saved_at")
+            out["data_date"] = row.get("data_date")
+    except Exception:
+        # 老库可能还没 data_date 列（迁移未跑）
+        try:
+            row = db.fetch_one("SELECT saved_at FROM market_snapshot WHERE key = %s",
+                               ("latest",))
+            out["saved_at"] = (row or {}).get("saved_at")
+        except Exception as e:
+            print(f"[store] 快照 meta 探测失败（忽略）: {e}")
+    return out
+
+
 def load_market_snapshot() -> dict:
     """加载最新行情收盘快照。返回 {stocks, valid_codes, saved_at, data_date}；无则空 dict。
 

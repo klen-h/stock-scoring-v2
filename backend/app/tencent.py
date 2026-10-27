@@ -717,21 +717,29 @@ def sync_snapshot_if_newer() -> bool:
     """
     try:
         from app.flash import store
-        snap = store.load_market_snapshot()
+        # ★★ 2026-10-27（内存 P0）：**先只读两列 meta** 比较数据日，确实更新才整份加载。
+        #   原实现直接 `load_market_snapshot()` —— 而它命中进程缓存时**仍会 `deepcopy` 整份**
+        #   （5257 只 ≈ 8MB JSON → ~200MB dict）⇒ 非交易时段本循环每 120s 深拷贝一次 200MB，
+        #   RSS 冲到 100% 被 OOM 杀 → 重启再灌 → 锯齿（Render 19:30 那次爆满的真因）。
+        meta = store.snapshot_meta()
     except Exception as e:
         print(f"[snapshot] 同步检查失败（忽略）: {e}")
         return False
-    if not snap or not snap.get("stocks"):
-        return False
-    new_d = str(snap.get("data_date") or str(snap.get("saved_at") or "")[:10])[:10]
+    new_d = str(meta.get("data_date") or str(meta.get("saved_at") or "")[:10])[:10]
     cur_d = str(_cache.get("data_date") or "")[:10]
     if not new_d or (cur_d and new_d <= cur_d):
         return False
+    # 只有**确实更新**时才整份加载（这一次 deepcopy 是必要成本，且一天只发生 1~2 次）
+    try:
+        snap = store.load_market_snapshot()
+    except Exception as e:
+        print(f"[snapshot] 快照加载失败（忽略）: {e}")
+        return False
+    if not snap or not snap.get("stocks"):
+        return False
     print(f"[snapshot] 检测到更新的收盘快照: 内存数据日 {cur_d or '空'} → {new_d}"
-          f"（saved_at={snap.get('saved_at')}），采纳之")
+          f"（saved_at={snap.get('saved_at') or meta.get('saved_at')}），采纳之")
     return restore_market_snapshot(restore_stocks=True, _snap=snap)
-    print(f"[snapshot] 已恢复 {len(_valid_codes)} 个有效代码（行情待盘中刷新）")
-    return False
 
 
 def get_stock(code: str) -> dict:
