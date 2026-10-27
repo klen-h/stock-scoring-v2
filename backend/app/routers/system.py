@@ -220,9 +220,12 @@ _SOURCES = [
      "market_regime"),
     # ★ 2026-09-12：交易员决策简报（日批盘后生成 + 企微推送；此前只有前端按需生成）
     ("交易员决策简报", "SELECT MAX(date) AS v FROM trader_briefs", "日批 盘后", 2, "trader_brief"),
-    # ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读**事件推送**落库；他非每日发视频，
-    #   滞后 2~7 天是常态不是故障 ⇒ 容忍放宽到 15 交易日；断流=推送异常或上游停更）
-    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送（不定期）", 15,
+    # ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读**事件推送**落库）。
+    # ★ 2026-10-28（用户："盘后也会有更新"）：原按"不定期、滞后 2~7 天常态"给的 15 交易日
+    #   容忍，实测基本每交易日都有（10-23 三条 / 10-27 17:00 一条盘后）⇒ 收紧到 5 天，
+    #   与 `lidaxiao_views._STALE_DAYS` 同步。断流 = 推送失败（可用卡面「↻ 更新」手动补拉）。
+    #   ⚠️ 无 `sync_key`：该表由 prometheus 式的 push/手动 refresh 写入，没有日批任务版本号。
+    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送/手动补拉", 5,
      None),
     # ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差）日批落库——
     #   两融本身是 T+1 数据（margin_date 列），MAX(date) 取的是落库日

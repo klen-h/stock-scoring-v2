@@ -2487,3 +2487,21 @@ def lidaxiao_view(limit: int = Query(14, ge=1, le=60,
     """
     from app import lidaxiao_views as lv
     return lv.load(limit)
+
+
+@router.post("/lidaxiao/refresh")
+def lidaxiao_refresh(user: dict = Depends(get_current_user)):
+    """手动补拉 xiaopage 最新解读（★ 2026-10-28 用户："盘后也会有更新，加个更新按钮"）。
+
+    【与 push 的关系】push 是"产出时刻"的实时回调（那时 GitHub raw 还没 commit，
+      所以只能带 payload）；本接口是**事后回拉**（Actions 已结束、raw 已更新）。
+      两者共用 `ingest_entries`，口径一致、幂等。
+    【为什么需要】推送链路失败（网络/超时/token 未配）时，那次解读会永久缺失，
+      卡片只能停在旧日期（实测停在 10-24，落后 4 天）。
+    【鉴权】写库 + 外呼 ⇒ 走用户 JWT（不是匿名）。成本见 `refresh_from_upstream`
+      注释：手动触发、ETag 短路、只提交增量条目。
+    """
+    from app import lidaxiao_views as lv
+    r = lv.refresh_from_upstream()
+    r["view"] = lv.load()
+    return r

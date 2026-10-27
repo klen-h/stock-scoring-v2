@@ -2471,20 +2471,31 @@
         <div v-if="lidx && lidx.latest" class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
             <!-- ★★ 2026-10-26（用户："李大霄视角卡片加上展开收起功能"）：标题即开关 -->
+            <!-- ★ 2026-10-28（用户："简化一下文字使得按钮能加进去"）：
+                 「外部观点参考」+「数据截至 10-24 21:02 · 落后4天」≈ 300px，
+                 塞不下按钮 ⇒ 缩为「10-24 21:02 · 4天前」，原义移到 hover title。 -->
             <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
                     @click="lidxOpen = !lidxOpen" :title="lidxOpen ? '点击收起' : '点击展开'">
               <span class="text-[10px] text-muted">{{ lidxOpen ? '▼' : '▶' }}</span>
               李大霄视角
-              <span class="text-[10px] text-muted font-normal">外部观点参考</span>
-              <span v-if="!lidxOpen && lidxCur.date" class="text-[10px] text-muted font-normal">
-                {{ (lidxCur.date || '').slice(5, 16) }}
-              </span>
             </button>
-            <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
-                  :title="lidx.stale ? '上游可能停更或推送异常' : ''">
-              数据截至 {{ (lidx.latest.date || '').slice(5, 16) }} · 落后{{ lidx.lag_days }}天<template v-if="lidx.stale"> ⚠</template>
-            </span>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
+                    :title="`外部观点参考（xiaopage LLM 二手解读，不进决策链）· 数据截至 ${lidx.latest.date || '—'}`">
+                {{ (lidx.latest.date || '').slice(5, 16) }} · {{ lidx.lag_days == null ? '—' : lidx.lag_days }}天前<template v-if="lidx.stale"> ⚠</template>
+              </span>
+              <!-- ★ 2026-10-28：手动补拉（推送失败兜底）。盘后也会更新，故不能只靠事件回调。 -->
+              <button type="button"
+                      class="text-[10px] px-1.5 py-0.5 rounded border border-border hover:text-accent hover:border-accent/40 disabled:opacity-50 disabled:cursor-wait"
+                      :disabled="lidxBusy"
+                      :title="'从 xiaopage 补拉最新解读（盘后也会更新；上游没变时零流量）'"
+                      @click="refreshLidx">
+                {{ lidxBusy ? '…' : '↻ 更新' }}
+              </button>
+            </div>
           </div>
+          <div v-if="lidxMsg" class="text-[10px] mb-1"
+               :class="lidxMsg.ok ? 'text-emerald-400' : 'text-amber-400'">{{ lidxMsg.text }}</div>
 
           <template v-if="lidxOpen">
             <!-- ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换，
@@ -2789,6 +2800,8 @@ import {
   getUserPlans,
   // ★ 2026-10-25：李大霄视角卡（观察器；xiaopage 事件推送，只读）
   getLidaxiaoView,
+  // ★ 2026-10-28：手动补拉（推送失败兜底，进卡面「↻ 更新」按钮）
+  refreshLidaxiao,
   // ★ 2026-10-25：流动性三件套（两融/基差/中美利差 日批落库序列；观察器，只读）
   getMacroLiquidity,
 } from '../api'
@@ -3651,6 +3664,37 @@ async function loadLidaxiao() {
     const { data } = await getLidaxiaoView()
     if (data && data.latest) lidx.value = data
   } catch { /* 静默保留上次值 */ }
+}
+// ★ 2026-10-28（用户："盘后也会有更新，加个手动更新按钮"）：手动补拉。
+//   后端拉 xiaopage 的 videos.json（~6.4MB）→ 同一个 ingest 落库（幂等）。
+//   ⚠️ 这是**慢请求**：Render 海外 1~3s，本地国内网络实测 59s ⇒
+//     必须 busy 态 + 反馈文案，否则用户会重复点击（虽然有 ETag 短路）。
+const lidxBusy = ref(false)
+const lidxMsg = ref(null)
+async function refreshLidx() {
+  if (lidxBusy.value) return
+  lidxBusy.value = true
+  lidxMsg.value = null
+  try {
+    const { data } = await refreshLidaxiao()
+    if (data && data.view && data.view.latest) lidx.value = data.view
+    if (data && data.ok === false) {
+      lidxMsg.value = { ok: false, text: '更新失败：' + (data.error || '未知原因') }
+    } else if (data && data.unchanged) {
+      lidxMsg.value = { ok: true, text: '上游无新解读（已是最新）' }
+    } else {
+      const d = String((data && data.latest && data.latest.date) || '').slice(5, 16)
+      lidxMsg.value = {
+        ok: true,
+        text: `已更新：新增 ${(data && data.stored) ?? 0} 条` + (d ? ` · 最新 ${d}` : ''),
+      }
+    }
+  } catch (e) {
+    lidxMsg.value = { ok: false, text: '更新失败（网络或超时，可稍后重试）' }
+  } finally {
+    lidxBusy.value = false
+    setTimeout(() => { lidxMsg.value = null }, 5000)
+  }
 }
 // ★ 2026-10-27（市场底清单并入观察器）：摘要行 —— 收起时也能看出"3/6 · 距 4 条还差 1 条"。
 //   `n_pass` 由后端下发（默认 4），不写死，避免阈值调了文案没跟。

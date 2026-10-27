@@ -31,6 +31,7 @@ from __future__ import annotations
 ================================================================================
 """
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -40,7 +41,11 @@ _TABLE = "lidaxiao_views"
 _READY = False
 _BJ = timezone(timedelta(hours=8))     # 北京时间（上游 date 列即按它写）
 
-_STALE_DAYS = 14      # 他不是每日发视频，滞后 2~7 天是常态；>14 天才警示（措辞两可：停更/推送异常）
+# ★ 2026-10-28（用户："李大霄视角盘后也会有更新的"）：原设 14 天（当时假设"不定期、滞后 2~7 天
+#   是常态"），但实测 `videos.json` 里 10-23 有三条、10-27 17:00 有一条盘后视频 ⇒ **基本每个
+#   交易日都有**，14 天等于永不告警（本次就是停在 10-24 落后 4 天却无任何提示）。
+#   收紧到 5 天：正常隔 1~2 天（含周末）不会误报，真断档（推送失败/停更）能亮 ⚠。
+_STALE_DAYS = 5
 
 _NOTE = ("LLM 结构化解读（xiaopage 项目产物，非本人原文）；"
          "观点仅供参考，不构成投资建议，不进入本项目任何决策链")
@@ -222,6 +227,79 @@ def _latest_meta() -> Optional[Dict]:
                 "date": r.get("date")} if r else None
     except Exception:
         return None
+
+
+def _latest_date() -> Optional[str]:
+    """表内最新一期的日期（`YYYY-MM-DD HH:MM`），空表返回 None。"""
+    try:
+        r = db.fetch_one(f"SELECT MAX(date) AS d FROM {_TABLE}")
+        d = (r or {}).get("d")
+        return str(d) if d else None
+    except Exception:
+        return None
+
+
+# ── 手动补拉（★ 2026-10-28 用户："盘后也会有更新，加一个手动更新按钮"）────────
+#
+# 【为什么要"补拉"】原设计是**事件推送**（xiaopage 在 LLM 出解读的那一刻 POST），
+#   而那个时刻 Actions 还没 commit `videos.json` ⇒ 推送链路一旦失败（网络/超时/token），
+#   这条解读就永久缺失，卡片只能停在旧日期（本次实测停在 10-24，落后 4 天）。
+#   ⇒ 补一条"事后回拉"通道：Actions 结束后 raw 已更新，此时拉是**准的**。
+#
+# 【成本】`videos.json` ≈ 6.4MB（484+ 条全量，xiaopage 未拆分小文件）。
+#   · 只手动触发，**不进任何定时循环**；
+#   · 带 `If-None-Match`（ETag）⇒ 上游没变时 304 零 body，重复点击不产生流量；
+#   · 只把"表内最新日期及之后"的条目送 `ingest_entries`（含同日多条视频），
+#     而非全量 484 条 upsert；空表/全无匹配时取前 3 条自愈。
+_DEFAULT_UPSTREAM = (
+    "https://raw.githubusercontent.com/klen-h/xiaopage/main/public/data/videos.json")
+_ETAG: Dict[str, Optional[str]] = {"v": None}
+
+
+def refresh_from_upstream(url: str = None, timeout=(10.0, 90.0)) -> Dict:
+    """从 xiaopage 的 `videos.json`（GitHub raw）补拉并落库（幂等）。
+
+    ⚠️ `timeout` 用 (connect, read) 二元组且给足 90s：本地实测这 6.4MB 在**国内网络**
+       要 59s（GitHub raw 慢），给 25s 会直接超时失败；Render（海外）通常 1~3s。
+    """
+    import requests
+
+    url = (url or os.environ.get("LIDX_UPSTREAM_URL") or _DEFAULT_UPSTREAM).strip()
+    headers = {"User-Agent": "stock-scoring/lidaxiao-refresh"}
+    if _ETAG.get("v"):
+        headers["If-None-Match"] = _ETAG["v"]
+    try:
+        r = requests.get(url, headers=headers, timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": f"上游拉取失败: {str(e)[:90]}"}
+    if r.status_code == 304:
+        return {"ok": True, "unchanged": True, "latest": _latest_meta(),
+                "lag_days": _lag_days((_latest_meta() or {}).get("date"))}
+    if r.status_code != 200:
+        return {"ok": False, "error": f"上游 HTTP {r.status_code}"}
+    _ETAG["v"] = r.headers.get("ETag")
+    try:
+        data = r.json()
+    except Exception:
+        return {"ok": False, "error": "上游不是合法 JSON（可能被限流/返回 HTML）"}
+    if not isinstance(data, list):
+        return {"ok": False, "error": "上游不是 JSON 数组"}
+
+    base = _latest_date()
+    # 只送「表内最新日期及之后」的条目：normal 情况就是新增的 1~3 条；
+    # 同日多条视频也一并覆盖（date 含时刻，比较用前 10 位）。
+    subset = [e for e in data
+              if isinstance(e, dict) and str(e.get("date") or "")[:10] >= (base or "")]
+    if not subset:
+        subset = data[:3]          # 自愈：上游最新日期反而更旧（回滚场景）→ 补前 3 条
+    res = ingest_entries(subset)
+    latest = res.get("latest") or {}
+    print(f"[lidaxiao] refresh: fetched={len(data)} sent={len(subset)} "
+          f"stored={res.get('stored')} skipped={res.get('skipped')}")   # ASCII（铁律⑥）
+    return {"ok": True, "unchanged": False, "fetched": len(data), "sent": len(subset),
+            "stored": res.get("stored"), "skipped": res.get("skipped"),
+            "reasons": res.get("reasons"), "latest": latest,
+            "lag_days": _lag_days(latest.get("date"))}
 
 
 # ── 读取（GET /market/lidaxiao）─────────────────────────────────────────────

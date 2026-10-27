@@ -99,3 +99,7 @@ cd frontend && npm run dev                    # 前端工作台
 - **2026-10-25** 新增「李大霄视角」卡（工作台右栏）：xiaopage 在 LLM 输出解读的时刻
   **事件推送**（`POST /api/market/lidaxiao/push` 共享密钥）→ 落库 → 只读卡片；
   **纯展示参考，不进决策链**（`backend/app/lidaxiao_views.py` 模块头含预登记声明）。
+- **2026-10-28** 李大霄卡加**手动补拉**（`POST /api/market/lidaxiao/refresh`，卡片「↻ 更新」）：
+  推送是"产出时刻"回调，失败就永久缺那期（实测停在 10-24 落后 4 天）⇒ 补"事后回拉"
+  xiaopage 的 `videos.json`（GitHub raw ≈6.4MB，ETag 短路，只提交增量条目，幂等）；
+  卡面文案精简为 `MM-DD HH:MM · N天前` 以容纳按钮；`stale` 阈值 14 → 5 天（实测基本每交易日都有）。

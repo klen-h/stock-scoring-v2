@@ -258,6 +258,11 @@ export const getPolicyAnnouncements = (date = '') =>
 export const getLidaxiaoView = (limit = 14) =>
   http.get('/market/lidaxiao', { params: { limit } })
 
+// ★ 2026-10-28（用户："盘后也会有更新，加个手动更新按钮"）：推送失败时的手动兜底。
+//   后端从 xiaopage 的 videos.json（GitHub raw，~6.4MB）补拉 → 走同一个 ingest 落库；
+//   带 ETag 短路（上游没变 → 304 零 body），故重复点击不产生流量。**手动、不进定时**。
+export const refreshLidaxiao = () => http.post('/market/lidaxiao/refresh')
+
 // ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差，日批落库的历史序列 + 最新一期；
 // 纯观察器不进决策链，口径见后端 app/liquidity_watch.py）。日频数据，进页面加载即可。
 export const getMacroLiquidity = (days = 30) =>
