@@ -1197,7 +1197,7 @@ def scan_all_strategies() -> dict:
     /api/strategies/{name}/scan 完全同源。此前战法信号仅靠手动触发、
     strategy_results 只有一次性迁移的 5 天数据；战法回测（backtest_warfare）
     依赖持续信号样本，本任务让其可持续积累。"""
-    from app.tencent import _cache, refresh_all_stocks
+    from app.tencent import _cache, refresh_all_stocks, waf_cooldown_left
     if not _cache.get("stocks"):
         print("[scheduler] 行情缓存为空，先刷新全量行情")
         refresh_all_stocks()
@@ -1205,7 +1205,7 @@ def scan_all_strategies() -> dict:
     from app.strategies.router import _do_scan
     from app.strategies.market_regime import is_strategy_admitted
     from app.strategies.recommendation import get_push_whitelist
-    stats = {"scanned": 0, "signals": 0, "failed": 0, "skipped": 0}
+    stats = {"scanned": 0, "signals": 0, "failed": 0, "skipped": 0, "skipped_waf": 0}
 
     # ★ 当日K线就绪校验：腾讯 K 线在收盘后延迟更新，过早扫描会拿到上一交易日数据
     #   （实测：15:40 扫描 → 16:45 推送的信号全是上周五收盘价，当日已收盘却未更新）
@@ -1238,6 +1238,16 @@ def scan_all_strategies() -> dict:
         if not admitted:
             stats["skipped"] += 1
             print(f"[scheduler] 战法 {key} 未准入（{admit_reason}），跳过扫描")
+            continue
+        # ★★ 2026-10-27（用户批准）：WAF 冷却期内**跳过该战法且不落库**。
+        #   原实现拿不到 K 线 → `_do_scan` 返回空 list → `save_scan_result(key, [])`
+        #   把「被限流」写成「0 只信号」，与「真的没信号」无法区分（污染信号统计与
+        #   回测样本；实测 10-27 日批 ma_pullback 就因此写成 0 只）。
+        _waf_left = waf_cooldown_left()
+        if _waf_left > 0:
+            stats["skipped_waf"] += 1
+            print(f"[scheduler] 战法 {key} WAF 冷却中（剩 {_waf_left:.0f}s），"
+                  f"跳过且不落库（保留上次结果）")
             continue
         try:
             results = _do_scan(strategy, 50e8, 1000e4)

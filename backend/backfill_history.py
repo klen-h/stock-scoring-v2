@@ -119,13 +119,18 @@ def _basis_changed(code: str, start: str, rows: list) -> bool:
     return False
 
 
-def backfill(code: str, name: str) -> int:
-    """增量回填单只：已有数据只补最新日期之后，无数据全量。返回写入行数。"""
+def backfill(code: str, name: str, quiet: bool = False) -> int:
+    """增量回填单只：已有数据只补最新日期之后，无数据全量。返回写入行数。
+
+    `quiet=True`（★ 2026-10-27，用户："正常的无需打印，只打印异常的"）：
+      日批逐只回填时静默「增量/OK」这类正常行，只保留异常（STALE / FAIL / 复权 / WARN）。
+      手动脚本仍默认 quiet=False，排障时看得到逐只明细。
+    """
     global _EM_FAIL_STREAK
     latest = db.fetch_one(
         "SELECT MAX(date) AS d FROM backtest_prices WHERE code = %s", (code,))
     start = (latest or {}).get("d")
-    if start:
+    if start and not quiet:
         print(f"  增量 {code} {name}（已有数据至 {start}）")
     rows = data.fetch_history(code, start=start)
     _target = str(_TARGET_DATE)[:10] if _TARGET_DATE else ""
@@ -160,12 +165,14 @@ def backfill(code: str, name: str) -> int:
             rows = full
             n = data.save_prices(code, name, rows, replace=True)
             print(f"  [复权] {code} 已全量重拉并**覆盖** {n} 条")
-            print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
+            if not quiet:
+                print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
             time.sleep(RATE_LIMIT)
             return n
         print(f"  [复权] {code} 全量重拉未取到更长序列，保留增量结果")
     n = data.save_prices(code, name, rows)
-    print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
+    if not quiet:
+        print(f"  [OK] {code} {name}: {n} 条 ({rows[0]['date']} ~ {rows[-1]['date']})")
     time.sleep(RATE_LIMIT)
     return n
 
@@ -282,7 +289,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     #    指数各 ~750 行、共 3 次请求，且在个股**配额逻辑之前** ⇒ 不占 DAILY_STOCK_QUOTA。
     for _code, _name in INDEX_BENCHMARKS:
         stats["codes"] += 1
-        stats["rows"] += backfill(_code, _name)
+        stats["rows"] += backfill(_code, _name, quiet=True)
 
     # 基准日期：个股/ETF 应同步到该日期（★ 仍取 sh000300：主基准地位不变）
     benchmark = (db.fetch_one(
@@ -309,7 +316,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     stats["etf_pending"] = len(etf_pending)
     for name, code, _ in etf_pending:
         stats["codes"] += 1
-        stats["rows"] += backfill(code, name)
+        stats["rows"] += backfill(code, name, quiet=True)
 
     # ETF 滞后检测：ETF 是宏观回测/信号跟踪的数据底座，此前曾全部静默停在
     # 08-24 四个交易日无人发现（战法个股有 missing 检测，ETF 池没有）→ 补上
@@ -363,7 +370,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     stats["stock_rows"] = 0
     for code, name, _ in batch:
         stats["codes"] += 1
-        stats["stock_rows"] += backfill(code, name)
+        stats["stock_rows"] += backfill(code, name, quiet=True)
 
     # 缺失检测：回填后重新取最新日期，仍落后基准的进告警清单
     stats["stock_missing"] = []
@@ -375,7 +382,21 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
                 stats["stock_missing"].append(f"{c}({name})")
     stats["stale"] = _STALE_COUNT
     stats["stock_missing_n"] = len(stats.get("stock_missing") or [])
-    print(f"[backfill_daily] 完成: {stats}")
+    # ★★ 2026-10-27（用户："正常的无需打印，只打印异常的"）：
+    #   原实现 `print(f"...: {stats}")` 会把 904 只 stock_missing 整串刷屏
+    #   （实测单次 600+ 行，日志一滚就把真正的异常冲掉）。
+    #   现在：只打一行摘要；**有缺口才**列明细（各取前 20 条 + 总数）。
+    _miss = stats.get("stock_missing") or []
+    _etf_miss = stats.get("etf_missing") or []
+    print(f"[backfill_daily] 完成: {stats['codes']} 只 / {stats['rows']} 行"
+          f"（基准 {stats.get('benchmark')}｜个股滞后 {len(_miss)}"
+          f"｜ETF 缺 {len(_etf_miss)}｜STALE {stats.get('stale')}）")
+    if _etf_miss:
+        print(f"  [WARN] ETF 缺失 {len(_etf_miss)}: " + "、".join(_etf_miss[:20])
+              + (" …" if len(_etf_miss) > 20 else ""))
+    if _miss:
+        print(f"  [WARN] 个股滞后 {len(_miss)}（配额内未轮到，次日继续推进）: "
+              + "、".join(_miss[:20]) + (" …" if len(_miss) > 20 else ""))
     _TARGET_DATE = None
     return stats
 

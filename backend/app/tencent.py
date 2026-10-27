@@ -196,6 +196,16 @@ _waf_blocked_until = 0
 _WAF_COOLDOWN = 120  # WAF触发后冷却120秒
 
 
+def waf_cooldown_left() -> float:
+    """WAF 冷却剩余秒数（0 = 未冷却）。
+
+    ★ 2026-10-27（用户批准）：供扫描层**显式跳过并标记**。原实现拿不到 K 线时返回空
+      list，上层 `save_scan_result(key, [])` 把「被限流」写成「0 只信号」，与「真的没信号」
+      混为一谈 —— 污染信号统计与回测样本（铁律：宁可标记缺失，不可伪装成 0）。
+    """
+    return max(0.0, float(_waf_blocked_until) - time.time())
+
+
 def _is_stale_kline(klines: list) -> bool:
     """
     K线是否"跨交易日陈旧"（最后一根早于最近交易日）。
