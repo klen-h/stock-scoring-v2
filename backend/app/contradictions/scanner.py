@@ -201,6 +201,16 @@ def _load_index_kline(symbol: str = "000001", count: int = 30) -> List[Dict]:
     except Exception as e:
         print(f"[contradiction] 读取指数 K 线失败: {e}")
     if rows:
+        # ★★ 2026-10-28（用户二报："推演证伪 待日批（指数截至 2026-10-23），还是不对"）：
+        #   腾讯**返回了数据但日期是旧的**（WAF 期间给缓存/停更），此时旧逻辑直接 return，
+        #   库兜底只在"返回空"时才走 ⇒ 观察器继续用 10-23 的收盘冒充当日。
+        #   实测：`key_level_watch` 里 000001 最新只到 10-23（rows=2），而
+        #   `backtest_prices.sh000001` 已到 10-27（日批每天维护）⇒ 应取更新的那份。
+        db_rows = _db_index_kline(symbol, count)
+        if db_rows and str(db_rows[-1].get("date") or "") > str(rows[-1].get("date") or ""):
+            print(f"[contradiction] {symbol} 实时源较旧（{rows[-1].get('date')}）"
+                  f"→ 库内日线更新（{db_rows[-1].get('date')}），改用库")
+            return db_rows
         return rows
     try:
         em = _em_index_kline(symbol, count)

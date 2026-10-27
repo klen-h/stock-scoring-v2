@@ -155,6 +155,22 @@ def compute(day: str = None) -> Dict:
         return {"ok": False, "reason": "指数K线全部不可用", "errors": errors}
 
     day = str(day or max(datas))[:10]
+    # ★★ 2026-10-28（P0：数据日期欺骗）：原逻辑 `day = max(datas)` 后把**所有** index
+    #   一并写成 `day` 的行 —— 若某指数只到 10-26（实时源停更），它的 10-26 收盘就会被
+    #   标成 10-27 的行，下游（推演证伪/观察器）据此当"当日收盘"用。
+    #   实测：10-27 那天只写进 2 个指数、000001 直接缺行（rows=2 且停在 10-23）。
+    #   改：逐行校验，只保留**日期等于目标日**的指数；不一致的记进 errors（宁缺勿错日期）。
+    kept, dropped = [], []
+    for r in rows:
+        if r["kline_date"] == day:
+            kept.append(r)
+        else:
+            dropped.append(f"{r['name']}({r['kline_date']})")
+    if dropped:
+        errors.append("日期不符已跳过：" + "、".join(dropped))
+    rows = kept
+    if not rows:
+        return {"ok": False, "reason": f"无指数有 {day} 的收盘", "errors": errors}
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         db.execute("DELETE FROM key_level_watch WHERE date = %s", (day,))
