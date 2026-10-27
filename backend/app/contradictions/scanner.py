@@ -159,6 +159,34 @@ def _em_index_kline(symbol: str, count: int) -> List[Dict]:
     return []
 
 
+def _db_index_kline(symbol: str, count: int = 30) -> List[Dict]:
+    """从 `backtest_prices` 读**日批已落库**的指数日线（前缀按指数口径推断）。
+
+    ★★ 2026-10-28（用户："观察器：待日批（指数截至 2026-10-23）"）：
+      腾讯 `get_kline` 遇 WAF、东财 push2his 又常断连时，本函数让观察器至少能拿到
+      **上一交易日收盘**（由日批 `INDEX_BENCHMARKS` 每晚维护），而不是卡在几天前。
+      指数代码口径：`399xxx` → sz，`000xxx` → sh（个股同码不在此路径，调用方只传指数）。
+    """
+    code = str(symbol or "").strip()
+    if code[:3] == "399":
+        full = "sz" + code
+    elif code[:3] == "000":
+        full = "sh" + code
+    else:
+        return []
+    try:
+        from app.database import db
+        rows = db.fetch(
+            "SELECT date, open, high, low, close, volume FROM backtest_prices "
+            "WHERE code = %s ORDER BY date DESC LIMIT %s", (full, int(count))) or []
+    except Exception as e:
+        print(f"[contradiction] 指数库兜底读取失败 {full}: {str(e)[:60]}")
+        return []
+    return [{"date": str(r["date"])[:10], "open": r["open"], "high": r["high"],
+             "low": r["low"], "close": r["close"], "volume": r["volume"]}
+            for r in reversed(rows)]
+
+
 def _load_index_kline(symbol: str = "000001", count: int = 30) -> List[Dict]:
     """加载指数日 K 线：腾讯 → 东财兜底。
 
@@ -181,6 +209,13 @@ def _load_index_kline(symbol: str = "000001", count: int = 30) -> List[Dict]:
             return em
     except Exception as e:
         print(f"[contradiction] {symbol} 东财兜底失败: {str(e)[:60]}")
+    # ★★ 2026-10-28：两路实时源都失败 ⇒ 用**日批落库**的指数日线兜底
+    #   （至少是上一交易日收盘，观察器不再因一次 WAF 就显示"待日批（指数截至 10-23）"）
+    db_rows = _db_index_kline(symbol, count)
+    if db_rows:
+        print(f"[contradiction] {symbol} 实时源均失败 → 日批库内日线兜底 "
+              f"{len(db_rows)} 根（截至 {db_rows[-1]['date']}）")
+        return db_rows
     return []
 
 
