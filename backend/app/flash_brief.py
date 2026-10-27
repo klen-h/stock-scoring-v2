@@ -52,6 +52,11 @@ COOLDOWN_MIN = int(os.environ.get("FLASH_BRIEF_COOLDOWN_MIN") or 30)
 DAILY_MAX = int(os.environ.get("FLASH_BRIEF_DAILY_MAX") or 8)
 NEWS_LIMIT = int(os.environ.get("FLASH_BRIEF_NEWS") or 5)          # 每次解读的重要条数
 POLL_NEWS_SCAN = int(os.environ.get("FLASH_BRIEF_SCAN") or 60)     # 扫描多少条原始快讯
+# ★ 2026-10-28（用户："更新了哪里感知不强"）：新条目窗口。
+#   60s 轮询是**静默整体替换**，用户看不出"这次多了哪条" ⇒ 给窗口内的条打 `is_new`，
+#   前端在条目左侧点一个蓝点 + 卡头显示「新 N」。30 分钟 ≈ 一个轮询周期的 30 倍，
+#   既不会刚刷完就全部变旧，也不会长期亮着。
+NEW_WINDOW_MIN = int(os.environ.get("FLASH_BRIEF_NEW_MIN") or 30)
 # 自动触发阈值
 IDX_TRIGGER = float(os.environ.get("FLASH_BRIEF_IDX_TRIGGER") or 1.0)   # 指数 |涨跌|%
 RATIO_LOW = float(os.environ.get("FLASH_BRIEF_RATIO_LOW") or 0.4)       # 涨跌比（跌家/涨家 的倒数口径见下）
@@ -314,7 +319,8 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
        若按 `time >= day` 过滤，凌晨/休市（当天还没有快讯）会直接空列表，反而更差。
        回放历史判断由 `flash_brief_runs` 负责（存的是当时那份 payload），不靠重算。
     """
-    out = {"rows": [], "scanned": 0, "error": ""}
+    out = {"rows": [], "scanned": 0, "error": "",
+           "new_window_min": NEW_WINDOW_MIN, "new_count": 0}
     try:
         rows = db.fetch("SELECT id, time, content, cluster FROM flash_news "
                         "ORDER BY time DESC LIMIT %s", (int(scan),)) or []
@@ -322,6 +328,9 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
         out["error"] = f"快讯: {str(e)[:60]}"
         return out
     out["scanned"] = len(rows)
+    # ★ 2026-10-28（方案 2）：窗口内新增标记。`time` 是 `YYYY-MM-DD HH:MM:SS` 字符串，
+    #   同日可直接按字符串比大小（字典序 == 时间序）；跨日也成立（日期前缀先比）。
+    cutoff = (_now() - timedelta(minutes=NEW_WINDOW_MIN)).strftime("%Y-%m-%d %H:%M:%S")
     scored = []
     for r in rows:
         content = (r.get("content") or "").replace("\n", " ").strip()
@@ -331,14 +340,16 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
         sc = _score_news(content, cluster)
         if sc <= 0:
             continue
+        t = str(r.get("time") or "")
         scored.append({
-            "id": r.get("id"), "time": str(r.get("time") or ""),
+            "id": r.get("id"), "time": t,
             "cluster": cluster, "score": sc,
             "text": content[:400],
             "gist": _template_gist(content),
             "scope": CLUSTER_SCOPE.get(cluster, "—"),
             "direction": _template_direction(content),
             "source": "rule",
+            "is_new": bool(t and t >= cutoff),
         })
     # ★★ 2026-10-28（用户："最新快讯替换的方式吗？更新了哪里感知不强"）：
     #   原 `sort(key=lambda x: (-x["score"], x["time"]), reverse=False)` —— 副键 `time`
@@ -351,6 +362,9 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
     scored.sort(key=lambda x: x["time"], reverse=True)
     scored.sort(key=lambda x: x["score"], reverse=True)
     out["rows"] = scored[:limit]
+    # 只统计**展示出来的**几条里有多少是窗口内新增（用户看到的就是这几条；
+    # 60 条里新增多少与卡面无关，报大了反而误导）
+    out["new_count"] = sum(1 for x in out["rows"] if x.get("is_new"))
     return out
 
 
@@ -425,9 +439,11 @@ SYSTEM = (
     '"market": "<一句话，引用指数/涨跌家数/成交额说明大盘>", '
     '"sectors": [{"name":"板块","note":"轮动含义，≤30字"}], '
     '"movers": [{"name":"个股","note":"异动原因，≤30字"}], '
-    '"news": [{"idx":1,"gist":"一句话摘要≤40字","cause":"原因≤40字",'
+    '"news": [{"id":"<该条快讯的 id，照抄输入里的 id= 后面的值>",'
+    '"idx":1,"gist":"一句话摘要≤40字","cause":"原因≤40字",'
     '"scope":"影响范围（板块/个股类别）",'
-    '"direction":"利好/利空/中性（对 A 股整体风险偏好，不是对油价/黄金）"}]}'
+    '"direction":"利好/利空/中性（对 A 股整体风险偏好，不是对油价/黄金）"}]}\n'
+    "★ `id` 必须逐字照抄（它是前端把解读对回原文的唯一键）；`idx` 仍要给，作旧版兜底。"
 )
 
 
@@ -452,10 +468,14 @@ def _user_prompt(p: Dict) -> str:
               f"｜换手 {x.get('turnover')}｜量比 {x.get('volume_ratio')}"
               f"｜命中 {'、'.join(x.get('tags') or [])}" for x in (mv.get("rows") or [])]
     lines += ["", f"### 重要快讯（规则打分取前 {len(n.get('rows') or [])} 条，原文截断 400 字）"]
+    # ★★ 2026-10-28（方案 3：解读按 id 对齐，不再只靠序号）：
+    #   60s 轮询会让 rows 顺序/成员变化（新快讯插队、Top5 重排）⇒ 旧版按 `idx` 对齐
+    #   会把 A 条的解读贴到 B 条上（"张冠李戴"）。这里把真实 `id` 显式喂给模型，
+    #   让它原样回传，前端以 id 为唯一键回填。
     for i, x in enumerate(n.get("rows") or [], 1):
-        lines.append(f"{i}. [{x.get('time')}][{x.get('cluster')}] {x.get('text')}")
-    lines += ["", "## 请按 system 的 schema 输出 JSON：news 的 idx 必须对应上面快讯的序号；"
-                  "sectors/movers 各最多 3 条，没有就空数组；"
+        lines.append(f"{i}. [id={x.get('id')}] [{x.get('time')}][{x.get('cluster')}] {x.get('text')}")
+    lines += ["", "## 请按 system 的 schema 输出 JSON：news 每项必须带 `id`（照抄上面的 id=）"
+                  "且 `idx` 与序号一致；sectors/movers 各最多 3 条，没有就空数组；"
                   "**invalidate 必填**（可观测阈值，不是「走势反转」这种空话）。"]
     return "\n".join(lines)
 
@@ -487,10 +507,46 @@ def _fallback_llm(p: Dict) -> Dict:
         "movers": [{"name": f"{x.get('name')}({x.get('code')})",
                     "note": "、".join(x.get("tags") or [])}
                    for x in (p.get("movers") or {}).get("rows", [])[:3]],
-        "news": [{"idx": i, "gist": x.get("gist"), "cause": "（待解读）",
+        # ★ 2026-10-28：兜底也带 `id`，与 LLM 路径同构（前端只认 id，回退 idx）
+        "news": [{"id": x.get("id"), "idx": i, "gist": x.get("gist"), "cause": "（待解读）",
                   "scope": x.get("scope"), "direction": x.get("direction")}
                  for i, x in enumerate((p.get("news") or {}).get("rows", []), 1)],
     }
+
+
+def _align_news_ids(llm: Dict, p: Dict) -> Dict:
+    """把 LLM 的 `news` 逐项对齐到快照里的真实 `id`（★ 2026-10-28 方案 3）。
+
+    【为什么后端还要校一遍】prompt 已要求照抄 `id`，但模型可能漏写/抄错/沿用旧版只给
+      `idx`。前端虽"id 优先、idx 兜底"，两者同时错就会**张冠李戴**（A 条的解读贴到 B 条）。
+      这里用 `idx` 反查真实 id 强制纠正 —— `idx` 就是输入里的行号，模型最容易给对；
+      `id` 是 20 位数字串，抄错概率高。
+
+    ⚠️ **只能用于"刚生成"的 llm**：它的 `idx` 对应的就是本次 prompt 的 rows。
+       缓存命中的旧 llm 绝不可这样纠正 —— 那时的 rows 顺序/成员与现在不同，
+       按当前 idx 回填等于把旧解读错配到新快讯上。
+    """
+    try:
+        rows = (p.get("news") or {}).get("rows") or []
+        if not rows or not isinstance(llm, dict):
+            return llm
+        ids = [str(r.get("id")) for r in rows]
+        idset = set(ids)
+        for n in (llm.get("news") or []):
+            if not isinstance(n, dict):
+                continue
+            if str(n.get("id") or "").strip() in idset:
+                continue                       # 模型抄对了，保留
+            try:
+                i = int(n.get("idx")) - 1
+            except (TypeError, ValueError):
+                i = -1
+            if 0 <= i < len(ids):
+                n["id"] = ids[i]               # 抄错/漏写 ⇒ 按行号纠正
+        return llm
+    except Exception as e:
+        print(f"[flash_brief] news id 对齐失败（不影响解读）: {str(e)[:60]}")
+        return llm
 
 
 def _parse_json(txt: str) -> Optional[Dict]:
@@ -720,6 +776,8 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
             err = f"LLM 失败: {str(e)[:100]}"
     if not llm:
         llm = _fallback_llm(p)
+    # ★ 2026-10-28（方案 3）：只对**本次生成**的 llm 做 id 纠正（其 idx 对应本次 rows）
+    llm = _align_news_ids(llm, p)
 
     try:
         db.upsert(_TABLE, {

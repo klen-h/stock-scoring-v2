@@ -17,6 +17,11 @@
       <span v-if="triggers.length"
             class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] cursor-help"
             :title="'盘中异动：' + triggers.join('、')">异动 {{ triggers.length }}</span>
+      <!-- ★ 2026-10-28（方案 2）：60s 轮询是静默替换 ⇒ 显式告诉用户"这次多了几条"。
+           只统计**展示出来的那几条**里窗口内新增的，不虚报。 -->
+      <span v-if="!isHistory && newsNew"
+            class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[10px] cursor-help"
+            :title="`近 ${newsWindow} 分钟内新增的重要快讯（条目左侧蓝点）`">新 {{ newsNew }}</span>
       <span v-if="asOf" class="text-[10px] text-muted font-mono">数据 {{ asOf }}</span>
       <router-link v-if="bodyOpen" to="/monitor" target="_blank" rel="noopener"
                    class="ml-auto text-[10px] text-accent hover:underline">全部快讯 ↗</router-link>
@@ -94,6 +99,9 @@
           <button type="button" class="w-full text-left px-2 py-1.5"
                   @click="openKey = (openKey === n.key ? '' : n.key)">
             <div class="flex items-center gap-1.5">
+              <!-- ★ 2026-10-28（方案 2）：窗口内新增标记（蓝点），解决"静默替换看不出变化" -->
+              <span v-if="n.isNew" class="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0"
+                    :title="`近 ${newsWindow} 分钟新增`"></span>
               <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
               <span class="px-1 rounded text-[10px]" :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
               <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
@@ -204,6 +212,10 @@ const asOf = computed(() => (isHistory.value
 const source = computed(() => (isHistory.value ? (hist.value?.source || '') : (data.value?.source || '')))
 const cached = computed(() => !!data.value?.cached)
 const triggers = computed(() => data.value?.trigger || [])
+// ★ 2026-10-28（方案 2）：窗口内新增的**展示条数** + 窗口分钟数（由后端下发，不写死）。
+//   历史 tab 没有实时快照 ⇒ 一律 0（不伪造"当时新增了几条"）。
+const newsNew = computed(() => (isHistory.value ? 0 : (snapshot.value?.news?.new_count || 0)))
+const newsWindow = computed(() => snapshot.value?.news?.new_window_min || 30)
 
 async function pickRun(r, i) {
   if (!r) return
@@ -275,12 +287,19 @@ const cards = computed(() => {
     }))
   }
   const rows = snapshot.value?.news?.rows || []
-  const map = {}
-  for (const x of (llm.value.news || [])) map[Number(x.idx)] = x
+  // ★★ 2026-10-28（方案 3）：解读按 **id** 回填，序号只作旧数据兜底。
+  //   原因：60s 轮询会重算 Top5（新快讯插队、排序变化），若还按 `idx` 对齐，
+  //   A 条的解读会被贴到 B 条上（"张冠李戴"）。后端 prompt 已要求逐字回传 id。
+  const byId = {}
+  const byIdx = {}
+  for (const x of (llm.value.news || [])) {
+    if (x.id !== undefined && x.id !== null && x.id !== '') byId[String(x.id)] = x
+    byIdx[Number(x.idx)] = x
+  }
   return rows.map((r, i) => {
-    const l = map[i + 1] || {}
+    const l = (r.id != null && byId[String(r.id)]) || byIdx[i + 1] || {}
     return {
-      key: r.id || i,
+      key: r.id != null ? r.id : i,
       time: r.time,
       cluster: r.cluster || '其他',
       score: r.score || 0,
@@ -289,6 +308,8 @@ const cards = computed(() => {
       cause: l.cause || '',
       scope: l.scope || r.scope,
       direction: l.direction || r.direction,
+      // ★ 2026-10-28（方案 2）：窗口内新增（后端 `is_new`）⇒ 条目左侧蓝点
+      isNew: !!r.is_new,
     }
   })
 })
