@@ -379,6 +379,29 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     name_of = dict(stock_items)
     latest_map = _latest_date_map(codes)
 
+    # ★★ 2026-10-27：**zzshare 按天快速通道**（1 天 1 请求拿全市场）
+    #   先补最近 5 个交易日，再算「谁还缺」——逐只链路只处理它补不到的
+    #   （窗口内有除权的票 / zzshare 不可用 / 池外代码）。
+    #   口径已实测（scripts/check_zzshare_qfq.py：close 0.00% 一致、volume 差 100 倍已换算）；
+    #   写库走 `save_prices(replace=False)` ⇒ **只补缺失日期，绝不动已有历史**。
+    #   fail-open：任何异常都退回纯逐只，不阻断日批。
+    try:
+        from app.backtest import zz_daily
+        _zz = zz_daily.fill_missing(stock_items, benchmark, days=5)
+        stats["zz_ok"] = _zz.get("ok")
+        stats["zz_days"] = _zz.get("days")
+        stats["zz_rows"] = _zz.get("rows")
+        stats["zz_codes"] = _zz.get("codes_filled")
+        stats["zz_exright_skipped"] = _zz.get("exright_skipped")
+        if _zz.get("rows"):
+            stats["rows"] += _zz["rows"]
+            latest_map = _latest_date_map(codes)      # 补完重查：逐只只跑剩下的
+            print(f"  [zz] 按天通道补 {_zz['codes_filled']} 只 / {_zz['rows']} 行"
+                  f"（除权跳过 {_zz.get('exright_skipped')} 只 ⇒ 交回逐只）")
+    except Exception as e:
+        stats["zz_ok"] = False
+        print(f"  [WARN] zzshare 快速通道不可用（回退逐只）: {str(e)[:100]}")
+
     # ①+② 优先队列：跳过已同步的，无数据排最前；近 7 天上榜股插队最优先
     rank_codes = _collect_rank_codes(7)
     pending, skipped = [], 0
@@ -425,10 +448,13 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     #   现在：只打一行摘要；**有缺口才**列明细（各取前 20 条 + 总数）。
     _miss = stats.get("stock_missing") or []
     _etf_miss = stats.get("etf_missing") or []
+    _zz_txt = (f"｜zz按天 {stats.get('zz_codes')} 只/{stats.get('zz_rows')} 行"
+               f"（除权跳过 {stats.get('zz_exright_skipped')}）"
+               if stats.get("zz_ok") else "｜zz按天 不可用")
     print(f"[backfill_daily] 完成: {stats['codes']} 只 / {stats['rows']} 行"
           f"（基准 {stats.get('benchmark')}｜必补 {stats.get('stock_fresh')}"
           f" / 老缺口 {stats.get('stock_rest')}｜本轮排队 {len(batch)}"
-          f"｜ETF 缺 {len(_etf_miss)}｜STALE {stats.get('stale')}）")
+          f"{_zz_txt}｜ETF 缺 {len(_etf_miss)}｜STALE {stats.get('stale')}）")
     if _etf_miss:
         print(f"  [WARN] ETF 缺失 {len(_etf_miss)}: " + "、".join(_etf_miss[:20])
               + (" …" if len(_etf_miss) > 20 else ""))
