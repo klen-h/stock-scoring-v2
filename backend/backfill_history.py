@@ -68,6 +68,37 @@ def _stale_fail(code: str, name: str, got, target: str) -> None:
           f"（源无新数据/被限流；连续 {_EM_FAIL_STREAK}）")
 
 
+FRESH_GAP_DAYS = 5   # 「近 5 个自然日 ≈ 3 个交易日」内的缺口 ⇒ 必补，不占配额
+
+
+def _needs_now(latest: str, benchmark: str) -> bool:
+    """是否属于「今晚必须补上」的新鲜缺口：从无数据，或滞后 ≤ FRESH_GAP_DAYS 天。
+
+    ★ 2026-10-27：这个窗口覆盖快照 T+1/T+5 收益回查、形态扫描、战法 T+1 撮合 ——
+      它们是**时钟属性**，晚一天就永久缺一天；而 900 只停在两周前的老缺口可以慢慢追。
+    """
+    if not latest:
+        return True                      # 从无数据（新股/新入池）⇒ 必须补全量
+    try:
+        from datetime import datetime as _dt
+        d0 = _dt.strptime(str(latest)[:10], "%Y-%m-%d").date()
+        d1 = _dt.strptime(str(benchmark)[:10], "%Y-%m-%d").date()
+        return (d1 - d0).days <= FRESH_GAP_DAYS
+    except Exception:
+        return False
+
+
+def _split_fresh(pending: list, benchmark: str) -> tuple:
+    """把待补池切成 (必补, 可延后)。`pending` 元素为 `(code, name, latest)`。
+
+    保持各自原有顺序（调用方已按「上榜股 → 无数据 → 越旧越前」排过序）。
+    """
+    fresh, rest = [], []
+    for p in pending:
+        (fresh if _needs_now(p[2], benchmark) else rest).append(p)
+    return fresh, rest
+
+
 def _basis_changed(code: str, start: str, rows: list) -> bool:
     """增量数据与库中「重叠日」的收盘价是否不一致（= 库里的旧数据与当前源对不上）。
 
@@ -364,8 +395,14 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     stats["rank_priority"] = len([c for c in rank_codes
                                   if any(p[0] == c for p in pending)])
 
-    # ③ 限量推进（quota=None = 不限量，补历史用）
-    batch = pending if quota is None else pending[:quota]
+    # ③ 分两段推进（★★ 2026-10-27）：
+    #   近 5 日缺口 / 从无数据 ⇒ **必补**（不占配额，回测刚需，今晚必须齐）；
+    #   其余老缺口 ⇒ 按 quota 限量（默认 150），逐日追平。
+    #   旧行为是 `pending[:quota]` 一刀切：配额被最旧缺口占满，当日数据反而补不上。
+    fresh, rest = _split_fresh(pending, benchmark)
+    batch = fresh + (rest if quota is None else rest[:quota])
+    stats["stock_fresh"] = len(fresh)
+    stats["stock_rest"] = len(rest)
     stats["stock_quota"] = quota if quota is not None else "unlimited"
     stats["stock_rows"] = 0
     for code, name, _ in batch:
@@ -389,7 +426,8 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     _miss = stats.get("stock_missing") or []
     _etf_miss = stats.get("etf_missing") or []
     print(f"[backfill_daily] 完成: {stats['codes']} 只 / {stats['rows']} 行"
-          f"（基准 {stats.get('benchmark')}｜个股滞后 {len(_miss)}"
+          f"（基准 {stats.get('benchmark')}｜必补 {stats.get('stock_fresh')}"
+          f" / 老缺口 {stats.get('stock_rest')}｜本轮排队 {len(batch)}"
           f"｜ETF 缺 {len(_etf_miss)}｜STALE {stats.get('stale')}）")
     if _etf_miss:
         print(f"  [WARN] ETF 缺失 {len(_etf_miss)}: " + "、".join(_etf_miss[:20])
@@ -401,15 +439,18 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     return stats
 
 
-def backfill_lagging() -> dict:
-    """一次性补齐全部滞后个股（不限配额）。用于：
-    换库/迁移/长假期后的大面积滞后（2026-09-13 实测 643 只中 499 只滞后，
-    其中 141 只停 09-07 —— 排行榜 T+5 轨道 09-02 起整批缺席）。
-    复用 backfill_daily 的池与优先队列，quota=None 不限量；
-    499 只 × 1s 限速 ≈ 10 分钟。幂等，可重复跑（已同步的自动跳过）。
+def backfill_lagging(quota: int = DAILY_STOCK_QUOTA) -> dict:
+    """补齐滞后个股：**近 5 日缺口无条件全补**，老缺口按 `quota` 限量。
+
+    ★★ 2026-10-27（实测：日批 2936s / 1029 只全试 / 904 只仍滞后）：
+      原实现 `quota=None` 每晚把整个滞后池试一遍——1056 次请求 × 1s 限速 + 东财断连 +
+      腾讯 WAF 冷却 ⇒ 49 分钟里大半是失败重试，而且**当日真正需要的近几天数据也被挤在后面**。
+      现在分两段：① 从无数据 / 滞后 ≤5 天 ⇒ 必补（快照 T+N、形态扫描、战法撮合的刚需）；
+      ② 其余老缺口每天推进 `quota` 只（默认 150），慢慢追平。
+      需要一次性追平历史时显式传 `quota=None`。
     """
-    print("── 滞后个股全量补齐（不限配额）──")
-    return backfill_daily(quota=None)
+    print(f"── 滞后个股补齐（近 5 日必补 + 老缺口 {quota if quota is not None else '不限'} 只）──")
+    return backfill_daily(quota=quota)
 
 
 def check_signal_coverage(days: int = 3) -> dict:

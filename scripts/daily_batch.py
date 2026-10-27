@@ -91,17 +91,22 @@ def task_backfill():
       只剩本日批一天一次供给；而 `_collect_rank_codes(7)` 近 7 天上榜股去重
       ≈157 只 > 配额 150 → 插队机制占满配额仍不够，普通股几乎补不到。
       实测代价：09-09 快照的 T+5（目标日 09-16）覆盖仅 25/50。
-      `backfill_daily(quota=None)` 会**跳过已同步到基准的股票** → 无积压时零开销，
-      仅积压时一次性追平（全池 ~700 只 ≈ 12 分钟；日批 74→86min，远低于 Actions
-      180min 上限）。幂等，可重复跑。
+
+    ★★ 2026-10-27（实测 2936s / 1029 只全试 / 904 只仍滞后）：
+      不限量反而有害——1056 次请求 × 1s 限速 + 东财断连 + 腾讯 WAF 冷却，
+      49 分钟里大半是失败重试，**当日真正需要的近几天数据反被挤在后面**。
+      改为「近 5 日缺口必补（不占配额）+ 老缺口每天 150 只」：
+      稳态日批降到 ~10 分钟，且当日数据 100% 齐全；老缺口逐日追平。
+      需要一次性追平历史时：`backfill_lagging(quota=None)`。
     """
     from backfill_history import backfill_lagging
-    r = backfill_lagging()
+    r = backfill_lagging()          # 默认 quota=DAILY_STOCK_QUOTA（150）
     # ★ 2026-10-20：显式回报滞后/STALE 数量（原先把整个 dict 塞进日志，
     #   747 只滞后时被淹没；而旧逻辑还会把"源限流"伪装成"已同步"）。
     miss = r.get("stock_missing") or []
     txt = (f"回填完成: {r.get('stock_rows')} 行，基准 {r.get('benchmark')}，"
-           f"滞后 {len(miss)} 只，STALE {r.get('stale') or 0} 只")
+           f"必补 {r.get('stock_fresh')} / 老缺口 {r.get('stock_rest')}，"
+           f"仍滞后 {len(miss)} 只，STALE {r.get('stale') or 0} 只")
     if miss:
         txt += f"（前5: {', '.join(miss[:5])}）"
     return txt
