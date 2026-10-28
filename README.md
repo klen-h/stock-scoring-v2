@@ -101,5 +101,7 @@ cd frontend && npm run dev                    # 前端工作台
   **纯展示参考，不进决策链**（`backend/app/lidaxiao_views.py` 模块头含预登记声明）。
 - **2026-10-28** 李大霄卡加**手动补拉**（`POST /api/market/lidaxiao/refresh`，卡片「↻ 更新」）：
   推送是"产出时刻"回调，失败就永久缺那期（实测停在 10-24 落后 4 天）⇒ 补"事后回拉"
-  xiaopage 的 `videos.json`（GitHub raw ≈6.4MB，ETag 短路，只提交增量条目，幂等）；
+  xiaopage 的解读数据（ETag 短路，只提交增量条目，幂等）；
   卡面文案精简为 `MM-DD HH:MM · N天前` 以容纳按钮；`stale` 阈值 14 → 5 天（实测基本每交易日都有）。
+  数据源首选 xiaopage 新派生的 **`views-lite.json`**（只留最近 60 条 + 消费侧字段，
+  6.2MB → **166KB，-97.4%**；拉取 59s → 16s，ETag 命中 2s），失败自动回退完整版 `videos.json`。

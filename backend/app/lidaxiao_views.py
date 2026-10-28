@@ -251,39 +251,45 @@ def _latest_date() -> Optional[str]:
 #   · 带 `If-None-Match`（ETag）⇒ 上游没变时 304 零 body，重复点击不产生流量；
 #   · 只把"表内最新日期及之后"的条目送 `ingest_entries`（含同日多条视频），
 #     而非全量 484 条 upsert；空表/全无匹配时取前 3 条自愈。
+# ★★ 2026-10-28（用户："6.4m 太大了，调整一下 json"）：
+#   xiaopage 侧已派生一份**消费侧精简版** `views-lite.json`
+#   （`scripts/build-views-lite.js`：只留最近 60 条 + 消费方要的字段，
+#     6243KB → 166KB，-97.3%；每次写 videos.json 后自动重建、随 CI 提交）。
+#   ⇒ 默认读 lite；老部署/未重建时**回退完整版** `videos.json`（幂等，口径一致）。
+#   ⚠️ `videos.json` 仍是 xiaopage 站点自己的数据源，**不能**为了省流量去裁剪它。
 _DEFAULT_UPSTREAM = (
+    "https://raw.githubusercontent.com/klen-h/xiaopage/main/public/data/views-lite.json")
+_LEGACY_UPSTREAM = (
     "https://raw.githubusercontent.com/klen-h/xiaopage/main/public/data/videos.json")
-_ETAG: Dict[str, Optional[str]] = {"v": None}
+_ETAG: Dict[str, Optional[str]] = {}      # url → ETag（lite/legacy 各一份，别串）
 
 
-def refresh_from_upstream(url: str = None, timeout=(10.0, 90.0)) -> Dict:
-    """从 xiaopage 的 `videos.json`（GitHub raw）补拉并落库（幂等）。
-
-    ⚠️ `timeout` 用 (connect, read) 二元组且给足 90s：本地实测这 6.4MB 在**国内网络**
-       要 59s（GitHub raw 慢），给 25s 会直接超时失败；Render（海外）通常 1~3s。
-    """
+def _fetch_and_ingest(url: str, timeout) -> Dict:
+    """拉一个上游文件 → 过滤出新增 → `ingest_entries`。失败返回 ok=False。"""
     import requests
 
-    url = (url or os.environ.get("LIDX_UPSTREAM_URL") or _DEFAULT_UPSTREAM).strip()
     headers = {"User-Agent": "stock-scoring/lidaxiao-refresh"}
-    if _ETAG.get("v"):
-        headers["If-None-Match"] = _ETAG["v"]
+    etag = _ETAG.get(url)
+    if etag:
+        headers["If-None-Match"] = etag
     try:
         r = requests.get(url, headers=headers, timeout=timeout)
     except Exception as e:
-        return {"ok": False, "error": f"上游拉取失败: {str(e)[:90]}"}
+        return {"ok": False, "error": f"上游拉取失败: {str(e)[:90]}", "url": url}
     if r.status_code == 304:
         return {"ok": True, "unchanged": True, "latest": _latest_meta(),
-                "lag_days": _lag_days((_latest_meta() or {}).get("date"))}
+                "lag_days": _lag_days((_latest_meta() or {}).get("date")),
+                "source": url, "bytes": 0}
     if r.status_code != 200:
-        return {"ok": False, "error": f"上游 HTTP {r.status_code}"}
-    _ETAG["v"] = r.headers.get("ETag")
+        return {"ok": False, "error": f"上游 HTTP {r.status_code}", "url": url}
+    _ETAG[url] = r.headers.get("ETag")
     try:
         data = r.json()
     except Exception:
-        return {"ok": False, "error": "上游不是合法 JSON（可能被限流/返回 HTML）"}
+        return {"ok": False, "error": "上游不是合法 JSON（可能被限流/返回 HTML）",
+                "url": url}
     if not isinstance(data, list):
-        return {"ok": False, "error": "上游不是 JSON 数组"}
+        return {"ok": False, "error": "上游不是 JSON 数组", "url": url}
 
     base = _latest_date()
     # 只送「表内最新日期及之后」的条目：normal 情况就是新增的 1~3 条；
@@ -295,11 +301,32 @@ def refresh_from_upstream(url: str = None, timeout=(10.0, 90.0)) -> Dict:
     res = ingest_entries(subset)
     latest = res.get("latest") or {}
     print(f"[lidaxiao] refresh: fetched={len(data)} sent={len(subset)} "
-          f"stored={res.get('stored')} skipped={res.get('skipped')}")   # ASCII（铁律⑥）
+          f"stored={res.get('stored')} skipped={res.get('skipped')} "
+          f"bytes={len(r.content)}")   # ASCII（铁律⑥）
     return {"ok": True, "unchanged": False, "fetched": len(data), "sent": len(subset),
             "stored": res.get("stored"), "skipped": res.get("skipped"),
             "reasons": res.get("reasons"), "latest": latest,
-            "lag_days": _lag_days(latest.get("date"))}
+            "lag_days": _lag_days(latest.get("date")),
+            "source": url, "bytes": len(r.content)}
+
+
+def refresh_from_upstream(url: str = None, timeout=(10.0, 60.0)) -> Dict:
+    """补拉 xiaopage 的最新解读并落库（幂等）：**先 lite，失败回退完整版**。
+
+    ⚠️ `timeout` 用 (connect, read)：lite 只有 ~166KB（Render 海外 1~2s）；
+       回退完整版 6.4MB 时国内网络实测 59s ⇒ 给 60s 读超时。
+    """
+    urls = ([url] if url
+            else [os.environ.get("LIDX_UPSTREAM_URL") or _DEFAULT_UPSTREAM,
+                  _LEGACY_UPSTREAM])
+    last = ""
+    for u in urls:
+        r = _fetch_and_ingest(str(u).strip(), timeout)
+        if r.get("ok"):
+            return r
+        last = r.get("error") or last
+        print(f"[lidaxiao] 上游 {str(u)[-28:]} 失败，尝试下一个: {last}")   # ASCII（铁律⑥）
+    return {"ok": False, "error": last or "上游不可用"}
 
 
 # ── 读取（GET /market/lidaxiao）─────────────────────────────────────────────
