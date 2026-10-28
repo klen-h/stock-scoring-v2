@@ -2201,6 +2201,9 @@ def _limit_stats(day: str) -> Optional[Dict]:
                           if tot["touched"] else None),
             "buckets": out_buckets, "total": tot,
             "skipped": {"new_stock": skip_new, "bad_data": skip_bad},
+            # ★ 2026-10-28：样本股票数（`backtest_prices` 当日覆盖）—— 前端据此标注
+            #   "参考值"并显示覆盖率。此前只在 `meta` 长文本里写了一句，实际没人 hover 到。
+            "sample_n": len(rows),
             "meta": (f"口径：曾触及涨停（最高价≥涨停价）为分母，"
                      f"剔除一字板（{tot['oneword']} 只，一字不会炸，留在分母会压低炸板率）"
                      f"与新股（上市<{_NEW_STOCK_MIN_DAYS}交易日，剔除 {skip_new} 只）；"
@@ -2215,6 +2218,33 @@ def _limit_stats(day: str) -> Optional[Dict]:
     except Exception as e:
         print(f"[market] limit stats failed: {e}")             # ASCII（铁律⑥）
         return None
+
+
+def _limit_stats_cov(day: str, ladder: Optional[Dict] = None) -> Optional[Dict]:
+    """`_limit_stats` + **样本覆盖率披露**（★ 2026-10-28）。
+
+    【为什么必须披露】炸板率的分母来自 `backtest_prices`，而它只覆盖回填过的股票
+    （当日实测 1032 只 / 全市场约 5570 ⇒ **18.5%**）。同屏还有两个"炸板"数：
+      · 实时口径（zzshare rt_k 全市场）：50.0%
+      · 日批本组（1032 只样本）      ：42.1%
+    两个数并列却不标覆盖率 ⇒ 用户只能问"哪个对"。**差 8 个点几乎全部来自分母不同**。
+
+    【口径选择】用「样本里**封住的涨停股数** / 官方涨停家数（`ladder.total`）」而不是
+    「样本股票数 / 全市场股票数」—— 炸板率关心的是**涨停股**的代表性，
+    用涨停股覆盖率能直接说明"这份比率代表了多少涨停"。
+    """
+    st = _limit_stats(day)
+    if not isinstance(st, dict):
+        return st
+    try:
+        official = int((ladder or {}).get("total") or 0)
+        sealed = (st.get("total") or {}).get("sealed")
+        if official > 0 and sealed is not None:
+            st["official_limit_up"] = official
+            st["coverage_pct"] = round(int(sealed) / official * 100, 1)
+    except Exception as e:
+        print(f"[market] limit coverage calc failed: {e}")     # ASCII（铁律⑥）
+    return st
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -2432,7 +2462,8 @@ def market_limit_review(date: str = None):
             out["source"] = "snapshot"
             out["as_of"] = str(snap.get("date") or d)[:10]      # 快照 = 收盘定稿时刻
     if out["ladder"] or out["stocks"]:
-        out["stats"] = _limit_stats(d)          # ★ 炸板率/大面率（来自 backtest_prices）
+        # ★ 2026-10-28：走带覆盖率披露的版本（`_limit_stats_cov`）
+        out["stats"] = _limit_stats_cov(d, out.get("ladder"))
         return out
     # ── 回退：直连 zzshare（快照缺失时，拿到的是**动态值**）──
     # ★ 2026-10-25（BK-31）：直连回退加**按日期 300s 冷却**——旧实现每请求 2 次
@@ -2461,7 +2492,7 @@ def market_limit_review(date: str = None):
             print(f"[market] limit-review live failed: {e}")    # ASCII（铁律⑥）
         _LIMIT_LIVE_CACHE.update(date=d, ts=_now_ts, out=dict(out))
     if out["ladder"] or out["stocks"]:
-        out["stats"] = _limit_stats(d)
+        out["stats"] = _limit_stats_cov(d, out.get("ladder"))     # ★ 2026-10-28 同上
         return out
     # ── ★★ 用户 review 意见②：双源都失败时**降级为最后可用快照 + stale 标记**，
     #   而不是让整块数据消失（盘前页面最怕某块突然空白）。
@@ -2491,7 +2522,7 @@ def market_limit_review(date: str = None):
                 out["stale"] = True          # ★ 明确标注"这是旧数据"
     except Exception as e:
         print(f"[market] limit-review stale fallback failed: {e}")   # ASCII（铁律⑥）
-    out["stats"] = _limit_stats(d)
+    out["stats"] = _limit_stats_cov(d, out.get("ladder"))         # ★ 2026-10-28 同上
     return out
 
 

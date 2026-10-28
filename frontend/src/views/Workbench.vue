@@ -1874,13 +1874,30 @@
                  ⇒ 两者都对，因为是两件事。组合读法：**A 高 B 低 = 分歧大但亏钱温和；
                  双高 = 真退潮**。口径细节全在 stats.meta 里（悬停可见）。 -->
             <div v-if="limitReview.stats" class="mb-2 border-t border-border/40 pt-2">
+              <!-- ★★ 2026-10-28（用户："日批炸板率样本标注"）：覆盖率不足 50% 时**明确标成参考值**。
+                   为什么必须有这一行：同一张卡上方是「实时全市场炸板 50%」，这里是「日批样本 42.1%」，
+                   两个数并列却不标分母 ⇒ 用户只能问"哪个对"。差 8 个点几乎全部来自样本覆盖。 -->
+              <div v-if="statsSampleLow" class="flex items-center gap-1.5 flex-wrap text-[10px] mb-1"
+                   :title="`分母来自 backtest_prices，当日仅覆盖 ${limitReview.stats.sample_n} 只股票；` +
+                           `样本内封住 ${limitReview.stats.total?.sealed} 只 vs 官方涨停 ` +
+                           `${limitReview.stats.official_limit_up} 只 ⇒ 覆盖 ${limitReview.stats.coverage_pct}%。` +
+                           `与上方实时口径（全市场 rt_k）**不可直接对比**。`">
+                <span class="px-1 rounded bg-amber-500/15 text-amber-300 shrink-0">⚠ 参考值</span>
+                <span class="text-muted">样本覆盖 {{ limitReview.stats.coverage_pct }}%
+                  （{{ limitReview.stats.total?.sealed }}/{{ limitReview.stats.official_limit_up }} 只涨停 ·
+                  样本 {{ limitReview.stats.sample_n }} 只）</span>
+                <span class="text-muted/70">· 与上方实时口径分母不同</span>
+              </div>
               <div class="flex items-center gap-3 flex-wrap text-[11px]"
                    :title="limitReview.stats.meta">
-                <span class="text-muted">炸板率(A) <b class="font-mono text-amber-300">{{ limitReview.stats.break_rate ?? '—' }}%</b>
+                <span class="text-muted">炸板率(A)
+                  <b class="font-mono" :class="statsSampleLow ? 'text-amber-300/60' : 'text-amber-300'">{{ limitReview.stats.break_rate ?? '—' }}%</b>
                   <span class="text-[10px]">接力意愿</span></span>
-                <span class="text-muted">大面率(B) <b class="font-mono text-red-400">{{ limitReview.stats.big_loss_rate ?? '—' }}%</b>
+                <span class="text-muted">大面率(B)
+                  <b class="font-mono" :class="statsSampleLow ? 'text-red-400/60' : 'text-red-400'">{{ limitReview.stats.big_loss_rate ?? '—' }}%</b>
                   <span class="text-[10px]">亏钱烈度</span></span>
-                <span class="text-muted">封板率 <b class="font-mono text-gray-300">{{ limitReview.stats.seal_rate ?? '—' }}%</b></span>
+                <span class="text-muted">封板率
+                  <b class="font-mono" :class="statsSampleLow ? 'text-gray-500' : 'text-gray-300'">{{ limitReview.stats.seal_rate ?? '—' }}%</b></span>
                 <span class="text-[10px] text-muted">
                   曾涨停 {{ limitReview.stats.total?.touched }}（一字 {{ limitReview.stats.total?.oneword }}）
                   · 分母已剔一字与新股</span>
@@ -3118,6 +3135,16 @@ const macroErr = ref('')
 const emotion = ref(null)
 // 初始即给完整结构：模板首帧（接口返回前）会读取 steps/stocks，null 会崩
 const limitReview = ref({ steps: [], stocks: [] })
+// ★★ 2026-10-28（用户："日批炸板率样本标注"）：日批炸板率的分母来自 `backtest_prices`，
+//   它只覆盖回填过的股票（实测当日 1032 只）⇒ 与**同卡上方**的实时全市场口径不可比：
+//     实时（zzshare rt_k 全市场）炸板 50.0% ｜ 日批（1032 只样本）炸板率 42.1%
+//   差 8 个点几乎全部来自分母，不是"两个数打架"。⇒ 覆盖率 <50% 时降级为「参考值」并明示。
+//   覆盖率口径 = 样本内**封住的涨停股数** / 官方涨停家数（`ladder.total`），
+//   因为炸板率关心的是"涨停股的代表性"，用涨停股覆盖率比用股票数更贴切。
+const statsSampleLow = computed(() => {
+  const c = limitReview.value?.stats?.coverage_pct
+  return c != null && c < 50
+})
 // ★ 2026-09-29（P1）：盘中实时涨停/炸板（rt_k 全市场精确口径）—— 与 limitReview 的
 //   「收盘定稿」口径互补：盘前/休市时后端返回 is_intraday=false（上一交易日收盘定稿）。
 const realtimeUplimit = ref(null)

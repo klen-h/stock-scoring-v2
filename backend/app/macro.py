@@ -589,6 +589,14 @@ RULES = [
      "band": {"bull_lo": 0, "bull_hi": 2, "bear_above": 3, "bear_below": -4},
      "strength": 1.0,
      "tag_bull": "油价温和(需求健康)", "tag_bear": "油价剧烈波动",
+     # ★★ 2026-10-28（用户："原油涨了却没算进去"）：区间参数化的规则**天然有盲区** ——
+     #   `(bull_hi, bear_above]` 即 (2%, 3%] 既不是"温和"也不是"剧烈" ⇒ 按设计不计分。
+     #   问题不在"不计分"（那是刻意的非单调设计），而在于**它在界面上完全消失**：
+     #   用户看到布伦特 +2.36%，却找不到它对分数做了什么 ⇒ 只能怀疑系统坏了。
+     #   ⇒ 给盲区一个**中性 tag**（direction 仍为 0、不进 `triggered`、不参与打分），
+     #     只在 `rules_detail` 里显示"系统看到了、只是不认为构成压制"。
+     #   ⚠️ 不改 `bull_hi`（2→3 会改变历史打分，属规则变更，须预登记+回测）。
+     "tag_neutral": "油价偏强(未到压制阈值)",
      "why": "油价大涨=输入性通胀压制宽松空间；大跌=全球需求恐慌"},
     {"id": "goldsilver_ratio", "group": "commodity", "metric": "goldsilver_change_pct",
      "bull": {"op": "<", "v": -1}, "bear": {"op": ">", "v": 1}, "strength": 1.0,
@@ -690,6 +698,9 @@ def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
                 direction, tag = -1, rule["tag_bear"]
             else:
                 # ★ 盲区：既不"温和上涨"也不"剧烈波动" ⇒ 按设计不计分（非漏判）
+                #   ★ 2026-10-28：**给中性 tag**（direction 保持 0）——
+                #   让"系统看到了但不计分"在界面上可读，而不是凭空消失。
+                tag = rule.get("tag_neutral")
                 note = (f"当前 {v}，落在 ({b['bull_hi']}, {b['bear_above']}] 的"
                         f"**无信号区间**（温和上限 {b['bull_hi']} / 剧烈阈值 {b['bear_above']}）"
                         f" ⇒ 不计分")

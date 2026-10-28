@@ -151,7 +151,11 @@
             <span class="text-muted"> {{ r.metric }} = {{ r.value ?? '—' }}</span>
             <span v-if="r.hit" class="ml-1"
                   :class="r.direction > 0 ? 'text-emerald-400' : 'text-red-400'">{{ r.tag }}</span>
-            <span v-else-if="r.note" class="text-muted/60"> · {{ r.note }}</span>
+            <!-- ★ 2026-10-28（用户："原油涨了却没算进去"）：未触发但**有说法**的规则
+                 （区间型规则的盲区，如油价 +2.36% 落在 (2,3]）也要显示 tag ——
+                 否则"系统看到了但不计分"在界面上凭空消失，用户只能怀疑系统坏了。 -->
+            <span v-else-if="r.tag" class="ml-1 text-muted/80">{{ r.tag }}</span>
+            <span v-if="!r.hit && r.note" class="text-muted/60"> · {{ r.note }}</span>
           </div>
         </div>
       </details>
