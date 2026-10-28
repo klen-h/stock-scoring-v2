@@ -634,17 +634,65 @@ def _industry_map() -> dict:
     return get_industry_map()
 
 
+def _fuyao_stocks() -> dict:
+    """fuyao 全市场快照 → `{code: {"amount": 元, "change_pct": %}}`（只留聚合所需两字段）。
+
+    ★ 2026-10-28：给 `industry_amount_share` 做**实时兜底**。fuyao 快照 5579 只、
+      不依赖 `tencent._cache["stocks"]` ⇒ 行情缓存未就绪 / 仍停在收盘快照时，
+      本地聚合依然能给出"此刻"的行业强弱（避免前端落回"昨天的快照"）。
+    失败返回 `{}`（调用方继续走原逻辑）。
+    """
+    try:
+        from app import fuyao
+        if not fuyao.enabled():
+            return {}
+        out = {}
+        for it in fuyao.snapshot_all():
+            code = str(it.get("ticker") or "").strip()
+            if not code:
+                continue
+            try:
+                amt = float(it.get("turnover") or 0)
+            except (TypeError, ValueError):
+                amt = 0.0
+            out[code] = {"amount": amt,
+                         "change_pct": it.get("price_change_ratio_pct")}
+        return out
+    except Exception as e:
+        print(f"[industry] fuyao snapshot failed: {str(e)[:60]}")    # ASCII（铁律⑥）
+        return {}
+
+
 def industry_amount_share(top: int = 15) -> dict:
-    """各行业成交额 + 占全市场比重（**纯内存 + 落库映射，零外部请求**）。只读、fail-open。"""
+    """各行业成交额 + 占全市场比重（**纯内存 + 落库映射**；行情缓存不可用时用 fuyao 兜底）。
+
+    ★★ 2026-10-28（阶段 4 · fuyao，修"板块数据是昨天的快照"）：
+      【现象】主线板块 Top5 / 快讯卡 的板块数有时是**上一交易日收盘**的。
+      【链路】前端 `loadSectorTop`：东财实时 → **本地聚合（本函数）** → `sector_snapshot` 快照。
+        本函数原来只读 `tencent._cache["stocks"]`，一旦它是**空的**（OOM 重启后首次扫描
+        2~4 分钟内）或**仍来自收盘快照**（`from_snapshot=True`，即昨天收盘）⇒ 前端直接落到
+        第 4 级"快照回退"。
+      【修法】这两种情况下改用 **fuyao 全市场快照**（5579 只，不依赖内存池）聚合；
+        正常盘中（腾讯内存新鲜）**仍走原路径**，保持"零外部请求"。
+      【披露】返回值新增 `src`（tencent/fuyao），`note` 里如实写明数据来源。
+    """
     out = {"available": False, "rows": [], "total_amount_yi": None,
            "top5_share_pct": None, "unmapped_share_pct": None, "industry_n": None,
-           "as_of": None, "from_snapshot": False, "note": None}
+           "as_of": None, "from_snapshot": False, "src": "tencent", "note": None}
     try:
         # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：补 `timezone, timedelta` ——
         #   下方 `fromtimestamp(data_ts)` 需显式 +08:00（见该行注释）。
         from datetime import datetime, timezone, timedelta
         from app.tencent import _cache
         stocks = _cache.get("stocks") or {}
+        from_snap = bool(_cache.get("from_snapshot"))
+        # ★ 2026-10-28：空缓存 / 收盘快照 ⇒ 用 fuyao 实时快照兜底（见 docstring）
+        if not stocks or from_snap:
+            _f = _fuyao_stocks()
+            if _f:
+                stocks = _f
+                out["src"] = "fuyao"
+                from_snap = False
         if not stocks:
             out["note"] = "行情缓存未就绪（首次全量扫描需 2-4 分钟）"
             return out
@@ -688,6 +736,8 @@ def industry_amount_share(top: int = 15) -> dict:
         rows.sort(key=lambda x: (x["is_other"], -x["amount_yi"]))
         # ⚠️ 用 `data_ts`（数据自身时刻）而不是 `last_update`（缓存填充时刻）—— 见 tencent._cache
         data_ts = _cache.get("data_ts") or 0
+        if out["src"] == "fuyao":
+            data_ts = time.time()      # fuyao 快照就是"此刻"，与内存池的 data_ts 语义一致
         out.update({
             "available": True, "rows": rows[:max(1, top)], "industry_n": len(rows),
             "total_amount_yi": round(total / 1e8, 0),
@@ -698,12 +748,14 @@ def industry_amount_share(top: int = 15) -> dict:
             #   `data_ts` 本身是真实 epoch（实时=`time.time()`；快照=`saved_at` 解析）⇒ 显式 +08:00。
             "as_of": (datetime.fromtimestamp(data_ts, tz=timezone(timedelta(hours=8)))
                       .strftime("%m-%d %H:%M") if data_ts else None),
-            "from_snapshot": bool(_cache.get("from_snapshot")),
+            "from_snapshot": from_snap,
         })
         # ⚠️ 前端插值文案：**不能含 Markdown 标记**
+        _src_txt = ("fuyao 实时快照（5579 只，含北交所）" if out["src"] == "fuyao"
+                    else "腾讯内存行情 + 落库映射（零外部请求）")
         note = (f"口径：{len(rows)} 个细分行业（一票一行业，按个股成交额聚合）· "
-                "零外部请求（腾讯内存行情 + 落库映射）· "
-                "绝对金额受行情缓存覆盖度影响，看占比更可靠")
+                f"{_src_txt} · "
+                "绝对金额受行情覆盖度影响，看占比更可靠")
         if out["unmapped_share_pct"] >= 1:
             note += f"；⚠️ {out['unmapped_share_pct']}% 成交额无行业映射（未计入，会影响占比绝对值）"
         out["note"] = note
