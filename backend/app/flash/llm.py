@@ -69,6 +69,51 @@ LLM_FREE_BASE_URL = (os.environ.get("LLM_FREE_BASE_URL") or "").strip()
 LLM_FREE_API_KEY = (os.environ.get("LLM_FREE_API_KEY") or "").strip()
 LLM_FREE_MODEL = (os.environ.get("LLM_FREE_MODEL") or "").strip()
 LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").strip()
+
+# ── 免费站模型**内置候选**（★ 2026-10-28，用户："你直接写死代码里可以吗"）──────
+# 【为什么必须写进代码】免费站的配额是**按模型**算的，不是按账号：
+#   2026-10-28 实测（同一把 Key、同一分钟）——
+#     deepseek-v4-flash          → 429 insufficient_quota（配额耗尽）
+#     glm-5.2 / kimi-k3          → 429 限流
+#     deepseek-flash             → **200 可用**
+#     sensenova-6.8-flash-lite   → **200 可用**
+#     sensenova-u1.5-lite        → 404 模型不存在
+#     deepseek-v4.1-flash        → 403 当前 token plan 无权
+#   而当时 `models` 只有 `[LLM_FREE_MODEL]` 一个（`LLM_FREE_MODEL_FALLBACK` 空）⇒
+#   `_call_provider` 的"第 2 次起切兜底模型"**无处可切** ⇒ 配额一耗尽就整条链失败，
+#   而且**不会自愈**（Render 上的 env 不会自己变）。这就是用户看到的"LLM 突然不可用"。
+# 【做法】把候选追加到链尾：env 显式配置的仍排第一（尊重部署方选择），
+#   内置只作**后备**。`_call_provider` 遇 429 会 `continue` → 下一 attempt 自然切下一个模型。
+#   ⇒ 即使 Render 上的 env 还写着已耗尽的 `deepseek-v4-flash`，也能自动落到可用的模型。
+# ⚠️ 代价：配额耗尽期间，每次调用会先撞一次 429（退避 ~4s）再切模型。
+#   想零延迟就把 `LLM_FREE_MODEL` 直接改成 `deepseek-flash`。
+_FREE_MODEL_BUILTIN = ["deepseek-flash", "sensenova-6.8-flash-lite"]
+
+# 配额耗尽的模型（model → 冷却截止时间戳）。★ 为什么需要：
+#   429 其实是两种完全不同的故障，必须区别对待 ——
+#     · `tpm/rpm` 瞬时限流 → 等几秒就恢复，退避重试是对的；
+#     · `insufficient_quota` 配额耗尽 → **等几秒没用**，只会让每次调用白等 4s；
+#   首次撞上后把该模型排到链尾并冷却 1 小时，后续调用直接就着可用模型跑。
+_MODEL_QUOTA_COOL: dict = {}
+_QUOTA_COOL_SEC = 3600
+
+
+def _free_models() -> list:
+    """免费站模型序列：env 显式配置优先，内置候选兜底（去重保序）。
+
+    ★ 2026-10-28：**配额耗尽的模型自动沉底**（冷却 1 小时）——
+      否则每次调用都要先撞一次 429 再切模型（实测一次调用因此多花 ~8s）。
+    """
+    seq = []
+    for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK, *_FREE_MODEL_BUILTIN):
+        m = (m or "").strip()
+        if m and m not in seq:
+            seq.append(m)
+    now = time.time()
+    hot = [m for m in seq if _MODEL_QUOTA_COOL.get(m, 0) > now]
+    if not hot:
+        return seq
+    return [m for m in seq if m not in hot] + hot
 # 免费站思考模式（deepseek-v4-flash 默认 medium 思考，渲染任务需显式压低）：
 # 空 = 按 tier 自动（fast→none / slow→low）；显式设置则恒用该值（none/low/medium/high）。
 LLM_FREE_REASONING = (os.environ.get("LLM_FREE_REASONING_EFFORT") or "").strip().lower()
@@ -106,7 +151,7 @@ _session.headers.update({"Content-Type": "application/json"})
 def llm_configured() -> bool:
     """任一 provider 配置完整即可用（免费站或主力站）。"""
     return bool((LLM_API_KEY and LLM_MODEL)
-                or (LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL))
+                or (LLM_FREE_BASE_URL and LLM_FREE_API_KEY and _free_models()))
 
 
 def _today_calls() -> int:
@@ -352,11 +397,11 @@ def _providers() -> list:
     """按优先级返回 provider 列表。
     ★ 影子模式（LLM_FREE_SHADOW=1）下免费站不进正式链（旧推送不变），仅后台影子调用。"""
     ps = []
-    if (LLM_FREE_BASE_URL and LLM_FREE_API_KEY and LLM_FREE_MODEL
-            and not LLM_FREE_SHADOW):
+    _fm = _free_models()      # ★ 2026-10-28：env 配置 + 内置候选（见 `_FREE_MODEL_BUILTIN`）
+    if LLM_FREE_BASE_URL and LLM_FREE_API_KEY and _fm and not LLM_FREE_SHADOW:
         ps.append({"name": "free", "base_url": LLM_FREE_BASE_URL.rstrip("/"),
                    "key": LLM_FREE_API_KEY,
-                   "models": [m for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK) if m],
+                   "models": _fm,
                    "reasoning": True})
     if LLM_API_KEY and LLM_MODEL:
         ps.append({"name": "main", "base_url": LLM_BASE_URL.rstrip("/"),
@@ -624,7 +669,11 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
     mark=False（影子调用）不计入熔断；toward_budget=False 不计日熔断预算。"""
     global _last_error
     max_tokens = LLM_MAX_TOKENS
-    for attempt in range(1, retries + 1):
+    # ★ 2026-10-28：**重试次数至少覆盖模型个数**（上限 3）。
+    #   "第 2 次起切兜底模型"是靠 attempt 递增实现的，而 429 分支只 `continue`
+    #   ⇒ 若 retries=1，永远试不到后备模型（配置里只有 2 个模型时这一行就是死代码）。
+    tries = max(int(retries), min(len(p.get("models") or [1]), 3))
+    for attempt in range(1, tries + 1):
         model = p["models"][min(attempt - 1, len(p["models"]) - 1)]  # 第 2 次起切兜底模型
         body = {
             "model": model,
@@ -652,10 +701,27 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
                 #   否则一次限流就整单失败，还会去试链尾那个欠费站，把真实错误
                 #   掩盖成 402（本次排障就被误导过一次）。
                 ra = (r.headers.get("Retry-After") or "").strip()
-                wait = float(ra) if ra.replace(".", "", 1).isdigit() else 4.0 * attempt
-                _last_error = f"{pkey} HTTP 429（限流 tpm/rpm）"
-                print(f"[llm] [{pkey}] 429 限流 → 退避 {wait:.0f}s 后重试"
-                      f"（第 {attempt}/{retries} 次）")
+                # ★ 2026-10-28：区分「瞬时限流」与「配额耗尽」——
+                #   `insufficient_quota` 等几秒没用，白等还不如立刻切下一模型。
+                #   实测同一把 Key 的 code 会漂移（`insufficient_quota` → `Throttling.BurstRate`），
+                #   所以按 code 分流而不是只看 message。
+                _txt = (r.text or "")[:400]
+                if "insufficient_quota" in _txt:
+                    _MODEL_QUOTA_COOL[model] = time.time() + _QUOTA_COOL_SEC
+                    wait = 0.0
+                    _last_error = f"{pkey} HTTP 429（配额耗尽 {model}）"
+                    print(f"[llm] [{pkey}] 429 配额耗尽（{model}）→ 冷却 "
+                          f"{_QUOTA_COOL_SEC // 60}min 并切下一模型"
+                          f"（第 {attempt}/{tries} 次）")
+                else:
+                    # 突发/速率限流：**也记一个短冷却**（5min）但**仍要退避**。
+                    # 不记冷却的后果实测：每次调用都先白撞一次 429，`deepseek-v4-flash`
+                    # 连续两次退避（4s+8s）把单次调用拖到 25~34s（盘前简报 fast 档）。
+                    _MODEL_QUOTA_COOL[model] = time.time() + 300
+                    wait = float(ra) if ra.replace(".", "", 1).isdigit() else 4.0 * attempt
+                    _last_error = f"{pkey} HTTP 429（限流 tpm/rpm）"
+                    print(f"[llm] [{pkey}] 429 限流 → 退避 {wait:.0f}s 后重试"
+                          f"（第 {attempt}/{tries} 次）")
                 time.sleep(min(wait, 30.0))
                 continue
             if r.status_code in (401, 403, 500, 502, 503, 504):
@@ -689,7 +755,7 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
         except Exception as e:
             _last_error = f"{pkey} {type(e).__name__}: {str(e)[:160]}"
             print(f"[llm] 第{attempt}次调用失败: {_last_error}")
-        if attempt < retries:
+        if attempt < tries:
             time.sleep(attempt * 3)
     if mark:
         _provider_mark(pkey, False, _last_error)
