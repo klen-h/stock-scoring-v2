@@ -69,11 +69,20 @@
                ⇒ 指数在**顶栏**、家数/涨停/成交额在**盘面速览的涨跌条**，全都有了；
              · 原「② 板块轮动」的**领涨 3 个** ⇒ 已由**主线板块 Top5**（含领涨股）覆盖；
            只保留唯一增量：**领跌 3 个**（盘面速览只讲强的一侧，弱的这侧只有这里有）。 -->
+      <!-- ★★ 2026-10-28（用户："我看到领跌是昨日的快照"）：不是过期，是**把"最弱"当成了"下跌"**。
+           后端旧实现取"涨幅最小 4 个"，全市场普涨那天就出现"+1.45% 领跌"（跌色渲染正数）
+           ⇒ 用户只能怀疑数据是昨天的。现后端只把 `change_pct < 0` 的算领跌；
+           全线上涨时给 `bottom_all_up` + `weakest`，这里如实说"无下跌板块（最弱 …）"。 -->
       <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
         <span class="text-muted">领跌</span>
         <span v-for="s in sectors.bottom.slice(0, 3)" :key="'b' + s.name" class="text-fall">
           {{ s.name }} {{ fmtPct(s.chg_pct) }}
         </span>
+      </div>
+      <div v-else-if="!isHistory && sectors.bottom_all_up" class="mt-1.5 flex flex-wrap gap-x-2 text-[10px]">
+        <span class="text-muted">领跌</span>
+        <span class="text-muted" :title="'全部行业板块上涨，没有下跌板块；这里给的是最弱的一个（仍在涨）'">
+          无（全行业上涨<template v-if="sectors.weakest">，最弱 {{ sectors.weakest.name }} {{ fmtPct(sectors.weakest.chg_pct) }}</template>）</span>
       </div>
 
       <!-- ③ 个股异动 -->

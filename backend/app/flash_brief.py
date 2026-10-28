@@ -241,10 +241,22 @@ def _sector_section() -> Dict:
             out["top"].append({"name": r.get("name"), "chg_pct": _r2(r.get("change_pct")),
                                "leader": r.get("leader"),
                                "leader_chg": _r2(r.get("leader_change_pct"))})
-        for r in rows[-4:][::-1]:
+        # ★★ 2026-10-28（用户："我看到领跌是昨日的快照"）：不是快照，是**语义错**。
+        #   实测当日 200 个行业**全线上涨**（最弱 电网设备 +1.45%），而旧实现取
+        #   `rows[-4:][::-1]` = **涨幅最小的 4 个**，再被前端按 `text-fall`（跌色）渲染
+        #   ⇒ 页面上出现"+1.45% 领跌"。用户看到正数标"领跌"只能怀疑数据过期，
+        #   其实数据是当天的、新鲜的，错的是**把"最弱"当成了"下跌"**。
+        #   修法：领跌必须 `change_pct < 0`（真跌）；全线上涨时 `bottom=[]` +
+        #   `bottom_all_up=True` + `weakest`（最弱但仍在涨），前端如实说"无下跌板块"。
+        down = [r for r in rows if (_num(r.get("change_pct")) or 0) < 0]
+        for r in down[-4:][::-1]:          # rows 降序 ⇒ 尾部最弱
             out["bottom"].append({"name": r.get("name"), "chg_pct": _r2(r.get("change_pct")),
                                   "leader": r.get("leader"),
                                   "leader_chg": _r2(r.get("leader_change_pct"))})
+        out["bottom_all_up"] = not down
+        if rows:
+            out["weakest"] = {"name": rows[-1].get("name"),
+                              "chg_pct": _r2(rows[-1].get("change_pct"))}
     except Exception as e:
         out["error"] = f"板块: {str(e)[:60]}"
     try:
@@ -376,10 +388,28 @@ def _template_gist(text: str) -> str:
 
 
 def _template_direction(text: str) -> str:
+    """规则兜底方向（**只在 LLM 不可用时用**）。
+
+    ★★ 2026-10-28（用户贴出真实误判）：
+      原文 1019 字「金十整理：美联储10月“暂停”几乎无疑，美银逆势看加息」——
+        命中 `降息` 2 次（且是**条件句**："若股市持续走弱…转向降息的可能性增加"）、
+        命中 `上调` 1 次、命中 **`加息` 30 次**，
+      旧实现 `sum(1 for k in pos if k in text)` **只数"出现了几个关键词"、不数次数、不看语境**
+      ⇒ p=2、n=1 ⇒ 判 **"多"**。一条"30 次加息"的快讯被标成利多，这是最坏的一类错：
+      数字看着有依据，实际方向反了。
+
+    两条修法：
+      ① **长文 / 汇编文一律"中性"**：`金十整理` 是多家机构观点的汇总（高盛/花旗/穆迪/
+         法农/野村各说一句），**没有单一方向**——它描述的是"分歧"，不是"结论"。
+         >300 字同理：规则法在任何长文上都必然误判，宁可不给方向。
+      ② **短讯改按出现次数计权**（`text.count`），而不是"关键词种类数"。
+    """
+    if "金十整理" in text or len(text) > 300:
+        return "中性"
     pos = ["涨停", "中标", "增持", "回购", "降准", "降息", "停火", "协议", "超预期", "上调"]
     neg = ["跌停", "减持", "制裁", "空袭", "加息", "下调", "亏损", "立案", "退市"]
-    p = sum(1 for k in pos if k in text)
-    n = sum(1 for k in neg if k in text)
+    p = sum(text.count(k) for k in pos)
+    n = sum(text.count(k) for k in neg)
     return "多" if p > n else ("空" if n > p else "中性")
 
 
