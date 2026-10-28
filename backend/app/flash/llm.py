@@ -979,12 +979,16 @@ def get_trend_context(symbol: str, item: dict, history: list) -> str:
     if price <= 0:
         return ""
     prev = item.get("prev_close") or 0
+    # ★★ 2026-10-28（用户："中国10年期国债的涨跌幅数据疑似有误"）：债券项是**收益率**，
+    #   "动能偏多/偏空"的符号与之**相反** —— 收益率上行 = 债券价格下跌 = 对股市利空，
+    #   写成"动能偏多"会让下游模型把利空读成利多。⇒ 收益率一律用"上行/下行"表述。
+    is_yield = item.get("kind") == "yield"
     parts = []
     # 日内动能（无开盘价，用昨收近似）
     if price > prev:
-        parts.append("动能偏多")
+        parts.append("收益率上行" if is_yield else "动能偏多")
     elif price < prev:
-        parts.append("动能偏空")
+        parts.append("收益率下行" if is_yield else "动能偏空")
     # 关键位
     levels = KEY_LEVELS.get(symbol, [])
     above = next((l for l in levels if l > price), None)
@@ -996,9 +1000,16 @@ def get_trend_context(symbol: str, item: dict, history: list) -> str:
     # 振幅
     hi, lo = item.get("high") or 0, item.get("low") or 0
     if hi and lo:
-        amp = (hi - lo) / price * 100
-        if amp > 2:
-            parts.append(f"日内振幅{amp:.1f}%（偏大）")
+        # ★ 2026-10-28：收益率的振幅同样是 bp（1.62% 的收益率日内走 6bp 就是
+        #   "3.7%" —— 按相对值写会被读成"债券价格振幅 3.7%"，实际价格只动 0.5% 左右）。
+        if is_yield:
+            amp_bp = round((hi - lo) * 100, 1)
+            if amp_bp >= 4:
+                parts.append(f"日内振幅{amp_bp}bp（偏大）")
+        else:
+            amp = (hi - lo) / price * 100
+            if amp > 2:
+                parts.append(f"日内振幅{amp:.1f}%（偏大）")
     # 近期趋势（历史里该 symbol 的最近 5 条）
     recent = [h.get(symbol, {}).get("price") for h in history[-5:]]
     recent = [p for p in recent if p]
@@ -1010,9 +1021,9 @@ def get_trend_context(symbol: str, item: dict, history: list) -> str:
             elif b < a:
                 down, up = down + 1, 0
         if up >= 2:
-            parts.append(f"连涨{up}日")
+            parts.append(f"连续上行{up}日" if is_yield else f"连涨{up}日")
         elif down >= 2:
-            parts.append(f"连跌{down}日")
+            parts.append(f"连续下行{down}日" if is_yield else f"连跌{down}日")
         if recent:
             parts.append(f"近5日高{max(recent + [price]):.2f} 低{min(recent + [price]):.2f}")
     return "，".join(parts)
@@ -1030,10 +1041,25 @@ def format_macro_snapshot(panel: dict, history: list) -> str:
         item = panel.get(key)
         if not item or not item.get("price"):
             return
-        chg = item.get("change_pct") or 0
         ctx = get_trend_context(symbol, item, history)
         prefix = "$" if dollar else ""
         ctx_s = f"  [{ctx}]" if ctx else ""
+        # ★★ 2026-10-28（用户："中国10年期国债的涨跌幅数据疑似有误"）：**债券项是收益率**，
+        #   必须用 **bp** 表达，不能套 `change_pct`。
+        #   反例（改前 LLM 实际读到的）：`中国10年期国债收益率%: 1.62 (-2.53%)` ——
+        #   1.662% → 1.62% 是**下行 4.2bp**，而 `-2.53%` 是"收益率的相对变化率"。
+        #   模型据此极易写成"国债下跌 2.53%"：① 量纲错（-2.53% ≠ -4.2bp）；
+        #   ② **符号也错** —— 收益率下行意味着债券**价格在涨**。
+        #   ⇒ 收益率一律输出 `±Nbp/日`，与 `daily_report` 的既有口径对齐。
+        if item.get("kind") == "yield":
+            bp = item.get("bp_change")
+            if bp is None:
+                prev = item.get("prev_close") or 0
+                bp = round((item["price"] - prev) * 100, 2) if prev else None
+            bp_s = f"{'+' if (bp or 0) > 0 else ''}{bp}bp/日" if bp is not None else "—"
+            lines.append(f"- {label}: {item['price']} ({bp_s}){ctx_s}")
+            return
+        chg = item.get("change_pct") or 0
         lines.append(f"- {label}: {prefix}{item['price']} "
                      f"({'+' if chg > 0 else ''}{chg:.2f}%){ctx_s}")
 
