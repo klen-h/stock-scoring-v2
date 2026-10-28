@@ -790,24 +790,19 @@
                     <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
                   </div>
                 </div>
-                <!-- ★★★ 2026-10-28（用户同意）：**涨停结构**（连板梯队）—— 与 Top5 并列。
-                     它回答的是 Top5 回答不了的问题：今天涨停是"**新题材在扩散**"还是
-                     "**老主线在高位博弈**"。
-                       · 首板占比高  ⇒ 广度好、题材正在扩散（跟随成本低、容错高）
-                       · 高位板占比高 ⇒ 资金集中在少数龙头、接力风险大（错一步就是大面）
-                     数据来自 fuyao `page_boards`（`overview.stats.limit_boards`），
-                     非 fuyao 源为 null ⇒ `v-if` 隐藏，**不伪造 0**（与 seal_rate 同纪律）。 -->
-                <div v-if="limitBoards.length" class="flex items-center gap-1.5 pl-5 mt-1 text-[10px] text-muted">
-                  <span class="shrink-0 cursor-help"
-                        title="连板梯队：首板多 = 新题材在扩散（追随容错高）；高位板多 = 资金集中在少数龙头，接力风险大。观察参考，非交易建议。">涨停结构</span>
-                  <span v-for="b in limitBoards" :key="b.level"
-                        class="px-1 rounded shrink-0"
-                        :class="b.level === 'one' ? 'bg-sky-500/10 text-sky-300' : 'bg-rose-500/10 text-rose-300'"
-                        :title="`${b.label} ${b.count} 只` + (b.promotion_rate != null
-                          ? ` · 晋级率 ${Math.round(b.promotion_rate * 100)}%` : '')">
-                    {{ b.label }} {{ b.count }}
-                  </span>
-                </div>
+                <!-- ★★★ 2026-10-28（用户：\"跟涨停梯队卡有冲突吗\"）——**已删除原「涨停结构」行**。
+                     原因：它与「涨停梯队与清单」卡里的**连板梯队**是同一件事的两份数据，且数字不一致：
+
+                       · 已有（zzshare 日批 `uplimit_hot.ban_info`）：首板 65 / 2板 6 / 3板 4 / 5板 1 = 76
+                       · 我加（fuyao `page_boards`，实时）      ：首板 61 / 2板 5 / 3板 2 / 5板+ 1 = 69
+
+                     同屏两个\"首板 65\"和\"首板 61\"必然被读成数据打架（用户当场就问出来了）。
+                     已有的那份还带**断层判读**（\"4板为 0 但存在 5 板 ⇒ 高标孤立\"），功能更强
+                     ⇒ **保留已有、删掉重复**。连板语义只在两处出现，且各司其职：
+                       ① 个股级：本卡「XX 领涨 襄阳轴承 5连板」（`leader_boards_text`，标记主线阶段）
+                       ② 市场级：「涨停梯队与清单」卡的连板梯队（zzshare 唯一口径）
+                     ⚠️ 教训：加展示前要 grep **展示文案**，不能只 grep **字段名** ——
+                        `limit_boards` 在 `overview.stats` 里躺着，并不代表页面上没有等价物。 -->
                 <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
                 <details v-if="amountShare?.available" class="mt-1">
                   <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
@@ -1847,13 +1842,22 @@
                  短线退潮的常见前兆（实测 09-23 即 5/6 板空档却有 7 板）。 -->
             <div v-if="limitReview.ladder?.dist?.length" class="mb-2">
               <div class="flex items-center gap-1.5 flex-wrap text-[11px]">
-                <span class="text-muted">连板梯队</span>
+                <span class="text-muted cursor-help"
+                      title="连板梯队（zzshare 日批 ban_info，收盘定稿）：首板=新题材在扩散；≥2 板=资金在高位接力（风险更高）。全系统连板档位**只有这一份**口径。">连板梯队</span>
+                <!-- ★ 2026-10-28（用户："首板单独标出来"）：这里与个股级标签同一套色义 ——
+                     首板（level 1）**蓝** = 新启动；≥2 板**红** = 高位接力。
+                     空档仍用 amber（现有「断层」警示，别混进红/蓝里）。 -->
                 <span v-for="d in limitReview.ladder.dist" :key="d.level"
                       class="px-1.5 py-0.5 rounded border font-mono"
                       :class="d.count === 0
                         ? 'border-amber-500/50 bg-amber-500/10 text-amber-400'
-                        : 'border-border/60 text-gray-300'">
-                  {{ d.level }}板 {{ d.count }}</span>
+                        : d.level === 1
+                          ? 'border-sky-500/40 bg-sky-500/10 text-sky-300'
+                          : 'border-rose-500/40 bg-rose-500/10 text-rose-300'"
+                      :title="d.level === 1
+                        ? `首板 ${d.count} 只（今日新启动，题材在扩散）`
+                        : `${d.level} 连板 ${d.count} 只（高位接力，风险更高）`">
+                  {{ d.level === 1 ? '首板' : d.level + '板' }} {{ d.count }}</span>
                 <span class="text-muted">最高 <b class="text-gray-300">{{ limitReview.ladder.max_count }}</b> 板
                   · 当日涨停 {{ limitReview.ladder.total }} 只</span>
               </div>
@@ -2966,17 +2970,9 @@ function limitTip() {
   if (s.limit_src && s.limit_src !== 'rt_k') extra.push('⚠️ 已回退到近似（rt_k 缓存不可用）')
   return `口径：${src}${extra.length ? ' · ' + extra.join(' · ') : ''}`
 }
-// ★ 2026-10-28（用户同意）：**涨停结构**（连板梯队）→ 主线 Top5 下方一行。
-//   ① 后端 `limit_stats._BOARD_CN` 已把 `board_level` 译成中文 label（"首板"/"2板"/"5板+"）
-//      ⇒ 前端**零映射**，不在这里重写一遍档位文案（否则两处会漂移）；
-//   ② 只保留 `count > 0` 的档位（空档显示"4板 0"是噪音）；
-//   ③ 非 fuyao 源整个字段为 null ⇒ 返回空数组 ⇒ 模板 `v-if` 隐藏（**不伪造 0**，
-//      与 `seal_rate`/`limit_open_count` 同纪律）。
-const limitBoards = computed(() => {
-  const b = overview.value?.stats?.limit_boards
-  if (!Array.isArray(b)) return []
-  return b.filter(x => x && (x.count || 0) > 0)
-})
+// ★ 2026-10-28：`limitBoards`（fuyao `page_boards`）**已移除** —— 与「涨停梯队与清单」卡的
+//   连板梯队（zzshare `ban_info`）重复且数字不同（首板 61 vs 65、3板 2 vs 4）。
+//   市场级连板语义**只保留 zzshare 一份**；本卡只在个股级标 `leader_boards_text`。
 const temperature = ref(null)
 const regimeLabel = ref('—')
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。
