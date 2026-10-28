@@ -101,31 +101,42 @@
       </div>
 
       <!-- ④ 快讯卡片列表（点击展开原因 / 影响范围）
-           ★ 2026-10-25（用户）：列表限高 + 溢出滚动，避免撑爆右栏 -->
-      <div v-if="cards.length" class="mt-2 space-y-1 max-h-80 overflow-y-auto pr-1">
-        <div v-for="(n, i) in cards" :key="n.key"
-             class="rounded border border-border/60 bg-white/[0.04]">
-          <button type="button" class="w-full text-left px-2 py-1.5"
-                  @click="openKey = (openKey === n.key ? '' : n.key)">
-            <div class="flex items-center gap-1.5">
-              <!-- ★ 2026-10-28（方案 2）：窗口内新增标记（蓝点），解决"静默替换看不出变化" -->
-              <span v-if="n.isNew" class="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0"
-                    :title="`近 ${newsWindow} 分钟新增`"></span>
-              <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
-              <span class="px-1 rounded text-[10px]" :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
-              <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
-              <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
-              <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
+           ★ 2026-10-25（用户）：列表限高 + 溢出滚动，避免撑爆右栏。
+           ★★ 2026-10-28（用户："展示方式还是很模糊，没有时间线，没有紧贴盘中变化"）：
+             改为**时间线**布局 —— 左侧竖轴 + 每条一个节点（新条目实心蓝点），
+             并在时间后补**相对时间**（"3 小时前"）。
+             为什么：原来每条只有 `10:28` 这种绝对时刻，一排看下去分不清
+             "刚发的"和"昨天下午的"（凌晨看盘时尤其明显）；时间线 + 相对时间
+             才能一眼看出**信息的新鲜度与节奏**（是否有大段空白 = 消息面真空）。 -->
+      <div v-if="cards.length" class="mt-2 relative max-h-80 overflow-y-auto pr-1 pl-3">
+        <!-- 竖轴：从第一条到最后一-条（`bottom-1.5` 让末端收在卡片下方，不悬空） -->
+        <span class="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-border/50" aria-hidden="true"></span>
+        <div v-for="(n, i) in cards" :key="n.key" class="relative pb-1 last:pb-0">
+          <!-- 节点：新条目（近 N 分钟）= 实心蓝点；其余空心 —— 与"新 N"徽标同一套语义 -->
+          <span class="absolute -left-3 top-[9px] w-[7px] h-[7px] rounded-full border"
+                :class="n.isNew ? 'bg-sky-400 border-sky-400' : 'bg-card border-border'"
+                :title="n.isNew ? `近 ${newsWindow} 分钟新增` : ''"></span>
+          <div class="rounded border border-border/60 bg-white/[0.04]">
+            <button type="button" class="w-full text-left px-2 py-1.5"
+                    @click="openKey = (openKey === n.key ? '' : n.key)">
+              <div class="flex items-center gap-1.5">
+                <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
+                <span v-if="agoText(n.time)" class="text-[10px] text-muted/70">· {{ agoText(n.time) }}</span>
+                <span class="px-1 rounded text-[10px]" :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
+                <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
+                <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
+                <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
+              </div>
+              <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
+            </button>
+            <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
+              <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
+                   的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
+                   ⇒ 按来源显示诚实文案。 -->
+              <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
+              <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
+              <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
             </div>
-            <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
-          </button>
-          <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
-            <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
-                 的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
-                 ⇒ 按来源显示诚实文案。 -->
-            <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
-            <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
-            <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
           </div>
         </div>
       </div>
@@ -347,6 +358,25 @@ function clusterCls(c) {
 function hhmm(t) {
   const s = String(t || '')
   return s.length >= 16 ? s.slice(11, 16) : s
+}
+// ★ 2026-10-28（用户："没有时间线，没有紧贴盘中变化"）：**相对时间**。
+//   只显示 `10:28` 看不出"这条有多旧" —— 凌晨看盘时，19:56 与 04:35 都是一串数字；
+//   换成 "3 小时前 / 2 天前" 才能一眼判断信息是否还新鲜。
+//   ⚠️ 后端 `time` 是**无时区**的北京时间字符串（`YYYY-MM-DD HH:MM:SS`）⇒ 用
+//   `new Date(s.replace(' ', 'T'))` 按**本地时区**解析（用户在 UTC+8）才与之一致；
+//   直接用 `Date.parse(s)` 在部分浏览器上会按 UTC 解释，导致整体偏 8 小时。
+function agoText(t) {
+  const s = String(t || '')
+  if (s.length < 19) return ''
+  const d = new Date(s.replace(' ', 'T'))
+  if (Number.isNaN(d.getTime())) return ''
+  const min = Math.floor((Date.now() - d.getTime()) / 60000)
+  if (min < 0) return ''                       // 未来时间（跨午夜计算误差）不显示
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
 }
 // ★ 2026-10-26：删掉本地 `stockHref`（返回 `/stock/${code}`）—— 路由是 **hash 模式**，
 //   裸路径会落到站点根 ⇒ 打开 404。统一用 `displayMeta.stockHref`（`#/stock/${code}`）。
