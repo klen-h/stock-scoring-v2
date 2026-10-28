@@ -734,7 +734,7 @@
                   <div class="text-xs font-semibold">主线板块 Top5
                     <span class="text-[10px] text-muted font-normal">
                       {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
-                         : sectorTopSrc === 'local' ? '（实时 · 本地聚合，无领涨股）'
+                         : sectorTopSrc === 'local' ? '（实时 · 本地聚合，龙头由涨停原因反推）'
                          : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
                          : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
                   <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
@@ -2123,7 +2123,7 @@
             <div v-if="sectorTop.length" class="border-t border-border/40 mt-2 pt-2">
               <div class="text-[11px] text-muted mb-1">板块主线 Top5
                 <span class="text-[10px]">{{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
-                  : sectorTopSrc === 'local' ? '（实时 · 本地聚合，无领涨股）'
+                  : sectorTopSrc === 'local' ? '（实时 · 本地聚合，龙头由涨停原因反推）'
                   : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
                   : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span>
                 <router-link target="_blank" to="/sector" class="text-accent hover:underline ml-1">板块详情</router-link></div>
@@ -4861,11 +4861,25 @@ async function loadSectorTop() {
   //      东财是板块市值加权、90 板块；且本地**没有领涨股**（leader 留空）。
   try {
     const { data } = await getSectorAmountShare(10)
+    // ★★ 2026-10-28（用户："可以"）：本地聚合**也能给领涨股**了 ——
+    //   后端用 fuyao 涨停池的「涨停原因」按行业名词典反推（`data.leaders[行业]`），
+    //   匹配不到就不标（宁可少标也不制造错误关联）。字段对齐东财分支的
+    //   `leader/leader_code/leader_change_pct`，模板无需分叉。
+    const leaders = (data && data.leaders) || {}
     const rows = ((data && data.rows) || [])
       .filter(r => r.avg_change_pct != null && (r.stock_n || 0) >= 3)
       .sort((a, b) => Number(b.avg_change_pct) - Number(a.avg_change_pct))
       .slice(0, 5)
-      .map(r => ({ name: r.industry, change_pct: r.avg_change_pct, leader: null }))
+      .map(r => {
+        const ld = leaders[r.industry]
+        return {
+          name: r.industry,
+          change_pct: r.avg_change_pct,
+          leader: ld ? ld.name : null,
+          leader_code: ld ? ld.code : null,
+          leader_change_pct: ld ? ld.chg_pct : null,
+        }
+      })
     if (rows.length) {
       sectorTop.value = rows
       sectorTopSrc.value = 'local'

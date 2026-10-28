@@ -634,6 +634,143 @@ def _industry_map() -> dict:
     return get_industry_map()
 
 
+# ── 涨停原因 → 行业（★ 2026-10-28，用户："可以"）──────────────────────────
+# 【做什么】本地聚合能算出"哪个行业强"，但**给不出领涨股**（东财的 `leader` 只有加实时
+#   clist 才有，而它盘中常被风控）。fuyao 的 `limit-up-pool` 每条都带
+#   `limit_up_reason`（如"半导体测试分选机+三季报增长"）⇒ 可反推"这个行业今天谁在涨停"。
+# 【口径纪律（用户认可）】
+#   · **只用行业名词典匹配**，不用 LLM、不猜语义；
+#   · 匹配不到就**不标**（宁可少标，也不制造错误关联 —— 与项目"宁可标记缺失，不可伪装成 0"一致）；
+#   · 词典按**词长降序**匹配，"光伏玻璃"必须先命中"光伏"（发电设备）而不是"玻璃"。
+# 【与 `industry_map` 的关系】右侧行业名必须与 `_industry_map()` 的 value **逐字一致**
+#   （49 个，实测），否则前端按行业名对不上。
+_REASON_INDUSTRY = [
+    # 电子/科技
+    ("半导体", "电子信息"), ("芯片", "电子信息"), ("存储", "电子信息"),
+    ("封测", "电子信息"), ("光刻", "电子信息"), ("晶圆", "电子信息"),
+    ("消费电子", "电子信息"), ("服务器", "电子信息"), ("液冷", "电子信息"),
+    ("算力", "电子信息"), ("数据中心", "电子信息"), ("大模型", "电子信息"),
+    ("PCB", "电子器件"), ("面板", "电子器件"), ("光模块", "电子器件"),
+    ("连接器", "电子器件"), ("被动元件", "电子器件"), ("传感器", "仪器仪表"),
+    # 电力设备/新能源
+    ("光伏", "发电设备"), ("硅料", "发电设备"), ("逆变器", "发电设备"),
+    ("储能", "发电设备"), ("锂电", "发电设备"), ("电池", "发电设备"),
+    ("风电", "发电设备"), ("特高压", "发电设备"), ("电网", "发电设备"),
+    # 军工/航空
+    ("军工", "飞机制造"), ("航空", "飞机制造"), ("导弹", "飞机制造"),
+    ("卫星", "飞机制造"), ("低空经济", "飞机制造"), ("无人机", "飞机制造"),
+    ("船舶", "船舶制造"),
+    # 机械/汽车
+    ("机器人", "机械行业"), ("减速器", "机械行业"), ("机床", "机械行业"),
+    ("工业母机", "机械行业"), ("工程机械", "机械行业"),
+    ("智能驾驶", "汽车制造"), ("整车", "汽车制造"), ("汽车", "汽车制造"),
+    ("零部件", "汽车制造"), ("摩托车", "摩托车"),
+    # 医药
+    ("创新药", "生物制药"), ("生物医药", "生物制药"), ("疫苗", "生物制药"),
+    ("CXO", "生物制药"), ("中药", "生物制药"), ("原料药", "生物制药"),
+    ("医疗器械", "医疗器械"), ("医美", "医疗器械"),
+    # 消费
+    ("白酒", "酿酒行业"), ("啤酒", "酿酒行业"), ("黄酒", "酿酒行业"),
+    ("食品", "食品行业"), ("乳业", "食品行业"), ("预制菜", "食品行业"),
+    ("家电", "家电行业"), ("家居", "家具行业"), ("免税", "商业百货"),
+    ("零售", "商业百货"), ("电商", "商业百货"),
+    ("旅游", "酒店旅游"), ("酒店", "酒店旅游"),
+    ("服装", "服装鞋类"), ("鞋", "服装鞋类"), ("纺织", "纺织行业"),
+    # 金融地产
+    ("券商", "金融行业"), ("保险", "金融行业"), ("银行", "金融行业"),
+    ("地产", "房地产"), ("房地产", "房地产"),
+    # 资源/周期
+    ("黄金", "有色金属"), ("白银", "有色金属"), ("稀土", "有色金属"),
+    ("锂矿", "有色金属"), ("小金属", "有色金属"), ("钨", "有色金属"),
+    ("煤炭", "煤炭行业"), ("焦煤", "煤炭行业"),
+    ("石油", "石油行业"), ("油气", "石油行业"), ("炼化", "石油行业"),
+    ("农药", "农药化肥"), ("化肥", "农药化肥"), ("化工", "化工行业"),
+    ("化纤", "化纤行业"), ("塑料", "塑料制品"), ("橡胶", "塑料制品"),
+    ("钢铁", "钢铁行业"), ("特钢", "钢铁行业"),
+    ("水泥", "水泥行业"), ("玻璃", "玻璃行业"), ("陶瓷", "陶瓷行业"),
+    ("建材", "建筑建材"), ("基建", "建筑建材"), ("水利", "建筑建材"),
+    # 公用/交通/农业/传媒
+    ("核电", "电力行业"), ("水电", "电力行业"), ("电力", "电力行业"),
+    ("燃气", "供水供气"), ("水务", "供水供气"),
+    ("航运", "交通运输"), ("港口", "交通运输"), ("物流", "交通运输"),
+    ("快递", "交通运输"), ("公路", "公路桥梁"), ("高速", "公路桥梁"),
+    ("种业", "农林牧渔"), ("养殖", "农林牧渔"), ("猪肉", "农林牧渔"),
+    ("饲料", "农林牧渔"), ("农业", "农林牧渔"),
+    ("造纸", "造纸行业"), ("包装", "印刷包装"), ("印刷", "印刷包装"),
+    ("游戏", "传媒娱乐"), ("影视", "传媒娱乐"), ("传媒", "传媒娱乐"),
+    ("环保", "环保行业"), ("污水", "环保行业"), ("固废", "环保行业"),
+    ("外贸", "物资外贸"),
+]
+# 长词优先：保证"光伏玻璃"→发电设备（而不是"玻璃"→玻璃行业）
+_REASON_INDUSTRY_SORTED = sorted(_REASON_INDUSTRY, key=lambda kv: -len(kv[0]))
+
+
+def industry_from_reason(reason: str):
+    """涨停原因 → 行业名（匹配不到返回 `None`，**绝不猜**）。"""
+    r = str(reason or "")
+    if not r:
+        return None
+    for kw, ind in _REASON_INDUSTRY_SORTED:
+        if kw in r:
+            return ind
+    return None
+
+
+def limit_up_leaders(ttl: float = 60) -> dict:
+    """fuyao 涨停池 → `{行业: 龙头}`（每个行业取 1 只）。
+
+    龙头排序：**连板高度降序 → 封单额降序**（连板代表更强的一致性预期）。
+    返回结构：`{"available": bool, "leaders": {...}, "pool": 池大小,
+                "matched": 命中行业的条数, "note": 口径说明, "error": ""}`
+
+    ⚠️ `limit-up-pool` 端点**有 50 条上限**（实测），且只含"已封住"的票
+       ⇒ 覆盖不到全部涨停股；前端必须标注"由涨停原因反推"，不能当权威领涨。
+    """
+    out = {"available": False, "leaders": {}, "pool": 0, "matched": 0,
+           "note": "", "error": ""}
+    try:
+        from app import fuyao
+        if not fuyao.enabled():
+            out["note"] = "fuyao 未启用"
+            return out
+        rows = fuyao.limit_up_pool(ttl=ttl)
+        out["pool"] = len(rows)
+        if not rows:
+            out["note"] = "涨停池为空（非交易日或接口异常）"
+            return out
+        best = {}
+        for it in rows:
+            if not isinstance(it, dict):
+                continue
+            ind = industry_from_reason(it.get("limit_up_reason"))
+            if not ind:
+                continue
+            out["matched"] += 1
+            cand = {
+                "code": str(it.get("ticker") or ""),
+                "name": str(it.get("name") or ""),
+                "chg_pct": it.get("price_change_ratio_pct"),
+                "boards": it.get("continue_day_cnt") or 1,
+                "boards_text": str(it.get("continue_day_text") or ""),
+                "reason": str(it.get("limit_up_reason") or "")[:40],
+                "seal_money": it.get("seal_money"),
+            }
+            cur = best.get(ind)
+            key = (cand["boards"] or 0, cand["seal_money"] or 0)
+            cur_key = ((cur["boards"] or 0, cur["seal_money"] or 0) if cur else (-1, -1))
+            if key > cur_key:
+                best[ind] = cand
+        out["leaders"] = best
+        out["available"] = bool(best)
+        out["note"] = (f"由 fuyao 涨停池（{len(rows)} 条，端点上限 50）的"
+                       f"「涨停原因」按行业名词典反推；匹配不到的不标")
+        return out
+    except Exception as e:
+        out["error"] = str(e)[:80]
+        print(f"[industry] limit_up_leaders failed: {str(e)[:80]}")    # ASCII（铁律⑥）
+        return out
+
+
 def _fuyao_stocks() -> dict:
     """fuyao 全市场快照 → `{code: {"amount": 元, "change_pct": %}}`（只留聚合所需两字段）。
 
@@ -678,7 +815,9 @@ def industry_amount_share(top: int = 15) -> dict:
     """
     out = {"available": False, "rows": [], "total_amount_yi": None,
            "top5_share_pct": None, "unmapped_share_pct": None, "industry_n": None,
-           "as_of": None, "from_snapshot": False, "src": "tencent", "note": None}
+           "as_of": None, "from_snapshot": False, "src": "tencent", "note": None,
+           # ★ 2026-10-28：早退分支也要有这两个键（前端按 `leaders[行业]` 取值）
+           "leaders": {}, "leaders_note": ""}
     try:
         # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：补 `timezone, timedelta` ——
         #   下方 `fromtimestamp(data_ts)` 需显式 +08:00（见该行注释）。
@@ -750,6 +889,19 @@ def industry_amount_share(top: int = 15) -> dict:
                       .strftime("%m-%d %H:%M") if data_ts else None),
             "from_snapshot": from_snap,
         })
+        # ★★ 2026-10-28（用户："可以"）：附上「板块 → 今日涨停龙头」。
+        #   本地聚合**没有领涨股**（东财 leader 要实时 clist，而它盘中常被风控），
+        #   这里用 fuyao 涨停池的「涨停原因」按行业词典反推；匹配不到就不标。
+        #   ⚠️ 只覆盖已封住的涨停股（端点上限 50 条），前端必须标注"由涨停原因反推"。
+        try:
+            _ld = limit_up_leaders()
+            out["leaders"] = _ld.get("leaders") or {}
+            out["leaders_note"] = _ld.get("note") or ""
+            out["leaders_pool"] = _ld.get("pool")
+        except Exception as e:
+            out["leaders"] = {}
+            out["leaders_note"] = f"龙头反推失败: {str(e)[:60]}"     # ASCII（铁律⑥）
+
         # ⚠️ 前端插值文案：**不能含 Markdown 标记**
         _src_txt = ("fuyao 实时快照（5579 只，含北交所）" if out["src"] == "fuyao"
                     else "腾讯内存行情 + 落库映射（零外部请求）")
