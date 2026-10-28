@@ -26,6 +26,7 @@
 ================================================================================
 """
 
+import json
 import requests
 import time
 # ★ 2026-09-25：补 typing（项目铁律③：生产 Python 3.9，禁用 PEP 604 的 `str | None`，
@@ -211,8 +212,24 @@ def _parse(family: str, f: list) -> dict:
     else:
         return {}
     chg = round((price - prev) / prev * 100, 2) if prev > 0 else 0.0
-    return {"price": price, "prev_close": prev, "change_pct": chg,
-            "high": hi, "low": lo, "time": t.strip()}
+    out = {"price": price, "prev_close": prev, "change_pct": chg,
+           "high": hi, "low": lo, "time": t.strip()}
+    # ★★ 2026-10-28（用户："中国10年期国债的涨跌幅数据疑似有误" —— 实测坐实，符号+量纲双错）
+    #   债券族（`bd`）的 `price` 是**收益率(%)**，不是债券价格。旧实现一律按价格算
+    #   `(price-prev)/prev*100`：
+    #     cn10y 1.662% → 1.62%  ⇒  change_pct = **-2.53%**
+    #   而收益率**下行** 4.2bp 意味着债券**价格上是涨的**（10Y 久期≈9.5 ⇒ 约 +0.4%）。
+    #   ⇒ 同一份数据，符号反了、量级也差 6 倍。若下游（LLM / 卡片）写成
+    #     "中国10年期国债下跌 2.53%"，读者会得到与事实完全相反的结论。
+    #   修法：债券族**只给 bp**（收益率变动），`change_pct` 置 None 防误用，
+    #     并打 `kind="yield"` 让下游知道这是收益率而非价格。
+    #   ⚠️ 规则引擎不受影响：`us10y_*` / `cn10y_*` 走的是 `_derived` 里的 bp 量，
+    #     没有一条规则读债券的 `change_pct`（已逐条核对）。
+    if family == "bd":
+        out["kind"] = "yield"
+        out["bp_change"] = round((price - prev) * 100, 2)
+        out["change_pct"] = None
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -618,14 +635,43 @@ def _hit(cond, v):
     return False
 
 
+def _no_hit_note(rule: dict, v) -> str:
+    """说明某条规则**为什么没触发**（可解释性用，不是给机器读的）。
+
+    ★ 2026-10-28：这是本次可解释性补强的核心 —— 用户看到"原油涨了/美债涨了，
+      宏观却是强多"时，需要的不是"总分 42"，而是**"你看到的那条为什么没算"**。
+    """
+    if rule.get("type") == "band":
+        return ""
+    parts = []
+    if rule.get("bull"):
+        parts.append(f"多需 {rule['bull']['op']} {rule['bull']['v']}")
+    if rule.get("bear"):
+        parts.append(f"空需 {rule['bear']['op']} {rule['bear']['v']}")
+    return f"当前 {v}，{(' / '.join(parts))} ⇒ 未达阈值" if parts else ""
+
+
 def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
     """
-    规则引擎：遍历 RULES，输出 (触发列表, 分组得分, 方向分, 等级)。
+    规则引擎：遍历 RULES，输出 (触发列表, 分组得分, 方向分, 等级, 明细)。
 
     分组得分 = Σ(方向×强度) / Σ(强度)（组内有数据的规则），归一到 [-1,1]；
     方向分 = Σ 组权重×组得分 × 100，范围 [-100,+100]。
+
+    ★★ 2026-10-28（用户："缺少解释性输出" + "原油/美债都涨了为什么还是强多"）：
+      第 5 个返回值 `details` = **全部规则**（含未触发、含无数据）的逐条评估：
+        `{id, group, metric, value, direction, strength, contribution, tag, why,
+          hit, note}`
+      为什么必须有它：只输出 `triggered` 时，用户**看不到"没算进去的东西"**，
+      于是"我看到的利空"和"系统的结论"之间永远缺一段解释。
+      典型场景（当天真实）：
+        · `oil_band` 布伦特 +2.25% 落在 **(2, 3] 无信号区间** ⇒ 不计分（不是"没看到"）；
+        · `us10y_surge` 要求单日 >6bp，当天 3.4bp ⇒ **未触发**（不是"忽略了加息"）；
+        · `us10y_high` 是**水平规则**（>4.7%），会在当前制度下长期点亮 ⇒ 与"今天涨没涨"无关。
+      这三条不写出来，任何人都会把"强多"读成"系统认为美债上涨是利多"——那是误读，不是 bug。
     """
     triggered = []
+    details = []
     group_sum = {}    # {group: (Σ方向×强度, Σ强度)}
     group_scores = {}
 
@@ -633,19 +679,27 @@ def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
         v = _resolve_metric(rule["metric"], panel, temperature, northbound_net_yi)
         direction = 0
         tag = None
+        note = ""
         if v is None:
-            tag = None   # 无数据 → 不计分也不计入分母
+            note = "无数据（该条不计分，也不计入分母）"
         elif rule.get("type") == "band":
             b = rule["band"]
             if b["bull_lo"] < v <= b["bull_hi"]:
                 direction, tag = 1, rule["tag_bull"]
             elif v > b["bear_above"] or v < b["bear_below"]:
                 direction, tag = -1, rule["tag_bear"]
+            else:
+                # ★ 盲区：既不"温和上涨"也不"剧烈波动" ⇒ 按设计不计分（非漏判）
+                note = (f"当前 {v}，落在 ({b['bull_hi']}, {b['bear_above']}] 的"
+                        f"**无信号区间**（温和上限 {b['bull_hi']} / 剧烈阈值 {b['bear_above']}）"
+                        f" ⇒ 不计分")
         else:
             if _hit(rule.get("bull"), v):
                 direction, tag = 1, rule["tag_bull"]
             elif _hit(rule.get("bear"), v):
                 direction, tag = -1, rule["tag_bear"]
+            else:
+                note = _no_hit_note(rule, v)
 
         if v is not None:
             s_, d_ = group_sum.get(rule["group"], (0.0, 0.0))
@@ -656,6 +710,19 @@ def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
                 "direction": direction, "strength": rule["strength"],
                 "value": v, "why": rule["why"],
             })
+        # ★ 全部规则都记一条（含未触发）—— 这是"可解释"的关键，不能只记触发项
+        details.append({
+            "id": rule["id"], "group": rule["group"], "metric": rule["metric"],
+            "value": v, "direction": direction,
+            "strength": rule["strength"],
+            "contribution": round(direction * rule["strength"], 2),
+            "tag": tag, "why": rule["why"],
+            "hit": direction != 0,
+            "note": note,
+            # ★ `type=band` 的阈值不好用一句话表达，原样带上供前端展示
+            "band": rule.get("band"),
+            "bull": rule.get("bull"), "bear": rule.get("bear"),
+        })
 
     total = 0.0
     for g, w in GROUP_WEIGHTS.items():
@@ -675,12 +742,72 @@ def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
         level = "偏空"
     else:
         level = "强空"
-    return triggered, group_scores, score, level
+    return triggered, group_scores, score, level, details
 
 
 # ================================================================
 #  三、完整快照（LLM-ready）
 # ================================================================
+
+# ══════════════════════════════════════════════════════════════════════════
+#  信号留痕（★ 2026-10-28）
+# ══════════════════════════════════════════════════════════════════════════
+# 【要解决的问题】用户报"宏观方向**首次**出现强多"，但事后**完全无法复盘**：
+#   `macro_daily` 只在日批落一次（收盘后），盘中某刻的等级变化**不留任何痕迹**
+#   ⇒ 既不能证实也不能证伪，只能互相猜。这正是"缺少可解释输出"的另一半 ——
+#     光有明细还不够，**明细本身也得留得下来**。
+# 【做法】等级**变化时**立刻写一行；同等级按 10 分钟心跳写一次（便于看"持续了多久"）。
+#   ⚠️ 为什么不每次都写：`get_macro_snapshot` 被前端 60s 轮询调用，每次都写等于
+#      一天上千行、且有写库抖动风险 ⇒ 只在"有新信息"时落。
+# 【纪律】纯观察器 —— 不改分数、不进闸门、不改 regime、不碰模拟盘；
+#   建表/写库任一步失败都静默（**绝不**因为留痕失败而让宏观快照不可用）。
+_SIG_CACHE = {"level": None, "ts": 0.0}
+_SIG_TABLE_READY = False
+
+
+def ensure_signal_table() -> None:
+    global _SIG_TABLE_READY
+    if _SIG_TABLE_READY:
+        return
+    from app.database import db
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS macro_signal_log (
+            id BIGSERIAL PRIMARY KEY,
+            ts TEXT,
+            level TEXT,
+            score REAL,
+            group_json TEXT,
+            tags_json TEXT,
+            rules_version TEXT
+        )
+    """)
+    _SIG_TABLE_READY = True
+
+
+def log_signal(level: str, score, group_contrib: dict, triggered: list) -> bool:
+    """等级变化（或 10 分钟心跳）时留痕；失败静默返回 False。"""
+    import time as _t
+    try:
+        now_ts = _t.time()
+        changed = _SIG_CACHE["level"] != level
+        if not changed and (now_ts - (_SIG_CACHE["ts"] or 0)) < 600:
+            return False
+        ensure_signal_table()
+        from app.database import db
+        db.execute(
+            "INSERT INTO macro_signal_log (ts, level, score, group_json, tags_json, "
+            "rules_version) VALUES (%s,%s,%s,%s,%s,%s)",
+            (datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
+             level, score,
+             json.dumps(group_contrib or {}, ensure_ascii=False),
+             json.dumps([t.get("tag") for t in (triggered or [])], ensure_ascii=False),
+             RULES_VERSION))
+        _SIG_CACHE.update(level=level, ts=now_ts)
+        return True
+    except Exception as e:
+        print(f"[macro] signal log failed: {str(e)[:80]}")      # ASCII（铁律⑥）
+        return False
+
 
 _LEVEL_ADVISORY = {
     "强多": "外部与内部信号共振偏多，可按个股信号积极操作",
@@ -874,8 +1001,14 @@ def get_macro_snapshot() -> dict:
     if northbound_net_yi is None:
         notes.append("北向资金净流入自 2024-08-19 起已停止披露（交易所调整），内部状态仅用市场温度")
 
-    triggered, group_scores, score, level = evaluate_rules(
+    triggered, group_scores, score, level, details = evaluate_rules(
         panel, temperature, northbound_net_yi)
+    # ★★ 2026-10-28：**每组对总分的实际贡献**（分）。
+    #   原来只给 `group_scores`（-1~1 的归一值），用户看到 `global: -0.065` 完全不知道
+    #   这意味着几分 —— 而实际它只扣了 2.3 分。把"权重 × 组得分 × 100"直接算出来，
+    #   "为什么是强多"就能一眼拆开：china +17.4 / global -2.3 / commodity +1.7。
+    group_contrib = {g: round(w * group_scores.get(g, 0.0) * 100, 1)
+                     for g, w in GROUP_WEIGHTS.items()}
 
     # ★ 2026-09-25：多市场交易时段 —— 复用 `flash/rules.get_market_clock()` 的**唯一实现**
     #   （该函数注释声明"全项目唯一实现"，故此处 import 而非前端再写一套，避免口径漂移）。
@@ -897,6 +1030,11 @@ def get_macro_snapshot() -> dict:
         "panel": {k: v for k, v in panel.items() if not k.startswith("_")},
         "derived": panel.get("_derived", {}),
         "rules_triggered": triggered,
+        # ★★ 2026-10-28（用户："项目缺少解释性输出"）：**全部规则**的逐条评估（含未触发）。
+        #   只给 `rules_triggered` 时，用户看到的永远是"系统算了什么"，
+        #   看不到"系统**没算**什么以及为什么" —— 那正是"原油涨了却判强多"这类困惑的根源。
+        #   每条含 `hit/note`：未触发的会写清"落在无信号区间"或"未达阈值"。
+        "rules_detail": details,
         "tags_bull": [t["tag"] for t in triggered if t["direction"] > 0],
         "tags_bear": [t["tag"] for t in triggered if t["direction"] < 0],
         "direction": {
@@ -904,6 +1042,9 @@ def get_macro_snapshot() -> dict:
             "level": level,
             "advisory": _LEVEL_ADVISORY[level],
             "group_scores": group_scores,
+            # ★ 2026-10-28：每组对总分的**实际贡献（分）**，与 `group_scores` 并存
+            #   （前者是 -1~1 的归一值、后者是分数），拆解"为什么是这个等级"靠它。
+            "group_contrib": group_contrib,
         },
         "market_temperature": temperature,
         "northbound_net_yi": northbound_net_yi,
@@ -923,4 +1064,7 @@ def get_macro_snapshot() -> dict:
     }
     with _cache_lock:
         _cache["snapshot"] = {"data": snapshot, "ts": now}
+    # ★ 2026-10-28：等级变化留痕（纯观察、失败静默）—— 详见 `log_signal` 上方注释。
+    #   放在缓存写完之后：即使留痕失败，快照本身已经可用。
+    log_signal(level, score, group_contrib, triggered)
     return snapshot

@@ -118,6 +118,43 @@
           </div>
         </div>
       </div>
+      <!-- ★★★ 2026-10-28（用户："缺少解释性输出" + "原油/美债都涨了为什么还强多"）：
+           把**全部规则（含未触发）**摊开，并给出每组对总分的**实际贡献（分）**。
+           为什么必须有：只看"支撑/压制因素"两个列表时，用户看到的永远是
+           **系统算了什么**，看不到**系统没算什么、以及为什么** ——
+           这正是"我明明看到利空，结论却是强多"这类困惑的唯一出口。
+           典型（当天真实）：布伦特 +2.36% 落在 (2,3] 的**无信号区间** ⇒ 不计分；
+           美债 10Y 单日 +3.6bp **未达** 6bp 阈值 ⇒ 不计分。不写出来就是黑箱。
+           ⚠️ 默认折叠：这是"要追问时才看"的信息，不该占常规版面。 -->
+      <details v-if="(macro.rules_detail || []).length" class="mt-1.5">
+        <summary class="text-[10px] text-muted cursor-pointer hover:text-accent select-none">
+          依据明细 · {{ (macro.rules_detail || []).length }} 条规则
+          <span class="text-muted/70">（触发 {{ triggeredCount }} 条，其余为未达阈值/无信号）</span>
+        </summary>
+        <!-- ① 分组贡献：先回答"分数是谁推上去的"（归一值看不出大小，所以算成分） -->
+        <div class="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-1 text-[10px] font-mono">
+          <span v-for="(v, g) in (macro.direction?.group_contrib || {})" :key="g"
+                :class="v > 0 ? 'text-emerald-400' : (v < 0 ? 'text-red-400' : 'text-muted')"
+                :title="`${groupLabel(g)}组：权重 ${groupWeight(g)}，组得分 ${macro.direction?.group_scores?.[g]}，对总分贡献 ${v} 分`">
+            {{ groupLabel(g) }} {{ fmtSigned(v) }}
+          </span>
+          <span class="text-muted">= 总分 {{ macro.direction?.score }}</span>
+        </div>
+        <!-- ② 逐条：触发的排前面，未触发的灰显并附**为什么没触发** -->
+        <div class="mt-1 space-y-0.5">
+          <div v-for="r in sortedRules" :key="r.id" class="text-[10px] leading-snug">
+            <span class="font-mono"
+                  :class="r.hit ? (r.direction > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-muted/50'">
+              {{ r.hit ? (r.direction > 0 ? '＋' : '－') : '·' }}
+            </span>
+            <span :class="r.hit ? 'text-gray-200' : 'text-muted/80'">{{ r.id }}</span>
+            <span class="text-muted"> {{ r.metric }} = {{ r.value ?? '—' }}</span>
+            <span v-if="r.hit" class="ml-1"
+                  :class="r.direction > 0 ? 'text-emerald-400' : 'text-red-400'">{{ r.tag }}</span>
+            <span v-else-if="r.note" class="text-muted/60"> · {{ r.note }}</span>
+          </div>
+        </div>
+      </details>
       <!-- ★ 2026-09-25：情绪温度计子项的**过热 vs 过冷**两栏对照 —— 直接回答
            "为什么巴菲特指标过热(94)而市场温度偏冷(28)" = 市场分歧明显的可视化。
            数据来自 `/macro/snapshot.sentiment`（金十 12 子项，后端已按得分降序）。
@@ -353,6 +390,25 @@ function fmtSigned(v) {
   const r = Math.abs(n) >= 100 ? Math.round(n) : Math.round(n * 10) / 10
   return (r > 0 ? '+' : '') + r
 }
+// ── ★★ 2026-10-28：规则明细（可解释性）───────────────────────────────────
+//   后端 `direction.group_contrib` = 每组对总分的**实际贡献（分）**，
+//   与 `group_scores`（-1~1 归一值）并存 —— 后者单独看根本不知道"扣了几分"。
+const _GROUP_CN = { china: '中国', global: '全球', commodity: '商品', internal: '内部' }
+const _GROUP_W = { china: 0.32, global: 0.35, commodity: 0.15, internal: 0.18 }
+function groupLabel(g) { return _GROUP_CN[g] || g }
+function groupWeight(g) { return _GROUP_W[g] ?? '—' }
+const triggeredCount = computed(
+  () => (props.macro?.rules_detail || []).filter(r => r.hit).length)
+// 排序：**触发的在前**（按贡献绝对值降序），未触发的在后仍按强度降序
+//   —— 用户第一眼要看"是谁把分数顶上去的"，未触发的价值在于"它没算"。
+const sortedRules = computed(() => {
+  const rows = [...(props.macro?.rules_detail || [])]
+  return rows.sort((a, b) => {
+    if (a.hit !== b.hit) return a.hit ? -1 : 1
+    return Math.abs(b.contribution || 0) - Math.abs(a.contribution || 0)
+      || (b.strength || 0) - (a.strength || 0)
+  })
+})
 function dirNumClass(v) {
   const n = Number(v)
   if (v == null || Number.isNaN(n) || n === 0) return 'text-muted'
