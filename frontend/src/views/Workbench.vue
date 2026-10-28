@@ -790,6 +790,24 @@
                     <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
                   </div>
                 </div>
+                <!-- ★★★ 2026-10-28（用户同意）：**涨停结构**（连板梯队）—— 与 Top5 并列。
+                     它回答的是 Top5 回答不了的问题：今天涨停是"**新题材在扩散**"还是
+                     "**老主线在高位博弈**"。
+                       · 首板占比高  ⇒ 广度好、题材正在扩散（跟随成本低、容错高）
+                       · 高位板占比高 ⇒ 资金集中在少数龙头、接力风险大（错一步就是大面）
+                     数据来自 fuyao `page_boards`（`overview.stats.limit_boards`），
+                     非 fuyao 源为 null ⇒ `v-if` 隐藏，**不伪造 0**（与 seal_rate 同纪律）。 -->
+                <div v-if="limitBoards.length" class="flex items-center gap-1.5 pl-5 mt-1 text-[10px] text-muted">
+                  <span class="shrink-0 cursor-help"
+                        title="连板梯队：首板多 = 新题材在扩散（追随容错高）；高位板多 = 资金集中在少数龙头，接力风险大。观察参考，非交易建议。">涨停结构</span>
+                  <span v-for="b in limitBoards" :key="b.level"
+                        class="px-1 rounded shrink-0"
+                        :class="b.level === 'one' ? 'bg-sky-500/10 text-sky-300' : 'bg-rose-500/10 text-rose-300'"
+                        :title="`${b.label} ${b.count} 只` + (b.promotion_rate != null
+                          ? ` · 晋级率 ${Math.round(b.promotion_rate * 100)}%` : '')">
+                    {{ b.label }} {{ b.count }}
+                  </span>
+                </div>
                 <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
                 <details v-if="amountShare?.available" class="mt-1">
                   <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
@@ -2948,6 +2966,17 @@ function limitTip() {
   if (s.limit_src && s.limit_src !== 'rt_k') extra.push('⚠️ 已回退到近似（rt_k 缓存不可用）')
   return `口径：${src}${extra.length ? ' · ' + extra.join(' · ') : ''}`
 }
+// ★ 2026-10-28（用户同意）：**涨停结构**（连板梯队）→ 主线 Top5 下方一行。
+//   ① 后端 `limit_stats._BOARD_CN` 已把 `board_level` 译成中文 label（"首板"/"2板"/"5板+"）
+//      ⇒ 前端**零映射**，不在这里重写一遍档位文案（否则两处会漂移）；
+//   ② 只保留 `count > 0` 的档位（空档显示"4板 0"是噪音）；
+//   ③ 非 fuyao 源整个字段为 null ⇒ 返回空数组 ⇒ 模板 `v-if` 隐藏（**不伪造 0**，
+//      与 `seal_rate`/`limit_open_count` 同纪律）。
+const limitBoards = computed(() => {
+  const b = overview.value?.stats?.limit_boards
+  if (!Array.isArray(b)) return []
+  return b.filter(x => x && (x.count || 0) > 0)
+})
 const temperature = ref(null)
 const regimeLabel = ref('—')
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— **v0 展示项，不进决策链**。
