@@ -324,9 +324,21 @@ def market_overview(background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"指数数据失败: {e}")
 
-    # ── 第二部分：全市场涨跌统计（从内存缓存读取）──
+    # ── 第二部分：全市场涨跌统计（fuyao 全市场优先 → 内存池兜底）──
+    # ★★ 2026-10-28（阶段 1 · fuyao）：**fuyao 宽度独立于内存池**。
+    #   原实现 `if stocks:` 才给统计 ⇒ 进程刚重启 / 行情缓存还在恢复时 `stats` 直接是 `{}`，
+    #   前端「涨跌家数」整块空白（今早 OOM 反复重启期间就是这个形态）。
+    #   fuyao 一次请求就能算（5579 只，实测 ~0.4s），即使内存池为空也能给出宽度；
+    #   涨停家数走 rt_k（同样不依赖内存池）。
+    fw = None
+    try:
+        from app import fuyao
+        fw = fuyao.market_width()
+    except Exception as e:
+        print(f"[market] fuyao width failed: {e}")       # ASCII（铁律⑥）
+
     stocks = _cache.get("stocks", {})
-    if stocks:
+    if fw or stocks:
         # ★ 2026-10-24（BK-03）：改 None 安全取值——池内个股的 change_pct/amount 可为
         #   None（scoring.py:1329 自认池内存在 None；快照恢复路径也可能缺列），
         #   旧裸下标 `s["change_pct"]` 会 KeyError ⇒ 整个 overview 接口 500
@@ -336,29 +348,53 @@ def market_overview(background_tasks: BackgroundTasks):
             return v if isinstance(v, (int, float)) else None
 
         total = len(stocks)
-        # ★★ 2026-10-27（P0-2）：**一趟遍历**算完全部宽度指标。
-        #   旧实现对同一份全池跑了 4 遍（up / down / changes / total_amount 求和），
-        #   60s 轮询 ⇒ 每天约 4000 次多余的全池循环（3000+ 只 × 4）。合并后只有 1 遍。
-        #   口径逐项对齐旧实现：
-        #     · change_pct 缺失 ⇒ 不参与涨/跌/均值/中位数（仍归入 flat，与旧 `total-up-down` 一致）
-        #     · change_pct == 0 ⇒ 计入 changes（旧实现同样保留，故 avg/median 含平盘）
-        #     · amount 缺失 ⇒ 按 0 累计（仅 fallback 用）
-        up = 0
-        down = 0
-        changes = []
-        chg_sum = 0.0
-        pool_amount = 0.0
-        for s in stocks.values():
-            chg = _num(s.get("change_pct"))
-            if chg is not None:
-                changes.append(chg)
-                chg_sum += chg
-                if chg > 0:
-                    up += 1
-                elif chg < 0:
-                    down += 1
-            pool_amount += _num(s.get("amount")) or 0
-        flat = total - up - down                                        # 平盘家数（含缺失）
+        # ★★ 2026-10-28（阶段 1 · fuyao）：**全市场宽度优先读 fuyao 快照**。
+        #   【为什么】内存池是 3236 只（`EXCLUDE_ST=True` + 不含北交所）⇒ 实测
+        #     「家数缺 36%、成交额缺 40%」（tencent.py:33-36）；而 fuyao
+        #     `prices/snapshot?limit=10000` **一次请求 2.1s 返回 5579 只全市场**（含北交所/ST）。
+        #   【收益】① 口径从 3236 → 5579（家数/成交额不再系统性偏小）；
+        #     ② 不再遍历内存池（一天 ~1440 次 × 3236 只的循环直接省掉）；
+        #     ③ 即使行情缓存冻住，宽度统计仍是最新的（数据源独立）。
+        #   【纪律】fail-open：fuyao 未启用/限流/失败 ⇒ 回退下面的原有遍历，行为完全一致。
+        #   【口径披露】`stats.width_src` = "fuyao" / "pool"，前端 hover 可辨。
+        if fw:
+            total = int(fw.get("total") or 0)
+            up = int(fw.get("up") or 0)
+            down = int(fw.get("down") or 0)
+            flat = int(fw.get("flat") or 0)
+            suspended = int(fw.get("suspended") or 0)
+            avg_chg = float(fw.get("avg_chg") or 0)
+            median_chg = float(fw.get("median_chg") or 0)
+            pool_amount = float(fw.get("amount_yuan") or 0)
+            width_src = "fuyao"
+        else:
+            # ★ 2026-10-27（P0-2）：**一趟遍历**算完全部宽度指标（fail-open 回退路径）。
+            #   旧实现对同一份全池跑了 4 遍（up / down / changes / total_amount 求和），
+            #   60s 轮询 ⇒ 每天约 4000 次多余的全池循环（3000+ 只 × 4）。合并后只有 1 遍。
+            #   口径逐项对齐旧实现：
+            #     · change_pct 缺失 ⇒ 不参与涨/跌/均值/中位数（仍归入 flat，与旧 `total-up-down` 一致）
+            #     · change_pct == 0 ⇒ 计入 changes（旧实现同样保留，故 avg/median 含平盘）
+            #     · amount 缺失 ⇒ 按 0 累计（仅 fallback 用）
+            up = 0
+            down = 0
+            suspended = 0
+            changes = []
+            chg_sum = 0.0
+            pool_amount = 0.0
+            for s in stocks.values():
+                chg = _num(s.get("change_pct"))
+                if chg is not None:
+                    changes.append(chg)
+                    chg_sum += chg
+                    if chg > 0:
+                        up += 1
+                    elif chg < 0:
+                        down += 1
+                pool_amount += _num(s.get("amount")) or 0
+            flat = total - up - down                                    # 平盘家数（含缺失）
+            avg_chg = round(chg_sum / len(changes), 2) if changes else 0
+            median_chg = round(sorted(changes)[len(changes) // 2], 2) if changes else 0
+            width_src = "pool"
         # ★ 2026-09-29：改**按板幅**判定（主板10/双创20/北交30/ST5，见 `_limit_counts`）——
         #   此前一刀切 `>=9.9` 在池子只含主板时"碰巧接近正确"，但解屏蔽（A1）后池子含
         #   创业板/科创板（20cm）⇒ 会系统性误判（涨 10% 的 20cm 票不算涨停）。
@@ -376,7 +412,8 @@ def market_overview(background_tasks: BackgroundTasks):
         #   【fail-open】缓存未就绪/不可用 ⇒ 回退池内求和（与旧行为完全一致），绝不返回 0。
         #   【单位】`cum_yi` 是「亿」，这里 ×1e8 还原为「元」——前端按元 /1e8 显示，**契约不变**。
         total_amount = None
-        amount_src = "pool_sum"
+        # ★ 2026-10-28：fuyao 的全市场求和（5579 只）优于内存池求和（3236 只，实测缺 40%）
+        amount_src = "fuyao_sum" if (fw and pool_amount > 0) else "pool_sum"
         try:
             from app import market_amount
             _amt = market_amount.peek()
@@ -403,8 +440,13 @@ def market_overview(background_tasks: BackgroundTasks):
             "limit_src": limit_src,
             "limit_data_date": limit_meta.get("data_date"),
             "limit_age_sec": limit_meta.get("age_sec"),
-            "avg_change_pct": round(chg_sum / len(changes), 2) if changes else 0,         # 平均涨跌幅
-            "median_change_pct": round(sorted(changes)[len(changes) // 2], 2) if changes else 0,  # 中位数
+            "avg_change_pct": avg_chg,                                    # 平均涨跌幅
+            "median_change_pct": median_chg,                              # 中位数
+            # ★ 2026-10-28（口径披露）：宽度统计的数据源 ——
+            #   "fuyao" = 全市场 5579 只（含北交所/ST，推荐）；"pool" = 内存池 3236 只（缺 36%）。
+            "width_src": width_src,
+            # 停牌家数（fuyao 才有该信息：有行情行但 volume=0）。口径变更时用于解释家数差。
+            "suspended_count": suspended,
             # 总成交额（元；前端 /1e8 显示为亿）
             "total_amount": total_amount,
             # ★ 2026-10-27：口径披露（不参与渲染，排查用）——

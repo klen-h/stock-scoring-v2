@@ -113,6 +113,48 @@ for _prefix, _code in _ALL_CODES:
     _CODE_TO_PREFIX[_code] = _prefix
 
 
+def _pool_from_fuyao() -> list:
+    """fuyao 真实代码表 → `[(prefix, code)]`；不可用返回 `[]`（调用方回退猜测池）。
+
+    ★★ 2026-10-28（阶段 1）：`_build_stock_pool()` 是"深 5999 + 创业板 1999 + 沪 6000 +
+      科创板 999"的**猜测代码段** ≈ 14997 个候选，其中约 9400 个是空号（不存在）。
+      全量扫描要 150 批（2~4 分钟），且向腾讯打大量不存在的代码（WAF 风险）。
+      实测 fuyao `meta/tickers/list?asset_type=a-share&limit=10000` **一次请求 5579 只**
+      真实代码（含创业板/科创板/北交所）⇒ 全量 **70 批**，空号请求归零。
+
+    ⚠️ 只用于**全量扫描**（盘前 / `_valid_codes` 为空 / 手动 force）；日常增量仍走
+      `_valid_codes`。切换后 `_valid_codes` 会从 3236 只涨到约 5000 只（覆盖北交所/双创），
+      增量批数随之从 41 → 约 63 —— 这是"口径变完整"的代价，需要观察请求量与内存。
+    """
+    try:
+        from app import fuyao
+        if not fuyao.enabled():
+            return []
+        tk = fuyao.tickers()
+        if not tk:
+            return []
+        global _CODE_TO_PREFIX
+        out = []
+        for code, it in tk.items():
+            ex = str(it.get("exchange") or "").lower()
+            if ex not in ("sh", "sz", "bj"):
+                continue
+            if _is_disabled(code):
+                continue
+            out.append((ex, code))
+            # 补齐前缀表：北交所(4/8/920xxx)、创业板 301xxx 等**不在**猜测段里，
+            # 缺了会让 `get_stock`/`portfolio_radar` 反查出错前缀（默认按 sh 处理 → 404）。
+            if _CODE_TO_PREFIX.get(code) != ex:
+                _CODE_TO_PREFIX[code] = ex
+        if out:
+            print(f"[tencent] 代码池改用 fuyao 真实代码表: {len(out)} 只"
+                  f"（替代 {len(_ALL_CODES)} 个猜测候选）")
+        return out
+    except Exception as e:
+        print(f"[tencent] fuyao 代码池获取失败（回退猜测池）: {str(e)[:80]}")
+        return []
+
+
 # ===== 缓存 =====
 
 # 全局缓存字典。因为全量 A股有几千只，每次请求都拉一遍腾讯会很慢，
@@ -483,11 +525,20 @@ def _refresh_all_stocks_inner(force: bool = False):
 
         # 决定本次扫描的代码池：
         #   force=True 或 _valid_codes 为空 → 全量扫描（发现新股）
-        #   否则 → 增量扫描（只请求已知有效代码，跳过 8000 个空号）
+        #   否则 → 增量扫描（只请求已知有效代码，跳过空号）
         do_full_scan = force or not _valid_codes
-        scan_pool = _ALL_CODES if do_full_scan else _valid_codes
+        if do_full_scan:
+            # ★ 2026-10-28（阶段 1）：全量优先用 fuyao 真实代码表（5579 只 → 70 批），
+            #   拿不到再回退 14997 个猜测候选（150 批）。
+            _fp = _pool_from_fuyao()
+            scan_pool = _fp if _fp else _ALL_CODES
+            pool_src = "fuyao" if _fp else "guess"
+        else:
+            scan_pool = _valid_codes
+            pool_src = "valid"
         mode = "全量" if do_full_scan else "增量"
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 开始{mode}刷新行情... ({len(scan_pool)} 个代码)")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 开始{mode}刷新行情... "
+              f"({len(scan_pool)} 个代码, pool={pool_src})")
 
         stocks = {}
         valid_found = []  # 记录本次发现的有效代码（用于更新 _valid_codes）

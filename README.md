@@ -105,3 +105,13 @@ cd frontend && npm run dev                    # 前端工作台
   卡面文案精简为 `MM-DD HH:MM · N天前` 以容纳按钮；`stale` 阈值 14 → 5 天（实测基本每交易日都有）。
   数据源首选 xiaopage 新派生的 **`views-lite.json`**（只留最近 60 条 + 消费侧字段，
   6.2MB → **166KB，-97.4%**；拉取 59s → 16s，ETag 命中 2s），失败自动回退完整版 `videos.json`。
+- **2026-10-28** 接入**同花顺 fuyao 数据 API**（`backend/app/fuyao.py`，配置 `FUYAO_API_KEY`）：
+  · `market_overview` 的**涨跌家数/成交额/均值中位数**改读 fuyao 全市场快照
+    （**1 次请求 ~0.4s，5579 只含北交所/ST**，替代遍历 3236 只内存池；口径缺 36%/40% 的问题解决）；
+    新增 `stats.width_src`（`fuyao`/`pool`）与 `suspended_count` 披露；fuyao 不可用时自动回退旧遍历。
+  · **行情缓存为空时也能给宽度**（此前 `if stocks:` 才出统计，OOM 重启期间前端整块空白）。
+  · 全量扫描的代码池改读 `meta/tickers/list`（**5579 只真实代码**，替代 14997 个猜测候选，
+    150 批 → **70 批**，空号请求归零；含北交所 355 只）。
+  · 新增自检端点 `GET /api/system/fuyao-check`（逐端点实测耗时/条数/限流冷却，不返回 Key）。
+  · ⚠️ 文档明确「暂未开放外部接入」的**主力资金/ETF 净流入/高频动向/成交额预测**一律不接；
+    fuyao 快照不含 `pe/pb/turnover_rate/市值/量比/委差`，**故不替代 `tencent._cache["stocks"]`**。

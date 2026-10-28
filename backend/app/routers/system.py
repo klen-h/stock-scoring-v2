@@ -241,6 +241,23 @@ def _to_date(v) -> Optional[str]:
     return s[:10] if len(s) >= 10 else s
 
 
+@router.get("/fuyao-check")
+def fuyao_check(user: dict = Depends(get_current_user)) -> Dict:
+    """同花顺 fuyao 数据源自检（★ 2026-10-28 接入）。
+
+    【为什么要这个端点】fuyao 是外部依赖，出问题时的第一反应应该是"是它还是我们"。
+      本端点逐端点**实测**（tickers / snapshot / 涨停统计 / 交易日历），
+      返回可用性、耗时、条数、最近错误与限流冷却剩余秒数 —— 部署后点一次即可确认：
+        · 线上从 Render（海外）拉全市场快照要多久（本地实测 2.1s）；
+        · Key 是否有效、额度是否被限（`cooldown_left_sec > 0` 说明刚被限流）；
+        · 各端点的真实条数（应见 5579 / 5579 / 243）。
+
+    【安全】**不返回 Key**，只回 `key_present`。未配置时给出配置提示，不报 500。
+    """
+    from app import fuyao
+    return fuyao.selfcheck()
+
+
 @router.get("/runtime-files")
 def runtime_files(user: dict = Depends(get_current_user)) -> Dict:
     """运行时「文件型数据」清单与完整性（数据库之外还靠文件的地方）。
