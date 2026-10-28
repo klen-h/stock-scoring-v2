@@ -469,6 +469,13 @@ def _refresh_all_stocks_inner(force: bool = False):
     #     ② `force=True`（全量）虽能跑完，但重建结果只写局部变量，模块级 `_valid_codes`
     #        永远为空 ⇒ 下一轮又是全量扫描（150 批），且增量路径继续崩。
     global _valid_codes
+    # ★★ 2026-10-28（内存护栏）：本函数每轮都会**新建 3236 项 dict 再整体替换**旧缓存
+    #   ⇒ 替换那一刻新旧各一份（瞬时双份）。内存吃紧时再叠这一下就会触发 OOM，
+    #   然后重启 → 恢复快照 → 再刷新，形成"越紧越扫"的循环（今早 9:44 的锯齿）。
+    #   ⇒ 高压（默认 ≥70%）时**跳过本轮**，保留旧缓存（读路径不受影响），下一轮再试。
+    from app.mem_guard import guard
+    if guard("refresh_all_stocks"):
+        return _cache.get("stocks") or {}
     with _cache["lock"]:   # with 语法：进入时自动加锁，退出时自动释放（类似 try-finally）
         # 冷却判断：未强制且 60 秒内刷新过 → 直接返回旧数据
         if not force and time.time() - _cache["last_update"] < 60:
@@ -661,6 +668,14 @@ def restore_market_snapshot(restore_stocks: bool = True, _snap: dict = None) -> 
         print(f"[snapshot] 无法导入 store: {e}")
         return False
     global _valid_codes
+    # ★★ 2026-10-28（内存护栏）：整份快照（5257 只 ≈ 8MB JSON → 100~200MB dict）是本进程
+    #   **最大的一次性分配**，也是"重启后立刻又被杀"的关键一环。
+    #   高压时**降级为只恢复 `_valid_codes`**（0.86MB，且是增量刷新的关键），
+    #   不灌 stocks —— 行情缓存等内存回落后的第一轮刷新自己会填。
+    if restore_stocks:
+        from app.mem_guard import guard
+        if guard("restore_market_snapshot"):
+            restore_stocks = False
     snap = _snap if _snap is not None else store.load_market_snapshot()
     if not snap:
         print("[snapshot] 无收盘快照，首次将全量扫描")

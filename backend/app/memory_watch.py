@@ -35,7 +35,10 @@ from app.database import db
 _TABLE = "memory_probe"
 _TABLE_READY = False
 
-SAMPLE_INTERVAL_MIN = 30       # 定时巡检间隔（分钟）
+# ★ 2026-10-28（用户报"早上内存爆满、多次重启"）：原 30 分钟太稀 —— 那次 08:30-12:00
+#   **一条采样都没有**（进程反复被杀，30 分钟的窗口全落在死亡间隙里），事后完全无法复盘。
+#   收紧到 10 分钟：盘中 3 小时 ≈ 18 条，足够画出尖峰；写库增量 ≈ 144 行/天（可忽略）。
+SAMPLE_INTERVAL_MIN = int(os.environ.get("MEM_SAMPLE_MIN") or 10)
 ALERT_PCT = 80                 # RSS 占上限百分比 ≥ 此值 ⇒ 企微告警
 WARN_PCT = 70                  # ≥ 此值 ⇒ 只在采样里标 note（不惊动用户）
 RECORD_DEBOUNCE_SEC = 300      # 两次落库的最小间隔（秒）—— 前端/多标签页去抖
