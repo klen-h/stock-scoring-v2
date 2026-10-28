@@ -776,6 +776,17 @@
                     <span v-else>{{ s.leader }}</span>
                     <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
                        class="font-mono hover:text-accent">{{ s.leader_code }}</a>
+                    <!-- ★ 2026-10-28（用户："首板单独标出来"）：连板高度标签 ——
+                         首板=蓝（当天新启动，主线**萌芽**）；≥2 连板=红（人气高，但接力风险也高）。
+                         此前两者外观相同，看不出主线处在"启动"还是"发酵末期"。 -->
+                    <span v-if="s.leader_boards_text"
+                          class="px-1 rounded text-[9px] shrink-0 cursor-help"
+                          :class="(s.leader_boards || 1) > 1
+                            ? 'bg-rose-500/15 text-rose-300'
+                            : 'bg-sky-500/15 text-sky-300'"
+                          :title="(s.leader_boards || 1) > 1
+                            ? `${s.leader} 已 ${s.leader_boards} 连板（人气高，接力风险也高）`
+                            : `${s.leader} 今日首板（板块新启动）`">{{ s.leader_boards_text }}</span>
                     <span class="font-mono" :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</span>
                   </div>
                 </div>
@@ -2138,7 +2149,11 @@
                   <span v-if="s.leader" class="text-muted">（{{ s.leader }}
                     <a v-if="s.leader_code" :href="xqUrl(s.leader_code)" target="_blank" rel="noopener"
                        class="text-muted hover:text-accent">{{ s.leader_code }}</a>
-                    <b :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</b>）</span>
+                    <b :class="pctClass(s.leader_change_pct)">{{ signNum(s.leader_change_pct) }}%</b>
+                    <!-- ★ 2026-10-28：此处与盘中卡是**同一份 sectorTop 的两种展示**，
+                         连板标签也必须同口径（只改一处会造成"同名模块口径不一致"，与 09-26 同理）。 -->
+                    <b v-if="s.leader_boards_text" class="text-[10px] px-1 rounded"
+                       :class="(s.leader_boards || 1) > 1 ? 'bg-rose-500/15 text-rose-300' : 'bg-sky-500/15 text-sky-300'">{{ s.leader_boards_text }}</b>）</span>
                 </span>
               </div>
             </div>
@@ -4878,6 +4893,10 @@ async function loadSectorTop() {
           leader: ld ? ld.name : null,
           leader_code: ld ? ld.code : null,
           leader_change_pct: ld ? ld.chg_pct : null,
+          // ★ 2026-10-28：连板高度 —— 「首板」是**新启动**，「5 连板」是**人气高但接力风险也高**，
+          //   两者含义差很远，混在一起看不出主线阶段。fuyao `continue_day_text` 直接给中文（"首板"/"2连板"）。
+          leader_boards: ld ? (ld.boards || 1) : null,
+          leader_boards_text: ld ? (ld.boards_text || '') : '',
         }
       })
     if (rows.length) {
