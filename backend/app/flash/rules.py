@@ -345,12 +345,25 @@ HOLIDAYS = {
 def get_china_market_status() -> dict:
     """A股当前交易状态 {is_open, reason}（节假日/周末/时段）。"""
     now = beijing_now()
-    md = (now.month, now.day)
-    for (lo, hi, name) in HOLIDAYS.get(now.year, []):
-        if lo <= md <= hi:
-            return {"is_open": False, "reason": f"{name}假期休市"}
-    if now.weekday() >= 5:   # 0=周一 ... 5/6=周六/周日
-        return {"is_open": False, "reason": "周末休市"}
+    # ★ 2026-10-28（阶段 3）：当日是否交易日**优先问外部日历**（跨年/调休不用手工维护）。
+    #   注意只判"日"这一层，时段判断仍在下面（15:00 后一律"已收盘"）。
+    _not_trading = None
+    try:
+        from app import trading_calendar as _tc
+        _not_trading = _tc.is_trading_day(now)
+    except Exception as e:
+        print(f"[rules] trading_calendar failed: {str(e)[:60]}")   # ASCII（铁律⑥）
+    if _not_trading is False:
+        return {"is_open": False,
+                "reason": "周末休市" if now.weekday() >= 5 else "法定假日休市"}
+    if _not_trading is None:
+        # 回退：手工日历（原逻辑逐字保留）
+        md = (now.month, now.day)
+        for (lo, hi, name) in HOLIDAYS.get(now.year, []):
+            if lo <= md <= hi:
+                return {"is_open": False, "reason": f"{name}假期休市"}
+        if now.weekday() >= 5:   # 0=周一 ... 5/6=周六/周日
+            return {"is_open": False, "reason": "周末休市"}
     t = now.hour * 100 + now.minute
     if t < 915:
         return {"is_open": False, "reason": "未开盘 (9:15前)"}
@@ -373,8 +386,21 @@ def is_trading_day(dt=None) -> bool:
     与 get_china_market_status() 的区别：后者把 15:00 后一律判为"已收盘"，
     而盘后复盘窗口（15:03-23:59）本就落在收盘之后，用它做门禁会把正常的
     盘后复盘一并拦掉。判断"今天该不该跑复盘"只需要日期维度的交易日。
+
+    ★★ 2026-10-28（阶段 3 · fuyao）：**优先用外部交易日历**（`trading_calendar`，
+      数据源同花顺，一次拉 5 年）。原实现只认手工 `HOLIDAYS` —— 每年要人工录入，
+      **漏一天就会让日批空跑/信号打错日期**（调休年最容易错）。
+      IO 隔离在 `trading_calendar` 里，本函数仍是"查询 + 兜底"，不破坏模块"纯函数"约定。
+      fuyao 不可用 / 日历条数异常 ⇒ `is_trading_day` 返回 None ⇒ 回退手工 HOLIDAYS。
     """
     now = dt or beijing_now()
+    try:
+        from app import trading_calendar as _tc
+        _v = _tc.is_trading_day(now)
+        if _v is not None:
+            return bool(_v)
+    except Exception as e:
+        print(f"[rules] trading_calendar failed: {str(e)[:60]}")   # ASCII（铁律⑥）
     md = (now.month, now.day)
     for (lo, hi, _name) in HOLIDAYS.get(now.year, []):
         if lo <= md <= hi:

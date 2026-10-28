@@ -292,8 +292,34 @@ def market_width(ttl: float = 45) -> Optional[Dict]:
 
 
 def limit_up_stats(ttl: float = 60) -> Optional[Dict]:
-    """涨停市场统计（封板率 / 涨停家数 / 炸板 / 连板梯队）。阶段 2 会用。"""
+    """涨停市场统计（封板率 / 涨停家数 / 炸板 / 连板梯队）。
+
+    实测字段（2026-10-28）：`trade_date`、`seal_rate`(0.5)、`limit_up_stock_count`(69)、
+    `open_stock_count`(69)、`touched_limit_up_stock_count`(138)、
+    `page_boards`([{board_level:"one", stock_count:61, promotion_rate:null}, ...])。
+    """
     return get("/api/a-share/special-data/limit-up-statistics", None, ttl=ttl)
+
+
+def limit_up_pool(ttl: float = 60) -> List[dict]:
+    """涨停股名单（含 `limit_up_reason` 涨停原因 / `seal_money` 封单 / `continue_day_cnt` 连板）。
+
+    ⚠️ 该端点**有固定上限 50 条**（实测传 `limit=200` 仍只回 50）⇒ **家数不能用它数**，
+       家数请用 `limit_up_stats()['limit_up_stock_count']`；本函数只用于"看名单/原因"。
+    """
+    d = get("/api/a-share/special-data/limit-up-pool", None, ttl=ttl, timeout=30)
+    return (d or {}).get("item") or []
+
+
+def limit_down_pool(ttl: float = 60) -> List[dict]:
+    """跌停股名单（实测字段：thscode/ticker/name/last_price/price_change_ratio_pct/
+    first_limit_time/last_limit_time/turnover_ratio_pct）。
+
+    ⚠️ 同样有上限 50 ⇒ 调用方拿到 `len()==50` 时必须视为**可能被截断**（极端千股跌停日），
+       不能直接当家数用（见 `limit_stats.counts_best` 的护栏）。
+    """
+    d = get("/api/a-share/special-data/limit-down-pool", None, ttl=ttl, timeout=30)
+    return (d or {}).get("item") or []
 
 
 def trading_days(start: str = "", end: str = "", ttl: float = 86400) -> List[str]:

@@ -440,6 +440,15 @@ def market_overview(background_tasks: BackgroundTasks):
             "limit_src": limit_src,
             "limit_data_date": limit_meta.get("data_date"),
             "limit_age_sec": limit_meta.get("age_sec"),
+            # ★★ 2026-10-28（阶段 2 · fuyao）：涨停**质量**指标 —— 只有 `limit_src=="fuyao"`
+            #   时才有值（其它源为 None，前端按 null 隐藏，不伪造 0）：
+            #     seal_rate   封板率（0~1，涨停/(涨停+炸板)）
+            #     open_count  炸板家数  touched_count 触板家数（涨停+炸板）
+            #     boards      连板梯队 [{level,label,count,promotion_rate}]
+            "seal_rate": limit_meta.get("seal_rate"),
+            "limit_open_count": limit_meta.get("open_count"),
+            "limit_touched_count": limit_meta.get("touched_count"),
+            "limit_boards": limit_meta.get("boards"),
             "avg_change_pct": avg_chg,                                    # 平均涨跌幅
             "median_change_pct": median_chg,                              # 中位数
             # ★ 2026-10-28（口径披露）：宽度统计的数据源 ——

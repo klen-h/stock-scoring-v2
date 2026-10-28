@@ -115,3 +115,10 @@ cd frontend && npm run dev                    # 前端工作台
   · 新增自检端点 `GET /api/system/fuyao-check`（逐端点实测耗时/条数/限流冷却，不返回 Key）。
   · ⚠️ 文档明确「暂未开放外部接入」的**主力资金/ETF 净流入/高频动向/成交额预测**一律不接；
     fuyao 快照不含 `pe/pb/turnover_rate/市值/量比/委差`，**故不替代 `tencent._cache["stocks"]`**。
+- **2026-10-28** fuyao **阶段 2/3**：
+  · 涨停口径 `limit_stats.counts_best` 新增 **fuyao 优先**（`limit-up-statistics` 家数 +
+    `limit-down-pool` 名单），`rt_k` 降为兜底；`stats` 新增 **封板率 / 炸板家数 / 触板家数 /
+    连板梯队**（此前只有"涨停家数"一个数）。跌停池有 50 条上限 ⇒ `len>=50` 视为截断、整组不用。
+  · 交易日历改 `backend/app/trading_calendar.py`（fuyao `calendar/trading-days`，一次拉 5 年
+    ≈1454 个交易日），`flash/rules.is_trading_day()` 优先查它、**手工 `HOLIDAYS` 降为兜底**
+    （IO 隔离在新模块，rules 仍无 IO）；日历条数 <800 判为异常并回退，避免"把交易日判成休市"。

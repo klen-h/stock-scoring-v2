@@ -127,18 +127,26 @@ def counts_from_quotes(stocks: dict) -> tuple:
 
 def counts_best(stocks: dict, require_intraday: bool = False,
                 min_trading: int = 0) -> tuple:
-    """`(涨停, 跌停, src, meta)` —— **rt_k 精确优先**，否则内存行情（按板幅）。
-    返回的 `src` ∈ {"rt_k", "board_approx"}；`meta` 含 `data_date/age_sec/is_intraday`
-    供调用方**披露口径**（本项目纪律：不假装它永远是"此刻"）。
+    """`(涨停, 跌停, src, meta)` —— **fuyao → rt_k → 内存板幅** 三级。
+    返回的 `src` ∈ {"fuyao", "rt_k", "board_approx"}；`meta` 含 `data_date/age_sec/is_intraday`
+    及 fuyao 专属的 `seal_rate/open_count/touched_count/boards`，供调用方**披露口径**。
 
-    ★ 按用途收紧 rt_k 的采用条件（默认都不要求，与 `routers/market._limit_counts_best`
-      的展示口径一致）：
-        · `require_intraday=True` —— 告警用：盘前/休市 rt_k 给的是**上一交易日收盘定稿**，
+    ★ 按用途收紧采用条件（默认都不要求，与 `routers/market._limit_counts_best` 同口径）：
+        · `require_intraday=True` —— 告警用：盘前/休市拿到的是**上一交易日收盘定稿**，
           拿来当"此刻"就是又一次误报（2026-10-09 事故的同类坑）；
-        · `min_trading>0` —— 防静默漏计：`snapshot()` fail-open，缺一两批时
+        · `min_trading>0` —— 防静默漏计：rt_k `snapshot()` fail-open，缺一两批时
           `trading` 会明显偏小（全量 ≈5400+），此时宁可用内存精确回退。
     """
     mem_up, mem_dn = counts_from_quotes(stocks)
+    # ★★ 2026-10-28（阶段 2 · fuyao）：优先读同花顺涨停统计。
+    #   【为什么放在 rt_k 之前】① 1 次请求 ~0.2s（rt_k 要 3 批 5569 行 / 14s 预热）；
+    #     ② 额外给**封板率 / 炸板家数 / 触板家数 / 连板梯队**（rt_k 只有家数）；
+    #     ③ 家数口径来自同花顺加工数据（`limit_up_stock_count`），比我们自己按板幅数更权威。
+    #   【为什么跌停要单独校验】涨跌停池端点**有 50 条上限**（实测传 limit=200 仍回 50）
+    #     ⇒ `len(dnp) >= 50` 视为可能截断（千股跌停日），整组不用、回退 rt_k。
+    fu, fd, fmeta = _fuyao_counts(require_intraday)
+    if fu is not None:
+        return (fu, fd, "fuyao", fmeta)
     pk = None
     try:
         from app import realtime_uplimit
@@ -157,3 +165,57 @@ def counts_best(stocks: dict, require_intraday: bool = False,
                      "is_intraday": pk.get("is_intraday")})
     return (mem_up, mem_dn, "board_approx",
             {"age_sec": None, "data_date": None, "is_intraday": None})
+
+
+# 连板档位中文（fuyao `page_boards[].board_level` 实测取值：
+# one/two/three/four/**five_plus**；多的档位先给保守映射，未知值原样透传）
+_BOARD_CN = {"one": "首板", "two": "2板", "three": "3板", "four": "4板",
+             "five": "5板", "five_plus": "5板+", "six": "6板", "seven": "7板",
+             "eight": "8板", "nine": "9板", "ten": "10板+"}
+
+
+def _norm_boards(raw) -> list:
+    """`page_boards` → `[{level,label,count,promotion_rate}]`（保留原 level 便于前端判等）。"""
+    out = []
+    for b in (raw or []):
+        if not isinstance(b, dict):
+            continue
+        lvl = str(b.get("board_level") or "")
+        if not lvl:
+            continue
+        out.append({"level": lvl, "label": _BOARD_CN.get(lvl, lvl),
+                    "count": b.get("stock_count"),
+                    "promotion_rate": b.get("promotion_rate")})
+    return out
+
+
+def _fuyao_counts(require_intraday: bool = False) -> tuple:
+    """fuyao 涨停/跌停家数 + 增强指标；不可用 / 被截断 / 非当日 ⇒ `(None, None, {})`。"""
+    try:
+        from app import fuyao
+        if not fuyao.enabled():
+            return None, None, {}
+        st = fuyao.limit_up_stats()
+        if not st or st.get("limit_up_stock_count") is None:
+            return None, None, {}
+        td = str(st.get("trade_date") or "")[:10]
+        if require_intraday:
+            # 盘前/休市时 trade_date 是上一交易日 ⇒ 不能当"此刻"（与 rt_k 的 is_intraday 同义）
+            from app.flash.rules import beijing_now
+            if td != beijing_now().strftime("%Y-%m-%d"):
+                return None, None, {}
+        dnp = fuyao.limit_down_pool()
+        if not dnp or len(dnp) >= 50:      # 50 是端点上限 ⇒ 可能截断，整组不用
+            return None, None, {}
+        return int(st["limit_up_stock_count"]), len(dnp), {
+            "data_date": td or None,
+            "age_sec": None,
+            "is_intraday": None,
+            "seal_rate": st.get("seal_rate"),
+            "open_count": st.get("open_stock_count"),
+            "touched_count": st.get("touched_limit_up_stock_count"),
+            "boards": _norm_boards(st.get("page_boards")),
+        }
+    except Exception as e:
+        print(f"[limit_stats] fuyao counts failed: {str(e)[:80]}")   # ASCII（铁律⑥）
+        return None, None, {}
