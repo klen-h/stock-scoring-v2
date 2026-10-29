@@ -81,17 +81,21 @@ def _ensure_table() -> None:
     #     加不上的列**不写**（否则整个 upsert 会失败、连原有采样一起丢）。
     _EXTRA_COLS.clear()
     for col in ("container_mb", "container_pct", "page_cache_mb"):
+        _exists = False
         try:
             db.fetch_one(f"SELECT {col} FROM {_TABLE} LIMIT 1")
-            _EXTRA_COLS.append(col)          # 列已存在
-            continue
+            _exists = True                   # 列已存在
         except Exception:
-            pass
+            _exists = False                  # 列不存在 ⇒ 走 ALTER（**预期分支**，非吞异常）
+        if _exists:
+            _EXTRA_COLS.append(col)
+            continue
         try:
             db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {col} TEXT")
             _EXTRA_COLS.append(col)
-        except Exception:
-            pass                              # 加不上就不写，绝不拖垮采样
+        except Exception as e:
+            # 加不上就不写这一列（绝不因为监控字段拖垮采样本身）
+            print(f"[memory_watch] 加列 {col} 失败（本次不写该列）: {str(e)[:80]}")
     _TABLE_READY = True
 
 
