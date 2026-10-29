@@ -194,12 +194,35 @@ def compute(day: str = None) -> Dict:
 
 
 def load(day: str = None) -> Dict:
+    """读取某日的指数关键位结果。
+
+    ★★ 2026-10-29（用户："观察器的拥挤与关键位盘中不显示"）：与 `crowding_watch.load`
+      同源问题 —— 前端按今天查，而 `compute()` 只在日批（收盘后）跑 ⇒ 盘中今天没有行
+      ⇒ 页面只有 `—`。修法同样是**回退到最近一次收盘**并标注实际日期。
+
+    ⚠️ 为什么不盘中现算：关键位判断依赖"前低(60日)/年内低点"的完整性，
+      盘中用未定稿的当日 bar 会让 `broke`（是否失守）随分钟反复翻转，
+      而 `broke` 是**只在首次跌破时才记一次**的状态量 —— 盘中现算会污染这个状态。
+    """
     ensure_table()
+    requested = str(day)[:10] if day else ""
+    fallback = False
     try:
         if day:
             d = str(day)[:10]
             rows = db.fetch("SELECT * FROM key_level_watch WHERE date=%s "
                             "ORDER BY code", (d,))
+            if not rows:
+                # ⚠️ 同 crowding_watch：必须限制 `date <= 请求日`，
+                #    否则查历史无数据日会回退到更新的日期（把后来的行情当成当时的）。
+                r = db.fetch_one("SELECT MAX(date) AS d FROM key_level_watch WHERE date <= %s",
+                                 (d,))
+                latest = str((r or {}).get("d") or "")[:10]
+                if latest and latest != d:
+                    rows = db.fetch("SELECT * FROM key_level_watch WHERE date=%s "
+                                    "ORDER BY code", (latest,))
+                    if rows:
+                        fallback, d = True, latest
         else:
             r = db.fetch_one("SELECT MAX(date) AS d FROM key_level_watch")
             d = str((r or {}).get("d") or "")[:10]
@@ -232,6 +255,10 @@ def load(day: str = None) -> Dict:
             "detail": x.get("detail"),
             "extra": extra,
         })
-    return {"date": d, "rows": out,
-            "note": "观察器：关键位失守只说明结构走坏，不构成买卖信号；"
-                    "失守后需看能否快速收回。"}
+    note = ("观察器：关键位失守只说明结构走坏，不构成买卖信号；"
+            "失守后需看能否快速收回。")
+    if fallback:
+        # 同 crowding_watch：不写"尚未生成"，周末/长假永远不会有该日数据。
+        note = f"该日（{requested}）无收盘数据，此处显示 {d} 收盘结果。" + note
+    return {"date": d, "rows": out, "requested_date": requested,
+            "fallback": fallback, "note": note}

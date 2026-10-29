@@ -247,12 +247,37 @@ def compute(day: str = None) -> Dict:
 
 
 def load(day: str = None, limit: int = 60) -> Dict:
+    """读取某日的拥挤赛道结果。
+
+    ★★ 2026-10-29（用户："观察器的拥挤与关键位盘中不显示"）：
+      根因不是没算，而是**查的日期太新** ——
+        · 前端按 `selectedDate`（默认今天）查；
+        · `compute()` 只在日批（收盘后 ~20:30）跑 ⇒ 盘中今天的行**还不存在**；
+        · `WHERE date=今天` ⇒ 0 行 ⇒ 页面显示 `—`（用户看到的就是"不显示"）。
+      旧行为只有 `day=None` 才取 `MAX(date)`，而前端**始终传了具体日期** ⇒ 回退分支永远走不到。
+      修法：指定日查不到就**回退到最近一次收盘**，并用 `fallback/requested` 如实标注实际日期。
+      为什么不"盘中也算一遍"：本观察器依赖 30 日/120 日指标的日线完整性，
+      盘中用未定稿的当日 bar 算出来的拥挤度会随分钟跳动，比"显示昨日"更容易误导。
+    """
     ensure_table()
+    requested = str(day)[:10] if day else ""
+    fallback = False
     try:
         if day:
-            rows = db.fetch("SELECT * FROM crowding_watch WHERE date=%s "
-                            "ORDER BY score DESC LIMIT %s", (str(day)[:10], limit))
             d = str(day)[:10]
+            rows = db.fetch("SELECT * FROM crowding_watch WHERE date=%s "
+                            "ORDER BY score DESC LIMIT %s", (d, limit))
+            if not rows:
+                # ⚠️ 必须 `date <= 请求日`：否则查看历史某天（如 10-25 无数据）会回退到
+                #    **比它更新**的 10-29 —— 相当于"回到未来"，把后来的行情当成当时的。
+                r = db.fetch_one("SELECT MAX(date) AS d FROM crowding_watch WHERE date <= %s",
+                                 (d,))
+                latest = str((r or {}).get("d") or "")[:10]
+                if latest and latest != d:
+                    rows = db.fetch("SELECT * FROM crowding_watch WHERE date=%s "
+                                    "ORDER BY score DESC LIMIT %s", (latest, limit))
+                    if rows:
+                        fallback, d = True, latest
         else:
             r = db.fetch_one("SELECT MAX(date) AS d FROM crowding_watch")
             d = str((r or {}).get("d") or "")[:10]
@@ -269,5 +294,10 @@ def load(day: str = None, limit: int = 60) -> Dict:
             "score": _num(x.get("score")), "level": x.get("level"),
             "leaders": (x.get("leaders") or "").split(",") if x.get("leaders") else [],
         })
-    return {"date": d, "rows": out,
-            "note": "观察器：拥挤≠卖出信号；高拥挤=30日涨幅分位高+高位股占比高，需自行结合量价。"}
+    note = "观察器：拥挤≠卖出信号；高拥挤=30日涨幅分位高+高位股占比高，需自行结合量价。"
+    if fallback:
+        # 不写死"尚未生成"——请求日可能是周末/长假，那天永远不会生成；
+        # 统一说"无收盘数据"，两种原因都覆盖，且不暗示"稍后会补上"。
+        note = f"该日（{requested}）无收盘数据，此处显示 {d} 收盘结果。" + note
+    return {"date": d, "rows": out, "requested_date": requested,
+            "fallback": fallback, "note": note}

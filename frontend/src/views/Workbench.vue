@@ -374,7 +374,13 @@
           <div v-else-if="riskErr" class="text-xs text-muted">{{ riskErr }}</div>
           <div v-else class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
             <div>
-              <div class="text-[11px] text-muted mb-1">拥挤赛道（30日 / 高位占比 / 距120日高）</div>
+              <!-- ★ 2026-10-29（用户：\"拥挤与关键位盘中不显示\"）：盘中今天的收盘数据还没算出来，
+                   后端已回退到最近一次收盘 ⇒ 这里必须**明确标出实际日期**，
+                   否则用户会以为这是今日拥挤度（和"领跌把涨幅最小当下跌"同类的误导）。 -->
+              <div class="text-[11px] text-muted mb-1">拥挤赛道（30日 / 高位占比 / 距120日高）
+                <span v-if="crowd?.fallback" class="text-amber-400/80"
+                      :title="`今日 ${crowd.requested_date} 的收盘数据尚未生成，这里显示的是 ${crowd.date} 收盘结果`">
+                  · {{ crowd.date }} 收盘</span></div>
               <div v-if="!crowd || !(crowd.rows || []).length" class="text-muted">—</div>
               <div v-else class="space-y-0.5">
                 <div v-for="r in crowdTop" :key="r.industry" class="flex items-center gap-2">
@@ -390,7 +396,10 @@
               </div>
             </div>
             <div>
-              <div class="text-[11px] text-muted mb-1">指数关键位（前低 / 整数位 / 年内低点）</div>
+              <div class="text-[11px] text-muted mb-1">指数关键位（前低 / 整数位 / 年内低点）
+                <span v-if="keyLv?.fallback" class="text-amber-400/80"
+                      :title="`今日 ${keyLv.requested_date} 的收盘数据尚未生成，这里显示的是 ${keyLv.date} 收盘结果`">
+                  · {{ keyLv.date }} 收盘</span></div>
               <div v-if="!keyLv || !(keyLv.rows || []).length" class="text-muted">—</div>
               <div v-else class="space-y-0.5">
                 <div v-for="r in keyLv.rows" :key="r.code" class="flex items-center gap-2">
