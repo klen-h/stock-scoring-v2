@@ -831,12 +831,23 @@ def generate_packs(
                 "date": date_str,
                 "stocks": delta,
             }
-            delta_path = os.path.join(output_dir, f"kline-delta-{date_str}.json")
-            with open(delta_path, "w", encoding="utf-8") as f:
+            # ★★ 2026-10-29（用户："改成存前端本地，每天增量，可行吗"）：
+            #   `compute_delta` 目前是「**伪增量**」—— 只要某只今天多了一根，就把它的
+            #   整段 150 天历史塞进 delta ⇒ 裸 JSON 约 **12MB**，而全量包 gzip 后只有
+            #   **2.68MB**。前端 `checkAndUpdate` 是「先试 delta、404 才下全量」
+            #   ⇒ 有 delta 的日子反而**多下 4 倍**流量。
+            #   本轮先做**零风险**的那半：delta 也走 gzip（12MB → 约 3MB）。
+            #   ⚠️ 只生成 `.json.gz`、不再生成 `.json`：旧版前端请求 `.json` 会 404，
+            #      自动走 else 分支去下全量 gz（2.68MB）—— 比现在下 12MB **更快**，
+            #      所以没有过渡期风险，也不需要双份文件。
+            #   （真正的「只传新增那 1 根」需要 delta 带 `base` 日期 + 前端校验本地版本，
+            #     否则用户离线几天会静默缺 K 线 —— 属下一步，未做。）
+            delta_path = os.path.join(output_dir, f"kline-delta-{date_str}.json.gz")
+            with gzip.open(delta_path, "wt", encoding="utf-8") as f:
                 json.dump(delta_pack, f, ensure_ascii=False, separators=(",", ":"))
-            
+
             delta_size = os.path.getsize(delta_path) / 1024
-            print(f"  增量包: {delta_path} ({delta_size:.1f} KB)")
+            print(f"  增量包: {delta_path} ({delta_size:.1f} KB, gzip)")
     
     # 清理旧文件（保留最近 7 天）
     cleanup_old_packs(output_dir, keep_days=7)

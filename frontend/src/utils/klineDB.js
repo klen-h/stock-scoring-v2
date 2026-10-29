@@ -541,13 +541,20 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
   }
 
   // 尝试增量更新（本地已是新版数据时才允许走增量路径）
-  const deltaUrl = `${baseUrl}/kline-delta-${todayStr}.json?${cacheBust}`
+  // ★★ 2026-10-29：增量包改 **gzip**（生成侧同步改）。
+  //   为什么：`compute_delta` 目前是伪增量（某只今天有新 K 线就把整段 150 天重发），
+  //   裸 JSON 约 **12MB**，而全量包 gzip 只有 2.68MB —— 有 delta 的日子反而多下 4 倍。
+  //   gzip 后约 3MB，先把这个洞堵上（真正的"只传新增 1 根"需要 delta 带 `base`
+  //   日期 + 本地版本校验，否则离线几天会静默缺 K 线，属下一步）。
+  //   ⚠️ 旧版 `.json` 已停产 ⇒ 老客户端这里 404，会走下面的 else 下全量 gz，更快，不亏。
+  const deltaUrl = `${baseUrl}/kline-delta-${todayStr}.json.gz?${cacheBust}`
   try {
     onProgress?.({ stage: 'download', message: '检查增量更新...' })
     const response = await fetch(deltaUrl, { cache: 'no-store' })
-    
+
     if (response.ok) {
-      const delta = await response.json()
+      const deltaBlob = await response.blob()
+      const delta = JSON.parse(await decompressGzip(deltaBlob))
       onProgress?.({ stage: 'apply', message: '应用增量更新...' })
       const result = await applyDelta(delta)
       return { 
