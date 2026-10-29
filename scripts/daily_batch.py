@@ -1233,6 +1233,32 @@ def task_crowding_watch():
         return f"拥挤赛道: WARN {str(e)[:70]}"
 
 
+def task_jin10_tidy():
+    """金十「每日汇总」抓取（2026-10-30，用户："现在缺国内的消息"）。**纯素材采集**。
+
+    ★ 该接口**没有列表 API**（实测 /tidy-news/list|articles|items 全 502），
+      只能按 id 递增扫描：id 全局连续、每天一批约 18~24 个，
+      未使用的 id 返回 status=200 但 category_id 为 null（不是 404）。
+      日常增量约 20 个请求（≈3 秒），首次/断档后最多扫 120 个。
+    ★ 只抓 4 个目标栏目（50029 A股盘前 / 50030 A股回顾 / 50033 存储 / 50034 ETF），
+      跑顺后再扩；**不逐条过 LLM**（原文已是提炼过的结论，见模块文件头）。
+    ★ **失败不抛**：消息面素材缺一天不影响主链。
+    ★ token 失效（401）单独提示 —— 这是唯一需要用户动手的故障。
+    """
+    try:
+        from app import jin10_tidy as jt
+        r = jt.compute()
+        err = str(r.get("error") or "")
+        if err.startswith("x-token"):
+            return "金十汇总: WARN token 失效，请重新登录金十更新 JIN10_X_TOKEN"
+        if not r.get("ok"):
+            return f"金十汇总: WARN {err[:70]}"
+        return (f"金十汇总: 扫 {r.get('scanned')} 个 id / 入库 {r.get('saved')} 条 / "
+                f"游标 {r.get('last_id')}")
+    except Exception as e:
+        return f"金十汇总: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1455,6 +1481,9 @@ TASKS = {
     # ★ 2026-09-12 迁入：原 Render 每日 07:00 循环被只读模式关闭 → 日历停在 09-04。
     #   放在 LLM 类任务（矛盾报告/日报）之前，保证复盘 prompt 里的事件排期是新的。
     "calendar": (task_calendar, "财经日历刷新（LLM 事件排期来源）"),
+    # ★ 2026-10-30（用户："缺国内的消息"）：金十每日汇总（A股盘前/回顾/存储/ETF）。
+    #   纯消息面素材，不进决策链；id 递增扫描（该接口无列表 API），日常约 20 个请求。
+    "jin10_tidy": (task_jin10_tidy, "金十每日汇总（国内消息面素材）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1569,7 +1598,9 @@ DEFAULT_ORDER = ["backfill",
                  # ★ 2026-10-26 合并：扫描+验证+报告合成一个排单位（原两个任务名保留为别名）
                  "sector_snapshot", "strategy_scan", "contradiction",
                  "score_snapshot", "mainline",
-                 "news_snapshot", "sector_strength",
+                 # ★ 2026-10-30：金十每日汇总紧跟 news_snapshot（同为"消息面采集"）。
+                #   外呼型任务，失败不抛（见 task_jin10_tidy）；日常约 20 个请求。
+                "news_snapshot", "jin10_tidy", "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
                  "market_observers",

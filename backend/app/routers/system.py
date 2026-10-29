@@ -1269,6 +1269,21 @@ def key_level_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return kl.load(date)
 
 
+@router.get("/jin10-tidy")
+def jin10_tidy(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+               user: dict = Depends(get_current_user)) -> Dict:
+    """金十每日汇总（A股盘前/回顾/存储/ETF）。
+
+    ★ 2026-10-30（用户："现在缺国内的消息"）：**原文直出，不经 LLM 改写**。
+      这些汇总是被人提炼过的结论，再让 LLM 总结一遍属于信息损耗。
+      需要"今日主线归纳"请用 `jin10_tidy.summarize()`（整批一次，见模块注释）。
+    ★ 与 `crowding_watch` 同一套回退语义：指定日无数据时回退到最近的
+      `date <= 请求日`，并返回 `fallback` + 实际 `date`（前端需如实标注）。
+    """
+    from app import jin10_tidy as jt
+    return jt.load(date)
+
+
 @router.get("/ai-basket-watch")
 def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                     user: dict = Depends(get_current_user)) -> Dict:
