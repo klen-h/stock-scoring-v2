@@ -1284,6 +1284,18 @@ def jin10_tidy(date: Optional[str] = Query(None, description="YYYY-MM-DD，默�
     return jt.load(date)
 
 
+@router.get("/stagflation")
+def stagflation(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                user: dict = Depends(get_current_user)) -> Dict:
+    """宏观组合风险档：`滞胀交易` 状态位（2026-10-30，简报第 1 项）。
+
+    ★ **只标注，不覆盖 `direction.score`**。返回里的 `advisory` 就是前端该显示的文案。
+    ★ 与 crowding_watch 同一套回退语义（`date <= 请求日` + `fallback`）。
+    """
+    from app import stagflation as st
+    return st.load(date)
+
+
 @router.get("/ai-basket-watch")
 def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                     user: dict = Depends(get_current_user)) -> Dict:

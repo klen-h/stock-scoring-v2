@@ -514,5 +514,7 @@ export const getAiBasketWatch = (date) => http.get('/system/ai-basket-watch', { 
 export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { params: { date }, timeout: 30000 })
 // ★ 2026-10-30：金十每日汇总（A股盘前/回顾/存储/ETF）—— 原文直出，不经 LLM 改写
 export const getJin10Tidy = (date) => http.get('/system/jin10-tidy', { params: { date }, timeout: 30000 })
+// ★ 2026-10-30：组合风险档（滞胀交易状态位）—— 只标注，不覆盖宏观分
+export const getStagflation = (date) => http.get('/system/stagflation', { params: { date }, timeout: 30000 })
 // ★ 2026-10-24：观察器 AI 解读（LLM 同步调用，按日缓存 + 数据指纹；默认点按钮才请求）
 export const getObserverReview = (date, refresh = false) => http.get('/system/observer-review', { params: { date, refresh }, timeout: 120000 })

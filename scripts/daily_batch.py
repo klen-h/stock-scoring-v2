@@ -1259,6 +1259,27 @@ def task_jin10_tidy():
         return f"金十汇总: WARN {str(e)[:70]}"
 
 
+def task_stagflation():
+    """宏观组合风险档：`滞胀交易` 状态位（2026-10-30，简报第 1 项）。**只标注，不改分**。
+
+    ★ 口径：油↑ + 10Y↓ + 美元↑ 三同时；开启需连续 2 日，关闭需连续 2 日不满足。
+    ★ **不覆盖 direction.score / mechanical_score**（用户明确红线）—— 并列输出，
+      由下游自行取舍。覆盖分数会直接改闸门与仓位，风险远大于收益。
+    ★ 每次**全量重算**（滞回依赖前日状态与连续计数，增量写一旦断档就永久错位；
+      而 panel 只有几十行，成本可忽略）。
+    ★ 数据不足的日子也落库（state=数据不足），不把"缺数据"当成"不是滞胀"。
+    """
+    try:
+        from app import stagflation as st
+        r = st.compute()
+        if not r.get("ok"):
+            return f"滞胀档: WARN {str(r.get('error'))[:70]}"
+        return (f"滞胀档: 当前【{r.get('current')}】/ 已算 {r.get('days')} 日 / "
+                f"近切换 {len(r.get('flips') or [])} 次")
+    except Exception as e:
+        return f"滞胀档: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1484,6 +1505,9 @@ TASKS = {
     # ★ 2026-10-30（用户："缺国内的消息"）：金十每日汇总（A股盘前/回顾/存储/ETF）。
     #   纯消息面素材，不进决策链；id 递增扫描（该接口无列表 API），日常约 20 个请求。
     "jin10_tidy": (task_jin10_tidy, "金十每日汇总（国内消息面素材）"),
+    # ★ 2026-10-30（简报第1项）：宏观组合风险档「滞胀交易」状态位。
+    #   只标注不改分；全量重算（滞回依赖历史），数量级几十行，成本可忽略。
+    "stagflation": (task_stagflation, "滞胀交易状态位（组合风险档，不改分）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1600,7 +1624,10 @@ DEFAULT_ORDER = ["backfill",
                  "score_snapshot", "mainline",
                  # ★ 2026-10-30：金十每日汇总紧跟 news_snapshot（同为"消息面采集"）。
                 #   外呼型任务，失败不抛（见 task_jin10_tidy）；日常约 20 个请求。
-                "news_snapshot", "jin10_tidy", "sector_strength",
+                "news_snapshot", "jin10_tidy",
+                # ★ 2026-10-30：滞胀档依赖 macro_daily 当日快照 ⇒ 排在消息面采集之后
+                "stagflation",
+                "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
                  "market_observers",

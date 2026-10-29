@@ -9,6 +9,17 @@
     <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
     <div v-else-if="!macro" class="text-muted text-xs">加载中…</div>
     <template v-else>
+      <!-- ★★ 2026-10-30（简报第 1 项）：**组合风险档**横幅。
+           ⚠️ 它**不修改**上面的宏观分数 —— 机械分照常显示，这里只是并列声明
+             "该组合下机械评分的因子权重假设不成立"。覆盖分数会直接动闸门与仓位，属红线。
+           文案由用户指定，不要改写成"看空/看多"之类结论。 -->
+      <div v-if="stagflation?.is_stagflation"
+           class="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+        <div class="text-[11px] font-medium text-amber-300 leading-snug">
+          组合风险档：当前宏观组合为【{{ stagflation.state }}】，机械评分因子权重假设不成立，仅供参考
+        </div>
+        <div class="text-[10px] text-amber-200/80 mt-0.5" :title="stagEvTitle">{{ stagEvText }}</div>
+      </div>
       <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行，
            严格单行不换行：长文本一律 truncate，悬停 title 看全文）
            ★ 2026-09-29：上述是**默认（内联卡）**口径；`full=true`（顶栏浮层）改成
@@ -304,6 +315,10 @@ const props = defineProps({
   // ★ 2026-10-25：流动性三件套（两融/中美利差/当月贴水率，日批落库 `/macro/liquidity`）。
   //   日频快照数据 ⇒ Workbench 进页面加载一次即可（不挂轮询）；`latest` 为空整块不渲染。
   liquidity: { type: Object, default: null },
+  // ★★ 2026-10-30（简报第 1 项）：**组合风险档**（滞胀交易 = 油↑+10Y↓+美元↑）。
+  //   ⚠️ 它**不改** `macro.direction.score` —— 机械分照常展示，这里只是并列标注
+  //     "该组合下机械评分的因子权重假设不成立"。改分会直接动闸门与仓位，红线。
+  stagflation: { type: Object, default: null },
   // ★ 2026-09-29（用户："你改为展示全部吧，宽度自适应"）：`full = true` ⇒ **展示全部**：
   //   首行允许**换行**、所有长文本**不截断**（顶栏浮层用 —— 浮层里没有"必须单行"的理由，
   //   而截断会让用户看不到 叙事/仓位建议 的全文）。
@@ -340,6 +355,32 @@ const pddTitle = computed(() => {
 //   阈值沿用 `margin_sentiment.sentiment_line()` 的口径（≥80 过热 / ≤20 过冷），保持单一来源。
 const hotSubs = computed(() => ((props.sentiment?.subs) || []).filter(s => s.score >= 80).slice(0, 4))
 const coldSubs = computed(() => ((props.sentiment?.subs) || []).filter(s => s.score <= 20).slice(0, 4))
+
+// ★ 2026-10-30：滞胀档三项证据（一行短文案 + hover 看口径）
+const stagEvText = computed(() => {
+  const e = props.stagflation?.evidence || {}
+  const o = e.oil || {}
+  const b = e.bond || {}
+  const u = e.usd || {}
+  const p = []
+  if (o.value != null) p.push(`油 ${o.value}（${o.chg_pct ?? '—'}%）${o.pass ? '✓' : '✗'}`)
+  if (b.value != null) p.push(`10Y ${b.value}（${b.bp_change ?? '—'}bp）${b.pass ? '✓' : '✗'}`)
+  if (u.value != null) p.push(`美元 ${u.value}（${u.chg_pct ?? '—'}%）${u.pass ? '✓' : '✗'}`)
+  return p.join(' · ')
+})
+const stagEvTitle = computed(() => {
+  const e = props.stagflation?.evidence || {}
+  const o = e.oil || {}
+  const b = e.bond || {}
+  const u = e.usd || {}
+  return [
+    `油：${o.rule || ''}`,
+    `债：${b.rule || ''}`,
+    `美元：${u.rule || ''}`,
+    `开启需连续 ${props.stagflation?.on_days ?? 2} 日成立；关闭需连续 ${props.stagflation?.off_days ?? 2} 日不满足`,
+    props.stagflation?.note || '',
+  ].filter(Boolean).join('\n')
+})
 
 // ★★ 2026-09-29（P2）：股指期货基差 —— 每品种取**当月合约**（标准口径），次月放 hover 对照。
 //   【配色纪律】**一律中性色，不用红绿** —— 贴水深浅**不直接等于**"涨/跌"（对现货是

@@ -211,6 +211,7 @@
                  宽度 `min(96vw,1120px)` **自适应屏宽**（原固定 720px 是为了"单行塞得下"，
                  现在既然可换行，就用足屏幕 —— 两列 grid（支撑/压制、过热/过冷）也更舒展）。 -->
             <MacroEnvCard full :macro="macro" :macro-err="macroErr" :temperature="temperature"
+                          :stagflation="stagflation"
                           :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
                           :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
           </div>
@@ -1394,6 +1395,7 @@
                ⚠️ 原来它只会出现在盘前（数据一直在，只是别处不渲染）⇒ 抽出来后
                  顶栏浮层让它在**任何阶段**都能看。 -->
           <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
+                        :stagflation="stagflation"
                         :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
                         :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
           <!-- ★ 2026-10-10（P0-2）：央行储备月度面板（月频慢变量，非信号）。紧跟宏观卡，
@@ -2892,6 +2894,7 @@ import {
   getWorkbenchScan, getWorkbenchScanSummary,
   // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
+  getStagflation,
   // ★ 2026-10-24：观察器 AI 解读（LLM）
   getObserverReview,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
@@ -3192,6 +3195,8 @@ const statusOpen = ref(false)
 // ★ 2026-09-25 用户反馈：盘前加"宏观与环境"卡（数据同数据中心：早盘锁定快照优先）
 const macro = ref(null)
 const macroErr = ref('')
+// ★ 2026-10-30（简报第1项）：组合风险档（滞胀交易）。**只标注，不改 macro.direction.score**
+const stagflation = ref(null)
 // ★ 盘中看盘序/情绪（2026-09-25 交易方法论 A1/A3/B2）
 const emotion = ref(null)
 // 初始即给完整结构：模板首帧（接口返回前）会读取 steps/stocks，null 会崩
@@ -5064,8 +5069,21 @@ async function loadAmountShare() {
     amountShare.value = data || null
   } catch { amountShare.value = null }
 }
+// ★ 2026-10-30（简报第1项）：组合风险档（滞胀交易）——独立加载。
+//   ① 不放进 `loadMacro` 的 try：它失败不该让宏观卡显示"加载失败"；
+//   ② 不受 `_dayCached('macroLocked')` 的早退影响：那是宏观快照的缓存，
+//      状态位是另一张表，且查询很轻（单行）。
+async function _loadStagflation() {
+  try {
+    const { data } = await getStagflation(selectedDate.value)
+    stagflation.value = data || null
+  } catch {
+    stagflation.value = null
+  }
+}
 // 宏观方向（早盘锁定快照优先，回退实时计算）——与 Dashboard.vue 同源同口径
 async function loadMacro() {
+  _loadStagflation()
   // ★ 只缓存"早盘锁定"那一份（dailyRes.snapshot）：它是当日 08:55-13:00 锁定的，
   //   当天不再变 ⇒ 切 tab 重拉纯属浪费。
   //   ⚠️ 回退路径（`getMacroSnapshot()` 实时计算）**不缓存** —— 那个会随外盘变。
