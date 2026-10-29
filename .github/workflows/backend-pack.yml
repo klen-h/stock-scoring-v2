@@ -57,6 +57,18 @@ on:
         description: '★ 全进程请求速率上限（默认 1；这是控 WAF 的主旋钮，仍有拦截就再降）'
         required: false
         default: '1'
+      rebuild_only:
+        # ★★ 2026-10-29（用户：日批在内存修复前就跑完了，需要重跑）：
+        #   场景 = **数据已经到位、只有表结构要换**（如 klines 加 WITHOUT ROWID）。
+        #   为什么普通重跑无效：update_backend_pack_incremental.py 顶部有
+        #     `if target_ymd <= prev_ymd: print("已是最新"); return 0`
+        #   数据没变 ⇒ 直接早退 ⇒ 表结构原封不动（10-29 当晚就是这样白跑了一次）。
+        #   打开本开关 ⇒ 跳过 mainflow / 增量 / 等前端包，只跑
+        #   `scripts/rebuild_pack_struct.py`（下载线上包 → 重写表结构 → 校验 → 重新压缩），
+        #   **不拉 K 线、不重算指标、不碰 Supabase**，Actions 上约 1~2 分钟。
+        description: '仅重建包结构（WITHOUT ROWID）：跳过 mainflow 与增量，不加数据只换结构'
+        required: false
+        default: 'false'
 
 concurrency:
   group: backend-pack
@@ -166,6 +178,9 @@ jobs:
       #   （10-20 日志：第 1 次 WAF 出现在 99 只），随后 300s 冷却连环触发。
       #   这里显式等（最多 180 分钟），正常日子前端 18:37 已结束 ⇒ 零等待。
       - name: Wait for frontend pack (avoid WAF quota overlap)
+        # ★ rebuild_only 不拉任何外部行情（只下载自己的 Pages 包）⇒ 无 WAF 配额冲突，
+        #   不需要等前端包，否则白等最多 20 分钟。
+        if: ${{ github.event.inputs.rebuild_only != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -211,6 +226,9 @@ jobs:
       #   新浪源逐股 ~0.75s，全池约 7 分钟；不跑这步 mainforce 会用昨日资金流
       #   （弱口径）。写库幂等（UNIQUE(code,date)），日批再跑一遍无害。
       - name: Backfill mainflow (mainforce 强口径前置)
+        # ★ rebuild_only 只换包结构、不加数据 ⇒ 资金流当天已回填过，重跑纯属浪费
+        #   （约 7 分钟 + 读 Supabase mainflow_history/kline_cache，egress 已 19.46GB）。
+        if: ${{ github.event.inputs.rebuild_only != 'true' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATA_SOURCE: pack
@@ -228,6 +246,9 @@ jobs:
         run: python scripts/daily_batch.py --tasks mainflow --no-pack-check --no-quotes
 
       - name: Update backend pack incrementally (zzshare)
+        # ★ rebuild_only 时本步骤必须跳过：它会在「数据已最新」时 return 0 早退，
+        #   **什么也不改**（正是 10-29 瘦身没生效的原因）⇒ 结构重写由下一步负责。
+        if: ${{ github.event.inputs.rebuild_only != 'true' }}
         # ★★ 2026-10-22：不再逐只拉腾讯（2915 只 × 750 根 = 3~6h + WAF）。
         #   新链路：Pages 上一份包（66MB，1 请求）→ zzshare 缺口交易日（2~3 请求）
         #   → 拼接（重叠/factor 校验）→ 重算 indicators/trend；mainforce/news 继承上一份。
@@ -243,6 +264,15 @@ jobs:
           done
           echo "::error::增量重试 6 次仍失败"
           exit 1
+
+      - name: Rebuild pack structure (WITHOUT ROWID only)
+        # ★★ 2026-10-29：**纯结构重写**，不拉数据、不重算指标、不读 Supabase。
+        #   为什么单独一个步骤而不是改增量脚本：增量脚本的 `write_sqlite` 需要把
+        #   2.1M 行 K 线 + 2884 份指标 JSON 全读进内存重组一遍，而这里数据**一个字节都没变**，
+        #   SQLite 自己 `INSERT ... SELECT` 更快也更不容易错；而且不碰合并逻辑 ⇒ 无回归风险。
+        #   校验不过直接 exit 1，**绝不覆盖线上包**。
+        if: ${{ github.event.inputs.rebuild_only == 'true' }}
+        run: python scripts/rebuild_pack_struct.py --pack-dir ./data/kline
 
       - name: Upload Pages artifacts
         uses: actions/upload-artifact@v4
