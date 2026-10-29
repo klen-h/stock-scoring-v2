@@ -349,12 +349,27 @@ def write_sqlite(path: str, date_str: str, quotes: dict, klines_raw: dict,
     if os.path.exists(path):
         os.remove(path)
     conn = sqlite3.connect(path)
+    # ★★★ 2026-10-29：`WITHOUT ROWID` —— 实测省 **26.4%**（249.9MB → 184.0MB），零数据损失。
+    #   【为什么】普通表 = **两份存储**：① 按 rowid 堆存的行；② `PRIMARY KEY (code, date)`
+    #     的隐式索引（每条又要再存一遍 code+date）。2.1M 行 × 两份 ⇒ 光索引就 137MB
+    #     （数据本身仅 112MB）。
+    #     `WITHOUT ROWID` 让行**按主键聚簇**存储：主键即表的物理顺序 ⇒ 索引那份冗余消失，
+    #     且 `WHERE code=? [AND date ...]` 这类本项目**唯一使用的查询形态**全部走聚簇扫描，
+    #     一个页能装更多行 ⇒ 磁盘读也更少。
+    #   【实测四档】（本地副本上跑，见 2026-10-29 memory）
+    #     原样 249.9MB ｜ 仅 VACUUM 242.7 ｜ **WITHOUT ROWID 184.0** ｜
+    #     +砍 2023 172.5 ｜ +只留 2025~ 132.6（丢 2024 整年，不建议）
+    #   【与 OOM 的关系】包体积直接决定解压时写盘的页缓存峰值（容器内存 = 进程 RSS +
+    #     page cache）⇒ 250MB→184MB 把那个峰值降了 1/4，与 `pack_source` 的
+    #     fadvise(DONTNEED) 是双保险。
+    #   ⚠️ 兼容性：SQLite 3.8.2+ 支持；查询侧（`pack_source._query`）只按 code/date 查、
+    #     从不依赖 rowid ⇒ 无影响。`update_backend_pack_incremental.py` 只 SELECT 不重建表。
     conn.execute("""
         CREATE TABLE klines (
             code TEXT NOT NULL, date TEXT NOT NULL,
             open REAL, high REAL, low REAL, close REAL, volume REAL,
             PRIMARY KEY (code, date)
-        )""")
+        ) WITHOUT ROWID""")
     conn.execute("CREATE TABLE codes (code TEXT PRIMARY KEY, name TEXT, market_cap REAL)")
     conn.execute("CREATE TABLE indicators (code TEXT PRIMARY KEY, json TEXT)")
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")

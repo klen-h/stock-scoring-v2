@@ -345,8 +345,17 @@ def main():
     out_db = os.path.join(args.pack_dir, "backend-pack.db")
     gbp.write_sqlite(out_db, date_str, quotes, merged, ind_out)
     gz = out_db + ".gz"
+    # ★ 2026-10-29：**流式**压缩。原写法 `fo.write(fi.read())` 会把整个包
+    #   （250MB，改 WITHOUT ROWID 后 184MB）一次性读进 Python bytes ⇒ 峰值 +250MB。
+    #   在 GitHub Actions（7GB）上不致命，但这是"大文件全量读"的典型写法，
+    #   一旦哪天在 512MB 容器里跑就必炸（与 `pack_source` 解压那次同源问题）。
+    #   分块 1MB ⇒ Python 侧内存恒定。
     with open(out_db, "rb") as fi, gzip.open(gz, "wb") as fo:
-        fo.write(fi.read())
+        while True:
+            chunk = fi.read(1 << 20)
+            if not chunk:
+                break
+            fo.write(chunk)
     os.remove(out_db)
     print(f"  压缩包: {gz} ({os.path.getsize(gz) / 1048576:.1f} MB)")
     gbp.write_indicators_pack(
