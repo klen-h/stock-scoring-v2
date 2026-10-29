@@ -40,7 +40,14 @@ on:
   #   ⚠️ 不能复用 `--tasks all`：会再跑完整日批（≈74 分钟）并重复写库，
   #     且 8:30 时 backend-pack 尚未开始（22:00 才跑）⇒ pack 校验必然失败。
   schedule:
-    - cron: '30 0 * * 1-5'    # UTC 0:30 = 北京 8:30，周一~五
+    # ⚠️ 两个时间点不是冗余，是**针对 GitHub schedule 的两个不确定性**：
+    #   ① cron 语法是 UTC（官方文档），但本仓库 2026-10-19 曾记录"实测为 Asia/Shanghai"
+    #      ⇒ 若按北京时间解释，8:30 会变成 00:30（凌晨，盘前没发 ⇒ saved=0）；
+    #   ② GitHub schedule **高峰期会延迟 5~30 分钟**（官方承认的已知行为）。
+    #   ⇒ 8:30 + 9:00 各跑一次，`ON CONFLICT (date,category_id,seq) DO UPDATE`
+    #     保证幂等，重复跑只花 ~20 个请求（约 3 秒），代价可忽略。
+    - cron: '30 0 * * 1-5'    # 期望 = 北京 8:30
+    - cron: '0 1 * * 1-5'     # 期望 = 北京 9:00（开盘前半小时，兜住延迟/时区误判）
 
 concurrency:
   group: daily-batch
