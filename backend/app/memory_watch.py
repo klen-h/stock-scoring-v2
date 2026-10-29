@@ -34,6 +34,9 @@ from app.database import db
 
 _TABLE = "memory_probe"
 _TABLE_READY = False
+# ★ 2026-10-29：本表**实际可用**的容器级内存列（探测/ALTER 成功才写）。
+#   老表（升级前建的）没有这些列 ⇒ 硬写会让整个 upsert 失败、连原有采样一起丢。
+_EXTRA_COLS: list = []
 
 # ★ 2026-10-28（用户报"早上内存爆满、多次重启"）：原 30 分钟太稀 —— 那次 08:30-12:00
 #   **一条采样都没有**（进程反复被杀，30 分钟的窗口全落在死亡间隙里），事后完全无法复盘。
@@ -69,6 +72,26 @@ def _ensure_table() -> None:
             note TEXT
         )
     """)
+    # ★★ 2026-10-29：补**容器级**内存列（`container_mb / container_pct / page_cache_mb`）。
+    #   为什么必须落库：用户报"爆内存"，而 `rss_mb` 只有 155MB（31%）——
+    #   因为 `VmRSS` 只算**进程**，平台判 OOM 看的是**容器**（含 page cache，本项目的
+    #   126MB pack 库 mmap 多记在这里）。不落这三列，下次爆了还是对不上账。
+    #   ⚠️ `CREATE TABLE IF NOT EXISTS` **不会修改已存在的表** ⇒ 必须 ALTER；
+    #     且 SQLite 不支持 `ADD COLUMN IF NOT EXISTS` ⇒ 先探测列、失败再加。
+    #     加不上的列**不写**（否则整个 upsert 会失败、连原有采样一起丢）。
+    _EXTRA_COLS.clear()
+    for col in ("container_mb", "container_pct", "page_cache_mb"):
+        try:
+            db.fetch_one(f"SELECT {col} FROM {_TABLE} LIMIT 1")
+            _EXTRA_COLS.append(col)          # 列已存在
+            continue
+        except Exception:
+            pass
+        try:
+            db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {col} TEXT")
+            _EXTRA_COLS.append(col)
+        except Exception:
+            pass                              # 加不上就不写，绝不拖垮采样
     _TABLE_READY = True
 
 
@@ -96,6 +119,10 @@ def _row_out(r: Dict) -> Dict:
         "rss_mb": _to_float(r.get("rss_mb")),
         "peak_mb": _to_float(r.get("peak_mb")),
         "used_pct": _to_float(r.get("used_pct")),
+        # ★ 2026-10-29：容器级（老行没有这些列 ⇒ `.get` 返回 None，不报错）
+        "container_mb": _to_float(r.get("container_mb")),
+        "container_pct": _to_float(r.get("container_pct")),
+        "page_cache_mb": _to_float(r.get("page_cache_mb")),
         "caches_mb": _to_float(r.get("caches_mb")),
         "unaccounted_mb": _to_float(r.get("unaccounted_mb")),
         "threads": int(_to_float(r.get("threads")) or 0),
@@ -177,7 +204,7 @@ def record_sample(snap: Optional[Dict] = None, force: bool = False,
     ts = now.isoformat(timespec="microseconds")
     try:
         _ensure_table()
-        db.upsert(_TABLE, {
+        row = {
             "ts": ts,
             "rss_mb": str(rss), "peak_mb": str(snap.get("peak_mb")),
             "used_pct": str(pct), "caches_mb": str(snap.get("caches_total_mb")),
@@ -186,7 +213,14 @@ def record_sample(snap: Optional[Dict] = None, force: bool = False,
             "top_json": json.dumps(top, ensure_ascii=False),
             "growth_json": json.dumps(growth[:8], ensure_ascii=False),
             "note": note,
-        }, conflict_columns=["ts"])
+        }
+        # ★ 2026-10-29：容器级列**只写探测成功的那些**（见 `_ensure_table`）
+        for col, key in (("container_mb", "container_mb"),
+                         ("container_pct", "container_pct"),
+                         ("page_cache_mb", "page_cache_mb")):
+            if col in _EXTRA_COLS:
+                row[col] = str(snap.get(key))
+        db.upsert(_TABLE, row, conflict_columns=["ts"])
     except Exception as e:
         print(f"[memory_watch] 写入采样失败: {e}")
         return None

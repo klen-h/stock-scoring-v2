@@ -531,6 +531,51 @@ def _read_rss_mb() -> Optional[float]:
         return None
 
 
+def _read_container_mem() -> Dict:
+    """**容器级**内存（cgroup）—— 平台判 OOM 用的是这个，不是进程 `VmRSS`。
+
+    ★★ 2026-10-29（用户报"今天爆内存"，但库里 RSS 最高只有 155MB / 31%）：
+      我们一直在看 `VmRSS`（**进程**常驻内存），而 Render 杀容器看的是
+      **容器内存** `memory.current` —— 它包含 **page cache / tmpfs / 共享库**。
+      本项目的 `pack_source` 会 mmap 一个 ~126MB 的数据库文件，这部分绝大多数记在
+      **page cache** 上（算容器的、不算进程 RSS）⇒ 完全可能出现
+      「进程自报 31%，平台判定 100% 被 OOM 杀」。**不读 cgroup 就永远对不上账。**
+    返回 `{container_mb, container_limit_mb, container_pct, container_src}`；
+    非 Linux / 无 cgroup（本地 Windows）⇒ 全 None，不猜测。
+    """
+    out: Dict = {"container_mb": None, "container_limit_mb": None,
+                 "container_pct": None, "container_src": None}
+
+    def _read(path: str) -> Optional[int]:
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                raw = f.read().strip()
+            if raw in ("", "max"):
+                return None
+            return int(raw)
+        except Exception:
+            return None
+
+    cur = _read("/sys/fs/cgroup/memory.current")                    # cgroup v2
+    if cur is not None:
+        lim = _read("/sys/fs/cgroup/memory.max")
+        out["container_src"] = "cgroup2"
+    else:
+        cur = _read("/sys/fs/cgroup/memory/memory.usage_in_bytes")  # cgroup v1
+        lim = _read("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        if cur is not None:
+            out["container_src"] = "cgroup1"
+            if lim is not None and lim >= (1 << 62):     # v1 用巨大数表示"无限制"
+                lim = None
+
+    if cur is not None:
+        out["container_mb"] = round(cur / 1048576.0, 1)
+        if lim:
+            out["container_limit_mb"] = round(lim / 1048576.0, 1)
+            out["container_pct"] = round(cur / lim * 100, 1)
+    return out
+
+
 def _peak_rss_mb() -> Optional[float]:
     """进程生命周期内的**峰值** RSS（MB）—— 与上限对比可知离 OOM 多近。"""
     try:
@@ -647,6 +692,10 @@ def collect_memory_snapshot(with_types: bool = False) -> Dict:
     total = round(sum(c["mb"] or 0 for c in caches), 2)
     used_pct = (round(rss / _MEM_LIMIT_MB * 100, 1)
                 if (rss and _MEM_LIMIT_MB) else None)
+    # ★★ 2026-10-29：**容器级**内存（见 `_read_container_mem` 注释）——
+    #   `used_pct` 是"进程 RSS / 假设上限"，可能与平台判定差很远；
+    #   `container_pct` 才是"平台会不会杀我"的真实读数。
+    ctr = _read_container_mem()
 
     # 类型分布（最重的一步）：只在被要求时做；RSS >85% 时**自动跳过**（别把被观测的
     # 进程压垮 —— 观测工具杀死被观测对象是最蠢的失败模式）。
@@ -660,6 +709,14 @@ def collect_memory_snapshot(with_types: bool = False) -> Dict:
 
     return {
         "rss_mb": rss, "peak_mb": peak, "used_pct": used_pct,
+        # ★ 2026-10-29：容器级读数（进程 RSS + page cache + 共享库）
+        "container_mb": ctr["container_mb"],
+        "container_limit_mb": ctr["container_limit_mb"],
+        "container_pct": ctr["container_pct"],
+        "container_src": ctr["container_src"],
+        # 容器内存 − 进程 RSS ≈ page cache / tmpfs / 共享库（mmap 的 pack 库多在这里）
+        "page_cache_mb": (round(ctr["container_mb"] - rss, 1)
+                          if (ctr["container_mb"] is not None and rss is not None) else None),
         "caches": caches, "caches_total_mb": total,
         "unaccounted_mb": (round(rss - total, 1) if rss is not None else None),
         "types": types_out, "types_skipped": types_skipped,
