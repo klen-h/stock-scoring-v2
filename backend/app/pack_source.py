@@ -101,6 +101,31 @@ def _db_fresh() -> bool:
     return age_h <= _PACK_MAX_AGE_H
 
 
+def _drop_page_cache(path: str) -> None:
+    """把文件从 **page cache** 里赶出去（不影响文件本身）。
+
+    ★★★ 2026-10-29（线上 5 次重启循环的真凶）：
+      现象：02:10~02:20 每 2 分钟重启一次；同一时刻进程 RSS 只有 **155MB（31%）**，
+            平台却按"内存超限"杀 —— 两边数字对不上。
+      原因：**page cache 不算进程 RSS，但算容器内存（cgroup `memory.current`）**。
+            本函数所在流程每次启动都要：下载 ~100MB gz + 解压出 **250MB** db
+            ⇒ 两次写盘 ≈350MB 脏页/页缓存；叠加进程 155MB ≈ 505MB ≈ 撞 512MB 上限。
+            容器文件系统是**临时的** ⇒ 每次重启文件没了 ⇒ 再下 250MB ⇒ **崩溃循环**。
+      修法：写完先 `fsync` 让脏页变干净，再 `posix_fadvise(DONTNEED)` 让内核立刻回收。
+            `DONTNEED` 只丢**干净页**，所以顺序不能反。非 Linux / 无该 API ⇒ 静默跳过。
+    """
+    try:
+        if not hasattr(os, "posix_fadvise"):
+            return
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    except Exception as e:
+        print(f"[pack_source] 丢弃页缓存失败（不影响功能）: {str(e)[:60]}")
+
+
 def _download_and_unpack(bust_cache: bool = True):
     import requests
     os.makedirs(_PACK_DIR, exist_ok=True)
@@ -118,15 +143,27 @@ def _download_and_unpack(bust_cache: bool = True):
     with open(gz_tmp, "wb") as f:
         for chunk in r.iter_content(1 << 16):
             f.write(chunk)
+        # ★ 2026-10-29：落盘 → 变"干净页" → 才能被 DONTNEED 回收
+        f.flush()
+        os.fsync(f.fileno())
+    _drop_page_cache(gz_tmp)
     db_tmp = _PACK_DB + ".tmp"
-    # ★ 流式解压：原来的 f_in.read() 会一次性把整个 db（实测 126MB）读进
-    #   Python bytes → 内存瞬间 +126MB。Render 免费实例仅 512MB（还要跑
+    # ★ 流式解压：原来的 f_in.read() 会一次性把整个 db（实测 250MB）读进
+    #   Python bytes → 内存瞬间 +250MB。Render 免费实例仅 512MB（还要跑
     #   FastAPI + 各定时任务），这个尖峰足以直接 OOM；且临时磁盘每次重启
-    #   都要重跑一遍 → 崩溃循环。分块拷贝后内存恒定 ≈1MB。
+    #   都要重跑一遍 → 崩溃循环。分块拷贝后 Python 侧内存恒定 ≈1MB。
     with gzip.open(gz_tmp, "rb") as f_in, open(db_tmp, "wb") as f_out:
         shutil.copyfileobj(f_in, f_out, 1 << 20)
+        f_out.flush()
+        os.fsync(f_out.fileno())
     os.replace(db_tmp, _PACK_DB)
-    os.replace(gz_tmp, _PACK_DB_GZ)
+    _drop_page_cache(_PACK_DB)          # ★ 250MB 的 db 也别留在页缓存里
+    # ★ gz 用完即删：全项目没有任何代码再读它（`redownload()` 只是删除），
+    #   留着白占 250MB 磁盘 + 等量页缓存 —— 正是崩溃循环的燃料。
+    try:
+        os.remove(gz_tmp)
+    except OSError as e:
+        print(f"[pack_source] 删除临时 gz 失败（不影响功能）: {str(e)[:60]}")
     print(f"[pack_source] 已就绪: {_PACK_DB} ({os.path.getsize(_PACK_DB) / 1048576:.1f} MB)")
 
 
