@@ -2113,7 +2113,12 @@ def _limit_counts_best(stocks: dict) -> tuple:
     #        口径披露依赖它，**不可改字面量**。
     from app import limit_stats
     mem_up, mem_dn = limit_stats.counts_from_quotes(stocks)
-    up, dn, src, meta = limit_stats.counts_best(stocks)
+    # ★ 2026-10-29：启用 `min_trading`（作者本意、此前一直没传）。
+    #   rt_k `snapshot()` 是 fail-open 的：抓 3 批里挂了 1 批也能返回，此时 `trading`
+    #   会明显偏小（全量 ≈5400+）⇒ 家数被系统性低估却标成 "rt_k 精确口径"。
+    #   4000 ≈ 全量的 72%：正常抖动（一批 1800 只失败）会落到 3600 ⇒ 触发回退，
+    #   宁可标"近似"（`board_approx`）也不要一个安静偏小的"精确值"。
+    up, dn, src, meta = limit_stats.counts_best(stocks, min_trading=4000)
     if src == "rt_k":
         _shadow_log(mem_up, mem_dn, up, dn, meta.get("data_date"),
                     meta.get("age_sec"), meta.get("is_intraday"))

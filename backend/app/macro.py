@@ -27,6 +27,7 @@
 """
 
 import json
+import os
 import requests
 import time
 # ★ 2026-09-25：补 typing（项目铁律③：生产 Python 3.9，禁用 PEP 604 的 `str | None`，
@@ -1002,13 +1003,20 @@ def get_macro_snapshot() -> dict:
     #      **完全停止披露北向净流入**（改为季度披露持股），而非"盘中不给、盘后给"。
     #      这里仍用真值判断 `nb.get("total_net")` ⇒ 0 被过滤为 None（行为本就正确）。
     northbound_net_yi = None
-    try:
-        from app.eastmoney import get_northbound
-        nb = get_northbound()
-        if nb and nb.get("total_net"):
-            northbound_net_yi = round(nb["total_net"] / 1e8, 1)   # 元 → 亿
-    except Exception:
-        pass
+    # ★★ 2026-10-29（线上日志：每分钟 2~3 条「北向资金抓取失败: Expecting value...」）：
+    #   交易所自 **2024-08-19 起完全停止披露**北向净流入（改为季度披露持股）——
+    #   这段代码的注释自己都写着这件事，**却仍然每轮去抓一次** ⇒ 外部请求 100% 失败、
+    #   日志刷屏、还占着与其它东财请求共享的冷却预算。
+    #   ⇒ 默认**直接跳过**（`northbound_net_yi=None` 下游早已正确处理：不计分、只加 note），
+    #     若将来官方恢复披露，置环境变量 `NORTHBOUND_ENABLED=1` 即可恢复抓取。
+    if os.environ.get("NORTHBOUND_ENABLED") == "1":
+        try:
+            from app.eastmoney import get_northbound
+            nb = get_northbound()
+            if nb and nb.get("total_net"):
+                northbound_net_yi = round(nb["total_net"] / 1e8, 1)   # 元 → 亿
+        except Exception:
+            pass
     if northbound_net_yi is None:
         notes.append("北向资金净流入自 2024-08-19 起已停止披露（交易所调整），内部状态仅用市场温度")
 

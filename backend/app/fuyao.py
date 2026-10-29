@@ -53,6 +53,13 @@ _CACHE: Dict[str, tuple] = {}          # cache_key -> (ts, data)
 _LOCK = threading.Lock()
 _last_call = [0.0]
 _cooldown_until = [0.0]
+# ★★ 2026-10-29（线上日志：`code=5003 /limit-up-statistics` 每 60s 打一次、一小时几十条）：
+#   业务错误（code>=5000，如"该时段无数据 / 无权限"）此前**不进任何冷却** ⇒ 每个轮询周期
+#   都真打一次外呼，既浪费配额又刷屏。
+#   ⚠️ 不能用**全局**冷却：同一时段 `limit-up-pool` 是正常的（板块连板标签靠它），
+#      全局冷却会把好的端点一起挡掉 ⇒ 必须**按 path 冷却**。
+_PATH_COOLDOWN_SEC = float(os.environ.get("FUYAO_PATH_COOLDOWN_SEC") or 300)
+_path_cooldown: dict = {}       # path → 冷却截止时间戳
 _STATS = {"calls": 0, "errors": 0, "last_error": "", "last_ms": 0,
           "last_ok_at": 0.0, "bytes": 0}
 
@@ -115,6 +122,8 @@ def get(path: str, params: Optional[dict] = None, ttl: float = 60,
         return cached
     if _now() < _cooldown_until[0]:
         return None                       # 限流冷却期：直接放弃，让调用方走旧路径
+    if _now() < _path_cooldown.get(path, 0.0):
+        return None                       # 本端点业务错误冷却中（其它端点不受影响）
     # 串行 + 最小间隔（多线程下也保证不并发打满）
     with _LOCK:
         wait = _MIN_INTERVAL - (_now() - _last_call[0])
@@ -159,7 +168,18 @@ def get(path: str, params: Optional[dict] = None, ttl: float = 60,
     if code != 0:
         _STATS["errors"] += 1
         _STATS["last_error"] = f"code={code} {str(body.get('message') or '')[:60]}"
-        print(f"[fuyao] business error code={code} {path}")
+        # ★ 2026-10-29：服务端业务错误（>=5000）⇒ **按端点**冷却，避免每轮轮询都白打一次；
+        #   4001（限流）在上面已走全局冷却，这里只处理"这个端点这段时间不可用"。
+        try:
+            _is_srv_err = int(code) >= 5000
+        except (TypeError, ValueError):
+            _is_srv_err = False
+        if _is_srv_err:
+            _path_cooldown[path] = _now() + _PATH_COOLDOWN_SEC
+            print(f"[fuyao] business error code={code} {path} "
+                  f"-> path cooldown {_PATH_COOLDOWN_SEC:.0f}s")
+        else:
+            print(f"[fuyao] business error code={code} {path}")
         return None
     data = body.get("data") or {}
     _STATS["last_ok_at"] = _now()

@@ -159,6 +159,19 @@ def counts_best(stocks: dict, require_intraday: bool = False,
             usable = False
         if min_trading and (pk.get("trading") or 0) < int(min_trading):
             usable = False
+        # ★★ 2026-10-29（线上 09:22 日志实测）：**全零保护** —— 今天新发现的一类静默错。
+        #   集合竞价时段（09:15~09:25）rt_k 的 `close` 尚未成交（=0），而 `high_limit` 有值
+        #   ⇒ 逐票 `close >= high_limit × (1-tol)` **全不成立** ⇒ up=0 down=0；
+        #   但 `data_date` 已经是今天 ⇒ `is_intraday=True` ⇒ 上面两道闸门**都放行**
+        #   ⇒ 页面显示「涨停 0 / 跌停 0」。
+        #   同一条日志里能直接看到矛盾：
+        #     approx(mem) up=21 down=13 | rt_k(exact) up=0 down=0 | delta up=-21
+        #   "0 只涨停"比"21 只"更误导（用户会以为今天真的一家都没涨停）。
+        #   ⇒ 判据：**连"曾触板"都是 0，而内存侧有数** ⇒ rt_k 快照不可用，回退近似。
+        #   ⚠️ 为什么不直接判 `up==0`：极端冰点日真的可能 0 涨停，那时内存侧也是 0，
+        #      `and (mem_up or mem_dn)` 这个条件让该情形仍走 rt_k（两者一致，无损）。
+        if not (pk.get("touched") or 0) and (mem_up or mem_dn):
+            usable = False
         if usable:
             return (int(pk["limit_up"]), int(pk["limit_down"]), "rt_k",
                     {"age_sec": pk.get("age"), "data_date": pk.get("data_date"),
