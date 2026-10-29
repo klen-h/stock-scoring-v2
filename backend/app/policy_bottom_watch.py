@@ -28,7 +28,12 @@ from __future__ import annotations
   ② 两市成交连续地量 < 13000 亿      —— 自动（market_amount_daily → intraday_path 回退）
   ③ 创业板指周线止跌（周线转涨）      —— 自动（指数日 K 聚合周线）
   ④ 涨跌比连续 2 日 > 0.8           —— 自动（market_emotion_daily.close_up/close_down）
-  ⑤ 10Y 美债 < 5.0% 或 布伦特 < 95  —— 自动（macro_daily 最新快照）
+  ⑤ 10Y 美债 < 5.0% **且**（布伦特 < 100 或自高点回落 > 15%）—— 自动（macro_daily 最新快照）
+     ★ 2026-10-30 改口径（docs/kimi/20261030_fed_chair_speech_brief.md 第 2 项）：
+       原为「10Y < 5.0% **或** 布伦特 < 95」。`或` 让步过大 —— 油价便宜就能抵掉长端利率，
+       而"油价高 + 长端高"正是滞胀组合，该组合下判"市场底成立"是误判。
+       `且` 才是简报要求的严格口径；当前（2026-10-29：10Y 5.031 / 布伦特 110.67）**不打勾**，
+       清单维持 2/6，仓位上限不变。
   ⑥ 强势板块（银行）补跌日           —— 自动（★ 2026-10-23，用户提供 2018 年底剧本：
       "下跌末段的最后一个信号往往是强势板块的补跌（2018 年底的银行、2024 年初的中字头）。
        工行在普跌日创新高 = 磨底没到最后一段。银行指数单日跌幅超过中证全指时记 1。"）
@@ -63,7 +68,16 @@ PBW_AMOUNT_DAYS = int(os.environ.get("PBW_AMOUNT_DAYS") or 3)      # 连续几�
 PBW_RATIO = float(os.environ.get("PBW_RATIO") or 0.8)              # 涨跌比门槛
 PBW_RATIO_DAYS = int(os.environ.get("PBW_RATIO_DAYS") or 2)        # 连续几个交易日
 PBW_US10Y = float(os.environ.get("PBW_US10Y") or 5.0)              # 美债 10Y 水平门槛（%）
-PBW_BRENT = float(os.environ.get("PBW_BRENT") or 95.0)             # 布伦特门槛（美元）
+# ★ 2026-10-30（docs/kimi/20261030_fed_chair_speech_brief.md 第 2 项）：
+#   ⑤ 从「10Y<5% **或** 布伦特<95」改为「10Y<5% **且** （布伦特<100 **或** 自高点回落>15%）」。
+#   【为什么】原来的`或`让步太大：只要油价便宜就能抵掉长端利率，而"油价高+长端高"
+#     恰恰是滞胀组合（2026-10-29 实测 10Y 5.031 / 布伦特 110.67，两条同时不满足）。
+#   【为什么加"自高点回落"】油价从 118 跌到 99 与从 60 涨到 99 是两件事，
+#     单看绝对水平会把"已经见顶回落"误判成"仍然很贵"。
+#   ⚠️ 阈值改动按本模块纪律**在此留痕**（原 PBW_BRENT=95）。
+PBW_BRENT = float(os.environ.get("PBW_BRENT") or 100.0)            # 布伦特门槛（美元）
+PBW_BRENT_PEAK_DAYS = int(os.environ.get("PBW_BRENT_PEAK_DAYS") or 60)   # 取近 N 条快照的高点
+PBW_BRENT_DRAWDOWN = float(os.environ.get("PBW_BRENT_DRAWDOWN") or 15.0)  # 自高点回落 >N% 亦可
 PBW_PASS = int(os.environ.get("PBW_PASS") or 4)                    # 清单达成数（含）即"确认"
 PBW_POSITION_CAP = float(os.environ.get("PBW_POSITION_CAP") or 30)  # 未达成时的**提示**仓位上限（%）
 # ── ⑥ 强势板块补跌（2026-10-23）──
@@ -397,6 +411,42 @@ def _macro_snapshot(as_of: str = None) -> Dict:
     return {"ok": False, "detail": "macro_daily 近 6 条都解析不出 us10y/brent"}
 
 
+def _brent_peak(as_of: str = None, days: int = None) -> Optional[float]:
+    """近 N 条快照里布伦特的**最高价**，用于"自高点回落"判据。
+
+    ★ 2026-10-30（简报第 2 项）：单看绝对水平不够 —— 油价从 118 跌到 99
+      和从 60 涨到 99 是两件事，前者是"风险已释放"，后者是"正在变贵"。
+      回落幅度 = (peak - 当前) / peak，与绝对门槛是**并集**关系（任一满足即可）。
+    ★ 数据源仍是 `macro_daily`（零外部请求）；窗口按**条数**而非日历天，
+      因为快照本身可能有缺口（实测 10-24/25 周末无数据）。
+    """
+    n = int(days or PBW_BRENT_PEAK_DAYS)
+    try:
+        rows = db.fetch("SELECT date, data_json FROM macro_daily") or []
+    except Exception:
+        return None
+    cut = _parse_macro_date(as_of) if as_of else None
+    parsed = []
+    for r in rows:
+        dt = _parse_macro_date(r.get("date"))
+        if dt is None:
+            continue
+        if cut is not None and dt > cut:
+            continue
+        parsed.append((dt, r))
+    parsed.sort(key=lambda x: x[0], reverse=True)
+    vals: List[float] = []
+    for _, r in parsed[:n]:
+        try:
+            d = json.loads(r.get("data_json") or "{}")
+        except (ValueError, TypeError):
+            continue
+        p = _num(((d.get("panel") or {}).get("brent") or {}).get("price"))
+        if p is not None:
+            vals.append(p)
+    return max(vals) if vals else None
+
+
 # ────────────────────────────────────────────────────────────────
 #  判定
 # ────────────────────────────────────────────────────────────────
@@ -587,17 +637,30 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
                                  "detail": m.get("detail") or "宏观快照不可用"}
     else:
         us, br = m.get("us10y"), m.get("brent")
+        peak = _brent_peak(as_of=day)
+        dd = round((peak - br) / peak * 100, 1) if (peak and br and peak > 0) else None
         ok_us = (us is not None and us < PBW_US10Y)
-        ok_oil = (br is not None and br < PBW_BRENT)
+        # 油价侧两种"便宜"都算：绝对值 < 门槛，或已从近 N 条高点回落 > N%
+        ok_oil = ((br is not None and br < PBW_BRENT)
+                  or (dd is not None and dd > PBW_BRENT_DRAWDOWN))
         parts = []
         if us is not None:
-            parts.append(f"10Y {us:.2f}%（门槛 <{PBW_US10Y:g}%）")
+            parts.append(f"10Y {us:.2f}%（需 <{PBW_US10Y:g}%）")
         if br is not None:
-            parts.append(f"布伦特 {br:.1f}（门槛 <{PBW_BRENT:g}）")
+            _oil = (f"布伦特 {br:.1f}（需 <{PBW_BRENT:g}"
+                    f" 或自高点回落 >{PBW_BRENT_DRAWDOWN:g}%")
+            if dd is not None:
+                _oil += f"，当前自高点 {peak:.1f} 已回落 {dd:g}%"
+            parts.append(_oil + "）")
         items["us10y_or_oil"] = {
-            "checked": bool(ok_us or ok_oil),
+            # ★★ 2026-10-30：**`或` 改成 `且`**（简报第 2 项）。
+            #   原 `ok_us or ok_oil` 的问题：只要油价便宜就能抵掉长端利率，
+            #   而"油价高 + 长端高"恰恰是滞胀组合 —— 该组合下"市场底成立"是误判。
+            #   ⚠️ key 仍叫 `us10y_or_oil`（改了会破坏前端与历史行的一致性），
+            #      但语义已是 and，见本条 detail。
+            "checked": bool(ok_us and ok_oil),
             "source": "auto", "insufficient": (us is None and br is None),
-            "detail": "、".join(parts) or "无数据",
+            "detail": "；".join(parts) or "无数据",
             "as_of": m.get("generated_at") or m.get("date"),
         }
 
