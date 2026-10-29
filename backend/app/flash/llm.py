@@ -67,8 +67,24 @@ LLM_FALLBACK_MODEL = (os.environ.get("LLM_MODEL_FALLBACK") or "").strip()
 # 不配置 LLM_FREE_* 时行为与旧版完全一致（env 门控）。
 LLM_FREE_BASE_URL = (os.environ.get("LLM_FREE_BASE_URL") or "").strip()
 LLM_FREE_API_KEY = (os.environ.get("LLM_FREE_API_KEY") or "").strip()
-LLM_FREE_MODEL = (os.environ.get("LLM_FREE_MODEL") or "").strip()
-LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").strip()
+
+# ── 免费站模型：★★ 2026-10-29 起**默认值写死在代码里**（用户：只改 Render 的 KEY，别再动 MODEL）──
+# 【为什么要写死而不是留在部署环境里】
+#   免费中转的配额是**按模型**算的，而且**每天都在变**（实测）：
+#     10-28 → deepseek-flash 200 / glm-5.2 429
+#     10-29 → glm-5.2 200 / deepseek-flash 429
+#   把"当前可用"填进 Render env ⇒ 一周内必然过期；更糟的是过期时的报错
+#   （429 `insufficient_quota`）和"额度用完"长得一模一样，会把人引去充钱/换 key。
+#   写进代码后，改一次 push 即生效（Render 自动重新部署），不必登各平台改 env。
+# 【env 仍然优先】部署方显式配置的尊重 —— 但见 `_free_models()`：已知不可用的模型会被沉底，
+#   所以 Render 上残留的旧值不会把链路卡死。
+_FREE_MODEL_DEFAULT = "glm-5.2"
+_FREE_MODEL_FALLBACK_DEFAULT = "sensenova-6.8-flash-lite"
+
+LLM_FREE_MODEL = ((os.environ.get("LLM_FREE_MODEL") or "").strip()
+                  or _FREE_MODEL_DEFAULT)
+LLM_FREE_MODEL_FALLBACK = ((os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").strip()
+                           or _FREE_MODEL_FALLBACK_DEFAULT)
 
 # ── 免费站模型**内置候选**（★ 2026-10-28，用户："你直接写死代码里可以吗"）──────
 # 【为什么必须写进代码】免费站的配额是**按模型**算的，不是按账号：
@@ -87,7 +103,18 @@ LLM_FREE_MODEL_FALLBACK = (os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").stri
 #   ⇒ 即使 Render 上的 env 还写着已耗尽的 `deepseek-v4-flash`，也能自动落到可用的模型。
 # ⚠️ 代价：配额耗尽期间，每次调用会先撞一次 429（退避 ~4s）再切模型。
 #   想零延迟就把 `LLM_FREE_MODEL` 直接改成 `deepseek-flash`。
-_FREE_MODEL_BUILTIN = ["deepseek-flash", "sensenova-6.8-flash-lite"]
+# ★ 2026-10-29：把 `glm-5.2` 提到首位、`deepseek-v4-flash` 移出（当天实测 429）。
+#   保留 `deepseek-flash` 在链尾 —— 它在 10-28 可用、今天 429，属"时好时坏"，
+#   沉到后面由 `_MODEL_QUOTA_COOL` 动态处理，比直接删掉更稳（配额恢复后能自动用上）。
+_FREE_MODEL_BUILTIN = ["glm-5.2", "sensenova-6.8-flash-lite", "deepseek-flash"]
+
+# ── 确定性不可用的模型：**即便 env 里配了也排到链尾** ──────────────────────
+#   为什么需要：用户只改了 Render 的 `LLM_FREE_API_KEY`，`LLM_FREE_MODEL` 很可能
+#   还残留着 `deepseek-v4-flash` ⇒ env 优先会让它排第一 ⇒ 每次冷启动都先撞 429/403，
+#   看起来就像"新 key 也没额度"。这类**结构性**不可用（403 无权 / 404 下线）不该靠
+#   `_MODEL_QUOTA_COOL`（那只处理"临时限流"，且冷却只在内存、重启即失效）。
+#   ⚠️ 只放"当前确定不可用"的，别把时好时坏的放进来（那个交给冷却机制）。
+_MODEL_KNOWN_DEAD = ("deepseek-v4-flash", "deepseek-v4.1-flash")
 
 # 配额耗尽的模型（model → 冷却截止时间戳）。★ 为什么需要：
 #   429 其实是两种完全不同的故障，必须区别对待 ——
@@ -104,11 +131,31 @@ def _free_models() -> list:
     ★ 2026-10-28：**配额耗尽的模型自动沉底**（冷却 1 小时）——
       否则每次调用都要先撞一次 429 再切模型（实测一次调用因此多花 ~8s）。
     """
+    # ★ 2026-10-29：env 里若残留**已知不可用**的模型，直接**替换**成代码默认值，
+    #   而不是"沉底"—— 沉底会让备选模型顶到首位（首选从 glm-5.2 变成 lite 模型），
+    #   与"首选 glm-5.2、备选 lite"的意图不符。
+    #   触发场景（真实存在的）：用户只改了 Render 的 `LLM_FREE_API_KEY`，
+    #   `LLM_FREE_MODEL` 仍是旧的 `deepseek-v4-flash`。
+    primary = LLM_FREE_MODEL if LLM_FREE_MODEL not in _MODEL_KNOWN_DEAD else _FREE_MODEL_DEFAULT
+    fallback = (LLM_FREE_MODEL_FALLBACK
+                if LLM_FREE_MODEL_FALLBACK not in _MODEL_KNOWN_DEAD
+                else _FREE_MODEL_FALLBACK_DEFAULT)
+
     seq = []
-    for m in (LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK, *_FREE_MODEL_BUILTIN):
+    for m in (primary, fallback, *_FREE_MODEL_BUILTIN):
         m = (m or "").strip()
         if m and m not in seq:
             seq.append(m)
+
+    # ① 结构性不可用（403 无权 / 404 下线）⇒ 沉底。
+    #   ★ 2026-10-29：这一步是为了让**不改部署环境**也能生效 ——
+    #   Render 上 `LLM_FREE_MODEL` 很可能还是 `deepseek-v4-flash`，
+    #   env 优先会让它排第一；沉底后真正可用的 `glm-5.2` 才会被先用上。
+    dead = [m for m in seq if m in _MODEL_KNOWN_DEAD]
+    if dead:
+        seq = [m for m in seq if m not in dead] + dead
+
+    # ② 临时限流（429）⇒ 再沉底（冷却 1 小时，内存态，重启失效）
     now = time.time()
     hot = [m for m in seq if _MODEL_QUOTA_COOL.get(m, 0) > now]
     if not hot:
