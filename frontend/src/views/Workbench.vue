@@ -418,6 +418,58 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-10-30（用户："现在缺国内的消息"）：金十每日汇总。
+               ① **原文直出**，不经 LLM 改写 —— 这些汇总是被人提炼过的结论，
+                  再让 LLM 总结一遍属于信息损耗（"四部门提高自贸港便利化"会被
+                  压成"利好海南"，丢掉"两类库容/LNG期货交割"这些可用细节）；
+               ② 每天约 50~60 条，**整块折叠 + 每条点击展开正文**，不占版面；
+               ③ 数据缺失时给出可行动的原因（JIN10_X_TOKEN 过期是唯一需要人工处理的故障）。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="jin10Open = !jin10Open; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0"
+                    :class="(jin10?.sections || []).length ? 'bg-sky-400' : 'bg-slate-500'"></span>
+              <span class="text-xs font-semibold shrink-0">金十消息面</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ jin10Line }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ jin10Open ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="jin10Open" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="!(jin10?.sections || []).length" class="text-xs text-muted">
+                暂无数据（汇总每天盘后生成；若长期为空，请检查 Render 的 JIN10_X_TOKEN 是否过期）
+              </div>
+              <template v-else>
+                <div class="text-[10px] text-muted mb-1.5">
+                  {{ jin10.date }}
+                  <span v-if="jin10.fallback" class="text-amber-400/80"
+                        :title="`请求 ${jin10.requested_date} 无数据，此处显示最近一期`">
+                    · 非当日（该日无数据）</span>
+                  · 原文未解读
+                </div>
+                <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
+                  <div v-for="sec in jin10.sections" :key="sec.category_id" class="space-y-0.5">
+                    <div class="text-[11px] font-medium text-gray-300 flex items-center gap-1.5">
+                      <span>{{ sec.name }}</span>
+                      <span class="text-muted font-normal">{{ sec.items.length }} 条</span>
+                    </div>
+                    <div v-for="(it, i) in sec.items" :key="sec.category_id + '-' + i"
+                         class="pl-1.5 border-l border-border/40">
+                      <button type="button" class="w-full text-left flex items-start gap-1.5"
+                              @click="openJin10 = (openJin10 === sec.category_id + '-' + i ? '' : sec.category_id + '-' + i)">
+                        <span class="text-[11px] text-gray-300 leading-snug flex-1">{{ it.title }}</span>
+                        <span v-for="t in it.tags" :key="t"
+                              class="shrink-0 px-1 rounded text-[9px]" :class="jin10TagCls(t)">{{ t }}</span>
+                      </button>
+                      <div v-if="openJin10 === sec.category_id + '-' + i"
+                           class="text-[10px] text-muted leading-relaxed mt-0.5">
+                        {{ it.content || '（该条只有标题，无正文）' }}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- ③ 推演证伪 -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -2839,7 +2891,7 @@ import {
   // ★ 2026-10-22：盘中变化检测器（8 档规则采样，零 LLM）
   getWorkbenchScan, getWorkbenchScanSummary,
   // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
-  getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch,
+  getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
   // ★ 2026-10-24：观察器 AI 解读（LLM）
   getObserverReview,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
@@ -4068,6 +4120,10 @@ async function loadWorkbenchScan() {
 }
 // ★ 2026-10-23：拥挤赛道 / 指数关键位（纯观察器）
 const crowd = ref(null)
+// ★ 2026-10-30：金十每日汇总（默认收起——每天 50~60 条，展开会撑爆观察器组）
+const jin10 = ref(null)
+const jin10Open = ref(false)
+const openJin10 = ref('')          // 当前展开的那一条（`category_id-seq`）
 const keyLv = ref(null)
 const aiBasket = ref(null)
 const riskLoading = ref(false)
@@ -4091,6 +4147,25 @@ function keyBadge(status) {
   if (status === '逼近支撑') return 'bg-amber-500/20 text-amber-300'
   return 'bg-border/40 text-muted'
 }
+// ★ 2026-10-30：金十汇总——折叠态的一行摘要（各栏目条数）
+const jin10Line = computed(() => {
+  const secs = jin10.value?.sections || []
+  if (!secs.length) return jin10.value ? '暂无' : ''
+  const parts = secs.map(s => `${s.name} ${s.items.length}`)
+  const total = secs.reduce((n, s) => n + s.items.length, 0)
+  return `${parts.join(' · ')}（共 ${total} 条）`
+})
+// 标签配色：与"连板/涨停结构"那套语义区分开，这里只用浅底小徽章
+function jin10TagCls(tag) {
+  if (tag === '政策') return 'bg-violet-500/15 text-violet-300'
+  if (tag === '资金面') return 'bg-amber-500/15 text-amber-300'
+  if (tag === '业绩') return 'bg-emerald-500/15 text-emerald-300'
+  if (tag === '订单') return 'bg-sky-500/15 text-sky-300'
+  if (tag === '存储' || tag === '半导体') return 'bg-rose-500/15 text-rose-300'
+  if (tag === '光模块' || tag === '算力') return 'bg-cyan-500/15 text-cyan-300'
+  if (tag === '汽车' || tag === '地产') return 'bg-orange-500/15 text-orange-300'
+  return 'bg-border/40 text-muted'
+}
 async function loadRiskWatch() {
   riskLoading.value = true
   riskErr.value = ''
@@ -4107,6 +4182,15 @@ async function loadRiskWatch() {
     riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
   } finally {
     riskLoading.value = false
+  }
+  // ★ 2026-10-30：金十汇总**单独请求**，不放进上面的 Promise.all。
+  //   它的失败原因通常是 `JIN10_X_TOKEN` 过期（401）—— 属常态性运维问题，
+  //   若塞进 Promise.all 会把整个"拥挤/关键位"块拖成加载失败。
+  try {
+    const t = await getJin10Tidy(selectedDate.value)
+    jin10.value = t.data || null
+  } catch {
+    jin10.value = null
   }
 }
 // ★ 2026-10-23：磨底 2.0 推演证伪记分卡
