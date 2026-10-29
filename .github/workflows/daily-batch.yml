@@ -106,8 +106,15 @@ jobs:
           #   （首站成功即返回，平时不会打到 R1；彻底下线就把 LLM_MODEL secret 清空）。
           #   ⚠️ 需要在仓库 Secrets 里新增 LLM_FREE_API_KEY（= SenseNova 的 key，
           #      与 LLM_API_KEY 不是同一个）。
-          LLM_FREE_BASE_URL: https://token.sensenova.cn/v1
-          LLM_FREE_MODEL: deepseek-v4-flash
+          # ★★ 2026-10-30（用户："模型写死代码里即可，在 github 配置太麻烦"）：
+          #   这里**故意删掉** LLM_FREE_BASE_URL / LLM_FREE_MODEL ——
+          #   ⚠️ env 的优先级**高于**代码默认值，写在这里等于把模型钉死在 workflow：
+          #     原来硬编码 `deepseek-v4-flash`（当天实测 429 throttling），
+          #     所以无论怎么改代码默认值，**日批的 LLM 任务始终用那个不可用的模型**，
+          #     表现和"额度用完"一模一样 ⇒ 这是"改代码没生效"的最隐蔽来源。
+          #   ⇒ 现在模型由 `app/flash/llm.py` 的 `_FREE_MODEL_DEFAULT`（glm-5.2）决定，
+          #     并自动跳过 `KNOWN_DEAD_MODELS`、429 自动换下一个候选。
+          #   ⚠️ **只有 KEY 必须留在这里**：密钥不能入库，只能走 Secrets。
           LLM_FREE_API_KEY: ${{ secrets.LLM_FREE_API_KEY }}
           LLM_FREE_SHADOW: '0'
           # ★ 2026-09-14：对齐业务开关（此前 Actions 未配 → 全用代码默认值，
