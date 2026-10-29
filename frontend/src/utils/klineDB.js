@@ -469,6 +469,43 @@ export async function clearAll() {
   })
 }
 
+// 数据包结构版本：version 2 = 150 天 K 线（评分需要足够历史让 EMA 系列指标收敛）
+const REQUIRED_PACK_VERSION = 2
+
+/**
+ * 下载并导入**完整包**（首次 / 结构升级 / 本地跨天太多 / 增量不可用 都走这里）。
+ *
+ * ★ 2026-10-29：从 `checkAndUpdate` 里抽出来 —— 全量下载现在有 **4 个入口**
+ *   （首次、结构升级、增量 404、增量 base 不匹配），复制四遍必然漂移
+ *   （旧版的两处判重逻辑就已经不完全一样了）。
+ */
+async function _downloadFullPack(baseUrl, cacheBust, onProgress, lastUpdate, reason) {
+  onProgress?.({ stage: 'download', message: reason || '下载完整数据包...' })
+  const packUrl = `${baseUrl}/kline-pack-latest.json.gz?${cacheBust}`
+  const resp = await fetch(packUrl, { cache: 'no-store' })
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+
+  onProgress?.({ stage: 'decompress', message: '解压数据...' })
+  const text = await decompressGzip(await resp.blob())
+  const data = JSON.parse(text)
+
+  // 防御：服务端/CDN 仍返回旧版包时拒绝导入（否则旧版本号会污染本地元信息）
+  if ((data.version || 1) < REQUIRED_PACK_VERSION) {
+    return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
+  }
+  // ★ 线上完整包与本地同日期 → 无新数据，跳过导入。
+  //   否则每天收盘前（lastUpdate≠今天）打开页面都会：增量 404 → 重下完整包
+  //   → 把 1500+ 只重新全量 put 进 IndexedDB，纯浪费（2026-09-08 实测）。
+  if (data.date && data.date === lastUpdate) {
+    return { updated: false, message: `线上包仍是 ${data.date}，暂无更新` }
+  }
+  onProgress?.({ stage: 'import', message: '导入数据...' })
+  const result = await importKlinePack(data, (loaded, total) => {
+    onProgress?.({ stage: 'import', loaded, total })
+  })
+  return { updated: true, message: `导入 ${result.imported} 只股票` }
+}
+
 /**
  * 检查并更新数据
  * 自动下载最新数据包或增量包
@@ -481,8 +518,6 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
   const today = new Date()
   const todayStr = today.toISOString().slice(0, 10).replace(/-/g, '')
 
-  // 数据包结构版本：version 2 = 150 天 K 线（评分需要足够历史让 EMA 系列指标收敛）
-  const REQUIRED_PACK_VERSION = 2
   // 缓存破坏参数：GitHub Pages 有 CDN 缓存，同一文件名可能被浏览器/CDN 返回旧版本，
   // 导致「下载到旧版包 → 写入旧版本号 → 下次又被判需重下」的循环，故每次请求强制绕过缓存
   const cacheBust = `t=${Date.now()}`
@@ -512,84 +547,51 @@ export async function checkAndUpdate(baseUrl = 'https://your-username.github.io/
 
   // 首次使用或数据包结构升级，下载完整包（增量包无法补齐历史天数）
   if (!lastUpdate || needFullRedownload) {
-    onProgress?.({ stage: 'download', message: needFullRedownload ? '数据结构升级，重新下载完整包...' : '首次加载，下载数据包...' })
-    const packUrl = `${baseUrl}/kline-pack-latest.json.gz?${cacheBust}`
-    
     try {
-      const response = await fetch(packUrl, { cache: 'no-store' })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      
-      onProgress?.({ stage: 'decompress', message: '解压数据...' })
-      const blob = await response.blob()
-      const text = await decompressGzip(blob)
-      const data = JSON.parse(text)
-
-      // 防御：服务端/CDN 仍返回旧版包时拒绝导入（否则旧版本号会污染本地元信息）
-      if ((data.version || 1) < REQUIRED_PACK_VERSION) {
-        return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
-      }
-      
-      onProgress?.({ stage: 'import', message: '导入数据...' })
-      const result = await importKlinePack(data, (loaded, total) => {
-        onProgress?.({ stage: 'import', loaded, total })
-      })
-      
-      return { updated: true, message: `导入 ${result.imported} 只股票` }
+      return await _downloadFullPack(
+        baseUrl, cacheBust, onProgress, lastUpdate,
+        needFullRedownload ? '数据结构升级，重新下载完整包...' : '首次加载，下载数据包...')
     } catch (error) {
       return { updated: false, message: `下载失败: ${error.message}` }
     }
   }
 
   // 尝试增量更新（本地已是新版数据时才允许走增量路径）
-  // ★★ 2026-10-29：增量包改 **gzip**（生成侧同步改）。
-  //   为什么：`compute_delta` 目前是伪增量（某只今天有新 K 线就把整段 150 天重发），
-  //   裸 JSON 约 **12MB**，而全量包 gzip 只有 2.68MB —— 有 delta 的日子反而多下 4 倍。
-  //   gzip 后约 3MB，先把这个洞堵上（真正的"只传新增 1 根"需要 delta 带 `base`
-  //   日期 + 本地版本校验，否则离线几天会静默缺 K 线，属下一步）。
-  //   ⚠️ 旧版 `.json` 已停产 ⇒ 老客户端这里 404，会走下面的 else 下全量 gz，更快，不亏。
+  // ★★ 2026-10-29：增量包改 **gzip**，且生成侧已从「伪增量」改成「只传新增的 K 线行」。
+  //   改前：`compute_delta` 只要某只今天多一根，就把整段 150 天重发 ⇒ 裸 JSON 10.11MB
+  //        （CDN 传输 ≈3MB，仍大于全量的 2.68MB）。
+  //   改后：只含 `date > 上一份最后一根` 的行 ⇒ 约 60KB。
+  //   ⚠️ 旧版 `.json` 已停产 ⇒ 老客户端这里 404，会下全量 gz，不会坏。
   const deltaUrl = `${baseUrl}/kline-delta-${todayStr}.json.gz?${cacheBust}`
   try {
     onProgress?.({ stage: 'download', message: '检查增量更新...' })
     const response = await fetch(deltaUrl, { cache: 'no-store' })
 
     if (response.ok) {
-      const deltaBlob = await response.blob()
-      const delta = JSON.parse(await decompressGzip(deltaBlob))
+      const delta = JSON.parse(await decompressGzip(await response.blob()))
+
+      // ★★ 2026-10-29：**base 校验**（这条是整个"真增量"能否成立的关键）。
+      //   delta 只含"从 base 那天往后新增的行"。若本地停在 base 之前（离线几天），
+      //   直接应用会**静默缺掉中间几天** —— K 线缺 → 指标错 → 评分错，且不报错。
+      //   ⇒ 本地日期 ≠ base 一律**回退全量**（2.68MB，慢一点但正确）。
+      //   `base` 为空（老版生成器）也按不安全处理。
+      const base = String(delta.base || '')
+      if (!base || base !== String(lastUpdate || '')) {
+        return await _downloadFullPack(
+          baseUrl, cacheBust, onProgress, lastUpdate,
+          `本地是 ${lastUpdate || '无'}、增量基于 ${base || '未知'}（中间可能缺天），改下全量...`)
+      }
+
       onProgress?.({ stage: 'apply', message: '应用增量更新...' })
       const result = await applyDelta(delta)
-      return { 
-        updated: true, 
-        message: `更新 ${result.updated} 只，新增 ${result.added} 只` 
+      return {
+        updated: true,
+        message: `更新 ${result.updated} 只，新增 ${result.added} 只`
       }
-    } else {
-      // 增量包不存在，下载完整包
-      onProgress?.({ stage: 'download', message: '下载完整数据包...' })
-      const packUrl = `${baseUrl}/kline-pack-latest.json.gz?${cacheBust}`
-      const packResponse = await fetch(packUrl, { cache: 'no-store' })
-      if (!packResponse.ok) throw new Error(`HTTP ${packResponse.status}`)
-      
-      const blob = await packResponse.blob()
-      const text = await decompressGzip(blob)
-      const data = JSON.parse(text)
-
-      // 防御：旧版包拒绝导入（同上）
-      if ((data.version || 1) < REQUIRED_PACK_VERSION) {
-        return { updated: false, message: `服务器数据包仍为旧版（v${data.version || 1}），请确认数据生成工作流已用新代码重新运行` }
-      }
-
-      // ★ 线上完整包与本地同日期 → 无新数据，跳过导入。
-      //   否则每天收盘前（lastUpdate≠今天）打开页面都会：增量 404 → 重下完整包
-      //   → 把 1500+ 只重新全量 put 进 IndexedDB，纯浪费（2026-09-08 实测）。
-      if (data.date && data.date === lastUpdate) {
-        return { updated: false, message: `线上包仍是 ${data.date}，暂无更新` }
-      }
-
-      const result = await importKlinePack(data, (loaded, total) => {
-        onProgress?.({ stage: 'import', loaded, total })
-      })
-
-      return { updated: true, message: `导入 ${result.imported} 只股票` }
     }
+
+    // 增量包不存在（周末/日批未跑）⇒ 下全量
+    return await _downloadFullPack(baseUrl, cacheBust, onProgress, lastUpdate)
   } catch (error) {
     return { updated: false, message: `更新失败: ${error.message}` }
   }

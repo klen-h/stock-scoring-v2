@@ -829,6 +829,11 @@ def generate_packs(
             delta_pack = {
                 "version": 2,
                 "date": date_str,
+                # ★★ 2026-10-29：**基线日期** —— 这份 delta 是"从哪一份包算出来的"。
+                #   前端必须校验 `base == 本地 last_update`，否则拒绝应用并回退全量：
+                #   本地若停在 3 天前，只补"今天新增的那 1 根"会**静默缺掉中间 2 天**
+                #   （K 线缺 → 指标错 → 评分错，且不报错，比崩溃更难发现）。
+                "base": str((prev_data or {}).get("date") or ""),
                 "stocks": delta,
             }
             # ★★ 2026-10-29（用户："改成存前端本地，每天增量，可行吗"）：
@@ -854,21 +859,41 @@ def generate_packs(
 
 
 def compute_delta(prev: Dict, current: Dict) -> Dict:
-    """
-    计算增量数据：只包含新增或更新的股票
+    """**只产出真正新增的 K 线行**（不是整只重发）。
+
+    ★★ 2026-10-29（用户："改成存前端本地，每天增量，可行吗"）：旧实现是「伪增量」——
+      只要某只今天多了一根，就把它的**整段 150 天历史**塞进 delta：
+      ```
+      if prev_last != curr_last: delta[code] = data     # data = 整只 150 根
+      ```
+      实测（1500 只 × 150 根的真实数据）：delta 裸 JSON **10.11 MB**，
+      而全量包 gzip 只有 **2.68 MB** ⇒ 有 delta 的日子反而更亏。
+      本函数改成按**日期**取新增行 ⇒ delta 约 **60 KB**（150 倍）。
+
+    ⚠️ 只看「最后一根日期」是不够的：中途补历史/除权修复时最后日期可能不变而中间有变。
+       这类情况由**全量包**兜底（`version` 不变就不强制重下，但日期跨越会触发回退，
+       见前端 `base` 校验）—— 这里刻意不做逐行 diff（成本高、收益低）。
+
+    返回的 `klines` 只含 `date > 上一份最后一根日期` 的行；
+    **新增股票**（本地没有）仍然整只给，否则前端拿不到历史。
     """
     delta = {}
     for code, data in current.items():
-        prev_data = prev.get(code)
-        if not prev_data:
-            # 新增股票
-            delta[code] = data
-        else:
-            # 检查是否有更新（比较最后一天 K 线）
-            prev_last = prev_data.get("klines", [[]])[-1] if prev_data.get("klines") else None
-            curr_last = data.get("klines", [[]])[-1] if data.get("klines") else None
-            if prev_last != curr_last:
-                delta[code] = data
+        prev_klines = (prev.get(code) or {}).get("klines") or []
+        curr_klines = data.get("klines") or []
+        if not curr_klines:
+            continue
+        if not prev_klines:
+            delta[code] = data                      # 新增股票 ⇒ 全给
+            continue
+        prev_last = str(prev_klines[-1][0] or "")
+        new_bars = [k for k in curr_klines if str(k[0] or "") > prev_last]
+        if new_bars:
+            delta[code] = {
+                "name": data.get("name"),
+                "market_cap": data.get("market_cap"),
+                "klines": new_bars,
+            }
     return delta
 
 
