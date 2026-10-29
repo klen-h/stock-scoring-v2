@@ -117,6 +117,13 @@ jobs:
           #   ⚠️ **只有 KEY 必须留在这里**：密钥不能入库，只能走 Secrets。
           LLM_FREE_API_KEY: ${{ secrets.LLM_FREE_API_KEY }}
           LLM_FREE_SHADOW: '0'
+          # ★★ 2026-10-30：金十快讯整理的 token（`jin10_tidy` 任务依赖）。
+          #   ⚠️⚠️ **只在 Secrets 里配是没用的** —— 必须在这里**显式引用**，
+          #     否则 `os.getenv("JIN10_X_TOKEN")` 取到的永远是空字符串，
+          #     任务会 WARN 跳过、一行都抓不到（本次就踩了这个：Secret 配了但
+          #     workflow 从未引用，等于没配，且日志里只有一条不显眼的 WARN）。
+          #   这是 `LLM_FREE_MODEL` 那个坑的同一类：**"配置存在" ≠ "配置生效"**。
+          JIN10_X_TOKEN: ${{ secrets.JIN10_X_TOKEN }}
           # ★ 2026-09-14：对齐业务开关（此前 Actions 未配 → 全用代码默认值，
           #   与 Render 跑出不同结果，即审查文档 §4 的「部署漂移」）。日批是
           #   唯一写库计算入口，白名单判据必须以 expectancy 为准：
