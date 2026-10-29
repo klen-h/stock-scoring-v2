@@ -31,6 +31,17 @@ on:
         required: false
         default: 'false'
 
+  # ★★ 2026-10-30（用户："今天是周五凌晨，还未开盘，如果不跑 actions，
+  #   明天开盘前看不到金十消息面"）：
+  #   日批主链在 **22:00（收盘后）**，而金十「A股盘前」(50029) 7~9 点才发布
+  #   ⇒ 22:00 能抓到「当天盘前」，但**当天已经收盘了才给你**；
+  #     周五盘前更糟：要等**下周一 22:00**，中间两天多空白。
+  #   ⇒ 加一个早间窗口，**只跑 jin10_tidy**，赶在 9:30 开盘前入库。
+  #   ⚠️ 不能复用 `--tasks all`：会再跑完整日批（≈74 分钟）并重复写库，
+  #     且 8:30 时 backend-pack 尚未开始（22:00 才跑）⇒ pack 校验必然失败。
+  schedule:
+    - cron: '30 0 * * 1-5'    # UTC 0:30 = 北京 8:30，周一~五
+
 concurrency:
   group: daily-batch
   cancel-in-progress: false
@@ -141,6 +152,16 @@ jobs:
           #   留 auto 会让将来一次接线把未背书的惩罚乘数静默启用 ⇒ fail-closed。
           MAINFORCE_MODE: off
         run: |
+          # ★ 早间 schedule（8:30）**只跑金十**，三个参数都是必须的：
+          #   ① `--no-pack-check`：8:30 时 backend-pack 还没跑（22:00 才跑）⇒
+          #      ensure_pack_fresh 会失败并 `return 3`，一条都抓不到；
+          #   ② `--no-quotes`：金十不读行情 ⇒ 省掉行情刷新（也少一次外呼）；
+          #   ③ 不走 `--tasks all`：会重复整个日批（≈74 分钟）并重复写库。
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "::notice::早间金十任务（赶在 9:30 开盘前入库）"
+            python scripts/daily_batch.py --tasks jin10_tidy --no-pack-check --no-quotes
+            exit $?
+          fi
           python scripts/daily_batch.py \
             --tasks ${{ github.event.inputs.tasks || 'all' }} \
             ${{ github.event.inputs.force == 'true' && '--force' || '' }}
