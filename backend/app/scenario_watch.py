@@ -61,16 +61,23 @@ SC_SH_FIX_DAYS = int(os.environ.get("SC_SH_FIX_DAYS") or 2)
 SC_GEO_KINETIC = int(os.environ.get("SC_GEO_KINETIC") or 3)
 
 # 关键日历（用户推演给定；时间仅作倒计时，不自动执行任何动作）
+# ★ 2026-10-31（用户："11/3 降档等只出文字提示，不碰仓位"）：
+#   `impact=high` 的事件在 **T-N 天内**产出 `event_alert` 文字提示，
+#   **只提示、不改任何分数/闸门/仓位** —— 本模块连 `position_hint` 都不写。
 EVENTS = [
     {"date": "2026-10-27", "name": "FOMC 加息 25bp（无SEP）",
-     "note": "声明鹰鸽定周方向"},
+     "note": "声明鹰鸽定周方向", "impact": "high"},
     {"date": "2026-10-31", "name": "A股三季报截止",
-     "note": "AI 业绩雷区出清；10/31 前零操作"},
+     "note": "AI 业绩雷区出清；10/31 前零操作", "impact": "normal"},
     {"date": "2026-11-03", "name": "美国中期选举",
-     "note": "选后伊朗决策窗口=最大尾部风险；T-1 自动降档"},
+     "note": "选后伊朗决策窗口=最大尾部风险", "impact": "high"},
     {"date": "2026-12-08", "name": "FOMC + 点阵图",
-     "note": "全年最重要会议；点阵图 4.10/4.25/4.50 → 进攻/中性/防守"},
+     "note": "全年最重要会议；点阵图 4.10/4.25/4.50 → 进攻/中性/防守", "impact": "high"},
 ]
+
+# 事件前提示窗口（天）：T-N ~ T 日期间输出 event_alert。
+# 默认 2：T-2 就开始提示，避免"只在当天提醒、已经来不及降仓"。
+SC_EVENT_ALERT_DAYS = int(os.environ.get("SC_EVENT_ALERT_DAYS") or 2)
 POINT_PLOT = [("4.10%", "进攻"), ("4.25%", "中性"), ("4.50%", "防守")]
 
 # ★ 地缘事件（金十快讯按**内容**匹配；实测 flash_news.cluster 字段当前为空）
@@ -365,11 +372,38 @@ def evaluate(day: str = None) -> Dict:
     evts = []
     for e in EVENTS:
         try:
-            d = (datetime.strptime(e["date"], "%Y-%m-%d") - now).days
+            # ★ 2026-10-31：按**日历日**比较（`.date()`）。
+            #   原实现是 datetime 相减，`(11-03 00:00 - 10-31 16:xx).days = 2`
+            #   ⇒ "3 个日历日后"被显示成"2 天后"，T-N 提示会早一天跑偏。
+            d = (datetime.strptime(e["date"], "%Y-%m-%d").date() - now.date()).days
         except ValueError:
             d = None
         evts.append({**e, "t_minus": d,
                      "soon": d is not None and 0 <= d <= 1})
+
+    # ★ 2026-10-31：高影响事件的**文字提示**（用户："只出文字提示，不碰仓位"）。
+    #   为什么不做成"自动降档"：降档属于仓位决策，系统直接改会越过用户；
+    #   本模块的既有红线就是"观察器，不改分数、不进闸门"。
+    _alerts = []
+    for e in evts:
+        t = e.get("t_minus")
+        if t is None or not (0 <= t <= SC_EVENT_ALERT_DAYS):
+            continue
+        if e.get("impact") != "high":
+            continue
+        when = "今天" if t == 0 else ("明天" if t == 1 else f"{t} 天后")
+        _alerts.append({
+            "date": e["date"], "name": e["name"], "t_minus": t,
+            "text": (f"{when}（{e['date']}）{e['name']}："
+                     f"建议最低仓位、不开新仓，让事件落地（仅提示，不改仓位）"),
+        })
+    event_alert = {
+        "active": bool(_alerts),
+        "items": _alerts,
+        "text": ("★事件前提示：" + "；".join(a["text"] for a in _alerts)
+                 if _alerts else ""),
+    }
+
     note = (f"推演证伪记分卡：{len(sigs)} 项信号，偏多 {n_up} / 偏空 {n_dn}。"
             f"情景倾向={scenario}。"
             + ("★地缘硬触发（实际动能事件已出现；油价未达阈值前不切换情景）。"
@@ -380,7 +414,8 @@ def evaluate(day: str = None) -> Dict:
             + "近 7 日内关键日历："
             + ("、".join(f"{e['name']}({e['t_minus']}d)" for e in evts
                          if e["t_minus"] is not None and 0 <= e["t_minus"] <= 7)
-               or "无"))
+               or "无")
+            + ("。" + event_alert["text"] if event_alert["active"] else ""))
 
     anchor = {
         "level": SC_SH_ANCHOR,
@@ -396,7 +431,7 @@ def evaluate(day: str = None) -> Dict:
     }
     return {"date": day, "signals": sigs, "lean": lean, "scenario": scenario,
             "events": evts, "point_plot": POINT_PLOT, "geo_alert": hard_geo,
-            "geo_candidate": geo_cand,
+            "geo_candidate": geo_cand, "event_alert": event_alert,
             "scenario_candidate": "熊市加深（地缘候选）" if geo_cand else "",
             "anchor": anchor, "data_as_of": kl_date,
             "checklist": {"n_checked": pb.get("n_checked"),
@@ -410,7 +445,7 @@ def save(data: Dict) -> bool:
     try:
         extra = {k: data.get(k) for k in
                  ("anchor", "checklist", "geo_alert", "geo_candidate",
-                  "scenario_candidate")}
+                  "scenario_candidate", "event_alert")}
         db.upsert(_TABLE, {
             "date": str(data.get("date"))[:10],
             "signals_json": json.dumps(data.get("signals") or [], ensure_ascii=False),
@@ -464,6 +499,8 @@ def load(day: str = None) -> Dict:
     return {"date": d, "signals": signals, "lean": row.get("lean"),
             "scenario": row.get("scenario"), "note": row.get("note"),
             "events": EVENTS, "point_plot": POINT_PLOT,
+            "event_alert": (extra.get("event_alert")
+                            or {"active": False, "items": [], "text": ""}),
             "geo_alert": bool(extra.get("geo_alert")
                               or any(s.get("hard") for s in signals)),
             "geo_candidate": cand,
@@ -481,6 +518,7 @@ def run_daily(day: str = None) -> Dict:
         save(data)
         return {"ok": True, "date": data["date"], "scenario": data["scenario"],
                 "lean": data["lean"], "n_up": data["n_up"],
-                "n_down": data["n_down"]}
+                "n_down": data["n_down"],
+                "event_alert": data.get("event_alert") or {}}
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}

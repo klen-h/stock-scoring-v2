@@ -520,6 +520,12 @@
                 <div v-if="scen.geo_candidate" class="text-[10px] text-rose-300">
                   ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
                 </div>
+                <!-- ★ 2026-10-31（用户："降档等只出文字提示，不碰仓位"）：
+                     高影响事件（选举/FOMC）T-N 天内的文字提示。
+                     刻意**不做成自动降档** —— 仓位由人决定，系统只按时提醒。 -->
+                <div v-if="scen.event_alert?.active" class="text-[10px] text-amber-300">
+                  {{ scen.event_alert.text }}
+                </div>
                 <div class="text-[10px] text-muted leading-relaxed">{{ scen.note }}</div>
               </div>
             </div>

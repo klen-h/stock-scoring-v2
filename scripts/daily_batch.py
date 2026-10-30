@@ -1346,8 +1346,13 @@ def task_scenario_watch():
         r = sw.run_daily(day=_batch_trading_day().isoformat())
         if not r.get("ok"):
             return f"推演证伪: WARN {str(r.get('error'))[:70]}"
+        # ★ 2026-10-31：事件前文字提示（只提示，不改仓位）
+        ea = r.get("event_alert") or {}
+        tip = (" / " + "；".join(x.get("text", "")
+                                 for x in (ea.get("items") or []))
+               if ea.get("active") else "")
         return (f"推演证伪: {r.get('scenario')} / 偏多 {r.get('n_up')} / "
-                f"偏空 {r.get('n_down')}")
+                f"偏空 {r.get('n_down')}{tip}")
     except Exception as e:
         return f"推演证伪: WARN {str(e)[:70]}"
 
