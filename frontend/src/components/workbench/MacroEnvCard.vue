@@ -13,12 +13,20 @@
            ⚠️ 它**不修改**上面的宏观分数 —— 机械分照常显示，这里只是并列声明
              "该组合下机械评分的因子权重假设不成立"。覆盖分数会直接动闸门与仓位，属红线。
            文案由用户指定，不要改写成"看空/看多"之类结论。 -->
-      <div v-if="stagflation?.is_stagflation"
-           class="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
-        <div class="text-[11px] font-medium text-amber-300 leading-snug">
-          组合风险档：当前宏观组合为【{{ stagflation.state }}】，机械评分因子权重假设不成立，仅供参考
+      <!-- ★ 2026-10-31：`is_alert` 覆盖两档（滞胀 / 衰退前夜）。
+           衰退前夜用 rose 色：它比滞胀更该降仓（股债金三杀），不能和滞胀同色同文案。 -->
+      <div v-if="stagflation?.is_alert"
+           class="mb-2 rounded border px-2 py-1.5"
+           :class="stagflation?.is_pre_recession
+             ? 'border-rose-500/40 bg-rose-500/10'
+             : 'border-amber-500/40 bg-amber-500/10'">
+        <div class="text-[11px] font-medium leading-snug"
+             :class="stagflation?.is_pre_recession ? 'text-rose-300' : 'text-amber-300'">
+          组合风险档：当前宏观组合为【{{ stagflation.state }}】{{ stagflation?.is_pre_recession ? '（黄金破位=通胀对冲失效）' : '' }}，机械评分因子权重假设不成立，仅供参考
         </div>
-        <div class="text-[10px] text-amber-200/80 mt-0.5" :title="stagEvTitle">{{ stagEvText }}</div>
+        <div class="text-[10px] mt-0.5"
+             :class="stagflation?.is_pre_recession ? 'text-rose-200/80' : 'text-amber-200/80'"
+             :title="stagEvTitle">{{ stagEvText }}</div>
       </div>
       <!-- 单行三段式：宏观方向 | 市场环境 | 事件诊断（★ 2026-09-25 用户要求同一行，
            严格单行不换行：长文本一律 truncate，悬停 title 看全文）
@@ -362,10 +370,19 @@ const stagEvText = computed(() => {
   const o = e.oil || {}
   const b = e.bond || {}
   const u = e.usd || {}
+  const g = e.gold || {}
   const p = []
   if (o.value != null) p.push(`油 ${o.value}（${o.chg_pct ?? '—'}%）${o.pass ? '✓' : '✗'}`)
   if (b.value != null) p.push(`10Y ${b.value}（${b.bp_change ?? '—'}bp）${b.pass ? '✓' : '✗'}`)
   if (u.value != null) p.push(`美元 ${u.value}（${u.chg_pct ?? '—'}%）${u.pass ? '✓' : '✗'}`)
+  // ★ 2026-10-31：黄金是**裁决变量**（不是三条件之一）——
+  //   涨=滞胀（对冲有效）/ 跌=衰退前夜（实际利率上行）/ 中性=方向未确认。
+  //   ⚠️ 这里用方向箭头而不是 ✓/✗：衰退前夜时"黄金跌"才是支持证据，
+  //     用 pass 的 ✓/✗ 会让人误读成"这一项不满足"。
+  if (g.value != null) {
+    const arrow = g.dir === 'up' ? '↑' : (g.dir === 'down' ? '↓' : '→')
+    p.push(`金 ${g.value}（${g.chg_pct ?? '—'}%）${arrow}`)
+  }
   return p.join(' · ')
 })
 const stagEvTitle = computed(() => {
@@ -373,10 +390,12 @@ const stagEvTitle = computed(() => {
   const o = e.oil || {}
   const b = e.bond || {}
   const u = e.usd || {}
+  const g = e.gold || {}
   return [
     `油：${o.rule || ''}`,
     `债：${b.rule || ''}`,
     `美元：${u.rule || ''}`,
+    `黄金（裁决变量）：${g.rule || ''}`,
     `开启需连续 ${props.stagflation?.on_days ?? 2} 日成立；关闭需连续 ${props.stagflation?.off_days ?? 2} 日不满足`,
     props.stagflation?.note || '',
   ].filter(Boolean).join('\n')
