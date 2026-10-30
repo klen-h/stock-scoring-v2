@@ -80,7 +80,14 @@ from app.database import db
 
 _REG = "thesis_registry"
 _EVT = "thesis_events"
+_EVID = "thesis_evidence"       # 全局证据快照（每日一行，抄值留痕）
 _READY = False
+
+# 证据快照抄哪些品种（白名单）。
+# ★ 不抄整份 panel：存储已 408MB/500MB（2026-10-29 实测），每日整份落库是浪费；
+#   这 11 个覆盖"滞胀/利率冲击/衰退"三档所需的全部判别变量。
+_EVID_ASSETS = ("brent", "wti", "gold", "silver", "copper",
+                "us10y", "dxy", "usdcnh", "nasdaq", "a50", "vix")
 
 # ── 枚举（写死，防止脏值污染统计）────────────────────────────────────────
 VALID_NATURE = ("prediction", "decision")
@@ -146,6 +153,14 @@ def _norm_p(p) -> Optional[float]:
     if v > 1.0:
         v = v / 100.0
     return max(0.0, min(1.0, v))
+
+
+def _num(v) -> Optional[float]:
+    """安全转 float（历史数据里可能是字符串/None）。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_dt(s) -> Optional[datetime]:
@@ -219,6 +234,16 @@ def ensure_tables() -> None:
             event_type TEXT NOT NULL,
             payload TEXT,
             created_by TEXT,
+            created_at TEXT
+        )
+    """)
+    # ③ 全局证据快照（每日一行；date 作主键 ⇒ 同日重跑只覆盖，天然幂等）
+    db.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_EVID} (
+            date TEXT PRIMARY KEY,
+            as_of TEXT,
+            data_ts TEXT,
+            payload TEXT,
             created_at TEXT
         )
     """)
@@ -395,8 +420,8 @@ def add_manual_evidence(thesis_id: int, field: str, value,
 # ══════════════════════════════════════════════════════════════════════════
 # 裁决器 v1
 # ══════════════════════════════════════════════════════════════════════════
-def _load_macro_latest() -> Dict:
-    """读 `macro_daily` 最新一份快照（完整 data_json：含 panel / derived）。
+def _load_macro_latest_with_date() -> Tuple[Dict, str]:
+    """读 `macro_daily` 最新一份快照，返回 (data_json, 快照日期 YYYY-MM-DD)。
 
     ★ 日期是 TEXT 且混斜杠格式 ⇒ 必须解析成 datetime 比较，不能字符串 MAX。
     """
@@ -404,7 +429,7 @@ def _load_macro_latest() -> Dict:
         rows = db.fetch("SELECT date, data_json FROM macro_daily") or []
     except Exception as e:
         print(f"[thesis] macro_daily 不可读: {str(e)[:80]}")
-        return {}
+        return {}, ""
     best_dt, best = None, {}
     for r in rows:
         dt = _parse_dt(r.get("date"))
@@ -413,7 +438,77 @@ def _load_macro_latest() -> Dict:
         if best_dt is None or dt > best_dt:
             obj = _loads(r.get("data_json"), {})
             best_dt, best = dt, (obj if isinstance(obj, dict) else {})
-    return best
+    return best, (best_dt.strftime("%Y-%m-%d") if best_dt else "")
+
+
+def _load_macro_latest() -> Dict:
+    """读 `macro_daily` 最新快照内容（裁决器用，不需要日期）。"""
+    return _load_macro_latest_with_date()[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 证据快照（全局每日一份，抄值留痕）
+# ══════════════════════════════════════════════════════════════════════════
+def collect_evidence(day: str = None) -> Dict:
+    """把 `macro_daily` 最新快照的关键品种**抄一份**到 `thesis_evidence`。
+
+    ★ 为什么"抄值"而不是"引用"（评审明确提醒）：`macro_daily` 的行可能被
+      重算/改写（历史回填、口径调整），直接引用等于让**历史证据随今天的数据
+      变化** —— 那就不叫证据了。抄下来才是"当时的读数"。
+    ★ 抄哪些：`_EVID_ASSETS` 白名单，不抄整份 panel（存储已吃紧）。
+    ★ 幂等：`date` 主键 upsert，同日重跑只覆盖不重复。
+    ★ 缺品种如实记入 `missing`（不是静默跳过）—— 否则将来复盘会误以为"当时没数据"。
+    """
+    ensure_tables()
+    day = str(day or _now_bjt().strftime("%Y-%m-%d"))[:10]
+    snap, as_of = _load_macro_latest_with_date()
+    if not snap:
+        return {"ok": False, "error": "macro_daily 无可用快照"}
+
+    panel = snap.get("panel") or {}
+    derived = snap.get("derived") or {}
+    assets: Dict[str, Dict] = {}
+    missing: List[str] = []
+    for k in _EVID_ASSETS:
+        item = panel.get(k) or {}
+        price = _num(item.get("price"))
+        if price is None:
+            missing.append(k)
+            continue
+        assets[k] = {"price": price,
+                     "change_pct": _num(item.get("change_pct")),
+                     "bp_change": _num(item.get("bp_change"))}
+
+    payload = {"as_of": as_of, "assets": assets,
+               "derived": derived if isinstance(derived, dict) else {}}
+    db.upsert(_EVID, {
+        "date": day,
+        "as_of": as_of,
+        "data_ts": _ts(),
+        "payload": _dumps(payload),
+        "created_at": _ts(),
+    }, conflict_columns=["date"])
+    return {"ok": True, "date": day, "as_of": as_of,
+            "assets": len(assets), "missing": missing}
+
+
+def load_evidence(day: str = None) -> Dict:
+    """读某日证据快照（默认最新一份）。"""
+    ensure_tables()
+    try:
+        if day:
+            row = db.fetch_one(f"SELECT * FROM {_EVID} WHERE date=%s",
+                               (str(day)[:10],))
+        else:
+            # 本表只写 YYYY-MM-DD（无斜杠格式），字符串排序即正确顺序
+            row = db.fetch_one(f"SELECT * FROM {_EVID} ORDER BY date DESC LIMIT 1")
+    except Exception as e:
+        return {"error": str(e)[:120]}
+    if not row:
+        return {}
+    d = dict(row)
+    d["payload"] = _loads(row.get("payload"), {})
+    return d
 
 
 def _manual_evidence_map(thesis_id: int) -> Dict[str, Dict]:

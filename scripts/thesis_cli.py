@@ -134,6 +134,16 @@ def _cmd_resolve(args) -> int:
     return 0 if r.get("ok") else 1
 
 
+def _cmd_evidence_show(args) -> int:
+    """查看证据快照（日批 task_thesis_evidence 抄下来的那份）。"""
+    d = tt.load_evidence(args.date)
+    if not d:
+        print("（无证据快照；跑一次 `daily_batch --tasks thesis_evidence` 或等日批）")
+        return 1
+    print(json.dumps(d, ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
 def _cmd_list(args) -> int:
     rows = tt.list_theses(args.status)
     if not rows:
@@ -203,6 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--value", required=True)
     sp.add_argument("--source-url", dest="source_url", required=True)
     sp.set_defaults(func=_cmd_evidence)
+
+    sp = sub.add_parser("evidence-show", help="查看证据快照（默认最新）")
+    sp.add_argument("--date", help="YYYY-MM-DD（缺省=最新）")
+    sp.set_defaults(func=_cmd_evidence_show)
 
     sp = sub.add_parser("resolve", help="跑裁决器（只处理已到期假设）")
     sp.add_argument("--force", action="store_true", help="忽略 deadline（调试用）")

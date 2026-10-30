@@ -1280,6 +1280,28 @@ def task_stagflation():
         return f"滞胀档: WARN {str(e)[:70]}"
 
 
+def task_thesis_evidence():
+    """宏观证据快照留痕（Thesis Tracker，2026-10-31）。**只抄值，不做任何判断**。
+
+    ★ 抄 `macro_daily` 最新快照的关键品种 → `thesis_evidence`（每日一行），
+      给假设复盘提供"当时的读数"。**必须抄值不能引用**：`macro_daily` 的行可能
+      被重算/改写（历史回填、口径调整），直接引用等于让历史证据随今天的数据漂移。
+    ★ 失败不抛：证据缺一天不影响主链；裁决器 v1 仍直接读 macro_daily。
+    ★ 幂等：date 主键 upsert，同日重跑只覆盖。
+    """
+    try:
+        from app import thesis_tracker as tt
+        r = tt.collect_evidence(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"宏观证据: WARN {str(r.get('error'))[:70]}"
+        miss = r.get("missing") or []
+        return (f"宏观证据: {r.get('date')} 抄 {r.get('assets')} 项"
+                f"（快照日 {r.get('as_of') or '-'}）"
+                + (f" / 缺 {','.join(miss)}" if miss else ""))
+    except Exception as e:
+        return f"宏观证据: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1508,6 +1530,10 @@ TASKS = {
     # ★ 2026-10-30（简报第1项）：宏观组合风险档「滞胀交易」状态位。
     #   只标注不改分；全量重算（滞回依赖历史），数量级几十行，成本可忽略。
     "stagflation": (task_stagflation, "滞胀交易状态位（组合风险档，不改分）"),
+    # ★ 2026-10-31（用户："证据采集 task、接入日批现在做"）：Thesis Tracker 证据快照。
+    #   抄 macro_daily 关键品种落库（每日一行），供假设复盘看"当时读数"。
+    #   纯留痕、不做判断、失败不抛；紧跟 stagflation（同依赖 macro_daily 当日快照）。
+    "thesis_evidence": (task_thesis_evidence, "宏观证据快照留痕（Thesis Tracker）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1627,6 +1653,8 @@ DEFAULT_ORDER = ["backfill",
                 "news_snapshot", "jin10_tidy",
                 # ★ 2026-10-30：滞胀档依赖 macro_daily 当日快照 ⇒ 排在消息面采集之后
                 "stagflation",
+                # ★ 2026-10-31：Thesis Tracker 证据快照（同依赖 macro_daily，紧排其后）
+                "thesis_evidence",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
