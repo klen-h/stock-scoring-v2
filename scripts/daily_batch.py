@@ -1302,6 +1302,38 @@ def task_thesis_evidence():
         return f"宏观证据: WARN {str(e)[:70]}"
 
 
+def task_thesis_resolve():
+    """Thesis Tracker 裁决器（2026-10-31）。**只裁决 deadline 已过的假设**。
+
+    ★ 为什么必须有这个任务：`resolve_open_theses()` 若只存在于 CLI ⇒
+      12/9 FOMC 决议后**没有任何进程会自动跑**，假设会永远停在 open。
+      "登记了却永远不结算"正是预登记纪律最怕的失效方式（比判错更糟）。
+    ★ 只处理已到期的；未到期一律 skip —— 那是"时间没到"，不是"没数据"。
+    ★ manual 字段缺证据时保持 open 并提示"待录入"，**不会**误判 lose。
+    ★ 失败不抛：裁决失败不影响主链。
+    """
+    try:
+        from app import thesis_tracker as tt
+        r = tt.resolve_open_theses()
+        if not r.get("ok"):
+            return f"假设裁决: WARN {str(r.get('error'))[:70]}"
+        results = r.get("results") or []
+        done = [x for x in results
+                if x.get("action") in ("resolved_win", "resolved_lose")]
+        pend = [x for x in results if x.get("action") == "pending"]
+        if done:
+            labels = ",".join("#%s=%s" % (x.get("id"), x.get("action"))
+                              for x in done)
+            return (f"假设裁决: {len(done)} 条已结算（{labels}）"
+                    + (f" / {len(pend)} 条待录入" if pend else ""))
+        if pend:
+            return ("假设裁决: 无到期 / %d 条待录入（%s）"
+                    % (len(pend), ",".join("#%s" % x.get("id") for x in pend)))
+        return "假设裁决: 无到期假设"
+    except Exception as e:
+        return f"假设裁决: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1534,6 +1566,10 @@ TASKS = {
     #   抄 macro_daily 关键品种落库（每日一行），供假设复盘看"当时读数"。
     #   纯留痕、不做判断、失败不抛；紧跟 stagflation（同依赖 macro_daily 当日快照）。
     "thesis_evidence": (task_thesis_evidence, "宏观证据快照留痕（Thesis Tracker）"),
+    # ★ 2026-10-31：裁决器必须进日批 —— 否则 deadline 过后假设永远停在 open
+    #   （"登记了却永远不结算"比判错更糟）。只裁决已到期的；manual 缺证据时
+    #   保持 open 并提示"待录入"，不会误判 lose。
+    "thesis_resolve": (task_thesis_resolve, "假设裁决（Thesis Tracker，只处理已到期）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1655,6 +1691,8 @@ DEFAULT_ORDER = ["backfill",
                 "stagflation",
                 # ★ 2026-10-31：Thesis Tracker 证据快照（同依赖 macro_daily，紧排其后）
                 "thesis_evidence",
+                # ★ 证据采集之后裁决（v1 虽读 macro_daily，但语义上证据先于裁决）
+                "thesis_resolve",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
