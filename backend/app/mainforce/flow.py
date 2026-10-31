@@ -889,6 +889,38 @@ def _stale_flow_codes(cutoff: str):
         return None
 
 
+# ── ★★ 2026-10-31：整表读的**硬安全阀** ──────────────────────────────────────
+# 背景：补全资金流后 `mainflow_history` 达 37.7 万行（2,861 只 × 约 130 天）。
+#   而 9-28 的注释实测「整表读单条 ≈110MB（8.8 万行）」⇒ 按每行 ~1.25KB 线性外推，
+#   37.7 万行的 **单次峰值 ≈470MB**，已超 Render 512MB 实例上限
+#   ⇒ **整表读现在等于"自杀开关"**（表再大一点，一次调用就能把进程顶死）。
+#
+# 为什么必须做成"拒绝"而不是"警告"：
+#   10-18 已加过 `[WARN]`，但日志里一行警告**没人会去看**——今天整轮排查里，
+#   "警告打了但没人看/看了也没拦" 已经出现过四次（workflow 硬编码、Secret 未引用、
+#   兜底在早退之后、ind_last_update 有值但 store 空）。
+#   ⇒ 这次直接把"警告"变成"拒绝执行"。
+_FULL_READ_MAX_ROWS = 200000      # 超过该行数 ⇒ 拒绝整表读
+_FULL_READ_FALLBACK_DAYS = 60     # 拒绝后改用的窗口天数（研究脚本通常够用；3 个月）
+
+
+def _full_read_guard() -> int:
+    """整表读安全阀。返回 0 = 允许整表读；>0 = 拒绝，并改用该窗口天数。
+
+    ★ 只在表行数超上限时返回 >0。查询异常时 **fail-open 返回 0**（按原逻辑放行）——
+      正确性优先：宁可多读一次，也不因为护栏自身故障而改变读数口径。
+    ★ 生产路径（`state.refresh_all`）传 `days=20` 本就不整表读，
+      本阀主要拦**三处退回整表读**的路径（见 `load_flow_map` 里的 `_deny`）。
+    """
+    try:
+        r = db.fetch_one("SELECT count(*) AS n FROM mainflow_history")
+        n = int((r or {}).get("n") or 0)
+    except Exception as e:
+        print(f"[mainflow] 整表读护栏检查失败（按原逻辑放行）: {str(e)[:60]}")
+        return 0
+    return _FULL_READ_FALLBACK_DAYS if n > _FULL_READ_MAX_ROWS else 0
+
+
 def load_flow_map(codes: list = None, days: int = None) -> dict:
     """读 {code: [{date, main_net, ...}]}（升序），供回测脚本用。
 
@@ -914,26 +946,49 @@ def load_flow_map(codes: list = None, days: int = None) -> dict:
     """
     ensure_table()
     win = int(days) if days and int(days) > 0 else None
+
+    # ★★ 2026-10-31：整表读安全阀（详见 `_full_read_guard` 注释）。
+    #   `>0` 表示"表已太大，禁止整表读，改用该窗口天数"。
+    _deny_win = _full_read_guard()
+
     # ★★ 2026-10-18（egress 实测）：`days=None` = **整表读**，实测该语句累计
     #   191 次 / **2000 万行 / ≈1.7GB**（全项目出口流量第一名）——全部来自研究脚本。
     #   生产路径（`mainforce/state.refresh_all`）已传 days=FLOW_WINDOW_DAYS ✓。
-    #   这里加**显式告警**：以后谁再新增无窗口调用，日志里立刻看得见。
     if win is None:
         print("[mainflow] [WARN] load_flow_map(days=None) ⇒ 整表读（≈8.7MB/次）；"
               "生产路径必须传 days，仅研究脚本允许全量")
+        if _deny_win:
+            win = _deny_win
+            print(f"[mainflow] ❌ 整表读被安全阀拒绝（表行数超上限）"
+                  f" ⇒ 降级为最近 {win} 天（整表读峰值会超实例内存）")
+
     cutoff = _flow_window_cutoff(win) if win else ""
+
+    def _deny(reason: str):
+        """**退回整表读的统一出口**：返回 `(win, cutoff)`。
+
+        ★ 2026-10-31：原来三处都是裸的 `win = None`（①取不到最新日期 ②陈旧判据不可用
+          ③存在陈旧代码）。前两处是"宁多读不给错窗口"，第三处是"不静默改降级口径"——
+          这两个理由本身没错，但**表长到 38 万行后，"多读"会直接把进程顶死**。
+          ⇒ 统一走这里：表没超限就维持原语义（退回整表读）；超限则改用降级窗口并出声。
+        """
+        if _deny_win:
+            print(f"[mainflow] ⚠️ 需退回整表读（{reason}），但表行数超安全阀上限"
+                  f" ⇒ 改用最近 {_deny_win} 天（整表读峰值会超 Render 内存）")
+            return _deny_win, _flow_window_cutoff(_deny_win)
+        return None, ""
+
     if win and not cutoff:
-        win = None                 # 取不到最新日期 ⇒ 退回整表读（宁多读，不给错窗口）
+        win, cutoff = _deny("取不到最新日期")
     if win:
         stale = _stale_flow_codes(cutoff)
         if stale is None:
-            print("[mainflow] 陈旧判据不可用 ⇒ 退回整表读（宁多读，不静默改口径）")
-            win = None
+            win, cutoff = _deny("陈旧判据不可用")
         elif stale:
             print(f"[mainflow] {len(stale)} 只代码资金流最后一行早于 {cutoff}"
-                  f" ⇒ 退回整表读（窗口化会把这些票从「有旧数据」变成「无数据」，"
+                  f"（窗口化会把这些票从「有旧数据」变成「无数据」，"
                   f"改变 overlay 的降级口径；例: {stale[:3]}）")
-            win = None
+            win, cutoff = _deny("存在陈旧代码")
     cache_key = "all" if not codes else ",".join(sorted(str(c) for c in codes))
     if win:
         cache_key = f"last{win}:{cache_key}"
