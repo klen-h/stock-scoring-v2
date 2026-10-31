@@ -199,7 +199,21 @@ export async function ensureIndicatorsPack(baseUrl = KLINE_DATA_BASE_URL) {
     const klineDate = await getLastUpdateDate()
     const indDate = await getIndicatorsDate()
     if (!klineDate || klineDate === indDate) {
-      return { updated: false, message: '指标包已是最新' }
+      // ★★ 2026-10-31（用户报"评分排行榜的主力行为整列全是 `-`"的**真正根因**）：
+      //   **日期相同 ≠ 数据在**。`ind_last_update` 只是"上次导入成功"的残影；
+      //   store 可能因事务失败 / 浏览器配额 / 用户清理而为空，但标记还在
+      //   ⇒ 旧实现永远返回"已是最新"、**永不重试**。
+      //   实测事故：`indicators` store 为 0 条、`ind_last_update=20261030`
+      //   ⇒ `getIndicator()` 全 null ⇒ `mfMap` 空 ⇒ 主力列全 `-`；
+      //     连带 `_series` 也读不到 ⇒ 评分静默回退「150 根现算」、
+      //     `flow5_amt` 未注入 ⇒ 资金面从 5 因子退化成 4 因子（全程无报错）。
+      //   修法：日期对上时**再查一次实际条数**，为 0 就继续往下走（强制重下）。
+      const n = await getIndicatorsCount()
+      if (n > 0) {
+        return { updated: false, message: '指标包已是最新' }
+      }
+      console.warn(`[前端评分] ind_last_update=${indDate} 但 indicators store 为空(${n} 条)`
+                   + ' → 强制重新下载')
     }
 
     // ★★ 2026-10-26（用户报"一天流量 2.18GB"）：指标包 5.5MB/次，必须节流。

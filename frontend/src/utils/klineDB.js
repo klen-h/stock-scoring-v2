@@ -258,6 +258,17 @@ export async function importIndicatorsPack(data, onProgress) {
     })
   }
 
+  // ★★ 2026-10-31（用户报"评分排行榜的主力行为整列全是 `-`"的真正根因之二）：
+  //   原实现**先写日期标记、不校验实际写入条数** ⇒ 事务中途失败 / 浏览器配额不足 /
+  //   页面被关闭导致 `imported < total` 时，`ind_last_update` 仍是新日期，
+  //   而 `ensureIndicatorsPack` 只看日期 ⇒ **永远判定"已是最新"、永不重试**。
+  //   实测事故：store 为 0 条而 `ind_last_update=20261030`，主力列全 `-` 且无任何报错。
+  //   现在：条数不符 ⇒ 把日期标记**清成 null** 并抛错（下次启动会重新下载）。
+  if (imported !== total) {
+    await setMeta('ind_last_update', null)
+    await setMeta('ind_count', imported)
+    throw new Error(`指标包导入不完整 ${imported}/${total}（已清标记，下次重试）`)
+  }
   // 指标包日期独立记录（与 K 线包对齐时跳过重复下载）
   await setMeta('ind_last_update', data.date)
   await setMeta('ind_count', total)
