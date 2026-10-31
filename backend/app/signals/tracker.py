@@ -92,6 +92,16 @@ RISK_CONFIG = {
     "max_positions": 5,                # 最大持仓（含等待中）数
     "max_correlated_positions": 2,     # 同相关性组最大持仓数
     "signal_expire_days": 5,           # 安全网：waiting 超 N 天强制过期（正常情况由论点失效机制管控）
+    # ★ 2026-11-01 新增：最小风险回报比（信号质量门槛）。
+    #   依据（去重后 18 笔真实成交，2026-08~10）：
+    #     RR < 0.5   → 2 笔  0 胜  累计 -5.26%
+    #     RR 0.5~1.0 → 4 笔  0 胜  累计 -11.20%
+    #     RR 1.0~1.5 → 4 笔  1 胜  累计 -4.86%
+    #     RR >= 1.5  → 8 笔  2 胜  累计 -6.46%
+    #   ⇒ **RR < 1 的 6 笔一笔没赢**，属纯负期望区，直接拒绝。
+    #   注：止损固定为 3%（`build_signal_from_llm`），所以 RR=1 等价于"支撑阻力
+    #   间距 ≥ 3%"。间距过窄的信号（如黄金 9.50→9.55，仅 0.53%）必被拦。
+    "min_rr": 1.0,
 }
 ACCOUNT_SIZE = 100000                  # 默认账户规模（元）
 
@@ -315,21 +325,36 @@ def _check_correlation(new_signal: dict, active: list) -> dict:
 
 
 def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUNT_SIZE) -> dict:
-    total_risk = 0.0
-    for s in active:
-        if s.get("status") == "active":
-            try:
-                entry, stop = float(s["entryPrice"]), float(s["stopLoss"])
-                total_risk += abs(entry - stop) / entry * account_size * 0.015
-            except (KeyError, TypeError, ValueError, ZeroDivisionError):
-                pass
-    try:
-        entry, stop = float(new_signal["entryCondition"]["targetPrice"]), float(new_signal["stopLoss"])
-        total_risk += abs(entry - stop) / entry * account_size * 0.015
-    except (KeyError, TypeError, ValueError, ZeroDivisionError):
-        pass
-    return {"canAdd": total_risk <= account_size * RISK_CONFIG["max_total_risk"],
-            "totalRiskPercent": round(total_risk / account_size * 100, 2),
+    """总风险门槛：**已持仓**的风险金额之和 + 新信号风险金额 ≤ 账户 × max_total_risk。
+
+    ★★ 2026-11-01 修正（原式量纲错误，门槛从未生效）：
+      原式 `abs(entry-stop)/entry * account_size * 0.015`
+        = 止损幅度(3%) × 账户(10万) × 1.5% = **45 元**
+      而上限是 `account_size * 0.06` = **6000 元**
+      ⇒ 需要 133 个持仓才触发，可 `max_positions` 只有 5
+      ⇒ 实测 `rejectedSignals` 50 条里 **「总风险超限」0 次**，门槛形同虚设。
+
+      现式按每笔**实际风险金额**（`positionSize.riskAmount` = 账户 × 1.5%）累加：
+        4 个持仓 = 6% ⇒ 第 5 个被拒，门槛真正生效。
+
+    ⚠️ 生效后与 `max_positions=5` 存在配置冲突（5 × 1.5% = 7.5% > 6%）：
+       实际有效上限变成 **4 个持仓**。若想保留 5 个，把 `max_total_risk` 调到 7.5%。
+    """
+    def _risk_of(s: dict) -> float:
+        ps = s.get("positionSize") or {}
+        try:
+            amt = float(ps.get("riskAmount") or 0)
+            if amt > 0:
+                return amt
+        except (TypeError, ValueError):
+            pass
+        # 老记录没有 positionSize：按固定单笔风险估算（与新信号同口径）
+        return account_size * RISK_CONFIG["max_risk_per_trade"]
+
+    used = sum(_risk_of(s) for s in active if s.get("status") == "active")
+    total = used + account_size * RISK_CONFIG["max_risk_per_trade"]
+    return {"canAdd": total <= account_size * RISK_CONFIG["max_total_risk"],
+            "totalRiskPercent": round(total / account_size * 100, 2),
             "maxAllowed": RISK_CONFIG["max_total_risk"] * 100}
 
 
@@ -416,6 +441,17 @@ def build_signal_from_llm(llm_signal: dict, source: str) -> dict:
         "takeProfit": str(round(take, 3)),
         "reasoning": llm_signal.get("reasoning", ""),
         "source": source,
+        # ★ 2026-11-01（规则同步第 1 步：先留存，不改行为）：
+        #   LLM 明明给了这三个字段，`build_signal_from_llm` 却**整段丢弃**——
+        #   这正是"买入规则与 LLM 不同步"的核心：
+        #     · invalidation   "跌破6.95失效"  vs  代码一律 support*0.97
+        #     · position_sizing "轻仓试探/重仓" vs  代码恒按 1.5% 风险
+        #     · confidence     "低/中/高"       vs  代码不读
+        #   留存后：审计可见、前端可展示、后续接入不必再回头改结构。
+        "invalidation": llm_signal.get("invalidation", ""),
+        "positionSizing": llm_signal.get("position_sizing", ""),
+        "confidence": llm_signal.get("confidence", ""),
+        "timeframe": llm_signal.get("timeframe", ""),
     }
 
 
@@ -447,11 +483,45 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
         validation["passed"] = False
         validation["reasons"].append(f"总风险超限 ({risk['totalRiskPercent']}%/{risk['maxAllowed']}%)")
 
+    # ★★ 2026-11-01 新增：风险回报比门槛（**信号质量**门槛，区别于上面三条的仓位门槛）
+    #   止损固定 3%（build_signal_from_llm），止盈 = 阻力 ⇒ RR = 间距 / 3%。
+    #   实测 RR<1 的 6 笔 0 胜、累计 -16.46%，是纯负期望区。
+    #   ★ 这是唯一直接作用于胜率的门槛——上面三条只管"买多少"，不管"买得对不对"，
+    #     所以 `rejectedSignals` 里 32 次午盘 / 11 次持仓数 / 7 次相关性，
+    #     而信号质量层面一次都没有拦过。
+    rr = 0.0
+    try:
+        # ★ 用 takeProfit 而非 resistance：做空时 entry == resistance，
+        #   拿 resistance 当止盈端会恒得 0（2026-11-01 测试发现的 bug）。
+        _entry = float(signal["entryCondition"]["targetPrice"])
+        _take = float(signal["takeProfit"])
+        _stop = float(signal["stopLoss"])
+        _reward = abs(_take - _entry)
+        _risk = abs(_entry - _stop)
+        rr = round(_reward / _risk, 2) if _risk > 0 else 0.0
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        rr = 0.0
+    if rr < RISK_CONFIG["min_rr"]:
+        validation["passed"] = False
+        validation["reasons"].append(
+            f"风险回报比不足 ({rr:.2f} < {RISK_CONFIG['min_rr']})："
+            f"支撑阻力间距过窄，止盈空间小于 3% 止损幅度")
+
     tech = {"passed": True, "score": 100, "warnings": [], "grade": "A"}
     hist = tracking.get("priceHistory", {}).get(signal["etfName"])
     if hist:
         tech = filter_signal_by_technical(signal, [p["price"] for p in hist])
         validation["warnings"] = tech["warnings"]
+        # ★★ 2026-11-01 修正（技术分从未参与拦截）：
+        #   原代码只取 `tech["warnings"]`，`tech["passed"]` **从未被读取**
+        #   ⇒ RSI 超买(-25) / 逆势(-30) 只写进 warnings，照常放行
+        #   ⇒ 实测 rejectedSignals 50 条里「技术分不达标」**0 次**。
+        #   这里让它真正生效：score < 50 ⇒ 拒绝。
+        #   （无 priceHistory 的老 ETF 仍走默认 100 分 fail-open，不做历史假设。）
+        if not tech["passed"]:
+            validation["passed"] = False
+            why = "；".join(tech["warnings"]) or "综合评分不足"
+            validation["reasons"].append(f"技术分不达标 ({tech['score']}/50)：{why}")
 
     position = calculate_position_size(signal, account_size)
     signal = dict(signal)
@@ -514,6 +584,15 @@ def update_signals(market_data: dict) -> dict:
     holdings_map = {h["name"]: h for h in market_data.get("holdings", [])}
     now = rules.beijing_now_iso()      # ★ 统一北京时间（入场/出场事件时间，通知管道直接比较它）
     alerts = {"entries": [], "exits": [], "updates": []}
+
+    # ★★ 2026-11-01 并发去重：本函数（15 分钟）、`add_signal_with_validation`
+    #   （快讯轮询触发）与 `save_tracking` 都是「读-改-写」且**无锁** ⇒ 同一信号
+    #   可能被处理两次。实测 `tracking_state.data_json`：
+    #     history 52 条 / 唯一 34 条 ⇒ **重复率 34.6%**
+    #   而 perf 在**每次**关闭时都 `+=1`（见下方 `perf["total"] += 1`）
+    #   ⇒ 胜率/盈亏比/期望全部被重复样本污染。
+    #   以 id 为键：处理前短路（不累加 perf），入历史前去重。
+    _hist_ids = {h.get("id") for h in tracking["history"]}
 
     for signal in tracking["activeSignals"]:
         if signal.get("status") not in ("waiting", "active"):
@@ -601,6 +680,12 @@ def update_signals(market_data: dict) -> dict:
                 except (TypeError, ValueError):
                     pass
             if exit_reason:
+                # ★ 2026-11-01：并发重复处理 → 已在历史里 ⇒ 只清理状态，不再累加 perf
+                _sid = signal.get("id")
+                if _sid and _sid in _hist_ids:
+                    signal["status"] = "closed"
+                    signal["lastStatus"] = "closed"
+                    continue
                 signal["status"] = "closed"
                 signal["lastStatus"] = "closed"
                 signal["exits"].append({"price": price, "time": now, "reason": exit_reason})
@@ -617,6 +702,12 @@ def update_signals(market_data: dict) -> dict:
                 perf["losses"] += 0 if signal["isWin"] else 1
                 perf["winRate"] = round(perf["wins"] / perf["total"] * 100, 1) if perf["total"] else 0
                 tracking["history"].insert(0, signal)
+                # ★★ 2026-11-01 关键修复：这里已经插过一次，函数末尾的清理循环
+                #   （`for s in activeSignals: if status in (closed,expired): insert`）
+                #   会**再插一次** ⇒ 每条平仓记录在 history 里都有 2 份。
+                #   实测 history 52 条 / 唯一 34 条（重复率 34.6%）的根因就是这里，
+                #   不是并发。记住 id 让末尾循环跳过。
+                _hist_ids.add(signal.get("id"))
                 emoji = "💰" if signal["isWin"] else "💸"
                 alerts["exits"].append({
                     "signal": signal, "currentPrice": price, "profit": signal["profit"],
@@ -643,9 +734,17 @@ def update_signals(market_data: dict) -> dict:
                 pass
 
     # 过期信号移入历史（供审计追踪），已平仓同理
+    # ★ 2026-11-01：这里必须用 `_hist_ids` 跳过**上面已经插入过**的记录
+    #   （平仓分支 line ≈704 已 insert 一次），否则每条平仓记录会写 2 份。
+    #   实测：history 52 条 / 唯一 34 条（重复率 34.6%）。
     for s in tracking["activeSignals"]:
-        if s.get("status") in ("closed", "expired"):
-            tracking["history"].insert(0, s)
+        if s.get("status") not in ("closed", "expired"):
+            continue
+        sid = s.get("id")
+        if sid and sid in _hist_ids:
+            continue
+        _hist_ids.add(sid)
+        tracking["history"].insert(0, s)
     tracking["activeSignals"] = [s for s in tracking["activeSignals"]
                                  if s.get("status") not in ("closed", "expired")]
     # 历史保留最近 200 条
@@ -674,6 +773,20 @@ def calculate_advanced_metrics(history: list):
     """胜率/平均盈亏/盈亏比/最大回撤/夏普/期望/连胜连败。"""
     if not history:
         return None
+    # ★ 2026-11-01：按 id 去重后再统计。
+    #   修复前每条平仓记录会在 history 里存两份（见 update_signals），
+    #   导致胜率/盈亏比/期望/连败全部被重复样本污染（36 笔 vs 真实 18 笔）。
+    #   存量脏数据无法自愈，这里在**消费侧**兜底，不改写历史。
+    _seen = set()
+    _uniq = []
+    for _h in history:
+        _hid = _h.get("id")
+        if _hid and _hid in _seen:
+            continue
+        if _hid:
+            _seen.add(_hid)
+        _uniq.append(_h)
+    history = _uniq
     profits = [h.get("profit") or 0 for h in history]
     wins = [h for h in history if h.get("isWin")]
     losses = [h for h in history if not h.get("isWin")]
