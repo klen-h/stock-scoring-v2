@@ -19,6 +19,7 @@
 """
 
 import os
+import re
 import json
 import sqlite3
 import threading
@@ -32,6 +33,39 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 # ★ 进程内已执行的 DDL 集合（见 Database.execute 的去重逻辑）：
 #   避免循环里的建表语句反复触发 PostgREST schema cache 重载（流量黑洞）。
 _DDL_DONE = set()
+
+# ★★ 2026-10-31：**跨进程**的 DDL 去重（上面那个集合跨重启失效）。
+#   背景：Render 实测每 2 分钟重启一次，每次重启都重跑 111 张表 DDL；
+#   而 PostgREST 对**任何 DDL**（哪怕 `IF NOT EXISTS` 什么都不做）都会触发
+#   schema cache **全量重载**（重拉全部关系）⇒ 30 天把 Supabase egress
+#   打到 19.46GB（配额 5GB），项目被 402 限流。
+#   改法：DDL 之前先用 `to_regclass` 查目标是否存在（纯本地系统表查询，
+#   返回一个 OID，几乎零流量），已存在就直接跳过 ⇒ 重启不再产生 DDL 流量。
+_DDL_SKIPPED = 0
+
+# 进程级 relation 缓存：一次 `pg_class` 查询拉全 public 的 relation，
+# 之后所有 DDL 判断都走内存。★ Supabase 远程节点单次往返实测 ~1.3s，
+# 逐个 `to_regclass` 会把启动拖到 100s+（比它省下的 DDL 还慢）。
+_ALL_REL = None
+
+_RE_CREATE_TABLE = re.compile(
+    r"^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w\.\"]+)", re.I)
+_RE_CREATE_INDEX = re.compile(
+    r"^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w\.\"]+)", re.I)
+_RE_ALTER_ADD = re.compile(
+    r"^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([\w\.\"]+)\s+ADD\s+(?:COLUMN\s+)?"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?([\w\"]+)", re.I)
+# schema.sql 里的建表清单（用于判断"是否全部已存在"）
+_RE_SCHEMA_TABLE = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w\"]+)", re.I)
+
+
+def _norm_rel(name: str) -> str:
+    """规范化 relation 名：去引号 + 补 `public.` 前缀（供 `to_regclass` 用）。"""
+    n = str(name or "").strip().strip('"')
+    if "." not in n:
+        n = "public." + n
+    return n
 
 
 class Database:
@@ -135,7 +169,65 @@ class Database:
     
     # ── 基础操作 ──
     
+    def _public_relations(self) -> set:
+        """`{"public.表或索引名", ...}`，进程内只查一次。
+
+        ★ 用 `pg_class`（含表/索引/序列）一次性拉全，而不是逐个 `to_regclass`：
+          远程节点每次往返 ~1.3s，111 次 DDL 就是 145s。
+        ★ 查询失败返回空集合 ⇒ 调用方会继续执行 DDL（fail-open，不阻塞建表）。
+        """
+        global _ALL_REL
+        if _ALL_REL is not None:
+            return _ALL_REL
+        try:
+            with self._get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT c.relname AS relname FROM pg_class c "
+                                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                                "WHERE n.nspname = 'public'")
+                    _ALL_REL = {"public." + str(r.get("relname"))
+                                for r in (cur.fetchall() or [])}
+        except Exception:
+            _ALL_REL = set()
+        return _ALL_REL
+
+    def _ddl_already_done(self, sql: str) -> bool:
+        """DDL 目标已存在则返回 True（调用方跳过执行，避免 schema cache 重载）。
+
+        ★ 只处理三种幂等 DDL：`CREATE TABLE` / `CREATE INDEX` / `ALTER TABLE ADD COLUMN`。
+        ★ 解析失败或查询异常一律返回 False —— **宁可多跑一次 DDL，也不能漏建表**。
+        ★ 用 `to_regclass`（本地系统表，返回 OID，几乎零流量）；
+          列存在性查 `information_schema.columns`。
+        ★ 仅在 PostgreSQL 下调用（SQLite 是本地文件，DDL 不产生网络流量）。
+        """
+        s = " ".join((sql or "").split())
+        try:
+            m = _RE_CREATE_TABLE.match(s) or _RE_CREATE_INDEX.match(s)
+            if m:
+                # ★ 走进程级缓存（一次 pg_class 查询），不再逐个 to_regclass
+                return _norm_rel(m.group(1)) in self._public_relations()
+
+            m = _RE_ALTER_ADD.match(s)
+            if m:
+                rel = _norm_rel(m.group(1))
+                schema, _, table = rel.rpartition(".")
+                col = m.group(2).strip('"')
+                with self._get_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT 1 FROM information_schema.columns "
+                            "WHERE table_schema=%s AND table_name=%s "
+                            "AND column_name=%s",
+                            (schema or "public", table, col))
+                        row = cur.fetchone()
+                return row is not None
+        except Exception as e:
+            # fail-open：宁可多执行一次 DDL，也不能漏建表
+            print(f"[database] DDL 存在性检查失败，仍执行 DDL: {str(e)[:60]}")
+        return False
+
     def execute(self, sql: str, params: tuple = None) -> int:
+        global _DDL_SKIPPED
         """
         执行 SQL（INSERT/UPDATE/DELETE）。
         返回受影响的行数。连接异常时自动重建并重试一次。
@@ -151,6 +243,13 @@ class Database:
         if _is_ddl:
             _key = " ".join((sql or "").split())
             if _key in _DDL_DONE:
+                return 0
+            # ★ 跨进程去重（2026-10-31）：表/索引/列已存在 ⇒ 跳过 DDL。
+            #   PostgREST 对任何 DDL 都会做 schema cache 全量重载，而 Render
+            #   每次重启都会重跑 111 张表 DDL ⇒ 这才是 19.46GB egress 的真根因。
+            if self._use_postgres and self._ddl_already_done(sql):
+                _DDL_SKIPPED += 1
+                _DDL_DONE.add(_key)
                 return 0
             _DDL_DONE.add(_key)
 
@@ -331,7 +430,28 @@ class Database:
         schema_path = os.path.join(os.path.dirname(__file__), "..", "schema.sql")
         with open(schema_path, "r", encoding="utf-8") as f:
             schema_sql = f.read()
-        
+
+        # ★★ 2026-10-31：schema.sql 里的表**全部已存在**时整体跳过。
+        #   `init_tables` 走的是 `cur.execute(schema_sql)`，**绕过了 `db.execute`
+        #   的 DDL 去重** ⇒ 每次 Render 重启都会重跑这 30 张表的 DDL，
+        #   而 PostgREST 对任何 DDL 都做 schema cache 全量重载（重拉全部关系）。
+        #   这是 19.46GB egress 的主因之一。缺表时才执行（新部署 / 新增表），
+        #   也可用 `FORCE_INIT_TABLES=1` 强制重跑一次。
+        if self._use_postgres and os.environ.get("FORCE_INIT_TABLES") != "1":
+            try:
+                expected = {_norm_rel(x) for x in _RE_SCHEMA_TABLE.findall(schema_sql)}
+                if expected:
+                    existing = self._public_relations()
+                    missing = expected - existing
+                    if not missing:
+                        print(f"[database] schema.sql 的 {len(expected)} 张表均已存在 ⇒ "
+                              f"跳过 init_tables（避免 schema cache 重载）")
+                        return
+                    print(f"[database] 缺 {len(missing)} 张表，仍执行 init_tables: "
+                          f"{sorted(missing)[:6]}")
+            except Exception as e:
+                print(f"[database] schema 比对失败，仍执行 init_tables: {str(e)[:70]}")
+
         with self._get_conn() as conn:
             if self._use_postgres:
                 with conn.cursor() as cur:
@@ -340,6 +460,9 @@ class Database:
                 # SQLite 需要逐条执行
                 conn.executescript(schema_sql)
         
+        if _DDL_SKIPPED:
+            print(f"[database] 跳过 {_DDL_SKIPPED} 条已存在的 DDL"
+                  f"（避免 PostgREST schema cache 重载）")
         print("[database] 数据表初始化完成")
     
     def close(self):

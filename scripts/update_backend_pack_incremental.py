@@ -183,7 +183,8 @@ def main():
         try:
             prev_ind[code] = json.loads(js)
         except Exception:
-            pass
+            # 单只指标 JSON 损坏：置空跳过（不打印，否则每只坏数据都会刷一行）
+            prev_ind[code] = None
     conn.close()
     prev_last = max((b[-1][0] for b in prev_bars.values() if b), default="")
     prev_ymd = str(prev_last)[:10].replace("-", "")

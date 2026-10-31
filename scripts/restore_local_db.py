@@ -38,8 +38,8 @@ import sys
 
 try:                      # Windows 控制台 GBK 会拦特殊符号
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN stdout reconfigure failed: {_e}", file=sys.stderr)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -144,8 +144,8 @@ def restore_pg(dump_dir: str, target_url: str, tables_meta: dict,
             failed.append((t, str(e)[:160]))
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"      WARN rollback 失败: {_e}")
 
     # 索引（先灌数再建，快很多）
     for t, meta in tables_meta.items():

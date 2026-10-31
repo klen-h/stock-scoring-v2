@@ -48,8 +48,8 @@ if os.path.exists(_ENV):
 #   文件已写成功但脚本以异常退出，容易被误判成"没导出来"）。
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN stdout reconfigure failed: {_e}", file=sys.stderr)
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if not DATABASE_URL.startswith("postgresql://"):

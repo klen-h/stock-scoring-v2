@@ -56,8 +56,8 @@ if os.path.exists(_ENV):
 #   （2026-10-31 实测：dump_schema 文件已写成功，却因最后一行 print 异常退出）。
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN stdout reconfigure failed: {_e}", file=sys.stderr)
 
 DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
 if not DATABASE_URL.startswith("postgresql://"):
@@ -259,12 +259,12 @@ def main(argv=None) -> int:
             try:
                 if os.path.exists(path):
                     os.remove(path)
-            except OSError:
-                pass
+            except OSError as _e:
+                print(f"      WARN 清理半成品失败: {_e}")
             try:
                 conn.rollback()
-            except Exception:
-                pass
+            except Exception as _e:
+                print(f"      WARN rollback 失败: {_e}")
 
     manifest["tables_exported"] = len(ok_names)
     manifest["seconds_total"] = round(time.time() - t_all, 1)

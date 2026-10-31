@@ -21,8 +21,8 @@ from datetime import datetime, timezone
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN stdout reconfigure failed: {_e}", file=sys.stderr)
 
 
 def main(argv=None) -> int:

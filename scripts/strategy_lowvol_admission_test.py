@@ -65,7 +65,8 @@ def q(sql, params=None, retries=4):
             try:
                 db._reset_pg_conn()
             except Exception:
-                pass
+                # 重连失败不阻塞后续重试（下面还会 sleep + retry）；显式忽略
+                _ = None
             time.sleep(1.5 * (i + 1))
     raise last
 
