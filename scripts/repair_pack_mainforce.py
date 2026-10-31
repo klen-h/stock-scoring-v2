@@ -38,6 +38,12 @@
   本地包解析在内存完成，无网络。
 
 【用法】
+  # 0) **产包链路的标准用法**（每天强制刷新；见 `backend-pack.yml` 的
+  #    "Repair mainforce labels in pack" 步骤）。`--force` 跳过抽样快判，
+  #    因为快判只能回答"有没有这个字段"，答不了"2884 只里覆盖了多少只"——
+  #    2026-10-31 实测它把"部分缺失"误判成"已有"，白白多跑一轮排查。
+  python scripts/repair_pack_mainforce.py --pack <pack> --force --write --out <pack>
+
   # 1) 预览（默认，只统计不写文件）——先看数字合不合理
   python scripts/repair_pack_mainforce.py
 

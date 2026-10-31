@@ -293,7 +293,14 @@ jobs:
             echo "::warning::指标包不存在，跳过 mainforce 修补"
             exit 0
           fi
-          python scripts/repair_pack_mainforce.py --pack "$PACK" --write --out "$PACK"
+          # ★★ 2026-10-31 二次修正：**不再用抽样快判，每天强制刷新**。
+          #   原因（第一次触发的实测）：快判说"包里有 mainforce"，但前端整列仍是 `-`
+          #   ⇒ 极可能是**部分缺失**（少数只有、大量没有），而布尔判断把它判成"有"。
+          #   "有这个字符串"≠"2884 只都有" —— 用便宜的代理指标当答案，会带偏诊断。
+          #   且 `mainforce_state` 每天更新，包里本就该每天与表对齐，
+          #   "继承上一份"正是单向棘轮的根源（丢一次就永久缺）。
+          #   成本：读表 ≈0.4MB/天（月配额 0.24%）；写包是本地文件，无 egress。
+          python scripts/repair_pack_mainforce.py --pack "$PACK" --force --write --out "$PACK"
 
       - name: Rebuild pack structure (WITHOUT ROWID only)
         # ★★ 2026-10-29：**纯结构重写**，不拉数据、不重算指标、不读 Supabase。
