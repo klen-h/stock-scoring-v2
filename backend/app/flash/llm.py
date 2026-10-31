@@ -1802,6 +1802,9 @@ def run_review_llm(phase: str, clusters: list, panel: dict, holdings: list,
     signals = extract_structured_signals(md)
     # 剥离末尾的 ```json 信号块（信号已单独解析入库，落盘/推送/前端展示不再暴露原始 JSON）
     clean_md = _JSON_BLOCK_RE.sub("", md).rstrip()
+    # ★ 2026-11-01：剥块后 `## N、具体交易信号` 只剩空壳 ⇒ 回填成人可读列表。
+    #   没有这一步，企微推送里那一节就是**空白标题**（10-30 盘前/午盘实测如此）。
+    clean_md = _fill_signal_section(clean_md, signals)
     return clean_md, signals, LLM_MODEL
 
 
@@ -1849,3 +1852,72 @@ def extract_structured_signals(markdown: str) -> list:
         except (TypeError, ValueError):
             continue
     return out[:5]   # 最多 5 个，防 LLM 超发
+
+
+# ================================================================
+#  「具体交易信号」小节回填（2026-11-01）
+# ================================================================
+# ★★ 问题（用户报「交易信号 etf 格式在企微里是空白的」）：
+#   `_SIGNAL_SCHEMA_HINT` 要求 LLM 把信号写在**报告末尾的 ```json 块**里，
+#   而 `run_review_llm` 用 `_JSON_BLOCK_RE.sub("", md)` 把它整块剥掉
+#   ⇒ 正文里只剩 `## N、具体交易信号` 标题 + 一串空行 ⇒ 企微推送那一节**完全空白**。
+#   实测 2026-10-30：盘前 `## 五`、午盘 `## 六` 下方均为 3~4 个空行；
+#   而 10-29 有内容，是因为那天 LLM 输出了空数组 + 文字说明（属偶然）。
+#
+# ★ 为什么在这里回填而不是让 LLM 别输出 json：
+#   json 块是**结构化入库的唯一来源**（`extract_structured_signals` → 状态机 → 推送），
+#   不能为了正文好看而放弃它。剥块是对的，缺的是"剥完补一段人可读的"。
+#
+# ★ 标题序号不固定（盘前「五」、午盘「六」）⇒ 用汉字数字通配；
+#   盘后按设计不要求该节（`get_postmarket_skill` 明写）⇒ 找不到标题就原样返回。
+_SIGNAL_SECTION_RE = re.compile(
+    r"(##\s*[一二三四五六七八九十]+、\s*具体交易信号\s*\n)"
+    r"([\s\S]*?)"
+    r"(?=\n-{3,}[ \t]*\n|\n#{2,3}\s|\Z)")
+
+_DIR_CN = {"long": "做多", "short": "做空"}
+
+
+def _render_signals_md(signals: list) -> str:
+    """把结构化信号渲染成**手机友好**的列表（不用宽表格：企微里要横向滚动）。"""
+    if not signals:
+        return ("（本次无信号：给出的 ETF 中未出现满足条件的入场点。"
+                "空仓等待也是一种决策。）")
+    lines = []
+    for i, s in enumerate(signals, 1):
+        d = _DIR_CN.get(s.get("direction"), s.get("direction") or "")
+        lines.append(f"**{i}. {s.get('etfName') or '?'}**（{d}）")
+        lines.append(f"- 支撑 {s.get('support')} ／ 阻力 {s.get('resistance')}")
+        meta = "｜".join(x for x in (
+            s.get("timeframe"),
+            s.get("confidence") and f"置信 {s['confidence']}",
+            s.get("position_sizing")) if x)
+        if meta:
+            lines.append(f"- {meta}")
+        if s.get("entry_condition"):
+            lines.append(f"- 触发：{s['entry_condition']}")
+        if s.get("invalidation"):
+            lines.append(f"- 失效：{s['invalidation']}")
+        if s.get("reasoning"):
+            lines.append(f"- 理由：{s['reasoning']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _fill_signal_section(md: str, signals: list) -> str:
+    """把 `## N、具体交易信号` 下的空壳替换为渲染后的列表。
+
+    ★ 任何异常都原样返回（回填只是展示优化，绝不因为它失败而影响推送）。
+    ★ 原段落里若有 `---` 分隔线，保留回去——否则 `## 六` 的内容会和 `## 七`
+      贴在一起（2026-11-01 用例验证时发现的）。
+    """
+    try:
+        m = _SIGNAL_SECTION_RE.search(md)
+        if not m:
+            return md
+        tail = "\n---\n" if "---" in m.group(2) else ""
+        return (md[:m.start()] + f"{m.group(1)}\n{_render_signals_md(signals)}\n{tail}"
+                + md[m.end():])
+    except Exception as e:
+        print(f"[llm] 信号小节回填失败（保留原文）: {e}")
+        return md
