@@ -936,7 +936,24 @@ def get_core_skill() -> str:
 
 ### 7. 策略与诊断一致性
 策略建议必须与相关性状态诊断一致。若诊断为负相关（紧缩逻辑），不推荐以"通胀/避险"
-为核心的配置，除非能明确指出负相关是特殊事件造成的假象（需在矛盾信号中说明）。"""
+为核心的配置，除非能明确指出负相关是特殊事件造成的假象（需在矛盾信号中说明）。
+
+### 8. 市况与方向一致性（★ 2026-11-01 新增：此前只注入状态数据、不给操作规则）
+上文【A股大盘近期状态】里的 `offensive / neutral / neutral_bearish / defensive`
+是本系统量化引擎的**硬约束**，不是参考信息。给交易信号时必须服从：
+
+| 市况 | 允许的方向 | 仓位上限 |
+|---|---|---|
+| `offensive` | 可做多 | 标准仓位 |
+| `neutral` | 区间操作，两个方向都要有明确区间依据 | 轻仓试探 |
+| `neutral_bearish` | **不给做多**（"反弹宜减不宜追"） | 仅做空，轻仓 |
+| `defensive` | **不给做多** | 仅做空，轻仓 |
+
+- 状态序列里"末尾已连续 N 日 X"是关键信息：**连续多日 defensive/neutral_bearish 时，
+  不要假设"跌够了该反弹"**，本系统的量化引擎对 V 型反转本身就有系统性滞后认知。
+- 唯一例外：某 ETF 有**独立于大盘**的驱动逻辑（如黄金的央行购金/避险、国债的降息交易）。
+  此时必须在 `reasoning` 中显式写明"为何不受大盘状态影响"，否则**不要给做多信号**。
+- 若当前市况不允许任何方向，就明说"今日无信号"并输出空数组——这比勉强给一个做多信号更有价值。"""
 
 
 _SIGNAL_SCHEMA_HINT = """### 信号输出格式（必须严格遵守）
@@ -961,7 +978,21 @@ _SIGNAL_SCHEMA_HINT = """### 信号输出格式（必须严格遵守）
 - support / resistance 必须是数字（基于当前价格给出，不是百分比）
 - position_sizing: "轻仓试探" / "标准仓位" / "重仓" —— 与 confidence 联动，confidence 低时必须"轻仓试探"
 - reasoning 一句话说明传导逻辑，禁止"通常/历史上"等模糊词
-没有把握时输出空数组，禁止编造点位。"""
+没有把握时输出空数组，禁止编造点位。
+
+#### ★ 这些字段会被系统**直接执行**，请按硬约束给出（2026-11-01 新增）
+- **支撑与阻力间距必须 ≥ 3%**（做多按 `(resistance-support)/support`，做空同理）。
+  系统止损固定为 `support × 0.97`（约 3%），**间距 < 3% 的信号会被自动拒绝**
+  （风险回报比不足）。历史实测：大量信号的间距只有 0.5%~2%，等于白给。
+- `support` 必须是**能承受 3% 波动**的真实关键位，不是"贴着现价的下一个整数关口"。
+  找不到留出 3% 容错空间的关键位时，就**不要给这个信号**。
+- `position_sizing` 的实际执行比例：轻仓试探 **0.75%** ／ 标准仓位 **1.5%** ／
+  重仓 **1.5%（当前封顶，不放大）**。想让某个机会拿到更大仓位，只能在 reasoning 里说明，
+  标"重仓"不会带来任何额外仓位。
+- `invalidation` **目前不参与止损计算**（止损只看 support），但它会展示给用户并留档。
+  请按"什么价位证明我错了"来写，不要写成与 support 无关的宏观条件。
+- 同时最多 **4 个持仓**（标准仓位口径），**同一相关性组最多 2 个**
+  （如 半导体+人工智能、黄金+白银、银行+证券+地产 各算一组）。"""
 
 
 def get_premarket_skill() -> str:
@@ -1269,6 +1300,38 @@ def format_a_share_context(days: int = 5) -> str:
         return ""
     return ("## A股大盘近期状态（量化系统提供）\n"
             "（读数提示：状态是否**刚转档**；指数「距高」为负 = 尾盘走弱/冲高回落）\n"
+            + "\n".join(lines) + "\n")
+
+
+def format_active_signals() -> str:
+    """当前挂着的交易信号（★ 2026-11-01 新增）。
+
+    ★ 为什么需要：prompt 此前只给「ETF 行情列表」，LLM **完全看不到系统里已经挂了
+      哪些信号** ⇒ 会重复给同一方向（被相关性组拒绝）、也不知道剩余额度。
+      实测 `rejectedSignals`：11 次「持仓数超限」+ 7 次「相关性超限」，
+      合计 36% 的拒绝是因为 LLM 不知道已占用。
+
+    失败/无数据返回空串，不影响 prompt 其余部分（与 `_internal_context` 同策略）。
+    """
+    try:
+        from app.signals import tracker          # 延迟导入：避免 llm ↔ tracker 循环
+        sigs = tracker.get_active_signals() or []
+    except Exception as e:
+        print(f"[llm] 当前信号读取失败（跳过）: {e}")
+        return ""
+    if not sigs:
+        return "## 当前已挂信号\n（无。本次是首批建仓机会。）\n"
+    lines = []
+    for s in sigs:
+        d = {"long": "做多", "short": "做空"}.get(s.get("direction"), s.get("direction") or "")
+        status = "已入场" if s.get("status") == "active" else "等价格触发"
+        try:
+            entry = s["entryCondition"]["targetPrice"]
+        except (KeyError, TypeError):
+            entry = "?"
+        lines.append(f"- {s.get('etfName')}（{d}，{status}）："
+                     f"入场 {entry} ／ 止损 {s.get('stopLoss')} ／ 止盈 {s.get('takeProfit')}")
+    return ("## 当前已挂信号（**不要重复给同方向**；同相关性组最多 2 个）\n"
             + "\n".join(lines) + "\n")
 
 
@@ -1754,6 +1817,12 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
     except Exception as _e:
         print(f"[llm] A股大盘段构造失败（跳过）: {_e}")
         a_share_context = ""
+    # ★ 2026-11-01：当前已挂信号（LLM 此前完全看不到，导致 36% 的拒绝是"重复方向/超额"）
+    try:
+        active_sigs = format_active_signals()
+    except Exception as _e:
+        print(f"[llm] 当前信号段构造失败（跳过）: {_e}")
+        active_sigs = ""
     holdings_note = ""
     if user_holdings:
         holdings_note = ("\n【持仓影响点评要求】若事件链或宏观信息与持仓个股所属行业/题材明确相关，"
@@ -1777,7 +1846,7 @@ def build_review_prompt(phase: str, clusters: list, panel: dict, holdings: list,
 {etf_hist}
 {etf_list}
 
-{perf_section}{_internal_context()}{a_share_context}
+{perf_section}{_internal_context()}{a_share_context}{active_sigs}
 {_calendar_context(3)}{user_holdings}{holdings_note}
 {get_core_skill()}
 
