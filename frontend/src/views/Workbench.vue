@@ -439,12 +439,30 @@
                 暂无数据（汇总每天盘后生成；若长期为空，请检查 Render 的 JIN10_X_TOKEN 是否过期）
               </div>
               <template v-else>
-                <div class="text-[10px] text-muted mb-1.5">
-                  {{ jin10.date }}
+                <div class="flex items-center gap-1.5 text-[10px] text-muted mb-1.5">
+                  <span>{{ jin10.date }}</span>
                   <span v-if="jin10.fallback" class="text-amber-400/80"
                         :title="`请求 ${jin10.requested_date} 无数据，此处显示最近一期`">
                     · 非当日（该日无数据）</span>
-                  · 原文未解读
+                  <span v-if="!jin10.summary">· 原文未解读</span>
+                  <span class="flex-1"></span>
+                  <!-- ★ 2026-11-01：日批 22:00 才抓一次，白天看到的常是前一日；
+                       这两个按钮就是手动补抓 / 让 LLM 归纳主线。 -->
+                  <button type="button" :disabled="jin10Busy"
+                          class="px-1.5 py-0.5 rounded border border-border/60 hover:bg-white/10 disabled:opacity-40"
+                          title="立即扫描金十最新汇总（不烧 LLM）"
+                          @click="refreshJin10(false)">{{ jin10Busy ? '…' : '抓最新' }}</button>
+                  <button type="button" :disabled="jin10Busy"
+                          class="px-1.5 py-0.5 rounded border border-sky-500/30 text-sky-300/90 hover:bg-sky-500/10 disabled:opacity-40"
+                          title="抓最新 + LLM 跨条目主线归纳（按日缓存，重复点不重复烧）"
+                          @click="refreshJin10(true)">{{ jin10Busy ? '…' : 'AI 解读' }}</button>
+                </div>
+                <div v-if="jin10Err" class="text-[10px] text-rose-300 mb-1">{{ jin10Err }}</div>
+                <div v-if="jin10Hint" class="text-[10px] text-amber-400/80 mb-1">{{ jin10Hint }}</div>
+                <div v-if="jin10.summary"
+                     class="mb-1.5 rounded border border-sky-500/20 bg-sky-500/5 p-1.5">
+                  <div class="text-[10px] text-sky-300/80 mb-0.5">AI 主线归纳（{{ jin10.date }}）</div>
+                  <div class="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap">{{ jin10.summary }}</div>
                 </div>
                 <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
                   <div v-for="sec in jin10.sections" :key="sec.category_id" class="space-y-0.5">
@@ -2900,6 +2918,8 @@ import {
   getWorkbenchScan, getWorkbenchScanSummary,
   // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
+  // ★ 2026-11-01：金十手动刷新（抓最新 + LLM 归纳）
+  refreshJin10Tidy,
   getStagflation,
   // ★ 2026-10-24：观察器 AI 解读（LLM）
   getObserverReview,
@@ -4135,6 +4155,9 @@ const crowd = ref(null)
 const jin10 = ref(null)
 const jin10Open = ref(false)
 const openJin10 = ref('')          // 当前展开的那一条（`category_id-seq`）
+const jin10Busy = ref(false)       // ★ 2026-11-01：手动刷新/AI 解读进行中
+const jin10Err = ref('')           // ★ 2026-11-01：刷新失败原因（内联展示，不弹窗）
+const jin10Hint = ref('')          // ★ 2026-11-01：非故障类提示（如"数据源暂无新内容"）
 const keyLv = ref(null)
 const aiBasket = ref(null)
 const riskLoading = ref(false)
@@ -4202,6 +4225,40 @@ async function loadRiskWatch() {
     jin10.value = t.data || null
   } catch {
     jin10.value = null
+  }
+}
+// ★ 2026-11-01：金十手动刷新。
+//   withSummary=false → 只 `compute()` 抓最新（零 LLM）；
+//   withSummary=true  → 再加一次跨条目归纳（按日缓存，force 才重算）。
+//   失败**必须显式提示**：最常见原因是 JIN10_X_TOKEN 过期，静默失败会让人以为是没数据。
+async function refreshJin10(withSummary) {
+  if (jin10Busy.value) return
+  jin10Busy.value = true
+  jin10Err.value = ''
+  jin10Hint.value = ''
+  try {
+    const r = await refreshJin10Tidy(selectedDate.value, withSummary, withSummary)
+    const out = r.data || {}
+    if (out.data) jin10.value = out.data
+    const c = out.compute || {}
+    const s = out.summary || {}
+    if (c.ok === false && c.error) {
+      jin10Err.value = String(c.error).includes('x-token')
+        ? 'JIN10_X_TOKEN 已失效：请重新登录金十后更新 Render 环境变量'
+        : `抓取失败：${c.error}`
+    } else if (withSummary && s.ok === false) {
+      jin10Err.value = `AI 解读失败：${s.error || '未知原因'}`
+    } else if (c.saved === 0) {
+      // ★ 抓到 0 条不等于失败：金十可能根本没发布当期汇总。
+      //   实测 2026-11-01：id 60066~60500 全部为空，10-30 起就没有新汇总。
+      //   不说清楚会被当成"按钮没生效"。
+      jin10Hint.value = `已扫描 ${c.scanned ?? 0} 个 id，金十这边暂无更新的汇总`
+        + `（数据源没有新内容，不是系统故障）`
+    }
+  } catch (e) {
+    jin10Err.value = `刷新失败：${e?.message || e}`
+  } finally {
+    jin10Busy.value = false
   }
 }
 // ★ 2026-10-23：磨底 2.0 推演证伪记分卡

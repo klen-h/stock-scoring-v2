@@ -514,6 +514,12 @@ export const getAiBasketWatch = (date) => http.get('/system/ai-basket-watch', { 
 export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { params: { date }, timeout: 30000 })
 // ★ 2026-10-30：金十每日汇总（A股盘前/回顾/存储/ETF）—— 原文直出，不经 LLM 改写
 export const getJin10Tidy = (date) => http.get('/system/jin10-tidy', { params: { date }, timeout: 30000 })
+// ★ 2026-11-01：手动刷新（立即扫描最新 id + LLM 跨条目归纳）。
+//   summarize=false 只抓数据不烧 LLM；force=true 忽略归纳缓存。
+//   超时给足 180s：`compute()` 要扫约 20 个 id，每个 15s timeout。
+export const refreshJin10Tidy = (date, summarize = true, force = false) =>
+  http.post('/system/jin10-tidy/refresh', null,
+    { params: { date, summarize, force }, timeout: 180000 })
 // ★ 2026-10-30：组合风险档（滞胀交易状态位）—— 只标注，不覆盖宏观分
 export const getStagflation = (date) => http.get('/system/stagflation', { params: { date }, timeout: 30000 })
 // ★ 2026-10-24：观察器 AI 解读（LLM 同步调用，按日缓存 + 数据指纹；默认点按钮才请求）

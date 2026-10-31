@@ -373,21 +373,38 @@ def load(day: str = None) -> Dict:
     if fallback:
         note = f"该日（{requested}）无数据，此处显示 {d} 的结果。" + note
     return {"date": d, "requested_date": requested, "fallback": fallback,
-            "sections": list(sections.values()), "note": note}
+            "sections": list(sections.values()), "note": note,
+            # ★ 2026-11-01：已生成的 AI 主线归纳（按日缓存；没有就是空串）。
+            #   前端据此把"原文未解读"换成实际内容，不用额外发请求。
+            "summary": _meta_get(f"summary:{d}") if d else ""}
 
 
-def summarize(day: str = None) -> Dict:
+def summarize(day: str = None, force: bool = False) -> Dict:
     """把当日**全部标题**拼成一次 LLM 调用，输出 3~5 条跨栏目主线。
 
     ★ 只送标题、不送正文：18 条标题约 600 字 ≈ 1 千 token，
       而逐条送正文要 9 万 token（免费额度已被 429 过，见 memory 2026-10-30）。
     ★ 这是 LLM 唯一该介入的环节 —— 它的强项是**跨条目归纳**，
       而不是逐条复述（原文已是提炼过的结论，复述只会丢细节）。
+
+    ★ 2026-11-01：加**按日缓存**（`jin10_tidy_meta` 的 `summary:<date>`）。
+      该函数此前**从未被任何代码调用**（前端一直显示"原文未解读"），
+      现在由手动按钮触发；缓存保证同一天重复点按钮不重复烧 token。
+      `force=True` 强制重算。
     """
     data = load(day)
+    day_key = str(data.get("date") or "")[:10]
     sections = data.get("sections") or []
-    if not sections:
+    if not sections or not day_key:
         return {"ok": False, "summary": "", "error": "无数据可归纳"}
+
+    cache_key = f"summary:{day_key}"
+    if not force:
+        cached = _meta_get(cache_key)
+        if cached:
+            return {"ok": True, "date": day_key, "summary": cached,
+                    "cached": True, "sections": len(sections),
+                    "titles": sum(len(s["items"]) for s in sections)}
 
     lines: List[str] = []
     for s in sections:
@@ -410,5 +427,10 @@ def summarize(day: str = None) -> Dict:
         return {"ok": False, "summary": "", "error": f"LLM 调用失败: {str(e)[:80]}"}
     if not text:
         return {"ok": False, "summary": "", "error": "LLM 返回空（可能限流）"}
-    return {"ok": True, "date": data.get("date"), "summary": text.strip(),
+    out = text.strip()
+    try:
+        _meta_set(cache_key, out)
+    except Exception as e:
+        print(f"[jin10_tidy] 归纳缓存写入失败（不影响本次返回）: {e}")
+    return {"ok": True, "date": day_key, "summary": out, "cached": False,
             "sections": len(sections), "titles": sum(len(s["items"]) for s in sections)}

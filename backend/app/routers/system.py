@@ -1284,6 +1284,44 @@ def jin10_tidy(date: Optional[str] = Query(None, description="YYYY-MM-DD，默�
     return jt.load(date)
 
 
+@router.post("/jin10-tidy/refresh")
+def jin10_tidy_refresh(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                       summarize: bool = Query(True, description="是否生成 AI 主线归纳"),
+                       force: bool = Query(False, description="强制重算（忽略归纳缓存）"),
+                       user: dict = Depends(get_current_user)) -> Dict:
+    """手动刷新金十汇总（★ 2026-11-01，用户："30 日拿到的是 29 日的数据，需要手动按钮"）。
+
+    【为什么需要这个按钮】
+      日批每天 **22:00** 才跑一次 `task_jin10_tidy`，而金十的「每日汇总」是当天
+      陆续发布的 ⇒ **白天打开工作台，拿到的必然是前一日的**（前端标"非当日"）。
+      这不是故障，是节奏问题；一次手动扫描就能拿到当天已发布的部分。
+
+    【做两件事】
+      1. `compute()` 增量扫描最新 id（约 20 个请求，与日批同款逻辑，成本可忽略）
+      2. `summarize()` 让 LLM 做**跨条目归纳**（1 次调用 ≈1~2k token，按日缓存）
+         ⇒ 前端那句"原文未解读"变成真实的「今日主线」
+
+    ★ 与 `observer_review` 同一模式：**只在用户点按钮时跑**，不自动触发。
+    ★ 任一步失败都不影响另一步，`data` 始终回读最新结果。
+    """
+    from app import jin10_tidy as jt
+    out: Dict = {"ok": True}
+    try:
+        out["compute"] = jt.compute()
+    except Exception as e:
+        out["compute"] = {"ok": False, "error": str(e)[:120]}
+    if summarize:
+        try:
+            out["summary"] = jt.summarize(date, force=force)
+        except Exception as e:
+            out["summary"] = {"ok": False, "error": str(e)[:120]}
+    try:
+        out["data"] = jt.load(date)
+    except Exception as e:
+        out["data"] = {"sections": [], "note": f"读取失败: {str(e)[:80]}"}
+    return out
+
+
 @router.get("/stagflation")
 def stagflation(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                 user: dict = Depends(get_current_user)) -> Dict:
