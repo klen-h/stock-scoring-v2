@@ -102,6 +102,17 @@ RISK_CONFIG = {
     #   注：止损固定为 3%（`build_signal_from_llm`），所以 RR=1 等价于"支撑阻力
     #   间距 ≥ 3%"。间距过窄的信号（如黄金 9.50→9.55，仅 0.53%）必被拦。
     "min_rr": 1.0,
+    # ★ 2026-11-01 新增：LLM `position_sizing` → 单笔风险比例映射。
+    #   此前该字段被 `build_signal_from_llm` 整段丢弃，`calculate_position_size`
+    #   恒按 1.5% 算 ⇒ LLM 说"轻仓试探"，代码照标准仓位下单，建议与执行脱节。
+    #   ⚠️ "重仓"默认**封顶在 max_risk_per_trade（1.5%）**，不突破单笔上限：
+    #     当前系统期望为负（去重后 18 笔累计 -27.78%），放大单笔风险 = 放大亏损。
+    #     真要放开重仓，改成 0.025，并同步评估 `max_total_risk`。
+    "position_risk": {
+        "轻仓试探": 0.0075,
+        "标准仓位": 0.0150,
+        "重仓": 0.0150,
+    },
 }
 ACCOUNT_SIZE = 100000                  # 默认账户规模（元）
 
@@ -289,6 +300,27 @@ def filter_signal_by_technical(signal: dict, price_history: list) -> dict:
             "grade": "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"}
 
 
+def resolve_risk_pct(signal: dict) -> float:
+    """解析本笔交易的**单笔风险比例**（占账户）。
+
+    ★ 2026-11-01 新增：把 LLM 的 `position_sizing` 真正接进来（原来恒 1.5%）。
+    三道封顶，宁可低估风险也不高估：
+      1. 未识别的取值 → 标准仓位（不猜"重仓"）
+      2. 不超过 `max_risk_per_trade`（风控硬上限，配置里的"重仓"也封顶）
+      3. `confidence == "低"` 时强制降到轻仓——prompt 本就要求"低置信度必须轻仓试探"，
+         但 LLM 不总遵守，这里做代码兜底。
+    """
+    default = RISK_CONFIG["max_risk_per_trade"]
+    sizing = (signal.get("positionSizing") or "").strip()
+    pct = RISK_CONFIG["position_risk"].get(sizing, default)
+    # confidence 低 → 强制轻仓（取更保守的一档）
+    conf = (signal.get("confidence") or "").strip()
+    if conf == "低":
+        pct = min(pct, RISK_CONFIG["position_risk"]["轻仓试探"])
+    # 硬上限
+    return min(pct, default)
+
+
 def calculate_position_size(signal: dict, account_size: int = ACCOUNT_SIZE) -> dict:
     """固定比例仓位：风险金额 / 单份风险 = 份数。"""
     try:
@@ -301,11 +333,15 @@ def calculate_position_size(signal: dict, account_size: int = ACCOUNT_SIZE) -> d
     risk_per_share = abs(entry - stop)
     if risk_per_share <= 0:
         return {"shares": 0, "positionValue": 0, "riskAmount": 0, "riskPercent": 0}
-    risk_amount = account_size * RISK_CONFIG["max_risk_per_trade"]
+    risk_pct = resolve_risk_pct(signal)
+    risk_amount = account_size * risk_pct
     shares = int(risk_amount / risk_per_share)
     return {"shares": shares, "positionValue": round(shares * entry, 2),
             "riskAmount": round(risk_amount, 2),
-            "riskPercent": round(risk_amount / account_size * 100, 2)}
+            "riskPercent": round(risk_pct * 100, 2),
+            # ★ 留存判定依据，便于审计"为什么这单只有 0.75%"
+            "riskBasis": {"positionSizing": signal.get("positionSizing") or "",
+                          "confidence": signal.get("confidence") or ""}}
 
 
 def _check_position_count(active: list) -> dict:
@@ -324,7 +360,8 @@ def _check_correlation(new_signal: dict, active: list) -> dict:
             "currentCorrelated": correlated, "maxAllowed": RISK_CONFIG["max_correlated_positions"]}
 
 
-def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUNT_SIZE) -> dict:
+def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUNT_SIZE,
+                      new_position: dict = None) -> dict:
     """总风险门槛：**已持仓**的风险金额之和 + 新信号风险金额 ≤ 账户 × max_total_risk。
 
     ★★ 2026-11-01 修正（原式量纲错误，门槛从未生效）：
@@ -352,7 +389,17 @@ def _check_total_risk(active: list, new_signal: dict, account_size: int = ACCOUN
         return account_size * RISK_CONFIG["max_risk_per_trade"]
 
     used = sum(_risk_of(s) for s in active if s.get("status") == "active")
-    total = used + account_size * RISK_CONFIG["max_risk_per_trade"]
+    # ★ 2026-11-01：新信号按**实际解析出的风险比例**计（轻仓 0.75% / 标准 1.5%），
+    #   不再固定 1.5%——否则"轻仓试探"的信号在额度上被当成标准仓位，
+    #   总风险门槛会比真实情况更早触发（也可能更晚，取决于档位）。
+    if new_position and new_position.get("riskAmount"):
+        try:
+            new_risk = float(new_position["riskAmount"])
+        except (TypeError, ValueError):
+            new_risk = account_size * resolve_risk_pct(new_signal)
+    else:
+        new_risk = account_size * resolve_risk_pct(new_signal)
+    total = used + new_risk
     return {"canAdd": total <= account_size * RISK_CONFIG["max_total_risk"],
             "totalRiskPercent": round(total / account_size * 100, 2),
             "maxAllowed": RISK_CONFIG["max_total_risk"] * 100}
@@ -478,7 +525,11 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
     if not corr["canAdd"]:
         validation["passed"] = False
         validation["reasons"].append(f"相关性超限 ({corr['currentCorrelated']}/{corr['maxAllowed']})")
-    risk = _check_total_risk(tracking["activeSignals"], signal, account_size)
+    # ★ 2026-11-01：先算仓位（依赖 position_sizing / confidence），再校验总风险。
+    #   否则总风险按"假设固定 1.5%"估算，与真实下单风险不一致。
+    position = calculate_position_size(signal, account_size)
+
+    risk = _check_total_risk(tracking["activeSignals"], signal, account_size, position)
     if not risk["canAdd"]:
         validation["passed"] = False
         validation["reasons"].append(f"总风险超限 ({risk['totalRiskPercent']}%/{risk['maxAllowed']}%)")
@@ -523,7 +574,6 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
             why = "；".join(tech["warnings"]) or "综合评分不足"
             validation["reasons"].append(f"技术分不达标 ({tech['score']}/50)：{why}")
 
-    position = calculate_position_size(signal, account_size)
     signal = dict(signal)
     signal.update({
         "id": str(int(time.time() * 1000)),
