@@ -116,6 +116,55 @@ RISK_CONFIG = {
 }
 ACCOUNT_SIZE = 100000                  # 默认账户规模（元）
 
+# 止损幅度：做多 `support × (1 - STOP_LOSS_PCT)`，做空 `resistance × (1 + STOP_LOSS_PCT)`。
+# ★ 2026-11-01 抽为常量：此前在 `build_signal_from_llm` 里硬编码 `0.97 / 1.03`，
+#   而 `min_rr` 门槛的"支撑阻力间距 ≥ 3%"正是由它推导——两处各写一份必然漂移。
+STOP_LOSS_PCT = 0.03
+
+# ================================================================
+#  信号规则版本号（★ 2026-11-01 新增，用于绩效统计分组）
+# ================================================================
+# 【为什么需要】
+#   2026-11-01 一天内连续改了 5 项执行规则（RR 门槛 / 总风险量纲 / 技术分拦截 /
+#   position_sizing 接入 / history 去重）+ prompt 的市况约束与间距要求。
+#   这之前的样本是在**完全不同的规则**下产生的 —— 混在一起统计，得到的胜率
+#   既不反映旧规则、也不反映新规则，只会得出"改了也没用"的错误结论。
+#
+# ★ 变更日志（**改任何门槛/止损/仓位逻辑时必须在这里追加一行**）：
+#   legacy          初版：固定 3% 止损、恒 1.5% 仓位、技术分与总风险门槛失效、
+#                   history 每条重复写 2 份
+#   v2-2026-11-02   RR ≥ 1.0（间距 ≥3%）/ 总风险量纲修正 / 技术分真正拦截 /
+#                   position_sizing 三档（轻仓 0.75%、重仓封顶）/ history 去重 /
+#                   prompt 加市况硬约束 + 支撑阻力间距要求
+#
+# 【兼容】没有 `ruleVersion` 字段的老信号一律视为 "legacy"，**不改写存量数据**。
+SIGNAL_RULE_VERSION = "v2-2026-11-02"
+LEGACY_RULE_VERSION = "legacy"
+
+
+def rule_version_of(signal: dict) -> str:
+    """信号的规则版本；老记录（无字段）→ legacy。"""
+    return (signal.get("ruleVersion") or LEGACY_RULE_VERSION)
+
+
+def _dedup_by_id(history: list) -> list:
+    """按 id 去重（保留首次出现）。
+
+    ★ 2026-11-01：`update_signals` 修复前，每条平仓记录会被写进 history **两份**
+      （平仓分支 insert 一次 + 函数末尾清理循环又 insert 一次），
+      存量数据无法自愈 ⇒ 所有消费侧统一走这里，而不是各写一份。
+    """
+    seen = set()
+    out = []
+    for h in (history or []):
+        hid = h.get("id")
+        if hid:
+            if hid in seen:
+                continue
+            seen.add(hid)
+        out.append(h)
+    return out
+
 # ★ 2026-09-13 P1-5 午盘信号治理（带开关，可回滚）：
 #   LLM 信号实测盘前 75%（8 笔）vs 午盘 **0%**（10 笔）——09-09 高开低走式轮动市里
 #   午盘追高即坟场（上午情绪高点已过，午后回落概率高）。
@@ -475,7 +524,8 @@ def build_signal_from_llm(llm_signal: dict, source: str) -> dict:
     support, resistance = float(llm_signal["support"]), float(llm_signal["resistance"])
     is_long = llm_signal["direction"] == "long"
     entry = support if is_long else resistance
-    stop = round(support * 0.97, 3) if is_long else round(resistance * 1.03, 3)
+    stop = (round(support * (1 - STOP_LOSS_PCT), 3) if is_long
+            else round(resistance * (1 + STOP_LOSS_PCT), 3))
     take = resistance if is_long else support
     return {
         "etfName": llm_signal["etfName"],
@@ -577,6 +627,9 @@ def add_signal_with_validation(signal: dict, account_size: int = ACCOUNT_SIZE) -
     signal = dict(signal)
     signal.update({
         "id": str(int(time.time() * 1000)),
+        # ★ 规则版本：绩效统计按此分组（改门槛/止损/仓位逻辑时必须同步
+        #   `SIGNAL_RULE_VERSION` 与变更日志，否则新旧样本会被混算）
+        "ruleVersion": SIGNAL_RULE_VERSION,
         # ★ 2026-09-12：统一北京时间（原来写服务器本地时间 = UTC，与 flash 侧不一致）
         "createdAt": rules.beijing_now_iso(),
         "status": "waiting" if validation["passed"] else "rejected",
@@ -808,35 +861,56 @@ def get_active_signals() -> list:
 
 
 def get_history(limit: int = 20) -> list:
-    return load_tracking()["history"][:limit]
+    """历史信号。★ 2026-11-01：去重后返回（否则同一条信号会在列表里出现两次）。"""
+    return _dedup_by_id(load_tracking()["history"])[:limit]
 
 
-def get_performance() -> dict:
-    return load_tracking()["performance"]
+def get_performance(version: str = "all") -> dict:
+    """绩效快照（total / wins / losses / winRate）。
+
+    ★ 2026-11-01：改为**从 history 去重重算**，不再直接返回
+      `tracking["performance"]`。后者是累加值，被"每条平仓记录写两份"的 bug
+      放大过（实测 36 vs 真实 18），而且**无法自愈**——修好写入逻辑不会回滚
+      已经多加的数字。
+
+    ★ `version="current"`：只看当前规则版本的样本。评估"新规则到底行不行"
+      时必须用它；混着 legacy 样本看只会得出旧规则的结论。
+    """
+    closed = [s for s in _dedup_by_id(load_tracking().get("history", []))
+              if s.get("status") == "closed"]
+    if version != "all":
+        want = SIGNAL_RULE_VERSION if version == "current" else version
+        closed = [s for s in closed if rule_version_of(s) == want]
+    total = len(closed)
+    wins = sum(1 for s in closed if s.get("isWin"))
+    return {"total": total, "wins": wins, "losses": total - wins,
+            "winRate": round(wins / total * 100, 1) if total else 0}
 
 
 # ================================================================
 #  五、绩效指标 + 专业报告（Markdown）
 # ================================================================
 
-def calculate_advanced_metrics(history: list):
-    """胜率/平均盈亏/盈亏比/最大回撤/夏普/期望/连胜连败。"""
+def calculate_advanced_metrics(history: list, version: str = "all"):
+    """胜率/平均盈亏/盈亏比/最大回撤/夏普/期望/连胜连败。
+
+    ★ 2026-11-01 `version` 参数：
+      - "all"（默认）：全部样本，**包含旧规则产生的 legacy 样本**，仅作历史参考
+      - "current"：仅 `SIGNAL_RULE_VERSION` 这一版的样本 —— **这才是当前规则的
+        真实表现**，也是决定"要不要继续调规则"的唯一依据
+      - 其它字符串：按该版本号精确过滤
+      没有 `ruleVersion` 字段的老信号视为 "legacy"。
+    """
     if not history:
         return None
-    # ★ 2026-11-01：按 id 去重后再统计。
-    #   修复前每条平仓记录会在 history 里存两份（见 update_signals），
-    #   导致胜率/盈亏比/期望/连败全部被重复样本污染（36 笔 vs 真实 18 笔）。
-    #   存量脏数据无法自愈，这里在**消费侧**兜底，不改写历史。
-    _seen = set()
-    _uniq = []
-    for _h in history:
-        _hid = _h.get("id")
-        if _hid and _hid in _seen:
-            continue
-        if _hid:
-            _seen.add(_hid)
-        _uniq.append(_h)
-    history = _uniq
+    # ★ 2026-11-01：先去重再统计（详见 `_dedup_by_id`）
+    history = _dedup_by_id(history)
+    # ★ 规则版本过滤（见 docstring）：新旧规则样本混算会得出错误结论
+    if version != "all":
+        want = SIGNAL_RULE_VERSION if version == "current" else version
+        history = [h for h in history if rule_version_of(h) == want]
+        if not history:
+            return None
     profits = [h.get("profit") or 0 for h in history]
     wins = [h for h in history if h.get("isWin")]
     losses = [h for h in history if not h.get("isWin")]
@@ -870,24 +944,39 @@ def calculate_advanced_metrics(history: list):
     }
 
 
+def _metrics_block(m: dict, title: str) -> str:
+    """绩效块（供专业报告复用；`m` 为 None 时给明确说明而非省略）。"""
+    if not m:
+        return f"\n## 📊 {title}\n（无已平仓样本）\n"
+    return (f"\n## 📊 {title}\n"
+            f"- 总交易 {m['totalTrades']} 次 | 胜率 {m['winRate']}% | 盈亏比 {m['profitFactor']}\n"
+            f"- 平均盈利 +{m['avgWin']}% / 平均亏损 -{m['avgLoss']}%\n"
+            f"- 最大回撤 -{m['maxDrawdown']}% | 夏普 {m['sharpeRatio']} | 期望 {m['expectancy']}%\n"
+            f"- 最长连胜 {m['maxConsecutiveWins']} / 连败 {m['maxConsecutiveLosses']}\n")
+
+
 def generate_pro_trader_report(account_size: int = ACCOUNT_SIZE) -> str:
-    """专业交易员报告（Markdown，供推送与前端展示）。"""
-    metrics = calculate_advanced_metrics(
-        [s for s in get_history(100) if s.get("status") == "closed"])
+    """专业交易员报告（Markdown，供推送与前端展示）。
+
+    ★ 2026-11-01：绩效**分版本展示**。
+      「当前规则」是决策依据；「历史全量（含旧规则）」只作对比。
+      11-01 一天内改了 5 项门槛，之前 18 笔是**完全不同的规则**下产生的，
+      混算会得到"改了也没用"的错误结论（详见 `SIGNAL_RULE_VERSION` 变更日志）。
+    """
+    closed = [s for s in get_history(200) if s.get("status") == "closed"]
+    cur = calculate_advanced_metrics(closed, version="current")
+    allm = calculate_advanced_metrics(closed, version="all")
     active = [s for s in get_active_signals() if s.get("status") in ("active", "waiting")]
     report = "# 🎯 专业交易员报告\n"
-    if metrics:
-        report += f"""
-## 📊 绩效仪表盘
-- 总交易 {metrics['totalTrades']} 次 | 胜率 {metrics['winRate']}% | 盈亏比 {metrics['profitFactor']}
-- 平均盈利 +{metrics['avgWin']}% / 平均亏损 -{metrics['avgLoss']}%
-- 最大回撤 -{metrics['maxDrawdown']}% | 夏普 {metrics['sharpeRatio']} | 期望 {metrics['expectancy']}%
-- 最长连胜 {metrics['maxConsecutiveWins']} / 连败 {metrics['maxConsecutiveLosses']}
-"""
+    report += _metrics_block(cur, f"当前规则 {SIGNAL_RULE_VERSION}")
+    if allm and (not cur or allm["totalTrades"] != cur["totalTrades"]):
+        report += _metrics_block(allm, "历史全量（含旧规则，仅供参考）")
     report += f"""
 ## ⚙️ 风控状态
 - 单笔最大风险 {RISK_CONFIG['max_risk_per_trade'] * 100:.1f}% | 总风险上限 {RISK_CONFIG['max_total_risk'] * 100:.1f}%
 - 最大持仓 {RISK_CONFIG['max_positions']} | 同组最大 {RISK_CONFIG['max_correlated_positions']}
+- 最小风险回报比 {RISK_CONFIG['min_rr']}（止损 {STOP_LOSS_PCT * 100:.0f}% ⇒ 等价于支撑阻力间距 ≥ {RISK_CONFIG['min_rr'] * STOP_LOSS_PCT * 100:.1f}%）
+- 仓位档位：轻仓 {RISK_CONFIG['position_risk']['轻仓试探'] * 100:.2f}% ／ 标准 {RISK_CONFIG['position_risk']['标准仓位'] * 100:.1f}% ／ 重仓 {RISK_CONFIG['position_risk']['重仓'] * 100:.1f}%
 
 ## 🎯 当前持仓/待入场（{len(active)}）
 """
@@ -909,6 +998,28 @@ def _safe_dt(s):
     return rules.to_beijing(s)
 
 
+def _by_version(closed: list) -> dict:
+    """按规则版本分组统计（★ 2026-11-01 新增）。
+
+    ★ 为什么必须分组：规则变了以后，旧样本的胜率不再代表当前系统。
+      用户提出的「新开一个统计记录」的正解就是这个——**不清空、不丢样本，
+      但把新旧分开算**，否则会永远看到 legacy 的 -27.78% 而无法评估新规则。
+    """
+    out = {}
+    for s in closed:
+        v = rule_version_of(s)
+        d = out.setdefault(v, {"closed": 0, "wins": 0, "profit_sum": 0.0})
+        d["closed"] += 1
+        if s.get("isWin"):
+            d["wins"] += 1
+        d["profit_sum"] += float(s.get("profit") or 0)
+    for d in out.values():
+        d["win_rate"] = round(d["wins"] / d["closed"] * 100, 1) if d["closed"] else None
+        d["avg_profit"] = round(d["profit_sum"] / d["closed"], 2) if d["closed"] else None
+        d["profit_sum"] = round(d["profit_sum"], 2)
+    return out
+
+
 def build_audit() -> dict:
     """
     LLM 复盘对账：把「复盘提议 → 风控门槛 → 跟踪 → 平仓」整条漏斗和分组胜率算清楚。
@@ -925,6 +1036,10 @@ def build_audit() -> dict:
     active = tracking.get("activeSignals", [])
     history = tracking.get("history", [])
     rejected = tracking.get("rejectedSignals", [])
+    # ★ 2026-11-01：先去重（原来直接用 history，每条平仓记录被写过 2 份
+    #   ⇒ 漏斗里的「已平仓/胜/胜率」被重复样本放大，与
+    #   `calculate_advanced_metrics` 口径不一致）
+    history = _dedup_by_id(history)
     closed = [s for s in history if s.get("status") == "closed"]
 
     wins = [s for s in closed if s.get("isWin")]
@@ -1018,6 +1133,9 @@ def build_audit() -> dict:
     } for s in history if s.get("status") == "closed"][:30]
 
     return {
+        # ★ 2026-11-01：规则版本 + 分版本统计（summary 里是全量混算，仅供参考）
+        "rule_version": SIGNAL_RULE_VERSION,
+        "by_version": _by_version(closed),
         "summary": {
             "proposed": len(active) + len(history) + len(rejected),
             "waiting": len([s for s in active if s.get("status") == "waiting"]),

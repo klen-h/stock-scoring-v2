@@ -175,14 +175,24 @@ def flash_review_run(phase: str, _user: dict = Depends(get_current_user)):
 
 @router.get("/signals")
 def flash_signals():
-    """信号跟踪总览：活跃 / 历史 / 绩效 / 被拒。"""
+    """信号跟踪总览：活跃 / 历史 / 绩效 / 被拒。
+
+    ★ 2026-11-01：
+      - `history` / `performance` 改走 tracker 的去重接口（原来直接用原始
+        tracking，重复记录会显示两遍、performance 也被重复累加过）。
+      - 新增 `metricsCurrent` / `ruleVersion`：**当前规则版本**的真实表现。
+        评估新规则时必须看它；`metrics` 是全量（含 legacy），只作历史对比。
+    """
     tracking = tracker.load_tracking()
+    hist = tracker.get_history(200)
+    closed = [s for s in hist if s.get("status") == "closed"]
     return {
         "activeSignals": tracking.get("activeSignals", []),
-        "history": tracking.get("history", [])[:30],
-        "performance": tracking.get("performance", {}),
-        "metrics": tracker.calculate_advanced_metrics(
-            [s for s in tracking.get("history", [])[:100] if s.get("status") == "closed"]),
+        "history": hist[:30],
+        "performance": tracker.get_performance(),
+        "metrics": tracker.calculate_advanced_metrics(closed),
+        "metricsCurrent": tracker.calculate_advanced_metrics(closed, version="current"),
+        "ruleVersion": tracker.SIGNAL_RULE_VERSION,
         "rejected": tracking.get("rejectedSignals", [])[:10],
         "etf_pool": tracker.HOLDINGS_MAP,
     }
