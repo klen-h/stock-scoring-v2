@@ -274,6 +274,27 @@ jobs:
           echo "::error::增量重试 6 次仍失败"
           exit 1
 
+      - name: Repair mainforce labels in pack
+        # ★★ 2026-10-31（用户："评分排行榜的主力行为怎么没有了"）：
+        #   产包链路 `update_backend_pack_incremental.py` 对 mainforce **只继承不计算**，
+        #   而唯一会计算它的 `generate_backend_pack.py::compute_mainforce_overlay`
+        #   **本 workflow 从未调用** ⇒ 某份包丢一次就永久缺失（单向棘轮）。
+        #   更关键的是：step 7 在"无新交易日"时 `return 0` 早退，
+        #   连重算路径都走不到（本次事故正是周六重复触发时暴露的）。
+        #   ⇒ 本步骤在包落盘后**独立体检并回填**：读 `mainforce_state`（当日已算好）
+        #     合并进包，不重算 overlay、不碰 K 线/指标。
+        #   日常成本 ≈0（抽样读 1MB 头部即退出）；仅整包缺失时才读表 0.4MB 并重写包。
+        #   ⚠️ 脚本在带信号比例 <5% 时返回 2（拒绝写坏包），此时本步骤失败是正确的。
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          PACK=./data/kline/indicators-pack.json.gz
+          if [ ! -f "$PACK" ]; then
+            echo "::warning::指标包不存在，跳过 mainforce 修补"
+            exit 0
+          fi
+          python scripts/repair_pack_mainforce.py --pack "$PACK" --write --out "$PACK"
+
       - name: Rebuild pack structure (WITHOUT ROWID only)
         # ★★ 2026-10-29：**纯结构重写**，不拉数据、不重算指标、不读 Supabase。
         #   为什么单独一个步骤而不是改增量脚本：增量脚本的 `write_sqlite` 需要把
