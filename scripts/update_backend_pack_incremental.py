@@ -311,6 +311,26 @@ def main():
     from app.scoring.indicator_cache import compute_latest_indicators
     gbp = _load_mod("gbp", os.path.join(ROOT, "scripts", "generate_backend_pack.py"))
     ind_out = {}
+
+    # ★★ 2026-10-31（用户："评分排行榜的主力行为怎么没有了"）：
+    #   下方循环对 `mainforce` **只继承、不计算**，而唯一会计算它的
+    #   `generate_backend_pack.py::compute_mainforce_overlay` 在 `backend-pack.yml`
+    #   里**从未被调用** ⇒ 某一份包一旦丢了这个字段，之后每天"继承"到的都是
+    #   "没有"，**永久不恢复**（单向棘轮，且全程不报错，只有前端那一列变成 `-`）。
+    #   这里加**兜底数据源**：继承失败时从 `mainforce_state`（当日已算好）补回。
+    #   成本：一次 `code = ANY(...)` ≈2853 行 ≈ **0.4 MB**；失败 fail-open
+    #   （`mf_fallback` 为空 ⇒ 退回纯继承，**不会比现在更糟**）。
+    #   ⚠️ 依赖 `DATABASE_URL`：本步骤原先没有该变量（只跑本地文件），
+    #      已同步在 `backend-pack.yml` 的 env 里补上。
+    mf_fallback = {}
+    try:
+        from app.mainforce.state import load_latest_for_pack
+        mf_fallback = load_latest_for_pack(list(merged.keys()))
+        print(f"  mainforce 兜底表: {len(mf_fallback)} 只（继承缺失时回填）")
+    except Exception as e:
+        print(f"  ⚠️ mainforce 兜底读取失败（本轮不补，退回纯继承）: {str(e)[:80]}")
+
+    n_mf_fixed = 0
     for i, (code, bars) in enumerate(merged.items()):
         if not bars:
             continue
@@ -323,6 +343,11 @@ def main():
             p = prev_ind.get(code) or {}
             if p.get("mainforce"):
                 ind["mainforce"] = p["mainforce"]      # 标签继承（不重连 Supabase）
+            elif mf_fallback.get(code):
+                # ★ 2026-10-31：继承失败 ⇒ 从 `mainforce_state` 兜底回填。
+                #   这是修复"永久缺失"的唯一入口——没有它，缺一次就永远缺。
+                ind["mainforce"] = mf_fallback[code]
+                n_mf_fixed += 1
             if p.get("news_score"):
                 ind["news_score"] = p["news_score"]
             ind_out[code] = ind
@@ -335,6 +360,8 @@ def main():
         print(f"::error::护栏：K线 {len(merged)}/{len(prev_bars)}、指标 {len(ind_out)}"
               f" —— 中止，不写残缺包")
         return 5
+    if n_mf_fixed:
+        print(f"  ★ mainforce 兜底回填: {n_mf_fixed} 只（原先继承缺失，已从表补回）")
     print(f"  指标: {len(ind_out)} 只，计算趋势健康度…")
     th = gbp.compute_trend_health_batch(ind_out)
     for code, v in th.items():

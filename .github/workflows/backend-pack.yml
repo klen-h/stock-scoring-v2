@@ -255,6 +255,15 @@ jobs:
         #   日线未发布返回 2：10 分钟后重试（最多 6 次）。
         env:
           ZZSHARE_TOKEN: ${{ secrets.ZZSHARE_TOKEN }}
+          # ★ 2026-10-31（用户："评分排行榜的主力行为怎么没有了"）：
+          #   本步骤此前**没有 DATABASE_URL**（只读写本地文件），而
+          #   `update_backend_pack_incremental.py` 新增的 mainforce 兜底需要读
+          #   `mainforce_state` 表 —— 不注入该变量时 db 会退回本地 SQLite（空库），
+          #   兜底静默失效（又是"配了但没生效"那类坑）。
+          #   成本：每日一次 `code = ANY(...)` ≈0.4MB（占月配额 0.24%）。
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # 与兜底读取的日志口径对齐：本步骤不碰策略链，抑制无关自检告警
+          ENV_CHECK_SKIP_LLM: '1'
         run: |
           for i in $(seq 1 6); do
             python scripts/update_backend_pack_incremental.py \

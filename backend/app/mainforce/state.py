@@ -426,6 +426,47 @@ def load_latest(codes: list) -> dict:
     return {c: cached[c] for c in codes if c in cached}
 
 
+# signal → 中文（与 `overlay.py:137/145` 的文案一致；前端 tooltip 也用这个）
+_SIGNAL_CN = {"distribution": "出货嫌疑", "accum": "主力吸筹区"}
+
+
+def load_latest_for_pack(codes: list) -> dict:
+    """{code: mainforce}——**供产包使用**的完整结构（与 `overlay` 输出同构）。
+
+    与 `load_latest()` 的差别只有一处：把**前端渲染要、但表里没存**的字段补齐。
+    表只存 `phase/signal/mult/chip_json/flow5_amt/flow5_amt_yuan/flow_consec`，
+    而 `ScoreRank.vue:970` 的 tooltip 直接读 `mainforce.price_pos` /
+    `mainforce.winner_ratio`（overlay 是把 chip 里的值提升到顶层才传出去的）。
+
+    ★★ 2026-10-31（用户："评分排行榜的主力行为怎么没有了"）：
+      产包链路 `scripts/update_backend_pack_incremental.py` 对 `mainforce`
+      **只继承、不计算**（`if p.get("mainforce"): ind["mainforce"] = p["mainforce"]`），
+      而唯一会计算它的 `generate_backend_pack.py::compute_mainforce_overlay`
+      在 `backend-pack.yml` 里**从未被调用**（workflow 只跑
+      `daily_batch --tasks mainflow` 与 `rebuild_pack_struct.py`）。
+      ⇒ 一旦某一份包丢了这个字段，之后每天"继承"到的都是"没有"，
+        **永远不恢复** —— 单向棘轮，且全程不报错（只有前端那一列变成 `-`）。
+      本函数就是这道缺口的**兜底数据源**：`mainforce_state` 里有，就能补回包里。
+
+    ★ 为什么放在这里而不是产包脚本里：`load_latest()` 是本项目约定的
+      mainforce **唯一数据入口**（`phase_cn` 补齐、`chip_json` 解析都在此）。
+      兜底若各写一套字段映射，迟早再次分叉（`phase_cn` 那次就是这么出问题的）。
+    """
+    out = {}
+    for code, v in (load_latest(codes) or {}).items():
+        chip = v.get("chip") or {}
+        d = dict(v)
+        # 提升到顶层（overlay 同款做法；chip 原样保留，两处都能取到）
+        d["price_pos"] = chip.get("price_pos")
+        d["winner_ratio"] = chip.get("winner_ratio")
+        d["signal_cn"] = _SIGNAL_CN.get(v.get("signal") or "", "")
+        # overlay 有、当前无消费方；给默认值只为结构一致（fail-closed 定案）
+        d.setdefault("reason", "")
+        d.setdefault("active", False)
+        out[code] = d
+    return out
+
+
 if __name__ == "__main__":
     import sys
     regime = sys.argv[1] if len(sys.argv) > 1 else None
