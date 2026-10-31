@@ -32,3 +32,7 @@ deploy.pem
 .env.local
 .env.*.local
 !.env.example
+
+# DB dump (Supabase 402 emergency backup, 2026-10-31)
+db_dump_*/
+_dump_test/
