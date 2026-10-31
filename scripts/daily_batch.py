@@ -1247,14 +1247,21 @@ def task_jin10_tidy():
     """
     try:
         from app import jin10_tidy as jt
-        r = jt.compute()
+        # ★ 2026-11-01：改按「栏目 × 日期」抓（原 id 扫描从 10-30 起就在漏抓，
+        #   见 `jin10_tidy.compute` 的 docstring）。`days=3` 覆盖"当天未发布、
+        #   前一天已发布"的情况，12 个请求，成本可忽略。
+        r = jt.compute(days=3)
         err = str(r.get("error") or "")
         if err.startswith("x-token"):
             return "金十汇总: WARN token 失效，请重新登录金十更新 JIN10_X_TOKEN"
-        if not r.get("ok"):
+        if err and not r.get("saved"):
             return f"金十汇总: WARN {err[:70]}"
-        return (f"金十汇总: 扫 {r.get('scanned')} 个 id / 入库 {r.get('saved')} 条 / "
-                f"游标 {r.get('last_id')}")
+        if not r.get("saved"):
+            # 0 条不算失败：盘前时段当天汇总本就还没发布
+            return (f"金十汇总: 0 条（{r.get('scanned')} 个请求 / "
+                    f"{len(r.get('dates') or [])} 天，数据源暂无新内容）")
+        return (f"金十汇总: 入库 {r.get('saved')} 条 / 请求 {r.get('scanned')} 个 / "
+                f"覆盖 {len(r.get('dates') or [])} 天")
     except Exception as e:
         return f"金十汇总: WARN {str(e)[:70]}"
 

@@ -1297,7 +1297,8 @@ def jin10_tidy_refresh(date: Optional[str] = Query(None, description="YYYY-MM-DD
       这不是故障，是节奏问题；一次手动扫描就能拿到当天已发布的部分。
 
     【做两件事】
-      1. `compute()` 增量扫描最新 id（约 20 个请求，与日批同款逻辑，成本可忽略）
+      1. `compute(days=3)` 按「栏目 × 日期」抓最近 3 天（12 个请求，成本可忽略；
+         ★ 2026-11-01 起取代原来的 id 递增扫描，后者对新日期一律返回空）
       2. `summarize()` 让 LLM 做**跨条目归纳**（1 次调用 ≈1~2k token，按日缓存）
          ⇒ 前端那句"原文未解读"变成真实的「今日主线」
 

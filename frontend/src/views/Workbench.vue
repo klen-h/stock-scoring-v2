@@ -4249,10 +4249,9 @@ async function refreshJin10(withSummary) {
     } else if (withSummary && s.ok === false) {
       jin10Err.value = `AI 解读失败：${s.error || '未知原因'}`
     } else if (c.saved === 0) {
-      // ★ 抓到 0 条不等于失败：金十可能根本没发布当期汇总。
-      //   实测 2026-11-01：id 60066~60500 全部为空，10-30 起就没有新汇总。
+      // ★ 抓到 0 条不等于失败：金十可能还没发布当期汇总（尤其盘前）。
       //   不说清楚会被当成"按钮没生效"。
-      jin10Hint.value = `已扫描 ${c.scanned ?? 0} 个 id，金十这边暂无更新的汇总`
+      jin10Hint.value = `已请求 ${c.scanned ?? 0} 次（近 3 天 × 4 栏目），金十暂无汇总`
         + `（数据源没有新内容，不是系统故障）`
     }
   } catch (e) {

@@ -12,18 +12,24 @@ from __future__ import annotations
   不改分数、不进闸门、不碰 regime/模拟盘；删掉本模块系统其余部分照常运行。
 
 --------------------------------------------------------------------------------
-一、接口（实测 2026-10-30）
+一、接口（实测 2026-10-30 / **修正 2026-11-01**）
 --------------------------------------------------------------------------------
-    GET https://mp-api.jin10.com/api/tidy-news/details?id={id}
+    GET https://mp-api.jin10.com/api/tidy-news/details?category_id={cat}&date={YYYY-MM-DD}
       x-app-id : fiXF2nOnDycGutVA   （与 flash/margin_sentiment.py 同一个）
       x-version: 1.0
       x-token  : <登录后拿到的 UUID>  ← **必须放 header**，放 cookie 也行但 header 更干净
     Bearer 方式无效（实测 401）。
 
-⚠️ **没有"文章列表"接口**：`/tidy-news/list|articles|items|news` 全部 502；
-   `/tidy-news/categories` 只给栏目元信息（无 data_id）；`/api/home` 只覆盖首页栏目。
-⇒ **靠 id 递增扫描**：id 全局连续，每天一批（约 18~24 个），
-   未使用的 id 返回 `status:200` 但 `data.category_id` 为 null（**不是 404**）⇒ 判空即可。
+★★ 2026-11-01 重要修正（代价：10-30 起漏抓了整批数据）
+  原方案是"按 id 递增扫描"——当时实测 `/tidy-news/list|articles|items` 全 502，
+  于是断定"没有列表 API"。**但真正的取数键是 `category_id + date`，不是 `id`**：
+    · `/details?id=60070`                          → `status:200` 但 `data:null`
+    · `/details?category_id=50029&date=2026-10-30` → 正常返回 27 条
+  ⇒ 旧扫描法对新日期一律返回 null，被误判成"今天还没发布"，游标一路往前推，
+    **越过之后永久补不回来**（实测 last_id=60169，而 10-30 四个栏目一条都没入库）。
+  ⇒ 现在：`compute(days=3)` 对最近 3 天 × 4 栏目发 **12 个请求**（旧法最多 120 个），
+    且天然支持补历史（`day=` 指定任意日期）。
+    实测补 10-29 + 10-30 两天：**8 个请求 → 121 条**。
 
 --------------------------------------------------------------------------------
 二、⚠️ x-token 会过期（本方案唯一的长期运维点）
@@ -46,7 +52,7 @@ from __future__ import annotations
 """
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import requests
@@ -255,74 +261,113 @@ def _split_contents(contents: List[Dict]) -> List[Dict]:
     return out
 
 
-def compute(max_scan: int = None) -> Dict:
-    """从上次的 id 往后扫，把目标栏目入库。
+def _fetch_by_date(category_id: int, day: str) -> Optional[Dict]:
+    """按「栏目 + 日期」取一天的汇总（★ 2026-11-01 新增，取代 id 扫描）。
 
-    返回 `{ok, scanned, saved, last_id, error}`。
+    `GET /api/tidy-news/details?category_id=50029&date=2026-10-30`
+    → `{id, title, category_id, date, contents, publish_time, ...}`
+
+    返回 None 表示"该日该栏目没有内容"或调用失败（失败原因见 `_last_error`）。
+    """
+    global _last_error
+    try:
+        r = requests.get(_API,
+                         params={"category_id": int(category_id), "date": str(day)[:10]},
+                         headers=_headers(), timeout=15)
+        j = r.json()
+    except Exception as e:
+        _last_error = f"网络: {str(e)[:80]}"
+        return None
+    status = j.get("status")
+    if status == 401:
+        _last_error = "x-token 失效（请重新登录金十更新 JIN10_X_TOKEN）"
+        return None
+    if status != 200:
+        _last_error = f"status={status} {str(j.get('message'))[:60]}"
+        return None
+    _last_error = ""
+    d = j.get("data")
+    return d if isinstance(d, dict) else None
+
+
+def compute(days: int = 3, day: str = None) -> Dict:
+    """按「栏目 × 日期」抓取目标栏目并入库。
+
+    ★★ 2026-11-01 重构（推翻原来的 id 递增扫描）：
+      原实现假定"该接口没有列表 API，只能按 id 递增扫描"。**这个假定是错的**：
+        · `/details?id=xxx`   对新日期返回 `status 200 + data=null`（看着像"没发布"）
+        · `/details?category_id=50029&date=2026-10-30` **正常返回 27 条**
+      ⇒ `id` 不是取数的正确键。扫描法从 2026-10-30 起一直在"扫到空就推进游标"，
+        游标越过那段后**永远补不回来**（实测 last_id 60169，而 10-30 数据完全没入库）。
+
+      现在的做法：对最近 `days` 天 × 4 个目标栏目各发 1 个请求
+      （默认 3 天 = **12 个请求**，比原来最多 120 个少 90%），
+      且天然支持补历史（`day=` 指定任意一天即可回补）。
+
+    参数：
+      days: 往回抓几天（含 `day` 当天），默认 3 —— 覆盖"当天还没发布、昨天已发布"的情况
+      day : 结束日期 YYYY-MM-DD，默认今天（北京时间）
+
+    返回 `{ok, scanned, saved, dates, per_day, error}`。
     """
     ensure_tables()
-    limit = int(max_scan or _MAX_SCAN)
-    last_id = int(_meta_get("last_id", "60065") or 60065)   # 60065 = 2026-10-29 最后一条
+    end = (str(day)[:10] if day else
+           datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"))
+    try:
+        end_dt = datetime.strptime(end, "%Y-%m-%d")
+    except ValueError:
+        return {"ok": False, "scanned": 0, "saved": 0, "dates": [], "per_day": {},
+                "error": f"日期格式错误: {end}"}
+    date_list = [(end_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+                 for i in range(max(1, int(days or 1)))]
+
     scanned = saved = 0
-    empty_run = 0
-    new_last = last_id
     errors: List[str] = []
+    per_day: Dict[str, int] = {}
 
-    for nid in range(last_id + 1, last_id + limit + 1):
-        d = _fetch_one(nid)
-        scanned += 1
-        if d is None:
-            # ★ 只有**确认是空 id**（`_fetch_one` 已清空 `_last_error`）才推进游标；
-            #   网络错误/401 一律不推进 —— 否则会把"没取到"当成"没有"，把那一段永久跳过。
-            if _last_error.startswith("x-token") or _last_error.startswith("网络"):
-                break
-            empty_run += 1
-            new_last = max(new_last, nid)   # 空 id 也推进，避免明天重复扫同一段
-            if empty_run >= _EMPTY_BREAK:
-                break                       # 连续空 ⇒ 今天这批还没发布，提前收
-            continue
-        empty_run = 0
-        new_last = max(new_last, nid)
+    for dstr in date_list:
+        for cat in _TARGETS:
+            d = _fetch_by_date(cat, dstr)
+            scanned += 1
+            if d is None:
+                # token 失效是唯一需要人介入的故障 ⇒ 立即中止，不空转剩余请求
+                if _last_error.startswith("x-token"):
+                    _meta_set("last_error", _last_error)
+                    return {"ok": False, "scanned": scanned, "saved": saved,
+                            "dates": date_list, "per_day": per_day, "error": _last_error}
+                continue
+            items = _split_contents(d.get("contents") or [])
+            if not items:
+                continue
+            try:
+                for it in items:
+                    db.execute(
+                        f"INSERT INTO {_TABLE} (date, category_id, group_name, title, "
+                        f"content, tags, seq, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                        f"ON CONFLICT (date, category_id, seq) DO UPDATE SET "
+                        f"group_name=EXCLUDED.group_name, title=EXCLUDED.title, "
+                        f"content=EXCLUDED.content, tags=EXCLUDED.tags",
+                        (dstr, int(cat), it["group_name"], it["title"], it["content"],
+                         _classify(it["title"], it["content"]), it["seq"],
+                         # ★ 显式带时区：卫生门 naive_now 会拦"无时区的 now 调用"
+                         #   （生产容器是 UTC，naive 会与本地差 8 小时）。
+                         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+                    )
+                saved += len(items)
+                per_day[dstr] = per_day.get(dstr, 0) + len(items)
+                print(f"[jin10_tidy] {dstr} {_TARGETS[cat]} {len(items)} 条")
+            except Exception as e:
+                errors.append(f"{dstr}/{cat}: {str(e)[:60]}")
+                print(f"[jin10_tidy] 入库失败 {dstr}/{cat}: {str(e)[:80]}")
 
-        cat = d.get("category_id")
-        if cat not in _TARGETS:
-            continue
-        day = str(d.get("date") or "")[:10]
-        if not day:
-            continue
-        items = _split_contents(d.get("contents") or [])
-        if not items:
-            continue
-        try:
-            for it in items:
-                db.execute(
-                    f"INSERT INTO {_TABLE} (date, category_id, group_name, title, "
-                    f"content, tags, seq, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-                    f"ON CONFLICT (date, category_id, seq) DO UPDATE SET "
-                    f"group_name=EXCLUDED.group_name, title=EXCLUDED.title, "
-                    f"content=EXCLUDED.content, tags=EXCLUDED.tags",
-                    (day, int(cat), it["group_name"], it["title"], it["content"],
-                     _classify(it["title"], it["content"]), it["seq"],
-                     # ★ 显式带时区：卫生门 naive_now 会拦"无时区的 now 调用"
-                     #   （生产容器是 UTC，naive 会与本地差 8 小时）。
-                     #   ⚠️ 注释里同样不能写出那个无时区写法，否则被正则当成真违规。
-                     datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
-                )
-            saved += len(items)
-            print(f"[jin10_tidy] {nid} -> {_TARGETS[cat]} {day} {len(items)} 条")
-        except Exception as e:
-            errors.append(f"{nid}: {str(e)[:60]}")
-            print(f"[jin10_tidy] 入库失败 {nid}: {str(e)[:80]}")
-
-    if new_last > last_id:
-        _meta_set("last_id", new_last)
     if _last_error:
         _meta_set("last_error", _last_error)
     elif saved:
         _meta_set("last_error", "")
 
-    return {"ok": not errors, "scanned": scanned, "saved": saved,
-            "last_id": new_last, "error": _last_error or ";".join(errors[:3])}
+    return {"ok": not errors and bool(saved), "scanned": scanned, "saved": saved,
+            "dates": date_list, "per_day": per_day,
+            "error": _last_error or ";".join(errors[:3])}
 
 
 def load(day: str = None) -> Dict:
