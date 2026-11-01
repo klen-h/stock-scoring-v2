@@ -1238,7 +1238,7 @@ export async function loadLocalKline(code, stockInfo = {}, bars = 150) {
  * @param {Object} finance - 扁平财报 {revenue_yoy, profit_yoy, roe, debt_ratio, gross_margin}
  * @returns {Promise<Object|null>} scoreStock 结果（dimensions 已适配详情页数组模板）；null = 本地不可用
  */
-export async function computeLocalScore(code, stockInfo = {}, finance = null, weights = null) {
+export async function computeLocalScore(code, stockInfo = {}, finance = null, weights = null, precomputed = null) {
   // ★★ 2026-09-23：补上与 `loadLocalKline` **同款**的「包新鲜度门」。
   //   此前这道门**只加了 K 线路径、漏了评分路径** ⇒ 本地包落后一个交易日时会出现
   //   「K 线回退后端（新口径）+ 评分仍用本地（旧口径）」的**同页不一致** —— 正是
@@ -1265,9 +1265,22 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
     if (series && seriesIsFresh(series)) technical = series
   } catch { /* 指标包缺失 → 现算兜底 */ }
   if (!technical) {
-    const klines = await getKlines(code, 150)
-    if (!klines || klines.length < 30) return null
-    technical = calcTechnicalSimple(appendTodayBar(klines, stockInfo))
+    // ★★ 2026-11-01：优先复用调用方传入的**预计算指标序列**。
+    //   详情页 `tryLoadLocalAll()` 此前的顺序是
+    //     `computeLocalScore()` → `loadLocalKline()`
+    //   两者**各自** `getLastUpdateDate()` + `getKlines(code,150)` +
+    //   `calcTechnicalSimple()` ⇒ 同一份数据读两遍、指标算两遍
+    //   （`calcTechnicalSimple` 实测 ~172ms 量级，IndexedDB 反序列化也不便宜）。
+    //   现在 `tryLoadLocalAll` 先跑 `loadLocalKline`（一次 IO + 一次计算），
+    //   把它的 `technical` 传进来；`_series` 新鲜时仍优先用 `_series`（与打包
+    //   事实源一致），不新鲜才落到 `precomputed` —— **行为不变，只省重复劳动**。
+    if (precomputed && precomputed.length >= 30) {
+      technical = precomputed
+    } else {
+      const klines = await getKlines(code, 150)
+      if (!klines || klines.length < 30) return null
+      technical = calcTechnicalSimple(appendTodayBar(klines, stockInfo))
+    }
   }
   if (!technical) return null
 

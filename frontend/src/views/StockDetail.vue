@@ -1216,12 +1216,18 @@ async function tryLoadLocalAll() {
       setGateRules(null)
     }
 
-    out.score = await computeLocalScore(code, stockInfo.value, finance, weights)
+    // ★★ 2026-11-01（提速 C）：先 `loadLocalKline`（一次 IndexedDB IO +
+    //   一次 `calcTechnicalSimple`），把 `technical` 传给评分复用 ——
+    //   原先两个函数**各自**读包、**各自**算一遍指标（重复 ~170ms CPU + 一次 IO）。
+    //   ⚠️ 顺序不能反：`computeLocalScore` 的 `precomputed` 只有
+    //      `loadLocalKline` 能产出。
     const local = await loadLocalKline(code, stockInfo.value)
     if (local) {
       out.klines = local.klines
       out.technical = local.technical
     }
+    out.score = await computeLocalScore(
+      code, stockInfo.value, finance, weights, local?.technical || null)
   } catch (e) { console.warn('[detail] 本地评分/K线失败:', e) }
   return out.score || out.klines ? out : { score: null, klines: null, technical: null }
 }
