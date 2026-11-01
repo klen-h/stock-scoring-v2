@@ -89,8 +89,9 @@
             <div class="text-base font-semibold truncate" :class="valClass(it)">
               {{ it.value }}<span class="text-[10px] text-muted font-normal ml-0.5">{{ it.unit }}</span>
             </div>
-            <div class="text-[10px] text-muted truncate" :title="`${it.source} @ ${it.as_of}`">
-              {{ it.source }} · {{ hhmm(it.as_of) }}
+            <div class="text-[10px] text-muted truncate"
+                 :title="`${srcCn(it.source)} · 截至 ${hhmm(it.as_of) || '—'}`">
+              {{ srcCn(it.source) }} · {{ hhmm(it.as_of) }}
             </div>
           </div>
         </div>
@@ -110,7 +111,7 @@
             <span class="text-[10px] text-muted w-28 shrink-0 truncate" :title="it.label">{{ it.label }}</span>
             <span class="text-xs flex-1 min-w-0 break-words" :class="valClass(it)">{{ it.value }}</span>
             <span class="text-[10px] text-muted shrink-0 font-mono cursor-help"
-                  :title="`${it.source} · ${it.caliber}`">{{ hhmm(it.as_of) }}</span>
+                  :title="`${srcCn(it.source)} · ${it.caliber}`">{{ hhmm(it.as_of) }}</span>
           </div>
         </div>
       </div>
@@ -153,13 +154,13 @@
         <div v-if="traceOpen" class="mt-2 space-y-1">
           <div v-for="(m, i) in data.missing" :key="'m' + i"
                class="text-[10px] text-muted bg-border/30 rounded px-2 py-1">
-            <span class="text-amber-300">{{ m.block }}</span> / {{ m.item }} —— {{ m.reason }}
+            <span class="text-amber-300">{{ blockCn(m.block) }}</span> / {{ m.item }} —— {{ m.reason }}
           </div>
           <div v-for="(t, i) in data.trace" :key="'t' + i"
-               class="grid grid-cols-[64px_1fr_auto] gap-2 text-[10px] text-muted border-b border-border/40 last:border-0 py-0.5">
-            <span class="truncate">{{ t.block }}</span>
+               class="grid grid-cols-[52px_1fr_auto] gap-2 text-[10px] text-muted border-b border-border/40 last:border-0 py-0.5">
+            <span class="truncate">{{ blockCn(t.block) }}</span>
             <span class="truncate" :title="t.item">{{ t.item }}</span>
-            <span class="font-mono truncate" :title="t.source">{{ t.source }} @ {{ hhmm(t.as_of) }}</span>
+            <span class="truncate" :title="t.source">{{ srcCn(t.source) }} · {{ hhmm(t.as_of) || '—' }}</span>
           </div>
         </div>
       </div>
@@ -183,6 +184,25 @@ const bodyOpen = ref(false)
 const traceOpen = ref(false)
 
 const conclusion = computed(() => props.data?.conclusion || {})
+
+// ★★ 2026-11-01（用户："其中有些是英文字眼，得换成中文"）：
+//   后端 `blocks` 的 key（market/macro/news）与各数据源标识（表名/接口名）都是英文，
+//   直接摆到界面上是"数据库术语"，对使用者没有意义。这里统一做**展示层翻译**，
+//   不改变后端结构（trace/missing 仍按英文 key 传递，便于排障时对得上代码）。
+const BLOCK_CN = { market: '盘面', macro: '宏观', news: '消息' }
+const SRC_CN = {
+  market_emotion_daily: '情绪快照表',
+  market_amount: '两市成交额',
+  'market_overview 快照': '指数行情',
+  market_regime_history: '市场状态表',
+  macro_daily_history: '外盘日线',
+  flash_calendar: '财经日历',
+  flash_brief: '快讯解读',
+  'flash_brief.news': '快讯条目',
+  腾讯指数: '指数行情',
+}
+const blockCn = (b) => BLOCK_CN[b] || b || ''
+const srcCn = (s) => SRC_CN[s] || s || ''
 const html = computed(() => renderMd(conclusion.value.markdown || ''))
 /** 结论首行（去掉 Markdown 标记）—— 卡片折叠时先给一句判断 */
 const lead = computed(() => {
@@ -205,7 +225,8 @@ function hhmm(s) {
 function srcLabel(items) {
   const srcs = [...new Set((items || []).map((i) => i.source).filter(Boolean))]
   if (!srcs.length) return ''
-  return srcs.length === 1 ? srcs[0] : `${srcs[0]} 等 ${srcs.length} 源`
+  const cn = srcs.map(srcCn)
+  return cn.length === 1 ? cn[0] : `${cn[0]} 等 ${cn.length} 处`
 }
 /** 有 delta 的按红涨绿跌；否则一律普通前景色（避免文字被判读成涨跌） */
 function valClass(it) {

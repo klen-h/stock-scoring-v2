@@ -285,7 +285,11 @@
       <!-- ── 主工作区 ── -->
       <div class="space-y-3 min-w-0">
         <!-- ★ 2026-10-24（用户："观察器独占一行"）：3:2 并排改为单列，观察器整行铺满；教练卡移回右栏。 -->
-        <div class="grid grid-cols-1 gap-3 items-stretch">
+        <!-- ★★ 2026-11-01（用户："早盘复盘不需要展示观察器、快讯解读等4个卡片，
+             只需要今天新加的卡片即可"）：本段（观察器）在「早盘复盘」阶段整块隐藏。
+             理由：早盘复盘是"读结论"，不是"看盘"——它自带盘面/宏观/消息三块，
+             下面再压一张观察器会重复且抢注意力。 -->
+        <div v-if="selectedPhase !== 'amreview'" class="grid grid-cols-1 gap-3 items-stretch">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
              原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
@@ -738,7 +742,10 @@
                两卡统一 `xl:h-[760px]`（显式 height 优先于 `items-stretch`，必然等高）：
                  · 左卡内容不可 flex ⇒ 整卡 `overflow-y-auto`（涨跌/主线/占比/持仓一起滚）；
                  · 右卡 `flex flex-col` + 列表 `flex-1` ⇒ 列表在自己区域内滚，卡本身不滚。 -->
-        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
+        <!-- ★★ 2026-11-01：本段（盘面速览 + 快讯解读）在「早盘复盘」阶段整块隐藏，
+             只留 `AmReviewCard`（用户在别的 tab 仍可看到这两张卡）。 -->
+        <div v-if="selectedPhase !== 'amreview'"
+             class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
           <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
                置于观察器下方；消除市场涨跌在多处重复）：
                · 涨跌家数/涨停跌停/成交额/情绪 —— 全站**只此一处**（原盘中看盘序、盘后结算卡各有一份）；
@@ -2795,7 +2802,10 @@
              观察池"也挂右侧，在评分榜下方，但是点击展开，默认收起"）：
              「评分榜 Top10（含**主力行为**列）+ 观察池」挂到**常驻右栏**（全阶段可见、不被时间轴切走）。
              ⚠️ 数据仍由父级加载（顶部「就绪状态条」复用同一批 `topItems` / `gwItems`）。 -->
-        <StockListsCards :top-items="topItems" :top-err="topErr" :top-mode="topMode"
+        <!-- ★★ 2026-11-01（同上）：评分榜 Top10 / 防御 Top10 / 观察池在「早盘复盘」阶段隐藏 ——
+             该阶段只要新卡；这些榜单属于"看盘"信息，切到别的阶段即可。 -->
+        <StockListsCards v-if="selectedPhase !== 'amreview'"
+                         :top-items="topItems" :top-err="topErr" :top-mode="topMode"
                          :top-countdown="refreshLeft"
                          :def-items="defTopItems" :def-meta="defMeta" :def-err="defErr"
                          :def-is-live="defIsLive" :def-live-loading="defLiveLoading"

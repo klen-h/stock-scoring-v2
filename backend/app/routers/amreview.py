@@ -76,6 +76,14 @@ _CAL_TTL = 600.0
 # `market_amount_daily` 是否存在（不存在就 10 分钟内不再尝试，理由见 `_am_amount`）
 _AMT_TABLE = {"missing": False, "ts": 0.0}
 
+# 市况枚举 → 中文（`caliber` 会出现在悬停提示里，不能露英文）
+_STATE_CN = {
+    "offensive": "进攻",
+    "neutral": "震荡",
+    "neutral_bearish": "偏空震荡",
+    "defensive": "防御",
+}
+
 
 def _calendar_items() -> list:
     import time as _t
@@ -198,8 +206,10 @@ def _market_block(day: str, is_live: bool, missing: List[dict]) -> List[dict]:
             items.append({"label": "情绪判读", "value": str(verdict), "unit": "",
                           "source": src, "as_of": as_of, "caliber": caliber})
     else:
+        # ★ 2026-11-01（用户："其中有些是英文字眼，得换成中文"）：原因文案不带表名/列名，
+        #   表名只留在 `trace` 的 `source` 字段里（排障时对代码用），展示层由前端翻成中文。
         missing.append({"block": "market", "item": "涨跌家数 / 涨跌停 / 连板 / 判读",
-                        "reason": "该日未留存（market_emotion_daily 无 am_* 也无 close_*）"})
+                        "reason": "该日未留存（库中既无 11:30 早盘定稿，也无收盘定稿）"})
 
     amt = _num(row.get("am_amount_yi")) or _am_amount(day)
     if amt is not None:
@@ -208,7 +218,7 @@ def _market_block(day: str, is_live: bool, missing: List[dict]) -> List[dict]:
                       "caliber": "两市（沪+深）累计，不含北交所"})
     else:
         missing.append({"block": "market", "item": "半日成交额",
-                        "reason": "该日未留存（market_amount_daily 无分时序列）"})
+                        "reason": "该日未留存（没有落库的分时成交额）"})
 
     # 指数：只有当日可取（无分钟级历史快照）；历史一律进 missing，不拿收盘值冒充
     if is_live:
@@ -259,7 +269,8 @@ def _macro_block(day: str, missing: List[dict]) -> List[dict]:
                 desc = ""
             items.append({"label": "市场状态", "value": desc or str(r["state"]), "unit": "",
                           "source": "market_regime_history", "as_of": str(r.get("date"))[:10],
-                          "caliber": f"量化引擎 state={r['state']}"})
+                          # ★ 2026-11-01：`caliber` 会显示在悬停提示里，不能露出 `state=defensive` 这种英文
+                          "caliber": f"量化引擎判定：{_STATE_CN.get(str(r['state']), '未知')}"})
         else:
             missing.append({"block": "macro", "item": "市场状态", "reason": "该日无 regime 判定记录"})
     except Exception as e:
@@ -293,7 +304,7 @@ def _macro_block(day: str, missing: List[dict]) -> List[dict]:
                           "caliber": "日频收盘价环比" if pct is not None else "仅收盘价（无前值）"})
         if not hit:
             missing.append({"block": "macro", "item": "外盘品种",
-                            "reason": "该日附近无 macro_daily_history 记录"})
+                            "reason": "该日附近没有外盘日线记录"})
     except Exception as e:
         print(f"[amreview] macro daily failed: {e}")
 
