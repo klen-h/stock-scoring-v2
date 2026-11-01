@@ -2154,8 +2154,20 @@ CALENDAR_WINDOW = (420, 480)   # 北京时间 07:00-08:00
 
 async def calendar_loop():
     """每日盘前刷新财经日历缓存（幂等，错过窗口当日可补跑）。
+
     失败仅打印日志：日历是辅助数据，挂了不影响事件流/复盘，
-    且缓存里仍保留着上一次成功拉取的数据。"""
+    且缓存里仍保留着上一次成功拉取的数据。
+
+    ★★ 2026-11-01：**已从 `_heavy` 移出**（见注册处）。原因：
+      `calendar.refresh()` 全项目只有这一个调用点，而 `_heavy` 在只读模式下
+      返回 `[]` ⇒ 线上日历**从未自动刷新**。实测 `flash_calendar.updated_at`
+      停在 10-30 19:24（当天 11-01），且不在 07:00-08:00 窗口内。
+      后果是"过期事件不消失、新事件不出现"，工作台 tab③ 与 `/api/flash/calendar`
+      都在展示旧排期。
+    ⚠️ 成本：每天 1 次 HTTP（金十 14 天日历）。与 `macro_daily_loop` 同类处理。
+    ⚠️ 若哪天觉得 egress 有压力，**不要**把它塞回 `_heavy`——那会让日历静默断档；
+       正确做法是调 `CALENDAR_WINDOW` 或降频，而不是让它不跑。
+    """
     while True:
         now = rules.beijing_now()
         t = now.hour * 60 + now.minute
@@ -2381,6 +2393,35 @@ async def calendar_ahead_loop():
         await asyncio.sleep(600)
 
 
+# ── 数据公布播报（2026-11-01 新增；逻辑见 calendar_ahead.run_publish_alert）──
+# 【为什么只做"中国 + 盘中"】实测公布时刻：
+#   中国核心指标 09:30 / 09:45 → A 股开盘后 0~15 分钟，**唯一能当天操作**的；
+#   美国核心指标 20:30 / 21:30 / 22:45 / 23:00 → 已收盘，只能影响次日。
+#   ⇒ 海外数据走**次日盘前汇总**（`run_alert` 的「昨夜已公布」段），不半夜弹窗。
+CAL_PUBLISH_TICK = 300      # 每 5 分钟一跳（金十公布后本身有 1~5 分钟延迟）
+
+
+async def calendar_publish_loop():
+    """盘中播报「刚公布的中国关键数据 + 超预期判断」。
+
+    ★ 双重闸门，把外部请求压到最低：
+      ① `in_cn_publish_window()`：交易日 09:25~11:30；
+      ② `has_due_cn()`：今日确有中国核心数据、且**计划时刻已过但未超 60 分钟**
+         ⇒ 只有 09:30 / 09:45 那两波之后才真正刷新金十，其余时间零请求。
+    ★ 失败仅打印（与 `calendar_ahead_loop` 同款：下一跳自然重试，不标记 done）。
+    """
+    while True:
+        try:
+            from app.flash import calendar_ahead
+            if calendar_ahead.in_cn_publish_window() and calendar_ahead.has_due_cn():
+                await asyncio.to_thread(calendar.refresh)      # 拿最新 actual
+                msg = await asyncio.to_thread(calendar_ahead.run_publish_alert)
+                print(f"[scheduler] {msg}")
+        except Exception as e:
+            print(f"[scheduler] 数据公布播报失败: {e}")        # ASCII（铁律⑥）
+        await asyncio.sleep(CAL_PUBLISH_TICK)
+
+
 # ── 两市成交额日额落库（收盘后一次；次日供"环比昨日"做精确基准）──
 AMOUNT_SAVE_WINDOW = (1555, 1800)       # 北京时间 15:55~18:00（收盘定稿后）
 
@@ -2466,6 +2507,10 @@ async def start():
              # ★ 2026-09-29：盘前日历前瞻（未来 3 天核心事件 PCE/CPI/非农/FOMC 主动提醒）
              #   —— 通知类、极轻量（读已落库日历 + 一条企微）⇒ 只读模式保留。
              asyncio.create_task(calendar_ahead_loop()),
+             # ★ 2026-11-01 新增：中国数据公布**盘中播报**（超预期判断 + 传导解读）。
+             #   非 `_heavy`：线上只读模式必须能跑，否则等于没做。
+             #   成本受 `in_cn_publish_window` + `has_due_cn` 双重闸门约束 ⇒ 极少触发外部请求。
+             asyncio.create_task(calendar_publish_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
             # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
@@ -2540,7 +2585,16 @@ async def start():
              *_heavy(contradiction_scan_loop),
              *_heavy(contradiction_report_loop),
              *_heavy(news_history_loop),
-             *_heavy(calendar_loop),
+             # ★★ 2026-11-01 **移出 `_heavy`**（原为 `*_heavy(calendar_loop)`）：
+             #   `calendar.refresh()` 全项目**只有这一个调用点**，而 `_heavy` 在
+             #   READ_ONLY=1（线上部署）下直接返回 `[]` ⇒ **日历从未被自动刷新**。
+             #   实测：`flash_calendar.updated_at` 停在 **10-30 19:24**（当天是 11-01），
+             #   且该时刻不在 07:00-08:00 窗口内 ⇒ 那是"缓存为空时现场兜底拉"的残留，
+             #   不是本循环的产物。后果：工作台「财经日历」tab 与 `/api/flash/calendar`
+             #   展示的是**旧排期**（过期事件不消失、新事件不出现）。
+             #   ★ 成本核算：每天 1 次 HTTP（金十 14 天日历，单次约百 KB），
+             #     与本进程其余循环不是一个量级 ⇒ 与 `macro_daily_loop` 同类处理。
+             asyncio.create_task(calendar_loop()),
              *_heavy(industry_map_loop),
              *_heavy(mainline_loop),
              *_heavy(sector_snapshot_loop),

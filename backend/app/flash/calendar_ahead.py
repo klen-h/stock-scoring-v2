@@ -223,9 +223,25 @@ def run_alert(days: int = 3, dry_run: bool = False) -> str:
         fresh.append(x)
     if not fresh:
         return f"日历前瞻: {len(core)} 条核心事件已全部推送过，跳过"
-    today = datetime.now().strftime("%Y-%m-%d")
+    # ★ 2026-11-01：改用**北京时间**。原为 `datetime.now()`——服务器跑 UTC 时
+    #   `today` 会比北京日期早一天（北京 07:00 = UTC 前一天 23:00），
+    #   导致标签"今天"误判、`days` 窗口整体偏移一格。
+    from app.flash import rules as _rules
+    _now = _rules.beijing_now()
+    today = _now.strftime("%Y-%m-%d")
     fresh_ids = set(id(x) for x in fresh)      # 身份比较（fresh 出自上面同一批对象）
     lines = []
+    # ★★ 2026-11-01 新增「昨夜已公布」段（用户："重要事件公布需要通知及解读吗"）：
+    #   美国核心数据全在 20:30~23:00 公布，那时 A 股已收盘 ⇒ **不当场推**
+    #   （半夜弹窗无法行动，纯骚扰），改为**次日盘前汇总实际值 + 超预期判断**。
+    #   中国的核心数据走盘中播报（`run_publish_alert`），这里排除，避免同一事件两次。
+    yday = (_now - timedelta(days=1)).strftime("%Y-%m-%d")
+    released = [x for x in published_on(yday) if x["country"] != "中国"]
+    if released:
+        lines.append(f"**昨夜已公布（{yday[5:]}）**")
+        for x in released:
+            lines.append(_released_line(x))
+        lines.append("")
     for d, rows in sorted(up["by_date"].items()):
         sel = [x for x in rows if id(x) in fresh_ids]
         if not sel:
@@ -262,3 +278,231 @@ def run_alert(days: int = 3, dry_run: bool = False) -> str:
     except Exception as e:
         print(f"[cal_ahead] 去重记录写入失败（已推送，可能重复推）: {e}")
     return f"日历前瞻: 已推送 {len(fresh)} 条核心事件（未来 {days} 天）"
+
+
+# ================================================================
+#  四、公布播报（2026-11-01 新增）
+# ================================================================
+# 【为什么只做"中国 + 盘中"，不做全量实时】
+#   实测库里 114 条 data 事件的公布时刻分布：
+#     中国核心指标：09:30 / 09:45          ← A 股开盘后 0~15 分钟，**唯一能当天操作**
+#     美国核心指标：20:30 / 21:30 / 22:45 / 23:00   ← 全部收盘后，只能影响次日
+#     欧日：14:30~18:00（多数在收盘后）
+#   ⇒ 全量实时播报的真实效果是"半夜弹一条非农"，当天根本无法行动。
+#     所以：**中国 → 盘中即时推**（`run_publish_alert`）；
+#           **海外 → 次日盘前汇总**（见 `run_alert` 的「昨夜已公布」段）。
+#
+# 【为什么不需要 LLM】
+#   数据源已给 `actual / consensus / prev / unit` ⇒ "超预期/不及预期"是纯算术，
+#   配上既有 `impact_of()` 的静态传导说明，信息已完整。上 LLM 只加成本与延迟，
+#   且事件解读属"事实 + 常识"，不是需要推理的场景。
+_DIR_UP, _DIR_DOWN, _DIR_UNKNOWN = 1, -1, 0
+
+# 指标"超预期"对 A 股的方向（+1 利好 / -1 利空 / 0 无法判断）
+# ⚠️ 与 `_IMPACT` 配套维护：`_IMPACT` 说"怎么传导"，这里说"超预期算好还是坏"。
+_DIRECTION = (
+    (("非农", "ADP", "初请", "失业率"), _DIR_DOWN),      # 就业强 = 降息慢 = 压制估值
+    (("PCE", "CPI"), _DIR_DOWN),                         # 通胀高 = 降息推迟
+    (("利率决议", "FOMC", "议息"), _DIR_UNKNOWN),        # 加息/降息方向相反，不猜
+    (("PMI", "工业产出", "GDP", "零售销售"), _DIR_UP),   # 景气/消费走强 = 利好
+)
+
+
+def _dir_of(title: str) -> int:
+    for kws, d in _DIRECTION:
+        if any(k in title for k in kws):
+            return d
+    return _DIR_UNKNOWN
+
+
+def _num(v):
+    """宽松转数值；转不了返回 None（宁可不判断，也不猜）。"""
+    try:
+        return float(str(v).replace("%", "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def judge(actual, consensus) -> Optional[dict]:
+    """实际值 vs 预期 → 超预期判断。任一无法解析成数值则返回 None。"""
+    a, c = _num(actual), _num(consensus)
+    if a is None or c is None:
+        return None
+    if abs(a - c) < 1e-9:
+        return {"label": "符合预期", "delta": 0.0, "beat": None}
+    return {"label": "高于预期" if a > c else "低于预期",
+            "delta": round(a - c, 4), "beat": a > c}
+
+
+def published_on(day: str, country: Optional[str] = None) -> list:
+    """某日**已公布**的关键数据（`actual` 非空），带超预期判断 + 传导方向。
+
+    ★ 复用 `_classify`（国家白名单 + 核心指标词 + 星级通道），与"前瞻"同一口径，
+      不会出现"预告里有、播报里没有"的错位。
+    """
+    out = []
+    try:
+        from app.flash import calendar
+        items = calendar.get_items()
+    except Exception as e:
+        print(f"[cal_ahead] 读取日历失败: {str(e)[:80]}")        # ASCII（铁律⑥）
+        return out
+    for it in items:
+        if str(it.get("kind")) != "data":
+            continue
+        if str(it.get("date") or "") != day:
+            continue
+        if country and str(it.get("country") or "") != country:
+            continue
+        act = it.get("actual")
+        if act is None or str(act).strip() == "":
+            continue
+        ch = _classify(it)
+        if not ch:
+            continue
+        title = str(it.get("title") or "")
+        out.append({
+            "id": str(it.get("id") or ""), "time": str(it.get("time") or ""),
+            "country": it.get("country"), "title": title, "star": it.get("star"),
+            "unit": it.get("unit") or "", "prev": it.get("prev"),
+            "consensus": it.get("consensus"), "actual": act,
+            "judge": judge(act, it.get("consensus")),
+            "dir": _dir_of(title), "impact": impact_of(title), "channel": ch,
+        })
+    out.sort(key=lambda x: x["time"])
+    return out
+
+
+def _fmt_val(v, unit: str) -> str:
+    """数值 + 单位（空值统一给 —，避免出现 'None%'）。"""
+    if v is None or str(v).strip() == "":
+        return "—"
+    return f"{v}{unit}"
+
+
+def _released_line(x: dict) -> str:
+    """一条已公布事件的 Markdown（前瞻的「昨夜已公布」与盘中的「即时播报」共用）。"""
+    unit = x.get("unit") or ""
+    head = (f"- {x.get('country') or ''} {x.get('title') or ''}："
+            f"实际 **{_fmt_val(x.get('actual'), unit)}**")
+    tail = [f"预期 {_fmt_val(x.get('consensus'), unit)}"]
+    if x.get("prev") not in (None, ""):
+        tail.append(f"前值 {_fmt_val(x.get('prev'), unit)}")
+    head += " ／ " + " ／ ".join(tail)
+    lines = [head]
+    j = x.get("judge")
+    if j:
+        d = x.get("dir") or 0
+        if j["beat"] is None:
+            verdict = "符合预期"
+        else:
+            good = (d > 0 and j["beat"]) or (d < 0 and not j["beat"])
+            verdict = f"{j['label']} → {'利好' if good else '利空'}" if d else j["label"]
+        lines.append(f"  {verdict}")
+    if x.get("impact"):
+        lines.append(f"  ↳ {x['impact']}")
+    return "\n".join(lines)
+
+
+# 盘中播报窗口：北京时间 09:25 ~ 11:30。
+# ★ 起点 09:25 早于最早的中国数据（09:30 官方 PMI / 09:45 财新），
+#   终点取上午收盘（中国关键数据不存在下午才公布的情况）。
+_CN_LIVE_START = 9 * 60 + 25
+_CN_LIVE_END = 11 * 60 + 30
+
+
+def in_cn_publish_window(now=None) -> bool:
+    """当前是否处于「中国数据可能公布」的盘中窗口。"""
+    from app.flash import rules
+    n = now or rules.beijing_now()
+    if not rules.is_trading_day(n):
+        return False
+    t = n.hour * 60 + n.minute
+    return _CN_LIVE_START <= t < _CN_LIVE_END
+
+
+def has_due_cn(now=None, gap_min: int = 60) -> bool:
+    """今日是否有「刚过公布时刻不超过 `gap_min` 分钟」的中国核心数据。
+
+    ★ 为什么需要它：`calendar.refresh()` 是**外部 HTTP**（金十）。
+      若整个上午每 5 分钟无条件刷一次，一天白付 24 次请求，且多数时候没有新数据。
+      用"计划时刻已过 60 分钟内"作闸门 ⇒ 只在**真可能出新值**的两波（09:30 / 09:45）
+      之后短暂轮询，其余时间零请求。
+    """
+    from app.flash import rules
+    n = now or rules.beijing_now()
+    day = n.strftime("%Y-%m-%d")
+    n_naive = n.replace(tzinfo=None)
+    try:
+        from app.flash import calendar
+        items = calendar.get_items()
+    except Exception:
+        return False
+    for it in items:
+        if str(it.get("kind")) != "data":
+            continue
+        if str(it.get("date") or "") != day:
+            continue
+        if str(it.get("country") or "") != "中国":
+            continue
+        if not _classify(it):
+            continue                     # 非核心指标（如官员讲话）不关心
+        try:
+            pub = datetime.strptime(str(it.get("time") or ""), "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        delta_min = (n_naive - pub).total_seconds() / 60
+        if 0 <= delta_min <= gap_min:
+            return True
+    return False
+
+
+def run_publish_alert(dry_run: bool = False) -> str:
+    """盘中播报：今日已公布的**中国**关键数据（每个事件只推一次）。"""
+    from app.flash import rules
+    now = rules.beijing_now()
+    day = now.strftime("%Y-%m-%d")
+    rows = published_on(day, country="中国")
+    if not rows:
+        return "日历播报: 今日暂无已公布的中国关键数据"
+    ensure_table()
+    from app.database import db
+    fresh = []
+    for x in rows:
+        key = f"pub:{x['id']}" if x["id"] else ""
+        if key:
+            try:
+                if db.fetch_one("SELECT event_id FROM calendar_alert_log WHERE event_id = %s",
+                                (key,)):
+                    continue
+            except Exception:
+                pass                 # 查失败按"没推过"，宁可重复不可漏
+        fresh.append((x, key))
+    if not fresh:
+        return f"日历播报: {len(rows)} 条已公布数据均已推送过"
+    lines = [_released_line(x) for x, _ in fresh]
+    title = f"📊 数据公布 · {len(fresh)} 条（中国）"
+    content = ("\n".join(lines) +
+               "\n\n（用途：**公布后立刻知道超预期方向**——开盘 30 分钟内不追高，"
+               "按实际值而非预期值调整判断。）")
+    if dry_run:
+        return f"【dry-run 不推送】{title}\n{content}"
+    try:
+        from app.flash import wechat
+        if not wechat.WECHAT_WEBHOOK:
+            return "日历播报: 检测到已公布数据但未配置 WECHAT_WEBHOOK，未推送"
+        wechat.notify("brief", title, content, force=True)
+    except Exception as e:
+        return f"日历播报: 推送失败（{str(e)[:80]}）"
+    try:
+        for x, key in fresh:
+            if not key:
+                continue
+            db.execute(
+                "INSERT INTO calendar_alert_log (event_id, event_date, title, pushed_at) "
+                "VALUES (%s, %s, %s, %s)",
+                (key, day, str(x["title"])[:120],
+                 now.strftime("%Y-%m-%d %H:%M:%S")))
+    except Exception as e:
+        print(f"[cal_ahead] 播报去重写入失败（已推送，可能重复推）: {e}")
+    return f"日历播报: 已推送 {len(fresh)} 条中国数据公布"
