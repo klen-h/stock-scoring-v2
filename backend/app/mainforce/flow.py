@@ -150,12 +150,16 @@ def ensure_table() -> None:
         db.execute("""
             CREATE INDEX IF NOT EXISTS idx_mainflow_date ON mainflow_history (date)
         """)
-        # ★ 2026-10-24（BK-06）：code 索引——逐股读（load_flow/gate 回放）走点查。
-        #   新表有 uq_mainflow(code,date) 兜底，但**生产表建立早于该约束** ⇒
-        #   CREATE TABLE IF NOT EXISTS 是 no-op、约束从未补上 ⇒ 必须显式建索引。
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_mainflow_code ON mainflow_history (code, date)
-        """)
+        # ★★ 2026-11-01（库容量治理，414MB/500MB）：**删掉这里原本的
+        #   `CREATE INDEX IF NOT EXISTS idx_mainflow_code ON mainflow_history (code, date)`**。
+        #   理由：它与唯一索引 `uq_mainflow_history_code_date (code, date)` **定义完全相同**，
+        #   是纯冗余 —— 实测 PG 里这两个索引分别占 23MB / 20MB。
+        #   ⚠️ 2026-10-24 那条注释（"生产表建立早于 uq_mainflow 约束 ⇒ 约束从未补上"）
+        #      **已被实测推翻**：库里确实存在 `uq_mainflow_history_code_date`（名字不同，
+        #      不是由该 CONSTRAINT 创建的）⇒ `code` 前缀查询本就由唯一索引覆盖。
+        #   ⇒ 逐股点查（`load_flow` / gate 回放）仍走 btree 前缀，不会退化成全表扫。
+        #   ⚠️ 若哪天在某环境发现**既无唯一索引也无 code 索引**，请补 **UNIQUE** 索引
+        #      （`uq_mainflow_history_code_date`），**不要再建普通索引**——那会再浪费 20MB。
     else:
         db.execute("""
             CREATE TABLE IF NOT EXISTS mainflow_history (
@@ -165,10 +169,10 @@ def ensure_table() -> None:
                 UNIQUE (code, date)
             )
         """)
-        # ★ BK-06：sqlite 分支同样补 code 索引（原来两个索引都没有）
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_mainflow_code ON mainflow_history (code, date)
-        """)
+        # ★★ 2026-11-01：sqlite 分支同样**不再**建 `idx_mainflow_code` ——
+        #   上面的 `UNIQUE (code, date)` 约束在 SQLite 会生成 `sqlite_autoindex_*`，
+        #   `code` 前缀查询由它覆盖；再建一条同样列序的普通索引纯属重复。
+        #   （与 PG 分支同一条理由，详见上方注释。）
 
 
 def fetch_flow_history(code: str, days: int = 130, source: str = "sina") -> list:

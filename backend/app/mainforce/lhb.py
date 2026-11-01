@@ -52,9 +52,12 @@ def ensure_table() -> None:
             )
         """)
         db.execute("CREATE INDEX IF NOT EXISTS idx_lhb_date ON lhb_history (date)")
-        # ★ 2026-10-10（P1-2）：个股维度也要按 code 查（详情页标签）⇒ 补 code 索引，
-        #   否则每次详情页都要全表扫（含 seats_json 大字段所在的页）。
-        db.execute("CREATE INDEX IF NOT EXISTS idx_lhb_code ON lhb_history (code)")
+        # ★★ 2026-11-01（库容量治理）：**删掉原来的 `idx_lhb_code ON lhb_history (code)`**。
+        #   它与唯一索引 `uq_lhb_history_code_date (code, date)` 的**最左前缀完全重合**
+        #   ⇒ 详情页按 code 查照样走 btree 前缀，不会"全表扫含 seats_json 的大页"
+        #     （2026-10-10 那条担心的前提是"没有唯一索引"，实测库里是有的）。
+        #   收益：释放约 0.5MB，并少一份写放大（每插一条龙虎榜要维护两个索引）。
+        #   ⚠️ 若某环境既无唯一索引也无 code 索引，请补 **UNIQUE** 而非普通索引。
     else:
         db.execute("""
             CREATE TABLE IF NOT EXISTS lhb_history (
