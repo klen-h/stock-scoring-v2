@@ -2629,16 +2629,35 @@
         <!-- ★ 2026-10-27：市场底清单已并入观察器 ⑤（日频数据，300s 刷新），右栏不再保留副本。 -->
 
         <!-- ★★ 2026-11-01（用户："教练卡里面应该有教练卡和李大霄视角的tab"）：
-             「教练卡 | 李大霄」同一组 tab；「今日系统时间线」回到常驻区最底部（见 aside 末尾）。 -->
-        <div class="flex items-center gap-1.5">
-          <button v-for="t in sideTabs" :key="t.key" type="button"
-                  class="px-2 py-0.5 rounded text-xs transition-colors"
-                  :class="sideTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
-                  :title="t.tip"
-                  @click="sideTab = t.key">{{ t.label }}</button>
-        </div>
-        <div v-show="sideTab === 'lidx'" class="bg-card border border-border rounded-lg p-3">
-
+             tab **收在教练卡这张卡内部**（原来放在卡外、两个卡各挂 v-show，视觉上不成组）。
+             「今日系统时间线」在常驻区最底部（见 aside 末尾），不参与本组 tab。
+             ⚠️ 教练卡自身的折叠按钮去掉 —— tab 切换已足够，两种收起叠加要多点一次；
+                `todoOpen` 保留（默认展开），不影响列表渲染。 -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5 gap-2">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <button v-for="t in sideTabs" :key="t.key" type="button"
+                      class="px-2 py-0.5 rounded text-xs transition-colors shrink-0"
+                      :class="sideTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+                      :title="t.tip"
+                      @click="sideTab = t.key">{{ t.label }}</button>
+              <span v-if="sideTab === 'todo' && todoCount"
+                    class="px-1.5 rounded-full bg-red-500 text-white text-[10px] shrink-0"
+                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
+            </div>
+            <router-link target="_blank" to="/coach"
+                         class="text-xs text-accent hover:underline shrink-0">教练</router-link>
+          </div>
+          <!-- ① 教练卡 -->
+          <div v-show="sideTab === 'todo'" class="space-y-2">
+            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
+            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+            </div>
+            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
+          </div>
+          <!-- ② 李大霄视角 -->
+          <div v-show="sideTab === 'lidx'">
               <div v-if="!lidx || !lidx.latest" class="text-xs text-muted p-2">—（暂无李大霄视角数据）</div>
         <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
              事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
@@ -2720,30 +2739,6 @@
             </div>
           </template>
         </div>
-        </div>
-        <!-- 教练卡（今日）—— **全站唯一一份**
-             ★ 2026-09-28 起唯一展示位就在右栏；10-24 紧贴清单下方；
-               10-27 清单并入观察器后，右栏首张卡（上方是快讯解读 / 李大霄）。
-             ⚠️ 回放（isReplay）时 readonly=true ⇒ 只读 + 状态徽标（历史不可改）。 -->
-        <div v-show="sideTab === 'todo'" class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
-            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                    @click="todoOpen = !todoOpen" :title="todoOpen ? '点击收起' : '点击展开'">
-              <span class="text-[10px] text-muted">{{ todoOpen ? '▼' : '▶' }}</span>教练卡
-              <span v-if="todoCount" class="ml-1 px-1.5 rounded-full bg-red-500 text-white text-[10px]"
-                    :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
-            </button>
-            <router-link target="_blank" to="/coach" class="text-xs text-accent hover:underline">教练</router-link>
-          </div>
-          <div v-if="todoOpen" class="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2">
-            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
-              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
-            </div>
-            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
-          </div>
-          <div v-else class="text-[10px] text-muted">
-            已收起（{{ todayCoach.length }} 条<template v-if="todoCount">，其中未决策 {{ todoCount }}</template>）—— 点击标题展开
           </div>
         </div>
 
@@ -3215,20 +3210,20 @@ const defLiveLoading = ref(false)
 const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, eq_state: '' })
 // ★ 2026-09-28：评分榜口径标记（'local'=本地实时 / 'backend'=后端批次）—— 卡片标题旁如实标注
 const topMode = ref('')
-// ★★ 2026-11-01（用户："右边常驻卡片分为顶部 tab 切换展示的方式，将李大霄视角和
-//   今日系统时间线到第二个 tab 里"）：主区右卡顶部 tab。
-//   原「李大霄视角」「今日系统时间线」常驻右栏（窄栏 320px，两块都很长，把右栏撑得很高）
-//   ⇒ 收进本卡第二 tab；右栏只留教练卡 + 评分榜。
-const rightTabs = [
-  { key: 'flash', label: '快讯', tip: '快讯解读：按事件簇聚合的重要快讯 + AI 解读' },
-  { key: 'view', label: '观点', tip: '李大霄视角（外部二手解读）+ 今日系统时间线 + 系统自洽性审查' },
+// ★★ 2026-11-01（用户："教练卡里面应该有教练卡和李大霄视角的tab"）：
+//   常驻右栏「教练卡」这张卡**内部**切 tab（不是卡外独立按钮组）。
+//   ⚠️ 上一版把模板写成 `sideTabs` 但 script 仍叫 `rightTabs` ⇒ 变量未定义、
+//      按钮根本没渲染（用户反馈"常驻区域的 tab 呢？"的直接原因）。此处对齐。
+const sideTabs = [
+  { key: 'todo', label: '教练卡', tip: '今日教练卡（未决策可交互 / 已决策显示结果）' },
+  { key: 'lidx', label: '李大霄', tip: '李大霄视角（xiaopage 二手解读，不进决策链）' },
 ]
-const RIGHT_TAB_KEY = 'wb_right_card_tab'
-const rightTab = ref((() => {
-  try { return localStorage.getItem(RIGHT_TAB_KEY) === 'view' ? 'view' : 'flash' } catch { return 'flash' }
+const SIDE_TAB_KEY = 'wb_side_card_tab'
+const sideTab = ref((() => {
+  try { return localStorage.getItem(SIDE_TAB_KEY) === 'lidx' ? 'lidx' : 'todo' } catch { return 'todo' }
 })())
-watch(rightTab, (v) => {
-  try { localStorage.setItem(RIGHT_TAB_KEY, v) } catch (e) { console.warn('[right-tab] 记忆失败', e?.message) }
+watch(sideTab, (v) => {
+  try { localStorage.setItem(SIDE_TAB_KEY, v) } catch (e) { console.warn('[side-tab] 记忆失败', e?.message) }
 })
 // ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道他在实时刷新"）：
 //   距下次刷新的**秒数**。仅**交易时段**走字（非交易时段数据不变，显示倒计时是误导），
