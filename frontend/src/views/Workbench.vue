@@ -1786,7 +1786,10 @@
         <template v-else-if="selectedPhase === 'amreview'">
           <AmReviewCard :data="amReview" :loading="amReviewLoading"
                         :error="amReviewError" :date="selectedDate"
-                        @refresh="loadAmReview(true)" />
+                        :digest="amDigest" :digest-loading="amDigestLoading"
+                        :digest-error="amDigestError"
+                        @refresh="loadAmReview(true)"
+                        @digest="genAmDigest" />
         </template>
 
         <!-- 实时模式 · ② 早盘 / ③ 午盘（执行模式：大字、少文字）
@@ -3017,6 +3020,9 @@ import {
   getMacroLiquidity,
   // ★ 2026-11-01：「早盘复盘」聚合（盘面/宏观/消息/午后研判一次取回）
   getAmReview,
+  // ★ 2026-11-01：数据附录的 AI 解读（GET 只读 / POST 才生成）
+  getAmReviewDigest,
+  runAmReviewDigest,
 } from '../api'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
@@ -5071,6 +5077,41 @@ async function loadAmReview(force = false) {
   }
 }
 
+// ★ 2026-11-01（用户："加一个 llm 解读"）：数据附录的 AI 解读。
+//   GET 只读缓存（进页面时顺手取一次，绝不触发 LLM）；POST 才真正生成。
+const amDigest = ref(null)
+const amDigestLoading = ref(false)
+const amDigestError = ref('')
+
+async function loadAmDigest() {
+  amDigestError.value = ''
+  try {
+    const { data } = await getAmReviewDigest(selectedDate.value)
+    amDigest.value = (data && data.ok && data.markdown) ? data : null
+  } catch { amDigest.value = null }   // 只读取失败不影响页面
+}
+
+async function genAmDigest() {
+  if (amDigestLoading.value) return
+  amDigestLoading.value = true
+  amDigestError.value = ''
+  try {
+    const { data } = await runAmReviewDigest(selectedDate.value)
+    if (data && data.ok) {
+      amDigest.value = data
+    } else {
+      // ★ 2026-11-02：后端在"数据不足"时返回 `blocked` + `hint`（拒绝生成以免编造），
+      //   这里把 hint 一起显示 —— 只说"失败了"用户不知道该怎么办。
+      amDigestError.value = (data && data.error) || '生成失败（原因未知）'
+      if (data && data.hint) amDigestError.value += '｜' + data.hint
+    }
+  } catch (e) {
+    amDigestError.value = '生成失败：' + (e?.response?.data?.detail || e?.message || e)
+  } finally {
+    amDigestLoading.value = false
+  }
+}
+
 // 11:32 复盘落库前的轻轮询：只在「今日 + 早盘复盘段 + 还没有结论」时启动，
 // 60 秒一次、最多 5 次、取到即停（不碰行情接口，纯一次聚合读）。
 let _amPoll = { n: 0, id: null }
@@ -5509,7 +5550,8 @@ async function loadPhaseData(phase) {
   //   ② `loadAmReview()`：四块聚合数据。
   //   午休期间行情不再变化 ⇒ 不挂 120s 行情轮询，只有 11:32 复盘落库前的 60s 轻轮询。
   if (phase === 'amreview') {
-    await Promise.all([loadPulse(), loadAmReview()])
+    // ★ `loadAmDigest` 是**只读**（后端 GET 不触发 LLM）⇒ 顺手取一次，有就显示
+    await Promise.all([loadPulse(), loadAmReview(), loadAmDigest()])
     startAmPoll()
   }
   if (phase === 'intraday' || phase === 'midday') {
