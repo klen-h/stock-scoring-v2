@@ -6,7 +6,10 @@
              与盘面速览的持仓行共享同一条 60s 轮询；
        解读：`POST /flash/brief/refresh`（一次批量 LLM，重要条全进同一 prompt）。
        系统级：盘中异动由调度器 `brief_loop` 自动触发 → 浏览器通知（/flash/notifications）。 -->
-  <div class="bg-card border border-border rounded-lg p-3 text-xs">
+  <!-- ★ 2026-11-01（用户："高度可以跟左卡片同高……还有很多空间"）：
+       `h-full flex flex-col` ⇒ 卡片吃满网格行高；列表用 `flex-1` 吃掉剩余空间，
+       不再用 `max-h-80` 硬截 320px（那样右卡永远比左卡矮一截，右下留白）。 -->
+  <div class="bg-card border border-border rounded-lg p-3 text-xs h-full flex flex-col">
     <div class="flex items-center gap-2 flex-wrap">
       <button type="button" class="flex items-center gap-2"
               :title="bodyOpen ? '收起' : '展开'"
@@ -54,7 +57,7 @@
 
     <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息。
          ★ 2026-10-25（用户）：去掉 truncate 省略号 ⇒ 换行完整展示。 -->
-    <div v-if="flashDiag" class="mt-1 text-[10px] text-muted leading-relaxed"
+    <div v-if="flashDiag" class="mt-1 text-[11px] text-muted leading-relaxed shrink-0"
          :title="diagnosisLine">
       {{ diagnosisLine }}
     </div>
@@ -73,13 +76,13 @@
            后端旧实现取"涨幅最小 4 个"，全市场普涨那天就出现"+1.45% 领跌"（跌色渲染正数）
            ⇒ 用户只能怀疑数据是昨天的。现后端只把 `change_pct < 0` 的算领跌；
            全线上涨时给 `bottom_all_up` + `weakest`，这里如实说"无下跌板块（最弱 …）"。 -->
-      <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+      <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] shrink-0">
         <span class="text-muted">领跌</span>
         <span v-for="s in sectors.bottom.slice(0, 3)" :key="'b' + s.name" class="text-fall">
           {{ s.name }} {{ fmtPct(s.chg_pct) }}
         </span>
       </div>
-      <div v-else-if="!isHistory && sectors.bottom_all_up" class="mt-1.5 flex flex-wrap gap-x-2 text-[10px]">
+      <div v-else-if="!isHistory && sectors.bottom_all_up" class="mt-1.5 flex flex-wrap gap-x-2 text-[11px] shrink-0">
         <span class="text-muted">领跌</span>
         <span class="text-muted" :title="'全部行业板块上涨，没有下跌板块；这里给的是最弱的一个（仍在涨）'">
           无（全行业上涨<template v-if="sectors.weakest">，最弱 {{ sectors.weakest.name }} {{ fmtPct(sectors.weakest.chg_pct) }}</template>）</span>
@@ -88,7 +91,7 @@
       <!-- ③ 个股异动 -->
       <!-- ★ 2026-10-26（用户："异动加上股票代码，方便跳转去雪球"）：
            名称 → 本地详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球）。 -->
-      <div v-if="!isHistory && movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
+      <div v-if="!isHistory && movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] shrink-0">
         <span class="text-muted">异动</span>
         <span v-for="m in movers" :key="m.code">
           <a :href="stockHref(m.code)" target="_blank" rel="noopener"
@@ -114,15 +117,15 @@
            ⇒ 按 cluster 聚合：组头给"条数 + 最新时间"，组内按时间倒序（天然时间线），
              默认展开最新 2 条，其余一键展开。
            ⚠️ 每组**各画一条竖轴**：跨组连成一条会被误读成"同一序列"。 -->
-      <div v-if="cards.length" class="mt-2 max-h-80 overflow-y-auto pr-1 space-y-1.5">
+      <div v-if="cards.length" class="mt-2 flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
         <div v-for="g in grouped" :key="g.key">
           <!-- 组头（历史 tab 无 cluster ⇒ 不渲染，退化为平铺） -->
           <div v-if="g.cluster" class="flex items-center gap-1.5 px-1 pb-0.5">
-            <span class="px-1 rounded text-[10px]" :class="clusterCls(g.cluster)">{{ g.cluster }}</span>
-            <span class="text-[10px] text-muted">{{ g.items.length }} 条</span>
-            <span class="text-[10px] text-muted/70">· {{ hhmm(g.items[0].time) }} 最新</span>
+            <span class="px-1 rounded text-[11px]" :class="clusterCls(g.cluster)">{{ g.cluster }}</span>
+            <span class="text-[11px] text-muted">{{ g.items.length }} 条</span>
+            <span class="text-[11px] text-muted/70">· {{ hhmm(g.items[0].time) }} 最新</span>
             <button v-if="g.items.length > groupHead" type="button"
-                    class="ml-auto text-[10px] text-accent hover:underline"
+                    class="ml-auto text-[11px] text-accent hover:underline"
                     @click="toggleGroup(g.cluster)">
               {{ openGroups[g.cluster] ? '收起' : `展开 ${g.items.length - groupHead} 条` }}
             </button>
@@ -132,64 +135,67 @@
             <span class="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-border/50" aria-hidden="true"></span>
             <div v-for="n in groupItems(g)" :key="n.key" class="relative pb-1 last:pb-0">
               <!-- 节点：新条目（近 N 分钟）= 实心蓝点；其余空心 —— 与"新 N"徽标同一套语义 -->
-              <span class="absolute -left-3 top-[9px] w-[7px] h-[7px] rounded-full border"
+              <span class="absolute -left-3 top-[10px] w-[7px] h-[7px] rounded-full border"
                     :class="n.isNew ? 'bg-sky-400 border-sky-400' : 'bg-card border-border'"
                     :title="n.isNew ? `近 ${newsWindow} 分钟新增` : ''"></span>
               <div class="rounded border border-border/60 bg-white/[0.04]">
                 <button type="button" class="w-full text-left px-2 py-1.5"
                         @click="openKey = (openKey === n.key ? '' : n.key)">
                   <div class="flex items-center gap-1.5">
-                    <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
-                    <span v-if="agoText(n.time)" class="text-[10px] text-muted/70">· {{ agoText(n.time) }}</span>
+                    <span class="font-mono text-[11px] text-muted">{{ hhmm(n.time) }}</span>
+                    <span v-if="agoText(n.time)" class="text-[11px] text-muted/70">· {{ agoText(n.time) }}</span>
                     <!-- cluster 已在组头显示，条目内只在无组头时兜底（历史 tab） -->
-                    <span v-if="!g.cluster && n.cluster" class="px-1 rounded text-[10px]"
+                    <span v-if="!g.cluster && n.cluster" class="px-1 rounded text-[11px]"
                           :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
-                    <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
-                    <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
-                    <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
+                    <span v-if="n.direction" class="text-[11px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
+                    <span v-if="n.score >= 4" class="text-[11px] text-amber-300">重要</span>
+                    <span class="ml-auto text-[11px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
                   </div>
-                  <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
+                  <!-- ★ 2026-11-01（用户："快讯解读的文字太小了"）：正文 11px → 13px。
+                       时间/标签保持 11px：它们是辅助信息，一起放大反而挤掉标题。 -->
+                  <div class="mt-1 text-[13px] text-gray-200 leading-relaxed">{{ n.gist }}</div>
                 </button>
-                <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
+                <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-xs">
                   <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
                        的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
                        ⇒ 按来源显示诚实文案。 -->
                   <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
                   <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
-                  <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
+                  <div class="text-[11px] text-muted leading-relaxed">{{ n.text }}</div>
                 </div>
               </div>
             </div>
           </div>
         </div>
       </div>
-      <div v-else class="mt-2 text-[11px] text-muted">
+      <div v-else class="mt-2 text-xs text-muted shrink-0">
         近期没有命中规则的重要快讯（低热度条目已折叠，完整列表见「全部快讯」）。
       </div>
 
-      <!-- ⑤ AI 结论 + 手动解读 -->
-      <div class="mt-2 pt-2 border-t border-border/40">
-        <div v-if="llm.conclusion" class="text-[11px] text-gray-200 leading-snug">
+      <!-- ⑤ AI 结论 + 手动解读
+           ★ 2026-11-01：`shrink-0` 固定在本卡底部（列表 `flex-1` 撑满时不被压缩）。 -->
+      <div class="mt-2 pt-2 border-t border-border/40 shrink-0">
+        <div v-if="llm.conclusion" class="text-xs text-gray-200 leading-snug">
           <span class="text-accent">AI</span> {{ llm.conclusion }}
         </div>
-        <div v-if="llm.market" class="text-[10px] text-muted mt-0.5 leading-relaxed">{{ llm.market }}</div>
+        <div v-if="llm.market" class="text-[11px] text-muted mt-0.5 leading-relaxed">{{ llm.market }}</div>
         <!-- ★ 2026-10-24（用户："给推翻条件"）：可观测阈值，不是"走势反转"这种空话 -->
-        <div v-if="llm.invalidate" class="text-[10px] text-amber-300/90 mt-1 leading-relaxed">
+        <div v-if="llm.invalidate" class="text-[11px] text-amber-300/90 mt-1 leading-relaxed">
           <span class="text-amber-400">推翻条件</span> {{ llm.invalidate }}
         </div>
         <div class="flex items-center gap-2 mt-1">
           <button type="button"
-                  class="px-2 py-0.5 rounded border border-border text-[10px] text-accent
+                  class="px-2 py-0.5 rounded border border-border text-[11px] text-accent
                          hover:border-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
                   :disabled="busy"
                   title="一次批量解读（重要快讯打包进同一次 LLM 调用）；30 分钟内重复点读缓存"
                   @click="refresh">
             {{ busy ? '解读中…' : (llm.conclusion ? '重新解读' : 'AI 解读') }}
           </button>
-          <span v-if="source" class="text-[10px] text-muted">
+          <span v-if="source" class="text-[11px] text-muted">
             {{ source === 'llm' ? 'AI 生成' : source === 'template' ? '规则兜底（LLM 未就绪）' : '快照' }}
           </span>
-          <span v-if="cached" class="text-[10px] text-muted">· 缓存</span>
+          <span v-if="cached" class="text-[11px] text-muted">· 缓存</span>
         </div>
       </div>
 

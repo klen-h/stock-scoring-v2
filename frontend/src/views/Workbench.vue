@@ -727,8 +727,12 @@
         <!-- ★★ 2026-10-26（用户：盘面速览与快讯解读从观察器容器里独立出来，左卡/右卡）：
              原来二者被误嵌在观察器卡内部（插入点落在那张卡的脚注之后、卡闭合之前）⇒ 视觉上是"卡中卡"。
              现在它们是观察器**同级**的两列：左＝盘面速览（涨跌/主线/持仓），右＝快讯解读（事件驱动）。
-             ⚠️ 断点 xl：窄屏自动上下堆叠（先盘面、后快讯）。 -->
-        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-start">
+             ⚠️ 断点 xl：窄屏自动上下堆叠（先盘面、后快讯）。
+             ★ 2026-11-01（用户："快讯解读的高度可以跟左卡片同高……还有很多空间"）：
+               原 `items-start` 让右卡按内容高度收缩 ⇒ 左卡 600+ px、右卡 480px，右下大片空白。
+               改 `items-stretch` + 右卡 `h-full`，两卡等高；快讯列表从固定 `max-h-80`
+               改为 `flex-1`（吃掉剩余高度，而不是留白）。 -->
+        <div class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
           <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
                置于观察器下方；消除市场涨跌在多处重复）：
                · 涨跌家数/涨停跌停/成交额/情绪 —— 全站**只此一处**（原盘中看盘序、盘后结算卡各有一份）；
@@ -889,8 +893,11 @@
                        ② 市场级：「涨停梯队与清单」卡的连板梯队（zzshare 唯一口径）
                      ⚠️ 教训：加展示前要 grep **展示文案**，不能只 grep **字段名** ——
                         `limit_boards` 在 `overview.stats` 里躺着，并不代表页面上没有等价物。 -->
-                <!-- 行业成交额占比：默认折叠（真金白银集中在哪，和涨幅榜互补） -->
-                <details v-if="amountShare?.available" class="mt-1">
+                <!-- 行业成交额占比（真金白银集中在哪，和涨幅榜互补）
+                     ★ 2026-11-01（用户："行业成交额占比默认展开"）：从 `<details>` 折叠改为默认展开。
+                       仍保留 `<details>`：用户手动收起后本次会话内不再弹开（若改成直接渲染，
+                       15 行占比会把下面的「持仓状态」挤到很下面）。 -->
+                <details v-if="amountShare?.available" class="mt-1" open>
                   <summary class="text-[10px] text-muted cursor-pointer hover:text-accent">
                     行业成交额占比（Top5 占 {{ amountShare.top5_share_pct }}% · 数据 {{ amountShare.as_of }}{{ amountShare.from_snapshot ? ' 快照' : '' }}）
                   </summary>
@@ -986,8 +993,10 @@
             </div>
           </div>
 
-          <!-- 右卡：快讯解读（自带卡片外壳） -->
-          <div class="min-w-0">
+          <!-- 右卡：快讯解读（自带卡片外壳）
+               ★ 2026-11-01：`h-full` 让卡片撑满网格行高（与左卡等高），
+                  快讯列表在卡内 `flex-1` 吃掉剩余高度。 -->
+          <div class="min-w-0 h-full">
             <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
           </div>
         </div>
