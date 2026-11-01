@@ -2631,7 +2631,9 @@
           <div v-show="sideTab === 'lidx'">
               <div v-if="!lidx || !lidx.latest" class="text-xs text-muted p-2">—（暂无李大霄视角数据）</div>
         <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
-             事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
+             事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库。
+             ★ 2026-11-01：**不再轮询**（用户要求）—— 切到本 tab 时取一次、30 分钟内复用，
+               需要最新内容点卡内「↻ 更新」（它走 xiaopage ingest，幂等）。
              卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
         <div v-if="lidx && lidx.latest" class="p-2">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
@@ -3266,6 +3268,9 @@ const sideTab = ref((() => {
 })())
 watch(sideTab, (v) => {
   try { localStorage.setItem(SIDE_TAB_KEY, v) } catch (e) { console.warn('[side-tab] 记忆失败', e?.message) }
+  // ★★ 2026-11-01（用户："lidaxiao_views 改为不轮询"）：
+  //   改为**进入 tab 时才取**（30 分钟内复用，超时才再取一次）+ 手动「↻ 更新」按钮兜底。
+  if (v === 'lidx') ensureLidx()
 })
 // ★ 2026-09-28（用户："评分榜 Top10 在盘中会有显示倒计时的吧？这样用户才知道他在实时刷新"）：
 //   距下次刷新的**秒数**。仅**交易时段**走字（非交易时段数据不变，显示倒计时是误导），
@@ -3926,11 +3931,26 @@ async function loadPolicyBottom() {
 //   数据由 xiaopage 在 LLM 输出解读的时刻 POST /market/lidaxiao/push 落库（事件驱动，
 //   非"通知后回拉"——该时刻 GitHub raw 尚未 commit，回拉必拿旧数据），本卡只读。
 const lidx = ref(null)
+// ★★ 2026-11-01（用户："lidaxiao_views 改为不轮询"）：
+//   `lidaxiao_views` 是**事件驱动**数据（xiaopage 产出新解读时才由它 POST 落库），
+//   按秒/按分轮询毫无收益 —— 探针实测这条 `SELECT * ... LIMIT 100` 全周被调
+//   **2,703 次 / ≈124MB**（在 egress 榜上排前六），而内容一天最多变一两次。
+//   ⇒ 改为：**进 tab 时取一次**（30 分钟内复用）+ 手动「↻ 更新」按钮兜底。
+const LIDX_TTL_MS = 30 * 60 * 1000
+const lidxTs = ref(0)
+
 async function loadLidaxiao() {
   try {
     const { data } = await getLidaxiaoView()
     if (data && data.latest) lidx.value = data
+    lidxTs.value = Date.now()          // 成功才记时间（失败下次仍会重试）
   } catch { /* 静默保留上次值 */ }
+}
+
+/** 进「李大霄」tab 时才取；30 分钟内命中内存值，不重复请求。 */
+function ensureLidx() {
+  if (lidx.value && Date.now() - lidxTs.value < LIDX_TTL_MS) return
+  loadLidaxiao()
 }
 // ★ 2026-10-28（用户："盘后也会有更新，加个手动更新按钮"）：手动补拉。
 //   后端拉 xiaopage 的 videos.json（~6.4MB）→ 同一个 ingest 落库（幂等）。
@@ -5529,9 +5549,13 @@ function startPolling() {
   //   ⇒ 这是"**推**"而不是"拉"：页面不必轮询、不必一直开着，用户收到通知再打开即可。
   //   ⚠️ 此处**刻意不加**自动重试定时器 —— 保留本注释是防止日后有人"好心补回来"
   //     （那会重新制造"开着页面等"的体验，且用户已明确否决）。
-  timers.push(setInterval(() => { loadCoach(); loadRadar(); loadLidaxiao() }, 60000))
-  //   ↑ ★ 2026-10-25：李大霄视角卡并入教练卡 60s 轮询（用户拍板"跟教练一起轮训"）——
-  //     接口只读小表前 15 行（~3KB/次），页面开一整天也不构成 egress 负担。
+  timers.push(setInterval(() => { loadCoach(); loadRadar() }, 60000))
+  //   ↑ ★ 2026-10-25：李大霄视角卡曾并入这条 60s 轮询（当时判断"小表 ~3KB/次不算负担"）。
+  //   ★★ 2026-11-01 撤出（用户："lidaxiao_views 改为不轮询"）：探针实测该语句全周
+  //     **2,703 次 / ≈124MB**（`SELECT * FROM lidaxiao_views ORDER BY date DESC LIMIT 100`），
+  //     是 egress 榜前六 —— 因为它一次 `SELECT *` 取整行、且**页面开着就一直在跑**。
+  //     而数据是事件驱动的（xiaopage 产出新解读才落库，一天最多变一两次）
+  //     ⇒ 轮询拿到的 99% 是同一份内容。现改为「进 tab 时取 + 30 分钟惰性 + 手动更新」。
   // ★ 2026-09-29（P1）：盘中实时涨停/炸板 60s 轮询（与后端 rt_k 预热 120s 错频，
   //   一半会命中同一份后端缓存，无额外外部请求）——⚠️ 仅交易时段真发请求。
   // ★★ 2026-10-26（G2 + G3）：**两条 60s 轮询合并为一条** —— 涨停/炸板 + 成交额环比
@@ -5655,7 +5679,11 @@ onMounted(async () => {
   // ★ 2026-11-01：`loadCalendarToday()` 补进挂载批次 —— 财经日历已移入**常驻右栏 tab③**，
   //   而它原来只在 `loadPhaseData('premarket')` 里调用 ⇒ 盘中/盘后切到该 tab 会是空白。
   //   `loadCalendarToday` 自带 `_dayCached` 守卫，与盘前重复调用无副作用。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  // ★ 2026-11-01：`loadLidaxiao()` 已从首屏批次移除 —— 改为**切到该 tab 时才取**
+  //   （见 `ensureLidx`）。默认 tab 是「教练卡」，绝大多数打开页面的人不会看它，
+  //   首屏就不必为它付一次 `SELECT *`。
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  if (sideTab.value === 'lidx') ensureLidx()
   loadPhaseData(selectedPhase.value)
   startPolling()
   // 快讯共享源：与 <FlashBriefCard> 共用引用计数 ⇒ 仍只有一条 60s 轮询；

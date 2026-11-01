@@ -391,7 +391,10 @@ def load(limit: int = 14) -> Dict:
               "title": r.get("title")} for r in rows[1:n + 1]]
     # ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换"）：
     #   增加 `items` = 最近 N 期**精简投影**（只带卡面要渲染的字段，不带 factors/core_views）
-    #   ⇒ 12 期约 5KB，60s 轮询仍可接受；前端用它渲染卡内 tab（选中态按 entry_id 记忆）。
+    #   ⇒ 12 期约 5KB；前端用它渲染卡内 tab（选中态按 entry_id 记忆）。
+    #   ★ 2026-11-01：**前提已变** —— `items` 虽精简，但 `SELECT * ... LIMIT 15` 的**原始行**
+    #     每行约 3KB（factors_json / core_views / operation_advice 等大字段），
+    #     实测单次响应 ≈45KB、全周 124MB。前端已改为**不轮询**（进 tab 才取）。
     _ITEM_FIELDS = ("entry_id", "bvid", "title", "date", "video_url",
                     "sentiment_score", "sentiment_level", "disclaimer_level",
                     "final_conclusion", "sectors")

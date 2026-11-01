@@ -2717,7 +2717,13 @@ def lidaxiao_view(limit: int = Query(14, ge=1, le=60,
     """读李大霄视角卡数据：最新一期 + 近 N 期情绪轨迹 + 滞后/过期标记。
 
     匿名理由（AUTH_POLICY §2）：GET 只读、读小表（~490 行取前 15）、无外部请求、
-    不写库、不触发重算（60s 轮询一次，响应 ~3KB，不构成 egress 负担）。
+    不写库、不触发重算。
+
+    ★★ 2026-11-01 更正（原文写"60s 轮询一次，响应 ~3KB，不构成 egress 负担"——**估错了**）：
+      `egress_probe` 实测全周 **2,703 次调用 / 40,545 行 / ≈124MB**，在出口流量榜排前六。
+      原因：`load()` 是 `SELECT * ... LIMIT 15`，而**单行约 3KB**（含 factors/core_views/
+      operation_advice 等大字段）⇒ 单次响应约 **45KB**，是原估计的 15 倍。
+      前端已于同日改为**不轮询**（进 tab 才取、30 分钟惰性 + 手动更新）⇒ 频次降到约 1/60。
     """
     from app import lidaxiao_views as lv
     return lv.load(limit)
