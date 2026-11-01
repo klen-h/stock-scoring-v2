@@ -507,6 +507,128 @@ def _holdings_block(is_live: bool, missing: List[dict]) -> Dict:
 
 # ── ⑤ 结论（午后研判）────────────────────────────────────────────────────
 
+# ── ⑤ 补充维度（用户："项目里有大把有用的数据没用上"）────────────────────
+#   这些不进页面的"数据附录"主表（避免信息过载），但**必须喂给 AI 解读** ——
+#   它们恰好是"解释成因"最需要的几个维度：钱从哪来、打到哪个板块、情景概率怎么变。
+
+# ★ 2026-11-02：枚举值以**库里实际出现的**为准（实测 `SELECT DISTINCT phase`：
+#   decline 1981 / sideways 532 / accumulation 237 / markup 67 / distribution 22 / shakeout 14）。
+#   ⚠️ 首版按"想当然"写成 accum/wash/range/down ⇒ 4/6 个没映射上，喂给模型的还是英文。
+_PHASE_CN = {
+    "accumulation": "吸筹", "accum": "吸筹",
+    "markup": "拉升",
+    "shakeout": "洗盘", "wash": "洗盘",
+    "distribution": "出货",
+    "sideways": "盘整", "range": "盘整",
+    "decline": "下跌", "down": "下跌",
+}
+
+
+# 情景推演是**日频**数据（日批落库）⇒ 按日缓存 10 分钟。
+# `scenario_watch.load()` 内部要跑 2 次查询（MAX(date) + 取行），跨境约 1.1 秒。
+_SC_CACHE: Dict[str, tuple] = {}
+_SC_TTL = 600.0
+
+
+def _scenario_of(day: str) -> Dict:
+    import time as _t
+    now = _t.time()
+    hit = _SC_CACHE.get(day)
+    if hit and now - float(hit[0] or 0) < _SC_TTL:
+        return hit[1]
+    try:
+        from app import scenario_watch as sw
+        sc = sw.load(day) or {}
+    except Exception as e:
+        print(f"[amreview] scenario failed: {e}")
+        return {}
+    if sc:
+        _SC_CACHE[day] = (now, sc)
+        if len(_SC_CACHE) > 8:
+            for k in sorted(_SC_CACHE, key=lambda x: _SC_CACHE[x][0])[:len(_SC_CACHE) - 8]:
+                _SC_CACHE.pop(k, None)
+    return sc
+
+
+def _extra_block(day: str, is_live: bool, missing: List[dict]) -> Dict:
+    """主力资金结构 / 板块强弱 / 情景推演概率 —— 三个"成因层"维度。
+
+    ★ 全部零外部请求：`mainforce_state`、`scenario_watch` 是**日批落库**；
+      板块占比走 `industry_amount_share`（读内存行情池 + 落库行业映射）。
+    ★ 每个维度独立 try：任一失败只影响自己，不拖垮整页。
+    """
+    out: Dict = {}
+
+    # ① 主力资金结构：全市场当日 phase 分布（钱在吸筹还是在出货）
+    #   ★ 2026-11-02：`date` 与 `phase` 一次 GROUP BY 取回 —— 原来多跑一条 MAX(date)，
+    #     跨境 570ms/次，白等半秒。
+    try:
+        rows = db.fetch(
+            "SELECT date, phase, COUNT(*) AS n FROM mainforce_state "
+            "WHERE date = (SELECT MAX(date) FROM mainforce_state WHERE date <= %s) "
+            "GROUP BY date, phase", (day,)) or []
+        dist = [{"phase": _PHASE_CN.get(str(r.get("phase") or ""), str(r.get("phase") or "未分类")),
+                 "n": int(r.get("n") or 0)} for r in rows]
+        dist.sort(key=lambda x: -x["n"])
+        total = sum(x["n"] for x in dist)
+        _d = str((rows[0].get("date") if rows else "") or "")[:10]
+        out["mainforce"] = {"date": _d, "dist": dist, "total": total}
+        if not total:
+            missing.append({"block": "extra", "item": "主力资金结构",
+                            "reason": "该日无主力行为快照（日批 19:00 后生成）"})
+    except Exception as e:
+        print(f"[amreview] mainforce dist failed: {e}")
+
+    # ② 板块强弱：成交额占比 Top6（钱打到哪、哪个板块在放量）
+    if is_live:
+        try:
+            from app.sector_industry import industry_amount_share
+            s = industry_amount_share(top=6) or {}
+            if s.get("available"):
+                out["sectors"] = {
+                    "rows": [{"industry": r.get("industry"),
+                              "share": _num(r.get("share_pct")),
+                              "chg": _num(r.get("avg_change_pct")),
+                              "n": r.get("stock_n")}
+                             for r in (s.get("rows") or [])],
+                    "top5_share": _num(s.get("top5_share_pct")),
+                    "as_of": s.get("as_of"),
+                }
+            else:
+                missing.append({"block": "extra", "item": "板块成交占比",
+                                "reason": "行情缓存未就绪（工作台轮询后可用）"})
+        except Exception as e:
+            print(f"[amreview] sectors failed: {e}")
+    else:
+        # 历史日：板块占比来自**实时内存池**，无法回溯 ⇒ 如实说明（不拿今天冒充）
+        missing.append({"block": "extra", "item": "板块成交占比",
+                        "reason": "历史日未留存（成交占比由实时行情聚合，盘中未落库）"})
+
+    # ③ 情景推演：**当前情景名 + 倾向 + 多空信号数 + 上证锚点状态**
+    #   ⚠️ 2026-11-02 修正：首版按"base/bull/bear 概率字典"写，实测 `load()` 不返回那种结构
+    #      （`scenario` 是字符串、`lean` 是倾向、`anchor` 是上证锚点）⇒ 首版恒为空。
+    try:
+        sc = _scenario_of(day)
+        anchor = (sc or {}).get("anchor") or {}
+        sc = sc or {}
+        if sc.get("scenario") or sc.get("lean"):
+            out["scenario"] = {
+                "date": str(sc.get("date") or "")[:10],
+                "stale": bool(sc.get("stale")),
+                "name": sc.get("scenario") or "",
+                "lean": sc.get("lean") or "",
+                "n_up": sc.get("n_up"),
+                "n_down": sc.get("n_down"),
+                "anchor_level": _num(anchor.get("level")),
+                "anchor_state": anchor.get("state") or "",
+                "note": str(sc.get("note") or "")[:80],
+            }
+    except Exception as e:
+        print(f"[amreview] scenario failed: {e}")
+
+    return out
+
+
 def _conclusion(day: str) -> Dict:
     """早盘复盘的文字结论 = 当日 `lunchbreak` 复盘（11:32 自动生成）。"""
     try:
@@ -529,6 +651,188 @@ def _conclusion(day: str) -> Dict:
             "phase": "lunchbreak", "signal": r.get("signals") or []}
 
 
+# ── ⑥ 数据附录的「AI 解读」（按需生成，不阻塞主端点）──────────────────────
+
+# {day: (ts, markdown)} —— 11:30 后数据冻结 ⇒ 同一天重复点"重新生成"才有必要
+_DIGEST_CACHE: Dict[str, tuple] = {}
+_DIGEST_TTL = 1800.0
+
+_DIGEST_SYS = (
+    "你是一名 A 股盘面解读员。**只根据给定数据分析**，不得编造任何数字；"
+    "数据里没有的东西就说「数据未提供」，不要用常识补。\n"
+    "写作要求：\n"
+    "1. 用 4~6 条短句（每条一行，以 `- ` 开头），一条只说一件事；\n"
+    "2. 每条必须写成「数据 → 含义」的因果，**不允许只复述数字**；\n"
+    "3. 优先使用这些**成因层**证据（它们比涨跌家数更有解释力）："
+    "主力资金结构（吸筹/拉升/出货家数）、板块成交占比（钱去了哪）、"
+    "情景推演概率（系统对后市的先验）；\n"
+    "4. 必须指出**今天最值得注意的一处矛盾或反常**（两组数据互相打架的地方）；\n"
+    "5. 如果给了持仓，最后加 1 条：这些盘面特征对**该持仓结构**意味着什么"
+    "（集中度/风格/浮亏），仍然**不要给具体买卖指令**；\n"
+    "6. 中文输出，不用表格、不用标题、不用 emoji。"
+)
+
+
+def _fmt_item(it: Dict) -> str:
+    """单条数据 → 一行文本。**有涨跌幅就给带符号的百分比**，没有就标"无前值"。
+
+    ★ 为什么必须区分（2026-11-02 实测发现）：`macro_daily_history` 缺前值时 delta 为 None，
+      原来只输出裸价格（`布伦特原油：111.43`）⇒ 模型不知道是涨是跌，只能瞎猜或空泛带过，
+      正好违反 system 里"不得编造"那一条。
+    """
+    label = it.get("label") or ""
+    unit = it.get("unit") or ""
+    delta = it.get("delta")
+    if delta is not None:
+        return f"- {label}：{float(delta):+.2f}{unit}"
+    val = it.get("value")
+    if unit and unit not in ("%",):
+        return f"- {label}：{val} {unit}"          # 数值与单位之间留空格（`1100 家`）
+    cal = str(it.get("caliber") or "")
+    tail = "（无前值，仅为水平值）" if "无前值" in cal else ""
+    return f"- {label}：{val}{unit}{tail}"
+
+
+def _digest_user_text(payload: Dict) -> str:
+    """把**全部可用维度**压成一段紧凑文本喂给 LLM（只给事实，不给结论）。
+
+    ★★ 2026-11-02（用户："提示词还不够，项目里有大把有用的数据没用上"）：
+      原来只喂了盘面 4 项 + 宏观 5 项 + 消息 1 条 ⇒ 只有 246 字符，
+      模型除了"涨跌家数多"说不出别的。现在补上**成因层**与**结构层**：
+        ① 主力资金结构（吸筹/拉升/出货 家数）—— 回答"钱在做什么"
+        ② 板块成交占比 Top6 + 涨跌 —— 回答"钱去了哪里"
+        ③ 情景推演概率 —— 回答"系统自己怎么看后市"
+        ④ 持仓结构（市值/集中度/风格）—— 回答"对这个人意味着什么"
+        ⑤ 每条数据的**口径**（是否 11:30 定稿 / 是否快照）—— 让模型知道自己看的是什么
+      仍然坚持：只喂数字与口径，**不喂结论**（结论是模型要产出的东西）。
+    """
+    lines = [f"# {payload.get('date')} 早盘（09:30-11:30）数据"]
+    blocks = payload.get("blocks") or {}
+    for key, name in (("market", "盘面"), ("macro", "宏观"), ("news", "消息")):
+        items = blocks.get(key) or []
+        if not items:
+            continue
+        lines.append(f"\n## {name}")
+        for it in items:
+            # 消息面是长文本，原样给（它本身就是"发生了什么"）
+            if key == "news":
+                lines.append(f"- {(it.get('label') or '')}：{(it.get('value') or '')}")
+            else:
+                lines.append(_fmt_item(it))
+
+    ex = payload.get("extras") or {}
+    mf = ex.get("mainforce") or {}
+    if mf.get("total"):
+        seg = "、".join(f"{x['phase']} {x['n']} 只" for x in (mf.get("dist") or [])[:6])
+        lines.append(f"\n## 主力资金结构（{mf.get('date')} 全市场 {mf['total']} 只）")
+        lines.append(f"- {seg}")
+
+    sec = ex.get("sectors") or {}
+    if sec.get("rows"):
+        lines.append("\n## 板块成交占比 Top6（钱去了哪里）")
+        for r in sec["rows"]:
+            chg = r.get("chg")
+            chg_s = f"{float(chg):+.2f}%" if chg is not None else "涨跌未知"
+            share = f"{float(r['share']):.1f}%" if r.get("share") is not None else "—"
+            lines.append(f"- {r.get('industry')}：成交占比 {share}，板块涨跌 {chg_s}，{r.get('n') or '—'} 只")
+        if sec.get("top5_share") is not None:
+            lines.append(f"- Top5 合计占 {float(sec['top5_share']):.1f}%（越高说明资金越集中）")
+
+    sc = ex.get("scenario") or {}
+    if sc.get("name") or sc.get("lean"):
+        head = f"\n## 情景推演（{sc.get('date')}）"
+        lines.append(head)
+        parts = []
+        if sc.get("name"):
+            parts.append(f"当前情景「{sc['name']}」")
+        if sc.get("lean"):
+            parts.append(f"倾向 {sc['lean']}")
+        if sc.get("n_up") is not None and sc.get("n_down") is not None:
+            parts.append(f"信号 多{sc['n_up']}/空{sc['n_down']}")
+        if sc.get("anchor_level") is not None:
+            parts.append(f"上证锚点 {sc['anchor_level']:.0f} {sc.get('anchor_state') or ''}".strip())
+        if parts:
+            lines.append("- " + "；".join(parts))
+        if sc.get("note"):
+            lines.append(f"- 说明：{sc['note']}")
+
+    h = payload.get("holdings") or {}
+    st = h.get("structure") or {}
+    if h.get("available") and (h.get("actions") or st):
+        lines.append("\n## 持仓（供你判断盘面对这个人的实际影响）")
+        if st.get("total_mv"):
+            lines.append(f"- 持仓市值约 {int(float(st['total_mv']) / 10000)} 万元")
+        if st.get("concentration_note"):
+            lines.append(f"- 集中度：{st['concentration_note']}")
+        if st.get("style"):
+            lines.append(f"- 风格：{st['style']}")
+        for a in (h.get("actions") or [])[:6]:
+            lines.append(f"- [{a.get('priority')}] {a.get('name') or ''} {a.get('text')}")
+
+    # 口径提示：让模型知道哪些数字是"定稿"、哪些是"实时快照"
+    # ⚠️ 过滤掉兜底文案（"无解读映射"这种对模型零信息量的占位）
+    calibers = {str(it.get("caliber") or "") for lst in blocks.values() for it in (lst or [])}
+    calibers = {c for c in calibers if c and "无解读映射" not in c}
+    if calibers:
+        lines.append("\n## 数据口径（判断可信度用）")
+        for c in list(calibers)[:5]:
+            lines.append(f"- {c}")
+
+    lines.append("\n请按系统要求输出解读。")
+    return "\n".join(lines)
+
+
+@router.get("/amreview/digest")
+def am_review_digest_get(date: str = None):
+    """**只读**：返回已生成的 AI 解读（绝不触发 LLM）。"""
+    day = str(date or _today())[:10]
+    hit = _DIGEST_CACHE.get(day)
+    if not hit:
+        return {"ok": True, "date": day, "markdown": "", "cached": False,
+                "hint": "尚未生成；点「AI 解读」生成（消耗 1 次 LLM）"}
+    return {"ok": True, "date": day, "markdown": hit[1], "cached": True,
+            "generated_at": rules.beijing_now().strftime("%H:%M")}
+
+
+@router.post("/amreview/digest")
+def am_review_digest_run(date: str = None, force: bool = False):
+    """生成（或强制重生成）数据附录的 AI 解读 —— **同步 LLM 调用，十几秒**。
+
+    ★ 为什么单独开端点而不是塞进 `/amreview`：
+      主端点是"打开标签页就要出内容"的关键路径，塞一次 LLM 会把首屏拖成十几秒
+      （本项目刚因"展示型接口现场重算"吃过 114 秒的亏）。
+    """
+    import time as _t
+    day = str(date or _today())[:10]
+    now = _t.time()
+    hit = _DIGEST_CACHE.get(day)
+    if hit and not force and now - float(hit[0] or 0) < _DIGEST_TTL:
+        return {"ok": True, "date": day, "markdown": hit[1], "cached": True}
+
+    try:
+        from app.flash.llm import call_llm, llm_configured, last_llm_error
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 模块不可用: {str(e)[:80]}"}
+    if not llm_configured():
+        return {"ok": False, "error": "未配置 LLM（LLM_API_KEY / LLM_FREE_*）"}
+
+    # 复用主端点（带 300s 缓存）拿数据，保证"AI 解读看到的"与"页面上显示的"是同一份
+    payload = am_review(day)
+    user = _digest_user_text(payload)
+    md = ""
+    try:
+        md = (call_llm(_DIGEST_SYS, user, temperature=0.3, tier="slow") or "").strip()
+    except Exception as e:
+        return {"ok": False, "error": f"调用失败: {str(e)[:100]}"}
+    if not md:
+        return {"ok": False, "error": last_llm_error() or "LLM 返回空（可能熔断/超时）"}
+
+    _DIGEST_CACHE[day] = (now, md)
+    print(f"[amreview] AI digest generated {day} len={len(md)}")
+    return {"ok": True, "date": day, "markdown": md, "cached": False,
+            "generated_at": rules.beijing_now().strftime("%H:%M")}
+
+
 @router.get("/amreview")
 def am_review(date: str = None):
     """早盘复盘聚合数据（盘面 / 宏观 / 消息 + 午后研判结论）。"""
@@ -548,26 +852,29 @@ def am_review(date: str = None):
     miss_c: List[dict] = []
     miss_n: List[dict] = []
     miss_h: List[dict] = []
+    miss_e: List[dict] = []
     try:
         ex = _executor()
         f_mkt = ex.submit(_market_block, day, is_live, miss_m)
         f_mac = ex.submit(_macro_block, day, miss_c)
         f_new = ex.submit(_news_block, day, miss_n)
         f_hol = ex.submit(_holdings_block, is_live, miss_h)
+        f_ext = ex.submit(_extra_block, day, is_live, miss_e)
         f_con = ex.submit(_conclusion, day)
         market_items, macro_items = f_mkt.result(), f_mac.result()
         news_items, conclusion = f_new.result(), f_con.result()
-        holdings = f_hol.result()
+        holdings, extras = f_hol.result(), f_ext.result()
     except Exception as e:
         # 极端情况下（线程池不可用）退回串行 —— 慢一点，但绝不返回空页
         print(f"[amreview] parallel failed, fallback to serial: {e}")
-        miss_m, miss_c, miss_n, miss_h = [], [], [], []
+        miss_m, miss_c, miss_n, miss_h, miss_e = [], [], [], [], []
         market_items = _market_block(day, is_live, miss_m)
         macro_items = _macro_block(day, miss_c)
         news_items = _news_block(day, miss_n)
         holdings = _holdings_block(is_live, miss_h)
+        extras = _extra_block(day, is_live, miss_e)
         conclusion = _conclusion(day)
-    missing = miss_m + miss_c + miss_n + miss_h
+    missing = miss_m + miss_c + miss_n + miss_h + miss_e
 
     trace = [{"block": b, "item": it["label"], "source": it["source"], "as_of": it["as_of"]}
              for b, lst in (("market", market_items), ("macro", macro_items), ("news", news_items))
@@ -582,6 +889,10 @@ def am_review(date: str = None):
         #   三块数据仍在 `blocks` 里，但**前端默认折叠**（数据附录）；
         #   页面的主角变成 `holdings.actions / holdings.items`（结论与行动）。
         "holdings": holdings,
+        # ★ 2026-11-02：补充维度（主力资金结构 / 板块占比 / 情景概率）。
+        #   只喂 AI 解读、**不进页面主表** —— 页面已经"减少数据罗列"了，
+        #   这些是"解释成因"的原料，摆出来反而增加信息过载。
+        "extras": extras,
         "blocks": {"market": market_items, "macro": macro_items, "news": news_items},
         "conclusion": conclusion,
         "trace": trace,
