@@ -365,6 +365,18 @@ _build_gate = threading.Lock()
 _build_state = {"computing": False, "last": None}
 
 
+def peek() -> Optional[Dict]:
+    """**只读**最近一次 `build()` 的结果（不触发计算）。没有则 None。
+
+    ★★ 2026-11-01（「早盘复盘」要展示持仓异动）：`build()` 冷启动本地实测 **31~36 秒**
+      （`_load_signal_map` 14~20s + 矛盾扫描 6s + 闸门首只 8s）。
+      把它塞进"早盘复盘"首屏 = 又一个 114 秒事故的翻版。
+      ⇒ 该页只 `peek()` 现成结果：工作台打开时本来就会调 `/portfolio/radar` 预热，
+        用户切到「早盘复盘」时通常已有；没有就如实显示"尚未就绪"，绝不为展示现场重算。
+    """
+    return _build_state.get("last") or None
+
+
 def _warming_placeholder() -> Dict:
     """预热期间（无历史结果可用）的占位响应 —— 前端据此显示"正在准备"。"""
     return {"as_of": None, "warming": True,

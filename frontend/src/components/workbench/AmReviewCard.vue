@@ -1,166 +1,184 @@
 <template>
-  <!-- ★★ 2026-11-01（用户："新增一个早盘复盘标签页，对当日早盘的盘面走势、宏观面及
-       消息面进行系统分析，输出可研判午盘行情；内容结构清晰、数据与结论可追溯"）。
-       结构顺序按"结论先行 → 数据分层 → 溯源收尾"：
-         ① 午后研判（结论条，首行加粗，依据可展开）
-         ② 盘面走势  ③ 宏观面  ④ 消息面（每块标题右侧标 source / as_of）
-         ⑤ 口径与溯源（默认收起，逐项列数据来源与截至时刻）
-       数据全部来自 `GET /api/market/amreview`（只读快照，缺失项进 `missing`）。 -->
+  <!-- ★★ 2026-11-01（用户："减少数据罗列…重点转向异动解读：明确标注持仓异动的关键信号与
+       触发原因，分析对当前持仓的具体影响（盈亏/风险敞口/仓位结构），并针对午盘给出可执行
+       的应对策略与优先级；站在用户视角：先讲结论与行动，再辅以数据支撑"）。
+       页面顺序按此重排 —— **行动在最上面，数据降级为附录（默认折叠）**：
+         ① 午后行动清单（P0/P1/P2）
+         ② 持仓异动（只列"有异动"的，无异动不罗列）
+         ③ 仓位结构 / 风险敞口（一行）
+         ④ 午后研判（LLM 原文，默认折叠）
+         ⑤ 数据附录（盘面/宏观/消息 + 溯源，默认折叠） -->
   <div class="space-y-3 min-w-0">
 
-    <!-- 头部：日期 + 口径 + 刷新 -->
-    <div class="bg-card border border-border rounded-lg p-3">
+    <!-- 头部 -->
+    <div class="bg-card border border-border rounded-lg px-3 py-2">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-sm font-semibold">早盘复盘</span>
         <span class="text-[10px] text-muted">{{ date }}</span>
-        <span v-if="data && data.is_live === false"
-              class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px]"
-              :title="'当前查看的是历史日期，不是今日'">历史回放</span>
-        <span v-if="stale"
+        <span v-if="stale" class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] cursor-help"
+              title="该日没有 11:30 定稿快照，数据为收盘定稿口径（各条已标注）">收盘口径</span>
+        <span v-if="data?.holdings?.quote_from_snapshot"
               class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px] cursor-help"
-              :title="'该日没有 11:30 定稿快照，展示的是收盘定稿口径（已在各条目标注）'">收盘口径</span>
-        <span v-if="data?.as_of" class="text-[10px] text-muted font-mono ml-auto">取数 {{ hhmm(data.as_of) }}</span>
+              :title="`行情来自收盘快照（${data.holdings.quote_data_date || '上一交易日'}），不是此刻实时`">
+              行情为快照
+        </span>
+        <span class="text-[10px] text-muted ml-auto font-mono">
+          行情 {{ hhmm(data?.holdings?.quote_as_of) || hhmm(data?.as_of) || '—' }}
+        </span>
         <button type="button" class="text-[10px] text-accent hover:underline"
                 :disabled="loading" @click="$emit('refresh')">刷新</button>
-      </div>
-      <div class="text-[10px] text-muted mt-1 leading-relaxed">
-        口径：早盘 = 09:30-11:30；11:30 由调度器落定稿快照，缺快照的日期会显式标注「该日未留存」。
       </div>
     </div>
 
     <!-- 骨架 -->
     <div v-if="loading && !data" class="space-y-3">
-      <div v-for="i in 4" :key="i"
-           class="bg-card border border-border rounded-lg p-4 animate-pulse">
+      <div v-for="i in 3" :key="i" class="bg-card border border-border rounded-lg p-4 animate-pulse">
         <div class="h-3 w-24 bg-border rounded mb-3"></div>
         <div class="h-2 w-full bg-border/70 rounded mb-2"></div>
         <div class="h-2 w-3/4 bg-border/70 rounded"></div>
       </div>
     </div>
 
-    <div v-else-if="error"
-         class="bg-card border border-border rounded-lg p-4 text-xs text-rise">
-      {{ error }}
-    </div>
+    <div v-else-if="error" class="bg-card border border-border rounded-lg p-4 text-xs text-rise">{{ error }}</div>
 
     <template v-else-if="data">
-      <!-- ① 结论条 -->
+      <!-- ① 午后行动清单 -->
+      <div class="bg-card border border-border rounded-lg p-3">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-sm font-semibold">午后怎么做</span>
+          <span v-if="actions.length" class="text-[10px] text-muted">{{ actions.length }} 条</span>
+          <span class="text-[10px] text-muted ml-auto">按优先级排序 · 数据见下方附录</span>
+        </div>
+
+        <div v-if="!holdings.available" class="text-xs text-muted leading-relaxed">
+          —（{{ holdingsReason }}）
+        </div>
+        <div v-else-if="!actions.length"
+             class="text-xs text-emerald-400/90 leading-relaxed">
+          今日持仓无异动：没有触发止损、冲高回落、主力出货等信号 —— 按原计划持有，不必操作。
+        </div>
+        <div v-else class="space-y-1.5">
+          <div v-for="(a, i) in actions" :key="i"
+               class="flex items-start gap-2 rounded-lg border border-border/60 bg-bg/40 px-2.5 py-1.5">
+            <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold" :class="prioCls(a.priority)">
+              {{ a.priority }}
+            </span>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs leading-relaxed">
+                <span v-if="a.name" class="font-semibold mr-1 text-accent">{{ a.name }}</span>{{ a.text }}
+              </div>
+            </div>
+          </div>
+          <div class="text-[10px] text-muted pt-0.5">
+            P0 = 开盘就处理（硬风险）· P1 = 今日盯盘处理 · P2 = 机会，非必须
+          </div>
+        </div>
+      </div>
+
+      <!-- ② 持仓异动 -->
+      <div v-if="holdings.available && holdings.items.length"
+           class="bg-card border border-border rounded-lg p-3">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-sm font-semibold">持仓异动</span>
+          <span class="text-[10px] text-muted">只列有异动的 {{ holdings.items.length }} 只</span>
+        </div>
+        <div class="space-y-2">
+          <div v-for="h in holdings.items" :key="h.code"
+               class="rounded-lg border border-border/60 bg-bg/40 px-2.5 py-2">
+            <div class="flex items-baseline gap-2 flex-wrap">
+              <span class="text-xs font-semibold">{{ h.name }}</span>
+              <span class="text-[10px] text-muted font-mono">{{ h.code }}</span>
+              <span class="text-xs font-mono" :class="numCls(h.day_pct)">今日 {{ fmtPct(h.day_pct) }}</span>
+              <span class="text-xs font-mono" :class="numCls(h.pnl_pct)">浮盈 {{ fmtPct(h.pnl_pct) }}</span>
+              <span v-if="h.weight != null" class="text-[10px] text-muted">占仓 {{ h.weight }}%</span>
+              <span v-if="h.industry" class="text-[10px] text-muted">{{ h.industry }}</span>
+            </div>
+            <!-- 信号 chips -->
+            <div class="flex flex-wrap gap-1 mt-1.5">
+              <span v-for="(a, i) in h.alerts" :key="i"
+                    class="px-1.5 py-0.5 rounded text-[10px]" :class="lvlCls(a.level)">{{ a.text }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="text-[10px] text-muted mt-1.5">
+          信号来自持仓雷达的确定性规则（浮亏阈值 / 冲高回落 / 主力出货 / 板块被点名 / 闸门就绪），非 LLM 生成。
+        </div>
+      </div>
+
+      <!-- ③ 仓位结构 -->
+      <div v-if="holdings.available && structureText"
+           class="bg-card border border-border rounded-lg px-3 py-2">
+        <div class="flex items-center gap-2 flex-wrap text-xs">
+          <span class="text-sm font-semibold shrink-0">仓位结构</span>
+          <span class="text-muted">{{ structureText }}</span>
+        </div>
+      </div>
+
+      <!-- ④ 午后研判（LLM） -->
       <div class="bg-card border border-border border-l-2 border-l-amber-500/70 rounded-lg p-3">
         <div class="flex items-center gap-2 flex-wrap mb-1">
           <span class="text-sm font-semibold">午后研判</span>
-          <span v-if="conclusion.time" class="text-[10px] text-muted font-mono">
-            {{ hhmm(conclusion.time) }} 生成
-          </span>
-          <span v-if="!conclusion.markdown"
-                class="px-1.5 py-0.5 rounded bg-border text-muted text-[10px] cursor-help"
-                :title="'系统在 11:32 自动生成午盘策略复盘；若当日窗口内后端未运行，则该日没有这条结论'">
-            未生成
-          </span>
+          <span v-if="conclusion.time" class="text-[10px] text-muted font-mono">{{ hhmm(conclusion.time) }} 生成</span>
+          <span v-if="!conclusion.markdown" class="px-1.5 py-0.5 rounded bg-border text-muted text-[10px]">未生成</span>
           <button v-if="conclusion.markdown" type="button"
                   class="ml-auto text-[10px] text-accent hover:underline"
-                  @click="bodyOpen = !bodyOpen">
-            {{ bodyOpen ? '收起依据' : '展开依据' }}
-          </button>
+                  @click="bodyOpen = !bodyOpen">{{ bodyOpen ? '收起' : '展开全文' }}</button>
         </div>
         <div v-if="!conclusion.markdown" class="text-xs text-muted">
-          —（该日暂无复盘结论，通常因为 11:32 时后端未运行，可到「快讯监控」手动补跑）
+          —（该日暂无复盘结论；系统在 11:32 自动生成，可在「快讯监控」手动补跑）
         </div>
         <template v-else>
-          <div class="text-xs font-semibold text-fg leading-relaxed line-clamp-3">{{ lead }}</div>
-          <div v-if="bodyOpen" class="md-body text-xs mt-2 max-h-[46vh] overflow-y-auto"
-               v-html="html"></div>
+          <div class="text-xs font-semibold leading-relaxed line-clamp-3">{{ lead }}</div>
+          <div v-if="bodyOpen" class="md-body text-xs mt-2 max-h-[46vh] overflow-y-auto" v-html="html"></div>
         </template>
       </div>
 
-      <!-- ② 盘面走势 -->
+      <!-- ⑤ 数据附录（默认折叠） -->
       <div class="bg-card border border-border rounded-lg p-3">
-        <div class="flex items-center gap-2 mb-2">
-          <span class="text-sm font-semibold">盘面走势</span>
-          <span class="text-[10px] text-muted">上午 09:30-11:30</span>
-          <span class="text-[10px] text-muted ml-auto font-mono">{{ srcLabel(data.blocks.market) }}</span>
-        </div>
-        <div v-if="!data.blocks.market.length" class="text-xs text-muted">
-          —（该日未留存早盘盘面数据）
-        </div>
-        <div v-else class="grid grid-cols-2 md:grid-cols-3 gap-2">
-          <div v-for="(it, i) in data.blocks.market" :key="i"
-               class="rounded-lg border border-border/70 bg-bg/40 px-2.5 py-2 min-w-0">
-            <div class="text-[10px] text-muted truncate" :title="it.caliber">{{ it.label }}</div>
-            <div class="text-base font-semibold truncate" :class="valClass(it)">
-              {{ it.value }}<span class="text-[10px] text-muted font-normal ml-0.5">{{ it.unit }}</span>
-            </div>
-            <div class="text-[10px] text-muted truncate"
-                 :title="`${srcCn(it.source)} · 截至 ${hhmm(it.as_of) || '—'}`">
-              {{ srcCn(it.source) }} · {{ hhmm(it.as_of) }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ③ 宏观面 -->
-      <div class="bg-card border border-border rounded-lg p-3">
-        <div class="flex items-center gap-2 mb-2">
-          <span class="text-sm font-semibold">宏观面</span>
-          <span class="text-[10px] text-muted">环境 / 外盘 / 已公布数据</span>
-          <span class="text-[10px] text-muted ml-auto font-mono">{{ srcLabel(data.blocks.macro) }}</span>
-        </div>
-        <div v-if="!data.blocks.macro.length" class="text-xs text-muted">—（该日未留存宏观数据）</div>
-        <div v-else class="space-y-1">
-          <div v-for="(it, i) in data.blocks.macro" :key="i"
-               class="flex items-start gap-2 py-1 border-b border-border/40 last:border-0">
-            <span class="text-[10px] text-muted w-28 shrink-0 truncate" :title="it.label">{{ it.label }}</span>
-            <span class="text-xs flex-1 min-w-0 break-words" :class="valClass(it)">{{ it.value }}</span>
-            <span class="text-[10px] text-muted shrink-0 font-mono cursor-help"
-                  :title="`${srcCn(it.source)} · ${it.caliber}`">{{ hhmm(it.as_of) }}</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- ④ 消息面 -->
-      <div class="bg-card border border-border rounded-lg p-3">
-        <div class="flex items-center gap-2 mb-2">
-          <span class="text-sm font-semibold">消息面</span>
-          <span class="text-[10px] text-muted">当日要点与重要快讯</span>
-          <span class="text-[10px] text-muted ml-auto font-mono">{{ srcLabel(data.blocks.news) }}</span>
-        </div>
-        <div v-if="!data.blocks.news.length" class="text-xs text-muted">
-          —（该日尚未生成快讯解读；只读页不会触发 LLM）
-        </div>
-        <div v-else class="space-y-2">
-          <div v-for="(it, i) in data.blocks.news" :key="i"
-               class="flex items-start gap-2">
-            <span class="text-[10px] text-muted font-mono w-10 shrink-0">{{ hhmm(it.as_of) || '—' }}</span>
-            <span class="w-0.5 self-stretch rounded bg-teal-500/40 shrink-0"></span>
-            <div class="min-w-0">
-              <div class="text-xs leading-relaxed break-words">{{ it.value }}</div>
-              <div v-if="it.caliber" class="text-[10px] text-muted mt-0.5">{{ it.caliber }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ⑤ 口径与溯源 -->
-      <div class="bg-card border border-border rounded-lg p-3">
-        <button type="button" class="flex items-center gap-2 w-full text-left"
-                @click="traceOpen = !traceOpen">
-          <span class="text-sm font-semibold">口径与溯源</span>
-          <span class="text-[10px] text-muted">{{ data.trace.length }} 项</span>
+        <button type="button" class="flex items-center gap-2 w-full text-left" @click="dataOpen = !dataOpen">
+          <span class="text-sm font-semibold">数据附录</span>
+          <span class="text-[10px] text-muted">盘面 · 宏观 · 消息 · 溯源</span>
           <span v-if="data.missing.length"
                 class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[10px]">
             未留存 {{ data.missing.length }}
           </span>
-          <span class="ml-auto text-[10px] text-muted">{{ traceOpen ? '▾' : '▸' }}</span>
+          <span class="ml-auto text-[10px] text-muted">{{ dataOpen ? '▾' : '▸' }}</span>
         </button>
-        <div v-if="traceOpen" class="mt-2 space-y-1">
-          <div v-for="(m, i) in data.missing" :key="'m' + i"
-               class="text-[10px] text-muted bg-border/30 rounded px-2 py-1">
-            <span class="text-amber-300">{{ blockCn(m.block) }}</span> / {{ m.item }} —— {{ m.reason }}
+
+        <div v-if="dataOpen" class="mt-2 space-y-3">
+          <div v-for="b in BLOCKS" :key="b.key">
+            <div class="text-[11px] font-semibold mb-1 flex items-center gap-2">
+              {{ b.label }}
+              <span class="text-[10px] text-muted font-normal">{{ srcLabel(data.blocks[b.key]) }}</span>
+            </div>
+            <div v-if="!data.blocks[b.key].length" class="text-[10px] text-muted">—（该日未留存）</div>
+            <div v-else class="space-y-0.5">
+              <div v-for="(it, i) in data.blocks[b.key]" :key="i"
+                   class="flex items-start gap-2 text-[10px] border-b border-border/30 last:border-0 py-0.5">
+                <span class="text-muted w-24 shrink-0 truncate" :title="it.caliber">{{ it.label }}</span>
+                <span class="flex-1 min-w-0 break-words" :class="numCls(it.delta)">{{ it.value }}</span>
+                <span class="text-muted shrink-0 font-mono cursor-help"
+                      :title="`${srcCn(it.source)} · ${it.caliber}`">{{ hhmm(it.as_of) || '—' }}</span>
+              </div>
+            </div>
           </div>
-          <div v-for="(t, i) in data.trace" :key="'t' + i"
-               class="grid grid-cols-[52px_1fr_auto] gap-2 text-[10px] text-muted border-b border-border/40 last:border-0 py-0.5">
-            <span class="truncate">{{ blockCn(t.block) }}</span>
-            <span class="truncate" :title="t.item">{{ t.item }}</span>
-            <span class="truncate" :title="t.source">{{ srcCn(t.source) }} · {{ hhmm(t.as_of) || '—' }}</span>
+
+          <div v-if="data.missing.length" class="pt-1">
+            <div class="text-[11px] font-semibold mb-1">未留存项</div>
+            <div v-for="(m, i) in data.missing" :key="'m' + i"
+                 class="text-[10px] text-muted bg-border/30 rounded px-2 py-1 mb-1">
+              <span class="text-amber-300">{{ blockCn(m.block) }}</span> / {{ m.item }} —— {{ m.reason }}
+            </div>
+          </div>
+
+          <div v-if="data.trace.length">
+            <div class="text-[11px] font-semibold mb-1">溯源（{{ data.trace.length }} 项）</div>
+            <div v-for="(t, i) in data.trace" :key="'t' + i"
+                 class="grid grid-cols-[52px_1fr_auto] gap-2 text-[10px] text-muted border-b border-border/30 last:border-0 py-0.5">
+              <span class="truncate">{{ blockCn(t.block) }}</span>
+              <span class="truncate" :title="t.item">{{ t.item }}</span>
+              <span class="truncate">{{ srcCn(t.source) }} · {{ hhmm(t.as_of) || '—' }}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -181,58 +199,82 @@ const props = defineProps({
 defineEmits(['refresh'])
 
 const bodyOpen = ref(false)
-const traceOpen = ref(false)
+const dataOpen = ref(false)
 
-const conclusion = computed(() => props.data?.conclusion || {})
-
-// ★★ 2026-11-01（用户："其中有些是英文字眼，得换成中文"）：
-//   后端 `blocks` 的 key（market/macro/news）与各数据源标识（表名/接口名）都是英文，
-//   直接摆到界面上是"数据库术语"，对使用者没有意义。这里统一做**展示层翻译**，
-//   不改变后端结构（trace/missing 仍按英文 key 传递，便于排障时对得上代码）。
-const BLOCK_CN = { market: '盘面', macro: '宏观', news: '消息' }
+const BLOCKS = [
+  { key: 'market', label: '盘面走势' },
+  { key: 'macro', label: '宏观面' },
+  { key: 'news', label: '消息面' },
+]
+// 展示层翻译（后端 key/表名是英文，界面上不露）
+const BLOCK_CN = { market: '盘面', macro: '宏观', news: '消息', holdings: '持仓' }
 const SRC_CN = {
-  market_emotion_daily: '情绪快照表',
-  market_amount: '两市成交额',
-  'market_overview 快照': '指数行情',
-  market_regime_history: '市场状态表',
-  macro_daily_history: '外盘日线',
-  flash_calendar: '财经日历',
-  flash_brief: '快讯解读',
-  'flash_brief.news': '快讯条目',
-  腾讯指数: '指数行情',
+  market_emotion_daily: '情绪快照表', market_amount: '两市成交额',
+  'market_overview 快照': '指数行情', market_regime_history: '市场状态表',
+  macro_daily_history: '外盘日线', flash_calendar: '财经日历',
+  flash_brief: '快讯解读', 'flash_brief.news': '快讯条目', 腾讯指数: '指数行情',
 }
 const blockCn = (b) => BLOCK_CN[b] || b || ''
 const srcCn = (s) => SRC_CN[s] || s || ''
+
+const conclusion = computed(() => props.data?.conclusion || {})
 const html = computed(() => renderMd(conclusion.value.markdown || ''))
-/** 结论首行（去掉 Markdown 标记）—— 卡片折叠时先给一句判断 */
+const holdings = computed(() => props.data?.holdings || { available: false, actions: [], items: [], structure: {} })
+const actions = computed(() => holdings.value.actions || [])
+
+/** 持仓雷达不可用时，把 `missing` 里的原因原文搬过来（不给空洞的"—"） */
+const holdingsReason = computed(() => {
+  const m = (props.data?.missing || []).find((x) => x.block === 'holdings')
+  return m?.reason || '暂无持仓数据'
+})
+
+/** 仓位结构一行话：总量 / 集中度 / 风格 */
+const structureText = computed(() => {
+  const s = holdings.value.structure || {}
+  const parts = []
+  if (s.total_mv) parts.push(`持仓市值 ${Math.round(s.total_mv / 10000)} 万`)
+  if (s.concentration_note) parts.push(s.concentration_note)
+  if (s.style) parts.push(s.style)
+  if (!parts.length) return ''
+  return parts.join(' ｜ ')
+})
+
+const stale = computed(() =>
+  (props.data?.blocks?.market || []).some((i) => String(i.caliber || '').includes('收盘定稿口径')))
+
+/** 结论首行（折叠时先给一句判断） */
 const lead = computed(() => {
-  const line = String(conclusion.value.markdown || '')
-    .split('\n')
+  const line = String(conclusion.value.markdown || '').split('\n')
     .map((s) => s.replace(/^#+\s*/, '').replace(/\*\*/g, '').trim())
     .find((s) => s.length > 0) || ''
   return line.slice(0, 160)
 })
-/** 该日没有 11:30 定稿 ⇒ 页面上要显式提示"这是收盘口径" */
-const stale = computed(() =>
-  (props.data?.blocks?.market || []).some((i) => String(i.caliber || '').includes('收盘定稿口径')))
 
 function hhmm(s) {
   const t = String(s || '')
   const m = t.match(/(\d{2}:\d{2})/)
   return m ? m[1] : (t.length === 10 ? t : '')
 }
-/** 每块右上角标"主要来源"，避免用户以为所有数字都来自同一处 */
 function srcLabel(items) {
   const srcs = [...new Set((items || []).map((i) => i.source).filter(Boolean))]
   if (!srcs.length) return ''
   const cn = srcs.map(srcCn)
   return cn.length === 1 ? cn[0] : `${cn[0]} 等 ${cn.length} 处`
 }
-/** 有 delta 的按红涨绿跌；否则一律普通前景色（避免文字被判读成涨跌） */
-function valClass(it) {
-  // 无 delta 的（家数/判读/成交额…）**不加颜色** —— 给它们红绿会被读成涨跌
-  if (it?.delta == null) return ''
-  const v = Number(it.delta)
-  return v > 0 ? 'text-red-400' : (v < 0 ? 'text-emerald-400' : '')
+const fmtPct = (v) => (v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`)
+function numCls(v) {
+  if (v == null) return ''
+  const n = Number(v)
+  return n > 0 ? 'text-red-400' : (n < 0 ? 'text-emerald-400' : '')
+}
+function prioCls(p) {
+  if (p === 'P0') return 'bg-red-500/20 text-red-300'
+  if (p === 'P1') return 'bg-amber-500/20 text-amber-300'
+  return 'bg-sky-500/20 text-sky-300'
+}
+function lvlCls(l) {
+  if (l === 'risk') return 'bg-red-500/15 text-red-300'
+  if (l === 'opportunity') return 'bg-emerald-500/15 text-emerald-300'
+  return 'bg-border/60 text-muted'
 }
 </script>

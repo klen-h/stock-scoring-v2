@@ -381,7 +381,131 @@ def _news_block(day: str, missing: List[dict]) -> List[dict]:
     return items
 
 
-# ── ④ 结论（午后研判）────────────────────────────────────────────────────
+# ── ④ 持仓异动（核心：信号 → 原因 → 影响 → 午后动作）──────────────────────
+
+# 动作优先级：数字越小越紧急（前端按此排序，P0 永远在最上面）
+_PRIO_ORDER = {"P0": 0, "P1": 1, "P2": 2}
+
+
+def _action_of(item: Dict) -> List[dict]:
+    """把逐只 alerts 翻译成「带优先级的具体动作」。
+
+    ★ 为什么在**后端**做：同一套判定将来企微推送也要用（推送不可能跑前端逻辑）。
+      前端只负责排版，避免"页面说减仓、推送说观望"这种两套口径。
+    ★ 全部是**确定性规则**（不是 LLM）：阈值与 `portfolio_radar._alerts_for` 同源，
+      只是把"描述"改写成"动作"，并给出优先级。
+    """
+    acts: List[dict] = []
+    pnl = item.get("pnl_pct")
+    for a in (item.get("alerts") or []):
+        lvl, txt = a.get("level"), str(a.get("text") or "")
+        if not txt:
+            continue
+        if lvl == "risk":
+            if "出货" in txt or (pnl is not None and pnl <= -12):
+                acts.append({"priority": "P0", "text": f"减仓/认错 —— {txt}"})
+            else:
+                acts.append({"priority": "P1", "text": f"今日盯盘处理 —— {txt}"})
+        elif lvl == "opportunity":
+            acts.append({"priority": "P2", "text": f"可考虑加仓（需自行确认）—— {txt}"})
+    return acts
+
+
+def _holdings_block(is_live: bool, missing: List[dict]) -> Dict:
+    """持仓异动：只读 `portfolio_radar` 的现成结果（**不触发 31~36s 冷构建**）。
+
+    返回结构（前端按"先结论后数据"排版）：
+      · `actions[]`  —— 跨持仓汇总的**待办清单**（P0/P1/P2 + 归属个股）
+      · `items[]`    —— 只保留**有异动**的持仓（无 alert 的不罗列，避免信息过载）
+      · `structure`  —— 仓位结构/敞口（总市值、最大行业占比、风格）
+    """
+    empty = {"available": False, "actions": [], "items": [], "structure": {}}
+    if not is_live:
+        # 历史日：持仓雷达用的是**此刻**的行情 ⇒ 放进历史页就是"拿今天的价格冒充那天"
+        missing.append({"block": "holdings", "item": "持仓异动",
+                        "reason": "历史日不提供（当日行情未留存，不能用今天的价格反推那天的持仓）"})
+        return empty
+    try:
+        from app import portfolio_radar
+        r = portfolio_radar.peek()
+    except Exception as e:
+        print(f"[amreview] radar peek failed: {e}")
+        r = None
+    if not r or r.get("warming") or not r.get("items"):
+        missing.append({"block": "holdings", "item": "持仓异动",
+                        "reason": "持仓雷达尚未就绪（打开工作台后约 1 分钟生成；也可点右侧持仓卡刷新）"})
+        return empty
+
+    items_out: List[dict] = []
+    actions: List[dict] = []
+    total_mv = 0.0
+    for it in (r.get("items") or []):
+        try:
+            total_mv += float(it.get("mv") or 0)
+        except (TypeError, ValueError):
+            pass
+
+    for it in (r.get("items") or []):
+        acts = _action_of(it)
+        if not acts:
+            continue                      # ★ 无异动不罗列（用户要求"减少数据罗列"）
+        mv = it.get("mv") or 0
+        try:
+            weight = round(float(mv) / total_mv * 100, 1) if total_mv > 0 else None
+        except (TypeError, ValueError, ZeroDivisionError):
+            weight = None
+        items_out.append({
+            "code": it.get("code"), "name": it.get("name"),
+            "day_pct": it.get("day_pct"), "pnl_pct": it.get("pnl_pct"),
+            "weight": weight, "industry": it.get("industry"),
+            "phase_cn": it.get("phase_cn") or "",
+            "alerts": [{"level": a.get("level"), "text": a.get("text")}
+                       for a in (it.get("alerts") or []) if a.get("text")],
+            "actions": acts,
+        })
+        for a in acts:
+            actions.append({**a, "code": it.get("code"), "name": it.get("name")})
+
+    # 仓位结构（组合层）：最大行业占比 + 风格，直接抄 `_portfolio_risk` 的结论
+    structure: Dict = {}
+    risk = r.get("portfolio_risk") or {}
+    try:
+        conc = risk.get("concentration") or []
+        if conc:
+            top = max(conc, key=lambda x: float(x.get("weight") or 0))
+            structure["top_industry"] = top.get("industry")
+            structure["top_weight"] = round(float(top.get("weight") or 0), 1)
+            structure["concentration_note"] = (
+                f"{top.get('industry')} 占 {structure['top_weight']}%"
+                + ("（过度集中，表面分散实则一个板块）" if structure["top_weight"] >= 50 else ""))
+    except Exception:
+        pass
+    style = risk.get("style") or {}
+    if style.get("label"):
+        structure["style"] = style.get("label")
+    structure["total_mv"] = round(total_mv, 0)
+    structure["risk_count"] = len(items_out)
+
+    # 组合层建议也进待办（集中度是"结构问题"，优先级低于个股硬风险）
+    if structure.get("top_weight") and structure["top_weight"] >= 50:
+        actions.append({"priority": "P1", "code": "", "name": "",
+                        "text": f"分散仓位 —— {structure['concentration_note']}"})
+
+    actions.sort(key=lambda x: _PRIO_ORDER.get(x.get("priority"), 9))
+    items_out.sort(key=lambda x: _PRIO_ORDER.get((x["actions"] or [{}])[0].get("priority"), 9))
+
+    return {
+        "available": True,
+        "quote_as_of": r.get("quote_as_of"),
+        "quote_data_date": r.get("quote_data_date"),
+        "quote_from_snapshot": r.get("quote_from_snapshot"),
+        "actions": actions[:8],           # 待办最多 8 条，多了没人看
+        "items": items_out,
+        "structure": structure,
+    }
+
+
+# ── ⑤ 结论（午后研判）────────────────────────────────────────────────────
 
 def _conclusion(day: str) -> Dict:
     """早盘复盘的文字结论 = 当日 `lunchbreak` 复盘（11:32 自动生成）。"""
@@ -423,23 +547,27 @@ def am_review(date: str = None):
     miss_m: List[dict] = []
     miss_c: List[dict] = []
     miss_n: List[dict] = []
+    miss_h: List[dict] = []
     try:
         ex = _executor()
         f_mkt = ex.submit(_market_block, day, is_live, miss_m)
         f_mac = ex.submit(_macro_block, day, miss_c)
         f_new = ex.submit(_news_block, day, miss_n)
+        f_hol = ex.submit(_holdings_block, is_live, miss_h)
         f_con = ex.submit(_conclusion, day)
         market_items, macro_items = f_mkt.result(), f_mac.result()
         news_items, conclusion = f_new.result(), f_con.result()
+        holdings = f_hol.result()
     except Exception as e:
         # 极端情况下（线程池不可用）退回串行 —— 慢一点，但绝不返回空页
         print(f"[amreview] parallel failed, fallback to serial: {e}")
-        miss_m, miss_c, miss_n = [], [], []
+        miss_m, miss_c, miss_n, miss_h = [], [], [], []
         market_items = _market_block(day, is_live, miss_m)
         macro_items = _macro_block(day, miss_c)
         news_items = _news_block(day, miss_n)
+        holdings = _holdings_block(is_live, miss_h)
         conclusion = _conclusion(day)
-    missing = miss_m + miss_c + miss_n
+    missing = miss_m + miss_c + miss_n + miss_h
 
     trace = [{"block": b, "item": it["label"], "source": it["source"], "as_of": it["as_of"]}
              for b, lst in (("market", market_items), ("macro", macro_items), ("news", news_items))
@@ -450,6 +578,10 @@ def am_review(date: str = None):
         "date": day,
         "is_live": is_live,
         "as_of": rules.beijing_now().strftime("%Y-%m-%d %H:%M"),
+        # ★ 2026-11-01（用户："减少数据罗列…重点转向异动解读"）：
+        #   三块数据仍在 `blocks` 里，但**前端默认折叠**（数据附录）；
+        #   页面的主角变成 `holdings.actions / holdings.items`（结论与行动）。
+        "holdings": holdings,
         "blocks": {"market": market_items, "macro": macro_items, "news": news_items},
         "conclusion": conclusion,
         "trace": trace,
