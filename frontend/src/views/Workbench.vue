@@ -3190,6 +3190,10 @@ const POLL_SEC = 120
 //   而 `sectorTop`（东财 60s TTL）与外盘若同步提频，会**翻倍外部请求**（红线）。
 const FAST_SEC = 60
 const refreshLeft = ref(0)
+// ★ 2026-11-01：今天是否交易日 —— 由 `/system/status` **首屏**下发
+//   （后端 `flash.rules.is_trading_day()`，含法定节假日）。
+//   `null` = 还没返回值 ⇒ 不拦截（fail-open），避免网络慢时误停轮询。
+const tradingDayFlag = ref(null)
 const gwItems = ref([])
 const gwErr = ref('')
 // ★ 2026-09-25（P1 观察池实化）：原实现只取 `items`，**把总览字段全丢了**
@@ -3404,8 +3408,10 @@ function isLivePhase() {
   const p = computePhase()
   if (p !== 'auction' && p !== 'intraday' && p !== 'midday') return false
   // ★ 2026-11-01：`computePhase` 只能判周末；**法定节假日**（落在工作日）靠后端下发字段兜住。
-  //   `emotion.trading_day` 由 `/market/emotion` 返回（后端 `flash.rules.is_trading_day`，
-  //   含外部交易日历）。只在**明确为 false** 时拦截 ⇒ 字段缺失/请求失败时不误判休市（fail-open）。
+  //   优先用 `/system/status` 的 `trading_day`（**首屏就有**，不必等轮询）；
+  //   兜底再用 `emotion.trading_day`（`/market/emotion`，轮询才回来）。
+  //   两者都只在**明确为 false** 时拦截 ⇒ 字段缺失/请求失败不误判休市（fail-open）。
+  if (tradingDayFlag.value === false) return false
   if (emotion.value && emotion.value.trading_day === false) return false
   return true
 }
@@ -5221,6 +5227,11 @@ async function loadStatus() {
     const srcAll = data?.sources
     freshnessOk.value = !!data && !(Array.isArray(srcAll) && srcAll.some(v => v.status && v.status !== 'ok'))
     if (data?.generated_at) statusTime.value = String(data.generated_at).slice(11, 16)
+    // ★ 2026-11-01：首屏就拿到「今天是否交易日」（含节假日）⇒ isLivePhase 不必等
+    //   /market/emotion。`!== undefined` 才算有效（老后端没这字段时保持 null = fail-open）。
+    if (data && data.trading_day !== undefined && data.trading_day !== null) {
+      tradingDayFlag.value = data.trading_day
+    }
     brief.summary = data?.summary || ''
     const src = data?.sources
     if (Array.isArray(src)) {

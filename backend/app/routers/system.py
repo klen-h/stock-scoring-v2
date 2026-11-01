@@ -357,14 +357,25 @@ def system_status(user: dict = Depends(get_current_user)) -> Dict:
     # ★ 2026-09-28（用户："好几处的时间差 8 小时"）：原 `datetime.now()` 是**服务器本地时间**，
     #   生产上是 **UTC** ⇒ 顶栏「系统状态 · 截至 HH:MM」会少 8 小时（`hhmm(statusTime)`）。
     #   本项目全链路北京时间 ⇒ 改用 `flash.rules.beijing_now`（本文件其它函数已是同样做法）。
-    from app.flash.rules import beijing_now
+    from app.flash.rules import beijing_now, is_trading_day
     # ★ 2026-10-28：`suspect` 必须在摘要里**单独计数**——它和 stale 看起来都是"没数据"，
     #   但成因完全相反（stale=上游没给；suspect=我们跑了却没写进去）⇒ 修复动作也不同。
     summary = f"{ok_count}/{len(sources)} 新鲜"
     if suspect_count:
         summary += f" · {suspect_count} 项跑了没落库"
+    # ★ 2026-11-01：今天到底是不是交易日（含法定节假日，走外部交易日历 + 手工兜底）。
+    #   前端 `Workbench.isLivePhase()` 用它兜"工作日但休市"——原来只能判周末
+    #   ⇒ 国庆/春节期间页面开着仍会 60s/120s 空转轮询（见提交 2da118dd）。
+    #   ⚠️ 必须随**首屏**下发：`/system/status` 是顶栏状态条的第一个请求，
+    #   而 `/market/emotion` 要等轮询才会有 ⇒ 只用后者会在启动期短暂空转。
+    try:
+        _td = bool(is_trading_day())
+    except Exception as e:
+        print(f"[system_status] is_trading_day 失败（回退 None）: {e}")
+        _td = None
     return {
         "latest_trading_day": latest,
+        "trading_day": _td,
         "generated_at": beijing_now().isoformat(timespec="seconds"),
         "summary": summary,
         "source_total": len(sources),
