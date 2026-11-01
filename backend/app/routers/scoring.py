@@ -1251,6 +1251,75 @@ def score_single(symbol: str):
     }
 
 
+# ★★ 2026-11-01：`rank_context` / `lhb` 的进程级缓存。
+#   【为什么必须加】实测 `score_context` **裸查反而要 1.75 秒**（完整评分 1.69 秒），
+#   因为这 3 次点查各自要走一次 Supabase 往返（本机实测 **~570ms/次**）。
+#   ⇒ **本项目真正的性能瓶颈是"往返次数"，不是"计算量"** ——
+#     拆端点本身不省时间，只有砍掉往返才省。
+#   这两个字段都是**日频**：`ranking_history` 是日批快照、`lhb_history` 每日盘后落库，
+#   同一天内反复查同一只股票毫无意义。缓存 30 分钟（跨日自然失效，不需显式清）。
+_CTX_CACHE: dict = {}
+_CTX_TTL = 1800
+
+
+@router.get("/{symbol}/context")
+def score_context(symbol: str, name: str = ""):
+    """个股评分的**附加上下文**（供"评分已在本地算好"的调用方补齐字段）。
+
+    ★★ 2026-11-01（详情页提速 A 的第二半）：`/score/{symbol}` 一次要做
+      `get_stock` + 750 根 K 线 + numpy 指标 + `score_stock`
+      （**实测冷 13.2s / 热 1.9~2.7s**），但本地评分
+      （`useFrontendScoring.computeLocalScore`，与后端**同一份 `scoreStock` 移植**、
+      同一份权重、同一份指标包）已经覆盖了
+      `total_score / dimensions / factors_up / factors_down / summary /
+       mainforce / trend_health` —— **后端那 2 秒里 99% 是在重算本地已经算过的东西**。
+      真正本地拿不到的只有下面这几个**纯点查**字段 ⇒ 单开本端点（约 50ms）。
+
+    返回 `{code, rank_context, lhb, defensive_attr}`：
+
+    ⚠️ **不返回 `gate`**：前端 `scoringEngine.buildGate` 已镜像
+      `mainforce.trade_gate.summarize`（源码注释自述"本地镜像"），
+      判据由 `/score/weights` 的 `gate` 字段下发 ⇒ 本地就能算，不必多跑后端。
+
+    ⚠️ 路径是**两段**（`/{symbol}/context`）：与单段通配 `/{symbol}` 形状不同，
+      天然不冲突（同 `/diag/{symbol}` 的既有理由）。
+    """
+    import time as _t
+    _now = _t.time()
+    _hit = _CTX_CACHE.get(symbol)
+    if _hit and _now - _hit[0] < _CTX_TTL:
+        out = dict(_hit[1])
+    else:
+        out = {"code": symbol, "rank_context": _rank_context(symbol), "lhb": None}
+        try:
+            from app.mainforce.lhb import recent_summary as _lhb_sum
+            lhb = _lhb_sum(symbol, days=10) or None
+            # 与 `score_single` 同口径：无上榜记录返回 None（前端不渲染，不留空壳）
+            out["lhb"] = lhb if (lhb and lhb.get("n")) else None
+        except Exception as e:
+            print(f"[lhb] context 上榜汇总失败 {symbol}: {e}")
+        # 防无界增长：本项目进程长期运行，全市场几千只票会撑爆内存。
+        # 直接清空是安全做法（缓存只是加速，丢了下次重查）。
+        if len(_CTX_CACHE) > 3000:
+            _CTX_CACHE.clear()
+        _CTX_CACHE[symbol] = (_now, dict(out))
+    # ★ `defensive_attr` 依赖调用方传入的 `name`（不同调用方可能传不同串），
+    #   不进缓存，每次现算（纯字符串判断，零成本）。
+    #   防御属性只依赖股票名（"银行"）；前端已有 name 就传，省一次外呼。
+    _name = name or ""
+    if not _name:
+        try:
+            from app.tencent import get_stock
+            _name = (get_stock(symbol) or {}).get("name") or ""
+        except Exception:
+            _name = ""
+    out["defensive_attr"] = (
+        "银行/高股息防御属性：阴跌段历史跑赢典型股 +0.18pt/日；"
+        "牛市段跑输全池 −0.19pt/日（详见评分重构方案 §7）"
+        if "银行" in _name else None)
+    return out
+
+
 # ★★ 2026-10-11（P1）：个股「一页纸诊断」—— 把既有结构化事实聚合成可读结论。
 #   ⚠️ 路径**必须两段**（`/diag/{symbol}`）：本文件早先注册的 `/{symbol}` 单段通配路由会吞掉
 #   单段静态路径（2026-09-22 观察池 `/score/gate-watch` 就被吞成 200 + {"error": "未找到股票"}，

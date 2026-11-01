@@ -1288,6 +1288,14 @@ export async function computeLocalScore(code, stockInfo = {}, finance = null, we
   // 趋势健康度（5 维度：量能/支撑/深度/动量/均线）——打包时后端已用同一函数算好
   if (trendHealth) result.trend_health = trendHealth
 
+  // ★★ 2026-11-01：买入条件就绪（gate）——本地镜像 `trade_gate.summarize`。
+  //   详情页此前**没有这个字段**（`computeLocalScore` 漏了），只能等后端补，
+  //   而后端 `/score/{symbol}` 为了它要重算 750 根 K 线 + numpy + score_stock。
+  //   `buildGate` 早已在 `computeRanking` 里用同款方式产出（判据由
+  //   `/score/weights` 的 `gate` 下发）⇒ 这里直接复用，**不新增任何后端请求**。
+  //   ⚠️ 调用方需先 `setGateRules()` / `setRegimeState()`，否则返回 null（模板自动隐藏）。
+  result.gate = buildGate(result)
+
   // 详情页模板期望 dimensions 为数组（后端 ScoreResult 形状）：
   // scoreStock 返回对象 → 按展示顺序转数组，details 的 {分值/满分} 形状两端一致
   const dimMap = result.dimensions || {}

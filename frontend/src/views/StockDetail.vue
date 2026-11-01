@@ -637,8 +637,11 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag, askStock } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getScoreContext, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag, askStock } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
+// ★ 2026-11-01：本地评分补 gate —— 判据（阈值/允许市况/条目名）由后端
+//   `/score/weights` 下发，前端只做布尔组合（`buildGate`），**与线上同口径**。
+import { setRegimeState, setGateRules } from '../utils/scoringEngine'
 // ★ 2026-10-10（P1-2）：连续主力净流入分档配色（**共享源**，与榜单页/工作台观察池同一份；
 //   文案用后端下发的 `flow_consec_cn`，前端不拼天数——见 displayMeta 注释）。
 import { CONSEC_STYLE } from '../composables/displayMeta'
@@ -1200,8 +1203,18 @@ async function tryLoadLocalAll() {
     let weights = null
     try {
       const w = await getScoreWeights()
-      weights = (w && w.data && w.data.weights) || null
-    } catch { weights = null }
+      const wd = (w && w.data) || w || {}
+      weights = wd.weights || null
+      // ★ 2026-11-01：把 regime 与 gate 判据一并注入引擎 ——
+      //   `buildGate` 依赖这两项，缺了会返回 null（详情页就不显示"就绪 N/3"）。
+      //   与 `computeRanking` 的注入方式完全一致，口径不漂。
+      setRegimeState(wd.regime_state)
+      setGateRules(wd.gate)
+    } catch {
+      weights = null
+      setRegimeState(null)
+      setGateRules(null)
+    }
 
     out.score = await computeLocalScore(code, stockInfo.value, finance, weights)
     const local = await loadLocalKline(code, stockInfo.value)
@@ -1295,9 +1308,6 @@ onMounted(async () => {
     //   原实现把它放进 `Promise.allSettled` ⇒ 首屏陪跑 2~13 秒，只为补一个榜单排位。
     //   ⇒ 改为：**先发出去但不等**，本地命中就用本地的、结果到了后台补 rank_context；
     //     只有本地不可用时才 `await` 它（那条路径本来就必须等）。
-    const scoreTask = getStockScore(code)
-      .then((r) => (r && r.data) || null)
-      .catch(() => null)
     // 第一批只等**轻接口**（单只行情 ~20-70ms / 支撑阻力 / RSI）
     const [info, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
@@ -1308,22 +1318,34 @@ onMounted(async () => {
     if (sr.status === 'fulfilled' && sr.value.data) supportResistance.value = sr.value.data.data
     if (rsi.status === 'fulfilled' && rsi.value.data) rsiSignals.value = rsi.value.data.data
 
+    // ★ 附加上下文（精算榜定位 / 龙虎榜 / 防御属性）—— 纯点查，**后端 ~14ms**。
+    //   与"完整评分"（1.7s）分开：本地评分已覆盖 total_score/dimensions/
+    //   summary/mainforce/trend_health/gate，只缺这几个字段。
+    //   放在第一批之后发，是为了拿到 `name` 一并传过去（省后端一次外呼）。
+    const ctxTask = getScoreContext(code, stockInfo.value.name || '')
+      .then((r) => (r && r.data) || null)
+      .catch(() => null)
+
     const local = await tryLoadLocalAll()
     if (local.score) {
-      // 本地评分（与后端同一引擎/同一指标源）⇒ 立刻可渲染
-      scoreData.value = { ...local.score }
-      // 后台补 `rank_context`（精算榜定位）：用户可能已经切页签/在看别的，
-      // 所以只在"当前展示的仍是这份评分、且它还没有 rank_context"时才补，
-      // 避免后端结果晚到后把用户正在看的内容覆盖掉。
-      scoreTask.then((remote) => {
-        const rc = remote && remote.rank_context
-        const cur = scoreData.value
-        if (rc && cur && !cur.rank_context) scoreData.value = { ...cur, rank_context: rc }
-      })
+      // 等 ctx（最多 14ms，通常已就绪）——**不用回调补字段**，避免"ctx 比本地快、
+      // 回填时 scoreData 还是空值"的竞态。
+      const ctx = await ctxTask
+      scoreData.value = {
+        ...local.score,
+        ...(ctx ? {
+          ...(ctx.rank_context ? { rank_context: ctx.rank_context } : {}),
+          ...(ctx.lhb ? { lhb: ctx.lhb } : {}),
+          ...(ctx.defensive_attr ? { defensive_attr: ctx.defensive_attr } : {}),
+        } : {}),
+      }
     } else {
-      // 本地不可用（未下 K 线包 / 该股不在包内）⇒ 这条路径只能等后端
-      const remote = await scoreTask
-      if (remote) scoreData.value = remote
+      // 本地不可用（未下 K 线包 / 包过期 / 该股不在包内）⇒ 只能走后端完整精算。
+      // ⚠️ 这是唯一会慢（1.7s~13s）的路径，也是 `/score/{symbol}` 保留的意义。
+      try {
+        const { data } = await getStockScore(code)
+        if (data) scoreData.value = data
+      } catch (e) { console.warn('[detail] 后端精算评分失败:', e?.message || e) }
     }
     if (local.klines) {
       klineData.value = local.klines
