@@ -645,6 +645,12 @@ import { CONSEC_STYLE } from '../composables/displayMeta'
 // ★ 2026-10-11（L1/L2）：一页纸诊断 / 事实问答的正文此前是 `whitespace-pre-wrap` 裸文本
 //   （`**现状**` 会原样显示星号）；现统一交给「观点卡」（内含全站唯一渲染器）。
 import InsightBody from '../components/InsightBody.vue'
+// ★★ 2026-11-01（用户："StockDetail 接 useFastQuotes"）：个股详情此前**只在
+//   `onMounted` 拉一次** `getStockRealtime`，页面停留期间价格不动，
+//   盘中盯单只票必须手动 F5；切换股票还会 `window.location.reload()` 整页重载。
+//   `useFastQuotes` 是站内既有的 12 秒批量报价（全站共享一条调度器 + 跨标签租约，
+//   非交易时段与后台标签自动不发）⇒ 接入后是"零新增请求结构"的实时化。
+import { useFastQuotes } from '../composables/useFastQuotes'
 
 const route = useRoute()
 const code = route.params.code
@@ -874,6 +880,62 @@ const quoteFields = computed(() => {
     { label: '市盈率', value: s.pe ?? '-', color: 'text-gray-200' },
   ]
 })
+
+// ── 盘中实时价（`useFastQuotes`，2026-11-01）──────────────────────────────
+// 直连腾讯（`api/tencent.js`）与后端 `get_stock` **不是同一套字段**，接入前必须归一，
+// 否则会出现"价格对了、成交量放大 100 倍"这种最难发现的错误：
+//   ① 昨收字段名不同：直连 `yesterday_close` ↔ 后端 `prev_close`
+//   ② **成交量单位不同**：直连已 ×100 转"股"，后端是"手"
+//      ⇒ 不除回 100，`formatVol` 会显示成 100 倍的数
+//   ③ `change_amt`（涨跌额）直连**不解析**，需用 `price - 昨收` 补
+function normalizeFastQuote(q) {
+  if (!q) return {}
+  const price = parseFloat(q.price)
+  const prev = parseFloat(q.yesterday_close ?? q.prev_close)
+  // ⚠️ 必须同时要求 `> 0`：`parseFloat(0)` 是有限数字，单靠 `isFinite` 会把
+  //   "停牌/新股首日（昨收 0）"算成 `change_amt = 现价 - 0 = 现价`，
+  //   界面上就会出现"涨了 10.5 元"这种离谱数字（2026-11-01 测试用例抓到的）。
+  const hasPrice = Number.isFinite(price) && price > 0
+  const hasPrev = Number.isFinite(prev) && prev > 0
+  return {
+    price: hasPrice ? price : undefined,
+    prev_close: hasPrev ? prev : undefined,
+    open: q.open,
+    high: q.high,
+    low: q.low,
+    change_pct: q.change_pct,
+    // 后端有这个字段、直连没有 ⇒ 自己算（A 股价格 2 位小数）
+    change_amt: (hasPrice && hasPrev) ? Number((price - prev).toFixed(2)) : undefined,
+    volume: q.volume != null ? q.volume / 100 : undefined,   // 股 → 手（与后端同口径）
+    amount: q.amount,
+    turnover_rate: q.turnover_rate,
+    pe: q.pe,
+  }
+}
+
+function applyFastQuote(q) {
+  const patch = normalizeFastQuote(q)
+  // ★ 价格无效（停牌 / 数据残缺）⇒ **整条丢弃**，不做部分更新。
+  //   否则会出现"价格停在旧值、涨跌幅却变成新值"这种自相矛盾的卡片
+  //   （停牌时直连可能给 price=0 但 change_pct=0）。
+  if (patch.price === undefined) return
+  const next = { ...stockInfo.value }
+  for (const [k, v] of Object.entries(patch)) {
+    // ★ 空值**不覆盖**：宁可留着上一次的数字，也不要拿 0/undefined 把卡片打空
+    //   （`useFastQuotes` 失败时根本不回调，这里是第二道保险）
+    if (v === undefined || v === null || Number.isNaN(v)) continue
+    next[k] = v
+  }
+  stockInfo.value = next
+}
+
+// 只订阅**当前这一只**（`code` 是 `route.params.code`；切股票是整页 reload，
+// 所以不需要处理 code 变化）。非交易时段 / 后台标签由 `useFastQuotes` 内部拦截，
+// 不会新增请求。
+const fastQuotes = useFastQuotes(
+  () => (code ? [String(code)] : []),
+  (quotes) => { applyFastQuote(quotes[String(code)]) },
+)
 
 // ── 支撑阻力 + RSI 显示辅助 ──
 const srBarBg = computed(() => {
@@ -1212,6 +1274,10 @@ async function toggleAnomaly() {
 }
 
 onMounted(async () => {
+  // ★★ 2026-11-01：先启动 12 秒实时价订阅（不等主数据链），
+  //   之后 `getStockRealtime` 返回会用更全的字段整体覆盖一次 —— 两者不冲突：
+  //   fast 先到 = 首屏更快有意义的价格；后端后到 = 补齐 prev_close 等完整字段。
+  fastQuotes.start()
   // ★ 从观察池「异动」入口进来（`?anomaly=1`）⇒ 直接把分析块**展开**
   //   但**不自动请求** —— 展开只是把「开始分析」按钮呈现出来，成本仍由人点（按需纪律）。
   const q = route.query.anomaly
@@ -1280,7 +1346,13 @@ onMounted(async () => {
   window.addEventListener('resize', () => charts.forEach(c => c && c.resize()))
 })
 
-onBeforeUnmount(() => { charts.forEach(c => c && c.dispose()); charts = [] })
+onBeforeUnmount(() => {
+  // ★ 2026-11-01：必须停订阅，否则离开页面后仍占着全站那条 12 秒调度器
+  //   （`useFastQuotes` 靠引用计数决定是否清定时器，不停会一直有订阅者）
+  fastQuotes.stop()
+  charts.forEach(c => c && c.dispose())
+  charts = []
+})
 
 watch(() => route.params.code, () => { window.location.reload() })
 </script>
