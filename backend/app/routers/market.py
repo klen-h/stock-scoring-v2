@@ -284,6 +284,46 @@ def market_events():
             "e4_stats": E4_STATS}
 
 
+# ★★ 2026-11-01：主指数行情**微缓存（3 秒）**。
+#
+# 【为什么需要】
+#   `/market/overview` 的 6 个指数**每次请求都同步外呼腾讯**（原实现无任何缓存），
+#   而它被多处共用：
+#     · `/market/pulse` 内部**直接调 `market_overview()`**（同文件 2329 行）
+#     · 工作台 60s 轮询、Dashboard、ScoreRank 首屏
+#   ⇒ 同一份指数数据每分钟被请求数次，开多个标签页还会成倍放大。
+#
+# 【为什么是 3 秒，而不是 60 秒】
+#   腾讯指数行情本身约 3 秒一档更新 —— TTL 再短不会更新鲜，只会多外呼；
+#   而给到 60 秒会与 `/pulse` 的 60s 轮询叠加差错觉：用户点了刷新，
+#   看到的还是 60 秒前的数字。3 秒是"挡住瞬时并发"与"不牺牲新鲜度"的交点。
+_IDX_SNAP_CACHE = {"ts": 0.0, "val": {}}
+_IDX_SNAP_TTL = 3.0
+
+
+def _main_indices_quotes() -> Dict:
+    """`MAIN_INDICES` 的腾讯原始行情（3 秒微缓存）。
+
+    ★ 失败时**回退上一次成功值**（无则返回空 dict）——指数行情短暂抖动
+      不该让顶栏整块空白，与 `realtime_uplimit` 的 fail-open 语义保持一致。
+    ★ **不缓存失败**（`ts` 不更新）⇒ 下一次请求立即重试。
+    """
+    import time as _t
+    now = _t.time()
+    if now - _IDX_SNAP_CACHE["ts"] < _IDX_SNAP_TTL and _IDX_SNAP_CACHE["val"]:
+        return _IDX_SNAP_CACHE["val"]
+    try:
+        from app.tencent import _fetch_tencent
+        codes_str = ",".join(f"{p}{c}" for p, c, _ in MAIN_INDICES)
+        data = _fetch_tencent(codes_str) or {}
+    except Exception as e:
+        print(f"[market] main indices fetch failed: {e}")       # ASCII（铁律⑥）
+        return _IDX_SNAP_CACHE["val"]
+    if data:
+        _IDX_SNAP_CACHE.update(ts=now, val=data)
+    return data
+
+
 @router.get("/overview")
 def market_overview(background_tasks: BackgroundTasks):
     """
@@ -296,11 +336,10 @@ def market_overview(background_tasks: BackgroundTasks):
     result = {"indices": [], "stats": {}}
 
     # ── 第一部分：主要指数实时数据 ──
+    # ★ 2026-11-01：改走 `_main_indices_quotes()` 的 3 秒微缓存
+    #   （原来这里**每次请求都 `_fetch_tencent`**，而 `/pulse` 也会调本函数）。
     try:
-        from app.tencent import _fetch_tencent
-        # 一次性请求 6 个指数（用逗号拼接代码）
-        codes_str = ",".join(f"{p}{c}" for p, c, _ in MAIN_INDICES)
-        data = _fetch_tencent(codes_str)
+        data = _main_indices_quotes()
         for prefix, code, name in MAIN_INDICES:
             qt_code = f"{prefix}{code}"
             info = data.get(qt_code)
@@ -2326,6 +2365,13 @@ def market_pulse(codes: str = ""):
             errors[name] = str(e)[:120]
             print(f"[market] pulse.{name} failed: {e}")          # ASCII（铁律⑥）
 
+    # ⚠️ 这里**故意**传一个新建的空 `BackgroundTasks()`：
+    #   `market_overview` 末尾会 `add_task(refresh_all_stocks)`（盘中且池旧于 120s），
+    #   而 pulse 被工作台 **60 秒**轮询调用。若把真实 BackgroundTasks 传进来，
+    #   全市场刷新就会从"`stock_cache_refresh_loop` 的 120s"变成"最坏 60s 一次"
+    #   ⇒ 外呼翻倍，与本轮"降本"的改动方向相反。
+    #   行情池的新鲜度由后台循环负责，pulse 只读现成数据。
+    #   （2026-11-01 记录：原代码传空对象是"碰巧正确"，此注释是把它变成"有意为之"。）
     _run("overview", lambda: market_overview(BackgroundTasks()))
     _run("temperature", market_temperature)
     _run("emotion", market_emotion)

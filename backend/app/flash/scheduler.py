@@ -2425,7 +2425,39 @@ async def calendar_publish_loop():
 
 
 # ── 两市成交额日额落库（收盘后一次；次日供"环比昨日"做精确基准）──
-AMOUNT_SAVE_WINDOW = (1555, 1800)       # 北京时间 15:55~18:00（收盘定稿后）
+# ★★ 2026-11-01 **修正笔误**：原为 `(1555, 1800)`——把"15:55"直接拼成 1555、
+#   "18:00"拼成 1800，忘了换算成分钟。而下面判定用的是
+#   `t = now.hour * 60 + now.minute`，取值范围 **0~1439** ⇒ `1555 <= t` 永不成立
+#   ⇒ `save_daily()` 从未执行过，两市成交额日额从不落库，且**全程无任何报错**。
+#   正确值：15*60+55=955，18*60+0=1080。
+#   ⚠️ 这类笔误在本文件是**第二次**（`BACKTEST_PREHEAT_WINDOW` 原 `(1605,2359)`，
+#     见其上方注释）⇒ 已加 `_validate_windows()` 在 `start()` 里机器自检，防复发。
+AMOUNT_SAVE_WINDOW = (955, 1080)        # 北京时间 15:55~18:00（收盘定稿后）
+
+
+def _validate_windows() -> list:
+    """自检所有 `*_WINDOW` 常量：必须满足 `0 <= start < end <= 1440`。
+
+    ★★ 为什么必须有（2026-11-01）：
+      `AMOUNT_SAVE_WINDOW` 曾被写成 `(1555, 1800)`，而判定值是 `hour*60+minute`
+      最大 1439 ⇒ 条件永不成立、功能 100% 失效、**且不报任何错**。
+      同类型的错在本文件已出现两次，人眼 review 拦不住 ⇒ 必须机器查。
+
+    返回 `[(名称, 原值, 原因), ...]`，空列表表示全部正常。
+    """
+    bad = []
+    for _name, _val in list(globals().items()):
+        if not _name.endswith("_WINDOW") or not isinstance(_val, tuple) or len(_val) != 2:
+            continue
+        try:
+            _s, _e = int(_val[0]), int(_val[1])
+        except (TypeError, ValueError):
+            bad.append((_name, _val, "元素非整数"))
+            continue
+        if not (0 <= _s < _e <= 1440):
+            bad.append((_name, _val,
+                        f"越界（要求 0<=start<end<=1440，实际 start={_s} end={_e}）"))
+    return bad
 
 
 async def amount_save_loop():
@@ -2460,6 +2492,17 @@ async def start():
     """启动全部调度循环（由 main.py 的 lifespan 调用，返回任务句柄便于关闭时取消）。"""
     status["running"] = True
     status["started_at"] = rules.beijing_now().isoformat()
+    # ★★ 2026-11-01：窗口常量自检。窗口写错 = 功能静默失效（不报错、不触发），
+    #   是本项目已踩过两次的坑（`AMOUNT_SAVE_WINDOW` / `BACKTEST_PREHEAT_WINDOW`）。
+    #   ⚠️ 只**告警**不阻断启动——一个窗口写错不该让整个调度停摆；
+    #     但必须让它在启动日志里显眼，而不是等几天后才发现数据没落库。
+    _bad = _validate_windows()
+    if _bad:
+        for _n, _v, _why in _bad:
+            print(f"[scheduler] ★★ 窗口常量错误 {_n}={_v} —— {_why}"
+                  f"（该循环将永不触发或触发范围错误）")
+    else:
+        print("[scheduler] 窗口常量自检通过")
     # ★ 重启恢复市场状态缓存：regime 是进程内存，schedule_done 幂等标记会让
     #   「当日已判定」重启后不再重算 → 评分回退静态默认权重，与快照差数分。
     #   启动即从 market_regime_history 恢复最近一次判定（评分的单一事实来源）。
