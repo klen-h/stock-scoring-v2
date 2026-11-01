@@ -344,6 +344,24 @@ def flow_map(max_age_h: float = DEFAULT_MAX_AGE_H, force: bool = False) -> dict:
             _log(f"命中本地缓存（{len(out)} 只，更新于 "
                  f"{_meta_get(conn, 'flow_updated_at')[:19]}）")
             return out
+        # ★★ 2026-11-01（用户："本地开发…热更新也会消耗流量，能不能缓存下来，
+        #   我一般都是盘后开发，数据有差异没有关系"）：
+        #   本机已有数据、只是被判"陈旧"时，开发期直接复用，**不进 `_top_up_flow`**。
+        #   为什么不能只靠 `flow._disk_load` 的开关：`_top_up_flow` 的 `need_full`
+        #   分支（本机缺该码 ⇒ 取全量历史）会在 RESEARCH_CACHE 这条链上先跑起来，
+        #   盘后本地数据往往"少当天补写的几行" ⇒ 全池都算 need_tail/need_full ⇒ 照样过网。
+        if not force:
+            try:
+                from app.dev_flags import stale_cache_enabled
+                _dev = stale_cache_enabled()
+            except Exception:
+                _dev = False
+            if _dev:
+                _local = _flow_from_local(conn)
+                if _local:
+                    _log(f"DEV_STALE_CACHE=1 => 复用陈旧本地缓存（{len(_local)} 只，"
+                         f"更新于 {_meta_get(conn, 'flow_updated_at')[:19]}；仅开发用，可能落后当天）")
+                    return _local
     finally:
         conn.close()
 

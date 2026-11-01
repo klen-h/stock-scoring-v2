@@ -722,17 +722,43 @@ def _ver_now():
 
 
 def _disk_load(ver):
-    """读本机整表缓存（零 egress）。版本不符 / 过期 / 异常 → None（调用方回源）。"""
+    """读本机整表缓存（零 egress）。版本不符 / 过期 / 异常 → None（调用方回源）。
+
+    ★★ 2026-11-01（用户："本地开发…每次修改前后端都会热更新，是不是也消耗流量，
+      能不能缓存下来，我一般都是盘后开发，数据有差异没有关系"）：
+      **会**。热更新 = 进程重启 ⇒ 内存缓存清零；本机 SQLite 虽在，但有「版本一致 +
+      12 小时内」双门控 —— 盘后开发时数据本就不再变，可版本号会因当天日批写入而变、
+      或 TTL 已过 ⇒ 判陈旧 ⇒ **每次重启回源整表**。
+      实测单条 `SELECT ... FROM mainflow_history` 可返回 **21.4 万行 ≈ 23MB**
+      （`scripts/egress_probe.py` 11-01 23:02→23:14）。
+      ⇒ 开发期可用 `DEV_STALE_CACHE=1` 关掉这个门控（**仅本地**，见 `app/dev_flags.py`）。
+    """
     try:
         if not os.path.exists(_FLOW_DISK_PATH):
             return None
         conn = sqlite3.connect(_FLOW_DISK_PATH)
         try:
             k = dict(conn.execute("SELECT k, v FROM meta").fetchall())
-            if not k.get("ts") or (ver is not None and k.get("ver") != str(ver)):
+            if not k.get("ts"):
                 return None
-            if time.time() - float(k["ts"]) > _FLOW_DISK_TTL:
-                return None
+            _ver_bad = ver is not None and k.get("ver") != str(ver)
+            _ts_bad = time.time() - float(k["ts"]) > _FLOW_DISK_TTL
+            if _ver_bad or _ts_bad:
+                try:
+                    from app.dev_flags import stale_cache_enabled
+                    _dev = stale_cache_enabled()
+                except Exception:
+                    _dev = False
+                if not _dev:
+                    return None
+                # 开发期放行：明确告知"这份数据可能过期"，避免有人把本地差异当成真结论
+                _why = []
+                if _ver_bad:
+                    _why.append(f"版本 {k.get('ver')}≠{ver}")
+                if _ts_bad:
+                    _why.append(f"已 {(time.time() - float(k['ts'])) / 3600:.1f}h")
+                print(f"[mainflow] DEV_STALE_CACHE=1 => 复用陈旧本机缓存"
+                      f"（{('、'.join(_why))}；数据可能过期，仅开发用）")
             by_code = {}
             for r in conn.execute("SELECT code, date, main_net, super_net, big_net, "
                                   "main_pct, super_pct, close, pct_chg FROM flow "
