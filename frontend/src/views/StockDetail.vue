@@ -1288,17 +1288,19 @@ onMounted(async () => {
   getStockNews(code).then(({ data }) => { newsData.value = data }).catch(() => {})
   getStockNewsHistory(code, 30).then(({ data }) => { newsHistory.value = data.history || [] }).catch(() => {})
   try {
-    // ★ 本地优先：实时行情（轻）先行，评分/K线尝试全本地（零后端重接口）；
-    //   支撑阻力/RSI 为轻量查询照常并行。本地不可用再回退后端精算。
-    // ★ 2026-10-25（线上白屏修复）：第二项是 `getStockScore`，解构名却写成 `fund`
-    //   ⇒ 下面 `score.status` 引用了一个不存在的变量，运行时 `ReferenceError: score is not defined`
-    //   整页脚本中断（评分/异动等全部不渲染）。改名回 `score`，与调用顺序一一对应：
-    //   info=行情 / score=评分 / sr=支撑阻力 / rsi=RSI。
-    const [info, score, sr, rsi] = await Promise.allSettled([
+    // ★★ 2026-11-01（提速 A：后端评分**不再阻塞首屏**）：
+    //   实测 `/score/{symbol}` 冷启动 **13.2s**、热态 **1.9~2.7s**（其中
+    //   `get_cached_klines` 首次 3.5s），而本地评分命中时它**只有 `rank_context`
+    //   一个字段有用**（原注释自述"本地包命中则丢弃后端结果"）。
+    //   原实现把它放进 `Promise.allSettled` ⇒ 首屏陪跑 2~13 秒，只为补一个榜单排位。
+    //   ⇒ 改为：**先发出去但不等**，本地命中就用本地的、结果到了后台补 rank_context；
+    //     只有本地不可用时才 `await` 它（那条路径本来就必须等）。
+    const scoreTask = getStockScore(code)
+      .then((r) => (r && r.data) || null)
+      .catch(() => null)
+    // 第一批只等**轻接口**（单只行情 ~20-70ms / 支撑阻力 / RSI）
+    const [info, sr, rsi] = await Promise.allSettled([
       getStockRealtime(code),
-      // ★ 2026-10-25（提速 1/2）：评分并入第一批并行（旧实现排在整批之后串行 2.2s——
-      //    本地包命中则丢弃后端结果，只保留 rank_context 等本地没有的字段）
-      getStockScore(code),
       getSupportResistance(code),
       getRSISignals(code),
     ])
@@ -1307,14 +1309,21 @@ onMounted(async () => {
     if (rsi.status === 'fulfilled' && rsi.value.data) rsiSignals.value = rsi.value.data.data
 
     const local = await tryLoadLocalAll()
-    const remoteScore = score.status === 'fulfilled' ? (score.value.data || null) : null
     if (local.score) {
-      // 本地评分与后端同源；rank_context（精算榜定位）只有后端响应里有 → 补挂
-      scoreData.value = { ...local.score,
-        rank_context: remoteScore?.rank_context ?? local.score.rank_context }
-    } else if (remoteScore) {
-      // 本地不可用（未下 K 线包/该股不在包内）→ 用已并行的后端精算结果
-      scoreData.value = remoteScore
+      // 本地评分（与后端同一引擎/同一指标源）⇒ 立刻可渲染
+      scoreData.value = { ...local.score }
+      // 后台补 `rank_context`（精算榜定位）：用户可能已经切页签/在看别的，
+      // 所以只在"当前展示的仍是这份评分、且它还没有 rank_context"时才补，
+      // 避免后端结果晚到后把用户正在看的内容覆盖掉。
+      scoreTask.then((remote) => {
+        const rc = remote && remote.rank_context
+        const cur = scoreData.value
+        if (rc && cur && !cur.rank_context) scoreData.value = { ...cur, rank_context: rc }
+      })
+    } else {
+      // 本地不可用（未下 K 线包 / 该股不在包内）⇒ 这条路径只能等后端
+      const remote = await scoreTask
+      if (remote) scoreData.value = remote
     }
     if (local.klines) {
       klineData.value = local.klines
