@@ -596,8 +596,26 @@ def get_current_regime() -> Optional[MarketState]:
 _REGIME_CACHE: dict = {"date": None, "state": None, "weights": None, "detail": None}
 
 
+_HISTORY_TABLE_READY = False
+
+
 def _ensure_history_table() -> None:
-    """确保市场状态追踪表存在（幂等，兼容 PostgreSQL / SQLite）。"""
+    """确保市场状态追踪表存在（幂等，兼容 PostgreSQL / SQLite）。
+
+    ★★ 2026-11-01：加**进程级一次性**标志。
+      实测单次调用 **2.4 秒** —— 因为是 **2 次 DDL 往返**：
+      `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS`，
+      而 Supabase 每次往返约 **1.2 秒**。
+      它在 `restore_regime_cache_from_db()` 里被**每次调用**执行，
+      于是 `/api/score/weights` 首次要 **3~7 秒**
+      （2.4s 建表 + 0.64s 查询 + 冷连接 2.8s），
+      本地 `uvicorn --reload` 每次改代码重启都要重付一遍。
+      表只需在**首次部署**建一次，之后 `IF NOT EXISTS` 纯属白付往返。
+    ⚠️ 只有**全部成功**才置 `True`：建表失败必须能重试（否则永远建不出来）。
+    """
+    global _HISTORY_TABLE_READY
+    if _HISTORY_TABLE_READY:
+        return
     from app.database import db
     # ★ 2026-10-24（BK-35）：id 列双库分支——SERIAL 是 PG 专有，SQLite 必抛
     #   （异常被吞 ⇒ 表没建出来，报告归档/nb 两日确认整体失效）。
@@ -633,6 +651,7 @@ def _ensure_history_table() -> None:
                            "ADD COLUMN bearish_refine_raw BOOLEAN")
     except Exception:
         pass
+    _HISTORY_TABLE_READY = True
 
 
 def refresh_regime_cache(force: bool = False) -> Optional[dict]:

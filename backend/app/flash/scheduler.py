@@ -2506,9 +2506,16 @@ async def start():
     # ★ 重启恢复市场状态缓存：regime 是进程内存，schedule_done 幂等标记会让
     #   「当日已判定」重启后不再重算 → 评分回退静态默认权重，与快照差数分。
     #   启动即从 market_regime_history 恢复最近一次判定（评分的单一事实来源）。
+    #
+    # ★★ 2026-11-01：改为 `asyncio.to_thread` —— 原先在 `async def start()` 里
+    #   **同步**调用，而它内部要读远程库（实测 3~7 秒：建表 2.4s + 查询 0.64s
+    #   + 冷连接 2.8s）⇒ **整个事件循环被卡住**，期间所有 HTTP 请求（含
+    #   `/api/score/weights`）一起排队，用户看到的就是"首次打开很慢"。
+    #   放线程池后：启动不再阻塞请求；regime 未就绪的那几秒里，
+    #   `/score/weights` 自己会再恢复一次（幂等，`_REGIME_CACHE` 覆盖写）。
     try:
         from app.backtest.market_regime import restore_regime_cache_from_db
-        _rc = restore_regime_cache_from_db()
+        _rc = await asyncio.to_thread(restore_regime_cache_from_db)
         if _rc and _rc.get("state"):
             print(f"[scheduler] 重启恢复市场状态: {_rc['date']} {_rc['state']} "
                   f"权重={_rc['weights']}")
