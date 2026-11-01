@@ -80,6 +80,12 @@ export const getMarketOverview = () => http.get('/market/overview')
 //   前端串行拼接会到 3 秒以上，标签切换明显卡顿。
 export const getAmReview = (date) =>
   http.get('/market/amreview', { params: date ? { date } : {}, timeout: 20000 })
+// ★ 2026-11-01：数据附录的「AI 解读」。
+//   GET 只读缓存（绝不触发 LLM）；POST 才真正生成（同步 LLM，十几秒 ⇒ 超时给足 120s）。
+export const getAmReviewDigest = (date) =>
+  http.get('/market/amreview/digest', { params: date ? { date } : {}, timeout: 15000 })
+export const runAmReviewDigest = (date) =>
+  http.post('/market/amreview/digest', {}, { params: date ? { date } : {}, timeout: 120000 })
 export const getMarketTemperature = () => http.get('/market/temperature')
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— v0 展示项，不进决策链
 export const getMarketEvents = () => http.get('/market/events')

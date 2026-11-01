@@ -191,36 +191,61 @@
           <span class="ml-auto text-[10px] text-muted">{{ dataOpen ? '▾' : '▸' }}</span>
         </button>
 
-        <div v-if="dataOpen" class="mt-2 space-y-3">
-          <div v-for="b in BLOCKS" :key="b.key">
-            <div class="text-[11px] font-semibold mb-1 flex items-center gap-2">
-              {{ b.label }}
-              <span class="text-[10px] text-muted font-normal">{{ srcLabel(data.blocks[b.key]) }}</span>
+        <div v-if="dataOpen" class="mt-2 space-y-2">
+          <!-- ★★ 2026-11-01（用户："加一个 llm 解读"）：附录顶部一段 AI 解读。
+               走**独立端点**（GET 只读缓存 / POST 才生成），不拖累主端点首屏。 -->
+          <div class="rounded-lg border border-border/60 bg-bg/40 px-2.5 py-2">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="w-1 h-3 rounded-full bg-accent"></span>
+              <span class="text-xs font-semibold">AI 解读</span>
+              <span v-if="digest?.generated_at" class="text-[11px] text-muted font-mono">
+                {{ digest.generated_at }} 生成
+              </span>
+              <button type="button"
+                      class="ml-auto text-[11px] text-accent hover:underline"
+                      :disabled="digestLoading"
+                      @click="$emit('digest')">
+                {{ digestLoading ? '生成中…' : (digest?.markdown ? '重新生成' : '生成解读') }}
+              </button>
             </div>
-            <div v-if="!data.blocks[b.key].length" class="text-[10px] text-muted">—（该日未留存）</div>
-            <div v-else class="space-y-0.5">
+            <div v-if="digestError" class="text-xs text-rise">{{ digestError }}</div>
+            <div v-else-if="digestLoading" class="text-xs text-muted">正在让模型读这批数据（约 10~30 秒）…</div>
+            <div v-else-if="digest?.markdown" class="md-body text-xs leading-relaxed"
+                 v-html="renderMd(digest.markdown)"></div>
+            <div v-else class="text-xs text-muted">
+              还没生成。点「生成解读」让模型把下面这些数字串成因果（消耗 1 次 LLM；只解读，不给操作建议）。
+            </div>
+          </div>
+
+          <div v-for="b in BLOCKS" :key="b.key">
+            <div class="text-xs font-semibold mb-0.5 flex items-center gap-2">
+              {{ b.label }}
+              <span class="text-[11px] text-muted font-normal">{{ srcLabel(data.blocks[b.key]) }}</span>
+            </div>
+            <div v-if="!data.blocks[b.key].length" class="text-[11px] text-muted">—（该日未留存）</div>
+            <div v-else class="space-y-0">
               <div v-for="(it, i) in data.blocks[b.key]" :key="i"
-                   class="flex items-start gap-2 text-[10px] border-b border-border/30 last:border-0 py-0.5">
+                   class="flex items-start gap-2 text-xs border-b border-border/25 last:border-0 py-[3px]">
                 <span class="text-muted w-24 shrink-0 truncate" :title="it.caliber">{{ it.label }}</span>
                 <span class="flex-1 min-w-0 break-words font-mono" :class="numCls(it.delta)">{{ it.value }}</span>
-                <span class="text-muted shrink-0 font-mono cursor-help"
+                <span class="text-muted shrink-0 font-mono cursor-help text-[11px]"
                       :title="`${srcCn(it.source)} · ${it.caliber}`">{{ hhmm(it.as_of) || '—' }}</span>
               </div>
             </div>
           </div>
 
-          <div v-if="data.missing.length" class="pt-1">
-            <div class="text-[11px] font-semibold mb-1">未留存项</div>
+          <div v-if="data.missing.length">
+            <div class="text-xs font-semibold mb-0.5">未留存项</div>
             <div v-for="(m, i) in data.missing" :key="'m' + i"
-                 class="text-[10px] text-muted bg-border/30 rounded px-2 py-1 mb-1">
+                 class="text-[11px] text-muted bg-border/30 rounded px-2 py-[3px] mb-0.5">
               <span class="text-amber-300">{{ blockCn(m.block) }}</span> / {{ m.item }} —— {{ m.reason }}
             </div>
           </div>
 
           <div v-if="data.trace.length">
-            <div class="text-[11px] font-semibold mb-1">溯源（{{ data.trace.length }} 项）</div>
+            <div class="text-xs font-semibold mb-0.5">溯源（{{ data.trace.length }} 项）</div>
             <div v-for="(t, i) in data.trace" :key="'t' + i"
-                 class="grid grid-cols-[52px_1fr_auto] gap-2 text-[10px] text-muted border-b border-border/30 last:border-0 py-0.5">
+                 class="grid grid-cols-[52px_1fr_auto] gap-2 text-[11px] text-muted border-b border-border/25 last:border-0 py-[2px]">
               <span class="truncate">{{ blockCn(t.block) }}</span>
               <span class="truncate" :title="t.item">{{ t.item }}</span>
               <span class="truncate">{{ srcCn(t.source) }} · {{ hhmm(t.as_of) || '—' }}</span>
@@ -241,8 +266,13 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
   error: { type: String, default: '' },
   date: { type: String, default: '' },
+  // ★ 2026-11-01：数据附录的「AI 解读」由父级取数（GET 只读 / POST 生成），
+  //   组件只负责排版 ⇒ mock 预览时也能直接塞假数据看效果。
+  digest: { type: Object, default: null },
+  digestLoading: { type: Boolean, default: false },
+  digestError: { type: String, default: '' },
 })
-defineEmits(['refresh'])
+defineEmits(['refresh', 'digest'])
 
 const bodyOpen = ref(false)
 const dataOpen = ref(false)

@@ -62,13 +62,13 @@
 
     <!-- 原有诊断一行（D 状态 / 主导叙事 / 仓位上限）—— 保留，避免丢信息。
          ★ 2026-10-25（用户）：去掉 truncate 省略号 ⇒ 换行完整展示。 -->
-    <div v-if="flashDiag" class="mt-1 text-[11px] text-muted leading-relaxed shrink-0"
+    <div v-if="flashDiag" class="mt-1 text-[12px] text-muted leading-relaxed shrink-0"
          :title="diagnosisLine">
       {{ diagnosisLine }}
     </div>
 
-    <div v-if="loadErr" class="mt-2 text-[11px] text-amber-400">{{ loadErr }}</div>
-    <div v-else-if="!snapshot" class="mt-2 text-[11px] text-muted">加载中…</div>
+    <div v-if="loadErr" class="mt-2 text-[12px] text-amber-400">{{ loadErr }}</div>
+    <div v-else-if="!snapshot" class="mt-2 text-[12px] text-muted">加载中…</div>
 
     <template v-else>
       <!-- ★ 2026-10-26（用户："盘面速览的涨跌/主线和快讯解读的相同部分有什么区别"）：
@@ -81,13 +81,13 @@
            后端旧实现取"涨幅最小 4 个"，全市场普涨那天就出现"+1.45% 领跌"（跌色渲染正数）
            ⇒ 用户只能怀疑数据是昨天的。现后端只把 `change_pct < 0` 的算领跌；
            全线上涨时给 `bottom_all_up` + `weakest`，这里如实说"无下跌板块（最弱 …）"。 -->
-      <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] shrink-0">
+      <div v-if="!isHistory && sectors.bottom.length" class="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[12px] shrink-0">
         <span class="text-muted">领跌</span>
         <span v-for="s in sectors.bottom.slice(0, 3)" :key="'b' + s.name" class="text-fall">
           {{ s.name }} {{ fmtPct(s.chg_pct) }}
         </span>
       </div>
-      <div v-else-if="!isHistory && sectors.bottom_all_up" class="mt-1.5 flex flex-wrap gap-x-2 text-[11px] shrink-0">
+      <div v-else-if="!isHistory && sectors.bottom_all_up" class="mt-1.5 flex flex-wrap gap-x-2 text-[12px] shrink-0">
         <span class="text-muted">领跌</span>
         <span class="text-muted" :title="'全部行业板块上涨，没有下跌板块；这里给的是最弱的一个（仍在涨）'">
           无（全行业上涨<template v-if="sectors.weakest">，最弱 {{ sectors.weakest.name }} {{ fmtPct(sectors.weakest.chg_pct) }}</template>）</span>
@@ -96,7 +96,7 @@
       <!-- ③ 个股异动 -->
       <!-- ★ 2026-10-26（用户："异动加上股票代码，方便跳转去雪球"）：
            名称 → 本地详情页；**代码 → 雪球**（全站口径：名称走站内、代码走雪球）。 -->
-      <div v-if="!isHistory && movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] shrink-0">
+      <div v-if="!isHistory && movers.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[12px] shrink-0">
         <span class="text-muted">异动</span>
         <span v-for="m in movers" :key="m.code">
           <a :href="stockHref(m.code)" target="_blank" rel="noopener"
@@ -122,10 +122,10 @@
            ⇒ 按 cluster 聚合：组头给"条数 + 最新时间"，组内按时间倒序（天然时间线），
              默认展开最新 2 条，其余一键展开。
            ⚠️ 每组**各画一条竖轴**：跨组连成一条会被误读成"同一序列"。 -->
-      <div v-if="cards.length" class="mt-2 flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
+      <div v-if="cards.length" class="mt-1 flex-1 min-h-0 overflow-y-auto pr-1 space-y-1.5">
         <div v-for="g in grouped" :key="g.key">
           <!-- 组头（历史 tab 无 cluster ⇒ 不渲染，退化为平铺） -->
-          <div v-if="g.cluster" class="flex items-center gap-1.5 px-1 pb-0.5">
+          <div v-if="g.cluster" class="flex items-center gap-1.5 px-1 pb-0.5 mb-1 mt-2">
             <span class="px-1 rounded text-[11px]" :class="clusterCls(g.cluster)">{{ g.cluster }}</span>
             <span class="text-[11px] text-muted">{{ g.items.length }} 条</span>
             <span class="text-[11px] text-muted/70">· {{ hhmm(g.items[0].time) }} 最新</span>
@@ -156,9 +156,9 @@
                     <span v-if="n.score >= 4" class="text-[11px] text-amber-300">重要</span>
                     <span class="ml-auto text-[11px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
                   </div>
-                  <!-- ★ 2026-11-01（用户："快讯解读的文字太小了"）：正文 11px → 13px。
+                  <!-- ★ 2026-11-01（用户："快讯解读的文字太小了"）：正文 11px → 12px。
                        时间/标签保持 11px：它们是辅助信息，一起放大反而挤掉标题。 -->
-                  <div class="mt-1 text-[13px] text-gray-200 leading-relaxed">{{ n.gist }}</div>
+                  <div class="mt-1 text-[12px] text-gray-200 leading-relaxed">{{ n.gist }}</div>
                 </button>
                 <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-xs">
                   <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
