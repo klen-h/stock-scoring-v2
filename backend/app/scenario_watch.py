@@ -474,8 +474,26 @@ def load(day: str = None) -> Dict:
         row = db.fetch_one("SELECT * FROM scenario_watch WHERE date = %s", (d,))
     except Exception:
         row = None
+    _fallback = False
     if not row:
-        return evaluate()
+        # ★★ 2026-11-01：**不再现场 evaluate**。
+        #   实测（2026-11-01 周日）：工作台把 `selectedDate`（当天）传进来，
+        #   该日无快照（周末日批不产）⇒ 走 `evaluate()` 现场重算
+        #   pbw+kl+esw 整套 ⇒ **实测 114.9 秒**，期间前端"推演证伪"
+        #   永远显示"加载中…"；而算出来的结果本质就是最近一日快照的内容
+        #   （date=2026-10-30）。
+        #   ⇒ 回退**最近一日快照**，并在返回里显式标注
+        #     `requested_date`（请求的日期）与 `stale`（快照 ≠ 请求日），
+        #     绝不冒充当天 —— 与 `evaluate()` 内对 key_level 的回退纪律一致。
+        #   `evaluate()` 保留给：日批写库、显式现算的调用方。
+        prev = db.fetch_one(
+            "SELECT date FROM scenario_watch ORDER BY date DESC LIMIT 1")
+        _pd = str((prev or {}).get("date") or "")[:10]
+        if not _pd:
+            return evaluate()          # 表真为空：只能现算（部署后首日）
+        row = db.fetch_one("SELECT * FROM scenario_watch WHERE date = %s", (_pd,))
+        d = _pd
+        _fallback = True
     try:
         signals = json.loads(row.get("signals_json") or "[]")
     except (ValueError, TypeError):
@@ -498,6 +516,10 @@ def load(day: str = None) -> Dict:
                 or any(s.get("candidate") for s in signals))
     return {"date": d, "signals": signals, "lean": row.get("lean"),
             "scenario": row.get("scenario"), "note": row.get("note"),
+            # ★ 2026-11-01：快照日期 ≠ 请求日期时显式告知（前端可标注"截至 X 日"），
+            #   防止"周末请求当天、拿到周五快照"被当成当天的读数。
+            "requested_date": (str(day)[:10] if day else d),
+            "stale": _fallback or bool(day and str(day)[:10] != d),
             "events": EVENTS, "point_plot": POINT_PLOT,
             "event_alert": (extra.get("event_alert")
                             or {"active": False, "items": [], "text": ""}),

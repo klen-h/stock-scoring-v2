@@ -4150,10 +4150,17 @@ const scenBadgeClass = computed(() => {
 })
 const scenLine = computed(() => {
   const s = scen.value
-  if (!s) return '加载中…'
-  const a = s.anchor || {}
-  return `${s.lean || '—'} ${s.n_up ?? 0}多/${s.n_down ?? 0}空` +
-    (a.level ? ` · 锚点${a.state || '—'}` : '')
+  // ★ 2026-11-01：失败（接口 500/超时）与"还在加载"必须区分——
+  //   原来失败也静默置 null ⇒ 用户对着"加载中…"看两分钟（后端现场算 114s 的后遗症）。
+  if (s) {
+    const a = s.anchor || {}
+    let line = `${s.lean || '—'} ${s.n_up ?? 0}多/${s.n_down ?? 0}空` +
+      (a.level ? ` · 锚点${a.state || '—'}` : '')
+    // 快照日期 ≠ 请求日期（如周末请求当天拿到周五快照）⇒ 显式标注，绝不冒充当天
+    if (s.stale && s.date) line += `（截至 ${s.date}）`
+    return line
+  }
+  return scenErr.value ? '—（暂无数据）' : '加载中…'
 })
 const scenDot = computed(() => {
   const s = scen.value
@@ -4340,6 +4347,9 @@ async function refreshJin10(withSummary) {
 }
 // ★ 2026-10-23：磨底 2.0 推演证伪记分卡
 const scen = ref(null)
+// ★ 2026-11-01：加载失败与"还在加载"分开——失败时摘要行显示"—（暂无数据）"，
+//   不再永远"加载中…"（后端 114s 现算事故的 UI 侧防线）。
+const scenErr = ref(false)
 function scenBadge(s) {
   if (s === '熊市加深') return 'bg-rose-500/20 text-rose-300'
   if (s === '提前修复') return 'bg-emerald-500/20 text-emerald-300'
@@ -4399,11 +4409,14 @@ function toggleObsAI() {
 }
 
 async function loadScenario() {
+  scenErr.value = false
   try {
     const { data } = await getScenarioWatch(selectedDate.value)
     scen.value = data || null
+    scenErr.value = !data          // 200 但空 ⇒ 也算"暂无"，不当成加载中
   } catch (e) {
     scen.value = null
+    scenErr.value = true
   }
   // 换日 / 回放切日：清掉上一天的 AI 解读（按日缓存，留着会误导）
   obsAI.value = { loading: false, error: '', markdown: '', conclusion: '', reasons: [],
