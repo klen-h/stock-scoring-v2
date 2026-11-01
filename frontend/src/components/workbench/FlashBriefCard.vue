@@ -476,8 +476,9 @@ onBeforeUnmount(() => { fb.stop() })
 </script>
 
 <style scoped>
-/* 解读 tab 横向滚动：细滚动条，避免右卡被撑高（与「李大霄视角」同款，2026-10-26） */
-.wb-hscroll::-webkit-scrollbar { height: 4px; }
-.wb-hscroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
-.wb-hscroll { scrollbar-width: thin; }
+/* 解读 tab 横向滚动。
+   ★★ 2026-11-01：与「李大霄视角」同步改为**隐藏滚动条**（保留滚动能力）——
+     两处 tab 交互同款，视觉就不该一个有一条没有。 */
+.wb-hscroll { scrollbar-width: none; -ms-overflow-style: none; }
+.wb-hscroll::-webkit-scrollbar { display: none; height: 0; width: 0; }
 </style>

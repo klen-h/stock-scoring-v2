@@ -1730,53 +1730,9 @@
           </div>
 
           </div>
-          <!-- 右列：财经日历 + 盘前简报 -->
+          <!-- 右列：决策简报（盘前）；财经日历已移入常驻右栏 tab③（2026-11-01） -->
           <div class="space-y-4 min-w-0">
 
-          <!-- ★ A2 隔夜与今日（财经日历；公告/解禁类待 C1 数据源） -->
-          <div class="bg-card border border-border rounded-lg p-3">
-            <div class="flex items-center justify-between mb-1.5">
-              <div class="text-sm font-semibold">隔夜与今日（财经日历）</div>
-              <router-link target="_blank" to="/calendar" class="text-xs text-accent hover:underline">完整日历</router-link>
-            </div>
-            <!-- ★★ 2026-09-29（P1）：未来 3 天**关键事件**（PCE/CPI/非农/FOMC…）。
-                 与下方"今日全部事件"互补：本块回答"**哪天是数据敏感期**"——已滤官员讲话、
-                 只留美国/中国、同指标多口径（年率/月率）已合并 ⇒ 高信噪比。
-                 筛选**全在后端** `flash/calendar_ahead`（与盘前企微推送同一套口径，
-                 前端不复制，避免页面与推送两套筛选漂移）。
-                 `by_date` 是对象 ⇒ v-for 第二参数取日期键（后端已按日期升序插入）。 -->
-            <div v-if="calendarAhead?.items?.length" class="mb-2 pb-2 border-b border-border/40">
-              <div class="text-[11px] text-muted mb-0.5">未来 3 天关键事件
-                <span class="text-[10px]">（核心指标 · 已滤官员讲话）</span></div>
-              <div v-for="(rows, d) in calendarAhead.by_date" :key="d"
-                   class="text-xs py-0.5 flex gap-1.5 items-start">
-                <span class="font-mono text-muted shrink-0">{{ mmdd(d) }}</span>
-                <span class="min-w-0">
-                  <template v-for="(x, i) in rows" :key="x.id">
-                    <span class="cursor-help"
-                          :class="x.channel === '5star' ? 'text-amber-300 font-semibold' : 'text-gray-300'"
-                          :title="`${x.country || ''}${x.title}${x.star ? '（' + '★'.repeat(x.star) + '）' : ''}${x.impact ? ' — ' + x.impact : ''}`"
-                    >{{ x.country }}{{ x.title }}<span v-if="x.star"
-                      class="text-[9px] align-super">{{ '★'.repeat(x.star) }}</span></span><span
-                      v-if="i < rows.length - 1" class="text-muted"> · </span>
-                  </template>
-                </span>
-              </div>
-            </div>
-            <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
-            <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
-            <div v-else class="text-xs">
-              <div v-for="(e, i) in calShown" :key="i" class="border-b border-border/40 py-1">
-                <span class="font-mono text-muted mr-2">{{ (e.time || e.date || '').slice(0, 16) }}</span>
-                {{ e.title || e.event || e.content || e.name || '—' }}
-              </div>
-              <button v-if="calendarToday.length > 3" type="button"
-                      class="mt-1 text-[10px] text-accent hover:underline"
-                      @click="calOpen = !calOpen">
-                {{ calOpen ? '收起' : `展开全部（${calendarToday.length} 条）` }}
-              </button>
-            </div>
-          </div>
           <div class="bg-card border border-border rounded-lg p-3">
             <div class="flex items-center justify-between mb-1.5">
               <div class="text-sm font-semibold">决策简报（盘前）<span
@@ -2742,6 +2698,55 @@
           </div>
         </div>
 
+          <!-- ③ 财经日历（★ 2026-11-01 从「盘前复盘卡右列」移入本组 tab。
+               用户："加多一个tab，财经日历…以下内容展示不美观，而且看不出来事件意味着什么，带上解读文字"。
+               ⇒ 每条事件**下面加一行传导路径**（`x.impact` 由后端 `calendar_ahead._impact_of`
+                 按标题映射给，前端不自造 ⇒ 与企微盘前推送同一口径，不会两套漂移）。
+               ⇒ 今日事件用数据源自带的 `summary` 作解读（金十原文），也不需要前端编。 -->
+          <div v-show="sideTab === 'cal'" class="space-y-2">
+            <!-- 未来 3 天关键事件 -->
+            <div v-if="calendarAhead?.items?.length">
+              <div class="text-[11px] text-muted mb-1">未来 3 天关键事件
+                <span class="text-[10px]">（核心指标 · 已滤官员讲话）</span></div>
+              <div v-for="(rows, d) in calendarAhead.by_date" :key="d" class="mb-2">
+                <div class="text-[10px] font-mono text-accent/80 border-b border-border/40 pb-0.5 mb-1">{{ mmdd(d) }}</div>
+                <div v-for="x in rows" :key="x.id" class="pl-1.5 mb-1">
+                  <div class="text-xs leading-snug">
+                    <span :class="x.channel === '5star' ? 'text-amber-300 font-semibold' : 'text-gray-200'">{{ x.country }}{{ x.title }}</span>
+                    <span v-if="x.star" class="text-[9px] align-super text-amber-400/80 ml-0.5">{{ '★'.repeat(x.star) }}</span>
+                  </div>
+                  <div v-if="x.impact" class="text-[10px] text-muted leading-tight mt-0.5">↳ {{ x.impact }}</div>
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-xs text-muted">—（未来 3 天无核心事件）</div>
+            <!-- 今日事件 -->
+            <div class="pt-1.5 border-t border-border/40">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[11px] text-muted">今日事件</span>
+                <router-link target="_blank" to="/calendar" class="text-[10px] text-accent hover:underline">完整日历 →</router-link>
+              </div>
+              <div v-if="calendarErr" class="text-muted text-xs">—（{{ calendarErr }}）</div>
+              <div v-else-if="!calendarToday.length" class="text-muted text-xs">—（今日无事件或数据未返回）</div>
+              <template v-else>
+                <div v-for="(e, i) in calShown" :key="i" class="py-1 border-b border-border/40 last:border-0">
+                  <div class="text-xs leading-snug">
+                    <span class="font-mono text-muted text-[10px] mr-1">{{ (e.time || '').slice(11, 16) || '全天' }}</span>
+                    <span v-if="e.country" class="text-muted">{{ e.country }}</span>
+                    <span :class="(e.star || 0) >= 4 ? 'text-amber-300' : 'text-gray-200'">{{ e.title || e.event || e.name || '—' }}</span>
+                    <span v-if="e.star" class="text-[9px] align-super text-amber-400/80 ml-0.5">{{ '★'.repeat(e.star) }}</span>
+                  </div>
+                  <div v-if="e.summary" class="text-[10px] text-muted leading-tight mt-0.5">↳ {{ e.summary }}</div>
+                </div>
+                <button v-if="calendarToday.length > 3" type="button"
+                        class="mt-1 text-[10px] text-accent hover:underline"
+                        @click="calOpen = !calOpen">
+                  {{ calOpen ? '收起' : `展开全部（${calendarToday.length} 条）` }}
+                </button>
+              </template>
+            </div>
+          </div>
+
         <!-- 持仓摘要
              ★ 2026-09-28（用户："持仓摘要右栏卡片先隐藏吧"）：**暂时隐藏**。
              ⚠️ 卡体**原样保留**、只加 `v-if="false"` —— 要恢复**删掉这个 v-if 即可**
@@ -3217,10 +3222,17 @@ const topMode = ref('')
 const sideTabs = [
   { key: 'todo', label: '教练卡', tip: '今日教练卡（未决策可交互 / 已决策显示结果）' },
   { key: 'lidx', label: '李大霄', tip: '李大霄视角（xiaopage 二手解读，不进决策链）' },
+  // ★ 2026-11-01：财经日历从「盘前复盘卡右列」移入本组 tab（用户：
+  //   "加多一个tab，财经日历，即将盘前的隔夜与今日（财经日历）移到这个tab下"）。
+  { key: 'cal', label: '财经日历', tip: '未来 3 天关键事件 + 今日事件（含传导路径解读）' },
 ]
 const SIDE_TAB_KEY = 'wb_side_card_tab'
+const SIDE_TAB_KEYS = ['todo', 'lidx', 'cal']
 const sideTab = ref((() => {
-  try { return localStorage.getItem(SIDE_TAB_KEY) === 'lidx' ? 'lidx' : 'todo' } catch { return 'todo' }
+  try {
+    const v = localStorage.getItem(SIDE_TAB_KEY)
+    return SIDE_TAB_KEYS.includes(v) ? v : 'todo'
+  } catch { return 'todo' }
 })())
 watch(sideTab, (v) => {
   try { localStorage.setItem(SIDE_TAB_KEY, v) } catch (e) { console.warn('[side-tab] 记忆失败', e?.message) }
@@ -5513,7 +5525,10 @@ onMounted(async () => {
   loadMacro(); loadFlashDiag(); loadSizing()
   // ★ 2026-09-29：实时涨停**全天常驻**（与宏观摘要同理）——盘前显示的是上一交易日
   //   收盘定稿口径（后端 `is_intraday=false`），盘中为此刻动态值 ⇒ 任何时段都有意义。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  // ★ 2026-11-01：`loadCalendarToday()` 补进挂载批次 —— 财经日历已移入**常驻右栏 tab③**，
+  //   而它原来只在 `loadPhaseData('premarket')` 里调用 ⇒ 盘中/盘后切到该 tab 会是空白。
+  //   `loadCalendarToday` 自带 `_dayCached` 守卫，与盘前重复调用无副作用。
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLidaxiao(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
   loadPhaseData(selectedPhase.value)
   startPolling()
   // 快讯共享源：与 <FlashBriefCard> 共用引用计数 ⇒ 仍只有一条 60s 轮询；
@@ -5527,8 +5542,11 @@ onUnmounted(() => { stopPolling(); fb.stop() })
      与另外 4 个页面各自漂移）。新增"观点输出"请直接加 `md-body` 类 + `v-html="renderMd(...)"`。 -->
 
 <style scoped>
-/* 卡内 tab 横向滚动：细滚动条，避免右栏被撑高（2026-10-26 李大霄多视频 tab） */
-.wb-hscroll::-webkit-scrollbar { height: 4px; }
-.wb-hscroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 2px; }
-.wb-hscroll { scrollbar-width: thin; }
+/* 卡内 tab 横向滚动。
+   ★★ 2026-11-01（用户："把李大霄视角里的日期tab的横向滚动条隐藏一下"）：
+      原为 `height:4px` 细滚动条，在 320px 窄卡里仍占一行、且和 tab 下沿贴在一起显得脏。
+      改成**完全隐藏但保留滚动能力**（触摸板 / 鼠标滚轮 / 选中自动居中都不受影响），
+      靠内容溢出 + `overflow-x-auto` 即可，不需要可见滚动条做提示。 */
+.wb-hscroll { scrollbar-width: none; -ms-overflow-style: none; }
+.wb-hscroll::-webkit-scrollbar { display: none; height: 0; width: 0; }
 </style>
