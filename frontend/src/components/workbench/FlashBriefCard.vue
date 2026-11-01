@@ -108,34 +108,57 @@
              为什么：原来每条只有 `10:28` 这种绝对时刻，一排看下去分不清
              "刚发的"和"昨天下午的"（凌晨看盘时尤其明显）；时间线 + 相对时间
              才能一眼看出**信息的新鲜度与节奏**（是否有大段空白 = 消息面真空）。 -->
-      <div v-if="cards.length" class="mt-2 relative max-h-80 overflow-y-auto pr-1 pl-3">
-        <!-- 竖轴：从第一条到最后一-条（`bottom-1.5` 让末端收在卡片下方，不悬空） -->
-        <span class="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-border/50" aria-hidden="true"></span>
-        <div v-for="(n, i) in cards" :key="n.key" class="relative pb-1 last:pb-0">
-          <!-- 节点：新条目（近 N 分钟）= 实心蓝点；其余空心 —— 与"新 N"徽标同一套语义 -->
-          <span class="absolute -left-3 top-[9px] w-[7px] h-[7px] rounded-full border"
-                :class="n.isNew ? 'bg-sky-400 border-sky-400' : 'bg-card border-border'"
-                :title="n.isNew ? `近 ${newsWindow} 分钟新增` : ''"></span>
-          <div class="rounded border border-border/60 bg-white/[0.04]">
-            <button type="button" class="w-full text-left px-2 py-1.5"
-                    @click="openKey = (openKey === n.key ? '' : n.key)">
-              <div class="flex items-center gap-1.5">
-                <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
-                <span v-if="agoText(n.time)" class="text-[10px] text-muted/70">· {{ agoText(n.time) }}</span>
-                <span class="px-1 rounded text-[10px]" :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
-                <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
-                <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
-                <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
-              </div>
-              <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
+      <!-- ★★ 2026-11-01（用户："快讯不是分类的吗？怎么那么多个伊朗局势"）：
+           `cluster` 字段本来就有，但列表是**平铺**的 ⇒ 同一事件的 5 条进展占 5 屏，
+           反而看不出"今天其实只有 1 件事在推进"。
+           ⇒ 按 cluster 聚合：组头给"条数 + 最新时间"，组内按时间倒序（天然时间线），
+             默认展开最新 2 条，其余一键展开。
+           ⚠️ 每组**各画一条竖轴**：跨组连成一条会被误读成"同一序列"。 -->
+      <div v-if="cards.length" class="mt-2 max-h-80 overflow-y-auto pr-1 space-y-1.5">
+        <div v-for="g in grouped" :key="g.key">
+          <!-- 组头（历史 tab 无 cluster ⇒ 不渲染，退化为平铺） -->
+          <div v-if="g.cluster" class="flex items-center gap-1.5 px-1 pb-0.5">
+            <span class="px-1 rounded text-[10px]" :class="clusterCls(g.cluster)">{{ g.cluster }}</span>
+            <span class="text-[10px] text-muted">{{ g.items.length }} 条</span>
+            <span class="text-[10px] text-muted/70">· {{ hhmm(g.items[0].time) }} 最新</span>
+            <button v-if="g.items.length > groupHead" type="button"
+                    class="ml-auto text-[10px] text-accent hover:underline"
+                    @click="toggleGroup(g.cluster)">
+              {{ openGroups[g.cluster] ? '收起' : `展开 ${g.items.length - groupHead} 条` }}
             </button>
-            <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
-              <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
-                   的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
-                   ⇒ 按来源显示诚实文案。 -->
-              <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
-              <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
-              <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
+          </div>
+          <div class="relative pl-3">
+            <!-- 竖轴：本组第一条到最后一条（每组独立，不跨组连成一条） -->
+            <span class="absolute left-[3px] top-1.5 bottom-1.5 w-px bg-border/50" aria-hidden="true"></span>
+            <div v-for="n in groupItems(g)" :key="n.key" class="relative pb-1 last:pb-0">
+              <!-- 节点：新条目（近 N 分钟）= 实心蓝点；其余空心 —— 与"新 N"徽标同一套语义 -->
+              <span class="absolute -left-3 top-[9px] w-[7px] h-[7px] rounded-full border"
+                    :class="n.isNew ? 'bg-sky-400 border-sky-400' : 'bg-card border-border'"
+                    :title="n.isNew ? `近 ${newsWindow} 分钟新增` : ''"></span>
+              <div class="rounded border border-border/60 bg-white/[0.04]">
+                <button type="button" class="w-full text-left px-2 py-1.5"
+                        @click="openKey = (openKey === n.key ? '' : n.key)">
+                  <div class="flex items-center gap-1.5">
+                    <span class="font-mono text-[10px] text-muted">{{ hhmm(n.time) }}</span>
+                    <span v-if="agoText(n.time)" class="text-[10px] text-muted/70">· {{ agoText(n.time) }}</span>
+                    <!-- cluster 已在组头显示，条目内只在无组头时兜底（历史 tab） -->
+                    <span v-if="!g.cluster && n.cluster" class="px-1 rounded text-[10px]"
+                          :class="clusterCls(n.cluster)">{{ n.cluster }}</span>
+                    <span v-if="n.direction" class="text-[10px]" :class="dirCls(n.direction)">{{ n.direction }}</span>
+                    <span v-if="n.score >= 4" class="text-[10px] text-amber-300">重要</span>
+                    <span class="ml-auto text-[10px] text-muted">{{ openKey === n.key ? '▾' : '▸' }}</span>
+                  </div>
+                  <div class="mt-0.5 text-[11px] text-gray-200 leading-snug">{{ n.gist }}</div>
+                </button>
+                <div v-if="openKey === n.key" class="px-2 pb-2 pt-1.5 border-t border-border/40 space-y-1 text-[11px]">
+                  <!-- ★ 2026-10-25（用户："原因都是数据不足，是否正常"）：旧文案是 cause 为空时
+                       的兜底，极具误导（实际是"该条尚未 AI 解读"，休市日 source=snapshot 属预期）
+                       ⇒ 按来源显示诚实文案。 -->
+                  <div><span class="text-muted">原因　</span>{{ n.cause || causeFallback }}</div>
+                  <div><span class="text-muted">影响　</span>{{ n.scope || '—' }}</div>
+                  <div class="text-[10px] text-muted leading-relaxed">{{ n.text }}</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -333,6 +356,37 @@ const cards = computed(() => {
     }
   })
 })
+
+// ★ 2026-11-01：按 cluster 聚合（详见模板注释）。
+//   `cards` 已按时间倒序 ⇒ 组内天然是时间线；组间按"首次出现"排 = 最新组在前。
+const groupHead = 2                 // 每组默认展开条数（其余折叠，一键展开）
+const openGroups = ref({})          // {cluster: true} = 该组已全展开
+
+const grouped = computed(() => {
+  // 历史 tab 只有 `llm.news`（无 cluster）⇒ 每条一组、不渲染组头，退化为平铺
+  if (isHistory.value) {
+    return cards.value.map(n => ({ key: n.key, cluster: '', items: [n] }))
+  }
+  const order = []
+  const map = new Map()
+  for (const n of cards.value) {
+    const k = n.cluster || '其他'
+    if (!map.has(k)) {
+      const g = { key: k, cluster: k, items: [] }
+      map.set(k, g)
+      order.push(g)
+    }
+    map.get(k).items.push(n)
+  }
+  return order
+})
+
+function groupItems(g) {
+  return openGroups.value[g.cluster] ? g.items : g.items.slice(0, groupHead)
+}
+function toggleGroup(cluster) {
+  openGroups.value = { ...openGroups.value, [cluster]: !openGroups.value[cluster] }
+}
 
 function fmtPct(v) {
   if (v === null || v === undefined) return '—'
