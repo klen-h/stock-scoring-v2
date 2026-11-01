@@ -3381,6 +3381,14 @@ function bjToday() {
 function computePhase() {
   // 与后端 current_phase 同分界（09:30/15:00），UI 在盘前侧再细分成 6 段
   const d = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000)
+  // ★★ 2026-11-01（用户："休盘时间怎么还在倒计时刷新"）：
+  //   原实现**只按时刻**判断 ⇒ 周日 10:00 命中 `intraday` ⇒ `isLivePhase()` 为真
+  //   ⇒ 卡片显示「后端批次 · Ns 后刷新」且 60s/120s 轮询整段空转（纯 egress 浪费）。
+  //   周末直接归入 review（数据本就不变）。
+  //   ⚠️ 法定节假日（落在工作日）仍会误判——项目前端无节假日日历
+  //      （`usePortfolio.isTradingDay` 同样只判周末）；若要彻底修，需把后端
+  //      `flash/rules.is_trading_day()` 的结果经接口下发并缓存，本次未做。
+  if (d.getDay() === 0 || d.getDay() === 6) return 'review'
   const m = d.getHours() * 60 + d.getMinutes()
   if (m >= 550 && m < 555) return 'premarket'    // 9:10-9:15 盘前（简报/决策卡已生成）
   // ★ 2026-09-25：9:15-9:30 独立为「竞价」段。此前整段并进盘前 ⇒ 时间轴上"竞价"这一环
@@ -3394,7 +3402,12 @@ function computePhase() {
 /** ★ 2026-09-28：是否"数据会变"的时段（竞价/盘中/午盘）—— 轮询倒计时与强制刷新共用判据。 */
 function isLivePhase() {
   const p = computePhase()
-  return p === 'auction' || p === 'intraday' || p === 'midday'
+  if (p !== 'auction' && p !== 'intraday' && p !== 'midday') return false
+  // ★ 2026-11-01：`computePhase` 只能判周末；**法定节假日**（落在工作日）靠后端下发字段兜住。
+  //   `emotion.trading_day` 由 `/market/emotion` 返回（后端 `flash.rules.is_trading_day`，
+  //   含外部交易日历）。只在**明确为 false** 时拦截 ⇒ 字段缺失/请求失败时不误判休市（fail-open）。
+  if (emotion.value && emotion.value.trading_day === false) return false
+  return true
 }
 const livePhase = ref(computePhase())
 // ★ 盘前是否已结束（9:30 后）：用于盘前视图的"回顾"标注
