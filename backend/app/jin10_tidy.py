@@ -209,6 +209,59 @@ def _classify(title: str, content: str) -> str:
     return ",".join(hits)
 
 
+# ================================================================
+#  送 LLM 前的「结构性重复」折叠（★ 2026-11-01）
+# ================================================================
+# 典型：`热门ETF` 栏目 17 条里 12 条是「XX溢价约Y%，开市起停牌至10:30」——
+#   同一现象的不同标的。逐条送进 LLM 既费 token，又会诱导它把"ETF 溢价"
+#   当成一条独立主线（它其实只是一个资金面现象，不是产业逻辑）。
+#
+# ⚠️ 只折叠**明确枚举**的模式，**不做通用文本相似度**：
+#   业绩类条目结构也很像（"XX：三季度净利润Y亿，同比+Z%"），但那是不同公司
+#   的不同事实，折叠会丢信息。ETF 溢价则是"同一件事的 N 个标的"，性质不同。
+_FOLD_PATTERNS = [
+    # ⚠️ 窗口要放宽：实测「溢价约36.41%，10月30日开市起至10:30停牌」中间有 21 个字符，
+    #   `{0,16}` 会漏掉大部分条目（首版就是栽在这里，17 条只折叠了 1 条）。
+    (re.compile(r"溢价[^。]{0,40}(停牌|风险)"), 2),   # ETF/LOF 溢价 → 停牌/风险提示
+]
+_FOLD_MIN = 3        # 少于 3 条不折叠（只有 2 条重复时没必要汇总）
+_FOLD_KEEP = 2       # 保留几条样例给 LLM 看具体幅度
+
+
+def _fold_for_llm(items: List[Dict]) -> List[Dict]:
+    """把同栏目内**结构化重复**的标题折叠为「样例外 2 条 + 一条汇总」。
+
+    仅用于 `summarize()` 的 payload —— **不影响入库与前端展示**。
+    """
+    consumed = set()
+    out: List[Dict] = []
+    for i, it in enumerate(items):
+        if i in consumed:
+            continue
+        hit = False
+        title = it.get("title") or ""
+        for pat, keep in _FOLD_PATTERNS:
+            if not pat.search(title):
+                continue
+            group = [j for j, x in enumerate(items)
+                     if j not in consumed and pat.search(x.get("title") or "")]
+            if len(group) < _FOLD_MIN:
+                continue
+            for j in group[:keep]:
+                out.append(items[j])
+                consumed.add(j)
+            rest = len(group) - keep
+            if rest > 0:
+                out.append({"title": f"（同类另有 {rest} 条，属同一现象的重复披露）"})
+            consumed.update(group[keep:])
+            hit = True
+            break
+        if not hit:
+            out.append(it)
+            consumed.add(i)
+    return out
+
+
 def retag(day: str = None) -> int:
     """按当前 `_TAGS` 重算标签，**不重新抓取**。
 
@@ -454,7 +507,8 @@ def summarize(day: str = None, force: bool = False) -> Dict:
     lines: List[str] = []
     for s in sections:
         lines.append(f"[{s['name']}]")
-        for it in s["items"][:12]:
+        # ★ 2026-11-01：先折叠结构性重复（如 12 条 ETF 溢价停牌），再截前 12 条
+        for it in _fold_for_llm(s["items"])[:12]:
             lines.append(f"- {it['title']}")
     payload = "\n".join(lines)
 
