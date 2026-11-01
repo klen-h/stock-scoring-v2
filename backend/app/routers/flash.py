@@ -151,11 +151,16 @@ def flash_brief_refresh(date: str = None, _user: dict = Depends(get_current_user
 
 
 @router.get("/review/{phase}")
-def flash_review(phase: str):
-    """最新复盘（markdown + 信号）。phase: premarket / lunchbreak / postmarket。"""
+def flash_review(phase: str, date: str = None):
+    """复盘（markdown + 信号）。phase: premarket / lunchbreak / postmarket。
+
+    ★ 2026-11-01：加可选 `date`（YYYY-MM-DD）。**不传时行为与以前完全一致**
+      （返回最新一条），传了则取该日最后一条 —— 「早盘复盘」历史回放需要它，
+      否则回看历史日期会把今天的结论当成那天的结论。
+    """
     if phase not in ("premarket", "lunchbreak", "postmarket"):
         return {"error": f"未知复盘阶段 {phase}"}
-    return store.load_review(phase)
+    return store.load_review(phase, day=date)
 
 
 @router.get("/review/{phase}/history")

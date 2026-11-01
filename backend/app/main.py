@@ -250,6 +250,10 @@ app.add_middleware(
 # 类比 Express：app.use('/api/market', marketRouter)
 # prefix 是 URL 前缀；tags 用于在 /docs 文档里分组显示
 app.include_router(market.router,  prefix="/api/market",  tags=["市场行情"])  # 大盘指数、全A股列表
+# ★ 2026-11-01：「早盘复盘」标签页的聚合端点（必须挂在 /api/market 前缀下，
+#   与 market.router 同前缀不会冲突 —— `/api/market/amreview` 与既有路径无重叠）
+from app.routers import amreview as amreview_router
+app.include_router(amreview_router.router, prefix="/api/market", tags=["早盘复盘"])
 app.include_router(stock.router,   prefix="/api/stock",   tags=["个股数据"])  # 个股K线、实时行情、技术指标
 app.include_router(capital.router, prefix="/api/capital", tags=["资金流向"])  # 资金流向（当前为空壳）
 app.include_router(sector.router,  prefix="/api/sector",  tags=["板块数据"])  # 行业/概念列表+资金流、个股→行业映射

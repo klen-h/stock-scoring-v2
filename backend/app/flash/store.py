@@ -310,12 +310,23 @@ def save_review(phase: str, analysis_md: str, signals: list) -> dict:
     return entry
 
 
-def load_review(phase: str) -> dict:
-    """加载最新复盘"""
-    row = db.fetch_one(
-        "SELECT * FROM flash_reviews WHERE phase = %s ORDER BY time DESC LIMIT 1",
-        (phase,)
-    )
+def load_review(phase: str, day: str = None) -> dict:
+    """加载复盘：不传 `day` = 最新一条（原语义，向后兼容）；传了就取**该日**最后一条。
+
+    ★ 2026-11-01（「早盘复盘」标签页）：历史回放必须能按日取 —— 否则回看 10-28 时
+      会拿到"今天"的午盘复盘，把当天结论当成历史结论，是最典型的"假数据"。
+    ★ `time` 存的是写入时刻（ISO 本地串），前缀比较即可按日过滤（索引走不到，
+      但该表每 phase 只保留 20 条 ⇒ 全表最多 60 行，可忽略）。
+    """
+    if day:
+        row = db.fetch_one(
+            "SELECT * FROM flash_reviews WHERE phase = %s AND time LIKE %s "
+            "ORDER BY time DESC LIMIT 1", (phase, f"{str(day)[:10]}%"))
+    else:
+        row = db.fetch_one(
+            "SELECT * FROM flash_reviews WHERE phase = %s ORDER BY time DESC LIMIT 1",
+            (phase,)
+        )
     if not row:
         return {}
     return {

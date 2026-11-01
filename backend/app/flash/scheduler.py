@@ -60,6 +60,7 @@ status = {
     "last_backtest_preheat": None,
     "last_score_snapshot": None,
     "last_market_snapshot": None,
+    "last_am_snapshot": None,          # ★ 2026-11-01：11:30 早盘定稿落库时刻
     "last_workbench_scan": None,
     "last_open_confirm": None,
     "last_news_alert": None,
@@ -2434,6 +2435,13 @@ async def calendar_publish_loop():
 #     见其上方注释）⇒ 已加 `_validate_windows()` 在 `start()` 里机器自检，防复发。
 AMOUNT_SAVE_WINDOW = (955, 1080)        # 北京时间 15:55~18:00（收盘定稿后）
 
+# ★★ 2026-11-01（「早盘复盘」标签页）：11:30 早盘定稿快照窗口。
+#   11*60+30=690，11*60+40=700（容错 10 分钟：错过 11:30 整点也能补）。
+#   【为什么必须定稿】上午收盘后 `date` 主键那一行会被收盘数据覆盖 ⇒ 15:00 后再看
+#     「早盘」就只剩收盘值了，而两者含义完全不同（例：上午 +0.4% 收盘 -1.2%）。
+#   ★ 窗口必须落在 11:30-13:00 内：13:00 后行情已是下午的，再截就不是"早盘"。
+AM_SNAPSHOT_WINDOW = (690, 700)
+
 
 def _validate_windows() -> list:
     """自检所有 `*_WINDOW` 常量：必须满足 `0 <= start < end <= 1440`。
@@ -2486,6 +2494,36 @@ async def amount_save_loop():
         except Exception as e:
             print(f"[scheduler] 成交额落库异常: {e}")        # ASCII（铁律⑥）
         await asyncio.sleep(600)
+
+
+async def am_snapshot_loop():
+    """11:30 落「早盘定稿」快照（`market.routers.snapshot_am`，2026-11-01）。
+
+    ★ 为什么不能靠 `market_emotion()` 自己写：那个函数只在**首次算出**时记预判、
+      收盘后补 `close_*`，**没有"11:30 那一刻"这个语义** ⇒ 早盘复盘页拿不到上午定稿。
+    ★ 幂等：`snapshot_am` 内部按 `am_as_of` 判重；成功后 `mark_schedule_done` 防重跑。
+    ★ 失败不标记（窗口内重试，间隔 3 分钟，最多约 3 次）。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            if (AM_SNAPSHOT_WINDOW[0] <= t < AM_SNAPSHOT_WINDOW[1]
+                    and rules.is_trading_day(now)
+                    and not store.is_schedule_done("am_snapshot")):
+                from app.routers import market as _mk
+                r = await asyncio.to_thread(_mk.snapshot_am)
+                if r.get("ok"):
+                    status["last_am_snapshot"] = rules.beijing_now().isoformat()
+                    if not r.get("skipped"):
+                        print(f"[scheduler] 早盘定稿已落库: {r.get('date')} "
+                              f"as_of={r.get('as_of')} 半日成交额={r.get('amount_yi')} 亿")
+                    store.mark_schedule_done("am_snapshot")
+                else:
+                    print(f"[scheduler] 早盘定稿失败（窗口内重试）: {r.get('error')}")
+        except Exception as e:
+            print(f"[scheduler] 早盘定稿异常: {e}")           # ASCII（铁律⑥）
+        await asyncio.sleep(180)
 
 
 async def start():
@@ -2566,6 +2604,9 @@ async def start():
              asyncio.create_task(calendar_publish_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
+             # ★ 2026-11-01：11:30 早盘定稿（「早盘复盘」标签页的数据基础）。
+             #   非 `_heavy`：这是**只读落库**、一天一次，线上必须跑，否则该页永远空。
+             asyncio.create_task(am_snapshot_loop()),
             # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
             asyncio.create_task(event_alert_loop()),
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）

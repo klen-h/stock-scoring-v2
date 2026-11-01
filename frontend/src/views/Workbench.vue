@@ -253,13 +253,15 @@
     </div>
 
     <!-- 横向时间轴：**6 节点等宽、始终一行**（不按真实时间比例）；各时段专属配色——
-         盘前蓝=计划筹备 / 竞价靛=过渡定稿 / 盘中红=交易执行 / 午盘琥珀=休市过渡 /
-         盘后紫=数据结算 / 复盘绿=复盘沉淀
+         盘前蓝=计划筹备 / 竞价靛=过渡定稿 / 早盘红=交易执行 / 早盘复盘青=沉淀研判 /
+         午盘琥珀=休市过渡 / 盘后紫=数据结算 / 复盘绿=复盘沉淀
          ★ 2026-09-25：加「竞价」后节点变 6 个，而这里仍是 `md:grid-cols-5` ⇒ 第 6 个被挤到
            第二行（用户反馈"宽度缩小，一行展示就行，空间够的"）。⇒ 改 6 列并收窄内外间距：
            一行放得下 6 个，且 9:25「已进入」提示仍能显示（该提示会临时撑高，故纵向留 py-2）。
-         ⚠️ 改节点数时**必须同步这里**（grid 列数 + 注释里的段数）。 -->
-    <div class="bg-card border border-border rounded-lg p-1.5 grid grid-cols-3 md:grid-cols-6 gap-1">
+         ⚠️ 改节点数时**必须同步这里**（grid 列数 + 注释里的段数）。
+         ★ 2026-11-01：新增「早盘复盘」⇒ 6 节点变 7 个 ⇒ md 改 7 列（一行放得下），
+           手机端 3 列会变成 3+3+1 的难看断行 ⇒ 改 4 列（4+3 两行，视觉均衡）。 -->
+    <div class="bg-card border border-border rounded-lg p-1.5 grid grid-cols-4 md:grid-cols-7 gap-1">
       <button v-for="p in PHASES" :key="p.key"
               class="relative rounded-lg px-1.5 py-2 text-center transition-all border min-w-0"
               :class="[nodeClass(p.key),
@@ -1011,8 +1013,12 @@
           </div>
         </div>
 
-        <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史） -->
-        <template v-if="isReplay">
+        <!-- 回放模式：当日聚合视图（Top50/简报/日报/教练历史）
+             ★ 2026-11-01：**「早盘复盘」段例外** —— 它的价值有一半在"回看某天上午
+               为什么走成那样"，必须能按日回放；若也落到这个聚合视图，该标签页在
+               回放模式下就只剩 Top50/简报，等于功能消失。
+               ⇒ 条件排除 `amreview`，让它继续走下面的阶段分支（内部自己按日期取数）。 -->
+        <template v-if="isReplay && selectedPhase !== 'amreview'">
           <div v-if="dayLoading" class="bg-card border border-border rounded-lg p-6 text-muted text-sm">加载中…</div>
           <template v-else>
             <div id="wb-top50" class="bg-card border border-border rounded-lg p-4">
@@ -1767,7 +1773,16 @@
           </div>
         </template>
 
-        <!-- 实时模式 · ② 盘中 / ③ 午盘（执行模式：大字、少文字）
+        <!-- ★★ 2026-11-01（用户："新增一个早盘复盘标签页"）：11:30-13:00 午休段。
+             独立成一段（不与早盘/午盘共用模板）—— 它是"复盘 + 研判"，是**读**不是**看**，
+             结构完全不同：结论条 → 盘面/宏观/消息 → 口径溯源。 -->
+        <template v-else-if="selectedPhase === 'amreview'">
+          <AmReviewCard :data="amReview" :loading="amReviewLoading"
+                        :error="amReviewError" :date="selectedDate"
+                        @refresh="loadAmReview(true)" />
+        </template>
+
+        <!-- 实时模式 · ② 早盘 / ③ 午盘（执行模式：大字、少文字）
              ★ 2026-09-25 用户要求：指数大字卡删除——与顶栏重复，指数保留顶栏常驻 -->
         <template v-else-if="selectedPhase === 'intraday' || selectedPhase === 'midday'">
           <!-- ★★ 2026-09-25（用户："同理，你调整一下盘中的布局" + "这个部分我想用一个长卡片展示"）：
@@ -2903,6 +2918,9 @@ import StockListsCards from '../components/workbench/StockListsCards.vue'
 import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
 // ★ 2026-10-24：右栏「快讯解读」卡（大盘/板块/个股 + 重要快讯 + AI 解读）
 import FlashBriefCard from '../components/workbench/FlashBriefCard.vue'
+// ★ 2026-11-01（用户："新增一个早盘复盘标签页"）：早盘复盘主视图
+//   （结论条 + 盘面/宏观/消息三块 + 口径溯源表；数据来自 `/market/amreview` 单端点）
+import AmReviewCard from '../components/workbench/AmReviewCard.vue'
 // ★ 2026-10-26（第①步：动态盘面 × 消息面融合）：快讯解读的**共享数据源**（单例，60s）
 //   —— 快讯卡与本页「持仓状态」的持仓行消费同一份快照 ⇒ 一条轮询、两处投影、零重复请求。
 import { useFlashBrief } from '../composables/useFlashBrief'
@@ -2985,6 +3003,8 @@ import {
   refreshLidaxiao,
   // ★ 2026-10-25：流动性三件套（两融/基差/中美利差 日批落库序列；观察器，只读）
   getMacroLiquidity,
+  // ★ 2026-11-01：「早盘复盘」聚合（盘面/宏观/消息/午后研判一次取回）
+  getAmReview,
 } from '../api'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
@@ -3068,8 +3088,13 @@ const PHASES = [
   //   昨日强势股溢价），时间轴上 9:30 直接从盘前跳盘中，少了一环。"
   //   ⇒ 补「竞价」节点：9:15 开始（9:20 后不可撤单、9:25 定稿）。
   { key: 'auction', label: '竞价', time: '09:15' },
-  { key: 'intraday', label: '盘中', time: '09:30' },
-  { key: 'midday', label: '午盘', time: '11:30' },
+  // ★ 2026-11-01（用户："盘中改名早盘 + 新增早盘复盘"）：
+  //   「盘中」更名「早盘」（09:30-11:30）；新增「早盘复盘」（11:30-13:00 午休，
+  //   系统在 11:32 生成午盘策略复盘）；「午盘」时点由 11:30 改为 **13:00**
+  //   —— 原 11:30 其实是"午休开始"，标 11:30 会让「早盘复盘」与它撞时间。
+  { key: 'intraday', label: '早盘', time: '09:30' },
+  { key: 'amreview', label: '早盘复盘', time: '11:30' },
+  { key: 'midday', label: '午盘', time: '13:00' },
   { key: 'postmarket', label: '盘后', time: '15:00' },
   { key: 'review', label: '复盘', time: '19:30' },
 ]
@@ -3080,6 +3105,8 @@ const PHASE_STYLE = {
   // 竞价：indigo —— 语义上是"盘前(蓝) → 盘中(红)"的过渡色（类名必须静态字面量，Tailwind 才扫得到）
   auction:    { text: 'text-indigo-400', border: 'border-indigo-500/60', bg: 'bg-indigo-500/10', hover: 'hover:border-indigo-500/40 hover:bg-indigo-500/5' },
   intraday:   { text: 'text-rose-400',   border: 'border-rose-500/60',   bg: 'bg-rose-500/10',   hover: 'hover:border-rose-500/40 hover:bg-rose-500/5' },
+  // 早盘复盘：teal —— 语义是"上午收盘 → 沉淀出判断"，介于早盘(红)与午盘(琥珀)之间
+  amreview:   { text: 'text-teal-300',   border: 'border-teal-500/60',   bg: 'bg-teal-500/10',   hover: 'hover:border-teal-500/40 hover:bg-teal-500/5' },
   midday:     { text: 'text-amber-300',  border: 'border-amber-500/60',  bg: 'bg-amber-500/10',  hover: 'hover:border-amber-500/40 hover:bg-amber-500/5' },
   postmarket: { text: 'text-violet-400', border: 'border-violet-500/60', bg: 'bg-violet-500/10', hover: 'hover:border-violet-500/40 hover:bg-violet-500/5' },
   review:     { text: 'text-emerald-400', border: 'border-emerald-500/60', bg: 'bg-emerald-500/10', hover: 'hover:border-emerald-500/40 hover:bg-emerald-500/5' },
@@ -3442,7 +3469,8 @@ function bjToday() {
   return d.toISOString().slice(0, 10)
 }
 function computePhase() {
-  // 与后端 current_phase 同分界（09:30/15:00），UI 在盘前侧再细分成 6 段
+  // 与后端 current_phase 同分界（09:30/15:00），UI 在盘前侧再细分成 7 段
+  // ★ 2026-11-01：新增 11:30-13:00 的 `amreview`（早盘复盘），`midday` 起点随之改 13:00
   const d = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000)
   // ★★ 2026-11-01（用户："休盘时间怎么还在倒计时刷新"）：
   //   原实现**只按时刻**判断 ⇒ 周日 10:00 命中 `intraday` ⇒ `isLivePhase()` 为真
@@ -3458,7 +3486,9 @@ function computePhase() {
   //   不可见（用户："9:30 直接从盘前跳盘中，少了一环"）。9:20 后不可撤单、9:25 定稿。
   if (m >= 555 && m < 570) return 'auction'
   if (m >= 570 && m < 690) return 'intraday'
-  if (m >= 690 && m < 900) return 'midday'
+  // ★ 2026-11-01：11:30-13:00 午休独立成「早盘复盘」段（系统 11:32 生成午盘策略）。
+  if (m >= 690 && m < 780) return 'amreview'
+  if (m >= 780 && m < 900) return 'midday'
   if (m >= 900 && m < 1170) return 'postmarket'
   return 'review'
 }
@@ -3793,7 +3823,7 @@ const macroTip = computed(() => {
 function badge(key) {
   if (key === 'premarket') return briefDegraded.value ? '⚠' : ''
   if (isReplay.value) return ''
-  if (['intraday', 'midday', 'postmarket', 'review'].includes(key)) {
+  if (['intraday', 'amreview', 'midday', 'postmarket', 'review'].includes(key)) {
     // 未决策数只挂在"涵盖此刻"的节点上（盘中/午盘同属 intraday 后半，简化：全部挂同一数）
     return todoCount.value || ''
   }
@@ -4973,6 +5003,64 @@ async function loadTailReview() {
     tailReview.value = data || null
   } catch { tailReview.value = null }
 }
+// ★★ 2026-11-01（用户："新增一个早盘复盘标签页…用于研判和预测午盘行情"）
+//   数据源：`GET /market/amreview`（**单端点**，后端并发取数 + 5 分钟按日缓存）。
+//   ⚠️ 缓存纪律（沿用本文件 `_dayCached` 三条）：
+//     ① 键带日期 ⇒ 换日/回放自动失效；
+//     ② **只在有结论时落缓存**：11:32 才生成复盘，若拿到"无结论"就缓存，
+//        当天再也补不上（与"日报空不缓存"是同一个坑）；
+//     ③ 失败**不**缓存，切回来会重试。
+const amReview = ref(null)
+const amReviewLoading = ref(false)
+const amReviewError = ref('')
+
+async function loadAmReview(force = false) {
+  const day = selectedDate.value
+  const ck = 'amreview'
+  if (!force && _dayCached(ck, day)) return
+  if (force) delete _dayCache[ck]
+  amReviewLoading.value = true
+  amReviewError.value = ''
+  try {
+    const { data } = await getAmReview(day)
+    if (data && data.ok) {
+      amReview.value = data
+      const hasConcl = !!((data.conclusion || {}).markdown)
+      // 纪律②：今日无结论（11:32 前）不落缓存，留给轻轮询补齐
+      if (hasConcl || !data.is_live) _dayMark(ck, day)
+    } else {
+      amReview.value = null
+      amReviewError.value = '—（暂无数据）'
+    }
+  } catch (e) {
+    // ★ 失败必须与"加载中"区分（今天刚修过同类问题：失败也显示"加载中…"）
+    amReview.value = null
+    amReviewError.value = '—（读取失败：' + (e?.response?.data?.detail || e?.message || e) + '）'
+  } finally {
+    amReviewLoading.value = false
+  }
+}
+
+// 11:32 复盘落库前的轻轮询：只在「今日 + 早盘复盘段 + 还没有结论」时启动，
+// 60 秒一次、最多 5 次、取到即停（不碰行情接口，纯一次聚合读）。
+let _amPoll = { n: 0, id: null }
+function stopAmPoll() {
+  if (_amPoll.id) clearInterval(_amPoll.id)
+  _amPoll = { n: 0, id: null }
+}
+function startAmPoll() {
+  stopAmPoll()
+  if (isReplay.value || document.hidden) return
+  if ((amReview.value?.conclusion || {}).markdown) return
+  _amPoll.id = setInterval(async () => {
+    _amPoll.n += 1
+    if (_amPoll.n > 5) { stopAmPoll(); return }
+    if (document.hidden || selectedPhase.value !== 'amreview') { stopAmPoll(); return }
+    await loadAmReview(true)
+    if ((amReview.value?.conclusion || {}).markdown) stopAmPoll()
+  }, 60000)
+}
+
 async function loadReport(date) {
   const day = date || selectedDate.value
   if (_dayCached('report', day)) return
@@ -5361,6 +5449,8 @@ async function loadStatus() {
 // ── 阶段切换与懒加载 ──
 async function loadPhaseData(phase) {
   if (isReplay.value) return
+  // ★ 2026-11-01：离开「早盘复盘」段就停掉它的轻轮询（避免在别的段位空跑）
+  if (phase !== 'amreview') stopAmPoll()
   if (phase === 'premarket') { await loadBrief('premarket'); await loadDecisionCard(); await Promise.all([loadMacro(), loadFlashDiag(), loadEmotion(), loadCalendarToday(), loadCalendarAhead(), loadSizing()]) }
   // ★ 2026-09-25：竞价段只拉"竞价相关"的（情绪快照里的 auction + 外盘）—— 零新增接口
   else if (phase === 'auction') { await Promise.all([loadEmotion(), loadGlobals()]) }
@@ -5383,6 +5473,15 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-30（P2 续）：复盘补「板块 Top5 + 成交占比」—— 复盘要看"今天什么行情、
   //   资金在哪个板块"，而这两块此前**只挂盘中** ⇒ 复盘时段整个板块卡是空的（切过来才残留旧值）。
   else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); await loadSectorTop(); await loadAmountShare(); }
+  // ★★ 2026-11-01（「早盘复盘」段）：只需两件事 ——
+  //   ① `loadPulse()`：顶栏指数 + **给后端 `_OVERVIEW_IDX_SNAP` 预热**
+  //      （amreview 的"指数涨跌"读的就是那份快照，刻意不自己外呼）；
+  //   ② `loadAmReview()`：四块聚合数据。
+  //   午休期间行情不再变化 ⇒ 不挂 120s 行情轮询，只有 11:32 复盘落库前的 60s 轻轮询。
+  if (phase === 'amreview') {
+    await Promise.all([loadPulse(), loadAmReview()])
+    startAmPoll()
+  }
   if (phase === 'intraday' || phase === 'midday') {
     // ★ 2026-09-28：盘中/午盘也加载「评分榜 + 观察池」（原只在盘后拉 ⇒ 盘中两卡不显示）。
     //   ⚠️ 二者是**日批/盘后**数据（观察池 = 晚间日批快照）⇒ 盘中显示的是上一交易日；
@@ -5396,6 +5495,14 @@ async function loadPhaseData(phase) {
 function selectPhase(key) {
   selectedPhase.value = key
   syncQuery()
+  // ★ 2026-11-01（「早盘复盘」）：`loadPhaseData` 在回放模式下**首行就 return**，
+  //   而该段在回放模式下也要能看（按日取快照）⇒ 这里单独补一次。
+  if (key === 'amreview') {
+    if (isReplay.value) { stopAmPoll(); loadAmReview() }   // 回放：只读该日快照，不轮询
+    else loadPhaseData(key)                                 // 实时：pulse 预热 + 取数 + 轻轮询
+    return
+  }
+  stopAmPoll()
   loadPhaseData(key)
 }
 function syncQuery() {
@@ -5509,7 +5616,11 @@ watch(selectedDate, async (d) => {
   if (radarOpen.value) loadRadarAnalysis(false)
   if (d && d !== todayStr) {
     stopPolling()
+    stopAmPoll()
     await Promise.all([loadReplayDay(d), loadPush(d)])   // 回放右栏也切当日推送
+    // ★ 2026-11-01：「早盘复盘」段在回放模式下**仍然按日取数**（它绕过回放聚合视图，
+    //   见模板 `v-if="isReplay && selectedPhase !== 'amreview'"`）⇒ 换日必须重取。
+    if (selectedPhase.value === 'amreview') loadAmReview(true)
   } else {
     await Promise.all([loadCoach(), loadPush(todayStr)])
     startPolling()
@@ -5551,7 +5662,7 @@ onMounted(async () => {
   // 这里 start 是为了「快讯卡被收起/尚未渲染」时持仓行的消息徽标也有数据。
   fb.start(selectedDate.value || '')
 })
-onUnmounted(() => { stopPolling(); fb.stop() })
+onUnmounted(() => { stopPolling(); stopAmPoll(); fb.stop() })
 </script>
 
 <!-- ★ 2026-10-11（L1）：`.md-body` 样式已收拢到全局 `src/styles/md.css`（原先本文件有一份副本，

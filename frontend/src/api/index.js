@@ -74,6 +74,12 @@ export const authCurrent = () => http.get('/auth/current')
 
 // 市场行情
 export const getMarketOverview = () => http.get('/market/overview')
+// ★ 2026-11-01（「早盘复盘」标签页）：**单一聚合端点**。
+//   盘面 / 宏观 / 消息 / 午后研判一次取回（后端并发查询 + 5 分钟按日缓存）。
+//   刻意不拆成 5 个请求：Supabase 在 ap-southeast-1，每次往返约 570ms，
+//   前端串行拼接会到 3 秒以上，标签切换明显卡顿。
+export const getAmReview = (date) =>
+  http.get('/market/amreview', { params: date ? { date } : {}, timeout: 20000 })
 export const getMarketTemperature = () => http.get('/market/temperature')
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— v0 展示项，不进决策链
 export const getMarketEvents = () => http.get('/market/events')

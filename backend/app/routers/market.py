@@ -300,6 +300,11 @@ def market_events():
 _IDX_SNAP_CACHE = {"ts": 0.0, "val": {}}
 _IDX_SNAP_TTL = 3.0
 
+# ★ 2026-11-01：`market_overview` **已解析**后的指数列表快照（见下方赋值处注释）。
+#   只给"只读展示"端点复用（`/api/market/amreview`）——避免它们为了 3 个指数
+#   去同步外呼腾讯，也避免各自再解析一遍导致口径分叉。
+_OVERVIEW_IDX_SNAP = {"ts": 0.0, "val": []}
+
 
 def _main_indices_quotes() -> Dict:
     """`MAIN_INDICES` 的腾讯原始行情（3 秒微缓存）。
@@ -362,6 +367,15 @@ def market_overview(background_tasks: BackgroundTasks):
                 })
     except Exception as e:
         print(f"指数数据失败: {e}")
+
+    # ★ 2026-11-01（「早盘复盘」）：把**已解析**的指数列表留一份快照，
+    #   供 `routers/amreview.py` 这类"只读展示"端点直接取用。
+    #   【为什么不复用 `_IDX_SNAP_CACHE`】那个存的是腾讯**原始字段字典**，
+    #     消费方要再解析一遍 ⇒ 口径会分叉（正是本项目反复踩的坑）。
+    #   ⚠️ 只写一次、只读不判新鲜度由消费方自己按 `ts` 决定。
+    if result["indices"]:
+        import time as _t2
+        _OVERVIEW_IDX_SNAP.update(ts=_t2.time(), val=list(result["indices"]))
 
     # ── 第二部分：全市场涨跌统计（fuyao 全市场优先 → 内存池兜底）──
     # ★★ 2026-10-28（阶段 1 · fuyao）：**fuyao 宽度独立于内存池**。
@@ -986,6 +1000,17 @@ _EMOTION_AUCTION_COLS = ("auction_as_of", "auction_count", "auction_avg_gap",
                          "auction_up_open", "auction_down_open",
                          "auction_avg_gap_all", "auction_total_amount_wan")
 
+# ★★ 2026-11-01（「早盘复盘」标签页）：**11:30 早盘定稿**字段。
+#   【为什么必须落库】`market_emotion_daily` 的 date 是主键、盘中反复覆盖 ⇒
+#     15:00 之后再打开页面，内存池里已是**收盘**数据 ⇒ 读实时就会把下午的行情
+#     当成"早盘"。而"早盘复盘"这一页的全部意义就是**上午 09:30-11:30 那段的定稿**。
+#   【语义边界】`am_*` 只在 11:30-11:40 写一次（`mark_schedule_done` 幂等），
+#     窗口外一律不写；缺失时消费方必须显示「该日未留存」，**不得用收盘值冒充**。
+#   【与 close_* 的关系】`close_*` = 全天定稿，`am_*` = 上午定稿；两者并列存放，
+#     互不覆盖（与 auction_* / close_* 同一套多组字段模式）。
+_EMOTION_AM_COLS = ("am_as_of", "am_up", "am_down", "am_limit_up",
+                    "am_limit_down", "am_max_streak", "am_verdict", "am_amount_yi")
+
 
 def _ensure_emotion_table() -> None:
     """建表（幂等）+ **幂等加列**。★ 数值列一律 TEXT —— SQLite/PostgreSQL 双库零风险。"""
@@ -1012,12 +1037,15 @@ def _ensure_emotion_table() -> None:
             auction_as_of TEXT,
             auction_count TEXT, auction_avg_gap TEXT,
             auction_up_open TEXT, auction_down_open TEXT,
-            auction_avg_gap_all TEXT, auction_total_amount_wan TEXT
+            auction_avg_gap_all TEXT, auction_total_amount_wan TEXT,
+            am_as_of TEXT,
+            am_up TEXT, am_down TEXT, am_limit_up TEXT, am_limit_down TEXT,
+            am_max_streak TEXT, am_verdict TEXT, am_amount_yi TEXT
         )
     """)
     # ★ 2026-09-25：`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表加列 ⇒ 老库需补 ALTER。
     #   逐列 `try/except` 忽略"列已存在"（双库的报错文案不同，故不匹配具体错误文本）。
-    for _c in (_EMOTION_CLOSE_COLS + _EMOTION_AUCTION_COLS):
+    for _c in (_EMOTION_CLOSE_COLS + _EMOTION_AUCTION_COLS + _EMOTION_AM_COLS):
         try:
             db.execute(f"ALTER TABLE market_emotion_daily ADD COLUMN {_c} TEXT")
         except Exception:
@@ -1037,7 +1065,7 @@ def _load_emotion_daily(day: str) -> Dict:
 
 
 def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict,
-                       auction: bool = False) -> Dict:
+                       auction: bool = False, am: bool = False) -> Dict:
     """把一次情绪快照组装成"整行"（**双库安全的写法**）。
 
     ⚠️⚠️ 为什么必须组装成**整行**：`db.upsert` 在 PG 下只更新传入的列，但在 **SQLite 分支
@@ -1081,11 +1109,30 @@ def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict,
         "auction_down_open": old.get("auction_down_open"),
         "auction_avg_gap_all": old.get("auction_avg_gap_all"),
         "auction_total_amount_wan": old.get("auction_total_amount_wan"),
+        # ★ 早盘定稿组（同样必须继承 —— SQLite 分支是整行替换，漏一个就抹掉历史）
+        "am_as_of": old.get("am_as_of"),
+        "am_up": old.get("am_up"), "am_down": old.get("am_down"),
+        "am_limit_up": old.get("am_limit_up"),
+        "am_limit_down": old.get("am_limit_down"),
+        "am_max_streak": old.get("am_max_streak"),
+        "am_verdict": old.get("am_verdict"),
+        "am_amount_yi": old.get("am_amount_yi"),
     }
     if base["created_at"] is None:
         base["created_at"] = _bj_now().isoformat()
 
-    if auction:
+    if am:
+        # 11:30 早盘定稿 ⇒ 只写 `am_*`（主字段/close_*/auction_* 一律保持原值）
+        base.update({
+            "am_as_of": _s(val.get("as_of")),
+            "am_up": _s(val.get("up")), "am_down": _s(val.get("down")),
+            "am_limit_up": _s(val.get("limit_up")),
+            "am_limit_down": _s(val.get("limit_down")),
+            "am_max_streak": _s(val.get("max_streak")),
+            "am_verdict": val.get("verdict"),
+            "am_amount_yi": _s(val.get("amount_yi")),
+        })
+    elif auction:
         # 竞价窗口（9:15-9:25）⇒ 写 `auction_*`（**允许覆盖**：9:25 的定稿值才是最终口径）
         a = val.get("auction") or {}
         base.update({
@@ -1194,6 +1241,60 @@ def _save_emotion_daily(val: Dict) -> None:
               f"{'close' if after_close else 'open'} verdict={val.get('verdict')}")
     except Exception as e:
         print(f"[market] emotion save failed (non-fatal): {e}")
+
+
+def snapshot_am(force: bool = False) -> Dict:
+    """写「早盘定稿」（11:30 那一刻的盘面），供「早盘复盘」标签页读取。
+
+    ★★ 为什么需要（2026-11-01，「早盘复盘」上线）：
+      `market_emotion_daily` 的 `date` 是主键、盘中反复覆盖 ⇒ 15:00 之后再打开页面，
+      可用的只有**收盘**数据。而早盘复盘要回答的是「**上午那一段**是什么形态」，
+      用下午/收盘值回答就是错的（`am_*` 与 `close_*` 会完全不同）。
+      ⇒ 必须在 11:30 那一刻把当时的读数**定稿落库**，与 `close_*` 并列存放。
+
+    ★ 幂等：同日已有 `am_as_of` ⇒ 跳过（`force=True` 才覆盖，仅供手工补录）。
+    ★ 时刻诚实：只写交易日、且行情所属日 == 今天；回放/休市一律不写，
+      宁可让消费方显示「该日未留存」，也不写一行「键=今天、值=昨天」的错位数据。
+    """
+    try:
+        _ensure_emotion_table()
+        now = _bj_now()
+        day = now.strftime("%Y-%m-%d")
+        if _price_date() != day:
+            return {"ok": False, "error": "行情非当日（休市/回放），不落早盘快照"}
+        old = _load_emotion_daily(day)
+        if old.get("am_as_of") and not force:
+            return {"ok": True, "skipped": True, "am_as_of": old.get("am_as_of")}
+
+        val = dict(market_emotion())
+        # 无行情 ⇒ 所有"今日"计数都是 None（见 `market_emotion` 顶部注释）
+        # ⇒ 写进去只会得到一行全是 NULL 的"早盘定稿"，比没有更糟。
+        if not val.get("has_live"):
+            return {"ok": False, "error": "行情缓存未就绪，不落早盘快照"}
+
+        # 半日成交额（两市累计）。只读缓存优先——调度器里不该为一个可选展示项
+        # 去同步抓 2 个分时（最坏 20s）；缓存没有就如实留空。
+        amount_yi = None
+        try:
+            from app import market_amount
+            _a = market_amount.peek(max_age=600) or {}
+            _cum = _a.get("cum_yi")
+            if _cum is not None and str(_a.get("data_date") or "") == day:
+                amount_yi = _cum
+        except Exception as e:
+            print(f"[market] am snapshot amount skipped: {e}")
+
+        val["amount_yi"] = amount_yi
+        row = _emotion_daily_row(day, val, False, old, am=True)
+        from app.database import db
+        db.upsert("market_emotion_daily", row, conflict_columns=["date"])
+        print(f"[market] am snapshot saved {day} as_of={val.get('as_of')} "
+              f"up={val.get('up')} limit_up={val.get('limit_up')} amt={amount_yi}")
+        return {"ok": True, "date": day, "as_of": val.get("as_of"),
+                "amount_yi": amount_yi}
+    except Exception as e:
+        print(f"[market] am snapshot failed (non-fatal): {e}")
+        return {"ok": False, "error": str(e)[:120]}
 
 
 # ══════════════════════════════════════════════════════════════════════════
