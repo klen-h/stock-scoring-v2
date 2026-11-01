@@ -244,13 +244,41 @@ def has_report(report_date: str) -> bool:
 
 
 def get_finance(code: str, report_date: str = None) -> dict:
-    """查单只股票的财报；不传 report_date 则取最新一期。"""
-    if report_date:
-        row = db.fetch_one("SELECT * FROM stock_finance WHERE code = %s "
-                           "AND report_date = %s", (code, report_date))
-    else:
+    """查单只股票的财报；不传 report_date 则取最新一期。
+
+    ★★ 2026-11-01 接入进程缓存（原实现**裸查 DB**）：
+      实测 `/api/stock/finance/{code}` 热态仍 **1.0 秒/次**（冷 2.4 秒），
+      而它是个股详情页 `tryLoadLocalAll()` 的**第一步**（串在本地评分之前）
+      ⇒ 只这一项就把首屏压到 1 秒以上。
+      本文件注释早就写明"每次都去远程库（Supabase 往返 0.5s 起）拉同样的数据纯属浪费"，
+      但那套 `_fin_cache` 只给了批量路径 `get_finance_batch` —— **单只路径漏了**。
+      财报是季度更新的数据，缓存 24h（`_FIN_CACHE_TTL`）完全安全；
+      手动刷新财报后 `clear_finance_cache()` 会立即清掉，不会出现"刷新了还是旧的"。
+
+    ⚠️ 只对**最新一期**（`report_date is None`）走缓存：
+       `report_date` / `asof` 这类"指定历史期"的查询是回测防未来函数用的，
+       语义要求精确，不做缓存以免混淆。
+    """
+    # 复用批量路径的 `_fin_cache`（同一份数据、同一个失效入口），
+    # 谁先查谁回填 —— 详情页查过的股票，榜单批量查时直接命中，反之亦然。
+    if not report_date:
+        cached = _fin_cache["data"].get(code)
+        if cached and time.time() - _fin_cache["ts"] < _FIN_CACHE_TTL:
+            return dict(cached)
         row = db.fetch_one("SELECT * FROM stock_finance WHERE code = %s "
                            "ORDER BY report_date DESC LIMIT 1", (code,))
+        if row:
+            # ⚠️ `_fin_cache["ts"]` 初值是 0.0（只有批量路径会更新它）
+            #   ⇒ 只回填 data 不设 ts 的话，`now - 0 < 86400` 永远为假、
+            #     缓存**永远不命中**（等于白加）。这里在"首次回填"时补上时间戳。
+            #   已存在的时间戳不动：它代表批量缓存的新鲜度，不该被单只查询延长。
+            if not _fin_cache["ts"]:
+                _fin_cache["ts"] = time.time()
+            _fin_cache["data"][code] = dict(row)
+            return dict(row)
+        return {}
+    row = db.fetch_one("SELECT * FROM stock_finance WHERE code = %s "
+                       "AND report_date = %s", (code, report_date))
     return dict(row) if row else {}
 
 
