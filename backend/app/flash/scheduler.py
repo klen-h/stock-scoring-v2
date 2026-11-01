@@ -2394,26 +2394,28 @@ async def calendar_ahead_loop():
 
 
 # ── 数据公布播报（2026-11-01 新增；逻辑见 calendar_ahead.run_publish_alert）──
-# 【为什么只做"中国 + 盘中"】实测公布时刻：
-#   中国核心指标 09:30 / 09:45 → A 股开盘后 0~15 分钟，**唯一能当天操作**的；
-#   美国核心指标 20:30 / 21:30 / 22:45 / 23:00 → 已收盘，只能影响次日。
-#   ⇒ 海外数据走**次日盘前汇总**（`run_alert` 的「昨夜已公布」段），不半夜弹窗。
+# 【覆盖范围：**全天宏观，不限中国**】
+#   首版只做 09:25~11:30 的中国数据，理由是"美国 20:30 后公布、A 股已收盘、
+#   当天无法操作"。用户指出："应该不限于中国，宏观环境不止中国" —— 这个批评是对的：
+#   把"能不能立刻下单"当成了"要不要知道"，而宏观环境影响的是**次日开盘与持仓判断**。
+#   实测时刻分布：中国 09:30/09:45；欧日 14:30~18:00；美国 20:30~23:00。
+#   ⇒ 窗口 09:25~23:30 全开；23:30~07:00 免打扰（该时段数据由次日盘前兜底）。
 CAL_PUBLISH_TICK = 300      # 每 5 分钟一跳（金十公布后本身有 1~5 分钟延迟）
 
 
 async def calendar_publish_loop():
-    """盘中播报「刚公布的中国关键数据 + 超预期判断」。
+    """实时播报「刚公布的关键数据 + 超预期判断」（不限国家）。
 
     ★ 双重闸门，把外部请求压到最低：
-      ① `in_cn_publish_window()`：交易日 09:25~11:30；
-      ② `has_due_cn()`：今日确有中国核心数据、且**计划时刻已过但未超 60 分钟**
-         ⇒ 只有 09:30 / 09:45 那两波之后才真正刷新金十，其余时间零请求。
+      ① `in_publish_window()`：工作日 09:25~23:30；
+      ② `has_due_event()`：今日确有核心数据、且**计划时刻已过但未超 20 分钟**
+         ⇒ 只在真可能出新值的时刻附近刷新金十，其余时间零请求。
     ★ 失败仅打印（与 `calendar_ahead_loop` 同款：下一跳自然重试，不标记 done）。
     """
     while True:
         try:
             from app.flash import calendar_ahead
-            if calendar_ahead.in_cn_publish_window() and calendar_ahead.has_due_cn():
+            if calendar_ahead.in_publish_window() and calendar_ahead.has_due_event():
                 await asyncio.to_thread(calendar.refresh)      # 拿最新 actual
                 msg = await asyncio.to_thread(calendar_ahead.run_publish_alert)
                 print(f"[scheduler] {msg}")
@@ -2507,9 +2509,10 @@ async def start():
              # ★ 2026-09-29：盘前日历前瞻（未来 3 天核心事件 PCE/CPI/非农/FOMC 主动提醒）
              #   —— 通知类、极轻量（读已落库日历 + 一条企微）⇒ 只读模式保留。
              asyncio.create_task(calendar_ahead_loop()),
-             # ★ 2026-11-01 新增：中国数据公布**盘中播报**（超预期判断 + 传导解读）。
+             # ★ 2026-11-01 新增：数据公布**实时播报**（超预期判断 + 传导解读），
+             #   覆盖中国/美国/欧洲 —— 宏观不止中国，晚间数据影响的是次日开盘。
              #   非 `_heavy`：线上只读模式必须能跑，否则等于没做。
-             #   成本受 `in_cn_publish_window` + `has_due_cn` 双重闸门约束 ⇒ 极少触发外部请求。
+             #   成本受 `in_publish_window` + `has_due_event` 双重闸门约束 ⇒ 极少触发外部请求。
              asyncio.create_task(calendar_publish_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),

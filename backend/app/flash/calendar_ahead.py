@@ -61,14 +61,21 @@ _KEY_COUNTRIES = ("美国", "中国")
 _IMPACT = (
     (("非农",), "新增就业强 = 经济热但降息更慢 → 美债利率上、压制 A 股估值；弱则相反"),
     (("PCE", "CPI"), "通胀超预期 = 降息推迟（higher-for-longer）→ 压制成长股；低于预期则利好"),
-    (("利率决议", "FOMC", "议息"), "直接定全球资金成本 → 影响汇率与外资流入 A 股"),
+    # ★★ 利率类统一收口（2026-11-01 用真实数据发现：`美联储利率决定(上限)`
+    #   与 `欧洲央行存款机制利率` **一条都没命中**，因为原文案只认"利率决议/议息"，
+    #   而各央行的字段名叫法完全不同 ⇒ 等于最该解释的两条没有解释）。
+    (("存款机制利率", "再融资利率", "利率决定", "利率决议", "FOMC", "议息", "央行目标利率"),
+     "直接定全球资金成本 → 影响汇率与外资流入 A 股（降息=利好，加息=利空）"),
     (("初请", "失业率"), "每周就业高频，只微调降息预期，通常不改趋势"),
     (("ADP",), "非农的先行指标，方向多数一致，可提前预判非农"),
     # ⚠️ 顺序要紧：`非制造业PMI` 标题里含"制造业"三字，必须排在制造业规则**之前**
     #   （2026-11-01 实测发现：首版把服务业 PMI 解释成"制造业扩张"，属事实错误）。
     (("非制造业", "服务业"),
      "50 是荣枯线：高于 50 = 服务业扩张 → 利好消费/出行/服务；低于 50 反之"),
-    (("制造业", "工业产出", "GDP"),
+    # ★★ GDP 必须与 PMI 分开（2026-11-01 用真实数据发现：`实际GDP年化季率初值`
+    #   被套用了"50 是荣枯线"，而 GDP 根本没有 50 这条线 —— 事实错误）。
+    (("GDP",), "经济总量增速：高于预期 = 基本面强 → 利好顺周期；但过强会推迟降息，是双刃"),
+    (("制造业", "工业产出"),
      "50 是荣枯线：高于 50 = 制造业扩张 → 利好钢铁/水泥/机械/有色等顺周期；低于 50 反之"),
     (("PMI",), "50 是荣枯线：高于 50 = 该行业扩张、低于 50 = 收缩（看具体行业）"),
     (("零售销售",), "反映消费强弱 → 影响家电/汽车/消费板块"),
@@ -98,19 +105,29 @@ _impact_of = impact_of
 
 
 def _classify(item: dict) -> Optional[str]:
-    """返回命中通道（'5star'/'core'/'4star'）或 None（含国家白名单过滤）。"""
+    """返回命中通道（'5star'/'core'/'4star'）或 None（含国家白名单过滤）。
+
+    ★★ 2026-11-01 修正（用户："应该不限于中国，应该宏观环境不止中国"）：
+      原逻辑对非美中数据 `return None`（只认 5 星）⇒ 把**欧元区 GDP、法国 CPI
+      这类真宏观数据（4 星）整段丢掉了**，理由是"防止 3 星官员讲话刷屏"——
+      但 3 星和 4 星不是一回事：
+        实测星级分布：3 星 112 条 / 4 星 8 条 / 5 星 2 条（14 天窗口）
+      ⇒ 4 星全库只有 8 条（约 0.6 条/天），放开**不会刷屏**；
+        而"欧洲通胀/景气"直接影响全球流动性与美元，进而传导 A 股。
+      ⇒ 改为：非美中数据也认「4 星且非讲话类」，仍排除 3 星噪音（112/140 的主体）。
+    """
     title = str(item.get("title") or "")
     star = item.get("star") or 0
     country = str(item.get("country") or "")
     if star >= 5:
         return "5star"                       # 最高级：不限国家（如非农）
+    is_4star = star >= 4 and not any(k in title for k in _NOISE_KW)
     if country not in _KEY_COUNTRIES:
-        return None                          # 非美中数据：只认 5 星（见 _KEY_COUNTRIES 注释）
+        # 非美中：只认 4 星（非讲话）。3 星是噪音主体（官员讲话/活动），继续排除。
+        return "4star" if is_4star else None
     if any(k in title for k in _CORE_KW):
         return "core"
-    if star >= 4 and not any(k in title for k in _NOISE_KW):
-        return "4star"
-    return None
+    return "4star" if is_4star else None
 
 
 # 同一指标的多种口径后缀（★ 实测：美国「核心PCE物价指数」在 9/30 有 年率/月率/年化季率
@@ -232,11 +249,29 @@ def run_alert(days: int = 3, dry_run: bool = False) -> str:
     fresh_ids = set(id(x) for x in fresh)      # 身份比较（fresh 出自上面同一批对象）
     lines = []
     # ★★ 2026-11-01 新增「昨夜已公布」段（用户："重要事件公布需要通知及解读吗"）：
-    #   美国核心数据全在 20:30~23:00 公布，那时 A 股已收盘 ⇒ **不当场推**
-    #   （半夜弹窗无法行动，纯骚扰），改为**次日盘前汇总实际值 + 超预期判断**。
-    #   中国的核心数据走盘中播报（`run_publish_alert`），这里排除，避免同一事件两次。
+    #   首版设计是"美国数据不当场推，改为次日盘前汇总"，理由是"收盘后无法操作"。
+    #   ★ 2026-11-01 修正（用户："宏观环境不止中国"）：20:30~23:00 仍在活跃时段，
+    #     `run_publish_alert` 已覆盖到 23:30 ⇒ 海外数据**当晚就推**。
+    #   本段只保留**隔夜（23:30~07:00 免打扰时段）**公布的漏网数据，避免漏报；
+    #   ⚠️ 排除中国：中国核心数据全在 09:30/09:45，当天早已实时推过，避免重复。
     yday = (_now - timedelta(days=1)).strftime("%Y-%m-%d")
     released = [x for x in published_on(yday) if x["country"] != "中国"]
+    # ★★ 2026-11-01 去重：`run_publish_alert` 已覆盖到 23:30，20:30~23:00 公布的
+    #   海外数据**当晚就推过了** ⇒ 这里若再列一遍就是重复推送。
+    #   只保留"23:30 之后公布"的漏网数据（免打扰时段的兜底），这才是本段的价值。
+    if released:
+        try:
+            _pushed = set()
+            for x in released:
+                if not x["id"]:
+                    continue
+                if db.fetch_one(
+                        "SELECT event_id FROM calendar_alert_log WHERE event_id = %s",
+                        (f"pub:{x['id']}",)):
+                    _pushed.add(x["id"])
+            released = [x for x in released if x["id"] not in _pushed]
+        except Exception as e:
+            print(f"[cal_ahead] 昨夜去重查询失败（保留原样）: {str(e)[:60]}")
     if released:
         lines.append(f"**昨夜已公布（{yday[5:]}）**")
         for x in released:
@@ -404,30 +439,42 @@ def _released_line(x: dict) -> str:
     return "\n".join(lines)
 
 
-# 盘中播报窗口：北京时间 09:25 ~ 11:30。
-# ★ 起点 09:25 早于最早的中国数据（09:30 官方 PMI / 09:45 财新），
-#   终点取上午收盘（中国关键数据不存在下午才公布的情况）。
-_CN_LIVE_START = 9 * 60 + 25
-_CN_LIVE_END = 11 * 60 + 30
+# 播报窗口：北京时间 09:25 ~ 23:30（**全天宏观，不限于中国**）。
+# ★★ 2026-11-01 修正（用户："应该不限于中国，应该宏观环境不止中国"）：
+#   首版只覆盖 09:25~11:30 的中国数据，理由是"美国数据 20:30 后公布、A 股已收盘、
+#   当天无法操作"。这个理由**站不住**——
+#     ① 宏观环境是全天候的，晚上 20:30 的非农照样影响你对次日开盘的判断；
+#     ② 用户晚上在看手机，不是"无法触达"，是"我以为他不需要"；
+#     ③ 实测欧洲数据 15:30~18:00、美国 20:30~23:00，全在人的活跃时段内。
+#   ⇒ 窗口拉长到 23:30。**23:30~07:00 不推**（真睡觉时段，硬抗打扰无收益），
+#     该时段公布的数据由次日盘前「昨夜已公布」段兜底，信息不丢。
+_PUB_START = 9 * 60 + 25       # 09:25（早于最早的中国 09:30）
+_PUB_END = 23 * 60 + 30        # 23:30（最后一波美国数据 23:00 之后留 30 分钟余量）
 
 
-def in_cn_publish_window(now=None) -> bool:
-    """当前是否处于「中国数据可能公布」的盘中窗口。"""
+def in_publish_window(now=None) -> bool:
+    """当前是否处于「数据公布播报」窗口（工作日 09:25~23:30）。
+
+    ⚠️ 用**工作日**而非**交易日**：节假日全球数据照发，且它对复盘有用；
+       而周末（周六日）晚间的美国数据并入周一盘前即可，不必推。
+    """
     from app.flash import rules
     n = now or rules.beijing_now()
-    if not rules.is_trading_day(n):
+    if n.weekday() >= 5:                  # 5=周六 6=周日
         return False
     t = n.hour * 60 + n.minute
-    return _CN_LIVE_START <= t < _CN_LIVE_END
+    return _PUB_START <= t < _PUB_END
 
 
-def has_due_cn(now=None, gap_min: int = 60) -> bool:
-    """今日是否有「刚过公布时刻不超过 `gap_min` 分钟」的中国核心数据。
+def has_due_event(now=None, gap_min: int = 20) -> bool:
+    """今日是否有「刚过公布时刻不超过 `gap_min` 分钟」的核心数据（**不限国家**）。
 
     ★ 为什么需要它：`calendar.refresh()` 是**外部 HTTP**（金十）。
-      若整个上午每 5 分钟无条件刷一次，一天白付 24 次请求，且多数时候没有新数据。
-      用"计划时刻已过 60 分钟内"作闸门 ⇒ 只在**真可能出新值**的两波（09:30 / 09:45）
-      之后短暂轮询，其余时间零请求。
+      全天每 5 分钟无条件刷 = 一天上百次请求，而绝大多数时刻没有新数据。
+      用"计划时刻已过 20 分钟内"作闸门 ⇒ 每个事件时刻只轮询约 4 次，
+      一天 10 来个时刻 ⇒ 约 40 次，可控。
+    ★ `gap_min` 由 60 收到 20（窗口从半天拉长到全天，必须收紧单点开销）。
+      金十公布后延迟 1~5 分钟，20 分钟足够捞到。
     """
     from app.flash import rules
     n = now or rules.beijing_now()
@@ -443,8 +490,8 @@ def has_due_cn(now=None, gap_min: int = 60) -> bool:
             continue
         if str(it.get("date") or "") != day:
             continue
-        if str(it.get("country") or "") != "中国":
-            continue
+        # ★ 不再按国家过滤（用户："宏观环境不止中国"）；`_classify` 内部已有
+        #   国家白名单（美/中全量 + 其他国家仅 5 星）⇒ 欧洲 4 星以下不会进来，不会刷屏。
         if not _classify(it):
             continue                     # 非核心指标（如官员讲话）不关心
         try:
@@ -458,13 +505,21 @@ def has_due_cn(now=None, gap_min: int = 60) -> bool:
 
 
 def run_publish_alert(dry_run: bool = False) -> str:
-    """盘中播报：今日已公布的**中国**关键数据（每个事件只推一次）。"""
+    """实时播报：今日已公布的关键数据（**不限国家**，每个事件只推一次）。
+
+    ★★ 2026-11-01（用户："应该不限于中国，应该宏观环境不止中国"）：
+      原版只筛 `country="中国"`，理由是"美国数据收盘后公布、当天无法操作"。
+      **这是把"能不能立刻下单"误当成"要不要知道"** —— 宏观环境是全天候的：
+      晚上 20:30 的非农决定次日开盘怎么开，凭它调整持仓判断完全来得及。
+      ⇒ 去掉国家限制，改由 `_classify` 的既有白名单把关（美/中全量，
+      其他国家仅 5 星），既覆盖宏观又不刷屏。
+    """
     from app.flash import rules
     now = rules.beijing_now()
     day = now.strftime("%Y-%m-%d")
-    rows = published_on(day, country="中国")
+    rows = published_on(day)
     if not rows:
-        return "日历播报: 今日暂无已公布的中国关键数据"
+        return "日历播报: 今日暂无已公布的关键数据"
     ensure_table()
     from app.database import db
     fresh = []
@@ -481,10 +536,12 @@ def run_publish_alert(dry_run: bool = False) -> str:
     if not fresh:
         return f"日历播报: {len(rows)} 条已公布数据均已推送过"
     lines = [_released_line(x) for x, _ in fresh]
-    title = f"📊 数据公布 · {len(fresh)} 条（中国）"
+    n_cn = sum(1 for x, _ in fresh if x.get("country") == "中国")
+    scope = f"中国 {n_cn} · 海外 {len(fresh) - n_cn}" if n_cn else "海外"
+    title = f"📊 数据公布 · {len(fresh)} 条（{scope}）"
     content = ("\n".join(lines) +
-               "\n\n（用途：**公布后立刻知道超预期方向**——开盘 30 分钟内不追高，"
-               "按实际值而非预期值调整判断。）")
+               "\n\n（用途：**按实际值而非预期值调整判断**。"
+               "盘中公布的看当日情绪，夜间公布的看次日开盘。）")
     if dry_run:
         return f"【dry-run 不推送】{title}\n{content}"
     try:
@@ -505,4 +562,4 @@ def run_publish_alert(dry_run: bool = False) -> str:
                  now.strftime("%Y-%m-%d %H:%M:%S")))
     except Exception as e:
         print(f"[cal_ahead] 播报去重写入失败（已推送，可能重复推）: {e}")
-    return f"日历播报: 已推送 {len(fresh)} 条中国数据公布"
+    return f"日历播报: 已推送 {len(fresh)} 条数据公布（{scope}）"
