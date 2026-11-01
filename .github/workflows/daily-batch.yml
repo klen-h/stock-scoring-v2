@@ -89,6 +89,38 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      # ★★ 2026-11-01（egress 治理 · 用户："改 workflow 加 cache"）：
+      #   把「本机 SQLite 缓存」在三份内容之间传递：research-cache.db（研究/资金流）、
+      #   flow-map.db（`flow.load_flow_map` 整表读落盘）、market-snapshot-cache.db（行情快照）。
+      #
+      # 【为什么必须加】`research_cache._top_up_flow` 有两条分支：
+      #   · `need_tail` —— 本机已有该码、只差最后几根 ⇒ **只补增量（几 MB）**
+      #   · `need_full` —— 本机**完全没有**该码 ⇒ **取该码全量历史（~146 行/码）**
+      #   Actions 每次都是全新 runner ⇒ `backend/data/research-cache.db` 不存在
+      #   ⇒ 全部 ~1500 只都落进 `need_full` ⇒ **每个交易日把 mainflow_history 全量历史重读一遍**。
+      #   触发链：`task_gate_snapshot → scoring.gate_watch → gate._load_gate_flow → research_cache.flow_map()`。
+      #   探针实测（10-25 → 11-01）：`SELECT ... FROM mainflow_history` **3,533 次 / 5,475 万行**，
+      #   是全项目出口流量第一名（上限口径 ≈5.8GB，占那周总量七成以上）。
+      #   ⇒ 缓存命中后只走 `need_tail`，量级从「全量历史」降到「全池各补 1 根」。
+      #
+      # 【为什么 key 用 run_id 而不是固定值】GitHub 缓存**不可变**：同 key 第二次起
+      #   直接命中旧文件、不再保存 ⇒ 缓存会永远停在第一次的内容。本地末根一旦停在很久
+      #   以前，`since = min(local_max)` 就退化为"从很久以前补起"，反而比不加缓存更贵。
+      #   ⇒ 每次 run 用唯一 key 保存新文件，靠 `restore-keys` 前缀恢复"最近一份"。
+      #   ⚠️ 代价：每天新增 1~3 份 ~110MB 的条目，GitHub 仓库缓存上限 10GB、
+      #      7 天未被命中即淘汰 ⇒ 稳态约 1~2GB，可接受。若哪天逼近上限，
+      #      改成按日期分桶（`localdb-${日期}`）并只保留 restore-keys 即可。
+      - name: Restore local DB caches (egress)
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/data/research-cache.db
+            backend/data/flow-map.db
+            backend/data/market-snapshot-cache.db
+          key: localdb-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            localdb-${{ runner.os }}-
+
       - name: Install dependencies
         # 完整依赖：日批要 import 后端各模块（scoring/strategies/contradictions…）
         run: pip install -q -r backend/requirements.txt
