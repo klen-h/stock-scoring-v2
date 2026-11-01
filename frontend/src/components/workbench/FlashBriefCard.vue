@@ -8,9 +8,14 @@
        系统级：盘中异动由调度器 `brief_loop` 自动触发 → 浏览器通知（/flash/notifications）。 -->
   <!-- ★ 2026-11-01（用户："高度可以跟左卡片同高……还有很多空间"）：
        `h-full flex flex-col` ⇒ 卡片吃满网格行高；列表用 `flex-1` 吃掉剩余空间，
-       不再用 `max-h-80` 硬截 320px（那样右卡永远比左卡矮一截，右下留白）。 -->
-  <div class="bg-card border border-border rounded-lg p-3 text-xs h-full flex flex-col">
-    <div class="flex items-center gap-2 flex-wrap">
+       不再用 `max-h-80` 硬截 320px（那样右卡永远比左卡矮一截，右下留白）。
+       ★★ 2026-11-01（用户："右边常驻卡片分为顶部 tab 切换"）：新增 `bare` ——
+       由父级提供「卡片外壳 + 顶部 tab 头」时，本组件不再画外壳与标题，
+       只渲染内容（否则 tab 头下面又压一个"快讯解读"标题，重复且多占一行）。 -->
+  <div :class="bare
+          ? 'p-3 text-xs h-full flex flex-col'
+          : 'bg-card border border-border rounded-lg p-3 text-xs h-full flex flex-col'">
+    <div v-if="!bare" class="flex items-center gap-2 flex-wrap">
       <button type="button" class="flex items-center gap-2"
               :title="bodyOpen ? '收起' : '展开'"
               @click="bodyOpen = !bodyOpen">
@@ -224,6 +229,8 @@ import { xqUrl, stockHref } from '../../composables/displayMeta'
 const props = defineProps({
   date: { type: String, default: '' },
   flashDiag: { type: Object, default: null },
+  // ★ 2026-11-01：由父级提供「卡片外壳 + 顶部 tab 头」时不画外壳/标题（见模板注释）
+  bare: { type: Boolean, default: false },
 })
 
 const fb = useFlashBrief()
