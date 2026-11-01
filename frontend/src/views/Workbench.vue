@@ -1003,173 +1003,11 @@
                  原「李大霄视角」「今日系统时间线」两张卡常驻右栏（窄栏，两块都很长）
                  ⇒ 收进本卡第二 tab，右栏只留教练卡 + 评分榜。
                  `bare` 让 FlashBriefCard 不再画自己的外壳/标题（避免 tab 头下再压一行）。 -->
-          <div class="min-w-0 h-full bg-card border border-border rounded-lg flex flex-col xl:h-[760px]">
-            <div class="flex items-center gap-1 px-3 pt-2.5 pb-1.5 border-b border-border/40 shrink-0 flex-wrap">
-              <button v-for="t in rightTabs" :key="t.key" type="button"
-                      class="px-2 py-0.5 rounded text-xs transition-colors"
-                      :class="rightTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
-                      :title="t.tip"
-                      @click="rightTab = t.key">{{ t.label }}</button>
-              <router-link v-if="rightTab === 'flash'" to="/monitor" target="_blank" rel="noopener"
-                           class="ml-auto text-[11px] text-accent hover:underline">全部快讯 ↗</router-link>
-            </div>
-            <div v-show="rightTab === 'flash'" class="flex-1 min-h-0">
-              <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" bare />
-            </div>
-            <div v-show="rightTab === 'view'" class="flex-1 min-h-0 overflow-y-auto p-2 space-y-2">
-              <div v-if="!lidx || !lidx.latest" class="text-xs text-muted p-2">—（暂无李大霄视角数据）</div>
-        <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
-             事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
-             卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
-        <div v-if="lidx && lidx.latest" class="p-2">
-          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
-            <!-- ★★ 2026-10-26（用户："李大霄视角卡片加上展开收起功能"）：标题即开关 -->
-            <!-- ★ 2026-10-28（用户："简化一下文字使得按钮能加进去"）：
-                 「外部观点参考」+「数据截至 10-24 21:02 · 落后4天」≈ 300px，
-                 塞不下按钮 ⇒ 缩为「10-24 21:02 · 4天前」，原义移到 hover title。 -->
-            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
-                    @click="lidxOpen = !lidxOpen" :title="lidxOpen ? '点击收起' : '点击展开'">
-              <span class="text-[10px] text-muted">{{ lidxOpen ? '▼' : '▶' }}</span>
-              李大霄视角
-            </button>
-            <div class="flex items-center gap-1.5 shrink-0">
-              <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
-                    :title="`外部观点参考（xiaopage LLM 二手解读，不进决策链）· 数据截至 ${lidx.latest.date || '—'}`">
-                {{ (lidx.latest.date || '').slice(5, 16) }} · {{ lidx.lag_days == null ? '—' : lidx.lag_days }}天前<template v-if="lidx.stale"> ⚠</template>
-              </span>
-              <!-- ★ 2026-10-28：手动补拉（推送失败兜底）。盘后也会更新，故不能只靠事件回调。 -->
-              <button type="button"
-                      class="text-[10px] px-1.5 py-0.5 rounded border border-border hover:text-accent hover:border-accent/40 disabled:opacity-50 disabled:cursor-wait"
-                      :disabled="lidxBusy"
-                      :title="'从 xiaopage 补拉最新解读（盘后也会更新；上游没变时零流量）'"
-                      @click="refreshLidx">
-                {{ lidxBusy ? '…' : '↻ 更新' }}
-              </button>
-            </div>
-          </div>
-          <div v-if="lidxMsg" class="text-[10px] mb-1"
-               :class="lidxMsg.ok ? 'text-emerald-400' : 'text-amber-400'">{{ lidxMsg.text }}</div>
-
-          <template v-if="lidxOpen">
-            <!-- ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换，
-                 支持水平滚动，选中后 tab 自行居中"）：最近 12 条视频各一个 tab。
-                 实测 10-23 就有 3 条（10:52 / 14:18 / 20:33）⇒ 必须能选，不能只显示最新。 -->
-            <div v-if="lidxItems.length > 1"
-                 ref="lidxTabsEl"
-                 class="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1 wb-hscroll">
-              <button v-for="(t, i) in lidxItems" :key="t.entry_id || i"
-                      :ref="(el) => setLidxTab(el, i)"
-                      type="button"
-                      class="shrink-0 px-2 py-0.5 rounded text-[10px] border transition-colors"
-                      :class="i === lidxSel
-                        ? 'bg-accent/20 text-accent border-accent/40'
-                        : 'bg-white/5 text-muted border-border hover:text-gray-200'"
-                      :title="t.title || ''"
-                      @click="selectLidx(i)">
-                {{ lidxTabLabel(t) }}
-              </button>
-            </div>
-            <div class="flex items-center gap-2 text-xs mb-1 mt-1.5 flex-wrap">
-              <span class="font-semibold text-gray-200">{{ lidxCur.title }}</span>
-              <a v-if="lidxCur.video_url" :href="lidxCur.video_url" target="_blank"
-                 class="text-accent hover:underline flex-shrink-0">{{ lidxCur.bvid }} ↗</a>
-              <span class="text-muted flex-shrink-0">{{ lidxCur.date }}</span>
-            </div>
-            <div class="text-xs mb-1.5">
-              情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidxCur.sentiment_level)">{{ lidxCur.sentiment_score ?? '—' }}</span>
-              <span :class="lidxLevelColor(lidxCur.sentiment_level)">· {{ lidxCur.sentiment_level || '—' }}</span>
-              <span class="text-muted"> · 防御话术 {{ lidxCur.disclaimer_level ?? '—' }}/5</span>
-            </div>
-            <div v-if="lidxCur.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
-              ▸ {{ lidxCur.final_conclusion }}
-            </div>
-            <div v-if="lidxCur.sectors && lidxCur.sectors.length" class="flex flex-wrap gap-1 mb-2">
-              <span v-for="s in lidxCur.sectors" :key="s"
-                    class="px-1.5 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-300 border border-blue-500/20">{{ s }}</span>
-            </div>
-            <div v-if="lidx.trend && lidx.trend.length" class="flex items-end gap-[3px] h-8">
-              <div v-for="(t, i) in lidx.trend" :key="i"
-                   class="flex-1 min-w-[4px] rounded-t"
-                   :style="{ height: Math.max(6, t.score || 0) + '%', background: lidxBarColor(t.score) }"
-                   :title="`${t.date} · 情绪${t.score} · ${t.title}`"></div>
-            </div>
-            <div v-if="lidx.trend && lidx.trend.length" class="text-[10px] text-muted mt-1">
-              近{{ lidx.trend.length }}期情绪（0~100，越高越乐观）
-            </div>
-          </template>
-        </div>
-        <!-- ★ 2026-10-24（用户："今日系统时间线移到最下面"）：由右栏顶部移到最下。
-             ⚠️ 它内含「系统自洽性审查（LLM）」—— 同源同卡，随本卡一起下移。
-             ⚠️ 全站只此一份（主区盘后那张同源卡 2026-09-26 已删）。 -->
-        <div class="p-2">
-          <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
-                  @click="pushOpen = !pushOpen"
-                  :title="pushOpen ? '点击收起' : '点击展开'">
-            <span class="text-[10px] text-muted">{{ pushOpen ? '▼' : '▶' }}</span>
-            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}
-          </button>
-          <template v-if="pushOpen">
-            <div v-if="pushConnErr" class="text-[10px] text-amber-400 mt-2">连接中断（保留上次数据）</div>
-            <div v-if="!pushItems.length" class="text-muted text-xs mt-2">—</div>
-            <div v-else class="max-h-80 overflow-y-auto pr-1 mt-2">
-              <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
-                <div class="flex items-center gap-2">
-                  <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
-                  <span class="font-semibold truncate">{{ p.title }}</span>
-                </div>
-                <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
-              </div>
-            </div>
-          </template>
-          <div v-else class="text-[10px] text-muted mt-1">
-            已收起（{{ pushItems.length }} 条）—— 点击标题展开
-          </div>
-
-          <!-- ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）：
-               与上方时间线**同源**（都基于今日系统提示集合）⇒ 放进**同一张卡**，不新开
-               "今日雷达"卡（9/28 刚因"同源两张卡"删过一份，注释原文：留两份只会同屏重复）。
-               ⚠️ **默认折叠 ⇒ 不请求**；展开时 `toggleRadar` 先走 `refresh=false` ——
-                  当日已分析过 ⇒ 直接读后端缓存（免费）；**当日未分析过 ⇒ 仍会真调一次 LLM**。
-               ⚠️ 位置：**必须排在上面 `v-if/v-else` 对之后** —— 插到中间会破坏
-                  `<template v-if="pushOpen">` 与"已收起"`v-else` 的邻接关系。 -->
-          <div class="mt-2 pt-2 border-t border-border/40">
-            <button type="button" class="text-xs font-semibold flex items-center gap-1 hover:text-accent"
-                    @click="toggleRadar"
-                    :title="radarOpen ? '点击收起' : '点击展开。⚠️ 当日已分析过 ⇒ 直接读缓存（免费）；当日尚未分析 ⇒ 会调用一次 LLM（约十几秒）'">
-              <span class="text-[10px] text-muted">{{ radarOpen ? '▼' : '▶' }}</span>
-              系统自洽性审查（LLM）
-            </button>
-            <template v-if="radarOpen">
-              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
-                <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">当日已分析 · 读缓存</span>
-                <span v-if="radarAnalysis.items_used" class="text-[10px] text-muted">
-                  基于 {{ radarAnalysis.items_used }} 条系统提示</span>
-                <button class="px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        :class="radarAnalysis.loading ? 'text-muted' : 'text-accent hover:border-accent/50'"
-                        :disabled="radarAnalysis.loading"
-                        title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒~1 分钟）。同日正常只需读缓存。"
-                        @click="loadRadarAnalysis(true)">
-                  {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
-                </button>
-              </div>
-              <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
-              <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端已把 conclusion/reasons **分开下发**
-                   （L3 结构化），前端按角色渲染：结论条置顶、「依据」默认收起。 -->
-              <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
-                           :text="radarAnalysis.markdown"
-                           :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
-                           feedback-source="radar"
-                           :feedback-ref="'radar:' + (selectedDate || todayStr)"
-                           collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
-              <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
-              <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
-                检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
-                早盘判断被午后自己推翻）。<span class="text-muted/70">与「矛盾扫描」分工不同：后者扫的是**市场数据**层面的矛盾。</span>
-              </div>
-            </template>
-          </div>
-        </div>
-            </div>
+          <!-- 右卡：快讯解读
+               ★ 2026-11-01：`xl:h-[760px]` 与左卡定高。
+               ★★ tab 已归位到**常驻右栏**（教练卡 / 李大霄），本卡只留快讯。 -->
+          <div class="min-w-0 h-full">
+            <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
           </div>
         </div>
 
@@ -2790,11 +2628,104 @@
 
         <!-- ★ 2026-10-27：市场底清单已并入观察器 ⑤（日频数据，300s 刷新），右栏不再保留副本。 -->
 
+        <!-- ★★ 2026-11-01（用户："教练卡里面应该有教练卡和李大霄视角的tab"）：
+             「教练卡 | 李大霄」同一组 tab；「今日系统时间线」回到常驻区最底部（见 aside 末尾）。 -->
+        <div class="flex items-center gap-1.5">
+          <button v-for="t in sideTabs" :key="t.key" type="button"
+                  class="px-2 py-0.5 rounded text-xs transition-colors"
+                  :class="sideTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+                  :title="t.tip"
+                  @click="sideTab = t.key">{{ t.label }}</button>
+        </div>
+        <div v-show="sideTab === 'lidx'" class="bg-card border border-border rounded-lg p-3">
+
+              <div v-if="!lidx || !lidx.latest" class="text-xs text-muted p-2">—（暂无李大霄视角数据）</div>
+        <!-- ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送接入，**纯展示参考不进决策链**；
+             事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库，本卡 60s 随教练卡轮询。
+             卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
+        <div v-if="lidx && lidx.latest" class="p-2">
+          <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+            <!-- ★★ 2026-10-26（用户："李大霄视角卡片加上展开收起功能"）：标题即开关 -->
+            <!-- ★ 2026-10-28（用户："简化一下文字使得按钮能加进去"）：
+                 「外部观点参考」+「数据截至 10-24 21:02 · 落后4天」≈ 300px，
+                 塞不下按钮 ⇒ 缩为「10-24 21:02 · 4天前」，原义移到 hover title。 -->
+            <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent text-left"
+                    @click="lidxOpen = !lidxOpen" :title="lidxOpen ? '点击收起' : '点击展开'">
+              <span class="text-[10px] text-muted">{{ lidxOpen ? '▼' : '▶' }}</span>
+              李大霄视角
+            </button>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
+                    :title="`外部观点参考（xiaopage LLM 二手解读，不进决策链）· 数据截至 ${lidx.latest.date || '—'}`">
+                {{ (lidx.latest.date || '').slice(5, 16) }} · {{ lidx.lag_days == null ? '—' : lidx.lag_days }}天前<template v-if="lidx.stale"> ⚠</template>
+              </span>
+              <!-- ★ 2026-10-28：手动补拉（推送失败兜底）。盘后也会更新，故不能只靠事件回调。 -->
+              <button type="button"
+                      class="text-[10px] px-1.5 py-0.5 rounded border border-border hover:text-accent hover:border-accent/40 disabled:opacity-50 disabled:cursor-wait"
+                      :disabled="lidxBusy"
+                      :title="'从 xiaopage 补拉最新解读（盘后也会更新；上游没变时零流量）'"
+                      @click="refreshLidx">
+                {{ lidxBusy ? '…' : '↻ 更新' }}
+              </button>
+            </div>
+          </div>
+          <div v-if="lidxMsg" class="text-[10px] mb-1"
+               :class="lidxMsg.ok ? 'text-emerald-400' : 'text-amber-400'">{{ lidxMsg.text }}</div>
+
+          <template v-if="lidxOpen">
+            <!-- ★★ 2026-10-26（用户："一天可能有几个视频，卡片内部 tab 切换，
+                 支持水平滚动，选中后 tab 自行居中"）：最近 12 条视频各一个 tab。
+                 实测 10-23 就有 3 条（10:52 / 14:18 / 20:33）⇒ 必须能选，不能只显示最新。 -->
+            <div v-if="lidxItems.length > 1"
+                 ref="lidxTabsEl"
+                 class="flex gap-1 overflow-x-auto pb-1 -mx-1 px-1 wb-hscroll">
+              <button v-for="(t, i) in lidxItems" :key="t.entry_id || i"
+                      :ref="(el) => setLidxTab(el, i)"
+                      type="button"
+                      class="shrink-0 px-2 py-0.5 rounded text-[10px] border transition-colors"
+                      :class="i === lidxSel
+                        ? 'bg-accent/20 text-accent border-accent/40'
+                        : 'bg-white/5 text-muted border-border hover:text-gray-200'"
+                      :title="t.title || ''"
+                      @click="selectLidx(i)">
+                {{ lidxTabLabel(t) }}
+              </button>
+            </div>
+            <div class="flex items-center gap-2 text-xs mb-1 mt-1.5 flex-wrap">
+              <span class="font-semibold text-gray-200">{{ lidxCur.title }}</span>
+              <a v-if="lidxCur.video_url" :href="lidxCur.video_url" target="_blank"
+                 class="text-accent hover:underline flex-shrink-0">{{ lidxCur.bvid }} ↗</a>
+              <span class="text-muted flex-shrink-0">{{ lidxCur.date }}</span>
+            </div>
+            <div class="text-xs mb-1.5">
+              情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidxCur.sentiment_level)">{{ lidxCur.sentiment_score ?? '—' }}</span>
+              <span :class="lidxLevelColor(lidxCur.sentiment_level)">· {{ lidxCur.sentiment_level || '—' }}</span>
+              <span class="text-muted"> · 防御话术 {{ lidxCur.disclaimer_level ?? '—' }}/5</span>
+            </div>
+            <div v-if="lidxCur.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
+              ▸ {{ lidxCur.final_conclusion }}
+            </div>
+            <div v-if="lidxCur.sectors && lidxCur.sectors.length" class="flex flex-wrap gap-1 mb-2">
+              <span v-for="s in lidxCur.sectors" :key="s"
+                    class="px-1.5 py-0.5 rounded text-[11px] bg-blue-500/10 text-blue-300 border border-blue-500/20">{{ s }}</span>
+            </div>
+            <div v-if="lidx.trend && lidx.trend.length" class="flex items-end gap-[3px] h-8">
+              <div v-for="(t, i) in lidx.trend" :key="i"
+                   class="flex-1 min-w-[4px] rounded-t"
+                   :style="{ height: Math.max(6, t.score || 0) + '%', background: lidxBarColor(t.score) }"
+                   :title="`${t.date} · 情绪${t.score} · ${t.title}`"></div>
+            </div>
+            <div v-if="lidx.trend && lidx.trend.length" class="text-[10px] text-muted mt-1">
+              近{{ lidx.trend.length }}期情绪（0~100，越高越乐观）
+            </div>
+          </template>
+        </div>
+        </div>
         <!-- 教练卡（今日）—— **全站唯一一份**
              ★ 2026-09-28 起唯一展示位就在右栏；10-24 紧贴清单下方；
                10-27 清单并入观察器后，右栏首张卡（上方是快讯解读 / 李大霄）。
              ⚠️ 回放（isReplay）时 readonly=true ⇒ 只读 + 状态徽标（历史不可改）。 -->
-        <div class="bg-card border border-border rounded-lg p-3">
+        <div v-show="sideTab === 'todo'" class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
             <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
                     @click="todoOpen = !todoOpen" :title="todoOpen ? '点击收起' : '点击展开'">
@@ -2853,6 +2784,79 @@
                          :gw-prices="gwPrices" />
 
 
+        <div class="bg-card border border-border rounded-lg p-2">
+        <!-- ★ 2026-10-24（用户："今日系统时间线移到最下面"）：由右栏顶部移到最下。
+             ⚠️ 它内含「系统自洽性审查（LLM）」—— 同源同卡，随本卡一起下移。
+             ⚠️ 全站只此一份（主区盘后那张同源卡 2026-09-26 已删）。 -->
+        <div class="p-2">
+          <button type="button" class="text-sm font-semibold flex items-center gap-1 hover:text-accent"
+                  @click="pushOpen = !pushOpen"
+                  :title="pushOpen ? '点击收起' : '点击展开'">
+            <span class="text-[10px] text-muted">{{ pushOpen ? '▼' : '▶' }}</span>
+            {{ isReplay ? selectedDate + ' 系统时间线' : '今日系统时间线' }}
+          </button>
+          <template v-if="pushOpen">
+            <div v-if="pushConnErr" class="text-[10px] text-amber-400 mt-2">连接中断（保留上次数据）</div>
+            <div v-if="!pushItems.length" class="text-muted text-xs mt-2">—</div>
+            <div v-else class="max-h-80 overflow-y-auto pr-1 mt-2">
+              <div v-for="(p, i) in pushItems" :key="i" class="text-xs border-b border-border/40 py-1.5">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-muted">{{ (p.ts || '').slice(11, 16) }}</span>
+                  <span class="font-semibold truncate">{{ p.title }}</span>
+                </div>
+                <div class="text-muted mt-0.5">{{ firstLine(p.content) }}</div>
+              </div>
+            </div>
+          </template>
+          <div v-else class="text-[10px] text-muted mt-1">
+            已收起（{{ pushItems.length }} 条）—— 点击标题展开
+          </div>
+
+          <!-- ★★ 2026-09-30（用户："LLM 自洽性审查接进右栏时间线卡"）：
+               与上方时间线**同源**（都基于今日系统提示集合）⇒ 放进**同一张卡**，不新开
+               "今日雷达"卡（9/28 刚因"同源两张卡"删过一份，注释原文：留两份只会同屏重复）。
+               ⚠️ **默认折叠 ⇒ 不请求**；展开时 `toggleRadar` 先走 `refresh=false` ——
+                  当日已分析过 ⇒ 直接读后端缓存（免费）；**当日未分析过 ⇒ 仍会真调一次 LLM**。
+               ⚠️ 位置：**必须排在上面 `v-if/v-else` 对之后** —— 插到中间会破坏
+                  `<template v-if="pushOpen">` 与"已收起"`v-else` 的邻接关系。 -->
+          <div class="mt-2 pt-2 border-t border-border/40">
+            <button type="button" class="text-xs font-semibold flex items-center gap-1 hover:text-accent"
+                    @click="toggleRadar"
+                    :title="radarOpen ? '点击收起' : '点击展开。⚠️ 当日已分析过 ⇒ 直接读缓存（免费）；当日尚未分析 ⇒ 会调用一次 LLM（约十几秒）'">
+              <span class="text-[10px] text-muted">{{ radarOpen ? '▼' : '▶' }}</span>
+              系统自洽性审查（LLM）
+            </button>
+            <template v-if="radarOpen">
+              <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+                <span v-if="radarAnalysis.cached" class="text-[10px] text-muted">当日已分析 · 读缓存</span>
+                <span v-if="radarAnalysis.items_used" class="text-[10px] text-muted">
+                  基于 {{ radarAnalysis.items_used }} 条系统提示</span>
+                <button class="px-2 py-0.5 rounded text-[11px] border border-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        :class="radarAnalysis.loading ? 'text-muted' : 'text-accent hover:border-accent/50'"
+                        :disabled="radarAnalysis.loading"
+                        title="强制重算。⚠️ 消耗 1 次 LLM 调用（同步，约需十几秒~1 分钟）。同日正常只需读缓存。"
+                        @click="loadRadarAnalysis(true)">
+                  {{ radarAnalysis.loading ? '分析中…' : (radarAnalysis.markdown ? '重新分析' : '分析矛盾点') }}
+                </button>
+              </div>
+              <div v-if="radarAnalysis.loading" class="mt-1.5 text-xs text-muted">分析中…（LLM 同步调用，约需十几秒）</div>
+              <!-- ★ 2026-10-11（L2/L3）：改走「观点卡」—— 后端已把 conclusion/reasons **分开下发**
+                   （L3 结构化），前端按角色渲染：结论条置顶、「依据」默认收起。 -->
+              <InsightBody v-else-if="radarAnalysis.markdown || radarAnalysis.conclusion"
+                           :text="radarAnalysis.markdown"
+                           :conclusion="radarAnalysis.conclusion" :reasons="radarAnalysis.reasons"
+                           feedback-source="radar"
+                           :feedback-ref="'radar:' + (selectedDate || todayStr)"
+                           collapsible class="mt-1.5 text-xs max-h-72 overflow-y-auto pr-1" />
+              <div v-else-if="radarAnalysis.error" class="mt-1.5 text-xs text-amber-400">{{ radarAnalysis.error }}</div>
+              <div v-else class="mt-1 text-[11px] text-muted leading-relaxed">
+                检查**系统今天自己发出的多条提示**是否互相打架（如"盘中警示说回避" vs "午间雷达说机会"、
+                早盘判断被午后自己推翻）。<span class="text-muted/70">与「矛盾扫描」分工不同：后者扫的是**市场数据**层面的矛盾。</span>
+              </div>
+            </template>
+          </div>
+        </div>
+        </div>
       </aside>
     </div>
 
