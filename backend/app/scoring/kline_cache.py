@@ -268,6 +268,49 @@ def append_intraday_bar(klines: Optional[List[Dict]], code: str) -> Optional[Lis
         return klines
 
 
+# ★★ 2026-11-01：读侧「价格连续性」校验（数据正确性，比性能优先）。
+#
+# 【为什么需要】数据包增量更新用"近似复权缩放"
+#   （`scripts/update_backend_pack_incremental.py` 的 `_merge_exdiv`：
+#    仅在 zzshare 识别为 exdiv 时按 factor 比例缩放旧历史）。
+#   一旦 factor 缺失/延迟 ⇒ 旧历史**不缩放**、新 bar **照常追加** ⇒ 序列断层。
+#
+#   实测 000807（云铝股份）：
+#     2026-10-29  C=18.40
+#     2026-10-30  C=25.36   **+37.8%**（真实涨幅仅 +1.1%）
+#   且整段历史与实时前复权相差 **32%~36%**（多次分红累积误差）。
+#
+# 【后果】技术指标（MA/RSI/MACD/BOLL）跨断层严重失真，
+#   `append_intraday_bar` 再把 25.36 拼到 18.40 后面会进一步放大 ⇒ **评分错误**。
+#   这类错误**没有任何报错**，只会表现为"这只票的分怎么看都不对"。
+#
+# 【处理】末尾若出现 A 股不可能的单日跳变 ⇒ 该股缓存不可信 ⇒ 返回 None，
+#   调用方走实时拉取（慢一点但正确）。宁可慢，不可错。
+_MAX_DAILY_JUMP = 0.31     # A 股单日最大 ±30%（北交所），再留 1% 余量
+_JUMP_LOOKBACK = 5         # 只查末尾 5 根（000807 的断层就在末 2 根）
+# ⚠️ 只在**末尾**检查：更早的历史断层对"当前"技术指标影响会被均线平滑，
+#   而全序列检查会因早期新股/复牌数据误判整只票。
+
+
+def _impossible_jump(klines: List[Dict]) -> str:
+    """末尾若干根是否存在 A 股不可能的单日跳变；返回描述串，无则空串。"""
+    if not klines or len(klines) < 2:
+        return ""
+    tail = klines[-min(_JUMP_LOOKBACK + 1, len(klines)):]
+    for i in range(1, len(tail)):
+        try:
+            p0 = float(tail[i - 1].get("close") or 0)
+            p1 = float(tail[i].get("close") or 0)
+        except (TypeError, ValueError):
+            continue
+        if p0 <= 0 or p1 <= 0:
+            continue
+        pct = p1 / p0 - 1
+        if abs(pct) > _MAX_DAILY_JUMP:
+            return f"{tail[i - 1].get('date')}→{tail[i].get('date')} {pct:+.1%}"
+    return ""
+
+
 def get_cached_klines(code: str) -> Optional[List[Dict]]:
     ensure_kline_cache_table()
     """
@@ -284,6 +327,13 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
         if pack_source.enabled():
             _k = pack_source.get_klines(code)
             if _k is not None:
+                # ★ 2026-11-01：包也可能是错的（复权缩放失败 ⇒ 断层），
+                #   不能因为"来自包"就无条件信任（000807 正是包内断层）。
+                _bad = _impossible_jump(_k)
+                if _bad:
+                    print(f"[kline_cache] {code} 包内存在不可能跳变（{_bad}）"
+                          f"⇒ 判不可信，回退实时拉取")
+                    return None
                 return _k
     except Exception:
         pass
@@ -323,6 +373,14 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
                           f"{(klines[-1].get('date') or '')[:10]}且无法合成当日bar，"
                           f"判过期走实时拉取")
                     return None
+            # ★ 2026-11-01：DB 缓存同样要过价格连续性校验
+            #   （DB 是包生成时写回的，包错则 DB 也错；这条防的是"包已修好、
+            #     DB 仍是旧坏数据"的过渡期）。
+            _bad = _impossible_jump(klines)
+            if _bad:
+                print(f"[kline_cache] {code} DB 缓存存在不可能跳变（{_bad}）"
+                      f"⇒ 判不可信，回退实时拉取")
+                return None
             return klines
         return None
     except (json.JSONDecodeError, TypeError):
