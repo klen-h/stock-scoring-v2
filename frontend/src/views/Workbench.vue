@@ -2696,7 +2696,6 @@
           </template>
         </div>
           </div>
-        </div>
 
           <!-- ③ 财经日历（★ 2026-11-01 从「盘前复盘卡右列」移入本组 tab。
                用户："加多一个tab，财经日历…以下内容展示不美观，而且看不出来事件意味着什么，带上解读文字"。
@@ -2736,7 +2735,10 @@
                     <span :class="(e.star || 0) >= 4 ? 'text-amber-300' : 'text-gray-200'">{{ e.title || e.event || e.name || '—' }}</span>
                     <span v-if="e.star" class="text-[9px] align-super text-amber-400/80 ml-0.5">{{ '★'.repeat(e.star) }}</span>
                   </div>
-                  <div v-if="e.summary" class="text-[10px] text-muted leading-tight mt-0.5">↳ {{ e.summary }}</div>
+                  <!-- ★ 2026-11-01：`impact` 由后端 `/flash/calendar` 补（与前瞻同一映射），
+                       数据源 `summary` 仅在无映射时兜底 —— 事件类条目（欧佩克/冬令时）
+                       本来 summary 常为空，只靠它等于没有解读。 -->
+                  <div v-if="e.impact || e.summary" class="text-[10px] text-muted leading-tight mt-0.5">↳ {{ e.impact || e.summary }}</div>
                 </div>
                 <button v-if="calendarToday.length > 3" type="button"
                         class="mt-1 text-[10px] text-accent hover:underline"
@@ -2746,6 +2748,7 @@
               </template>
             </div>
           </div>
+        </div>
 
         <!-- 持仓摘要
              ★ 2026-09-28（用户："持仓摘要右栏卡片先隐藏吧"）：**暂时隐藏**。

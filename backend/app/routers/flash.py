@@ -53,6 +53,16 @@ def flash_calendar(days: int = Query(7, ge=1, le=60),
     c = calendar.load()
     items = calendar.upcoming(days=days, min_star=min_star,
                               kinds=(kind,) if kind else ())
+    # ★★ 2026-11-01：给每条补 `impact`（传导解读），与 `/calendar-ahead` 同一映射。
+    #   原因：工作台「财经日历」tab 的"今日事件"原来只靠数据源 `summary`，
+    #   而**事件类**条目（欧佩克会议 / 北美冬令时）summary 常为空 ⇒ 用户看不到"意味着什么"。
+    #   ⚠️ 复制成新 dict 再补，避免污染日历内存缓存（`calendar.load()` 可能返回引用）。
+    try:
+        from app.flash.calendar_ahead import impact_of
+        items = [dict(x, impact=x.get("impact") or impact_of(str(x.get("title") or "")))
+                 for x in items]
+    except Exception as e:
+        print(f"[flash] 日历 impact 补全失败（原样返回）: {str(e)[:80]}")   # ASCII（铁律⑥）
     return {"updated_at": c.get("updated_at", ""),
             "range": c.get("range", {}),
             "total": len(c.get("items") or []),
