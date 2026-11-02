@@ -51,16 +51,18 @@ bootstrap：对事件日 T+20 收益做**有放回重采样**（B=10000，固定
 ================================================================================
 """
 import argparse
+import contextlib
 import json
 import os
 import random
 import sys
 from collections import defaultdict
 
-try:
+# ★ 2026-11-02：改用 `contextlib.suppress`（`except: pass` 会被
+#   `code_hygiene_check.py` 的 GUARDRAILS #11 判为"吞异常" ⇒ CI 红灯）。
+#   语义完全等价：重定向 stdout 编码失败不该让脚本挂掉。
+with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

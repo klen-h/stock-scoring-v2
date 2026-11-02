@@ -37,13 +37,19 @@ import app.policy_bottom_watch as pbw           # noqa: E402
 def _dates(start: str, end: str) -> list:
     """可用交日集合：涨跌比表 ∪ 成交额表（两者谁有都算一天）。"""
     out = set()
+    # ★★ 2026-11-02：原来 `except Exception: pass` —— **这是本脚本最不该静默的地方**：
+    #   某张表查不到（不存在/无权限/超时）时，那个日期源会**静默贡献 0 天**，
+    #   于是"可用交集日"变小，回放结果看起来"这几天没数据"，实则是查询失败。
+    #   回放脚本的价值全在"区间是否完整"⇒ 必须把失败说出来（stderr，不影响退出码）。
     for sql in ("SELECT date FROM market_emotion_daily WHERE date >= %s AND date <= %s",
                 "SELECT DISTINCT date FROM intraday_path WHERE date >= %s AND date <= %s"):
         try:
             for r in db.fetch(sql, (start, end)):
                 out.add(str(r["date"])[:10])
-        except Exception:
-            pass
+        except Exception as e:
+            tbl = sql.split(" FROM ")[1].split()[0]
+            print(f"[pbw_replay] 警告：日期源 `{tbl}` 读取失败，"
+                  f"该表的日子**未计入**回放区间（{str(e)[:80]}）", file=sys.stderr)
     return sorted(d for d in out if d)
 
 

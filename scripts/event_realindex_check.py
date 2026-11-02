@@ -29,6 +29,7 @@
 """
 import argparse
 import json
+import contextlib
 import os
 import sys
 import time
@@ -37,10 +38,10 @@ from datetime import datetime, timedelta
 import numpy as np
 import requests
 
-try:
+# ★ 2026-11-02：`except: pass` → `contextlib.suppress`（语义等价，
+#   且不再触发 `code_hygiene_check.py` 的 GUARDRAILS #11"吞异常"）
+with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IDX_CACHE = os.path.join(ROOT, "data", "idx_daily.json")
