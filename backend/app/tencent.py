@@ -231,6 +231,20 @@ _KLINE_CACHE_SAVE_INTERVAL = 60  # 磁盘写入间隔（秒），避免频繁写
 _kline_cache_last_save = 0
 _kline_cache_dirty = False  # 标记是否有未持久化的变更
 
+# ══ ★★ 2026-11-02：K 线缓存的**容量上限**（Render 500MB 实例反复 OOM 的根因）══
+# 【实测成本】tracemalloc 量得：484 根日线 ≈ **0.13 MB**（每根约 280 字节，dict 结构）。
+#   ⇒ 300 只 × 1 种 count ≈ 39MB；300 只 × 3 种 ≈ 117MB；800 只 × 3 种 ≈ 312MB。
+# 【为什么会无限涨】`KLINE_CACHE[cache_key] = ...` 原来是**只写不淘汰**；
+#   `cache_key` 又含 `count`（同一只票 30/120/500/750 各存一份）；
+#   盘中 TTL 从 300s 降到 60s ⇒ 开盘后重拉密度×5，条目线性堆积。
+#   线上磁盘缓存文件曾达 **51MB**（≈1200 条 ≈ 120~150MB 常驻），
+#   叠加全市场刷新的新旧两份 dict、快照、涨停池，峰值直逼 500MB。
+# 【上限怎么定】按"总根数"而不是"条数"：条数无法区分 30 根和 750 根的条目，
+#   按根数才能直接换算成内存（30 万根 × 280B ≈ 84MB），且与环境变量可调。
+#   淘汰策略 = **最旧优先（按 ts）**，与 TTL 语义一致：旧的本来就要重拉。
+_KLINE_CACHE_MAX_BARS = int(os.environ.get("KLINE_CACHE_MAX_BARS") or 300000)
+_KLINE_BARS_TOTAL = [0]      # 用 list 装可变整数（避免 global 到处写）
+
 # ── WAF 全局限流状态 ──
 # 腾讯WAF触发后（HTTP 501），需要暂停所有K线请求一段时间。
 # _waf_blocked_until: 在此时间戳之前，所有K线请求直接返回缓存（或空）。
@@ -278,6 +292,33 @@ def _is_stale_kline(klines: list) -> bool:
     return d < ref
 
 
+def _evict_kline_cache(tag: str = "runtime") -> int:
+    """把 `KLINE_CACHE` 裁到 `_KLINE_CACHE_MAX_BARS` 以内：**最旧优先淘汰**。
+
+    ★ 为什么淘汰是安全的：这些条目本来就只是"防重复请求"的短期缓存，
+      TTL 一到同样要重拉 ⇒ 淘汰最旧 = 提前让它过期，**不会产生任何错误数据**
+      （下一次调用正常回源）。这与"释放别人的业务缓存"是两回事，
+      不违反 `mem_guard` 那条"绝不主动清理缓存"的纪律。
+    ★ 为什么按"总根数"而非"条数"：30 根与 750 根的成本差 25 倍，
+      按条数限额会出现"条数达标、内存却超标"。
+    """
+    if _KLINE_BARS_TOTAL[0] <= _KLINE_CACHE_MAX_BARS:
+        return 0
+    before_bars, before_n = _KLINE_BARS_TOTAL[0], len(KLINE_CACHE)
+    order = sorted(KLINE_CACHE, key=lambda k: (KLINE_CACHE.get(k) or {}).get("ts", 0))
+    n = 0
+    for k in order:
+        if _KLINE_BARS_TOTAL[0] <= _KLINE_CACHE_MAX_BARS or len(KLINE_CACHE) <= 1:
+            break
+        _KLINE_BARS_TOTAL[0] -= len((KLINE_CACHE.get(k) or {}).get("data") or [])
+        KLINE_CACHE.pop(k, None)
+        n += 1
+    print(f"[kline_cache] evict {n} entries ({tag}): "
+          f"{before_n}->{len(KLINE_CACHE)} 条  {before_bars}->{_KLINE_BARS_TOTAL[0]} 根 "
+          f"(~{_KLINE_BARS_TOTAL[0] * 0.00028:.0f}MB)")
+    return n
+
+
 def _load_kline_cache():
     """从磁盘加载K线缓存（启动时调用一次）"""
     global KLINE_CACHE
@@ -291,7 +332,11 @@ def _load_kline_cache():
                 k: v for k, v in data.items()
                 if now - v.get("ts", 0) < 86400
             }
-            print(f"[启动] K线缓存从磁盘恢复: {len(KLINE_CACHE)} 条")
+            _KLINE_BARS_TOTAL[0] = sum(len(v.get("data") or []) for v in KLINE_CACHE.values())
+            print(f"[启动] K线缓存从磁盘恢复: {len(KLINE_CACHE)} 条 / "
+                  f"{_KLINE_BARS_TOTAL[0]} 根 / 约 {_KLINE_BARS_TOTAL[0] * 0.00028:.0f} MB")
+            # ★ 2026-11-02：文件可能比上限还大（历史版本无上限地写盘）⇒ 恢复时就裁到预算内
+            _evict_kline_cache(tag="load")
         else:
             print("[启动] 无K线缓存文件，将从零开始")
     except Exception as e:
@@ -995,7 +1040,13 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
                 })
             # 只缓存有数据的结果（空结果不缓存，让下次能重试）
             if result:
+                # ★ 2026-11-02：**写入即记账**（覆盖同 key 时先扣旧根数，否则会虚高）
+                _old = KLINE_CACHE.get(cache_key)
+                if _old:
+                    _KLINE_BARS_TOTAL[0] -= len(_old.get("data") or [])
                 KLINE_CACHE[cache_key] = {"data": result, "ts": time.time()}
+                _KLINE_BARS_TOTAL[0] += len(result)
+                _evict_kline_cache()          # 超预算就淘汰最旧的（安全：等价提前过期）
                 _kline_cache_dirty = True
                 _save_kline_cache()  # 有写入间隔控制，不会每次都写
                 # ★ 顺手写回数据库 K 线缓存：供 WAF 冷却期兜底（详情页/持仓页）。
