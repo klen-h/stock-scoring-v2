@@ -56,6 +56,16 @@ _GATE_TTL = 1800.0
 #   注意：锁的持有时间 = 一次完整构建（数秒~数十秒），期间后来的调用者**排队**，
 #   但它们等到的多半是缓存命中（第二个检查），代价可接受。
 _GATE_BUILD_LOCK = threading.Lock()
+
+# ★★ 2026-11-02：**逐条**缓存 `{(code, date): (ts, gate)}`。
+#   为什么必须逐条：整批缓存（`_GATE_CACHE`）的 key 是**全部 (code,date) 的指纹**，
+#   盘中只要新增 1 个信号，指纹就变 ⇒ 整批 1018 只 × 750 根重读重算，
+#   表现为 CPU 与内存**同时**打到 100% 的尖峰（用户截图即此现象）。
+#   逐条之后：新增 1 个信号只算 1 只股票。
+#   单条只存 5 个小字段 ≈ 200B，2 万条 ≈ 4MB，可以放心常驻。
+_GATE_ENTRY_CACHE = {}
+_GATE_ENTRY_TTL = 1800.0     # 与整批缓存同口径（30 分钟）；盘中 phase 会变，不能更久
+_GATE_ENTRY_MAX = 20000
 _pack_warned = {"done": False}
 
 
@@ -360,9 +370,29 @@ def gate_states_for_signals(signals: list) -> dict:
 
 
 def _gate_states_build(signals: list, ck) -> dict:
+    # ★★ 2026-11-02（**CPU 与内存同时打到 100% 的真因**）：
+    #   本函数入口的旧实现是"按整批 signals 重建"——`_gate_cache_key()` 是
+    #   **整批 (code,date) 的指纹**，所以**只要盘中新出现一个信号，指纹就变**，
+    #   于是把 1018 只 × 750 根日线**全部重读一遍、全部重算一遍 chip/phase**。
+    #   盘中 `flash_loop` 每 5 分钟就可能带来新信号 ⇒ 每 5 分钟一次
+    #   "CPU 100% + 210MB" 的尖峰（用户看到的 CPU/内存同步抽顶就是它）。
+    #   ⇒ 改为**逐条增量**：命中 `_GATE_ENTRY_CACHE` 的 (code,date) 直接返回，
+    #     只对**没见过的那几条**加载日线并计算。新增 1 个信号 = 只算 1 只股票。
+    now = time.time()
+    out = {}
     by_code = {}
     for s in signals:
-        by_code.setdefault(s["code"], []).append(s["date"])
+        code, d = s["code"], s["date"]
+        e = _GATE_ENTRY_CACHE.get((str(code), str(d)[:10]))
+        if e and now - float(e[0] or 0) < _GATE_ENTRY_TTL:
+            out[(code, d)] = e[1]
+        else:
+            by_code.setdefault(code, []).append(d)
+    if not by_code:
+        # 全部命中：连资金流/股本都不用读（这两步各是一次远程/大字典）
+        _GATE_CACHE.update(ts=now, key=ck, val=out)
+        return dict(out)
+    computed = []
     # ★ 2026-10-21：本机资金流缓存优先（原来整表 8.7MB/次，见 `_load_gate_flow`）
     flow_map = _load_gate_flow()
     fs_map = _retry_read(_float_map, "流通股本 map")
@@ -377,7 +407,6 @@ def _gate_states_build(signals: list, ck) -> dict:
                       "full history from Supabase (~40MB)")   # ASCII（铁律⑥）
         except Exception:
             pass
-    out = {}
     # ★ 批量加载（单 IN 查询 + 6h 进程缓存，与战法回放路径共享）——
     #   逐股 load_prices 是 253 次独立查询，曾把绩效接口拖到 30s 超时
     # ★ 2026-09-13：**不要**给这里加 start 缩短历史！chip_series 的价格网格
@@ -411,11 +440,19 @@ def _gate_states_build(signals: list, ck) -> dict:
                 blocked.append(f"高位(price_pos {cm['price_pos']:.2f})")
             if pm["phase"] == "markup":
                 blocked.append("拉升段")
-            out[(code, d)] = {
+            rec = {
                 "ok": not blocked, "reason": "；".join(blocked),
                 "phase": pm["phase"], "price_pos": cm["price_pos"],
                 "winner_ratio": cm["winner_ratio"], "flow5": flow5,
             }
+            out[(code, d)] = rec
+            computed.append(((str(code), str(d)[:10]), rec))
+    # 写回逐条缓存（只写**本次真正算出来的**，命中项不刷新 ts —— 否则会无限续期）
+    for k, v in computed:
+        _GATE_ENTRY_CACHE[k] = (now, v)
+    if len(_GATE_ENTRY_CACHE) > _GATE_ENTRY_MAX:
+        for k in list(_GATE_ENTRY_CACHE)[: max(1, _GATE_ENTRY_MAX // 4)]:
+            _GATE_ENTRY_CACHE.pop(k, None)
     _GATE_CACHE.update(ts=time.time(), key=ck, val=out)
     return dict(out)
 
