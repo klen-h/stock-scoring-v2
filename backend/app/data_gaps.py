@@ -59,6 +59,15 @@ CHECK_TABLES = (
     ("sector_daily", "date", "板块快照 · 东财（常缺）", False),
 )
 
+# ══ ★★ 2026-11-02（用户拍板）：**只记录、不参与判定**的表 ══
+# 【为什么】`sector_daily`（东财板块快照）长期残缺是**已知常态**，前端「板块分化」
+#   早已改用 zzshare 的 `plate_daily_zz` ⇒ 它落后**不影响任何页面**。
+#   但它留在 `gaps` 里每天贡献一条 `gaps=1`，让"断档告警"这个**本该极稀有**的信号
+#   长期处于"永远有一条"的状态 —— 真断档混在里面，一眼看不出来。
+#   现在：落后只写进 `notes`（日志可见、可排查），**不进 `gaps`、不参与 ok 判定**。
+#   ⚠️ 如果哪天把它接回前端读取，必须先从这里移出去，否则会静默用旧数据当今天。
+WATCH_ONLY_TABLES = {"sector_daily"}
+
 _TABLE_READY = False
 
 
@@ -178,6 +187,11 @@ def check_gaps(max_lag: int = TOLERATED_LAG_DAYS) -> Dict:
         checked += 1
         lag = lag_trading_days(latest, expected)
         if lag > max_lag:
+            # ★ 2026-11-02：只记录不判定的表（见 `WATCH_ONLY_TABLES`）
+            if table in WATCH_ONLY_TABLES:
+                notes.append(f"{table}: 最新 {latest}，落后 {lag} 个交易日"
+                             f"（仅记录，不参与断档判定）")
+                continue
             gaps.append({"table": table, "label": label, "latest": latest,
                          "lag": lag, "critical": bool(critical)})
     crit = [g for g in gaps if g["critical"]]
