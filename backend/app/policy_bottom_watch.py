@@ -237,9 +237,16 @@ def _breadth_series(limit: int = 10, as_of: str = None) -> Tuple[List[Tuple[str,
 
 
 def _chinext_weekly(as_of: str = None) -> Dict:
-    """创业板指周线止跌：最近一周（含未走完）收盘 vs 上一周收盘。
+    """创业板指周线止跌：**只用已收盘的周**比较（周线转涨）。
 
-    checked = 本周收盘 > 上周收盘（即周线转涨）。周线由日 K 按 ISO 周聚合。
+    ★★ 2026-11-02（用户："因为今天是星期一，这样算是止跌吗？"）——**不算**。
+      旧实现对"最后一周"一视同仁，于是**周一**会拿"周一收盘 vs 上周五收盘"
+      当作"本周 +1.87%"，并打勾 ✅。那不是周线止跌，是**单日涨幅**：
+      一根阳线就能让一个"周线转涨"的清单项成立，属于**误判**（且方向偏乐观）。
+      ⇒ 现在先判断该周是否**已走完**（末根日 K 是不是周五）：
+        · 已走完  → 用它 vs 上一周（原语义）
+        · 未走完  → **跳过它**，用"上一个已收盘周 vs 再上一周"判定，
+                    并把未走完那周的进度写进 detail（供参考，不参与打勾）。
     ★ `as_of`：只取该日及之前的 K 线（回放历史日时不许看未来）。
     """
     try:
@@ -254,6 +261,9 @@ def _chinext_weekly(as_of: str = None) -> Dict:
         return {"checked": False, "insufficient": True,
                 "detail": f"日K不足（{len(bars)} 根，需 ≥15）"}
     weeks: List[Tuple[str, float]] = []
+    # ★ 2026-11-02：同时记下每周的**交易日数**与**末根日K的星期几**（1=周一…5=周五）
+    wdays: Dict[str, int] = {}
+    wlast_wd: Dict[str, int] = {}
     cur_key, cur_close = None, None
     for b in bars:
         d = str(b.get("date") or "")[:10]
@@ -268,20 +278,37 @@ def _chinext_weekly(as_of: str = None) -> Dict:
             cur_key, cur_close = key, float(b["close"])
         else:
             cur_close = float(b["close"])
+        wdays[key] = wdays.get(key, 0) + 1
+        wlast_wd[key] = dt.isoweekday()
     if cur_key is not None:
         weeks.append((cur_key, cur_close))
     if len(weeks) < 3:
         return {"checked": False, "insufficient": True, "detail": f"周线不足（{len(weeks)} 周）"}
-    (w0, c0), (w1, c1), (w2, c2) = weeks[-3], weeks[-2], weeks[-1]
-    chg_prev = (c1 / c0 - 1) * 100
-    chg_now = (c2 / c1 - 1) * 100
-    return {
-        "checked": c2 > c1,
-        "insufficient": False,
-        "detail": (f"本周 {w2} 收 {c2:.1f} vs 上周 {c1:.1f}（{chg_now:+.2f}%）；"
-                   f"再前周 {chg_prev:+.2f}%"),
-        "value": round(chg_now, 2),
-    }
+
+    # 最后一周是否**已走完**：末根日 K 落在周五（含节假日提前收盘的近似）
+    last_key = weeks[-1][0]
+    last_done = wlast_wd.get(last_key) == 5
+    if last_done:
+        (w0, c0), (w1, c1), (w2, c2) = weeks[-3], weeks[-2], weeks[-1]
+        chg_prev = (c1 / c0 - 1) * 100
+        chg_now = (c2 / c1 - 1) * 100
+        detail = (f"{w2} 收 {c2:.1f} vs {w1} 收 {c1:.1f}（{chg_now:+.2f}%）；"
+                  f"再前周 {chg_prev:+.2f}%")
+        return {"checked": c2 > c1, "insufficient": False,
+                "detail": detail, "value": round(chg_now, 2)}
+
+    # 最后一周未走完（例如周一/周二）：**不参与判定**，退到上一个已收盘周
+    (w0, c0), (w1, c1) = weeks[-3], weeks[-2]
+    chg_judged = (c1 / c0 - 1) * 100
+    pend_days = wdays.get(last_key, 0)
+    pend_chg = (weeks[-1][1] / c1 - 1) * 100
+    detail = (f"{w1} 收 {c1:.1f} vs {w0} 收 {c0:.1f}（{chg_judged:+.2f}%，已收盘周）；"
+              f"{last_key} 未走完（{pend_days} 个交易日，暂 {pend_chg:+.2f}%，"
+              f"仅供参考不判定）")
+    return {"checked": c1 > c0, "insufficient": False,
+            "detail": detail, "value": round(chg_judged, 2),
+            "pending_week": last_key, "pending_days": pend_days,
+            "pending_chg": round(pend_chg, 2)}
 
 
 def _bank_catchdown(as_of: str = None) -> Dict:

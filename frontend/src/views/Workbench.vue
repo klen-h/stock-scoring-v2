@@ -4128,6 +4128,20 @@ const wsErr = ref('')
 const wsSel = ref('')
 const wsRows = computed(() => (wsDay.value && wsDay.value.rows) || [])
 const wsPick = computed(() => wsRows.value.find(x => x.slot === wsSel.value) || null)
+// ★★ 2026-11-02（用户："盘中变化的 tab 有新的时间点要自动选中最新的"）：
+//   原来只在 `wsSel` 为空时**选一次**（`if (!wsSel.value)`）⇒ 盘中 5 分钟一刷，
+//   出了新档也不会跳过去，用户必须手动点，而新档恰恰是最该看的那一档。
+//   现在记住"见过的档位"，一旦出现**没见过**的档，就自动跳到其中最新的一档；
+//   用户手动点过旧档也会被新档顶掉 —— 这是用户明确要的行为。
+const wsSeen = { slots: new Set() }
+/** 在给定列表里挑"最该看"的一档：有方向的最新档 → 有料的最新档 → 最新档 */
+function wsPickNewest(list) {
+  const rows = list || []
+  const dir = rows.filter(x => x.verdict === 'positive' || x.verdict === 'negative')
+  const any = rows.filter(x => x.worth)
+  const pick = dir[dir.length - 1] || any[any.length - 1] || rows[rows.length - 1]
+  return pick ? pick.slot : ''
+}
 
 // ★ 2026-10-23：观察器合并后，4 段折叠状态用 localStorage 记忆（默认全收起）
 const OBS_KEY = 'wb_obs_open'
@@ -4286,13 +4300,13 @@ async function loadWorkbenchScan() {
     ])
     wsDay.value = d.data || null
     wsSummary.value = s.data || null
-    // 默认选中**最后一个"有方向"的档**（正/反影响优先，其次中性变化，最后任意一档）
-    if (!wsSel.value && wsRows.value.length) {
-      const dir = wsRows.value.filter(x => x.verdict === 'positive' || x.verdict === 'negative')
-      const any = wsRows.value.filter(x => x.worth)
-      wsSel.value = ((dir[dir.length - 1] || any[any.length - 1]
-        || wsRows.value[wsRows.value.length - 1]) || {}).slot
-    }
+    // 默认选中**最后一个"有方向"的档**（正/反影响优先，其次中性变化，最后任意一档）；
+    // ★ 2026-11-02：出现**新的时间档**时也自动切过去（见 `wsSeen` 注释）。
+    const _rows = wsRows.value || []
+    const _fresh = _rows.filter(r => !wsSeen.slots.has(r.slot))
+    _rows.forEach(r => wsSeen.slots.add(r.slot))
+    if (!wsSel.value) wsSel.value = wsPickNewest(_rows)
+    else if (_fresh.length) wsSel.value = wsPickNewest(_fresh)
   } catch (e) {
     wsErr.value = '盘中变化数据加载失败（接口需登录）'
     wsDay.value = null
@@ -4491,6 +4505,7 @@ async function loadScenario() {
 }
 watch(selectedDate, () => {
   wsSel.value = ''
+  wsSeen.slots.clear()      // ★ 2026-11-02：换日期后"见过的档位"重来，否则新日期不自动选中
   loadWorkbenchScan()
   loadRiskWatch()
   loadScenario()
