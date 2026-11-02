@@ -240,7 +240,13 @@ def run_gap_check(push: bool = True, dry_run: bool = False) -> str:
     # ⚠️ 方向别写反：`res["ok"] == True` 的语义是"**没有关键表**断档" ⇒
     #    此刻若仍有 gap，那就是"只有参考级表"（非关键），标注一下便于读日志。
     if res["ok"]:
-        head += " (non-critical only)"
+        # ★★ 2026-11-02（**告警噪音**）：原来无论是否关键表，只要有 gap 就 `force=True`
+        #   推企微（穿透业务开关）⇒ 实测今天推的是 `sector_daily`（东财板块快照，
+        #   标着「参考·不告警」，且板块分化早已改用 zzshare `plate_daily_zz`）。
+        #   一条自己标注"不告警"的项，却每天用 ⚠️ 强提醒推出去 —— 久了就没人看，
+        #   真断档反而被淹没。
+        #   ⇒ **只有关键表（critical）断档才推送**；非关键只写日志留痕。
+        return head + " (non-critical only, not pushed)"
     if dry_run or not push:
         return head + " push=off"
     _ensure_log()

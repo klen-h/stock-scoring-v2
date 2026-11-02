@@ -96,6 +96,10 @@ def quintile_table(rows, h: int):
 
 
 _META_NAME = "subfactor_ic_latest.json"   # 机器可读基线（落库、覆盖式）—— 供下轮对比
+# ★★ 2026-11-02：**IC 实质门槛**。|IC| 小于它视为"无预测力"，不构成信号。
+#   起因：`主力净流入` IC = **-0.004**（统计上等于 0）触发「倒U基础动摇 ⇒ 背书失效」
+#   并 force 推企微。0 附近的符号随机翻转 ⇒ 这条告警几乎每轮都报，真问题被淹没。
+_IC_MATERIAL = 0.01
 _TAG = "subfactor_ic"                     # 落库 tag（日批的「月度幂等」判据也用它）
 
 
@@ -132,16 +136,22 @@ def _review(verdicts, prev) -> tuple:
     neg_prev = [s for s in common if pv[s] < 0]
     neg_now = [s for s in neg_prev if cur[s] < 0]
     alerts = []
-    faded = [s for s in neg_prev if cur[s] >= 0]
+    # ★★ 2026-11-02（**告警噪音**）：三条判据原来只看**符号**，没有**幅度**门槛。
+    #   实测：`主力净流入` IC = **-0.004**（统计上等于 0）也触发
+    #   「倒U基础动摇 ⇒ 背书失效」并 force 推企微。IC 在 0 附近符号随机翻转
+    #   ⇒ 这条规则**几乎每轮都报**，真告警被淹没（正是本项目反复强调的告警疲劳）。
+    #   ⇒ 统一要求 |IC| ≥ `_IC_MATERIAL`（0.01）才算"实质性"，否则视为无预测力。
+    faded = [s for s in neg_prev if cur[s] >= _IC_MATERIAL]
     if faded:
         alerts.append(f"负 IC 复现度下降：{'、'.join(faded)} 由负转正"
                       f"（{len(neg_now)}/{len(neg_prev)} 项复现）"
                       "—— 反转效应可能减弱，复核体检报告 §建议1 的技术面降权结论")
     for s in common:
-        if abs(pv[s]) >= 0.04 and pv[s] * cur[s] < 0 and s not in faded:
+        if (abs(pv[s]) >= 0.04 and pv[s] * cur[s] < 0
+                and abs(cur[s]) >= _IC_MATERIAL and s not in faded):
             alerts.append(f"预测力方向翻转：{s} 上轮 {pv[s]:+.3f} → 本轮 {cur[s]:+.3f}")
     for s in ("主力净流入", "主力极端流入(散户陷阱降分)"):
-        if s in pv and cur.get(s, 0) < 0:
+        if s in pv and cur.get(s, 0) <= -_IC_MATERIAL:
             alerts.append(f"倒U基础动摇：{s} IC 转负（{cur[s]:+.3f}）"
                           "—— 09-13 倒U改造的背书失效，需复检曲线")
     repro = round(len(neg_now) / len(neg_prev) * 100) if neg_prev else None
