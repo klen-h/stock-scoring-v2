@@ -51,6 +51,11 @@ _fs_cache = {"ts": 0.0, "map": None}
 #      的 `GROUP BY code`，且**不读写**整表磁盘缓存 —— 实测一次 **444 秒**。
 _GATE_CACHE = {"ts": 0.0, "key": None, "val": None}
 _GATE_TTL = 1800.0
+# ★★ 2026-11-02（OOM）：构建闸门状态是**单实例级重活**（≈1018 只 × 750 根日线），
+#   而调度器里有 3 个循环会并发调它 ⇒ 用一把锁把它们串起来，峰值只保留一份。
+#   注意：锁的持有时间 = 一次完整构建（数秒~数十秒），期间后来的调用者**排队**，
+#   但它们等到的多半是缓存命中（第二个检查），代价可接受。
+_GATE_BUILD_LOCK = threading.Lock()
 _pack_warned = {"done": False}
 
 
@@ -154,9 +159,17 @@ def _load_gate_bars(by_code: dict) -> dict:
                 print("[gate] ohlc topped up %d rows (cache %s, signal %s)"
                       % (added, cmax, latest))           # ASCII（铁律⑥）
             if cmax >= latest:
-                return {c: [dict(b, date=_norm_date(b.get("date"), as_str))
-                            for b in bars]
-                        for c, bars in cached.items()}
+                # ★★ 2026-11-02（**OOM 直因**）：原来是
+                #   `{c: [dict(b, date=...) for b in bars] for c, bars in cached.items()}`
+                #   —— **整份再复制一遍**。1018 只 × 750 根 ≈ 76 万根 bar，
+                #   每根 dict ≈ 280B ⇒ 一份 ≈ 210MB，复制后**同时存在 420MB**。
+                #   而这份数据**不在任何模块级缓存里**（是正在运行函数的局部变量），
+                #   所以 `memory_probe` 显示"具名缓存只有 45MB、未归类却 401MB"。
+                #   `ohlc_for()` 每次调用都返回**全新** dict ⇒ 可以放心原地归一化。
+                for _c, _bars in cached.items():
+                    for _b in _bars:
+                        _b["date"] = _norm_date(_b.get("date"), as_str)
+                return cached
             print("[gate] local ohlc still stale (%s < %s) -> DB fallback"
                   % (cmax, latest))                      # ASCII（铁律⑥）
     except Exception as e:
@@ -325,14 +338,28 @@ def gate_states_for_signals(signals: list) -> dict:
     批量还原信号日当日的主力过滤状态（无前视，供白名单重算/回测复用）。
     signals: [{code, date, ...}]；返回 {(code, date): gate_dict}（同 strategy_gate 结构）。
     ★ 30 分钟进程缓存（见文件头 `_GATE_CACHE` 说明）：同一批 signals 只算一次。
+
+    ★★ 2026-11-02（Render 连爆 8 次 OOM 的直接原因）：**单飞**。
+      一次构建要把 1018 只 × 750 根日线读进内存（≈210MB），而调度器的
+      `workbench_scan_loop` / `portfolio_radar_warm_loop` / `score_snapshot_loop`
+      会**并发**调用本函数 ⇒ N 个线程各建一份，512MB 一击即穿。
+      实测 11:44 那一刻：线程 23（全天最高）、RSS 447MB、未归类 401MB，
+      而具名缓存只有 45.7MB —— 这些数据是**函数局部变量**，缓存探针看不见。
+      加锁后并发退化为"排队 + 命中缓存"，峰值只剩一份。
     """
     if not signals:
         return {}
     ck = _gate_cache_key(signals)
-    now = time.time()
-    if _GATE_CACHE["key"] == ck and now - _GATE_CACHE["ts"] < _GATE_TTL:
+    if _GATE_CACHE["key"] == ck and time.time() - _GATE_CACHE["ts"] < _GATE_TTL:
         return dict(_GATE_CACHE["val"])
+    with _GATE_BUILD_LOCK:
+        # 等锁期间别人可能已经算完 ⇒ 再看一次，避免白跑一遍 210MB
+        if _GATE_CACHE["key"] == ck and time.time() - _GATE_CACHE["ts"] < _GATE_TTL:
+            return dict(_GATE_CACHE["val"])
+        return _gate_states_build(signals, ck)
 
+
+def _gate_states_build(signals: list, ck) -> dict:
     by_code = {}
     for s in signals:
         by_code.setdefault(s["code"], []).append(s["date"])

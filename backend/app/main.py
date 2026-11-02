@@ -72,15 +72,20 @@ async def lifespan(app: FastAPI):
     import anyio.to_thread
     anyio.to_thread.current_default_thread_limiter().total_tokens = 8
 
-    # ★★ 2026-11-02（**今天连爆 8 次**，memory_probe 实证）：
+    # ★★ 2026-11-02（**今天连爆 8 次**，Render 日志 + memory_probe 双证据）：
     #   上面那条只封了 **anyio**（FastAPI 同步端点走的是它），
     #   而**调度器里上百处 `asyncio.to_thread(...)` 走的是 loop 的默认执行器**，
     #   默认 `ThreadPoolExecutor(max_workers=min(32, cpu+4))` ⇒ **完全没有封顶**。
     #   【今天的证据】`memory_probe` 全天线程数与 RSS 一比一：
     #     常态 8~17 线程 / RSS 205~230MB / 未归类 165~190MB；
     #     **11:44:29 爆表那一刻 = 23 线程（全天最高）/ RSS 446.8MB / 未归类 401MB**，
-    #     而具名缓存只有 45.7MB ⇒ 涨的全是"每线程一块 arena"的堆碎片（不归还 OS）。
-    #   ⇒ 把**默认执行器**也换成小池，等于给调度器并发上了同一个闸。
+    #     而具名缓存只有 45.7MB。
+    #   【为什么不是 arena】用户已确认 `MALLOC_ARENA_MAX=2` **确实生效** ⇒ arena 最多 2 块，
+    #     不可能"每线程一块"。线程数在这里只是**并发重活的计数器**：23 个线程 =
+    #     23 个任务同时在跑，而其中 `mainforce.gate.gate_states_for_signals()`
+    #     一次就要把 1018 只 × 750 根日线读进内存（≈210MB，且**不在任何缓存里**）。
+    #     N 个线程各建一份 ⇒ 512MB 一击即穿。
+    #   ⇒ 本处分两刀：这里封默认执行器（并发上限），`gate.py` 侧加单飞锁 + 去掉整份复制。
     #   【代价】启动预热被串行化、首批页面稍慢；但 CPU 只有 0.1~0.5 核，
     #     并行本来就是假的，而 OOM 会整站重启（更慢）。
     workers = int(os.environ.get("ASYNCIO_POOL_WORKERS") or 6)
