@@ -927,6 +927,12 @@ def memory_diag(types: int = 1, top: int = 15, history: int = 0,
             "limit_mb": _MEM_LIMIT_MB,
             "used_pct": used_pct,
             "threads": threading.active_count(),
+            # ★ 2026-11-02：arena 碎片是"缓存只有 45MB、RSS 却 447MB"的元凶，
+            #   而这个开关**只能靠环境变量在进程启动前注入**，代码里设无效。
+            #   render.yaml 只是清单 ⇒ 必须能看到**实际生效值**，
+            #   否则每次只能靠猜"控制台到底配了没有"。
+            "malloc_arena_max": os.environ.get("MALLOC_ARENA_MAX"),
+            "asyncio_pool_workers": os.environ.get("ASYNCIO_POOL_WORKERS") or 6,
         },
         "python": {
             "version": sys.version.split()[0],

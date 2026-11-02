@@ -71,6 +71,38 @@ async def lifespan(app: FastAPI):
     #   【配套】Render 控制台加 `MALLOC_ARENA_MAX=2`（render.yaml 已登记，双保险）。
     import anyio.to_thread
     anyio.to_thread.current_default_thread_limiter().total_tokens = 8
+
+    # ★★ 2026-11-02（**今天连爆 8 次**，memory_probe 实证）：
+    #   上面那条只封了 **anyio**（FastAPI 同步端点走的是它），
+    #   而**调度器里上百处 `asyncio.to_thread(...)` 走的是 loop 的默认执行器**，
+    #   默认 `ThreadPoolExecutor(max_workers=min(32, cpu+4))` ⇒ **完全没有封顶**。
+    #   【今天的证据】`memory_probe` 全天线程数与 RSS 一比一：
+    #     常态 8~17 线程 / RSS 205~230MB / 未归类 165~190MB；
+    #     **11:44:29 爆表那一刻 = 23 线程（全天最高）/ RSS 446.8MB / 未归类 401MB**，
+    #     而具名缓存只有 45.7MB ⇒ 涨的全是"每线程一块 arena"的堆碎片（不归还 OS）。
+    #   ⇒ 把**默认执行器**也换成小池，等于给调度器并发上了同一个闸。
+    #   【代价】启动预热被串行化、首批页面稍慢；但 CPU 只有 0.1~0.5 核，
+    #     并行本来就是假的，而 OOM 会整站重启（更慢）。
+    workers = int(os.environ.get("ASYNCIO_POOL_WORKERS") or 6)
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=workers, thread_name_prefix="bg"))
+        print(f"[main] 默认线程池封顶 {workers}（asyncio.to_thread 并发闸）")
+    except Exception as e:
+        print(f"[main] 设置默认线程池失败（不影响启动）: {e}")
+
+    # ★ 2026-11-02：`MALLOC_ARENA_MAX` 是"arena 碎片"的对症开关，但它必须
+    #   **在进程启动前**由环境变量注入（代码里设无效）。render.yaml 只是清单，
+    #   真正生效要看 Render 控制台有没有配 ⇒ 启动时把**实际生效值**打出来，
+    #   否则永远在猜"到底配了没有"。
+    _arena = os.environ.get("MALLOC_ARENA_MAX")
+    if _arena:
+        print(f"[main] MALLOC_ARENA_MAX={_arena}（已生效）")
+    else:
+        print("[main] WARN MALLOC_ARENA_MAX 未设置：glibc 会按 CPU 数开多个 arena，"
+              "多线程下内存碎片不归还 OS ⇒ 建议在 Render 控制台设为 2")
+
     # 初始化数据库表结构
     from app.database import db
     db.init_tables()
