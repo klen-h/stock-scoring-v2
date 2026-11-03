@@ -71,15 +71,42 @@ fi
 # ── 4. 前端（build:server）───────────────────────────────────────────────
 if [ "$DO_FRONT" = 1 ]; then
   if [ -d "$APP_DIR/frontend" ]; then
+    # ★ 2026-11-04：宝塔装的 node（如 `/www/server/nodejs/v22.1.0/bin`）**未必在 PATH 里**，
+    #   直接调 `npm` 会 `command not found`。这里自动补最新版本到 PATH（`sort -V` 取最高）。
+    if ! command -v npm >/dev/null 2>&1; then
+      _ndir="$(ls -1d /www/server/nodejs/*/bin 2>/dev/null | sort -V | tail -1 || true)"
+      if [ -n "${_ndir:-}" ] && [ -x "$_ndir/npm" ]; then
+        export PATH="$_ndir:$PATH"
+        log "PATH 无 npm，已自动加入：$_ndir"
+      else
+        warn "找不到 npm（尝试过 PATH 与 /www/server/nodejs/*/bin）"
+      fi
+    fi
     AV="$(mem_avail_mb)"
     log "可用内存 ${AV}MB"
     if [ "$AV" -gt 0 ] && [ "$AV" -lt 400 ]; then
       warn "内存紧张：vite build 可能被 OOM 杀掉。建议改用 --skip-frontend，在本地构建后传 dist/"
     fi
     cd "$APP_DIR/frontend"
+    # ★★ 2026-11-04（实测报错 `EACCES mkdir /www/server/nodejs/cache/_cacache`）：
+    #   宝塔的 Node 把 npm **全局缓存**放在 `/www/server/nodejs/cache`，属主是 root
+    #   ⇒ 普通用户跑 npm 直接 errno -13 失败。
+    #   解法：**只给本项目指定缓存目录**（`npm_config_cache` 环境变量，只在本脚本内生效，
+    #   不写 `.npmrc`、不改宝塔全局目录）—— 全局目录是同机所有站点共用的，别去动它。
+    export npm_config_cache="$APP_DIR/.npm-cache"
+    mkdir -p "$npm_config_cache"
+    # ⚠️ 同源但更隐蔽的问题：之前若用 `sudo npm` 跑过，`node_modules` 会变成 root 拥有，
+    #   之后普通用户永远写不进去（且报错同样是 EACCES，很容易误判成同一个原因）。
+    #   这里提前拦下，并给出**可直接复制**的修复命令。
+    if [ ! -w "$APP_DIR/frontend" ]; then
+      die "frontend/ 对当前用户（$(id -un)）不可写。请改用项目属主执行，或：sudo chown -R $(id -u):$(id -g) $APP_DIR/frontend"
+    fi
+    if [ -d node_modules ] && [ ! -w node_modules ]; then
+      die "node_modules 属主不是 $(id -un)（多半之前用 sudo npm 跑过）。修复：sudo chown -R $(id -u):$(id -g) $APP_DIR/frontend/node_modules"
+    fi
     if [ ! -d node_modules ]; then
-      log "首次构建，安装前端依赖"
-      npm ci --no-audit --no-fund || npm install --no-audit --no-fund || die "前端依赖安装失败"
+      log "首次构建，安装前端依赖（缓存 → .npm-cache）"
+      npm ci --no-audit --no-fund || npm install --no-audit --no-fund || die "前端依赖安装失败（装不上先看上面的权限提示）"
     fi
     log "构建前端（build:server → base=/  API=/api）"
     npm run build:server || die "前端构建失败"
