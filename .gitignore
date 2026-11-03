@@ -2,6 +2,11 @@
 __pycache__/
 *.pyc
 
+# 虚拟环境（2026-11-03：自有服务器改用 venv 部署，建在 backend/.venv）
+#   不加这条的话，服务器上 git pull 后 git status 会一直脏
+.venv/
+venv/
+
 # 排查用的临时脚手架：跑完即删，绝不入库
 #   2026-09-18：bd03f36 曾误把 scripts/_tmp_sql_probe.py / _tmp_two_items.py 提交进去
 scripts/_tmp_*
