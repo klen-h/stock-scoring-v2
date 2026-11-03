@@ -7,6 +7,9 @@ __pycache__/
 .venv/
 venv/
 
+# 前端产物打包（2026-11-03：本地 build 后压成 zip 上传到服务器，产物不入库）
+frontend-dist.zip
+
 # 排查用的临时脚手架：跑完即删，绝不入库
 #   2026-09-18：bd03f36 曾误把 scripts/_tmp_sql_probe.py / _tmp_two_items.py 提交进去
 scripts/_tmp_*
