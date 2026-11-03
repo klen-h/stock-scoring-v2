@@ -1146,7 +1146,10 @@ def format_macro_snapshot(panel: dict, history: list) -> str:
 
     add("布伦特原油", "brent", "brent")
     add("纽约原油", "wti", "wti")
-    add("COMEX黄金", "gold", "gold")
+    # ★ 2026-11-04：`gold` 的数据源已从 COMEX **期货** 换成东财 `122.XAU`（伦敦金**现货**）
+    #   ⇒ label 必须跟着改。原来写"COMEX黄金"会让模型按期货口径推理（基差/展期），
+    #   而拿到的是现货价 —— 两者差 8 美元左右，模型据此算"溢价"就会得出错误结论。
+    add("黄金现货(伦敦金)", "gold", "gold")
     add("COMEX白银", "silver", "silver")
     add("COMEX铜", "copper", "copper")
     d = panel.get("_derived", {})
@@ -1520,8 +1523,7 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 【核心能源与避险】
 - 布伦特原油: {_fmt_item(g('brent') or {})}
 - 纽约原油: {_fmt_item(g('wti') or {})}
-- COMEX黄金: {_fmt_item(g('gold') or {})}
-- 黄金现货: {g('gold_spot', {}).get('price', '未知')}
+- 黄金现货(伦敦金): {_fmt_item(g('gold') or {})}
 {cb_gold_line_text}
 {treasury_line_text}
 

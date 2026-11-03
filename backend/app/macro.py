@@ -90,8 +90,11 @@ _SINA_SYMBOLS = [
 _PANEL_MAP = {
     "brent":    ("hf_OIL", "hf"),
     "wti":      ("hf_CL", "hf"),
-    "gold":     ("hf_GC", "hf"),        # COMEX 金期货（面板主金价，其余金来源只做参考）
-    "gold_spot": ("hf_XAU", "hf"),      # 伦敦金现货
+    # ⚠️ `gold` / `gold_spot` **2026-11-04 已移出本表**：用户要求"黄金改用东财 122.XAU（现货）"。
+    #   为什么必须移出而不是"留作新浪源、东财兜底"：新浪恢复后 `hf_GC`（COMEX **期货** 3938）
+    #   会重新覆盖 `122.XAU`（**现货** 3930）⇒ 同一个键在两种口径间来回跳，
+    #   而面板上只显示"黄金"三个字 —— 没人看得出今天这个是期货还是现货。
+    #   ⇒ 见 `_EXTRA_PANEL_KEYS`：彻底交给东财单一来源。
     "silver":   ("hf_SI", "hf"),
     "copper":   ("hf_HG", "hf"),
     "nasdaq":   ("hf_NQ", "hf"),
@@ -184,10 +187,12 @@ def _fetch_sina(extra: Optional[list] = None) -> dict:
 # 【红线】宁可留 `—`，也不拿"看起来差不多"的数字顶上：
 #   用 WTI 冒充布伦特、用国债期货价（106.5）冒充收益率（4.92%）都是错的。
 _TX_MAP = {
-    "brent": "hf_OIL", "wti": "hf_CL", "gold": "hf_GC",
+    "brent": "hf_OIL", "wti": "hf_CL",
     # 腾讯与新浪的 `hf_*` 是**同一套代码**（实测 hf_OIL/hf_CL/hf_GC 均可）
     #   ⇒ 新浪被 IP 封后，这几个贵金属/有色品种可原样平移过来。
-    "gold_spot": "hf_XAU", "silver": "hf_SI", "copper": "hf_HG",
+    # ⚠️ 唯独 **gold / gold_spot 不放这里**：腾讯对应的是 COMEX 期货 / 另一路现货，
+    #   与用户指定的 `122.XAU` 口径不同（详见 `_PANEL_MAP` 上方注释）。
+    "silver": "hf_SI", "copper": "hf_HG",
     "nasdaq": "hf_NQ",             # 日经/纳指**期货**（若腾讯有则不必走东财）
     "nikkei": "hf_NK",
     "us_dji": "usDJI", "us_ixic": "usIXIC", "us_spx": "us.INX",
@@ -214,11 +219,20 @@ _EM_MAP = {
     "us2y": "171.US2Y",
     "us30y": "171.US30Y",
     "cn10y": "171.CN10Y",          # 中国10年期国债收益率
+    # ★★ 2026-11-04（用户给出 `quote.eastmoney.com/q/122.XAU.html`，要求"替换现有黄金"）：
+    #   **`122` 是贵金属市场号**，`XAU` = 伦敦金现货（f14 名称"黄金/美元"）。
+    #   实测 3930.17 / -0.42% / 昨收 3946.63，与 `hf_XAU` 基本一致，但是**实时且稳定**。
+    #   用它替掉原来的 `hf_GC`（COMEX **期货**）：两者差 8 美元左右，
+    #   而面板上只写"黄金"⇒ 混用会让历史对比失真（期货含基差/展期）。
+    "gold": "122.XAU",             # 伦敦金现货（面板"黄金"的唯一来源）
+    "gold_spot": "122.XAU",        # 别名：与 gold 同源同值，保留键名兼容旧调用
 }
 
 # 新浪**完全没有**的面板项（不能塞进 `_PANEL_MAP`，否则等于伪造新浪代码）。
 # 这些键只由备用源提供，但仍要参与"缺失探测"⇒ `get_panel` 里单独并入。
-_EXTRA_PANEL_KEYS = ("kospi",)
+# ★ 2026-11-04：`gold`/`gold_spot` 也进来了 —— 见 `_PANEL_MAP` 里那段注释，
+#   目的是**单一来源**，避免新浪恢复后期货价把现货价顶掉。
+_EXTRA_PANEL_KEYS = ("kospi", "gold", "gold_spot")
 # ⚠️ 只取 us10y：它是**唯一进规则判定**的收益率（磨底清单「10Y < 5.0%」）。
 #   us2y/us30y 只用于展示，为它们多发两次可能超时的请求不值得。
 _FRED_MAP = {"us10y": "DGS10"}
@@ -587,6 +601,12 @@ def get_macro_panel() -> dict:
 
     # ── 衍生指标 ──
     derived = {}
+    # ⚠️ 2026-11-04 口径提示：`gold` 现在是**伦敦金现货**（122.XAU），
+    #   而 `silver` 仍是 COMEX **期货**（hf_SI）。两者差 ~0.4%，
+    #   ⇒ 金银比的**绝对水位**会有同等偏差；但本指标进规则用的是
+    #     `goldsilver_change_pct`（**日变化率**，两端同向时偏差抵消），
+    #     阈值 ±1%，影响可忽略。若将来要给金银比设"绝对水位"规则，
+    #     必须先把白银也换成现货（`122.XAG`），否则口径不一致。
     g, s_ = panel.get("gold"), panel.get("silver")
     if g and s_ and s_["price"] > 0:
         r_now = g["price"] / s_["price"]

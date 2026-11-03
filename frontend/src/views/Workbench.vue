@@ -12,13 +12,18 @@
       <!-- ★ 2026-09-25 用户："底部的系统状态移到顶部的日期的下面，把简要信息展示一行，
            点击再悬浮展示内容" ⇒ 日期正下方常驻一行摘要；点击就地弹出**浮层**
            （absolute 定位，不再用底部 `<details>` 撑开页面），点浮层外关闭。 -->
-      <div class="relative flex flex-col gap-1">
-        <label class="flex items-center gap-2">
-          <span class="text-muted text-xs">日期</span>
+      <div class="relative flex flex-col gap-0.5">
+        <!-- ★ 2026-11-04（用户："位置不够了…越简单越好"）：
+             顶栏一加黄金就 12 项，日期这里最占宽 ⇒ 去掉年份、去掉"日期"二字：
+               `日期 [今天 2026-11-03]`（13 字宽） → `[今天 11-03]`（7 字宽）
+             ⚠️ 年份不丢：完整日期在 `<option>` 的 `title` 与选中项的悬浮提示里；
+               跨年回放时才会觉得缺，而那种场景极少（下拉一展开就是完整日期）。 -->
+        <label class="flex items-center gap-1.5">
           <select v-model="selectedDate"
-                  class="bg-card border border-border rounded px-2 py-1 text-xs">
-            <option v-for="d in dayList" :key="d.date" :value="d.date">
-              {{ d.date === todayStr ? '今天 ' + d.date : d.date }}
+                  :title="selectedDate"
+                  class="bg-card border border-border rounded px-1.5 py-0.5 text-[11px] leading-tight">
+            <option v-for="d in dayList" :key="d.date" :value="d.date" :title="d.date">
+              {{ d.date === todayStr ? '今天 ' + d.date.slice(5) : d.date.slice(5) }}
             </option>
           </select>
         </label>
@@ -29,17 +34,21 @@
              ⚠️ 敢缩的前提：**完整解释在点击后的浮层里**（`statusHtml`，信息一点没丢）；
                内存**只在 ≥75% 时**才亮出来（平时不是关注点，且它最易波动）；
                全部字段的含义见 `title`。 -->
-        <button class="flex items-center gap-1.5 text-[10px] text-muted hover:text-gray-300 w-fit"
+        <!-- ★ 2026-11-04（用户贴出 `17/17 新鲜 · 库79.4% · 00:35 ▾`，要求"越简单越好"）：
+             再砍两个字符口径 —— 「库」字去掉（圆点+百分比的组合只有它是容量）、
+             百分比取整（79.4→79，容量看一位小数没有意义，而它每 10 分钟变一次）。
+             含义全部保留在 `title`（悬浮即见"73% = 库体积占用"）。 -->
+        <button class="flex items-center gap-1 text-[10px] text-muted hover:text-gray-300 w-fit"
                 :title="statusTitle"
                 @click.stop="statusOpen = !statusOpen">
-          <span class="inline-block w-2 h-2 rounded-full"
+          <span class="inline-block w-1.5 h-1.5 rounded-full"
                 :class="freshnessOk ? 'bg-emerald-500' : 'bg-amber-500'"></span>
           <span v-if="statusBrief.summary">{{ statusBrief.summary }}</span>
           <span v-else>系统状态</span>
-          <span v-if="statusBrief.dbPct != null">· 库{{ statusBrief.dbPct }}%</span>
-          <span v-if="memWarn" class="text-amber-400">· 内存{{ statusBrief.memMb }}MB</span>
+          <span v-if="statusBrief.dbPct != null">· {{ Math.round(statusBrief.dbPct) }}%</span>
+          <span v-if="memWarn" class="text-amber-400">· {{ statusBrief.memMb }}MB</span>
           <span v-if="statusTime">· {{ statusTime }}</span>
-          <span>▾</span>
+          <span class="text-[9px] opacity-70">▾</span>
         </button>
         <!-- ★ 2026-09-29：与「宏观」浮层同款处理 —— 遮罩**压暗**（原来完全透明 ⇒ 没有层次线索），
              但压得轻一些（这是个小组件，不是大对话框）。 -->
@@ -59,7 +68,10 @@
 
       <!-- ★ 2026-09-25 用户要求：竖排标签样式（名称/价格/涨跌 上下三行），居中排开空间足够；
            细分隔线区分 A股与外盘 -->
-      <div class="flex-1 min-w-[560px] flex items-center justify-center gap-3 flex-wrap">
+      <!-- ★ 2026-11-04：外盘从 11 项增到 12 项（加了黄金）⇒ 间距收紧一档
+           （`gap-3→gap-2`、每项 `px-1.5→px-1`），12 项仍能挤在一行，
+           不会把右侧「情绪/市况」挤到下一行。 -->
+      <div class="flex-1 min-w-[420px] flex items-center justify-center gap-2 flex-wrap">
         <!-- ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
              指数整块可点 → **雪球指数页**（新标签，与全站"外链一律新标签"惯例一致）。
              用 `<component :is>` 而非直接写 `<a>`：拿不到 `prefix` 时（老数据/降级）
@@ -79,7 +91,7 @@
           </div>
         </component>
         <div class="w-px self-stretch bg-border"></div>
-        <div v-for="g in globalsRow" :key="g.key" class="text-center px-1.5">
+        <div v-for="g in globalsRow" :key="g.key" class="text-center px-1">
           <div class="text-[10px] text-muted">{{ g.label }}</div>
           <div class="text-xs font-mono font-semibold leading-snug">{{ g.price ?? '—' }}</div>
           <div class="text-xs font-mono font-bold" :class="pctClass(g.pct)">
@@ -221,7 +233,7 @@
       <!-- 情绪/市况模块（归并为一组）；★ 2026-09-25 用户反馈：顶栏一行放不下，
            「数据新鲜度」从独立项挪到本组**下方**（组内竖排）⇒ 顶栏少一个 item，
            挤换行的概率大幅下降；新鲜度改 10px 与市况副标题同级。 -->
-      <div class="border-l border-border pl-4 flex flex-col gap-1">
+      <div class="border-l border-border pl-3 flex flex-col gap-1">
         <div class="flex items-center gap-3">
         <div class="text-center">
           <div class="text-lg font-bold font-mono leading-none"
@@ -3711,6 +3723,10 @@ const globalsRow = computed(() => {
     { key: 'kospi', label: '韩国KOSPI' },
     { key: 'usdcnh', label: '离岸USDCNH' },
     { key: 'brent', label: '布伦特' },
+    // ★ 2026-11-04（用户："这个黄金替换现有的黄金，也发出来，位置在布伦特后面"）：
+    //   紧贴布伦特 ⇒「油 + 金」两个避险/通胀锚相邻，扫一眼就能看出是通胀交易还是避险交易。
+    //   ⚠️ 数据是东财 `122.XAU`（伦敦金**现货**），不是原来的 COMEX 期货 —— 见后端注释。
+    { key: 'gold', label: '黄金' },
     { key: 'nasdaq', label: '纳指期货' },
     { key: 'us10y', label: '美债10Y' },
     { key: 'dxy', label: '美元指数' },
