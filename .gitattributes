@@ -1,0 +1,6 @@
+# ★ 2026-11-04：shell 脚本一律 LF。
+# 为什么专门写这条：本机是 Windows（core.autocrlf=true），而脚本在 Linux 服务器上执行；
+#   一旦 checkout 出 CRLF，bash 会报 `$'\r': command not found` —— 报错只说"第 N 行有问题"，
+#   完全看不出是换行符，排查很费时间。
+# ⚠️ 只约束 .sh，不动其他文件：全局 `* text=auto` 会让下次 checkout 大面积改动工作区。
+*.sh text eol=lf
