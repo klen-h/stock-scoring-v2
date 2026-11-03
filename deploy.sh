@@ -27,7 +27,7 @@ for a in "$@"; do
     --skip-pull)     DO_PULL=0 ;;
     --skip-frontend) DO_FRONT=0 ;;
     --no-restart)    DO_RESTART=0 ;;
-    -h|--help)       sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help)       sed -n '2,17p' "$0"; exit 0 ;;
     *)               echo "未知参数: $a（-h 看用法）" >&2; exit 2 ;;
   esac
 done
