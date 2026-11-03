@@ -17,21 +17,18 @@ export default defineConfig(({ mode }) => {
   // base 需要在 node 侧使用，不受"只有 VITE_ 才会暴露给客户端"的限制。
   const env = loadEnv(mode, process.cwd(), '')
 
+  // ⚠️ 2026-11-04 关于 `build.outDir`：这里**故意不设**。
+  //   服务器上要构建到 `dist-build`（宝塔在 `dist` 里放了 `.user.ini`，vite 清空 dist 会
+  //   `ENOTDIR` 失败），但试过三种传参方式，只有**直调 CLI** 稳定生效：
+  //     ❌ `npm run build:server -- --outDir=dist-build` → 静默无效，产物照样进 dist
+  //     ❌ 同上但用空格                       → 被当成 root，报 entry module 找不到
+  //     ❌ `VITE_OUT_DIR=... npm run build:server`（config 里读 process.env）
+  //        本地 PowerShell 下正常，**服务器 bash 下实测仍走 dist**（原因未定位，不再依赖）
+  //     ✅ `node node_modules/vite/bin/vite.js build --mode server --outDir dist-build`
+  //   ⇒ 统一由 `deploy.sh` 直调，配置文件保持单一来源（默认 dist），避免两处优先级打架。
   return {
     base: env.VITE_BASE || '/stock-scoring-v2/',
     plugins: [vue()],
-    build: {
-      // ★★ 2026-11-04（实测 `ENOTDIR: not a directory, scandir '.../dist/.user.ini'`）：
-      //   宝塔"防跨站攻击"会在**网站根目录**（本项目 = `frontend/dist`）放一个 `.user.ini`，
-      //   而 vite 构建前会 `emptyDir(outDir)` ⇒ 删到它必然失败（该文件常带 immutable，连 root 都删不掉）。
-      //   ⇒ 用 `VITE_OUT_DIR` 指定另一个产物目录（`deploy.sh` 传 `dist-build`），
-      //     构建完再把产物同步回 `dist` 并**保留 `.user.ini`**。
-      //   ⚠️ 必须读 `process.env`：`loadEnv()` 只读 `.env.*` 文件，**看不到 shell 变量**
-      //      （与上面 `base` 那个坑同源，别再只写 `env.VITE_OUT_DIR`）。
-      //   ⚠️ 也**不能**用 CLI `--outDir`：实测 `npm run build:server -- --outDir=xxx`
-      //      在 Windows 下不生效（产物照样写进 dist），直调 `vite.js` 才行 —— 配置最稳。
-      outDir: process.env.VITE_OUT_DIR || env.VITE_OUT_DIR || 'dist',
-    },
     resolve: {
       alias: {
         // 启用 Vue 运行时编译器（支持组件内 inline template 字符串）

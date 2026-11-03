@@ -117,11 +117,14 @@ if [ "$DO_FRONT" = 1 ]; then
     #     好处：不动宝塔的安全设置，也**不会出现"构建失败但 dist 已被清空"**的站点白屏
     #     （vite 失败时 dist 原样保留，旧版本继续服务）。
     rm -rf dist-build
-    # ⚠️ 用**环境变量**控制产物目录（`vite.config.js` 里读 `process.env.VITE_OUT_DIR`）。
-    #   实测 `npm run build:server -- --outDir=dist-build` **不生效**（产物照样进 dist，
-    #   换成空格形式更糟：`--outDir dist-build` 会被当成 root 目录报
-    #   `Could not resolve entry module "dist-build/index.html"`）—— 别再用 CLI 参数。
-    VITE_OUT_DIR=dist-build npm run build:server || die "前端构建失败"
+    # ★★ 2026-11-04：**直调 vite CLI**，不用 `npm run build:server`。三种方式都实测过：
+    #   ❌ `npm run build:server -- --outDir=dist-build`  → 静默无效（产物照样进 dist）
+    #   ❌ 同上空格形式                                    → 被当成 root，entry module 找不到
+    #   ❌ `VITE_OUT_DIR=... npm run build:server`         → 本地有效，**服务器上仍走 dist**
+    #   ✅ `node node_modules/vite/bin/vite.js build --mode server --outDir dist-build`
+    #   ⚠️ `--mode server` 不能丢，它才加载 `.env.server`（base=/ 、API=/api）。
+    node node_modules/vite/bin/vite.js build --mode server --outDir dist-build \
+      || die "前端构建失败"
     if [ -d dist ]; then
       # 只删 `.user.ini` 之外的东西；它删不掉也不该删（删了宝塔/nginx 还会重建）
       find dist -mindepth 1 -maxdepth 1 ! -name '.user.ini' -exec rm -rf {} + \
