@@ -168,6 +168,166 @@ def _fetch_sina(extra: Optional[list] = None) -> dict:
         return {}
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  ★★ 2026-11-03（自有服务器上线）：**新浪对云服务器 IP 返回 Forbidden**
+# ════════════════════════════════════════════════════════════════════════════
+# 【现象】阿里云北京机房请求 `hq.sinajs.cn` 一律 `Forbidden`（http/https 都一样，
+#   带完整 UA + Referer 也没用）；同一份代码在境外（Render 新加坡）正常
+#   ⇒ 判定为**按 IP 段的封禁**，不是请求头问题（已实测排除）。
+# 【后果】外盘面板 9 项全显示 `—`（规则引擎因此拿不到输入，标签恒为"中性"）。
+# 【对策】新浪优先，缺哪项补哪项，三个备用源并行补齐（**只补缺失，不覆盖**）：
+#   ① 腾讯 `qt.gtimg.cn`  —— hf_*（布伦特/WTI/黄金，逗号分隔）、
+#                            us*.INX（道指/纳指/标普/金龙，`~` 分隔）、hk*（恒生科技）
+#   ② 东财 `push2` —— A50 / 离岸人民币 / 美元指数 / 纳指期货
+#   ③ FRED `fredgraph.csv` —— 美债收益率（**日频收盘**，非盘中；面板需标注）
+# 【红线】宁可留 `—`，也不拿"看起来差不多"的数字顶上：
+#   用 WTI 冒充布伦特、用国债期货价（106.5）冒充收益率（4.92%）都是错的。
+_TX_MAP = {
+    "brent": "hf_OIL", "wti": "hf_CL", "gold": "hf_GC",
+    "us_dji": "usDJI", "us_ixic": "usIXIC", "us_spx": "us.INX",
+    "cn_hxc": "usHXC", "hstech": "hkHSTECH",
+}
+_EM_MAP = {
+    "a50": "100.XIN9",             # 富时中国A50（东财口径为现货指数）
+    "usdcnh": "133.USDCNH",
+    "dxy": "100.UDI",
+    "nasdaq": "103.NQ00Y",         # 小型纳指当月连续（= 面板要的"纳指期货"）
+}
+# ⚠️ 只取 us10y：它是**唯一进规则判定**的收益率（磨底清单「10Y < 5.0%」）。
+#   us2y/us30y 只用于展示，为它们多发两次可能超时的请求不值得。
+_FRED_MAP = {"us10y": "DGS10"}
+
+_TX_SESSION = requests.Session()
+_TX_SESSION.headers.update({"User-Agent": "Mozilla/5.0"})
+_EM_URL = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+_FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id="
+
+
+def _tx_parse(code: str, val: str) -> Optional[dict]:
+    """腾讯单条解析。⚠️ `hf_*` 是**逗号**分隔，其余（us*/hk*）是 **`~`** 分隔 —— 实测确认。"""
+    if not val:
+        return None
+    if code.startswith("hf_"):
+        f = val.split(",")
+        price, hi, lo, prev = _f(f, 0), _f(f, 4), _f(f, 5), _f(f, 7)
+        chg = (price / prev - 1) * 100 if prev else 0.0
+        t = _s(f, 6)
+    else:
+        f = val.split("~")
+        price, prev = _f(f, 3), _f(f, 4)
+        hi = lo = 0.0
+        chg = (price / prev - 1) * 100 if prev else 0.0
+        t = ""
+    if not price or not prev:
+        return None
+    return {"price": round(price, 3), "prev_close": round(prev, 3),
+            "change_pct": round(chg, 2), "high": round(hi, 3), "low": round(lo, 3),
+            "time": t, "source": "tencent"}
+
+
+def _fetch_tencent(keys) -> dict:
+    out = {}
+    codes = {k: _TX_MAP[k] for k in keys if _TX_MAP.get(k)}
+    if not codes:
+        return out
+    try:
+        r = _TX_SESSION.get("https://qt.gtimg.cn/q=" + ",".join(codes.values()), timeout=8)
+        text = r.content.decode("gbk", errors="replace")
+        by_code = {}
+        for line in text.split(";"):
+            line = line.strip()
+            if '="' not in line:
+                continue
+            name = line.split("=")[0].replace("v_", "")
+            by_code[name] = line.split('"')[1]
+        for k, c in codes.items():
+            v = _tx_parse(c, by_code.get(c) or "")
+            if v:
+                out[k] = v
+    except Exception as e:
+        print(f"[macro] 腾讯备用源失败: {e}")          # ASCII（铁律⑥）
+    return out
+
+
+def _fetch_em(keys) -> dict:
+    """东财：f2=最新价 f3=涨跌幅% ⇒ 反推昨收（东财不直接给昨收）。"""
+    out = {}
+    codes = {k: _EM_MAP[k] for k in keys if _EM_MAP.get(k)}
+    if not codes:
+        return out
+    try:
+        r = _session.get(_EM_URL, params={
+            "fltt": 2, "fields": "f2,f3,f12,f13,f14",
+            "secids": ",".join(codes.values())}, timeout=8)
+        diff = ((r.json() or {}).get("data") or {}).get("diff") or []
+        rows = list(diff.values()) if isinstance(diff, dict) else diff
+        got = {f"{x.get('f13')}.{x.get('f12')}": x for x in rows}
+        for k, c in codes.items():
+            x = got.get(c)
+            if not x:
+                continue
+            price, chg = x.get("f2"), x.get("f3")
+            if not isinstance(price, (int, float)) or not isinstance(chg, (int, float)):
+                continue
+            prev = price / (1 + chg / 100) if chg != -100 else 0
+            out[k] = {"price": round(float(price), 3), "prev_close": round(prev, 3),
+                      "change_pct": round(float(chg), 2), "high": 0.0, "low": 0.0,
+                      "time": "", "source": "eastmoney"}
+    except Exception as e:
+        print(f"[macro] 东财备用源失败: {e}")          # ASCII（铁律⑥）
+    return out
+
+
+def _fetch_fred(keys) -> dict:
+    """FRED 国债收益率（**日频收盘**）。只取最近两根算变化，缺列留空。"""
+    out = {}
+    for k in keys:
+        sid = _FRED_MAP.get(k)
+        if not sid:
+            continue
+        try:
+            # ★★ 超时必须短：本函数在**面板请求路径**上（TTL 60s）。
+            #   实测国内访问 FRED 经常 ReadTimeout，给 20s × 3 个品种 = 一次请求卡 60s，
+            #   会把整页拖死 ⇒ 只取 us10y + 6 秒超时，拿不到就如实留 `—`。
+            r = _session.get(_FRED_URL + sid, timeout=6)
+            pts = []
+            for line in (r.text or "").splitlines()[1:]:
+                d, _, v = line.partition(",")
+                v = (v or "").strip()
+                if v and v not in ("", "."):
+                    try:
+                        pts.append((d.strip(), float(v)))
+                    except ValueError:
+                        continue
+            if len(pts) < 2:
+                continue
+            (d0, v0), (d1, v1) = pts[-2], pts[-1]
+            out[k] = {"price": round(v1, 3), "prev_close": round(v0, 3),
+                      "change_pct": round((v1 - v0) * 100, 2),   # 收益率用 **bp** 更贴切
+                      "high": 0.0, "low": 0.0, "time": d1,
+                      "source": "fred", "unit_hint": "bp"}
+        except Exception as e:
+            print(f"[macro] FRED {sid} 失败: {e}")      # ASCII（铁律⑥）
+    return out
+
+
+def _fallback_panel(need) -> dict:
+    """补齐新浪缺失的面板项（并行三源，任一失败只影响自己覆盖的项）。"""
+    need = set(need)
+    out = {}
+    for fn in (_fetch_tencent, _fetch_em, _fetch_fred):
+        try:
+            out.update({k: v for k, v in (fn(need - set(out)) or {}).items()
+                        if k not in out})
+        except Exception as e:
+            print(f"[macro] 备用源 {fn.__name__} 异常: {e}")
+    if out:
+        print(f"[macro] 新浪缺失 {len(need)} 项，备用源补齐: {sorted(out)}")
+    if need - set(out):
+        print(f"[macro] 仍无数据的项（如实留空）: {sorted(need - set(out))}")
+    return out
+
+
 def _parse(family: str, f: list) -> dict:
     """按字段族解析成统一结构 {price, prev_close, change_pct, high, low, time}。"""
     if family == "hf":
@@ -385,6 +545,14 @@ def get_macro_panel() -> dict:
         f = raw.get(symbol)
         if f and len(f) >= 2:
             panel[key] = _parse(family, f)
+
+    # ★★ 2026-11-03：新浪拉不到的项，用备用源补齐（**只补缺失，绝不覆盖**）。
+    #   背景：云服务器 IP 被新浪按段封禁（Forbidden），境外正常 ⇒ 面板全靠兜底。
+    _missing = [k for k in _PANEL_MAP if k not in panel]
+    if _missing:
+        for _k, _v in (_fallback_panel(_missing) or {}).items():
+            if _k not in panel and _v.get("price"):
+                panel[_k] = _v
 
     # 健康埋点：核心资产（布伦特/WTI/金/纳指/美元）有价才算健康
     from app import health
