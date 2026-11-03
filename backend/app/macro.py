@@ -518,6 +518,17 @@ _FUT_BASIS_SPECS = (
 )
 _FUT_ANNUALIZE_MIN_DAYS = 5      # 剩余自然日 < 此值不年化（分母太小 ⇒ 数字无意义）
 
+# 展示口径说明（新浪主源 / 东财兜底**共用同一段**，避免两个源说两套话）
+_FUT_BASIS_NOTE = (
+    "基差 = 现货收盘 − 期货收盘（正=期货贴水）；年化 = 基差率×365/剩余自然日。"
+    "⚠️ 当月合约临近到期时年化对天数极敏感，别当趋势读；"
+    "IM 贴水含雪球/DMA 对冲盘结构性需求，不能干净解读为「市场情绪」；"
+    "纯展示层（北向停披后的内资情绪/对冲需求温度计），不进决策链。")
+
+# 东财现货指数（`1` = 沪市指数）：与新浪 `sh000300` 等一一对应
+_EM_FUT_SPOT = {"IF": "1.000300", "IH": "1.000016",
+                "IC": "1.000905", "IM": "1.000852"}
+
 
 def _third_friday(year: int, month: int) -> Optional[date]:
     """当月第三个周五 = 中金所股指期货最后交易日。"""
@@ -605,14 +616,84 @@ def get_index_futures_basis(raw: dict) -> Optional[dict]:
         return {
             "items": items,
             "as_of": next((t.get("time") for r in items for t in r["tenors"] if t.get("time")), ""),
-            "note": ("基差 = 现货收盘 − 期货收盘（正=期货贴水）；年化 = 基差率×365/剩余自然日。"
-                     "⚠️ 当月合约临近到期时年化对天数极敏感，别当趋势读；"
-                     "IM 贴水含雪球/DMA 对冲盘结构性需求，不能干净解读为「市场情绪」；"
-                     "纯展示层（北向停披后的内资情绪/对冲需求温度计），不进决策链。"),
+            "note": _FUT_BASIS_NOTE,
         }
     except Exception as e:
         print(f"[macro] futures basis failed: {e}")        # ASCII（铁律⑥）
         return None
+
+
+def _em_futures_basis() -> Optional[dict]:
+    """**东财兜底**：中金所股指期货基差（`220` 市场）+ 现货指数（`1` 市场）。
+
+    ★★ 2026-11-04（用户："后者是 render 的，有股指期货基差"）：
+      上面那个函数只读**新浪**（`nf_IF*` + `sh000300`），而国内 IDC 的 IP 被新浪封
+      ⇒ 自有服务器上这一整块**恒为空**（Render/本地正常）。
+      东财有同源数据，实测与 Render 显示**逐位一致**：
+        `220.IF2611` 4003.4  vs 现货 `1.000300` 4008.87 ⇒ 基差 0.136%（Render 0.137%）
+        `220.IC2611` 6317.2  vs 现货 `1.000905` 6327.05 ⇒ 0.156%（Render 0.156%）
+      （旧注释说"东财 push2 多 market 码试探连接被拒、腾讯无中金所期货"——
+        那时是市场号没找对：中金所是 `220`，代码形如 `IF2611`。）
+
+    口径与新浪路径**完全一致**（同一段 `_FUT_BASIS_NOTE`、同一套到期日推导）。
+    ⚠️ 东财 `ulist` **不返回持仓量**（f20/f21 恒 0）⇒ `oi` 留 None，不填 0
+      （0 会被读成"无持仓"，是错误信息）。
+    """
+    months, today = _front_month_codes(), date.today()
+    mcs = [mc for mc, _e, _l in months]
+    secids: list = []
+    for name, _prefix, _spot, _sn in _FUT_BASIS_SPECS:
+        secids += [f"220.{name}{mc}" for mc in mcs]
+        secids.append(_EM_FUT_SPOT[name])
+    try:
+        r = _session.get(_EM_URL, params={
+            # ⚠️ f12/f13 必须带上：下面用 `{f13}.{f12}` 拼 key 回查，
+            #    漏掉这两个字段会**静默拿不到任何行**（首版就漏了，调试了一次）。
+            "fltt": 2, "fields": "f2,f3,f5,f12,f13,f14,f18",
+            "secids": ",".join(secids)}, timeout=8)
+        diff = ((r.json() or {}).get("data") or {}).get("diff") or []
+        rows = list(diff.values()) if isinstance(diff, dict) else diff
+        got = {f"{x.get('f13')}.{x.get('f12')}": x for x in rows}
+    except Exception as e:
+        print(f"[macro] eastmoney futures basis failed: {e}")   # ASCII（铁律⑥）
+        return None
+
+    items = []
+    for name, _prefix, _spot, spot_name in _FUT_BASIS_SPECS:
+        s = got.get(_EM_FUT_SPOT[name]) or {}
+        sp = s.get("f2")
+        if not isinstance(sp, (int, float)) or not sp:
+            continue
+        row = {"product": name, "spot_name": spot_name,
+               "spot": round(float(sp), 2), "tenors": []}
+        for mc, exp, label in months:
+            x = got.get(f"220.{name}{mc}") or {}
+            fp, prev = x.get("f2"), x.get("f18")
+            if not isinstance(fp, (int, float)) or not fp:
+                continue
+            basis = sp - fp
+            rate = basis / sp * 100
+            days = (exp - today).days
+            vol = x.get("f5")
+            row["tenors"].append({
+                "label": label, "code": f"{name}{mc}", "expiry": exp.isoformat(),
+                "days_left": days, "fut": round(float(fp), 1),
+                "basis": round(basis, 2), "basis_rate": round(rate, 3),
+                "annualized": (round(rate * 365 / days, 2)
+                               if days >= _FUT_ANNUALIZE_MIN_DAYS else None),
+                # 期货惯例用**昨结算**；东财 f18 即昨结算价
+                "fut_chg_pct": (round((fp / float(prev) - 1) * 100, 2)
+                                if isinstance(prev, (int, float)) and prev else None),
+                "volume": vol if isinstance(vol, (int, float)) else None,
+                "oi": None,        # 东财 ulist 不返回持仓量 ⇒ 不填 0
+                "time": "",
+            })
+        if row["tenors"]:
+            items.append(row)
+    if not items:
+        return None
+    print(f"[macro] 基差走东财兜底（新浪不可用）：{len(items)} 个品种")   # ASCII（铁律⑥）
+    return {"items": items, "as_of": "", "note": _FUT_BASIS_NOTE}
 
 
 def get_macro_panel() -> dict:
@@ -700,7 +781,10 @@ def get_macro_panel() -> dict:
     panel["_derived"] = derived
     # ★ 2026-09-29（P2）：股指期货基差 —— 与 `_derived` 同款「下划线私有键」约定
     #   （`get_macro_snapshot` 输出 `panel` 时会过滤 `_` 前缀 ⇒ 不污染面板本体）。
-    panel["_futures_basis"] = get_index_futures_basis(raw)
+    # ★ 2026-11-04：新浪拿不到（国内 IDC 被封）就**走东财兜底**，
+    #   否则自有服务器上「股指期货基差」整块恒为空（Render 有、服务器没有）。
+    panel["_futures_basis"] = (get_index_futures_basis(raw)
+                               or _em_futures_basis())
     with _cache_lock:
         _cache["panel"] = {"data": panel, "ts": now}
     return panel
