@@ -23,8 +23,14 @@
 services:
   backend:
     build:
-      context: ..
-      dockerfile: ./backend/Dockerfile
+      # ★★ 2026-11-03（用户实测报错：「提示没有 requirements.txt」）：**必须从 backend/ 构建**。
+      #   Dockerfile 里是 `COPY ./requirements.txt .` 和 `COPY . .`，
+      #   这些路径**相对于构建上下文**（不是相对于 Dockerfile 所在目录）。
+      #   `requirements.txt` 只在 `backend/` 下，仓库根目录没有
+      #   ⇒ 若把 context 写成仓库根（`..`），第一步 COPY 就报 "not found"。
+      #   （仓库根那份开发用 docker-compose.yml 也是这个错，它从没构建成功过。）
+      context: ../backend
+      dockerfile: Dockerfile
     image: stock-scoring-backend:prod
     container_name: stock-scoring-backend
     restart: unless-stopped

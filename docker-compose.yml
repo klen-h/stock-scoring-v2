@@ -2,8 +2,11 @@ version: '3.8'
 services:
   backend:
     build:
-      context: .
-      dockerfile: ./backend/Dockerfile
+      # ★ 2026-11-03：`COPY` 路径是**相对构建上下文**的，而 `requirements.txt`
+      #   只在 `backend/` 下 ⇒ 原写法 `context: .`（仓库根）会让 Dockerfile 第一条
+      #   `COPY ./requirements.txt .` 直接报 "not found"（这个组合从来没有构建成功过）。
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     volumes:
