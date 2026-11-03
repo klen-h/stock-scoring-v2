@@ -20,6 +20,18 @@ export default defineConfig(({ mode }) => {
   return {
     base: env.VITE_BASE || '/stock-scoring-v2/',
     plugins: [vue()],
+    build: {
+      // ★★ 2026-11-04（实测 `ENOTDIR: not a directory, scandir '.../dist/.user.ini'`）：
+      //   宝塔"防跨站攻击"会在**网站根目录**（本项目 = `frontend/dist`）放一个 `.user.ini`，
+      //   而 vite 构建前会 `emptyDir(outDir)` ⇒ 删到它必然失败（该文件常带 immutable，连 root 都删不掉）。
+      //   ⇒ 用 `VITE_OUT_DIR` 指定另一个产物目录（`deploy.sh` 传 `dist-build`），
+      //     构建完再把产物同步回 `dist` 并**保留 `.user.ini`**。
+      //   ⚠️ 必须读 `process.env`：`loadEnv()` 只读 `.env.*` 文件，**看不到 shell 变量**
+      //      （与上面 `base` 那个坑同源，别再只写 `env.VITE_OUT_DIR`）。
+      //   ⚠️ 也**不能**用 CLI `--outDir`：实测 `npm run build:server -- --outDir=xxx`
+      //      在 Windows 下不生效（产物照样写进 dist），直调 `vite.js` 才行 —— 配置最稳。
+      outDir: process.env.VITE_OUT_DIR || env.VITE_OUT_DIR || 'dist',
+    },
     resolve: {
       alias: {
         // 启用 Vue 运行时编译器（支持组件内 inline template 字符串）

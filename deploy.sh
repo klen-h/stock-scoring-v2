@@ -109,7 +109,29 @@ if [ "$DO_FRONT" = 1 ]; then
       npm ci --no-audit --no-fund || npm install --no-audit --no-fund || die "前端依赖安装失败（装不上先看上面的权限提示）"
     fi
     log "构建前端（build:server → base=/  API=/api）"
-    npm run build:server || die "前端构建失败"
+    # ★★ 2026-11-04（实测 `ENOTDIR: not a directory, scandir '.../dist/.user.ini'`）：
+    #   宝塔"防跨站攻击"会在**网站根目录**（本项目就是 `frontend/dist`）放一个 `.user.ini`，
+    #   而 vite 每次构建前都要 `emptyDir(dist)` 把目录清空 ⇒ 删到它必然失败
+    #   （这种文件通常还带 `chattr +i`，连 root 都 rm 不掉）。
+    #   ⇒ 构建到 `dist-build`（宝塔不碰这个目录），成功后再**同步回 dist、保留 .user.ini**。
+    #     好处：不动宝塔的安全设置，也**不会出现"构建失败但 dist 已被清空"**的站点白屏
+    #     （vite 失败时 dist 原样保留，旧版本继续服务）。
+    rm -rf dist-build
+    # ⚠️ 用**环境变量**控制产物目录（`vite.config.js` 里读 `process.env.VITE_OUT_DIR`）。
+    #   实测 `npm run build:server -- --outDir=dist-build` **不生效**（产物照样进 dist，
+    #   换成空格形式更糟：`--outDir dist-build` 会被当成 root 目录报
+    #   `Could not resolve entry module "dist-build/index.html"`）—— 别再用 CLI 参数。
+    VITE_OUT_DIR=dist-build npm run build:server || die "前端构建失败"
+    if [ -d dist ]; then
+      # 只删 `.user.ini` 之外的东西；它删不掉也不该删（删了宝塔/nginx 还会重建）
+      find dist -mindepth 1 -maxdepth 1 ! -name '.user.ini' -exec rm -rf {} + \
+        || die "无法清理 dist/（旧产物属主可能是 root）：sudo chown -R $(id -u):$(id -g) $APP_DIR/frontend/dist"
+    else
+      mkdir -p dist
+    fi
+    cp -a dist-build/. dist/ || die "同步产物到 dist/ 失败"
+    rm -rf dist-build
+    log "已同步到 dist/（保留 .user.ini）"
     cd "$APP_DIR"
   else
     warn "没有 frontend/ 目录，跳过"
