@@ -192,7 +192,17 @@ _EM_MAP = {
     "usdcnh": "133.USDCNH",
     "dxy": "100.UDI",
     "nasdaq": "103.NQ00Y",         # 小型纳指当月连续（= 面板要的"纳指期货"）
+    # ★ 2026-11-04（用户："少了个日经225，想把韩国指数也加上去"）：
+    #   新浪原代码 `hf_NK`（日经**期货**）在服务器上取不到 ⇒ 改用东财**现货**指数。
+    #   ⚠️ 语义差异如实说明：期货含预期、24h 交易；现货是已实现收盘。
+    #     顶栏标签写「日经225」不加"期货"，避免读者误以为是期货口径。
+    "nikkei": "100.N225",          # 日经225（现货指数）
+    "kospi": "100.KS11",           # 韩国综合指数 KOSPI（现货）
 }
+
+# 新浪**完全没有**的面板项（不能塞进 `_PANEL_MAP`，否则等于伪造新浪代码）。
+# 这些键只由备用源提供，但仍要参与"缺失探测"⇒ `get_panel` 里单独并入。
+_EXTRA_PANEL_KEYS = ("kospi",)
 # ⚠️ 只取 us10y：它是**唯一进规则判定**的收益率（磨底清单「10Y < 5.0%」）。
 #   us2y/us30y 只用于展示，为它们多发两次可能超时的请求不值得。
 _FRED_MAP = {"us10y": "DGS10"}
@@ -548,7 +558,7 @@ def get_macro_panel() -> dict:
 
     # ★★ 2026-11-03：新浪拉不到的项，用备用源补齐（**只补缺失，绝不覆盖**）。
     #   背景：云服务器 IP 被新浪按段封禁（Forbidden），境外正常 ⇒ 面板全靠兜底。
-    _missing = [k for k in _PANEL_MAP if k not in panel]
+    _missing = [k for k in list(_PANEL_MAP) + list(_EXTRA_PANEL_KEYS) if k not in panel]
     if _missing:
         for _k, _v in (_fallback_panel(_missing) or {}).items():
             if _k not in panel and _v.get("price"):

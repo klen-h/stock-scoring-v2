@@ -3704,6 +3704,11 @@ const globalsRow = computed(() => {
   const defs = [
     { key: 'a50', label: 'A50期货' },
     { key: 'hstech', label: '恒生科技' },
+    // ★ 2026-11-04（用户："少了个日经225，想把韩国指数也加上去"）：
+    //   两项都由**东财现货指数**提供（新浪的 `hf_NK` 是日经**期货**，且服务器 IP 被新浪封）。
+    //   ⚠️ 标签写「日经225」「韩国KOSPI」**不带"期货"**——数据口径是现货，别让人误读。
+    { key: 'nikkei', label: '日经225' },
+    { key: 'kospi', label: '韩国KOSPI' },
     { key: 'usdcnh', label: '离岸USDCNH' },
     { key: 'brent', label: '布伦特' },
     { key: 'nasdaq', label: '纳指期货' },
