@@ -290,14 +290,22 @@ def _fetch_tencent(keys) -> dict:
 
 
 def _fetch_em(keys) -> dict:
-    """东财：f2=最新价 f3=涨跌幅% ⇒ 反推昨收（东财不直接给昨收）。"""
+    """东财 `ulist`：f2=最新价 f3=涨跌幅% f15=最高 f16=最低 f18=昨收。
+
+    ★★ 2026-11-04（自查上一轮的疏漏）：首版只取了 `f2,f3`，把 `high/low` **硬填 0.0**、
+      昨收靠 `price/(1+chg%)` **反推**。实测 `ulist` 本身就支持 `f15/f16/f18`：
+        `122.XAU  价=3928.26 高=3969.96 低=3895.59 开=3949.03 昨=3946.63`
+      ⇒ 现在 high/low 是**真实值**，昨收是**上游给的**（反推会带浮点误差，
+        对收益率这种 4.9 量级的数字，0.001 的误差就是 0.1bp）。
+      ⚠️ `f15/f16/f18` 在停牌/无成交时会返回 `"-"`，必须做类型检查再转 float。
+    """
     out = {}
     codes = {k: _EM_MAP[k] for k in keys if _EM_MAP.get(k)}
     if not codes:
         return out
     try:
         r = _session.get(_EM_URL, params={
-            "fltt": 2, "fields": "f2,f3,f12,f13,f14",
+            "fltt": 2, "fields": "f2,f3,f12,f13,f14,f15,f16,f18",
             "secids": ",".join(codes.values())}, timeout=8)
         diff = ((r.json() or {}).get("data") or {}).get("diff") or []
         rows = list(diff.values()) if isinstance(diff, dict) else diff
@@ -309,10 +317,17 @@ def _fetch_em(keys) -> dict:
             price, chg = x.get("f2"), x.get("f3")
             if not isinstance(price, (int, float)) or not isinstance(chg, (int, float)):
                 continue
-            prev = price / (1 + chg / 100) if chg != -100 else 0
-            out[k] = {"price": round(float(price), 3), "prev_close": round(prev, 3),
-                      "change_pct": round(float(chg), 2), "high": 0.0, "low": 0.0,
-                      "time": "", "source": "eastmoney"}
+            # 昨收优先用 f18（权威）；缺失时退回反推。⚠️ `"-"` 不是数字，必须过 isinstance。
+            prev = x.get("f18")
+            if not isinstance(prev, (int, float)) or not prev:
+                prev = price / (1 + chg / 100) if chg != -100 else 0
+            hi, lo = x.get("f15"), x.get("f16")
+            out[k] = {
+                "price": round(float(price), 3), "prev_close": round(float(prev), 3),
+                "change_pct": round(float(chg), 2),
+                "high": round(float(hi), 3) if isinstance(hi, (int, float)) else 0.0,
+                "low": round(float(lo), 3) if isinstance(lo, (int, float)) else 0.0,
+                "time": "", "source": "eastmoney"}      # `ulist` 不返回时间戳（f86 无效）
     except Exception as e:
         print(f"[macro] 东财备用源失败: {e}")          # ASCII（铁律⑥）
     return out
