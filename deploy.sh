@@ -39,11 +39,33 @@ die()  { printf '\033[1;31m[deploy]\033[0m %s\n' "$*" >&2; exit 1; }
 mem_avail_mb() { awk '/^MemAvailable:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0; }
 
 # ── 1. 代码 ──────────────────────────────────────────────────────────────
+# ★★ 2026-11-04（真因，踩了三次）：**脚本不能就地更新自己**。
+#   `git pull` 是用 rename 把 `deploy.sh` 换成新文件，而 **bash 已经持有旧文件的 inode
+#   并读入了缓冲** ⇒ 本次执行会继续跑**旧代码**，日志看着"拉取成功"，实际用的是上一版逻辑。
+#   实测：明明改成了直调 `node vite.js`，日志里却还在跑 `npm run build:server`，
+#   于是我误判成"环境变量在服务器上不生效"，白折腾了两轮。
+#   对策：pull 前后比对**自身 md5**，变了就 `exec bash "$SELF"`（exec 会重新打开文件读到新内容）。
+SELF="$APP_DIR/deploy.sh"
+SELF_MD5_BEFORE=""
+if [ -f "$SELF" ]; then SELF_MD5_BEFORE="$(md5sum "$SELF" 2>/dev/null | awk '{print $1}')"; fi
+
 if [ "$DO_PULL" = 1 ] && [ -d .git ]; then
   log "拉取代码（--ff-only：有本地改动会直接失败，不会覆盖你的修改）"
   git pull --ff-only || die "git pull 失败 —— 请手动处理，或用 --skip-pull 跳过"
 fi
 log "当前版本：$(git rev-parse --short HEAD 2>/dev/null || echo '非 git 目录（tar 部署）')"
+
+if [ -n "${SELF_MD5_BEFORE:-}" ] && [ -f "$SELF" ]; then
+  if [ "$(md5sum "$SELF" 2>/dev/null | awk '{print $1}')" != "$SELF_MD5_BEFORE" ]; then
+    log "deploy.sh 自身已更新 → 立刻用新版本重新执行（带 --skip-pull，不会再拉一次）"
+    # 去掉原参数里的 --skip-pull 再加一个，避免重复；其余参数原样带过去
+    NEW_ARGS=()
+    for a in "$@"; do
+      if [ "$a" != "--skip-pull" ]; then NEW_ARGS+=("$a"); fi
+    done
+    exec bash "$SELF" --skip-pull ${NEW_ARGS[@]+"${NEW_ARGS[@]}"}
+  fi
+fi
 
 # ── 2. 找 Python（兼容 venv / .venv / 系统 python3）────────────────────────
 PY=""
