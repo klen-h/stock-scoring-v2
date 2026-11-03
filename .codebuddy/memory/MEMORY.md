@@ -20,7 +20,19 @@
 
 ## 1. 架构与运行形态
 - 单进程 FastAPI（`backend/app/main.py`）`/api/*` + 前端静态；生产 `uvicorn 0.0.0.0:8000`，**不要 `--reload`**。
-- 前端生产 = GitHub Pages（pnpm 构建推 gh-pages）；Render 后端兜底 dist。
+- ★★ **生产部署 = 自有服务器**（用户 2026-11-04 确认："确实在用服务器那套，因为 render 会爆内存"）。
+  Render 已弃用：512MB 实例一天多次 `Ran out of memory`（11-02 单日 6 次，见 daily）。
+  · 路径 `/www/wwwroot/stock-scoring-v2`，服务 `sudo systemctl restart stock-scoring`，
+    uvicorn `:8000`，nginx 反代 `/api`（**同源**，不走跨域）。
+  · **前端必须 `npm run build:server`** —— 读 `.env.server`（`VITE_BASE=/`、`VITE_API_BASE_URL=/api`）。
+    `npm run build` 是 **GitHub Pages 口径**（`base=/stock-scoring-v2/` + API 指 Render）
+    ⇒ 传上服务器就是 js/css 全 404、或"页面能开但接口全 CORS 报错"。
+    这个坑 2026-11-03 踩过两次，原因写死在 `frontend/vite.config.js` 头部，别再犯。
+  · 一键部署：根目录 `./deploy.sh`（Python/venv 自动探测 → 依赖变了才装 → build:server
+    → 编译检查 → 重启 → 健康检查 + 打印内存）。内存吃紧时 `--skip-frontend`（本地构建后传 dist）。
+  · ★ 给用户回复时：**先确认是服务器那套**，别再默认给 Render 相关步骤。
+- 另有 GitHub Pages 一套静态站（push `frontend/**` 由 `deploy-preview.yml` 自动，base 子路径），
+  **仅供外网预览，不是生产**；两套 base 不同，产物不能互换。
 - DB 默认 SQLite，`DATABASE_URL` 走 PG（Supabase 东京）；`app/database.py` 自动转 `%s` 兼容双库。
 - 调度器 `flash/scheduler.py` ~30 个 asyncio loop 按日幂等；**`RENDER_READ_ONLY=1` 下所有 `_heavy` 循环不跑 = 死代码**，
   重计算一律迁进日批（`scripts/daily_batch.py`）。★ 反复模式：Render 循环停摆 ⇒ 数据静默断档（已发生 5 次）。
