@@ -1,3 +1,22 @@
+# ⚠️⚠️⚠️ 2026-11-04：**本文件已弃用（DEPRECATED），生产跑在自有服务器上**
+#
+#   为什么弃用：免费实例 512MB，本项目是"常驻调度器 + 全市场重计算"型负载，
+#     实测一天内被 OOM 杀掉 6 次（11-02：09:36/09:38/09:40/09:42/11:44/14:28），
+#     每次重启都要重下 31MB 数据包 ⇒ 数据断档 + 用户侧随机 502。
+#   现在形态：`/www/wwwroot/stock-scoring-v2` + `systemctl` + nginx 反代，用 `./deploy.sh` 部署。
+#
+#   ⚠️ 危险点：下面 `autoDeploy: yes` 仍在 —— 只要这个 Render 服务**没被 Suspend/Delete**，
+#     每次 push main 都会**尝试重新部署并拉起一个第二写入方**：
+#     两台机器同时跑 快讯/复盘/日报/盘前简报 ⇒ **企微重复推送 + 重复写库 + 双倍 LLM**。
+#     （即使设了 RENDER_READ_ONLY=1，`review_loop`/`daily_report_loop` 等**仍被刻意保留**。）
+#   ⇒ 正确做法：Render 控制台 **Suspend**（先别 Delete，保留 1~2 天可回滚），
+#     并处理 `.github/workflows/keep-alive.yml` 与 secret `RENDER_BACKEND_URL`
+#     （后者要改成服务器域名，否则「日批完成 → 复盘已就绪」会静默失效）。
+#
+#   本文件**保留**仅为记录历史配置（MALLOC_ARENA_MAX / DATA_SOURCE=pack 等踩坑结论），
+#   以及万一将来需要临时起一个 Render 环境对照时参考。**不要据此重新部署生产。**
+#
+# ── 以下为历史配置 ────────────────────────────────────────────────────────
 services:
   - type: web
     name: stock-scoring-backend

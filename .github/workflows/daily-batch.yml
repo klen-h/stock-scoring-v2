@@ -211,8 +211,15 @@ jobs:
       #             ② 后端每 5 分钟轮询三表 → 用户否决"而不是轮询的方式"；③ 本步骤。
       #   ⚠️ **失败**不走这里：`daily_batch.py` 内部已在推失败告警（workflow env 里有
       #     `WECHAT_WEBHOOK`）⇒ 成功/失败两种情形都有通知渠道，无需 `if: always()`。
-      #   ⚠️ 需要两个 GitHub secret：`BATCH_CALLBACK_TOKEN`（须与 Render env 同名同值）与
-      #     `RENDER_BACKEND_URL`（keep-alive.yml 已在用）。**未配置则跳过**，不让 CI 变红。
+      #   ⚠️ 需要两个 GitHub secret：`BATCH_CALLBACK_TOKEN`（须与后端 env 同名同值）与
+      #     `RENDER_BACKEND_URL`（keep-alive.yml 也在用）。**未配置则跳过**，不让 CI 变红。
+      # ★★ 2026-11-04：**这个 secret 现在必须指向「自有服务器」域名**，不再是 Render。
+      #   原因：生产已迁到自有服务器（Render 因 OOM 弃用），Render 已 Suspend；
+      #   若不改，本步骤的 POST 会打到一个已停的服务 ⇒ 响应超时/连接被拒 ⇒
+      #   `|| echo "通知失败"` 把错误吞掉，**CI 依然 success，只是当晚没有复盘通知**。
+      #   这类"静默断链"最难发现 ⇒ 改 Secret 后请手动 workflow_dispatch 一次本工作流验证。
+      #   ⚠️ 变量名保留 `RENDER_BACKEND_URL` 是为了不用同时改两个 workflow；
+      #      将来若要改名（如 `BACKEND_URL`），必须**两个文件 + Secret 名一起改**。
       - name: Notify backend (batch done)
         if: success()
         run: |
