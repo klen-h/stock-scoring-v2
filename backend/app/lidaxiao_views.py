@@ -32,6 +32,7 @@ from __future__ import annotations
 """
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -257,11 +258,51 @@ def _latest_date() -> Optional[str]:
 #     6243KB → 166KB，-97.3%；每次写 videos.json 后自动重建、随 CI 提交）。
 #   ⇒ 默认读 lite；老部署/未重建时**回退完整版** `videos.json`（幂等，口径一致）。
 #   ⚠️ `videos.json` 仍是 xiaopage 站点自己的数据源，**不能**为了省流量去裁剪它。
-_DEFAULT_UPSTREAM = (
-    "https://raw.githubusercontent.com/klen-h/xiaopage/main/public/data/views-lite.json")
-_LEGACY_UPSTREAM = (
-    "https://raw.githubusercontent.com/klen-h/xiaopage/main/public/data/videos.json")
-_ETAG: Dict[str, Optional[str]] = {}      # url → ETag（lite/legacy 各一份，别串）
+_GH_RAW = "https://raw.githubusercontent.com/"
+_LITE_PATH = "klen-h/xiaopage/main/public/data/views-lite.json"
+_FULL_PATH = "klen-h/xiaopage/main/public/data/videos.json"
+# 旧常量名保留（语义不变：默认上游 = lite 的**直连**地址）
+_DEFAULT_UPSTREAM = _GH_RAW + _LITE_PATH
+_LEGACY_UPSTREAM = _GH_RAW + _FULL_PATH
+_ETAG: Dict[str, Optional[str]] = {}      # url → ETag（每个镜像各自一份，别串）
+
+
+def _mirror_urls(path: str) -> List[str]:
+    """一个 GitHub raw 路径 → **按实测可用性排序的多个镜像**。
+
+    ★★ 2026-11-04（用户实测报错）：
+        `更新失败：上游拉取失败: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))`
+      —— 国内服务器**直连 raw.githubusercontent.com 被 RST/超时**。
+      ⚠️ 迷惑点：同一台机器的 `git pull` 是好的（配了 `ghfast.top` 镜像），
+         但 `requests` 直连**不走 git 的配置** ⇒ 两条链路行为完全不同，
+         看日志会以为"网络没问题"，实际只是 git 走了代理。
+      同一文件（views-lite.json，150.5KB）本地实测：
+        raw 直连    ❌ 15s 超时
+        gh-proxy    ✅ 0.53s
+        jsDelivr    ✅ 1.33s
+        ghfast      ✅ 2.09s
+      ⇒ 依次尝试、**任意成功即返回**；全挂才报错。
+      · `LIDX_MIRROR_PREFIX`（如 `https://gh-proxy.com`）可把自建/指定代理放到最前；
+      · `LIDX_UPSTREAM_URL`（完整 URL）依然最高优先，且走它时**不**再试镜像。
+    """
+    p = path.lstrip("/")
+    cands: List[str] = []
+    pre = (os.environ.get("LIDX_MIRROR_PREFIX") or "").strip().rstrip("/")
+    if pre:
+        cands.append(f"{pre}/{_GH_RAW}{p}")
+    cands += [
+        f"https://gh-proxy.com/{_GH_RAW}{p}",
+        f"https://ghfast.top/{_GH_RAW}{p}",
+        # jsDelivr 语法不同：gh/user/repo@branch/path（只替换**第一个** /main/）
+        f"https://cdn.jsdelivr.net/gh/{p.replace('/main/', '@main/', 1)}",
+        f"{_GH_RAW}{p}",          # 直连兜底（海外可用；国内多半被 reset）
+    ]
+    seen, out = set(), []
+    for u in cands:
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
 
 
 def _fetch_and_ingest(url: str, timeout) -> Dict:
@@ -310,23 +351,36 @@ def _fetch_and_ingest(url: str, timeout) -> Dict:
             "source": url, "bytes": len(r.content)}
 
 
-def refresh_from_upstream(url: str = None, timeout=(10.0, 60.0)) -> Dict:
-    """补拉 xiaopage 的最新解读并落库（幂等）：**先 lite，失败回退完整版**。
+def refresh_from_upstream(url: str = None, timeout=(10.0, 60.0),
+                          budget: float = 90.0) -> Dict:
+    """补拉 xiaopage 的最新解读并落库（幂等）：**多镜像逐个试，先 lite 后完整版**。
 
-    ⚠️ `timeout` 用 (connect, read)：lite 只有 ~166KB（Render 海外 1~2s）；
+    ⚠️ `timeout` 用 (connect, read)：lite 只有 ~150KB（镜像 0.5~2s）；
        回退完整版 6.4MB 时国内网络实测 59s ⇒ 给 60s 读超时。
+    ★ `budget`（秒）：**总时间预算**。镜像全挂时若不设上限，4×lite + 4×full
+      各自等到超时 ≈ 数分钟，按钮会一直转圈 ⇒ 超过预算立即放弃并返回最后一次错误。
     """
-    urls = ([url] if url
-            else [os.environ.get("LIDX_UPSTREAM_URL") or _DEFAULT_UPSTREAM,
-                  _LEGACY_UPSTREAM])
+    if url:
+        urls = [str(url).strip()]
+    else:
+        env_url = (os.environ.get("LIDX_UPSTREAM_URL") or "").strip()
+        urls = ([env_url] if env_url else []) + _mirror_urls(_LITE_PATH)
+        urls += _mirror_urls(_FULL_PATH)      # lite 全挂才回退完整版（6.4MB，慢）
     last = ""
+    t0 = time.time()
     for u in urls:
-        r = _fetch_and_ingest(str(u).strip(), timeout)
+        if time.time() - t0 > budget:
+            print(f"[lidaxiao] 上游预算 {budget:.0f}s 用尽，放弃剩余 {len(urls)} 个镜像中的未试项")
+            last = last or f"超过总预算 {budget:.0f}s"
+            break
+        r = _fetch_and_ingest(u, timeout)
         if r.get("ok"):
+            # 打一行命中来源：以后排查"到底走的哪个镜像"不用再猜
+            print(f"[lidaxiao] 上游命中: {str(r.get('source') or u)[:70]}")
             return r
         last = r.get("error") or last
-        print(f"[lidaxiao] 上游 {str(u)[-28:]} 失败，尝试下一个: {last}")   # ASCII（铁律⑥）
-    return {"ok": False, "error": last or "上游不可用"}
+        print(f"[lidaxiao] 上游 {str(u)[-42:]} 失败: {last}")   # ASCII（铁律⑥）
+    return {"ok": False, "error": last or "上游不可用（所有镜像均失败）"}
 
 
 # ── 读取（GET /market/lidaxiao）─────────────────────────────────────────────
