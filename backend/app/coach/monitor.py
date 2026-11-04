@@ -99,12 +99,35 @@ def coach_tick() -> dict:
 # ==============================================================================
 
 def health_card() -> str:
-    """体检卡正文：每票一行（成本/现价/盈亏/距止损/持有天数/规则状态），3 秒看完。"""
+    """体检卡正文：每票一行（成本/现价/盈亏/距止损/持有天数/规则状态），3 秒看完。
+
+    ★★ 2026-11-04（用户报："已经 15:40 了，收盘了才触发吗？早盘复盘的"）：
+      本函数算的是 `tier="all"`（**含 heavy**：拥挤减仓 / 高位+主力出货），
+      但此前**只推企微、不落库** ⇒ 早盘 10:30 / 14:45 命中的 heavy 结论
+      **不会出现在教练卡列表里**，要等 15:40 的 `daily_close_job` 落库才看得见。
+      用户看到的就是"收盘后才冒出一条" —— 而盘中的那次提醒走的是体检卡（企微），
+      两条路径**只在一处汇合**（`coach_alerts`），此前却只有一个入口往里写。
+
+      ⇒ 现在算完就落库。`push=False` 是安全的：`distribution_cut` / `crowded_trim`
+        在 `rules.yaml` 里本来就是 `push: false`（只进列表、不推企微），
+        所以**不会增加任何企微消息量**，只是让它们提前出现在列表里。
+
+      ⚠️ 落库失败绝不能挡住推送 —— 体检卡的核心价值是及时提醒。
+      ⚠️ `dedupe_key = 日|规则|标的` ⇒ 15:40 重跑不会重复建行，
+        并保留**首次触发时间**（10:30 命中就是 10:30，不会被改写成 15:40）。
+    """
     ctx = coach_rules.build_context(tier="all")
     poss = ctx.get("positions") or []
     if not poss:
         return ""
     advices = coach_rules.evaluate_all("all", ctx=ctx)
+    # ★ 落库（push=False）：让盘中的 heavy 结论立刻进教练卡列表，不必等到 15:40 的盘后重算
+    try:
+        _fresh = audit.record_advices([a.to_dict() for a in advices], push=False)
+        if _fresh:
+            print(f"[coach] 体检卡落库 {len(_fresh)} 条（盘中即可见）")   # ASCII（铁律⑥）
+    except Exception as e:
+        print(f"[coach] 体检卡落库失败（不影响推送）: {e}")
     hit_by_code = {}
     for a in advices:
         if a.code:
