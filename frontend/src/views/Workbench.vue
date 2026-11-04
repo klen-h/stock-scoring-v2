@@ -454,7 +454,7 @@
             </button>
             <div v-if="jin10Open" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="!(jin10?.sections || []).length" class="text-xs text-muted">
-                暂无数据（汇总每天盘后生成；若长期为空，请检查 Render 的 JIN10_X_TOKEN 是否过期）
+                暂无数据（汇总每天盘后生成；若长期为空，请检查服务器 .env 里的 JIN10_X_TOKEN 是否过期）
               </div>
               <template v-else>
                 <div class="flex items-center gap-1.5 text-[10px] text-muted mb-1.5">
@@ -464,8 +464,10 @@
                     · 非当日（该日无数据）</span>
                   <span v-if="!jin10.summary">· 原文未解读</span>
                   <span class="flex-1"></span>
-                  <!-- ★ 2026-11-01：日批 22:00 才抓一次，白天看到的常是前一日；
-                       这两个按钮就是手动补抓 / 让 LLM 归纳主线。 -->
+                  <!-- ★ 2026-11-01：日批 22:00 才抓一次，白天看到的常是前一日。
+                       ★ 2026-11-04：打开观察器时若**今天还没数据**会自动抓一次
+                         （`maybeAutoRefreshJin10`，不烧 LLM、10 分钟节流）；
+                         这两个按钮保留给"今天已有数据但想再补抓 / 要 LLM 归纳"的场景。 -->
                   <button type="button" :disabled="jin10Busy"
                           class="px-1.5 py-0.5 rounded border border-border/60 hover:bg-white/10 disabled:opacity-40"
                           title="立即扫描金十最新汇总（不烧 LLM）"
@@ -4373,7 +4375,11 @@ const jin10Line = computed(() => {
   if (!secs.length) return jin10.value ? '暂无' : ''
   const parts = secs.map(s => `${s.name} ${s.items.length}`)
   const total = secs.reduce((n, s) => n + s.items.length, 0)
-  return `${parts.join(' · ')}（共 ${total} 条）`
+  // ★ 2026-11-04：加日期前缀 —— 折叠态就能看出是**今天**的还是前一天的，不用展开。
+  //   今天的不加标记（省宽度），非今天标 `11-03`（与顶栏日期同口径）。
+  const d = String(jin10.value?.date || '')
+  const tag = d && d !== todayStr ? `${d.slice(5)} ` : ''
+  return `${tag}${parts.join(' · ')}（共 ${total} 条）`
 })
 // 标签配色：与"连板/涨停结构"那套语义区分开，这里只用浅底小徽章
 function jin10TagCls(tag) {
@@ -4412,12 +4418,56 @@ async function loadRiskWatch() {
   } catch {
     jin10.value = null
   }
+  // ★★ 2026-11-04（用户："B + C，如果请求到今天了，就不要再定时刷新了"）：
+  //   **惰性刷新**——打开观察器时看一眼库里有没有"今天"的数据：
+  //     · 有 → 什么都不做（用户明确要求：今天已抓到就别再刷）
+  //     · 无 → 自动抓一次，`summarize=false`（**不烧 LLM**，只外呼 28 个请求）
+  //   ⚠️ 不是定时器：只在"加载观察器"这一刻判一次，页面挂着不动不会再打。
+  maybeAutoRefreshJin10()
+}
+// ★★ 2026-11-04：金十惰性刷新的开关判断（调用点在 `loadRiskWatch` 末尾）。
+//   三道闸，缺一不可 —— 少任何一道都会变成"反复外呼金十"：
+//     ① 看的是**今天**：回放历史日（`selectedDate != todayStr`）绝不外呼，
+//        否则每切一次日期就打 28 个请求。
+//     ② 库里**没有今天的数据**：`jin10.date` 是**数据实际日期**（后端 fallback 时
+//        是昨天），不是请求日期 —— 用它判断才不会把"请求了今天"当成"拿到了今天"。
+//     ③ 10 分钟节流：金十「A股盘前」09:05 才发布，早上反复开关页面不该重复打。
+//        ⚠️ 用 `localStorage` 而非模块变量：**刷新页面会清空模块变量**，
+//           而"反复开页面"恰恰最常表现为刷新。
+const JIN10_AUTO_THROTTLE_MS = 10 * 60 * 1000
+
+function _jin10AutoKey() {
+  // 按自然日分 key ⇒ 跨天自动失效，不用手动清
+  return `jin10:auto:${todayStr}`
+}
+function _jin10AutoThrottled() {
+  try {
+    const last = Number(localStorage.getItem(_jin10AutoKey()) || 0)
+    return last > 0 && (Date.now() - last) < JIN10_AUTO_THROTTLE_MS
+  } catch {
+    // 隐私模式/禁用存储：读不到状态 ⇒ 宁可不自动刷，也不冒"每次打开都外呼"的险
+    return true
+  }
+}
+function _markJin10Auto() {
+  try { localStorage.setItem(_jin10AutoKey(), String(Date.now())) } catch {}
+}
+function maybeAutoRefreshJin10() {
+  if (selectedDate.value !== todayStr) return                    // ① 只在看今天时
+  if (String(jin10.value?.date || '') === todayStr) return       // ② 今天已有数据
+  if (_jin10AutoThrottled()) return                              // ③ 节流
+  _markJin10Auto()
+  refreshJin10(false, { auto: true })
 }
 // ★ 2026-11-01：金十手动刷新。
 //   withSummary=false → 只 `compute()` 抓最新（零 LLM）；
 //   withSummary=true  → 再加一次跨条目归纳（按日缓存，force 才重算）。
 //   失败**必须显式提示**：最常见原因是 JIN10_X_TOKEN 过期，静默失败会让人以为是没数据。
-async function refreshJin10(withSummary) {
+// ★ 2026-11-04：新增 `opts.auto` —— 自动触发时**静默非关键错误**
+//   （用户没点按钮，弹"抓取失败"只会困惑；但 token 失效**必须**提示，
+//    那是唯一需要人工介入的故障）。
+async function refreshJin10(withSummary, opts = {}) {
+  const auto = !!opts.auto
   if (jin10Busy.value) return
   jin10Busy.value = true
   jin10Err.value = ''
@@ -4429,19 +4479,22 @@ async function refreshJin10(withSummary) {
     const c = out.compute || {}
     const s = out.summary || {}
     if (c.ok === false && c.error) {
-      jin10Err.value = String(c.error).includes('x-token')
-        ? 'JIN10_X_TOKEN 已失效：请重新登录金十后更新 Render 环境变量'
-        : `抓取失败：${c.error}`
+      const isToken = String(c.error).includes('x-token')
+      if (!auto || isToken) {
+        jin10Err.value = isToken
+          ? 'JIN10_X_TOKEN 已失效：请重新登录金十后更新服务器 .env 里的 JIN10_X_TOKEN'
+          : `抓取失败：${c.error}`
+      }
     } else if (withSummary && s.ok === false) {
       jin10Err.value = `AI 解读失败：${s.error || '未知原因'}`
-    } else if (c.saved === 0) {
+    } else if (c.saved === 0 && !auto) {
       // ★ 抓到 0 条不等于失败：金十可能还没发布当期汇总（尤其盘前）。
-      //   不说清楚会被当成"按钮没生效"。
-      jin10Hint.value = `已请求 ${c.scanned ?? 0} 次（近 3 天 × 4 栏目），金十暂无汇总`
+      //   不说清楚会被当成"按钮没生效"。自动模式不提示（用户没点，且这属正常）。
+      jin10Hint.value = `已请求 ${c.scanned ?? 0} 次（近 ${c.dates?.length ?? 7} 天 × 4 栏目），金十暂无汇总`
         + `（数据源没有新内容，不是系统故障）`
     }
   } catch (e) {
-    jin10Err.value = `刷新失败：${e?.message || e}`
+    if (!auto) jin10Err.value = `刷新失败：${e?.message || e}`
   } finally {
     jin10Busy.value = false
   }

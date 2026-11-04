@@ -1248,9 +1248,9 @@ def task_jin10_tidy():
     try:
         from app import jin10_tidy as jt
         # ★ 2026-11-01：改按「栏目 × 日期」抓（原 id 扫描从 10-30 起就在漏抓，
-        #   见 `jin10_tidy.compute` 的 docstring）。`days=3` 覆盖"当天未发布、
-        #   前一天已发布"的情况，12 个请求，成本可忽略。
-        r = jt.compute(days=3)
+        #   见 `jin10_tidy.compute` 的 docstring）。`days=7` 覆盖"当天未发布、前一天已发布"，
+        #   同时兜住连休三天以上的空洞，28 个请求，成本可忽略。
+        r = jt.compute(days=7)
         err = str(r.get("error") or "")
         if err.startswith("x-token"):
             return "金十汇总: WARN token 失效，请重新登录金十更新 JIN10_X_TOKEN"

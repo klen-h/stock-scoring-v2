@@ -1314,12 +1314,15 @@ def jin10_tidy_refresh(date: Optional[str] = Query(None, description="YYYY-MM-DD
       这不是故障，是节奏问题；一次手动扫描就能拿到当天已发布的部分。
 
     【做两件事】
-      1. `compute(days=3)` 按「栏目 × 日期」抓最近 3 天（12 个请求，成本可忽略；
-         ★ 2026-11-01 起取代原来的 id 递增扫描，后者对新日期一律返回空）
+      1. `compute(days=7)` 按「栏目 × 日期」抓最近 7 天（28 个请求，成本可忽略；
+         ★ 2026-11-01 起取代原来的 id 递增扫描，后者对新日期一律返回空
+         ★ 2026-11-04：窗口 3 天 → 7 天，避免连休三天后永久补不回来）
       2. `summarize()` 让 LLM 做**跨条目归纳**（1 次调用 ≈1~2k token，按日缓存）
          ⇒ 前端那句"原文未解读"变成真实的「今日主线」
 
-    ★ 与 `observer_review` 同一模式：**只在用户点按钮时跑**，不自动触发。
+    ★ 与 `observer_review` 同一模式：**只在用户点按钮（或前端惰性检查）时跑**，
+      不跑定时器。前端逻辑见 `Workbench.vue` 的 `maybeAutoRefreshJin10()`：
+      库里已有当天数据就什么都不做。
     ★ 任一步失败都不影响另一步，`data` 始终回读最新结果。
     """
     from app import jin10_tidy as jt
