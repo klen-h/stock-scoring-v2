@@ -128,6 +128,17 @@ def _merge_one(prev_bars, zrows, days):
             continue
         if f and abs(float(f) / f_last - 1.0) > 1e-4:
             return prev_bars, "exdiv"         # 缺口内除权 ⇒ 必须腾讯重拉
+        # ★★ 2026-11-04（日批实测：包内 6 只"不可能跳变"，其中 4 只就发生在当天）：
+        #   上面的 factor 检测**有盲区** —— `if f and ...` 在 `f` 为 None/0 时整段跳过，
+        #   而 zzshare 的 factor 偶发为空 ⇒ 除权日的 bar 被当成普通 bar 直接追加 ⇒
+        #   序列出现 +37.8% / +88.7% / +61.7% 的假跳变。
+        #   读侧 `kline_cache._impossible_jump` 只能兜底（每天回退实时拉取，
+        #   还会喂出腾讯 WAF 全局冷却，把后面的战法全跳过）。
+        #   ⇒ 追加前**用价格再自检一次**（A 股单日最大 ±20%，留到 31% 作余量），
+        #     接不上就按除权处理，交给 `_merge_exdiv` 去缩放历史。
+        _prev_c = float(merged[-1][4]) if merged else 0.0
+        if _prev_c > 0 and abs(float(c) / _prev_c - 1) > 0.31:
+            return prev_bars, "exdiv"
         merged.append([d, round(float(o), 2), round(float(h), 2),
                        round(float(l), 2), round(float(c), 2),
                        float(v) / 100.0])     # 股 → 手

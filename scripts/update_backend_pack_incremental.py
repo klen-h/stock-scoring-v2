@@ -109,7 +109,22 @@ def _merge_exdiv(prev_bars, zrows, days):
         out.append([d, round(float(o), 2), round(float(h), 2),
                     round(float(l), 2), round(float(c), 2), float(v) / 100.0])
         added += 1
-    return (out[-days:], added > 0)
+    out = out[-days:]
+    # ★★ 2026-11-04（日批实测：包内 6 只"不可能跳变"，4 只发生在当天）：
+    #   缩放完**再自检一次** —— 若 factor 比例本身不准（缺失/延迟/口径不同），
+    #   按它缩放后仍会断层。此时宁可**不更新这只票**（保留旧 bar），
+    #   也不要往包里写一条断层序列：写了之后读侧 `_impossible_jump` 天天回退实时拉取，
+    #   还会喂出腾讯 WAF 冷却，把当天一半战法整段跳过（实测 `skipped_waf: 5`）。
+    for i in range(max(1, len(out) - 3), len(out)):
+        try:
+            p0, p1 = float(out[i - 1][4]), float(out[i][4])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if p0 > 0 and abs(p1 / p0 - 1) > 0.31:
+            print(f"  [exdiv] 缩放后仍断层（{out[i - 1][0]}→{out[i][0]} "
+                  f"{p1 / p0 - 1:+.1%}）⇒ 跳过该股，保留旧 bar")
+            return prev_bars, False
+    return (out, added > 0)
 
 
 def _load_prev_db(pack_dir):

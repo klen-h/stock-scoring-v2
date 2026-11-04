@@ -194,7 +194,18 @@ def run_daily(force: bool = False) -> dict:
             "ORDER BY anchor_date DESC LIMIT 1")
     except Exception as e:
         print(f"[eq_anchor] 读取上次锚点失败（按需重算）: {str(e)[:80]}")
-    if today_row and today_row.get("universe_n") and not force:
+    # ★★ 2026-11-04（用户报"⚠️ 等权锚态滞后 2026-10-23 < 榜日 2026-11-04"，而任务显示 ✅1s）：
+    #   **幂等判据写错了** —— 原实现只判断"表里最新一行有没有 universe_n"，
+    #   **完全没检查那一行是不是今天**。⇒ 一旦某天写成功（实测停在 10-23），
+    #   此后每天都会命中"当日行已存在（幂等跳过）"⇒ **永久卡死**，
+    #   而任务状态永远是绿的、耗时 1 秒（典型"绿勾掩盖断档"）。
+    #   正确判据：最新行的 `anchor_date` **必须等于今天**才算幂等；
+    #   只要不是今天，就说明"今天还没写过"，继续往下走（写失败也只是不写，
+    #   下次重试，比"永远跳过"好一万倍）。
+    from app.flash.rules import latest_completed_trading_day
+    _today = str(latest_completed_trading_day())[:10]
+    if (today_row and str(today_row.get("anchor_date") or "")[:10] == _today
+            and today_row.get("universe_n") and not force):
         return {"date": today_row["anchor_date"], "skipped": True,
                 "note": "当日行已存在（幂等跳过）"}
 

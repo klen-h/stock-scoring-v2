@@ -304,7 +304,7 @@ def _latest_date_map(codes: list) -> dict:
     return {r["code"]: r["d"] for r in rows}
 
 
-def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
+def backfill_daily(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:
     """每日增量回填（供调度器调用）：基准指数池 + ETF 池 + 战法新个股。
     已回填标的只补最新日期之后，新出现的个股全量。返回统计 dict。
 
@@ -432,9 +432,23 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     #   其余老缺口 ⇒ 按 quota 限量（默认 150），逐日追平。
     #   旧行为是 `pending[:quota]` 一刀切：配额被最旧缺口占满，当日数据反而补不上。
     fresh, rest = _split_fresh(pending, benchmark)
-    batch = fresh + (rest if quota is None else rest[:quota])
+    # ★★ 2026-11-04（用户："拆回填任务，别让老缺口阻塞"）：
+    #   原先把 fresh + rest[:150] 放**同一个循环** ⇒ 老缺口的失败重试把整个任务拖到
+    #   实测 **3440 秒（57 分钟）**，而它排在日批 **[1/49]** —— 后面 48 个任务全被堵着。
+    #   现在按 phase 分段：
+    #     · "fresh"：只补近 5 日缺口（当日刚需，快）→ 排在 [1]
+    #     · "rest" ：只补老缺口（慢、可延后）→ 单独一个任务，**排到日批最后**
+    #     · "all"  ：原行为（单步手动跑用）
+    #   ⚠️ fresh 段**不吃配额**（quota 只作用于 rest），与 2026-10-27 的语义一致。
+    if phase == "fresh":
+        batch = fresh
+    elif phase == "rest":
+        batch = (rest if quota is None else rest[:quota])
+    else:
+        batch = fresh + (rest if quota is None else rest[:quota])
     stats["stock_fresh"] = len(fresh)
     stats["stock_rest"] = len(rest)
+    stats["phase"] = phase
     stats["stock_quota"] = quota if quota is not None else "unlimited"
     stats["stock_rows"] = 0
     for code, name, _ in batch:
@@ -474,7 +488,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA) -> dict:
     return stats
 
 
-def backfill_lagging(quota: int = DAILY_STOCK_QUOTA) -> dict:
+def backfill_lagging(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:
     """补齐滞后个股：**近 5 日缺口无条件全补**，老缺口按 `quota` 限量。
 
     ★★ 2026-10-27（实测：日批 2936s / 1029 只全试 / 904 只仍滞后）：
@@ -484,8 +498,9 @@ def backfill_lagging(quota: int = DAILY_STOCK_QUOTA) -> dict:
       ② 其余老缺口每天推进 `quota` 只（默认 150），慢慢追平。
       需要一次性追平历史时显式传 `quota=None`。
     """
-    print(f"── 滞后个股补齐（近 5 日必补 + 老缺口 {quota if quota is not None else '不限'} 只）──")
-    return backfill_daily(quota=quota)
+    print(f"── 滞后个股补齐 [phase={phase}]"
+          f"（近 5 日必补 + 老缺口 {quota if quota is not None else '不限'} 只）──")
+    return backfill_daily(quota=quota, phase=phase)
 
 
 def check_signal_coverage(days: int = 3) -> dict:

@@ -98,9 +98,15 @@ def task_backfill():
       改为「近 5 日缺口必补（不占配额）+ 老缺口每天 150 只」：
       稳态日批降到 ~10 分钟，且当日数据 100% 齐全；老缺口逐日追平。
       需要一次性追平历史时：`backfill_lagging(quota=None)`。
+
+    ★★ 2026-11-04（日批实测 **3440s = 57 分钟，占整批 55%**）：**拆成两个任务** ——
+      本任务只跑 `phase="fresh"`（近 5 日必补），老缺口交给 `task_backfill_rest`
+      并**排到日批最后**。原来两者在同一个循环里，老缺口的失败重试把排在 [1/49]
+      的这一步拖到 57 分钟，**后面 48 个任务全在等它**（而它们根本不依赖老缺口）。
     """
     from backfill_history import backfill_lagging
-    r = backfill_lagging()          # 默认 quota=DAILY_STOCK_QUOTA（150）
+    # ★★ 2026-11-04：只跑近 5 日必补（当日刚需、快）；老缺口见 task_backfill_rest
+    r = backfill_lagging(phase="fresh")
     # ★ 2026-10-20：显式回报滞后/STALE 数量（原先把整个 dict 塞进日志，
     #   747 只滞后时被淹没；而旧逻辑还会把"源限流"伪装成"已同步"）。
     miss = r.get("stock_missing") or []
@@ -110,6 +116,26 @@ def task_backfill():
     if miss:
         txt += f"（前5: {', '.join(miss[:5])}）"
     return txt
+
+
+def task_backfill_rest():
+    """回测价格库**老缺口**回填（慢，排日批最后，不阻塞任何下游）。
+
+    ★★ 2026-11-04（用户："拆回填任务，别让老缺口阻塞"）：从 `task_backfill` 拆出。
+      它每天最多补 `DAILY_STOCK_QUOTA`（150）只"滞后 > 5 天"的票，单日可能跑几十分钟，
+      但**不产出任何当日刚需数据** —— 只影响历史回测的完整性。
+      而原位置在 `[1/49]`，实测把整批拖成 1h43m。
+    ★ 失败不抛：老缺口晚一天追平无害；当日数据由 `task_backfill`（fresh 段）保证。
+    """
+    from backfill_history import backfill_lagging
+    try:
+        r = backfill_lagging(phase="rest")
+    except Exception as e:
+        return f"回填(老缺口): WARN {str(e)[:70]}（不影响当日数据）"
+    miss = r.get("stock_missing") or []
+    return (f"回填(老缺口): 补 {r.get('stock_rows')} 行"
+            f"（池内老缺口 {r.get('stock_rest')} 只，本轮至多 150）"
+            f"，仍滞后 {len(miss)} 只")
 
 
 def task_kline_closes():
@@ -655,9 +681,19 @@ def task_mainline():
 
 
 def task_lhb():
-    """龙虎榜同步（日榜全量 + 池内个股席位明细）。"""
+    """龙虎榜同步（日榜 + 池内个股席位明细）。
+
+    ★★ 2026-11-04（用户问"哪里可优化"）：实测 **448 秒**，抓了 8 个交易日
+      （`rows 593 / details 37`）。而日批每天跑一次 ⇒ 8 天窗口**绝大部分是重复劳动**，
+      真正需要的只有"上次同步之后的新日期"。改成 2 天窗口：
+        · 正常日：1~2 天增量，请求量降 ~75%；
+        · 断档后：`backfill_days(10, 3)` 手动补（`--tasks lhb` 或临时改回）。
+      ⚠️ 缩小窗口的前提是"日批每天真跑"。若连续停跑超过 2 天，中间那天会永久缺 ——
+        `data_gap` 自检能发现（lhb 表有日期断档检查），但**不会自动补**。
+        真发生就手动 `python -c "from app.mainforce.lhb import backfill_days; backfill_days(10,3)"`。
+    """
     from app.mainforce.lhb import backfill_days
-    return f"龙虎榜: {backfill_days(10, 3)}"
+    return f"龙虎榜: {backfill_days(2, 2)}"
 
 
 def task_intraday_path():
@@ -1553,7 +1589,9 @@ def task_contradiction():
 
 
 TASKS = {
-    "backfill": (task_backfill, "回测价格回填"),
+    "backfill": (task_backfill, "回测价格回填（近5日必补）"),
+    # ★★ 2026-11-04：老缺口回填独立成任务、**排日批最后**（慢但不阻塞下游）
+    "backfill_rest": (task_backfill_rest, "回测价格回填（老缺口，慢，排末）"),
     # ★ 2026-10-26：kline_cache 紧凑收盘列（61 根，≈450B/行）——消费方 stock_facts
     #   用它算 ret5/ret20/距高点，避免整列读 15KB 的 kline_data（27MB/日 → 0.9MB）。
     "kline_closes": (task_kline_closes, "K线紧凑收盘列维护（closes61）"),
@@ -1730,7 +1768,10 @@ DEFAULT_ORDER = ["backfill",
                 "policy_watch",
                  "scenario_watch",
                  "daily_report",
-                 "trader_brief", "retention", "egress_report"]
+                 "trader_brief", "retention", "egress_report",
+                 # ★★ 2026-11-04：老缺口回填排最后 —— 实测 3440s（57 分钟）且不产当日
+                 #   刚需数据，绝不能再占着 [1] 的位置把后面 48 个任务压住。
+                 "backfill_rest"]
 
 # ★★ 2026-10-26：**别名任务**（只注册、不进默认排单）。
 #   合并后前端仍有"单步重算"按钮按旧任务名调用（如 `ContradictionsView` 的
