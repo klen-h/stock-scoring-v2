@@ -397,14 +397,28 @@ def _parse_macro_date(s) -> Optional[datetime]:
     return None
 
 
+_snapshot_cache: Dict = {"key": None, "val": None}
+
+
 def _macro_snapshot(as_of: str = None) -> Dict:
     """macro_daily 最新一条的 us10y / brent（读库，零外部请求）。
 
     ★ `date` 是 TEXT 且混着 `2026/9/7` 斜杠格式 ⇒ **解析成 datetime 后排序**（见上）。
       逐条尝试直到解析出需要的键（有些行 data_json 可能不完整）。
+
+    ★★ 2026-11-04（实测）：整表扫描 + 逐行解析 `data_json` 单次 **26.9 秒**
+      —— 表只有 44 行，但单行 JSON 有几百 KB（整份 macro 快照），国内拉 Supabase 慢。
+      本函数是 `_live_macro()` 的**降级路径**，正常走不到；但一旦上游抖动，
+      每 120s 轮询都会卡 27 秒 ⇒ 必须缓存。key = 截止日（当天内容只变一次）。
     """
+    ck = str(as_of or "")[:10]
+    if _snapshot_cache["key"] == ck:
+        return _snapshot_cache["val"]
     try:
-        rows = db.fetch("SELECT date, data_json FROM macro_daily") or []
+        # ★ 2026-11-04：加 LIMIT —— 只要最近 6 条，没必要把整表 + 全部 data_json 拉回来
+        #   （同 `_brent_peak` 的 16.5 秒问题，见其注释）
+        rows = db.fetch("SELECT date, data_json FROM macro_daily "
+                        "ORDER BY date DESC LIMIT 400") or []
     except Exception as e:
         return {"ok": False, "detail": f"macro_daily 不可读: {str(e)[:60]}"}
     cutoff = str(as_of or "")[:10]
@@ -432,10 +446,112 @@ def _macro_snapshot(as_of: str = None) -> Dict:
         us10y = _num((panel.get("us10y") or {}).get("price"))
         brent = _num((panel.get("brent") or {}).get("price"))
         if us10y is not None or brent is not None:
-            return {"ok": True, "us10y": us10y, "brent": brent,
-                    "date": dt.strftime("%Y-%m-%d"),
-                    "generated_at": d.get("generated_at")}
+            res = {"ok": True, "us10y": us10y, "brent": brent,
+                   "date": dt.strftime("%Y-%m-%d"),
+                   "generated_at": d.get("generated_at")}
+            _snapshot_cache["key"] = ck
+            _snapshot_cache["val"] = res
+            return res
     return {"ok": False, "detail": "macro_daily 近 6 条都解析不出 us10y/brent"}
+
+
+def _live_macro() -> Optional[Dict]:
+    """实时宏观两项（10Y / 布伦特）—— 读 `app.macro` 的**共享 60s 缓存**，零边际请求。
+
+    ★★ 2026-11-04（用户："观察器我想实时，尤其是市场底确认清单"）：
+      第⑤条此前只读 `macro_daily`（**日频落库**，日批写一次）⇒ 盘中看到的分明是
+      昨天的 10Y / 布伦特，而这两项恰恰是整张清单里唯一"分钟级会变、用户会盯着看"
+      的数据（东财 `171.US10Y` / 布伦特都是实时的，早就有）。
+      ⇒ 优先读 `get_macro_panel()`：工作台的宏观面板每轮都在刷它，`TTL_QUOTES=60`
+        内命中缓存 ⇒ **不新增任何外部请求**；冷缓存时最多一次真实抓取。
+
+      ⚠️ 失败返回 None，由调用方**回退 `macro_daily`** —— 宁可显示旧值并标注，
+        也不能因为上游抖动整条变"不可用"（那是把故障放大给用户看）。
+    """
+    try:
+        from app.macro import get_macro_panel
+        panel = get_macro_panel() or {}
+    except Exception as e:
+        print(f"[pbw] 实时宏观不可用，回退 macro_daily: {str(e)[:80]}")
+        return None
+    us = _num((panel.get("us10y") or {}).get("price"))
+    br = _num((panel.get("brent") or {}).get("price"))
+    if us is None and br is None:
+        return None
+    return {"ok": True, "us10y": us, "brent": br, "live": True,
+            "generated_at": (panel.get("generated_at") or panel.get("as_of")
+                             or datetime.now().strftime("%Y-%m-%d %H:%M")),
+            "detail": "实时面板"}
+
+
+def _item_us10y_oil(as_of: str = None, use_live: bool = True,
+                    peak_override: float = None) -> Dict:
+    """第⑤条：10Y 美债 < 门槛 **且**（布伦特 < 门槛 或 自高点回落 > N%）。
+
+    `use_live=True`（默认）优先实时面板，失败回退 `macro_daily`。
+    ★ 抽成独立函数是为了让 `load()` 也能**现读现重算**这一条（见 `load` 内注释）。
+
+    ★★ 2026-11-04（实测踩到）：`peak_override` 参数是为 `load()` 准备的。
+      `_brent_peak()` 要读 `macro_daily` 的 `data_json` —— 那张表只有 **44 行**，
+      但单行 JSON 有几百 KB（整份 macro 快照），国内到 Supabase 拉一次要 **12.7 秒**。
+      `load()` 每次请求都重算第⑤条 ⇒ 每 2 分钟卡 12 秒，必然超时。
+      ⇒ 历史峰值**一天只变一次**，落库时就存在条目里了
+        （`evaluate()` 算的那份 `items.us10y_or_oil.peak`）⇒ `load()`
+        直接把它传进来，**完全跳过扫库**。
+      ⚠️ 老数据（改造前落的行）没有 `peak` 字段 ⇒ 传 None → 回退查库一次，
+        之后日批重写就带上了。
+    """
+    m = (_live_macro() if use_live else None) or _macro_snapshot(as_of=as_of)
+    if not m.get("ok"):
+        return {"checked": False, "source": "auto", "insufficient": True,
+                "live": False, "detail": m.get("detail") or "宏观快照不可用"}
+
+    us, br = m.get("us10y"), m.get("brent")
+    peak = peak_override if peak_override is not None else _brent_peak(as_of=as_of)
+    # ★ 实时价要参与峰值 —— 否则"今天创新高、自高点回落算成 0%"是自相矛盾的
+    if peak is not None and br is not None:
+        peak = max(peak, br)
+    dd = round((peak - br) / peak * 100, 1) if (peak and br and peak > 0) else None
+    ok_us = (us is not None and us < PBW_US10Y)
+    # 油价侧两种"便宜"都算：绝对值 < 门槛，或已从近 N 条高点回落 > N%
+    ok_oil = ((br is not None and br < PBW_BRENT)
+              or (dd is not None and dd > PBW_BRENT_DRAWDOWN))
+    parts = []
+    if us is not None:
+        parts.append(f"10Y {us:.2f}%（需 <{PBW_US10Y:g}%）")
+    if br is not None:
+        _oil = (f"布伦特 {br:.1f}（需 <{PBW_BRENT:g}"
+                f" 或自高点回落 >{PBW_BRENT_DRAWDOWN:g}%")
+        if dd is not None:
+            _oil += f"，当前自高点 {peak:.1f} 已回落 {dd:g}%"
+        parts.append(_oil + "）")
+    return {
+        # ★★ 2026-10-30：**`或` 改成 `且`**（简报第 2 项）。
+        #   原 `ok_us or ok_oil` 的问题：只要油价便宜就能抵掉长端利率，
+        #   而"油价高 + 长端高"恰恰是滞胀组合 —— 该组合下"市场底成立"是误判。
+        #   ⚠️ key 仍叫 `us10y_or_oil`（改了会破坏前端与历史行的一致性），
+        #      但语义已是 and，见本条 detail。
+        "checked": bool(ok_us and ok_oil),
+        "source": "auto:live" if m.get("live") else "auto",
+        "live": bool(m.get("live")),
+        "insufficient": (us is None and br is None),
+        "us10y": us, "brent": br, "peak": peak, "drawdown_pct": dd,
+        "ok_us": ok_us, "ok_oil": ok_oil,
+        "detail": "；".join(parts) or "无数据",
+        "as_of": m.get("generated_at") or m.get("date"),
+    }
+
+
+def _position_hint(n_checked: int, n_total: int) -> str:
+    """仓位提示文案（**不自动执行**）。`evaluate` 与 `load` 共用，避免两处文案漂移。"""
+    if n_checked >= PBW_PASS:
+        return (f"清单 {n_checked}/{n_total} 已达 {PBW_PASS} 条门槛 ⇒ "
+                "市场底**候选确认**（仍属观察结论，不自动改仓位）")
+    return (f"清单 {n_checked}/{n_total} 未达 {PBW_PASS} 条 ⇒ "
+            f"建议总仓位上限 {PBW_POSITION_CAP:g}%（**提示，不自动执行**）")
+
+
+_peak_cache: Dict = {"key": None, "val": None}
 
 
 def _brent_peak(as_of: str = None, days: int = None) -> Optional[float]:
@@ -446,12 +562,42 @@ def _brent_peak(as_of: str = None, days: int = None) -> Optional[float]:
       回落幅度 = (peak - 当前) / peak，与绝对门槛是**并集**关系（任一满足即可）。
     ★ 数据源仍是 `macro_daily`（零外部请求）；窗口按**条数**而非日历天，
       因为快照本身可能有缺口（实测 10-24/25 周末无数据）。
+
+    ★★ 2026-11-04（实测踩到）：旧实现 `SELECT date, data_json FROM macro_daily`
+      —— **全表**取回再逐行 `json.loads`，单次耗时 **16.5 秒**。以前只在日批跑一次
+      还看不出问题；改成"第⑤条每次请求都重算"之后，前端每 2 分钟卡 16 秒必然超时。
+      ⇒ 两处一起修：
+        ① SQL 加 `LIMIT`：历史峰值只需要最近 N 条，取 400 条足够覆盖 60 个交易日
+           （即使 `date` 混着 `2026/9/7` 斜杠格式导致字符串排序不准，条数余量也够）；
+        ② 进程内缓存（key = 截止日 + 条数）：峰值来自历史，**一天只变一次**，
+           没必要每次请求都重新扫库。
     """
     n = int(days or PBW_BRENT_PEAK_DAYS)
+    ck = (str(as_of or "")[:10], n)
+    if _peak_cache["key"] == ck:
+        return _peak_cache["val"]
+    # ★★ 2026-11-04（实测 12.7 秒）：根因不是行数（`macro_daily` 只有 44 行），
+    #   而是**单行 `data_json` 有几百 KB**（整份 macro 快照）—— 44 行就是十几 MB，
+    #   国内拉 Supabase 只能 1MB/s 上下。⇒ 在**服务端**用 PG 的 JSON 操作符
+    #   取出那一个数字，传输量从 MB 级降到 KB 级。
+    #   ⚠️ 测试跑 SQLite（不支持 `::jsonb`）⇒ 语法错误被捕获后走旧语法，
+    #      结果完全一致，只是慢（测试数据量小，无所谓）。
+    slim = True
     try:
-        rows = db.fetch("SELECT date, data_json FROM macro_daily") or []
+        rows = db.fetch(
+            "SELECT date, (data_json::jsonb->'panel'->'brent'->>'price') AS brent "
+            "FROM macro_daily ORDER BY date DESC LIMIT 400") or []
     except Exception:
-        return None
+        slim = False
+        rows = []
+    if slim and not rows:
+        slim = False          # 有些驱动静默返回空（不抛异常）⇒ 不能据此认定"没有数据"
+    if not slim:
+        try:
+            rows = db.fetch("SELECT date, data_json FROM macro_daily "
+                            "ORDER BY date DESC LIMIT 400") or []
+        except Exception:
+            return None
     cut = _parse_macro_date(as_of) if as_of else None
     parsed = []
     for r in rows:
@@ -464,14 +610,20 @@ def _brent_peak(as_of: str = None, days: int = None) -> Optional[float]:
     parsed.sort(key=lambda x: x[0], reverse=True)
     vals: List[float] = []
     for _, r in parsed[:n]:
-        try:
-            d = json.loads(r.get("data_json") or "{}")
-        except (ValueError, TypeError):
-            continue
-        p = _num(((d.get("panel") or {}).get("brent") or {}).get("price"))
+        if slim:
+            p = _num(r.get("brent"))
+        else:
+            try:
+                d = json.loads(r.get("data_json") or "{}")
+            except (ValueError, TypeError):
+                continue
+            p = _num(((d.get("panel") or {}).get("brent") or {}).get("price"))
         if p is not None:
             vals.append(p)
-    return max(vals) if vals else None
+    peak = max(vals) if vals else None
+    _peak_cache["key"] = ck
+    _peak_cache["val"] = peak
+    return peak
 
 
 # ────────────────────────────────────────────────────────────────
@@ -657,39 +809,8 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
                        + (f"；剔除 {', '.join(bbad[-2:])}" if bbad else "")),
         }
 
-    # ⑤ 10Y / 油价
-    m = _macro_snapshot(as_of=day)
-    if not m.get("ok"):
-        items["us10y_or_oil"] = {"checked": False, "source": "auto", "insufficient": True,
-                                 "detail": m.get("detail") or "宏观快照不可用"}
-    else:
-        us, br = m.get("us10y"), m.get("brent")
-        peak = _brent_peak(as_of=day)
-        dd = round((peak - br) / peak * 100, 1) if (peak and br and peak > 0) else None
-        ok_us = (us is not None and us < PBW_US10Y)
-        # 油价侧两种"便宜"都算：绝对值 < 门槛，或已从近 N 条高点回落 > N%
-        ok_oil = ((br is not None and br < PBW_BRENT)
-                  or (dd is not None and dd > PBW_BRENT_DRAWDOWN))
-        parts = []
-        if us is not None:
-            parts.append(f"10Y {us:.2f}%（需 <{PBW_US10Y:g}%）")
-        if br is not None:
-            _oil = (f"布伦特 {br:.1f}（需 <{PBW_BRENT:g}"
-                    f" 或自高点回落 >{PBW_BRENT_DRAWDOWN:g}%")
-            if dd is not None:
-                _oil += f"，当前自高点 {peak:.1f} 已回落 {dd:g}%"
-            parts.append(_oil + "）")
-        items["us10y_or_oil"] = {
-            # ★★ 2026-10-30：**`或` 改成 `且`**（简报第 2 项）。
-            #   原 `ok_us or ok_oil` 的问题：只要油价便宜就能抵掉长端利率，
-            #   而"油价高 + 长端高"恰恰是滞胀组合 —— 该组合下"市场底成立"是误判。
-            #   ⚠️ key 仍叫 `us10y_or_oil`（改了会破坏前端与历史行的一致性），
-            #      但语义已是 and，见本条 detail。
-            "checked": bool(ok_us and ok_oil),
-            "source": "auto", "insufficient": (us is None and br is None),
-            "detail": "；".join(parts) or "无数据",
-            "as_of": m.get("generated_at") or m.get("date"),
-        }
+    # ⑤ 10Y / 油价（★ 2026-11-04：抽到 `_item_us10y_oil`，默认读**实时面板**）
+    items["us10y_or_oil"] = _item_us10y_oil(day)
 
     # ⑥ 强势板块（银行）补跌日（2026-10-23）
     items["bank_catchdown"] = {"source": "auto", **_bank_catchdown(as_of=day)}
@@ -699,12 +820,7 @@ def evaluate(day: str = None, manual: Dict = None) -> Dict:
     prev_n = _prev_checked(day)
     crossed = bool(n_checked >= PBW_PASS and (prev_n is None or prev_n < PBW_PASS))
 
-    if n_checked >= PBW_PASS:
-        hint = (f"清单 {n_checked}/{n_total} 已达 {PBW_PASS} 条门槛 ⇒ "
-                "市场底**候选确认**（仍属观察结论，不自动改仓位）")
-    else:
-        hint = (f"清单 {n_checked}/{n_total} 未达 {PBW_PASS} 条 ⇒ "
-                f"建议总仓位上限 {PBW_POSITION_CAP:g}%（**提示，不自动执行**）")
+    hint = _position_hint(n_checked, n_total)
 
     return {"date": day, "items": items, "n_checked": n_checked, "n_total": n_total,
             "crossed_4": crossed, "position_hint": hint,
@@ -774,6 +890,34 @@ def load(day: str = None) -> Optional[Dict]:
         it.update(etf_hint(day))
     except Exception:
         pass
+    # ★★ 2026-11-04（用户："观察器我想实时，尤其是市场底确认清单"）：
+    #   **第⑤条现读现重算** —— `macro_daily` 是日频（日批写一次），落库快照里的
+    #   10Y / 布伦特盘中**必然是旧值**，而这一条恰恰是整张清单里唯一
+    #   分钟级会变、又最常被盯着的（东财 171.US10Y / 布伦特早就是实时的）。
+    #   ⚠️ **只重算这一条**：其余五条是日频量（成交额/涨跌比/周线/银行补跌），
+    #      重算要打外部请求，而它们一天只变一次 —— 为"实时"付这个代价不值。
+    #   ⚠️ 只在"看最近交易日"时重算：回放历史日必须用当天口径，
+    #      否则会把今天的实时价贴到历史清单上（"写入时刻冒充数据时刻"的老毛病）。
+    try:
+        if body.get("items") and day == str(_default_day())[:10]:
+            _old = body["items"].get("us10y_or_oil") or {}
+            # ★ 峰值用**落库那份**（历史高点一天只变一次）⇒ 这里不扫 macro_daily，
+            #   否则每次请求要拉 12.7 秒的大 JSON（见 `_item_us10y_oil` 注释）
+            _new = _item_us10y_oil(day, peak_override=_old.get("peak"))
+            body["items"]["us10y_or_oil"] = _new
+            if bool(_new.get("checked")) != bool(_old.get("checked")):
+                # 勾选状态真的变了 ⇒ 必须同步重算汇总，
+                # 否则顶部 "N/6" 与条目**自相矛盾**（这类不一致比旧值更难排查）
+                n = sum(1 for v in body["items"].values() if v.get("checked"))
+                total = int(body.get("n_total") or len(body["items"]))
+                body["n_checked"] = n
+                body["position_hint"] = _position_hint(n, total)
+                _prev = body.get("prev_n_checked")
+                body["crossed_4"] = bool(
+                    n >= PBW_PASS and (_prev is None or int(_prev) < PBW_PASS))
+            body["live_checked_at"] = _new.get("as_of") or ""
+    except Exception as e:
+        print(f"[pbw] 第⑤条实时重算失败（返回落库快照）: {str(e)[:80]}")
     return body
 
 
