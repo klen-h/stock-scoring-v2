@@ -165,6 +165,33 @@ else
   log "已跳过前端构建（--skip-frontend）"
 fi
 
+# ── 5. 关键 env 自检：这些变量**默认值=关闭**，不配就是静默失效 ────────────
+#   ★★ 2026-11-04（用户："你昨天叫我加的，我还没加"）：这类开关的问题不是"配错"，
+#     而是**没人记得配**，而且失效时**不报错**（推送照常返回、CI 照常 success）。
+#     ⇒ 每次部署都检查一遍，缺了就在部署输出里直接给出可复制的修复命令。
+#   ⚠️ 只**提示**、不自动改 `.env`：那是用户的部署配置，脚本不该擅自写入。
+_check_env() {
+  local f="$APP_DIR/backend/.env"
+  [ -f "$f" ] || { warn "backend/.env 不存在（服务器首次部署需从 .env.example 复制）"; return 0; }
+  local missing=""
+  # 日常推送总开关：0/缺省 ⇒ 诊断/复盘/盘前盘后简报**全部静默不发**
+  if ! grep -qE '^[[:space:]]*WECHAT_BUSINESS_ALERTS[[:space:]]*=[[:space:]]*1[[:space:]]*$' "$f"; then
+    missing="${missing}  WECHAT_BUSINESS_ALERTS=1\n"
+  fi
+  # 没有任何推送通道 ⇒ 连 force 类（失败告警）也发不出去
+  if ! grep -qE '^[[:space:]]*(WECHAT_WEBHOOK|WECHAT_HOOK_(RISK|COACH|BRIEF|ALERT))[[:space:]]*=[[:space:]]*https' "$f"; then
+    missing="${missing}  WECHAT_WEBHOOK=<群机器人 webhook>\n"
+  fi
+  if [ -n "$missing" ]; then
+    warn "以下开关未配（默认关闭 ⇒ 企微不会收到对应消息，且不会报错）："
+    printf "    ${missing}"
+    warn "修复：编辑 $f 加上这些行，然后重新执行 ./deploy.sh（会重启生效）"
+  else
+    log "推送开关自检通过（日常推送已开）"
+  fi
+}
+_check_env
+
 # ── 5. 编译检查：语法错就别重启了，让旧进程继续顶着 ────────────────────────
 log "后端语法检查"
 "$PY" -m compileall -q "$APP_DIR/backend/app" >/dev/null || die "后端有语法错误，已中止（服务仍在跑旧代码，未受影响）"
