@@ -447,3 +447,16 @@
 - 详情页提速后首屏热态 ≈0.2~0.3s（2026-11-01）：本地评分 + `/score/{sym}/context`
   （14ms 带缓存）+ 财报进程缓存 + regime 建表进程标志 + 恢复改 to_thread。
   `/score/{symbol}` 完整精算只在"本地包不可用/包过期（每天 15:00~18:00 窗口）"时走。
+
+- ★★ Git 推送（2026-11-04 实测）：本机 remote 是 SSH，**github.com:22 不通**
+  （`ssh: connect to host github.com port 22: Connection refused`）。GitHub 官方备用端口可用：
+  `git -c core.sshCommand="ssh -p 443 -o HostName=ssh.github.com" push origin main`
+  （实测认证通过、推送成功）。想长期生效就写 `~/.ssh/config`：
+  ```
+  Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+  ```
+  服务器侧走 `https://ghfast.top/https://github.com/...` 镜像，**不受此影响**。
+  用户反馈浏览器直连 GitHub 也慢/超时 —— 日常浏览建议用 `bgithub.xyz` 等镜像。
