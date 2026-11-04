@@ -49,6 +49,18 @@ EXPECTED_SWITCHES: Dict[str, tuple] = {
     "SECTOR_LINKAGE_MODE": (
         "shadow",
         "板块联动筛选（off/shadow/on；on 须预登记 GO + 拍板）"),
+    # ★★ 2026-11-04（用户："企微没有收到今天的有些信息"）：这个开关**默认 0**，
+    #   关掉后 `notify()` / `push_markdown_batched()` 里所有**非 force** 推送直接 return：
+    #   盘前策略 / 午盘策略 / 盘后复盘 / 交易员报告 / 盈利承压 / 周度回测 / 因子体检…
+    #   只有 force=True 三类能发（关键通知 / 失败告警 / 战法买入信号）。
+    #   表现极度隐蔽：日志里只有一句"未推送（业务推送开关已关）"，没有任何报错。
+    #   ⇒ 部署意图 = 开（用户要日常推送），不符就在启动第一屏打 `[!!]`。
+    "WECHAT_BUSINESS_ALERTS": (
+        "1",
+        "日常推送总开关（0=只发 force 类；诊断/复盘/简报会全部静默）"),
+    "WECHAT_HOOK": (
+        "set",
+        "企微推送通道是否已配置（set/unset；未配则所有推送直接 return、连日志都不打）"),
 }
 
 
@@ -85,6 +97,17 @@ def _actual(name: str) -> Optional[str]:
         if name == "SECTOR_LINKAGE_MODE":
             from app.sector_strength import mode as _ss_mode
             return _ss_mode()
+        if name == "WECHAT_BUSINESS_ALERTS":
+            # 与消费方同源（`wechat.py` 在 import 时求值的常量），不信 os.environ 的裸值
+            from app.flash.wechat import BUSINESS_ALERTS_ENABLED as _biz
+            return "1" if _biz else "0"
+        if name == "WECHAT_HOOK":
+            import os as _os
+            from app.flash import wechat as _w
+            _has = bool((_w.WECHAT_WEBHOOK or "").strip() or any(
+                (_os.environ.get(f"WECHAT_HOOK_{k}") or "").strip()
+                for k in ("RISK", "COACH", "BRIEF", "ALERT")))
+            return "set" if _has else "unset"
     except Exception as e:      # 读失败不阻断（自检自身故障绝不能影响服务启动）
         return f"<err:{type(e).__name__}>"
     return None

@@ -134,6 +134,15 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
+          # ★★ 2026-11-04（用户："企微没有收到今天的有些信息，是不是忘记配置什么了"）：
+          #   本 workflow **从来没有这个开关**，而 `wechat.BUSINESS_ALERTS_ENABLED`
+          #   的代码默认是 **0** ⇒ 日批里所有**业务类**推送全部**静默不发**：
+          #     · 交易员决策简报（盘后）  · 盈利承压监测  · 周度回测报告  · 因子体检
+          #   只有 `force=True` 的能发（失败告警 / 数据缺口 / 市场底清单达成 / 战法信号）。
+          #   表现：日批日志里写着"未推送（业务推送开关已关）"，**CI 依然 success**，
+          #   不翻日志永远发现不了 —— 与 `env_check` 那类"配了没生效"同源。
+          #   ⚠️ 服务端（自有服务器 `backend/.env`）也要有同一行，否则两边各缺一半。
+          WECHAT_BUSINESS_ALERTS: '1'
           # ★ 2026-09-21：zzshare 每日数据积累（zz_daily 任务）需要 token —— 匿名会 0 行/慢。
           #   需在仓库 Secrets 新增 ZZSHARE_TOKEN（值同 Render 的环境变量；官网免费领取）。
           ZZSHARE_TOKEN: ${{ secrets.ZZSHARE_TOKEN }}
