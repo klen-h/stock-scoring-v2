@@ -33,7 +33,7 @@ import contextlib
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -101,7 +101,9 @@ def fetch_page(code: str, end: str, count: int = 800, retries: int = 3):
 def fetch_all(code: str, start: str = START):
     """分段翻页拉全历史（`end` 递减）。"""
     bars = {}
-    end = datetime.now().strftime("%Y-%m-%d")
+    # ★ 2026-11-05（卫生门 naive_now）：翻页起点是"今天"，必须按北京时间取 ——
+    #   生产/CI 是 UTC，naive now 在 00:00~08:00 会取到"昨天"，少翻一页。
+    end = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     for k in range(14):
         items = fetch_page(code, end)
         if not items:

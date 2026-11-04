@@ -392,6 +392,46 @@ def _render_pbw_md(data: dict) -> str:
         return ""
 
 
+def _render_pattern_md(data: dict) -> str:
+    """缩量启动形态候选（★ 2026-11-05，用户："同时把它挪进盘后简报里"）。
+
+    【为什么同时要"独立推送"和"简报一行"】
+      · 独立企微推送负责**当天就能看到**（`pattern_launch.push_scan`）；
+      · 简报这一段负责**复盘归档**——简报是每天必读、且按日落库的那一份，
+        翻旧简报时能查到"那天系统报过哪几只形态"。
+      二者**同一数据源**（`pattern_scan_daily`），不重复计算、不重复推送。
+
+    【红线】正文必须带"非买入信号"。本形态研究结论是
+      「T+10 净超额 +1.80pp，但胜率 43~45%、中位收益为负、T+5 全负」，
+      剥离声明就等于把它包装成选股信号（见 `pattern_launch` 模块头预登记声明）。
+
+    ★ 确定性渲染、失败静默：观察器缺一天不能拖垮简报。
+    """
+    try:
+        from app import pattern_launch as _pl
+        day = str((data or {}).get("date") or "")[:10]
+        d = _pl.load_scan(day) if day else {"items": []}
+        items = d.get("items") or []
+        if not items:
+            return ""
+        out = [f"## 缩量启动形态 · {day}（{len(items)} 只）",
+               "> 候选清单，**非买入信号**（研究：T+10 净超额 +1.80pp，"
+               "但胜率 43~45%、T+5 全负 ⇒ 正边际但不赚钱）。"]
+        for it in items:
+            # 数据源偶发带空格（"新 希 望"）⇒ 渲染前清掉
+            _nm = str(it.get("name") or "").replace(" ", "")
+            seg = [f"`{it.get('code')}` {_nm}".strip()]
+            if it.get("board"):
+                seg.append(str(it["board"]))
+            seg.append(f"启动 {it.get('launch_pct')}%")
+            seg.append(f"缩量 {it.get('vol_ratio')}")
+            out.append("- " + " ｜ ".join(seg))
+        return "\n".join(out) + "\n\n"
+    except Exception as e:
+        print(f"[trader_brief] 形态候选渲染失败（不影响简报）: {e}")
+        return ""
+
+
 def _fallback_skeleton(data: dict, reason: str) -> str:
     """LLM 不可用/失败时的规则骨架简报（绝不用 LLM 常识补写）。"""
     lines = [f"> AI 暂不可用（{reason}），以下为规则版简报（仅确定性内容）", ""]
@@ -523,7 +563,8 @@ def generate_trader_brief(phase: str = None, force: bool = False,
     narrative = _validate_refs(narrative, data)
     funding_md = _render_funding_md(data, phase)   # ★ P1-6：盘前固定展示两融+情绪
     pbw_md = _render_pbw_md(data)                  # ★ 2026-10-18：市场底确认清单（观察器）
-    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n{funding_md}{pbw_md}"
+    pattern_md = _render_pattern_md(data)          # ★ 2026-11-05：缩量启动形态（与企微推送同源）
+    md = (f"{narrative}\n\n## 该做\n{actions_md}\n\n{funding_md}{pbw_md}{pattern_md}"
           f"> 数据窗口：{data.get('candidates_date', today)}")
 
     data_json = json.dumps(data, ensure_ascii=False)

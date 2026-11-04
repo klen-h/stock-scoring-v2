@@ -23,8 +23,13 @@
 """
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# ★ 2026-11-05（卫生门 naive_now）：文件名时间戳必须显式带时区 ——
+#   生产容器是 UTC，naive `datetime.now()` 会让报告文件名比北京日期差 8 小时，
+#   跨零点补跑时就会落到"昨天"的文件名下（本项目的经典坑）。
+_BJ = timezone(timedelta(hours=8))
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"
@@ -78,7 +83,7 @@ def main():
     # 落报告
     out = BACKEND / "backtest_reports"
     out.mkdir(parents=True, exist_ok=True)
-    p = out / f"pbw_replay_{datetime.now().strftime('%Y%m%d_%H%M')}.md"
+    p = out / f"pbw_replay_{datetime.now(_BJ).strftime('%Y%m%d_%H%M')}.md"
     lines = [
         f"# 市场底确认清单 · 历史回放（{start} ~ {end}）\n",
         "> **描述性披露，不作判据、不进决策链。** 口径见 `app/policy_bottom_watch.py` 模块头。\n",

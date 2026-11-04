@@ -297,7 +297,12 @@ _MAX_DAILY_JUMP = 0.31     # A 股单日最大 ±30%（北交所），再留 1% 
 _JUMP_LOOKBACK = 5         # 只查末尾 5 根（000807 的断层就在末 2 根）
 # ★★ 2026-11-04：判坏缓存（code → 断层描述）。包在进程内不变 ⇒ 判定可复用，
 #   避免每个战法都对同一只坏票重复"回退实时拉取"（日批实测因此触发 WAF 冷却）。
+# ★★ 2026-11-05（自查补充）：**必须随包日期失效** ——
+#   日批是短进程（跑完就退出，缓存天然清零）；但**常驻服务（uvicorn）不重启**，
+#   一旦某天把某只票判坏，包修好后它仍会被永久跳过 ⇒ 那只票永远拿不到 K 线。
+#   ⇒ 用 `_bad_pack_day` 记录"判坏时的包日期"，日期一变就整表清空重判。
 _bad_pack: Dict[str, str] = {}
+_bad_pack_day: Dict[str, str] = {"d": None}
 # ⚠️ 只在**末尾**检查：更早的历史断层对"当前"技术指标影响会被均线平滑，
 #   而全序列检查会因早期新股/复牌数据误判整只票。
 
@@ -340,6 +345,14 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
             #   ⇒ 后面 5 个战法被整段跳过（日志 `skipped_waf: 5`，等于当天没扫）。
             #   包在进程内不会变，判坏结果天然可缓存 ⇒ 命中直接短路：
             #   不重复解析、不重复打印、**更不重复打实时接口**（WAF 就是被这个喂出来的）。
+            # ★ 2026-11-05：缓存随包日期失效（常驻服务不重启 ⇒ 否则永远跳过该股）
+            try:
+                _pk_day = str(pack_source._pack_date() or "")
+            except Exception:
+                _pk_day = ""
+            if _pk_day and _pk_day != _bad_pack_day["d"]:
+                _bad_pack.clear()
+                _bad_pack_day["d"] = _pk_day
             if code in _bad_pack:
                 return None
             _k = pack_source.get_klines(code)

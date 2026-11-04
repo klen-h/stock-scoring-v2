@@ -370,7 +370,9 @@ def run(holds=None, step=1, refresh=False, quiet=False, out_dir=None):
 
     out_dir = out_dir or os.path.join(BACKEND_DIR, "backtest_reports")
     os.makedirs(out_dir, exist_ok=True)
-    stamp = dt.datetime.now()
+    # ★ 2026-11-05（卫生门 naive_now）：报告文件名时间戳必须带时区 ——
+    #   CI/生产是 UTC，naive now 在 00:00~08:00 会把报告落到北京的前一天。
+    stamp = dt.datetime.now(dt.timezone(dt.timedelta(hours=8)))
     out = os.path.join(out_dir, f"subfactor_ic_{stamp:%Y%m%d_%H%M}.md")
     content = "\n".join(lines)
     with open(out, "w", encoding="utf-8") as f:

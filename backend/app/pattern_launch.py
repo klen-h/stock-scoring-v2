@@ -349,7 +349,9 @@ def render_scan_md(result: dict) -> str:
         "",
     ]
     for it in items:
-        seg = [f"`{it.get('code')}` {it.get('name') or ''}".strip()]
+        # 数据源偶发带空格（实测 "新 希 望"）⇒ 渲染前清掉，A 股简称本来不含空格
+        _nm = str(it.get("name") or "").replace(" ", "")
+        seg = [f"`{it.get('code')}` {_nm}".strip()]
         if it.get("board"):
             seg.append(str(it["board"]))
         seg.append(f"启动 {it.get('launch_pct')}%")
@@ -406,6 +408,32 @@ def push_scan(result: dict, force: bool = False) -> dict:
     except Exception as e:
         print(f"[pattern] 推送标记写入失败（可能重复推）: {str(e)[:80]}")
     return {"pushed": True, "n": len(items)}
+
+
+def load_scan(date: str = None) -> dict:
+    """读取某日已落库的扫描结果（供**盘后简报**/前端复用，不再重扫）。
+
+    ★★ 2026-11-05（用户："同时把它挪进盘后简报里"）：
+      简报是确定性渲染（`trader_brief` 不把观察器交给 LLM 叙述），
+      所以这里只读库、不重算 —— 与 `pattern_scan_daily` 的落库口径完全一致。
+    返回 `{date, n, items:[{code,name,board,launch_pct,vol_ratio,score}]}`；
+    无当日数据时 `items` 为空（调用方据此整段不输出，而不是写"0 只"占版面）。
+    """
+    ensure_tables()
+    day = str(date or latest_trading_date() or "")[:10]
+    if not day:
+        return {"date": "", "n": 0, "items": []}
+    try:
+        rows = db.fetch(
+            f"SELECT code, name, board, launch_pct, vol_ratio, score "
+            f"FROM {_SCAN_TABLE} WHERE date = %s ORDER BY score DESC", (day,))
+    except Exception as e:
+        print(f"[pattern] 读取扫描结果失败: {str(e)[:80]}")
+        return {"date": day, "n": 0, "items": []}
+    items = [{"code": r.get("code"), "name": r.get("name"), "board": r.get("board"),
+              "launch_pct": r.get("launch_pct"), "vol_ratio": r.get("vol_ratio"),
+              "score": r.get("score")} for r in (rows or [])]
+    return {"date": day, "n": len(items), "items": items}
 
 
 def scan_latest(date: str = None) -> dict:

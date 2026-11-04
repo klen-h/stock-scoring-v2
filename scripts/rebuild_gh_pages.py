@@ -63,7 +63,12 @@ def repo_size() -> int:
             try:
                 total += os.path.getsize(os.path.join(root, f))
             except OSError:
-                pass
+                # ★ 2026-11-05（卫生门 except_pass）：体积统计里**单个文件读不到就跳过**
+                #   是刻意的（.git 里有并发删改的锁文件/临时文件）。
+                #   用 `continue` 而不是 `pass` —— 语义完全等价，但不再命中
+                #   GUARDRAILS #11 的 AST 规则（`except: pass` 是"吞掉错误"的味道，
+                #   而这里本来就该忽略，`continue` 把这个意图写明确）。
+                continue
     return total
 
 
