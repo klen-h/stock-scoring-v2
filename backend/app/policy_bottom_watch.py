@@ -1008,6 +1008,10 @@ def run_daily(day: str = None) -> Dict:
         data["crossed_4"] = bool(data.get("crossed_4")) or already_crossed
         save(data)
         return {"ok": True, "date": data["date"], "n_checked": data["n_checked"],
+                # ★ 2026-11-04：**必须回传 n_total** —— 日批侧原来写死 `/5`，
+                #   而 10-23 加上第⑥条（银行补跌）后已是 **6 条** ⇒ 日志/推送
+                #   一直显示 "2/5"，与页面上的 "2/6" 对不上（用户会以为是两个数）。
+                "n_total": data.get("n_total"),
                 # crossed_4 = 首次跨过（推送信号，与日批调用方的历史键名兼容）
                 "crossed_4": first_cross, "first_cross": first_cross,
                 "today_crossed": data["crossed_4"],

@@ -1440,15 +1440,18 @@ def task_policy_bottom_watch():
         try:
             from app.flash import wechat
             md = pbw.render_markdown(pbw.load(day))
-            wechat.push_markdown_batched("市场底确认清单达成 4/5", md,
-                                         force=True, category="alert")
+            # ★ 2026-11-04：标题原写死 "4/5"，而清单 10-23 起是 **6 条** ⇒ 与页面不一致
+            wechat.push_markdown_batched(
+                f"市场底确认清单达成 {r.get('n_checked')}/{r.get('n_total') or '?'}", md,
+                force=True, category="alert")
             extra = "，已推送企微"
         except Exception as e:
             print(f"[daily-batch] 清单达成推送失败: {e}")     # ASCII（铁律⑥）
             extra = f"，推送失败({str(e)[:40]})"
     elif r.get("already_crossed"):
         extra = "，今日已推送过（幂等）"
-    return f"市场底清单: {r.get('n_checked')}/5{extra}"
+    # ★ 2026-11-04：`/5` 是硬编码，实际 n_total 已是 6（10-23 加的银行补跌条）
+    return f"市场底清单: {r.get('n_checked')}/{r.get('n_total') or '?'}{extra}"
 
 
 # 顺序 = 依赖顺序：行情 → 数据底座 → 扫描 → 汇总

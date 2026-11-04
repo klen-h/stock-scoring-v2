@@ -295,6 +295,9 @@ def append_intraday_bar(klines: Optional[List[Dict]], code: str) -> Optional[Lis
 #   调用方走实时拉取（慢一点但正确）。宁可慢，不可错。
 _MAX_DAILY_JUMP = 0.31     # A 股单日最大 ±30%（北交所），再留 1% 余量
 _JUMP_LOOKBACK = 5         # 只查末尾 5 根（000807 的断层就在末 2 根）
+# ★★ 2026-11-04：判坏缓存（code → 断层描述）。包在进程内不变 ⇒ 判定可复用，
+#   避免每个战法都对同一只坏票重复"回退实时拉取"（日批实测因此触发 WAF 冷却）。
+_bad_pack: Dict[str, str] = {}
 # ⚠️ 只在**末尾**检查：更早的历史断层对"当前"技术指标影响会被均线平滑，
 #   而全序列检查会因早期新股/复牌数据误判整只票。
 
@@ -332,14 +335,22 @@ def get_cached_klines(code: str) -> Optional[List[Dict]]:
     try:
         from app import pack_source
         if pack_source.enabled():
+            # ★★ 2026-11-04（日批实测事故）：同一只坏票在**每个战法**里都被重新判一次
+            #   ⇒ 6 只 × 5 个战法 = 30 次"回退实时拉取" ⇒ 触发腾讯 **WAF 全局冷却 120s**
+            #   ⇒ 后面 5 个战法被整段跳过（日志 `skipped_waf: 5`，等于当天没扫）。
+            #   包在进程内不会变，判坏结果天然可缓存 ⇒ 命中直接短路：
+            #   不重复解析、不重复打印、**更不重复打实时接口**（WAF 就是被这个喂出来的）。
+            if code in _bad_pack:
+                return None
             _k = pack_source.get_klines(code)
             if _k is not None:
                 # ★ 2026-11-01：包也可能是错的（复权缩放失败 ⇒ 断层），
                 #   不能因为"来自包"就无条件信任（000807 正是包内断层）。
                 _bad = _impossible_jump(_k)
                 if _bad:
+                    _bad_pack[code] = _bad
                     print(f"[kline_cache] {code} 包内存在不可能跳变（{_bad}）"
-                          f"⇒ 判不可信，回退实时拉取")
+                          f"⇒ 判不可信，回退实时拉取（本进程内不再重复）")
                     return None
                 return _k
     except Exception:
