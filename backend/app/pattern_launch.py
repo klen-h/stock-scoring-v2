@@ -333,6 +333,81 @@ def _name_industry(code: str) -> tuple:
 # ================================================================
 # 每日扫描（主入口）
 # ================================================================
+def render_scan_md(result: dict) -> str:
+    """扫描结果的企微正文（**每票一行**，不用表格）。
+
+    ⚠️ 企微不支持 Markdown 表格（竖线错位、表头与内容不对齐）—— 这是
+      `coach/monitor.py` 2026-09-15 踩过的坑，这里直接按列表式写。
+    """
+    items = result.get("items") or []
+    if not items:
+        return ""
+    day = str(result.get("date") or "")[:10]
+    lines = [
+        "> 候选清单，**非买入信号**。研究结论：T+10 净超额 +1.80pp，"
+        "但胜率 43~45%、中位收益为负、T+5 全负 ⇒ **正边际但不赚钱**。",
+        "",
+    ]
+    for it in items:
+        seg = [f"`{it.get('code')}` {it.get('name') or ''}".strip()]
+        if it.get("board"):
+            seg.append(str(it["board"]))
+        seg.append(f"启动 {it.get('launch_pct')}%")
+        seg.append(f"缩量 {it.get('vol_ratio')}")
+        if it.get("score") is not None:
+            seg.append(f"质量 {it.get('score')}")
+        lines.append("- " + " ｜ ".join(seg))
+    lines += ["", f"共 **{len(items)}** 只（数据日 {day}）。"
+                  "详情：评分排行 → 「形态」标签。"]
+    return "\n".join(lines)
+
+
+def push_scan(result: dict, force: bool = False) -> dict:
+    """推送当日缩量启动形态候选（**独立一条**企微消息）。
+
+    ★★ 2026-11-05（用户："独立企微推送"）：
+      此前本模块**只落库、零推送** —— 11-03 命中 3 只，用户完全不知道
+      （唯一入口是「评分排行 → 形态」tab，不点进去就永远看不到）。
+
+    【三条硬约束】
+      1. **0 命中不推**：`pattern_scan_daily` 每日命中常在 0~3 只之间，
+         天天推一条"今天没有"只会训练用户忽略这个通道。
+      2. **每日最多一次**：走 `flash.store` 的 `schedule_state`（**按北京日期自动重置**），
+         日批重跑/补跑不会重复轰炸。
+      3. **"非买入信号"必须随消息出现**：本形态胜率 43~45%、T+5 全负，
+         正文第一行就是这句声明 —— 剥离它等于把一个"正边际但不赚钱"的形态
+         包装成选股信号，这是本模块预登记声明里最不能破的一条。
+    """
+    items = result.get("items") or []
+    day = str(result.get("date") or "")[:10]
+    if not items or not day:
+        return {"pushed": False, "reason": "无命中"}
+    try:
+        from app.flash import store
+        if store.is_schedule_done("pattern_push"):
+            return {"pushed": False, "reason": "当日已推送"}
+    except Exception as e:
+        # fail-open：查不到状态就照推（宁可极小概率重复，也不要整天静默）
+        print(f"[pattern] 推送状态查询失败（按未推送处理）: {str(e)[:80]}")
+    body = render_scan_md(result)
+    if not body:
+        return {"pushed": False, "reason": "正文为空"}
+    try:
+        from app.flash import wechat
+        wechat.push_markdown_batched(
+            f"📐 缩量启动形态 · {day[5:]}（{len(items)} 只）",
+            body, force=force, category="alert")
+    except Exception as e:
+        print(f"[pattern] 推送失败: {str(e)[:80]}")
+        return {"pushed": False, "reason": f"推送异常: {str(e)[:60]}"}
+    try:
+        from app.flash import store
+        store.mark_schedule_done("pattern_push")
+    except Exception as e:
+        print(f"[pattern] 推送标记写入失败（可能重复推）: {str(e)[:80]}")
+    return {"pushed": True, "n": len(items)}
+
+
 def scan_latest(date: str = None) -> dict:
     cfg = get_config()
     day = date or latest_trading_date()

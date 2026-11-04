@@ -643,8 +643,13 @@ def task_pattern_launch_scan():
         return f"缩量启动扫描: 数据未就绪（{result.get('note') or 'backtest_prices 空'}）"
     n = pl.persist_scan(result)
     w = pl.update_watch_returns()
+    # ★★ 2026-11-05（用户："独立企微推送"）：命中后推**独立一条**消息。
+    #   0 命中不推、每日最多一次 —— 见 `pattern_launch.push_scan` 的三条硬约束。
+    _p = pl.push_scan(result, force=False)
+    _pt = ("，已推企微" if _p.get("pushed")
+           else (f"，未推（{_p.get('reason')}）" if _p.get("reason") else ""))
     return (f"缩量启动扫描: 命中 {result['n']} 只（落库 {n}）｜ 观察回填 {w} 只 "
-            f"｜ 数据日 {result['date']} ｜ 参数 {result.get('params_hash')}")
+            f"｜ 数据日 {result['date']} ｜ 参数 {result.get('params_hash')}{_pt}")
 
 
 def task_shadow_rank():
