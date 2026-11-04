@@ -27,6 +27,7 @@
 """
 
 import json
+import os
 import time
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -36,7 +37,11 @@ from app.scoring.kline_cache import MIN_SCORING_KLINE_COUNT
 
 
 # ── 配置 ──
-INDICATOR_POOL_SIZE = 300   # 预计算股票池大小（按市值排序前 N 只）
+# ★★ 2026-11-04：原为硬编码 300（写 `.env` 无效）⇒ 改为可配置，默认值不变。
+#   ⚠️ 生效前提同 `kline_cache.CACHE_POOL_SIZE`：`indicator_cache_refresh_loop` 是
+#      `_heavy` 且受 `ENABLE_HEAVY_JOBS` 管控，**只读模式下不跑**；
+#      指标刷新在线上由 GitHub Actions（`indicator-refresh.yml`）产出。
+INDICATOR_POOL_SIZE = int(os.environ.get("INDICATOR_POOL_SIZE") or 300)   # 预计算股票池大小（按市值排序前 N 只）
 MAX_INDICATOR_AGE_HOURS = 36  # 缓存最大有效期（小时）
 SERIES_DAYS = 60            # 存储最近 N 天指标数组（评分最多需要 60 天高低点）
 

@@ -28,6 +28,7 @@
 """
 
 import json
+import os
 import time
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -36,7 +37,13 @@ from app.database import db
 
 
 # ── 配置 ──
-CACHE_POOL_SIZE = 500       # 缓存股票池大小（按市值排序前N只）
+# ★★ 2026-11-04：`CACHE_POOL_SIZE` 原来是**硬编码 500**，用户写进 `.env` 完全无效
+#   （这类"配了但没生效"最容易误判）。现改为可配置，默认值不变。
+#   ⚠️ 实际生效前提：`kline_cache_refresh_loop` **必须在本进程里跑** ——
+#      它是 `_heavy(...)`，`DEPLOY_READ_ONLY=1` / `RENDER_READ_ONLY=1` 下不启动，
+#      此时本参数只影响 `kline_cache_stats()` 上报的 `pool_size` 字段，**不影响任何取数**。
+#      且在 `DATA_SOURCE=pack` 模式下读侧直接读数据包，DB 缓存池同样不参与。
+CACHE_POOL_SIZE = int(os.environ.get("CACHE_POOL_SIZE") or 500)   # 缓存股票池大小（按市值排序前N只）
 CACHE_KLINE_COUNT = 500     # 每只股票缓存多少根K线
 MAX_CACHE_AGE_HOURS = 36    # 缓存最大有效期（小时），超过则强制刷新
 # 评分链路可采信的最小K线数。战法扫描（count=30/60/120）、持仓撤退提醒（count=30）

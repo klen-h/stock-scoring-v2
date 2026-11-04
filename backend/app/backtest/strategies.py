@@ -9,6 +9,7 @@
 """
 
 import json
+import os
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -185,13 +186,18 @@ def _warfare_signal_stream(strategy_name: str = None) -> list:
 #     回测多花点时间，而回测是低频手动操作。
 _PRICES_CACHE = {}        # {(code, start): (ts, bars)} 进程内缓存（回测价格每日一更，长驻减少 Supabase 传输）
 _PRICES_TTL = 21600       # 6 小时：每日回填一次，无需短 TTL 反复重拉
-_PRICES_CACHE_MAX = 200   # ★ 2026-09-24：条数上限（对齐 data.py；无上限时实测达 808 条/234MB）
+# ★★ 2026-11-04（用户："服务器内存还有剩余，把 P0/P1 放开"）：**改为可配置，默认值不变**。
+#   为什么默认不动：GitHub Actions 的日批也会 import 本模块，改默认值等于让 Actions
+#   一起变形（它的内存/egress 预算没变）。只让"显式配置的环境"生效 ⇒
+#   服务器可在 `backend/.env` 放开，Actions 保持原样。
+_PRICES_CACHE_MAX = int(os.environ.get("PRICES_CACHE_MAX") or 200)   # ★ 2026-09-24：条数上限（对齐 data.py；无上限时实测达 808 条/234MB）
 _PRICES_BAR_MAX = 900     # ★ 2026-09-24：单条超过此根数不缓存（防单条吃几十 MB）
 # ★ 2026-09-28（OOM 治理，实测驱动）：再补**字节级兜底**。上面那个 200 条上限**在字节
 #   意义上等于没上限** —— 实测 200 条 = **232MB**（≈1.2MB/条），正是 2026-09-24 内存告警
 #   的头号元凶（`memory_probe` 该项 232.54MB，全进程 81.8%）。bar 数是字节的可靠代理
 #   （每根 bar = 6 字段 dict，结构固定）⇒ 5 万根 ≈ 65MB 封顶。
-_PRICES_BARS_MAX = 50000
+# 字节级兜底（同上，可配置）。换算参考：每根 bar ≈1.3KB ⇒ 10 万根 ≈130MB。
+_PRICES_BARS_MAX = int(os.environ.get("PRICES_BARS_MAX") or 50000)
 
 
 def invalidate_prices_cache() -> None:
