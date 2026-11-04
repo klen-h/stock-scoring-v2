@@ -460,3 +460,13 @@
   ```
   服务器侧走 `https://ghfast.top/https://github.com/...` 镜像，**不受此影响**。
   用户反馈浏览器直连 GitHub 也慢/超时 —— 日常浏览建议用 `bgithub.xyz` 等镜像。
+
+- ★★ **Supabase 大 JSON 表的读取代价**（2026-11-04 实测，`macro_daily`）：
+  表只有 **44 行**，但单行 `data_json` 有**几百 KB** ⇒ `SELECT date, data_json` 全表
+  要拉十几 MB，国内 **12.7 秒**（`_macro_snapshot` 26.9 秒）。
+  两条纪律：
+  ① **请求路径上绝不 `SELECT *` / 全表取 JSON 大字段** —— 用 PG 的
+     `col::jsonb->'k'->>'f'` 在服务端取值，或只 `LIMIT` 到真正需要的条数；
+  ② 只在**日批/后台**做的重活，一旦被搬进"每次请求都算"的路径，必须同时加
+     **进程内缓存**（key 用日期）或**落库复用**（如 `policy_bottom_watch` 的 peak）。
+  同类风险：`macro_daily` / `macro_history` / 各类 `*_daily.data_json`。
