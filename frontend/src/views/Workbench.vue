@@ -460,6 +460,10 @@
                     <span class="text-[10px] text-muted truncate flex-1"
                           :title="`区间 [${x.range_low}, ${x.range_high}]`">
                       [{{ x.range_low }}, {{ x.range_high }}]</span>
+                    <span v-if="x.washout"
+                          class="shrink-0 px-1 rounded text-[9px] cursor-help"
+                          :class="woCls(x.washout)" :title="woTitle(x.washout)">
+                      {{ woShort(x.washout) }}</span>
                   </div>
                 </div>
                 <div class="text-[10px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
@@ -476,6 +480,10 @@
                   <span class="text-[10px] text-muted truncate flex-1"
                         :title="`振幅 ${((x.amp60 || 0) * 100).toFixed(0)}%`">
                     [{{ x.range_low }}, {{ x.range_high }}]</span>
+                  <span v-if="x.washout"
+                        class="shrink-0 px-1 rounded text-[9px] cursor-help"
+                        :class="woCls(x.washout)" :title="woTitle(x.washout)">
+                    {{ woShort(x.washout) }}</span>
                 </div>
                 <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
                   {{ rg.note }}
@@ -4809,6 +4817,28 @@ function rgStateCls(s) {
   if (s === '突破') return 'bg-rose-500/20 text-rose-300'
   if (s === '上沿') return 'bg-sky-500/20 text-sky-300'
   return 'bg-border/40 text-muted'
+}
+// ★★ 2026-11-06（功能 2）：洗盘 vs 破位打分徽章。
+//   ⚠️ 只给"到下沿/破位"的票打分（后端 annotate 已过滤），区间中部没有"该不该割"的问题。
+function woCls(w) {
+  if (!w) return ''
+  if (w.score >= 3) return 'bg-amber-500/20 text-amber-300'
+  if (w.score <= -2) return 'bg-emerald-500/20 text-emerald-300'
+  return 'bg-border/40 text-muted'
+}
+function woShort(w) {
+  if (!w) return ''
+  const map = { 偏洗盘: '洗', 部分洗盘证据: '半', 偏破位: '破', 证据不足: '?' }
+  return `${w.score >= 0 ? '+' : ''}${w.score} ${map[w.verdict] || ''}`.trim()
+}
+// 悬停展开五项证据：分数本身没有意义，**哪几项成立**才有意义
+function woTitle(w) {
+  if (!w) return ''
+  const mark = { washout: '✓', break: '✗', neutral: '·', na: '—' }
+  const lines = (w.signals || []).map(s =>
+    `${mark[s.side] || '·'} ${s.label} ${s.value}：${s.why}`)
+  lines.push('', w.verdict, w.caveat || '')
+  return lines.join('\n')
 }
 // 区间内按位置展示：越靠下沿越靠前（那是"要不要割"最需要判断的地方）
 const rgTop = computed(() => {

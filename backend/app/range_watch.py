@@ -409,6 +409,16 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
     total_in = sum(int(a.get("ir") or 0) for a in agg or [])
 
     holds = set(_holdings_codes())
+    # ★★ 功能 2（2026-11-06）：给"到下沿/已破位"的票补「洗盘 vs 破位」分项证据。
+    #   只读本地表（`range_watch` + `stock_facts_wide`），零外呼。
+    #   ⚠️ 只对 pos ≤ 0.25 的票打分：区间中部/上沿没有"该不该割"的问题，
+    #      给它们打分只会制造噪音。失败静默（主表照常展示）。
+    wa_date = ""
+    try:
+        from app import washout_alert as wa
+        wa_date = wa.annotate(items, d)
+    except Exception as e:
+        print(f"[range] washout annotate failed: {str(e)[:80]}")
     mine = [it for it in items if it["code"] in holds]
 
     return {
@@ -418,8 +428,13 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
         "state_counts": counts,
         "rows": items,
         "mine": mine,
+        # `stock_facts_wide` 的日期（洗盘打分用的资金流/涨跌幅来自它）；
+        # 与 `date` 不同时前端要提示，否则会把旧资金流当成当日
+        "washout_stats_date": wa_date,
         "note": ("区间口径：上下沿取前 59 日高低点；`range_days`=距最近一次创新高/新低；"
-                 "振幅需在 15%~35% 且持续 ≥15 日才算区间。纯观察，不改评分/闸门。"),
+                 "振幅需在 15%~35% 且持续 ≥15 日才算区间。"
+                 "洗盘分只是「证据条数」汇总，不是概率，不构成买卖建议。"
+                 "纯观察，不改评分/闸门。"),
     }
 
 
