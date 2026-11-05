@@ -389,9 +389,15 @@ def load_latest(codes: list) -> dict:
     from app.mainforce.flow import consec_label as _consec_label
     from app.mainforce.flow import consec_tier as _consec_tier
     now = time.time()
-    if _latest_cache["ts"] and now - _latest_cache["ts"] > _LATEST_TTL_SEC:
+    # ★★ 2026-11-06（防御 `cache_release` 的 clear()）：用 `.get` 而不是 `["ts"]`。
+    #   线上实测：`cache_release._clear_one` 曾把 `_latest_cache` 整个清成 `{}`，
+    #   此后每次调用都 `KeyError: 'ts'`，主力状态列**永久失效直到重启**。
+    #   根因已在 `cache_release._CLEAR_AS_RESET` 修掉，这里再做一层容错 ——
+    #   缓存被任何方式破坏时，最多"重算一次"，不能让整个功能消失。
+    _ts = _latest_cache.get("ts") or 0.0
+    if _ts and now - _ts > _LATEST_TTL_SEC:
         _latest_cache.update({"ts": 0.0, "data": {}})
-    cached = _latest_cache["data"]
+    cached = _latest_cache.setdefault("data", {})
     missing = [c for c in dict.fromkeys(codes) if c not in cached]
     if missing:
         rows = db.fetch("""

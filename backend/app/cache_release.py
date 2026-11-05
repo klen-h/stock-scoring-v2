@@ -81,11 +81,35 @@ _RELEASABLE = [
 _last_release_ts = 0.0
 
 
+# ★★ 2026-11-06（线上实测事故）：少数缓存是**带元信息的 dict**，
+#   直接 `.clear()` 会把元信息一起清掉，消费方随后按 key 取值就炸。
+#   实测：`mainforce.state._latest_cache = {"ts": 0.0, "data": {}}`，
+#         被清成 `{}` 之后 `load_latest()` 里 `_latest_cache["ts"]` 抛
+#         `KeyError: 'ts'` ⇒ **每一次** `portfolio_radar` 都打印
+#         `主力状态读取失败（跳过）: 'ts'`，持仓雷达/评分榜的主力列**永久丢失**，
+#         直到进程重启（因为缓存再也不会被重建）。
+#   ⇒ 这类缓存改成"清空后写回初始结构"，而不是留一个空 dict。
+_CLEAR_AS_RESET = {
+    ("app.mainforce.state", "_latest_cache"): {"ts": 0.0, "data": {}},
+    # ★★ 同类排查结论（2026-11-06，逐个核对初始值）：
+    #   下面这几个也是"初始就带元信息键"的 dict，`clear()` 后消费方取 `["ts"]` 同样会炸。
+    #   它们暂时没在日志里暴露，只是因为调用方有 try/except 兜底 ——
+    #   但功能是**静默失效**的（比如闸门资金流永远退回回源，egress 暴涨）。
+    #   ⇒ 与 `_latest_cache` 同一修法，全部按"清空后恢复初始结构"处理。
+    ("app.mainforce.flow", "_FS_CACHE"): {"ts": 0.0, "data": {}},
+    ("app.mainforce.gate", "_fs_cache"): {"ts": 0.0, "map": None},
+    ("app.mainforce.trade_gate", "_contra_cache"): {"ts": 0.0, "n": 0},
+    ("app.mainforce.confluence", "_env_cache"): {"ts": 0.0, "snap": None},
+}
+
+
 def _clear_one(mod_path: str, attr: str) -> bool:
     """清空一个模块级缓存容器（dict/list/set）。
 
     ★ **只碰已加载的模块**（`sys.modules.get`，不 import）—— 与 `routers/system.py`
       的探针同一条原则：不主动 import ⇒ 零副作用，且未加载的模块本来就不占内存。
+    ★ 带元信息键的 dict 走 `_CLEAR_AS_RESET`（清空后恢复初始结构），
+      否则消费方会 `KeyError` —— 见该常量上方的实测事故。
     """
     mod = sys.modules.get(mod_path)
     if mod is None:
@@ -96,6 +120,11 @@ def _clear_one(mod_path: str, attr: str) -> bool:
     try:
         if isinstance(c, (dict, list, set)):
             c.clear()
+            reset = _CLEAR_AS_RESET.get((mod_path, attr))
+            if reset is not None:
+                # `reset` 一律是 dict 初始结构；deepcopy 防止多个调用方共享同一份
+                import copy
+                c.update(copy.deepcopy(reset))
             return True
     except Exception:
         pass
