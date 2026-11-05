@@ -26,6 +26,21 @@ from app.signals.tracker import HOLDINGS_MAP
 RATE_LIMIT = 1.0   # 每请求间隔（秒），东财对连续请求会断连，放慢更稳
 DAILY_STOCK_QUOTA = 150  # 每晚个股回填上限：数据源限流下长任务易被打断，分批推进更稳
 
+# ★★ 2026-11-06（日批实测：回测价格回填被框架杀死 "单任务超时（>1800s）"）：
+#   单只失败的真实成本 ≈ **32 秒**：
+#     东财 fetch_history（timeout=15，Read timed out）
+#     → 降级腾讯（WAF 501，快速返回）
+#     → `_stale_fail` 里 time.sleep(2)
+#     → 换源再试一次（又是 15s 超时）
+#   而当晚 `必补 484 只`，源**本身就没有新数据**（日志：002129 最新 10-30 < 基准 11-05）
+#   ⇒ 484 × 32s ≈ 4.3 小时，把一个"源没数据"变成了"任务超时"的假故障，
+#     还连带 486 只滞后完全没推进。
+#   ⇒ 加两道止损：**时间预算** + **连续 STALE 熔断**。
+#   为什么不直接调大框架超时：那只是把 30 分钟拖成 1 小时，仍然是空转；
+#     而"源不可用"这件事本来就该快速返回、下轮再试。
+BACKFILL_BUDGET_SEC = {"fresh": 900, "rest": 600}   # 分段预算（框架上限 1800s，留余量）
+CONSEC_STALE_LIMIT = 6      # 连续 N 只 STALE ⇒ 判定源不可用，本轮中止
+
 # ══════════════════════════════════════════════════════════════════════════
 # 基准指数池（★ 2026-09-29 P0：基准错配修复的数据底座）
 # ══════════════════════════════════════════════════════════════════════════
@@ -450,10 +465,7 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:
     stats["stock_rest"] = len(rest)
     stats["phase"] = phase
     stats["stock_quota"] = quota if quota is not None else "unlimited"
-    stats["stock_rows"] = 0
-    for code, name, _ in batch:
-        stats["codes"] += 1
-        stats["stock_rows"] += backfill(code, name, quiet=True)
+    _run_batch_guarded(batch, phase, stats)
 
     # 缺失检测：回填后重新取最新日期，仍落后基准的进告警清单
     stats["stock_missing"] = []
@@ -474,9 +486,13 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:
     _zz_txt = (f"｜zz按天 {stats.get('zz_codes')} 只/{stats.get('zz_rows')} 行"
                f"（除权跳过 {stats.get('zz_exright_skipped')}）"
                if stats.get("zz_ok") else "｜zz按天 不可用")
-    print(f"[backfill_daily] 完成: {stats['codes']} 只 / {stats['rows']} 行"
+    # ★ 2026-11-06：主动中止时写"中止"而不是"完成"——否则日志看起来像补完了，
+    #   实际还有几百只没轮（这正是上次"补 9 只却报完成"的误导来源）。
+    _ab = stats.get("aborted") or ""
+    print(f"[backfill_daily] {'中止' if _ab else '完成'}: {stats['codes']} 只 / {stats['rows']} 行"
           f"（基准 {stats.get('benchmark')}｜必补 {stats.get('stock_fresh')}"
           f" / 老缺口 {stats.get('stock_rest')}｜本轮排队 {len(batch)}"
+          f"｜实际 {stats.get('stock_done')}"
           f"{_zz_txt}｜ETF 缺 {len(_etf_miss)}｜STALE {stats.get('stale')}）")
     if _etf_miss:
         print(f"  [WARN] ETF 缺失 {len(_etf_miss)}: " + "、".join(_etf_miss[:20])
@@ -486,6 +502,52 @@ def backfill_daily(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:
               + "、".join(_miss[:20]) + (" …" if len(_miss) > 20 else ""))
     _TARGET_DATE = None
     return stats
+
+
+def _run_batch_guarded(batch: list, phase: str, stats: dict) -> None:
+    """逐只回填，带**两道止损**：时间预算 + 连续 STALE 熔断。
+
+    ★★ 2026-11-06（日批实测：被框架按 1800s 杀死）：
+      单只失败约 **32 秒**（东财 15s 超时 → 腾讯 WAF → sleep 2s → 再试 15s），
+      而当晚 `必补 484 只`、源本身没有新数据 ⇒ 484 × 32s ≈ 4.3 小时。
+      加护栏后最多 `CONSEC_STALE_LIMIT × 32s ≈ 3 分钟`就能判断"源不可用"并退出。
+
+    判据用 `_STALE_COUNT` 的**增量**，而不是 `backfill()` 的返回值：
+      返回 0 既可能是"源没数据"(STALE)，也可能是"本来就已同步"(正常)，
+      用返回值分不开 —— 拿返回值做熔断会把"全部已同步"误判成"源挂了"。
+
+    ★ 抽成独立函数是为了**可单测**：`backfill()` 可 patch 成假函数，
+      不用真发 484 次网络请求、也不用连数据库。
+    """
+    _budget = BACKFILL_BUDGET_SEC.get(phase, BACKFILL_BUDGET_SEC["fresh"])
+    # ⚠️ 用 `monotonic` 而不是 `time.time()`：后者会被系统校时/NTP 跳变影响，
+    #    而且 Windows 上精度约 15ms —— 单测里 50 次快速循环会落在同一 tick，
+    #    导致"预算已用尽"判断不出来（实测踩过）。
+    _deadline = time.monotonic() + _budget
+    _consec = 0
+    _done = 0
+    _aborted = ""
+    stats["stock_rows"] = 0
+    for code, name, _ in batch:
+        if _consec >= CONSEC_STALE_LIMIT:
+            _aborted = (f"连续 {_consec} 只 STALE ⇒ 判定数据源不可用，"
+                        f"剩余 {len(batch) - _done} 只留待下轮")
+            break
+        if time.monotonic() > _deadline:
+            _aborted = (f"时间预算 {_budget}s 用尽，"
+                        f"剩余 {len(batch) - _done} 只留待下轮")
+            break
+        _before = _STALE_COUNT
+        stats["codes"] = stats.get("codes", 0) + 1
+        stats["stock_rows"] += backfill(code, name, quiet=True)
+        _done += 1
+        # 只有"这一只新产生了 STALE"才累加；成功一次就清零（偶发失败不该触发熔断）
+        _consec = _consec + 1 if _STALE_COUNT > _before else 0
+    stats["stock_done"] = _done
+    stats["aborted"] = _aborted
+    if _aborted:
+        # ⚠️ 必须显式打印：否则"只补了 9 只"看起来像 bug，而实际是主动止损
+        print(f"  [STOP] 逐只回填中止：{_aborted}")
 
 
 def backfill_lagging(quota: int = DAILY_STOCK_QUOTA, phase: str = "all") -> dict:

@@ -110,9 +110,17 @@ def task_backfill():
     # ★ 2026-10-20：显式回报滞后/STALE 数量（原先把整个 dict 塞进日志，
     #   747 只滞后时被淹没；而旧逻辑还会把"源限流"伪装成"已同步"）。
     miss = r.get("stock_missing") or []
-    txt = (f"回填完成: {r.get('stock_rows')} 行，基准 {r.get('benchmark')}，"
+    # ★★ 2026-11-06：`aborted` 必须回显 —— 上次日批"补 9 只"却报"完成"，
+    #   而真实原因是源无数据、逐只在空转（最终被框架按 1800s 杀死）。
+    #   区分"补完了"和"主动止损"是排障的第一信息。
+    _ab = r.get("aborted") or ""
+    txt = (f"回填{'中止' if _ab else '完成'}: {r.get('stock_rows')} 行，"
+           f"基准 {r.get('benchmark')}，"
            f"必补 {r.get('stock_fresh')} / 老缺口 {r.get('stock_rest')}，"
+           f"实际试 {r.get('stock_done')} 只，"
            f"仍滞后 {len(miss)} 只，STALE {r.get('stale') or 0} 只")
+    if _ab:
+        txt += f"｜⚠ {_ab}"
     if miss:
         txt += f"（前5: {', '.join(miss[:5])}）"
     return txt
