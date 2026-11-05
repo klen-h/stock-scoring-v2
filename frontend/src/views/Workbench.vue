@@ -416,6 +416,10 @@
             </div>
             <div>
               <div class="text-[11px] text-muted mb-1">指数关键位（前低 / 整数位 / 年内低点）
+                <!-- ★ 2026-11-05：现价实时（支撑位仍为收盘口径），一眼看出数据新旧 -->
+                <span v-if="keyLv?.live" class="text-emerald-400/80"
+                      :title="`现价实时（${keyLv.live_as_of || '刚刚'}）；支撑位仍为 ${keyLv.date} 收盘口径；broke 只在收盘确认时置位`">
+                  · 实时</span>
                 <span v-if="keyLv?.fallback" class="text-amber-400/80"
                       :title="`今日 ${keyLv.requested_date} 的收盘数据尚未生成，这里显示的是 ${keyLv.date} 收盘结果`">
                   · {{ keyLv.date }} 收盘</span></div>
@@ -429,6 +433,12 @@
                   <span class="w-20 text-right text-muted" :title="r.detail">{{ r.support_type }} {{ r.support }}</span>
                   <span class="w-12 text-right font-mono"
                         :class="(r.dist_pct ?? 99) <= 1.5 ? 'text-amber-300' : 'text-muted'">{{ fmtPct(r.dist_pct) }}</span>
+                  <!-- ★ 2026-11-05：盘中已跌破、但尚未收盘确认（`broke` 只在收盘置位） -->
+                  <span v-if="r.live_broke" class="px-1 rounded text-[10px] bg-rose-500/20 text-rose-300"
+                        title="盘中已跌破支撑；`broke` 只在收盘确认时置位，这里是实时提醒">盘中跌破</span>
+                  <!-- 支撑位与现价差一个量级以上 ⇒ 落库数据本身可疑 -->
+                  <span v-else-if="r.support_suspect" class="px-1 rounded text-[10px] bg-slate-500/20 text-slate-300"
+                        title="支撑位与现价差一个量级以上，落库数据可疑；距离已回退为收盘口径">支撑存疑</span>
                   <span class="px-1 rounded text-[10px]" :class="keyBadge(r.status)">{{ r.status }}</span>
                 </div>
               </div>

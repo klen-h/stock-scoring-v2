@@ -21,6 +21,7 @@ from __future__ import annotations
 """
 import math
 import os
+import time
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -193,6 +194,62 @@ def compute(day: str = None) -> Dict:
             "year_low_n": sum(1 for r in rows if r["first_year_low"])}
 
 
+# ── 实时现价（2026-11-05 轻量实时化）─────────────────────────────────────────
+_LIVE_TTL = 15.0
+_live_cache: Dict = {"ts": 0.0, "map": {}}
+
+
+def _live_index_quotes() -> Dict[str, Dict]:
+    """实时指数报价 `{code: {price, chg_pct, time}}`（15 秒进程缓存）。
+
+    ★★ 2026-11-05（用户："把关键位这条做成轻量实时"）：
+      支撑位（前低60/整数位/年内低点）**一天只变一次**（收盘后才更新）；
+      `broke` 是"首次失守"的**状态量**，盘中翻转会污染它（见 `load` 的 ⚠️）。
+      盘中真正在变的只有一件事：**现价离支撑多远**。
+      ⇒ 所以这里**只取指数现价**，零 K 线请求、零重算 ——
+        与 `compute()` 的"遍历 300 根 K 线整体重算"完全不是一回事。
+
+    ⚠️ 15 秒进程缓存：一次刷新里 6 个指数只该打一轮；用户手动刷新也不会连打。
+    ⚠️ 失败返回 `{}`，调用方**原样返回收盘值**（宁可显示昨天的，也不显示空白）。
+    """
+    now = time.time()
+    if _live_cache["ts"] and now - _live_cache["ts"] < _LIVE_TTL:
+        return _live_cache["map"]
+    out: Dict[str, Dict] = {}
+    try:
+        from app.tencent import get_index
+    except Exception as e:
+        print(f"[keylevel] 实时指数模块不可用（回退收盘值）: {str(e)[:80]}")
+        _live_cache.update({"ts": now, "map": out})
+        return out
+    # ★★ 2026-11-05（实测 6 只**串行 10.1 秒**）：`get_index` 每次都是真实 HTTP（无缓存层）。
+    #   并发 6 个 ⇒ 降到单个请求的耗时（~1~2s）。前端 120s 轮询本就够，
+    #   但首屏/手动刷新不该让人干等 10 秒。
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _one(item):
+        _c = item[0]
+        try:
+            q = get_index(_c) or {}
+            _p = q.get("price")
+            if _p:
+                return _c, {"price": float(_p), "chg_pct": q.get("change_pct"),
+                            "time": str(q.get("time") or "")}
+        except Exception:
+            pass              # 单指数失败不影响其余（与 compute() 的 fail-open 同口径）
+        return _c, None
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(6, max(1, len(INDICES)))) as ex:
+            for _c, _v in ex.map(_one, INDICES):
+                if _v:
+                    out[_c] = _v
+    except Exception as e:
+        print(f"[keylevel] 实时指数并发抓取失败（回退收盘值）: {str(e)[:80]}")
+    _live_cache.update({"ts": now, "map": out})
+    return out
+
+
 def load(day: str = None) -> Dict:
     """读取某日的指数关键位结果。
 
@@ -231,11 +288,43 @@ def load(day: str = None) -> Dict:
     except Exception as e:
         return {"date": day, "rows": [], "note": f"读取失败: {str(e)[:80]}"}
     extra_map = _extra_levels()
+    # ★★ 2026-11-05（轻量实时化）：**只在"看最近交易日"时**用实时价覆盖。
+    #   回放历史日必须原样返回当日结论 —— 否则就是"用今天的价回看昨天"
+    #   （本项目反复禁过的"写入时刻冒充数据时刻"）。
+    #   ⚠️ 判据用 `requested` 而不查 `MAX(date)`：多一次远程查询要多 1~2 秒
+    #      （实测 Supabase 单次往返 1~2s），而这个判断根本不需要看库里有没有行。
+    try:
+        from app.flash.rules import latest_completed_trading_day
+        _today = str(latest_completed_trading_day())[:10]
+    except Exception:
+        _today = ""
+    _use_live = (not requested) or (bool(_today) and requested >= _today)
+    live_map = _live_index_quotes() if _use_live else {}
+
     out = []
     for x in rows:
         code = x.get("code")
         close = _num(x.get("close"))
         chg = _num(x.get("chg_pct"))
+        support = _num(x.get("support"))
+        _lq = live_map.get(code) or {}
+        _lpx = _num(_lq.get("price"))
+        if _lpx:                               # 有实时价 ⇒ 现价/涨跌用实时
+            close = _lpx
+            if _lq.get("chg_pct") is not None:
+                chg = _num(_lq.get("chg_pct"))
+        # ★★ 2026-11-05 护栏：`compute()` 的 K 线源存在串标的的既有 bug ——
+        #   实测 2026-11-04 落库：`000905 中证500 close=8.33/support=8.04`、
+        #   `000985 中证全指 close=15.95/support=14.66`，而真实点位是 6740 / 5211。
+        #   用这种 support 去算实时距离会得到 **83742%** 这种荒谬值（本次实测踩到）。
+        #   ⇒ 只接受"支撑位与现价同一量级"（0.1x~10x）；否则**沿用落库的 dist_pct**
+        #     并标 `support_suspect`，让别人一眼知道是支撑位有问题而不是行情有问题。
+        _sup_ok = bool(support and support > 0)
+        _dist_live = None
+        if _lpx and _sup_ok:
+            _ratio = _lpx / support
+            if 0.1 <= _ratio <= 10:
+                _dist_live = round((_ratio - 1) * 100, 2)
         prev = (close / (1 + chg / 100)) if close and chg is not None else None
         extra = []
         for L in extra_map.get(code or "", []):
@@ -248,17 +337,37 @@ def load(day: str = None) -> Dict:
         out.append({
             "code": code, "name": x.get("name"),
             "close": close, "chg_pct": chg,
-            "support": _num(x.get("support")), "support_type": x.get("support_type"),
-            "dist_pct": _num(x.get("dist_pct")), "status": x.get("status"),
+            "support": support, "support_type": x.get("support_type"),
+            # 距离用实时价重算（支撑位一天只变一次，不重算）；
+            # 支撑位量级可疑 或 无实时值 ⇒ 沿用落库的收盘口径
+            "dist_pct": (_dist_live if _dist_live is not None
+                         else _num(x.get("dist_pct"))),
+            "status": x.get("status"),
+            # ⚠️ `broke` 仍是**日批的收盘确认值**，盘中绝不改写（它是状态量，
+            #    只在"首次失守"时置位；盘中反复翻转会把它变成噪音）
             "broke": bool(x.get("broke")),
             "first_year_low": bool(x.get("first_year_low")),
+            # 盘中是否**正在**跌破 —— 纯展示，与 `broke` 的"首次失守"语义分开
+            # ⚠️ 有实时值时返回 True/False（False 也要显式给，前端才知道"已判断"），
+            #    无实时值才是 None（未知）
+            "live_broke": (bool(_dist_live < 0) if _dist_live is not None else None),
+            # 支撑位与现价差一个量级以上 ⇒ 落库数据本身有问题（见上方护栏注释）
+            "support_suspect": bool(_lpx and _sup_ok and _dist_live is None),
+            "live": bool(_lpx),
+            "live_as_of": str(_lq.get("time") or ""),
             "detail": x.get("detail"),
             "extra": extra,
         })
     note = ("观察器：关键位失守只说明结构走坏，不构成买卖信号；"
             "失守后需看能否快速收回。")
+    live_any = any(r.get("live") for r in out)
+    if live_any:
+        note = (f"现价为实时（支撑位仍为 {d} 收盘口径；"
+                "`broke` 只在收盘确认时置位）。") + note
     if fallback:
         # 同 crowding_watch：不写"尚未生成"，周末/长假永远不会有该日数据。
         note = f"该日（{requested}）无收盘数据，此处显示 {d} 收盘结果。" + note
     return {"date": d, "rows": out, "requested_date": requested,
-            "fallback": fallback, "note": note}
+            "fallback": fallback, "live": live_any,
+            "live_as_of": next((r.get("live_as_of") for r in out if r.get("live")), ""),
+            "note": note}
