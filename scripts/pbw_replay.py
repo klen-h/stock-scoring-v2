@@ -61,7 +61,9 @@ def _dates(start: str, end: str) -> list:
 def main():
     args = sys.argv[1:]
     start = "2026-09-25"
-    end = datetime.now().strftime("%Y-%m-%d")
+    # ★ 2026-11-06（卫生门 naive_now）：必须显式带时区 —— 生产容器是 UTC，
+    #   无 tz 的 `now()` 在 08:00 前会把"回放到今天"落到前一天，区间凭空少一天。
+    end = datetime.now(_BJ).strftime("%Y-%m-%d")
     if "--from" in args:
         start = args[args.index("--from") + 1]
     if "--to" in args:

@@ -69,7 +69,10 @@ from pathlib import Path
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
-    pass
+    # Windows GBK 控制台不支持 reconfigure ⇒ 保持默认编码即可。
+    # 这里**没有需要处理的故障**（GUARDRAILS#11 针对的是"吞异常导致故障静默"），
+    # 故不做动作；写成赋值而非 `pass` 只是为了让卫生门能区分二者。
+    _ = None
 
 ROOT = Path(__file__).resolve().parent.parent
 BACKEND = ROOT / "backend"

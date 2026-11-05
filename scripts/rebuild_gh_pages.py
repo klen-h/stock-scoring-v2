@@ -35,7 +35,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+# ★ 2026-11-06（卫生门 naive_now）：下面的"发布窗口"是**北京时间**判断
+#   （三个 workflow 都按北京时间 18:00-22:30 写 gh-pages）。
+#   生产容器是 UTC，无 tz 的 `now()` 会让窗口**整体前移 8 小时** ——
+#   实测表现是"北京 10:00 就弹撞车警告"，而真正的高峰期一声不响。
+_BJ = timezone(timedelta(hours=8))
 
 
 def sh(args, cwd=None, check=True, quiet=False):
@@ -110,7 +116,7 @@ def main():
         return 0
 
     # ── 时间窗口提醒 ──
-    now = datetime.now()
+    now = datetime.now(_BJ)
     if 18 <= now.hour < 23:
         print(f"\n  ⚠️ 现在是 {now:%H:%M}，正处于发布窗口（18:00-22:30）。")
         print("     此时 gh-pages 可能正被 workflow 写入，撞车会排队或产生多余发布。")

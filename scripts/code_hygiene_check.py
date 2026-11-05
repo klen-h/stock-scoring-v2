@@ -32,9 +32,19 @@ SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '.zcode', 'docs', '.codebudd
              'reports', 'dist', 'tmp_archive'}
 SCAN_EXT = {'.py', '.vue', '.js', '.ts'}
 
+# ★★ 2026-11-06：`utcnow` / `naive_now` 从**逐行正则**改为 **AST 检测**（见下方 AST_NAIVE）。
+#   起因（CI 实测）：正则会把"提到这些词"的文本也算成违规 ——
+#     · 本文件第 11 行 docstring 里写着 `datetime.now()`（规则说明本身）
+#     · `pbw_replay.py:30` 的注释里也用这个写法解释坑
+#   两者都不是调用，却让基线从 150 涨到 155，且**每加一条规则说明就会再涨一次**。
+#   ⇒ 只认真正的 `ast.Call`（`datetime.now()` 无参 / `datetime.utcnow()`）。
+#   这也与 `except_pass` 的 AST 检测口径统一了。
+AST_NAIVE = [
+    ("utcnow", None, 'datetime.utcnow() 手加时区（坑 7）'),
+    ("naive_now", None, 'datetime.now() 无时区（生产 UTC 差 8h）'),
+]
+
 PATTERNS = [
-    ("utcnow", re.compile(r'datetime\.utcnow\('), 'datetime.utcnow() 手加时区（坑 7）'),
-    ("naive_now", re.compile(r'datetime\.now\(\)'), 'datetime.now() 无时区（生产 UTC 差 8h）'),
     ("naive_fromtimestamp", re.compile(r'fromtimestamp\((?![^)]*tz)[^)]*\)'),
      'fromtimestamp 未带 tz（BK-08 同型）'),
     # except_pass 改用 AST 检测（见 count_all）：同行正则查不到跨行 `except:\n    pass`，
@@ -76,10 +86,19 @@ def iter_files():
                     yield os.path.join(dirpath, f)
 
 
+def _attr_root(n):
+    """`a.b.c` → 'a'（取最左的 Name），用于识别 `datetime.now()` 的调用者。"""
+    while isinstance(n, ast.Attribute):
+        n = n.value
+    return n.id if isinstance(n, ast.Name) else ''
+
+
 def count_all():
     counts = {name: [] for name, _rx, _d in PATTERNS}
     counts[AST_ONLY[0]] = []
     counts[UNUSED_DESTRUCTURE[0]] = []
+    for _n, _rx, _d in AST_NAIVE:      # ★ AST 检测的两条也要有 key，否则 KeyError
+        counts[_n] = []
     for p in iter_files():
         rel = os.path.relpath(p, ROOT).replace(os.sep, '/')
         try:
@@ -113,6 +132,25 @@ def count_all():
                 if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 \
                         and isinstance(node.body[0], ast.Pass):
                     counts[AST_ONLY[0]].append('%s:%d' % (rel, node.body[0].lineno))
+                # ★ 2026-11-06：naive_now / utcnow 的 AST 版（见 AST_NAIVE 上方说明）。
+                #   只认真正的调用：`datetime.now()` **无参数**才算；
+                #   `datetime.now(_BJ)` / `datetime.now(timezone.utc)` 是正确写法，不报。
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    f = node.func
+                    if _attr_root(f) != 'datetime':
+                        continue
+                    if f.attr == 'utcnow':
+                        counts['utcnow'].append('%s:%d' % (rel, node.lineno))
+                    elif f.attr == 'now' and not node.args and not node.keywords:
+                        counts['naive_now'].append('%s:%d' % (rel, node.lineno))
+    # ★ 排序：`ast.walk` 的顺序不保证行号递增，而 `main()` 用
+    #   `counts[name][base_n:]` 取"超出基线的新增点" —— 不排序会指错位置。
+    def _k(s):
+        parts = s.split(':')
+        return (parts[0], int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0)
+
+    for _k2 in counts:
+        counts[_k2].sort(key=_k)
     return counts
 
 
@@ -129,7 +167,7 @@ def main():
     baseline = json.load(io.open(BASELINE, encoding='utf-8'))
     failed = False
     all_names = ([(n, _rx, d) for n, _rx, d in PATTERNS]
-                 + [AST_ONLY, UNUSED_DESTRUCTURE])
+                 + [AST_ONLY, UNUSED_DESTRUCTURE] + AST_NAIVE)
     for name, _rx, desc in all_names:
         now_n, base_n = len(counts[name]), int(baseline.get(name, 0))
         mark = 'OK ' if now_n <= base_n else 'FAIL'
