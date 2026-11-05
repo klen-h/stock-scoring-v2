@@ -231,11 +231,35 @@ def _market_section() -> Dict:
 
 # ── ② 板块 ────────────────────────────────────────────────────────────────
 def _sector_section() -> Dict:
-    out = {"top": [], "bottom": [], "inflow": [], "outflow": [], "error": ""}
+    out = {"top": [], "bottom": [], "inflow": [], "outflow": [], "error": "",
+           "stale": False, "as_of": "", "src": ""}
     try:
         from app.eastmoney import get_sectors
         rows = [r for r in (get_sectors("industry", 200) or [])
                 if _num(r.get("change_pct")) is not None]
+        # ★★ 2026-11-05（用户："快讯解读用了昨天的数据"）——**实测的时点缺陷**：
+        #   `get_sectors` 的降级链是 东财主站 → 东财 delay → **zzshare（日频）** → 新浪。
+        #   一旦落到 zzshare，`change_pct` 就是**上一个交易日收盘**的板块涨幅，
+        #   而 prompt 里只有一行"### 板块（涨跌幅）"——**没有任何日期**。
+        #   实测后果：11-05 09:56 的解读说「贵金属大涨 10.08%」，
+        #     而 `sector_daily` 里贵金属 **11-04 = +10.45%**、
+        #     11-05 实时只有 **+5.84%** ⇒ AI 拿昨天的数当"今天盘面"讲，
+        #     还据此判"快讯利空 vs 盘面大涨 = 情绪透支"（结论本身因此失真）。
+        #   ⇒ 这里把来源与时点显式标出来，交给 prompt 声明 + SYSTEM 约束。
+        #   ⚠️ 东财/新浪分支的 dict **没有 source 字段**（=实时），
+        #      zzshare 分支才带 `source="zzshare"` ⇒ 全为 zzshare 才判日频。
+        _srcs = {str(r.get("source") or "") for r in rows}
+        if _srcs == {"zzshare"}:
+            out["stale"] = True
+            out["src"] = "zzshare(日频)"
+            try:
+                from app.database import db
+                _r = db.fetch_one("SELECT MAX(date) AS d FROM sector_daily")
+                out["as_of"] = str((_r or {}).get("d") or "")[:10]
+            except Exception:
+                out["as_of"] = ""
+        else:
+            out["src"] = "eastmoney/sina(实时)"
         rows.sort(key=lambda r: _num(r.get("change_pct")) or 0, reverse=True)
         for r in rows[:4]:
             out["top"].append({"name": r.get("name"), "chg_pct": _r2(r.get("change_pct")),
@@ -463,6 +487,12 @@ SYSTEM = (
     "**阈值必须由输入数字推导并写明推导式**（如 3690×0.99≈3654），"
     "不得出现输入中不存在的数（2026-10-25 实测：模型曾编造'跌破3650/低于15000亿'，"
     "两个数输入里都没有）。\n\n"
+    "6) ★★ 若某段标注了「数据日 YYYY-MM-DD（日频快照）」或带 ⚠️，"
+    "说明那段是**上一交易日收盘**的数 —— 引用时**必须带上日期**"
+    "（如「11-04 收盘贵金属 +10.45%」），**严禁**说成「今日盘面/今天领涨」；"
+    "当日实时数据缺失时，宁可不描述该维度，也**不得**拿旧数冒充当日。"
+    "（2026-11-05 实测：板块源降级到日频后，模型把 11-04 的 +10% 当"
+    "11-05 盘中数据讲，还据此判定了「情绪透支」。）\n\n"
     "★ 只输出一个 JSON 对象（不要 markdown、不要代码围栏）：\n"
     '{"conclusion": "<盘面定性；若快讯中有改变 A 股风险偏好的信息，点名最关键的几条（各一句话，不限总字数；快讯与盘面一致时如实说明即可）>", '
     '"invalidate": "<推翻条件：≤50字，1~2 条可观测阈值>", '
@@ -486,7 +516,13 @@ def _user_prompt(p: Dict) -> str:
     lines.append(f"- 涨/跌/平：{m.get('up')}/{m.get('down')}/{m.get('flat')}"
                  f"；涨跌比 {m.get('ratio')}；成交额 {m.get('amount_yi')} 亿")
     lines.append(f"- 涨停/跌停（板幅精确口径 limit_stats）：{m.get('limit_up')}/{m.get('limit_down')}")
-    lines += ["", "### 板块（涨跌幅）"]
+    # ★★ 2026-11-05：板块段落**必须带时点**（详见 `_sector_section` 的注释）。
+    #   降级到日频源时说清"这是哪天的收盘"，否则模型会把昨天的 10% 当今天盘面讲。
+    if s.get("stale"):
+        lines += ["", f"### 板块（涨跌幅）⚠️ 数据日 {s.get('as_of') or '未知'}"
+                      "（日频快照，**不是今日实时**）"]
+    else:
+        lines += ["", "### 板块（涨跌幅，实时）"]
     lines += [f"- 领涨 {x.get('name')} {x.get('chg_pct')}%（龙头 {x.get('leader')}"
               f" {x.get('leader_chg')}%）" for x in (s.get("top") or [])]
     lines += [f"- 领跌 {x.get('name')} {x.get('chg_pct')}%" for x in (s.get("bottom") or [])]
