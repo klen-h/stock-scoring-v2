@@ -1417,6 +1417,31 @@ def event_targets_themes(user: dict = Depends(get_current_user)) -> Dict:
     return {"themes": et.list_themes()}
 
 
+@router.get("/range-watch")
+def range_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                state: Optional[str] = Query(None, description="下沿/上沿/中部/破位/突破"),
+                limit: int = Query(300, ge=1, le=3000),
+                user: dict = Depends(get_current_user)) -> Dict:
+    """震荡区间识别（每只票的箱体上下沿、位置、持续天数）。
+
+    **纯观察，不进决策链**。读 `range_watch` 表（日批产物），零外部请求。
+
+    ★★ 2026-11-05（用户："底部震荡常匪夷所思、散户易被洗下车"）：
+      排查发现**结构性缺陷** —— 系统所有卖出判据都是**幅度**
+      （−8% / 回撤 8% / 固定 3 日），**没有"这个跌幅在箱体什么位置"的坐标**。
+      在区间下沿，−8% 可能只是日常试探，但规则眼里和"趋势破位"长得一模一样。
+
+    ★ 区间口径（详见 `app/range_watch.py` 文件头）：
+      · 上下沿取**前 59 日**高低点（不含当日，否则当日永远在自己区间内）
+      · `range_days` = 收盘价连续待在区间内的天数（回溯需 >60 根，见 MIN_BARS）
+      · 振幅须在 15%~35%、持续 ≥15 日才算"区间"（太窄是死水，太宽是趋势）
+
+    ★ 返回里 `mine` 是**我的持仓切片** —— 用户最关心"我手上这些在不在箱体里"。
+    """
+    from app import range_watch as rg
+    return rg.load(date, state=state, limit=limit)
+
+
 @router.get("/people-watch")
 def people_watch(people: int = Query(83, description="people_org_id，默认 83=特朗普"),
                  days: int = Query(30, ge=1, le=180),

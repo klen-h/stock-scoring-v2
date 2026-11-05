@@ -1274,6 +1274,33 @@ def task_crowding_watch():
         return f"拥挤赛道: WARN {str(e)[:70]}"
 
 
+def task_range_watch():
+    """震荡区间识别（2026-11-05，用户："底部震荡常匪夷所思、散户易被洗下车"）。
+    **纯观察器，不进决策链**。
+
+    ★ 为什么需要：现有卖出判据**全是幅度**（`exit_advice` 的 −8%/回撤8%、
+      `hold_3d_review` 固定 3 日），**没有"这个跌幅在箱体什么位置"的坐标**。
+      在区间下沿，−8% 可能只是日常试探，但规则眼里和"趋势破位"一模一样。
+    ★ 产物：每只票的 `range_low/range_high/amp60/range_days/pos_in_range/state`。
+      后续「洗盘打分」「持仓耐心度」都读这张表，不重复算。
+    ★ 性能：2864 只**必须批量读 K 线** —— 逐只 `get_klines` 每只新开 sqlite 连接，
+      本地实测直接跑到超时（见 `range_watch._bulk_klines` 注释）。
+    ★ 存储：只留最近 5 天（DB 已 398MB/500MB，2026-10-29 实测）。
+    ★ 失败不抛（观察器缺一天不影响主链）。
+    """
+    try:
+        from app import range_watch as rg
+        r = rg.compute(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"震荡区间: WARN {str(r.get('reason'))[:70]}"
+        sc = r.get("state_counts") or {}
+        return (f"震荡区间: {r.get('n')} 只 / 区间内 {r.get('in_range')} / "
+                f"下沿 {sc.get('下沿', 0)} / 破位 {sc.get('破位', 0)} / "
+                f"{r.get('elapsed_ms')}ms")
+    except Exception as e:
+        return f"震荡区间: WARN {str(e)[:70]}"
+
+
 def task_jin10_tidy():
     """金十「每日汇总」抓取（2026-10-30，用户："现在缺国内的消息"）。**纯素材采集**。
 
@@ -1578,7 +1605,10 @@ def task_market_observers():
     parts, bad = [], 0
     for label, fn in (("拥挤赛道", task_crowding_watch),
                       ("关键位", task_key_level_watch),
-                      ("AI篮子", task_ai_basket_watch)):
+                      ("AI篮子", task_ai_basket_watch),
+                      # ★ 2026-11-05：震荡区间（用户"底部震荡洗盘"诉求的功能 1）。
+                      #   同样纯只读、写小表、失败不抛。
+                      ("震荡区间", task_range_watch)):
         txt, is_bad = _run_sub(fn, label)
         parts.append(txt)
         bad += 1 if is_bad else 0
@@ -1824,6 +1854,7 @@ ALIAS_TASKS = {
     "crowding_watch": (task_crowding_watch, "〔别名〕拥挤赛道（单步）"),
     "key_level_watch": (task_key_level_watch, "〔别名〕指数关键位（单步）"),
     "ai_basket_watch": (task_ai_basket_watch, "〔别名〕AI 硬件篮子（单步）"),
+    "range_watch": (task_range_watch, "〔别名〕震荡区间（单步）"),
     "etf_share_watch": (task_etf_share_watch, "〔别名〕宽基 ETF 份额（单步）"),
     "policy_announcement_watch": (task_policy_announcement_watch, "〔别名〕增持公告（单步）"),
     "policy_bottom_watch": (task_policy_bottom_watch, "〔别名〕市场底清单（单步）"),

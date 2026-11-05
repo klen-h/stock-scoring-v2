@@ -540,6 +540,9 @@ export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', 
 //   ⚠️ 不传 date 时后端取事实表最新日，所以回放历史日也安全（会带 fallback 标记）。
 export const getEventTargets = (params) => http.get('/system/event-targets', { params, timeout: 20000 })
 export const getEventThemes = () => http.get('/system/event-targets/themes', { timeout: 20000 })
+// ★★ 2026-11-05：震荡区间识别（每只票的箱体上下沿/位置/持续天数）。
+//   纯读 range_watch 表（日批产物）⇒ 零外部请求。返回含 `mine`（我的持仓切片）。
+export const getRangeWatch = (params) => http.get('/system/range-watch', { params, timeout: 20000 })
 // ★★ 2026-11-05：人物立场时间线（金十「人物讲话」，T+1 更新，非实时）。
 //   ⚠️ 这是**历史**纵览；当日实时看快讯（flash_brief）。
 export const getPeopleTimeline = (params) => http.get('/system/people-watch', { params, timeout: 20000 })

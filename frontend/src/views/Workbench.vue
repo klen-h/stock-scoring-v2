@@ -427,6 +427,63 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-05（用户："底部震荡常匪夷所思、散户易被洗下车"）：
+               震荡区间识别。系统所有卖出判据都是**幅度**（−8% / 回撤 8% / 固定 3 日），
+               **没有"这个跌幅在箱体什么位置"的坐标** —— 在区间下沿，−8% 可能只是
+               日常试探，但规则眼里和"趋势破位"一模一样。本卡补的就是这个坐标。
+               ★ 纯观察：不改评分、不进闸门、不碰模拟盘。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="toggleRg()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="rgDot"></span>
+              <span class="text-xs font-semibold shrink-0">震荡区间</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ rgLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ rgOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="rgOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="rgBusy && !rg" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!rg" class="text-xs text-muted">—</div>
+              <div v-else-if="!rg.total" class="text-xs text-muted">{{ rg.note || '暂无数据' }}</div>
+              <template v-else>
+                <div v-if="(rg.mine || []).length" class="mb-2">
+                  <div class="text-[10px] text-muted mb-0.5">我的持仓</div>
+                  <div v-for="x in rg.mine" :key="'m' + x.code"
+                       class="flex items-center gap-1.5 text-[11px] leading-tight">
+                    <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
+                    <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
+                    <span class="shrink-0 px-1 rounded text-[10px]" :class="rgStateCls(x.state)">
+                      {{ x.state }}</span>
+                    <span class="font-mono text-muted shrink-0 w-[62px] text-right">
+                      pos {{ (x.pos == null ? '—' : x.pos.toFixed(2)) }}</span>
+                    <span class="font-mono text-muted shrink-0 w-[44px] text-right">
+                      {{ x.range_days }}日</span>
+                    <span class="text-[10px] text-muted truncate flex-1"
+                          :title="`区间 [${x.range_low}, ${x.range_high}]`">
+                      [{{ x.range_low }}, {{ x.range_high }}]</span>
+                  </div>
+                </div>
+                <div class="text-[10px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
+                <div v-for="x in rgTop" :key="'r' + x.code"
+                     class="flex items-center gap-1.5 text-[11px] leading-tight">
+                  <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
+                  <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
+                  <span class="shrink-0 px-1 rounded text-[10px]" :class="rgStateCls(x.state)">
+                    {{ x.state }}</span>
+                  <span class="font-mono text-muted shrink-0 w-[62px] text-right">
+                    pos {{ (x.pos == null ? '—' : x.pos.toFixed(2)) }}</span>
+                  <span class="font-mono text-muted shrink-0 w-[44px] text-right">
+                    {{ x.range_days }}日</span>
+                  <span class="text-[10px] text-muted truncate flex-1"
+                        :title="`振幅 ${((x.amp60 || 0) * 100).toFixed(0)}%`">
+                    [{{ x.range_low }}, {{ x.range_high }}]</span>
+                </div>
+                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                  {{ rg.note }}
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- ★★ 2026-11-05（用户："昨天 Kimi 分析出重大利好、创业板 +6.40%，
                系统没到能买的条件，我错过了。重头做你会加什么？"）：
                事件 → 观察名单**落点**。信息层（快讯解读/金十/剧本追踪）早就够满，
@@ -3194,6 +3251,8 @@ import {
   getCrossMarketWatch,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
   getEventTargets, getEventThemes,
+  // ★★ 2026-11-05：震荡区间（箱体上下沿/位置/持续天数，含我的持仓切片）
+  getRangeWatch,
   // ★★ 2026-11-05：人物立场时间线（金十「人物讲话」，T+1 更新，非实时）
   getPeopleTimeline, getPeopleList,
   // ★ 2026-11-01：金十手动刷新（抓最新 + LLM 归纳）
@@ -4382,13 +4441,16 @@ const xmkOpen = ref(!!_obs.xmk)
 const evtOpen = ref(!!_obs.evt)
 // ★ 2026-11-05：人物立场（默认收起，且**展开才加载** —— 它不是盘面，是复盘用的）
 const pplOpen = ref(!!_obs.ppl)
+// ★★ 2026-11-05：震荡区间（用户："底部震荡常匪夷所思、散户易被洗下车"）。
+//   它不是"再看一个指标"，是给"−8% 该不该止损"补一个箱体坐标。
+const rgOpen = ref(!!_obs.rg)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
-      evt: evtOpen.value, ppl: pplOpen.value,
+      evt: evtOpen.value, ppl: pplOpen.value, rg: rgOpen.value,
       scen: scenOpen.value, ai: aiOpen.value,
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
@@ -4396,7 +4458,7 @@ function saveObs() {
 }
 const obsAllOpen = computed(() =>
   wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
-  && scenOpen.value && aiOpen.value && pbwOpen.value)
+  && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
@@ -4404,6 +4466,7 @@ function toggleAllObs() {
   xmkOpen.value = v
   evtOpen.value = v
   pplOpen.value = v
+  rgOpen.value = v
   // 人物时间线是懒加载：展开时才请求（loadPeople 内部自己判重）
   if (v) loadPeople()
   scenOpen.value = v
@@ -4570,6 +4633,9 @@ const ppl = ref(null)
 const pplPeople = ref([])
 const pplId = ref(83)            // 默认特朗普（他的讲话对大类资产影响最大）
 const pplBusy = ref(false)
+// ★★ 2026-11-05：震荡区间。给"−8% 该不该止损"补一个**箱体坐标**。
+const rg = ref(null)
+const rgBusy = ref(false)
 const riskLoading = ref(false)
 const riskErr = ref('')
 const crowdTop = computed(() => {
@@ -4700,6 +4766,56 @@ function togglePpl() {
   saveObs()
   if (pplOpen.value && !ppl.value) loadPeople()
 }
+// ★★ 2026-11-05：震荡区间（懒加载，展开才请求）。
+const rgDot = computed(() => {
+  const d = rg.value
+  if (!d || !d.total) return 'bg-slate-500'
+  // 有持仓落在区间内 ⇒ 蓝点：这不是警报，是"该看一眼箱体位置"
+  return (d.mine || []).some(x => x.in_range) ? 'bg-sky-400' : 'bg-slate-500'
+})
+const rgLine = computed(() => {
+  const d = rg.value
+  if (!d) return '展开加载'
+  if (!d.total) return d.note || '暂无数据（等日批首次运行）'
+  const sc = d.state_counts || {}
+  const mi = (d.mine || []).length
+  const miIn = (d.mine || []).filter(x => x.in_range).length
+  const parts = [`区间内 ${d.in_range || 0}`,
+                 `下沿 ${sc['下沿'] || 0}`, `破位 ${sc['破位'] || 0}`]
+  if (mi) parts.push(`持仓 ${mi}（区间内 ${miIn}）`)
+  return parts.join(' · ')
+})
+async function loadRange() {
+  if (rgBusy.value) return
+  rgBusy.value = true
+  try {
+    const r = await getRangeWatch({ limit: 200 })
+    rg.value = r.data || null
+  } catch {
+    if (!rg.value) rg.value = { total: 0, rows: [], mine: [], note: '加载失败（接口需登录）' }
+  } finally {
+    rgBusy.value = false
+  }
+}
+function toggleRg() {
+  rgOpen.value = !rgOpen.value
+  saveObs()
+  if (rgOpen.value && !rg.value) loadRange()
+}
+// 位置色：下沿/破位偏"该看"，上沿/突破偏"要动"，中部中性
+function rgStateCls(s) {
+  if (s === '破位') return 'bg-emerald-500/20 text-emerald-300'
+  if (s === '下沿') return 'bg-amber-500/20 text-amber-300'
+  if (s === '突破') return 'bg-rose-500/20 text-rose-300'
+  if (s === '上沿') return 'bg-sky-500/20 text-sky-300'
+  return 'bg-border/40 text-muted'
+}
+// 区间内按位置展示：越靠下沿越靠前（那是"要不要割"最需要判断的地方）
+const rgTop = computed(() => {
+  const rows = (rg.value && rg.value.rows) || []
+  return rows.filter(x => x.in_range)
+    .sort((a, b) => (a.pos ?? 1) - (b.pos ?? 1)).slice(0, 8)
+})
 // ★ 2026-10-30：金十汇总——折叠态的一行摘要（各栏目条数）
 const jin10Line = computed(() => {
   const secs = jin10.value?.sections || []
