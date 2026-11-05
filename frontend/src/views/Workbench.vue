@@ -506,6 +506,57 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-05（用户给了金十「人物讲话」接口，并指出"不是实时的"）：
+               人物立场时间线。价值不在"再加新闻源"，而在**同一人 48 小时内说反话**：
+                 Trump 11-03 打击设施 → 11-04 可以签协议 → 11-05 承认是败选主因。
+               单条快讯看不出序列，`flash_brief` 结构性地看不到。
+               ★ 数据是编辑整理后发布（T+1），**不是实时**；当日实时看快讯。
+               ★ 关键句直接取金十标红/粗体（编辑已筛过），不烧 LLM。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="togglePpl()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="pplDot"></span>
+              <span class="text-xs font-semibold shrink-0">人物立场</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ pplLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ pplOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="pplOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="pplBusy && !ppl" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!ppl" class="text-xs text-muted">—</div>
+              <div v-else-if="!ppl.ok" class="text-xs text-muted">{{ ppl.error || '暂无数据' }}</div>
+              <template v-else>
+                <div class="flex flex-wrap gap-1 mb-1.5">
+                  <button v-for="p in pplPeople" :key="p.id" type="button"
+                          class="px-1.5 py-0.5 rounded border text-[10px]"
+                          :class="pplId === p.id
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                            : 'border-border/60 text-muted hover:bg-white/10'"
+                          :title="`${p.title} · 已入库 ${p.n} 条${p.latest ? '，最新 ' + p.latest : ''}`"
+                          @click="pickPpl(p.id)">
+                    {{ p.name }}<span class="opacity-60 ml-0.5">{{ p.n }}</span>
+                  </button>
+                </div>
+                <div v-if="!(ppl.items || []).length" class="text-[10px] text-muted">
+                  暂无已入库讲话。该数据靠日批拉取（约 22:00），也可在服务器手动触发
+                  <code class="text-[9px]">POST /system/people-watch/refresh</code>。
+                </div>
+                <div v-else class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+                  <div v-for="it in ppl.items" :key="it.id" class="pl-1.5 border-l border-border/40">
+                    <div class="text-[10px] text-muted font-mono">{{ it.time }}</div>
+                    <div v-for="(k, i) in it.keys" :key="i"
+                         class="text-[11px] text-gray-300 leading-snug">· {{ k }}</div>
+                    <div v-if="!(it.keys || []).length && it.excerpt"
+                         class="text-[11px] text-gray-400 leading-snug">{{ it.excerpt }}</div>
+                  </div>
+                </div>
+                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                  只呈现原文与金十高亮句，不做立场判断 —— "他改口了"要自己看出来。
+                  本数据 T+1 更新，当日实时请看快讯。
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- ② 拥挤与关键位（AI 篮子在④） -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -3143,6 +3194,8 @@ import {
   getCrossMarketWatch,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
   getEventTargets, getEventThemes,
+  // ★★ 2026-11-05：人物立场时间线（金十「人物讲话」，T+1 更新，非实时）
+  getPeopleTimeline, getPeopleList,
   // ★ 2026-11-01：金十手动刷新（抓最新 + LLM 归纳）
   refreshJin10Tidy,
   getStagflation,
@@ -4327,20 +4380,22 @@ const crowdOpen = ref(!!_obs.crowd)
 const xmkOpen = ref(!!_obs.xmk)
 // ★ 2026-11-05：事件落点（默认收起 —— 它不是"每天都要看"，是"想动的时候查"）
 const evtOpen = ref(!!_obs.evt)
+// ★ 2026-11-05：人物立场（默认收起，且**展开才加载** —— 它不是盘面，是复盘用的）
+const pplOpen = ref(!!_obs.ppl)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
-      evt: evtOpen.value,
+      evt: evtOpen.value, ppl: pplOpen.value,
       scen: scenOpen.value, ai: aiOpen.value,
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
 }
 const obsAllOpen = computed(() =>
-  wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value
+  wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
   && scenOpen.value && aiOpen.value && pbwOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
@@ -4348,6 +4403,9 @@ function toggleAllObs() {
   crowdOpen.value = v
   xmkOpen.value = v
   evtOpen.value = v
+  pplOpen.value = v
+  // 人物时间线是懒加载：展开时才请求（loadPeople 内部自己判重）
+  if (v) loadPeople()
   scenOpen.value = v
   aiOpen.value = v
   pbwOpen.value = v
@@ -4506,6 +4564,12 @@ const evt = ref(null)
 const evtThemes = ref([])        // 可选主题（近 7 天快讯条数）
 const evtPick = ref('')          // 当前选中的主题（空 = 后端自动取前 2）
 const evtBusy = ref(false)
+// ★★ 2026-11-05：人物立场时间线（金十「人物讲话」）。
+//   数据是**编辑整理后**发布的（T+1），不是实时 —— 实时看快讯。
+const ppl = ref(null)
+const pplPeople = ref([])
+const pplId = ref(83)            // 默认特朗普（他的讲话对大类资产影响最大）
+const pplBusy = ref(false)
 const riskLoading = ref(false)
 const riskErr = ref('')
 const crowdTop = computed(() => {
@@ -4591,6 +4655,50 @@ function evtScoreCls(s) {
   if (s >= 70) return 'text-rose-300'
   if (s >= 60) return 'text-gray-200'
   return 'text-muted'
+}
+// ★★ 2026-11-05：人物立场。
+const pplDot = computed(() => {
+  const d = ppl.value
+  if (!d || !d.ok) return 'bg-slate-500'
+  return (d.n || 0) > 0 ? 'bg-sky-400' : 'bg-slate-500'
+})
+const pplLine = computed(() => {
+  const d = ppl.value
+  if (!d) return '展开加载'
+  if (!d.ok) return d.error || '暂无数据'
+  const last = (d.items || [])[0]
+  return last
+    ? `${d.name} · ${d.n} 条 · 最新 ${last.date}`
+    : `${d.name} · 暂无已入库讲话（等日批拉取）`
+})
+async function loadPeople() {
+  if (pplBusy.value) return
+  pplBusy.value = true
+  try {
+    const r = await getPeopleTimeline({ people: pplId.value, days: 30, limit: 20 })
+    ppl.value = r.data || null
+  } catch {
+    if (!ppl.value) ppl.value = { ok: false, error: '加载失败（接口需登录）' }
+  } finally {
+    pplBusy.value = false
+  }
+  if (!pplPeople.value.length) {
+    try {
+      const l = await getPeopleList()
+      pplPeople.value = l.data?.people || []
+    } catch { pplPeople.value = [] }
+  }
+}
+function pickPpl(id) {
+  if (pplId.value === id && ppl.value) return
+  pplId.value = id
+  ppl.value = null
+  loadPeople()
+}
+function togglePpl() {
+  pplOpen.value = !pplOpen.value
+  saveObs()
+  if (pplOpen.value && !ppl.value) loadPeople()
 }
 // ★ 2026-10-30：金十汇总——折叠态的一行摘要（各栏目条数）
 const jin10Line = computed(() => {

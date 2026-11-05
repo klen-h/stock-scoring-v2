@@ -1307,6 +1307,36 @@ def task_jin10_tidy():
         return f"金十汇总: WARN {str(e)[:70]}"
 
 
+def task_people_watch():
+    """金十「人物讲话」抓取（2026-11-05，用户给的真实接口）。**纯素材采集**。
+
+    ★ 接口：`GET /api/free-flash/list?people_org_id=...`，**必须带 x-token**
+      （实测：裸 header → 502；带 x-app-id/x-version → 200 但 401 请登录）。
+      与 `jin10_tidy` 共用 `JIN10_X_TOKEN`，失败模式也一致。
+    ★ **这个接口不是实时的**（用户实测指出）：编辑整理后才发布，实测 T+1 才有。
+      ⇒ 这里只补"历史结构化"，**不假装实时**；当日实时看快讯（`flash_brief` 已在做）。
+        为一个必然延迟的源做伪实时，会制造两个口径。
+    ★ 金十把关键句标了红色（`rgb(235,69,57)`）+ `<b>` 粗体 ⇒ 直接取编辑高亮，
+      **不烧 LLM**，也避免"模型总结损耗原文"（同 `jin10_tidy` 的原文直出立场）。
+    ★ **失败不抛**：素材缺一天不影响主链。
+    ★ 拉最近 7 天做增量（重复靠 `ON CONFLICT DO NOTHING` 跳过，`saved` 只报真新增）。
+    """
+    try:
+        from app import people_watch as pww
+        r = pww.sync_all(days=7)
+        items = r.get("items") or []
+        errs = [x for x in items if not x.get("ok")]
+        if errs and not r.get("saved"):
+            e0 = str(errs[0].get("error") or "")
+            if "x-token" in e0:
+                return "人物讲话: WARN token 失效，请重新登录金十更新 JIN10_X_TOKEN"
+            return f"人物讲话: WARN {e0[:70]}"
+        return (f"人物讲话: 新增 {r.get('saved')} 条 / {len(items)} 人 / "
+                f"失败 {len(errs)}")
+    except Exception as e:
+        return f"人物讲话: WARN {str(e)[:70]}"
+
+
 def task_stagflation():
     """宏观组合风险档：`滞胀交易` 状态位（2026-10-30，简报第 1 项）。**只标注，不改分**。
 
@@ -1617,6 +1647,9 @@ TASKS = {
     # ★ 2026-10-30（用户："缺国内的消息"）：金十每日汇总（A股盘前/回顾/存储/ETF）。
     #   纯消息面素材，不进决策链；id 递增扫描（该接口无列表 API），日常约 20 个请求。
     "jin10_tidy": (task_jin10_tidy, "金十每日汇总（国内消息面素材）"),
+    # ★ 2026-11-05：金十「人物讲话」时间线。与 jin10_tidy 共用 x-token，
+    #   **T+1 才更新**（编辑整理后发布），只补历史结构化，不当实时用。
+    "people_watch": (task_people_watch, "金十人物讲话时间线（历史结构化素材）"),
     # ★ 2026-10-30（简报第1项）：宏观组合风险档「滞胀交易」状态位。
     #   只标注不改分；全量重算（滞回依赖历史），数量级几十行，成本可忽略。
     "stagflation": (task_stagflation, "滞胀交易状态位（组合风险档，不改分）"),
@@ -1745,6 +1778,8 @@ DEFAULT_ORDER = ["backfill",
                  # ★ 2026-10-30：金十每日汇总紧跟 news_snapshot（同为"消息面采集"）。
                 #   外呼型任务，失败不抛（见 task_jin10_tidy）；日常约 20 个请求。
                 "news_snapshot", "jin10_tidy",
+                # ★ 2026-11-05：人物讲话与 jin10_tidy 同源同 token，紧跟其后跑。
+                "people_watch",
                 # ★ 2026-10-30：滞胀档依赖 macro_daily 当日快照 ⇒ 排在消息面采集之后
                 "stagflation",
                 # ★ 2026-10-31：Thesis Tracker 证据快照（同依赖 macro_daily，紧排其后）

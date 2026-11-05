@@ -540,6 +540,10 @@ export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', 
 //   ⚠️ 不传 date 时后端取事实表最新日，所以回放历史日也安全（会带 fallback 标记）。
 export const getEventTargets = (params) => http.get('/system/event-targets', { params, timeout: 20000 })
 export const getEventThemes = () => http.get('/system/event-targets/themes', { timeout: 20000 })
+// ★★ 2026-11-05：人物立场时间线（金十「人物讲话」，T+1 更新，非实时）。
+//   ⚠️ 这是**历史**纵览；当日实时看快讯（flash_brief）。
+export const getPeopleTimeline = (params) => http.get('/system/people-watch', { params, timeout: 20000 })
+export const getPeopleList = () => http.get('/system/people-watch/people', { timeout: 20000 })
 // ★ 2026-10-30：金十每日汇总（A股盘前/回顾/存储/ETF）—— 原文直出，不经 LLM 改写
 export const getJin10Tidy = (date) => http.get('/system/jin10-tidy', { params: { date }, timeout: 30000 })
 // ★ 2026-11-01：刷新（抓最新 + LLM 跨条目归纳）。

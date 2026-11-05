@@ -1417,6 +1417,42 @@ def event_targets_themes(user: dict = Depends(get_current_user)) -> Dict:
     return {"themes": et.list_themes()}
 
 
+@router.get("/people-watch")
+def people_watch(people: int = Query(83, description="people_org_id，默认 83=特朗普"),
+                 days: int = Query(30, ge=1, le=180),
+                 limit: int = Query(20, ge=1, le=100),
+                 user: dict = Depends(get_current_user)) -> Dict:
+    """人物立场时间线（同一人物跨天讲话的原文 + 金十高亮关键句）。
+
+    **纯观察**：只呈现原文与编辑高亮句，**不做立场判断、不做多空解读**。
+
+    ★★ 2026-11-05（用户给出接口并指出"这个不是实时的"）：
+      `GET /api/free-flash/list?people_org_id=...` 是编辑**整理后**发布的，
+      有延迟（实测 11-05 22:00 时最新一条是 11-05 01:29）。实时只能看快讯流。
+      ⇒ 本端点**只负责历史结构化**（T-1 及更早），当日实时归 `flash_brief`。
+
+    ★ 关键发现：金十把重要句标了红色（`rgb(235,69,57)`）+ `<b>` 粗体
+      ⇒ 直接取编辑的高亮，**不烧 LLM**，也避免"模型总结损耗原文"。
+    """
+    from app import people_watch as pww
+    return pww.timeline(people, days=days, limit=limit)
+
+
+@router.get("/people-watch/people")
+def people_watch_people(user: dict = Depends(get_current_user)) -> Dict:
+    """关注名单 + 各人已落库条数/最新日期。"""
+    from app import people_watch as pww
+    return {"people": pww.list_people()}
+
+
+@router.post("/people-watch/refresh")
+def people_watch_refresh(days: int = Query(30, ge=1, le=180),
+                         user: dict = Depends(get_current_user)) -> Dict:
+    """手动拉取（需 `JIN10_X_TOKEN`）。日批也会自动跑一次。"""
+    from app import people_watch as pww
+    return pww.sync_all(days=days)
+
+
 @router.get("/observer-review")
 def observer_review(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                     refresh: bool = Query(False, description="强制重算（消耗 1 次 LLM）"),
