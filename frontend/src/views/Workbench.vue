@@ -427,6 +427,85 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-05（用户："昨天 Kimi 分析出重大利好、创业板 +6.40%，
+               系统没到能买的条件，我错过了。重头做你会加什么？"）：
+               事件 → 观察名单**落点**。信息层（快讯解读/金十/剧本追踪）早就够满，
+               缺的是最后一跳：从"伊朗缓和是利好"到"今天具体看哪只、它什么状态"。
+               ★ 红线：**不给买卖建议**。每只票只列「评分/距高/主力5日/筹码位置」，
+                 `risks` 主动标风险，就是为了对冲"名单 = 推荐"的误读。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="evtOpen = !evtOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="evtDot"></span>
+              <span class="text-xs font-semibold shrink-0">事件落点</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ evtLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ evtOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="evtOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="!evt" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!evt.ok" class="text-xs text-muted">{{ evt.error || '暂无数据' }}</div>
+              <template v-else>
+                <!-- 约束先摆出来：它才是"能不能动手"的前提，不是名单 -->
+                <div v-if="evt.constraint?.position_hint"
+                     class="text-[10px] text-amber-300/90 mb-1.5 leading-snug">
+                  {{ evt.constraint.position_hint }}
+                </div>
+                <div v-if="evt.fallback" class="text-[10px] text-amber-400/80 mb-1">
+                  请求 {{ evt.requested_date }} 数据未生成，以下为 {{ evt.date }} 口径
+                </div>
+                <!-- 主题切换：点已选中的取消，回到自动 -->
+                <div class="flex flex-wrap gap-1 mb-1.5">
+                  <button v-for="t in evtThemes.filter(x => x.mapped)" :key="t.theme"
+                          type="button"
+                          class="px-1.5 py-0.5 rounded border text-[10px]"
+                          :class="evtPick === t.theme
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
+                            : 'border-border/60 text-muted hover:bg-white/10'"
+                          @click="pickEvtTheme(t.theme)">
+                    {{ t.theme }}<span class="opacity-60 ml-0.5">{{ t.news_count }}</span>
+                  </button>
+                </div>
+                <div v-for="th in evt.themes" :key="th.theme" class="mb-2 last:mb-0">
+                  <div class="text-[11px] font-medium text-gray-300 mb-0.5">
+                    {{ th.theme }}
+                    <span class="text-muted font-normal">{{ th.news_count }} 条</span>
+                  </div>
+                  <div v-for="g in th.groups" :key="g.industry"
+                       class="pl-1.5 border-l border-border/40 mb-1">
+                    <div class="text-[10px] text-muted">{{ g.industry }}</div>
+                    <div v-if="!(g.targets || []).length" class="text-[10px] text-muted/60">
+                      {{ g.empty_reason }}
+                    </div>
+                    <template v-for="x in g.targets" :key="x.code">
+                      <div class="flex items-center gap-1.5 text-[11px] leading-tight">
+                        <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
+                        <span class="text-gray-200 shrink-0 w-[60px] truncate">{{ x.name }}</span>
+                        <span class="font-mono shrink-0 w-[34px] text-right" :class="evtScoreCls(x.score)">
+                          {{ x.score == null ? '—' : x.score.toFixed(1) }}</span>
+                        <span class="font-mono text-muted shrink-0 w-[52px] text-right">
+                          {{ evtNum(x.dist_high, 1, '%') }}</span>
+                        <span class="font-mono shrink-0 w-[54px] text-right"
+                              :class="(x.flow5 || 0) < 0 ? 'text-emerald-400' : 'text-rose-400'">
+                          {{ evtNum(x.flow5, 2) }}亿</span>
+                        <span class="text-[10px] text-muted shrink-0 w-[26px]">{{ x.phase_cn }}</span>
+                      </div>
+                      <div v-if="(x.risks || []).length"
+                           class="pl-[44px] text-[10px] text-amber-400/80 leading-snug">
+                        ⚠ {{ x.risks.join('；') }}
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="(th.verify || []).length" class="text-[10px] text-muted leading-snug">
+                    验证：{{ th.verify.join(' / ') }}
+                  </div>
+                </div>
+                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                  {{ evt.note }}
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- ② 拥挤与关键位（AI 篮子在④） -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -3062,6 +3141,8 @@ import {
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
   // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离，纯展示）
   getCrossMarketWatch,
+  // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
+  getEventTargets, getEventThemes,
   // ★ 2026-11-01：金十手动刷新（抓最新 + LLM 归纳）
   refreshJin10Tidy,
   getStagflation,
@@ -4244,25 +4325,29 @@ const obsHelp = [
 const crowdOpen = ref(!!_obs.crowd)
 // ★ 2026-11-05：跨市场异动（默认收起——正常情况下"没有异动"，不该占版面）
 const xmkOpen = ref(!!_obs.xmk)
+// ★ 2026-11-05：事件落点（默认收起 —— 它不是"每天都要看"，是"想动的时候查"）
+const evtOpen = ref(!!_obs.evt)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
+      evt: evtOpen.value,
       scen: scenOpen.value, ai: aiOpen.value,
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
 }
 const obsAllOpen = computed(() =>
-  wsOpen.value && crowdOpen.value && xmkOpen.value
+  wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value
   && scenOpen.value && aiOpen.value && pbwOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
   crowdOpen.value = v
   xmkOpen.value = v
+  evtOpen.value = v
   scenOpen.value = v
   aiOpen.value = v
   pbwOpen.value = v
@@ -4415,6 +4500,12 @@ const aiBasket = ref(null)
 // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离）。
 //   数据来自宏观面板共享缓存 ⇒ 零新增外部请求；纯展示，不进决策链。
 const xmk = ref(null)
+// ★★ 2026-11-05：事件 → 观察名单落点。
+//   读 `stock_facts_wide`（日批产物）⇒ 零外部请求；**不给买卖建议**，只列事实。
+const evt = ref(null)
+const evtThemes = ref([])        // 可选主题（近 7 天快讯条数）
+const evtPick = ref('')          // 当前选中的主题（空 = 后端自动取前 2）
+const evtBusy = ref(false)
 const riskLoading = ref(false)
 const riskErr = ref('')
 const crowdTop = computed(() => {
@@ -4471,6 +4562,35 @@ function xmkDotOf(level) {
   if (level === 'extreme_down') return 'bg-emerald-400'
   if (level === 'none') return 'bg-slate-600'
   return 'bg-slate-400'
+}
+// ★★ 2026-11-05：事件落点。
+//   状态点：有数据=灰蓝（它不报警，是"要不要动手前查一眼"），数据非当日=琥珀。
+//   ⚠️ 刻意不用红/绿 —— 这张卡里没有任何方向判断，用颜色会暗示"看好/看空"。
+const evtDot = computed(() => {
+  const d = evt.value
+  if (!d || !d.ok) return 'bg-slate-500'
+  return d.fallback ? 'bg-amber-400' : 'bg-sky-400'
+})
+// 折叠态一行：优先给"约束"，因为那才是决定能不能动手的前提
+const evtLine = computed(() => {
+  const d = evt.value
+  if (!d) return ''
+  if (!d.ok) return '暂无数据'
+  const c = d.constraint || {}
+  const head = c.n_checked != null ? `清单 ${c.n_checked}/${c.n_total}` : ''
+  const ths = (d.themes || []).map(t => `${t.theme} ${t.news_count}`).join(' / ')
+  return [head, ths].filter(Boolean).join(' · ') || '无主题'
+})
+// 一行票的四个数字（评分/距高/主力5日/阶段），给模板复用
+function evtNum(v, digits = 1, suffix = '') {
+  if (v == null) return '—'
+  return (v >= 0 && suffix === '%' ? '+' : '') + v.toFixed(digits) + suffix
+}
+function evtScoreCls(s) {
+  if (s == null) return 'text-muted'
+  if (s >= 70) return 'text-rose-300'
+  if (s >= 60) return 'text-gray-200'
+  return 'text-muted'
 }
 // ★ 2026-10-30：金十汇总——折叠态的一行摘要（各栏目条数）
 const jin10Line = computed(() => {
@@ -4535,12 +4655,45 @@ async function loadRiskWatch() {
   } else {
     xmk.value = { ok: false, error: '仅当日实时可用（回放历史日不显示跨市场异动）' }
   }
+  // ★★ 2026-11-05：事件落点（读事实表，回放历史日也能用，会带 fallback 标记）
+  loadEventTargets()
   // ★★ 2026-11-04（用户："B + C，如果请求到今天了，就不要再定时刷新了"）：
   //   **惰性刷新**——打开观察器时看一眼库里有没有"今天"的数据：
   //     · 有 → 什么都不做（用户明确要求：今天已抓到就别再刷）
   //     · 无 → 自动抓一次，`summarize=false`（**不烧 LLM**，只外呼 28 个请求）
   //   ⚠️ 不是定时器：只在"加载观察器"这一刻判一次，页面挂着不动不会再打。
   maybeAutoRefreshJin10()
+}
+// ★★ 2026-11-05：事件落点加载 / 主题切换。
+//   ⚠️ 失败时**不清空上次结果**（铁律 11：静默保留）—— 只有首次失败才写错误，
+//      否则一次网络抖动会把已经展开的名单整块擦掉。
+let _evtThemesLoaded = false
+async function loadEventTargets() {
+  if (evtBusy.value) return
+  evtBusy.value = true
+  try {
+    const params = { date: selectedDate.value, top: 3 }
+    if (evtPick.value) params.themes = evtPick.value
+    const r = await getEventTargets(params)
+    evt.value = r.data || null
+  } catch {
+    if (!evt.value) evt.value = { ok: false, error: '加载失败（接口需登录或数据未生成）' }
+  } finally {
+    evtBusy.value = false
+  }
+  // 主题列表只需拉一次（近 7 天条数，变化很慢）
+  if (!_evtThemesLoaded) {
+    _evtThemesLoaded = true
+    try {
+      const t = await getEventThemes()
+      evtThemes.value = t.data?.themes || []
+    } catch { evtThemes.value = [] }
+  }
+}
+// 点同一个主题 = 取消选择，回到"自动取前 2"
+function pickEvtTheme(th) {
+  evtPick.value = evtPick.value === th ? '' : th
+  loadEventTargets()
 }
 // ★★ 2026-11-04：金十惰性刷新的开关判断（调用点在 `loadRiskWatch` 末尾）。
 //   三道闸，缺一不可 —— 少任何一道都会变成"反复外呼金十"：

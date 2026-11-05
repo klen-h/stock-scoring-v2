@@ -535,6 +535,11 @@ export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { p
 //   ⚠️ 不传 date：这是**实时**状态（"今天外面在跌、我们在涨"），历史回放没有意义
 //      —— 客户端本来就只展示最新快照。
 export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', { timeout: 20000 })
+// ★★ 2026-11-05：事件 → 观察名单落点（主题 → 行业 → 标的当前状态）。
+//   纯读 stock_facts_wide（日批产物），零外部请求 ⇒ 8s 足够。
+//   ⚠️ 不传 date 时后端取事实表最新日，所以回放历史日也安全（会带 fallback 标记）。
+export const getEventTargets = (params) => http.get('/system/event-targets', { params, timeout: 20000 })
+export const getEventThemes = () => http.get('/system/event-targets/themes', { timeout: 20000 })
 // ★ 2026-10-30：金十每日汇总（A股盘前/回顾/存储/ETF）—— 原文直出，不经 LLM 改写
 export const getJin10Tidy = (date) => http.get('/system/jin10-tidy', { params: { date }, timeout: 30000 })
 // ★ 2026-11-01：刷新（抓最新 + LLM 跨条目归纳）。

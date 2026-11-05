@@ -1383,6 +1383,40 @@ def cross_market_watch(user: dict = Depends(get_current_user)) -> Dict:
     return xmw.snapshot()
 
 
+@router.get("/event-targets")
+def event_targets(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                  themes: Optional[str] = Query(None, description="逗号分隔的主题，不传则自动取前 2"),
+                  top: int = Query(3, ge=1, le=10, description="每个行业取前几只"),
+                  user: dict = Depends(get_current_user)) -> Dict:
+    """事件 → 观察名单落点（主题 → 受益行业 → 具体标的的当前状态）。
+
+    **纯观察，不进决策链**。数据全来自 `stock_facts_wide`（日批产物）⇒ 零新增请求。
+
+    ★★ 2026-11-05（用户："昨天 Kimi 分析出重大利好、创业板 +6.40%，系统却没到能买的
+      条件，我错过了。重头做你会加什么？"）：
+      信息层已经够满（flash_brief / jin10_tidy / thesis_tracker / scenario_watch），
+      缺的是**最后一跳** —— 从"伊朗缓和是利好"到"今天具体看哪只、它什么状态"。
+      `flash_brief` 只到板块级（"影响 原油/军工/黄金"），落不到标的。
+
+    ★ 红线：**不给买卖建议**。输出的每条都只是事实（评分/距高点/主力 5 日/筹码位置），
+      `risks` 主动标出"贴近高点/主力流出/筹码高位"，就是为了对冲"名单=推荐"的误读。
+
+    ⚠️ 行业口径的坑（第一版实测踩过，详见 `app/event_targets.py` 文件头）：
+      只用 49 个粗行业做映射时，"黄金贵金属"会返回云铝股份、"原油能源"会返回锂矿，
+      **答非所问比不做还糟** ⇒ 现在改成「粗行业圈范围 + 名称关键词收口」。
+    """
+    from app import event_targets as et
+    tl = [x.strip() for x in (themes or "").split(",") if x.strip()] or None
+    return et.build(day=date, themes=tl, top=top)
+
+
+@router.get("/event-targets/themes")
+def event_targets_themes(user: dict = Depends(get_current_user)) -> Dict:
+    """可用主题列表（近 7 天快讯条数 + 是否已配行业映射）。"""
+    from app import event_targets as et
+    return {"themes": et.list_themes()}
+
+
 @router.get("/observer-review")
 def observer_review(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                     refresh: bool = Query(False, description="强制重算（消耗 1 次 LLM）"),
