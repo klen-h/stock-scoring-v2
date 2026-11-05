@@ -530,6 +530,11 @@ export const getCrowdingWatch = (date) => http.get('/system/crowding-watch', { p
 export const getKeyLevelWatch = (date) => http.get('/system/key-level-watch', { params: { date }, timeout: 30000 })
 export const getAiBasketWatch = (date) => http.get('/system/ai-basket-watch', { params: { date }, timeout: 30000 })
 export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { params: { date }, timeout: 30000 })
+// ★★ 2026-11-05：跨市场异动（外围指数极端异动 + 中国 vs 日韩区域背离）。
+//   纯读宏观面板的共享 60s 缓存 ⇒ 通常 <100ms；冷缓存时首次抓取可能 10s+ ⇒ 给 20s。
+//   ⚠️ 不传 date：这是**实时**状态（"今天外面在跌、我们在涨"），历史回放没有意义
+//      —— 客户端本来就只展示最新快照。
+export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', { timeout: 20000 })
 // ★ 2026-10-30：金十每日汇总（A股盘前/回顾/存储/ETF）—— 原文直出，不经 LLM 改写
 export const getJin10Tidy = (date) => http.get('/system/jin10-tidy', { params: { date }, timeout: 30000 })
 // ★ 2026-11-01：刷新（抓最新 + LLM 跨条目归纳）。

@@ -586,7 +586,14 @@ def build_data_md(date: str = None) -> str:
         parts = []
         if nikkei.get("change_pct") is not None:
             parts.append(f"日经 {nikkei['change_pct']:+.2f}%")
-        # 韩国无直接代码，用宏观方向分里的标签间接反映（若有）
+        # ★ 2026-11-05：**"韩国无直接代码"这句话已经过时** —— 面板早有 `kospi`
+        #   （东财 `100.KS11`，见 macro.py 的 `_EM_MAP`），只是没人在这里读。
+        #   为什么要放进日报：KOSPI 里三星+海力士占 25~30%，它是**全球存储链最灵敏的
+        #   温度计**。11-05 单日 -5.28%、同期 A 股半导体两天 +13% —— 这个背离是当天
+        #   最重要的盘面事实，日报不写就等于漏掉了。详见 `cross_market_watch`。
+        kospi = panel.get("kospi") or {}
+        if kospi.get("change_pct") is not None:
+            parts.append(f"韩国KOSPI {kospi['change_pct']:+.2f}%")
         tags = macro.get("tags") or []
         global_bear = [t for t in tags if t.get("group") == "global" and t.get("direction") == "bear"]
         if global_bear:

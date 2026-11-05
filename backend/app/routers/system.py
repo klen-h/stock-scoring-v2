@@ -1363,6 +1363,26 @@ def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return ab.load(date)
 
 
+@router.get("/cross-market-watch")
+def cross_market_watch(user: dict = Depends(get_current_user)) -> Dict:
+    """跨市场异动观察器（外围指数极端异动 + 中国 vs 日韩区域背离）。
+
+    纯观察，**不进决策链**。数据全部来自 `app.macro` 的共享 60s 缓存 ⇒ 零新增请求。
+
+    ★★ 2026-11-05（用户："KOSPI -5.28%、恒科 +5.55%，这样的异常怎么解读"）：
+      这组数据的价值是**方向相反** —— 美日韩半导体链跌、中国科技涨。
+      若真是"行业景气上升"，两边该同向；反向只能说明是资金再分配。
+      ⇒ 系统此前完全看不到：`_external_panic` 只看日经 < -2%（当天 -1.79% 差 0.21 个点），
+        KOSPI 面板早就有但没有任何判定读它，更没有"区域背离"这个概念。
+
+    ⚠️ 刻意**不**改 `_external_panic`：那个结果进 `market_regime`，会连锁改
+       评分权重 / 准入闸门 / 模拟盘 —— 为一个新阈值让整批股票分数漂移，不划算。
+       本端点只输出事实，要不要行动由人决定。
+    """
+    from app import cross_market_watch as xmw
+    return xmw.snapshot()
+
+
 @router.get("/observer-review")
 def observer_review(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                     refresh: bool = Query(False, description="强制重算（消耗 1 次 LLM）"),

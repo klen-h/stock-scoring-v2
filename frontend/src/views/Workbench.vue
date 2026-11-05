@@ -379,6 +379,54 @@
           </div>
           </div>
 
+          <!-- ★★ 2026-11-05（用户："恒科 +5.55% / KOSPI -5.28%，这样的异常怎么解读"）：
+               跨市场异动。此前系统**看不到**这件事 —— `_external_panic` 只看"日经 < -2%"
+               （当天现货 -1.79%，差 0.21 个点没触发），KOSPI 面板早就有但没有任何判定读它，
+               更没有"区域背离"这个概念。
+               ★ 本卡**只陈述事实**（涨跌 + 方向关系），不解释成因、不改分数、不进闸门。
+                 为什么刻意不进 `_external_panic`：那个结果会连锁改评分权重/闸门/模拟盘，
+                 为一个新阈值让整批股票分数漂移，风险与收益不对等。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="xmkOpen = !xmkOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="xmkDot"></span>
+              <span class="text-xs font-semibold shrink-0">跨市场异动</span>
+              <span class="text-[10px] text-muted truncate flex-1">{{ xmkLine }}</span>
+              <span class="text-[10px] text-muted shrink-0">{{ xmkOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="xmkOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="!xmk" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!xmk.ok" class="text-xs text-muted">{{ xmk.error || '暂无数据' }}</div>
+              <template v-else>
+                <div class="space-y-0.5">
+                  <div v-for="m in xmk.markets" :key="m.key"
+                       class="flex items-center gap-2 text-xs">
+                    <span class="w-1 h-1 rounded-full shrink-0" :class="xmkDotOf(m.level)"></span>
+                    <span class="text-gray-300 shrink-0 w-[68px] truncate">{{ m.name }}</span>
+                    <span class="font-mono text-gray-200 shrink-0 w-[66px] text-right">
+                      {{ m.price == null ? '—' : m.price.toFixed(2) }}</span>
+                    <span class="font-mono shrink-0 w-[58px] text-right" :class="xmkChgCls(m.chg)">
+                      {{ m.chg == null ? '—' : (m.chg >= 0 ? '+' : '') + m.chg.toFixed(2) + '%' }}</span>
+                    <span class="text-[10px] text-muted truncate flex-1" :title="m.caliber">
+                      {{ m.caliber }}<template v-if="m.time"> · {{ m.time }}</template></span>
+                  </div>
+                </div>
+                <div v-if="xmk.divergence"
+                     class="mt-1.5 pt-1.5 border-t border-border/50 text-[11px]"
+                     :class="xmk.divergence.on ? 'text-amber-300' : 'text-muted'">
+                  区域背离：中国 {{ xmk.divergence.cn_avg >= 0 ? '+' : '' }}{{ xmk.divergence.cn_avg.toFixed(2) }}%
+                  vs {{ xmk.divergence.asia_label || '韩国' }} {{ xmk.divergence.asia_avg >= 0 ? '+' : '' }}{{ xmk.divergence.asia_avg.toFixed(2) }}%
+                  ⇒ 差 {{ xmk.divergence.gap >= 0 ? '+' : '' }}{{ xmk.divergence.gap.toFixed(1) }}pp
+                  <span v-if="!xmk.divergence.on" class="text-muted">
+                    （未达 {{ xmk.thresholds?.diverge_pp ?? 8 }}pp）</span>
+                </div>
+                <div v-if="xmk.summary"
+                     class="mt-1 text-[11px] text-gray-300 leading-snug">{{ xmk.summary }}</div>
+                <div class="mt-1 text-[10px] text-muted leading-snug">{{ xmk.note }}</div>
+              </template>
+            </div>
+          </div>
+
           <!-- ② 拥挤与关键位（AI 篮子在④） -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -3012,6 +3060,8 @@ import {
   getWorkbenchScan, getWorkbenchScanSummary,
   // ★ 2026-10-23：观察器——拥挤赛道 / 指数关键位 / AI 硬件篮子 / 推演证伪
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
+  // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离，纯展示）
+  getCrossMarketWatch,
   // ★ 2026-11-01：金十手动刷新（抓最新 + LLM 归纳）
   refreshJin10Tidy,
   getStagflation,
@@ -4192,23 +4242,27 @@ const obsHelp = [
   '配色：涨跌幅=红涨绿跌；回撤 ≤-25% 标红（风险）；距支撑 ≤1.5% 标黄（逼近）；状态标签单独着色',
 ].join('\n')
 const crowdOpen = ref(!!_obs.crowd)
+// ★ 2026-11-05：跨市场异动（默认收起——正常情况下"没有异动"，不该占版面）
+const xmkOpen = ref(!!_obs.xmk)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
-      ws: wsOpen.value, crowd: crowdOpen.value,
+      ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
       scen: scenOpen.value, ai: aiOpen.value,
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
 }
 const obsAllOpen = computed(() =>
-  wsOpen.value && crowdOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value)
+  wsOpen.value && crowdOpen.value && xmkOpen.value
+  && scenOpen.value && aiOpen.value && pbwOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
   crowdOpen.value = v
+  xmkOpen.value = v
   scenOpen.value = v
   aiOpen.value = v
   pbwOpen.value = v
@@ -4358,6 +4412,9 @@ const jin10Err = ref('')           // ★ 2026-11-01：刷新失败原因（内�
 const jin10Hint = ref('')          // ★ 2026-11-01：非故障类提示（如"数据源暂无新内容"）
 const keyLv = ref(null)
 const aiBasket = ref(null)
+// ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离）。
+//   数据来自宏观面板共享缓存 ⇒ 零新增外部请求；纯展示，不进决策链。
+const xmk = ref(null)
 const riskLoading = ref(false)
 const riskErr = ref('')
 const crowdTop = computed(() => {
@@ -4378,6 +4435,42 @@ function keyBadge(status) {
   if (status === '失守整数位') return 'bg-orange-500/20 text-orange-300'
   if (status === '逼近支撑') return 'bg-amber-500/20 text-amber-300'
   return 'bg-border/40 text-muted'
+}
+// ★★ 2026-11-05：跨市场异动。
+//   状态点用**琥珀**而非红：背离本身不是坏事（"我们涨、别人跌"也可能是好事），
+//   它是"值得看一眼"的信号。用红会让人误以为出事了。
+const xmkDot = computed(() => {
+  const d = xmk.value
+  if (!d || !d.ok) return 'bg-slate-500'
+  return (d.alerts || []).length ? 'bg-amber-400' : 'bg-slate-500'
+})
+// 折叠态一行：**优先展示背离**（它比单个涨跌幅有信息量），其次才列极端项。
+const xmkLine = computed(() => {
+  const d = xmk.value
+  if (!d) return ''
+  if (!d.ok) return '暂无数据'
+  const g = d.divergence
+  if (g && g.on) {
+    const s = (v) => (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
+    // ⚠️ 用后端给的 `asia_label`，不要硬编码"日韩"——日经是期货含夜盘，不参与均值，
+    //    写成"日韩"会把没参与计算的市场也算进去（口径说错比数字错更难发现）。
+    return `背离 ${g.gap >= 0 ? '+' : ''}${g.gap.toFixed(1)}pp（中国 ${s(g.cn_avg)} vs ${g.asia_label || '韩国'} ${s(g.asia_avg)}）`
+  }
+  const al = d.alerts || []
+  if (al.length) return al.join(' · ')
+  const n = (d.markets || []).filter(m => m.chg != null).length
+  const th = d.thresholds?.extreme_pct ?? 3
+  return n ? `无异动（${n} 个市场均在 ±${th}% 内）` : '暂无数据'
+})
+function xmkChgCls(chg) {
+  if (chg == null) return 'text-muted'
+  return chg >= 0 ? 'text-rose-400' : 'text-emerald-400'   // 红涨绿跌（A 股习惯）
+}
+function xmkDotOf(level) {
+  if (level === 'extreme_up') return 'bg-rose-400'
+  if (level === 'extreme_down') return 'bg-emerald-400'
+  if (level === 'none') return 'bg-slate-600'
+  return 'bg-slate-400'
 }
 // ★ 2026-10-30：金十汇总——折叠态的一行摘要（各栏目条数）
 const jin10Line = computed(() => {
@@ -4427,6 +4520,20 @@ async function loadRiskWatch() {
     jin10.value = t.data || null
   } catch {
     jin10.value = null
+  }
+  // ★★ 2026-11-05：跨市场异动——同样**单独请求**（读宏观面板缓存，通常 <100ms；
+  //   但冷缓存时首次抓取可能 10s+，塞进上面的 Promise.all 会拖慢"拥挤/关键位"块）。
+  //   ⚠️ **只在看今天时请求**：这是"当下的外围状态"，回放历史日拿到的是今天的价，
+  //      贴到 10-20 的观察器上就是"写入时刻冒充数据时刻"的老毛病 ⇒ 直接不显示。
+  if (selectedDate.value === todayStr) {
+    try {
+      const x = await getCrossMarketWatch()
+      xmk.value = x.data || null
+    } catch {
+      xmk.value = null            // 失败静默保留上次值（铁律 11）
+    }
+  } else {
+    xmk.value = { ok: false, error: '仅当日实时可用（回放历史日不显示跨市场异动）' }
   }
   // ★★ 2026-11-04（用户："B + C，如果请求到今天了，就不要再定时刷新了"）：
   //   **惰性刷新**——打开观察器时看一眼库里有没有"今天"的数据：
