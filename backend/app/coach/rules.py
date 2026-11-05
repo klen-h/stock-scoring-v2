@@ -169,11 +169,28 @@ def _macro() -> dict:
         from app.macro import get_macro_panel
         p = get_macro_panel() or {}
         nq = p.get("nasdaq") or {}
+        ix = p.get("us_ixic") or {}
+        # ★★ 2026-11-05（用户："纳指 11 月 4 日不是涨的吗"）——**口径 bug**：
+        #   `nasdaq` 是 **`hf_NQ` 期货**，它的 `change_pct` 是"相对上一**结算价**"的
+        #   **即时**涨跌。北京时间早上 09:25 它反映的是**美股盘前电子盘**，
+        #   而"美股昨夜收盘涨跌"是**现货指数**的日涨跌 —— 两件事。
+        #   实测（11-05 21:40）：期货 **-0.80%**，现货 IXIC **+1.44%**（11/4 收盘）。
+        #   ⇒ 教练卡写"纳指隔夜 -1.14%"，用户看到的是"纳指 11/4 涨 1.44%"：
+        #     两个数字各自都对，但**语义不同**，把期货当"隔夜"用就是误报。
+        #   ⇒ 改用**现货指数 `us_ixic`** 的 `change_pct`（A 股开盘前=昨夜收盘涨跌）；
+        #     取不到才回退期货（并标注来源，便于排障）。
+        #   ⚠️ 阈值 `nq_pct: -0.76` 是按旧口径（期货）定的，换现货后**未重新校准**
+        #     —— 现货日波动通常略小于期货，该阈值偏保守（更容易触发），先观察。
+        nq_pct = ix.get("change_pct")
+        src = "spot"
+        if nq_pct is None:
+            nq_pct = nq.get("change_pct")
+            src = "future"
         val = {"us10y": (p.get("us10y") or {}).get("price"),
                "dxy": (p.get("dxy") or {}).get("price"),
                # ★ 2026-09-20：纳指隔夜（外部领先因子，见 `_ev_external_lead`）
-               "nasdaq": nq.get("price"),
-               "nasdaq_pct": nq.get("change_pct")}
+               "nasdaq": ix.get("price") or nq.get("price"),
+               "nasdaq_pct": nq_pct, "nasdaq_src": src}
     except Exception:
         _macro_cache.update(ts=now)   # 失败也刷新时间戳 = 失败缓存 600s
         return _macro_cache["val"]    # 重建失败沿用旧值（fail-open）

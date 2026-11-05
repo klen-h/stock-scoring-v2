@@ -601,9 +601,20 @@ def _build_impl() -> Dict:
             "flow5_amt": mf.get("flow5_amt"),
         }
         # 盈亏 + 日内距高（个股级「冲高回落」—— 与指数规则同口径）
+        # ★★ 2026-11-05（用户："仓位结构 · 持仓市值 0 万还是没有修复"）：
+        #   `mv` 原先**嵌在盈亏分支里** —— 只有 `price and h["cost"] > 0` 才赋值。
+        #   但市值只需要 `price × shares`，**与成本价毫无关系**。
+        #   实测后果：成本价为 0/缺失的持仓（手工录入常见），`mv` 字段整个不存在
+        #   ⇒ `amreview` 里 `total_mv += float(it.get("mv") or 0)` 累加成 0
+        #   ⇒ 前端"持仓市值 0 万"（而且带 cost 的票明明有市值）。
+        #   ⇒ 拆开：市值独立算；盈亏才依赖 cost。
+        if price and h.get("shares"):
+            try:
+                item["mv"] = round(float(price) * float(h["shares"]), 2)
+            except (TypeError, ValueError):
+                pass
         if price and h["cost"] > 0:
             item["pnl_pct"] = round((price / h["cost"] - 1) * 100, 2)
-            item["mv"] = round(price * h["shares"], 2) if h["shares"] else None
         if price and high:
             item["drop_from_high"] = round((price - high) / high * 100, 2)
 
