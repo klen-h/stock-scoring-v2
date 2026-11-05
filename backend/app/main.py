@@ -31,6 +31,7 @@ print(FLASH_COOKIE)
 # 类比 Express 的 app = express() 和 cors 中间件
 from contextlib import asynccontextmanager
 import asyncio
+import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -151,15 +152,28 @@ async def lifespan(app: FastAPI):
     # ★ DATA_SOURCE=pack：启动后台预下载数据包（非阻塞，不拖慢服务可用）；
     #   就绪前读侧自动回退 DB 模式（get_cached_klines 等均有兜底）
     if (os.environ.get("DATA_SOURCE", "db") or "db").strip().lower() in ("pack", "local"):
-        async def _pack_bootstrap():
+        # ★★ 2026-11-06（部署实测：`systemctl restart` 每次卡 90 秒被 SIGKILL）：
+        #   **必须用 daemon 线程，不能用 `asyncio.to_thread`**。
+        #   原实现 `await asyncio.to_thread(pack_source._ensure_ready)`：
+        #     · 该函数下载 62MB gz + 解压 250MB db，正常要 30~60 秒；
+        #     · `asyncio.to_thread` 用的 executor **线程不可取消** ——
+        #       `task.cancel()` 只让 `await` 抛 CancelledError，**线程继续下载**；
+        #     · uvicorn 退出时 `asyncio.run` 会 `shutdown_default_executor()` 等线程结束
+        #       ⇒ lifespan 卡死 ⇒ systemd `TimeoutStopSec`(90s) 到点 SIGKILL。
+        #   实测证据：新进程 00:45:44 启动、全程没有 "数据包就绪"、00:57:25 停止卡到 00:58:55。
+        #   ⇒ daemon 线程解释器退出时**不等**，直接终止。
+        #   ⚠️ 安全性：`_ensure_ready` 是**原子写**（下载到 `.tmp` → `os.replace`），
+        #      中途被杀最多留一个 `.tmp`，下次覆盖，不会把半成品当成品。
+        def _pack_bootstrap_sync():
             try:
                 from app import pack_source
-                await asyncio.to_thread(pack_source._ensure_ready)
+                pack_source._ensure_ready()
                 st = pack_source.status()
                 print(f"[main] 后端数据包就绪: {st.get('date')}，{st.get('total')} 只")
             except Exception as e:
                 print(f"[main] 数据包预下载失败（读侧将回退 DB）: {e}")
-        asyncio.create_task(_pack_bootstrap())
+        threading.Thread(target=_pack_bootstrap_sync, daemon=True,
+                         name="pack-bootstrap").start()
 
     # ★ 系统绩效预热（首访冷路径 30-60s → 启动后台预计算进 1h 缓存）：
     #   delay 30s 错开数据包下载；失败静默（首访用户会触发在线计算）

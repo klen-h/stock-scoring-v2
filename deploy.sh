@@ -212,9 +212,24 @@ if [ "$DO_RESTART" = 1 ]; then
     log "✅ 部署完成，健康检查通过（${i}s）"
     free -m | awk 'NR<=2'
   else
-    warn "❌ 健康检查 40 秒未通过，最近日志："
-    $SUDO journalctl -u "$SERVICE" -n 50 --no-pager || true
-    die "部署失败（服务可能没起来）"
+    # ★★ 2026-11-06（实测：日志里**一条 `/api/health` 访问记录都没有**，
+    #   说明 curl 根本没连上服务，而"服务没起来"和"端口没监听"是两回事）。
+    #   原版只打 journalctl，看不出到底是哪种 ⇒ 补三段现场诊断。
+    warn "❌ 健康检查 40 秒未通过：$HEALTH_URL"
+    warn "── ① 服务状态 ──"
+    $SUDO systemctl status "$SERVICE" --no-pager -l 2>&1 | head -12 || true
+    warn "── ② 8000 端口监听 ──"
+    if command -v ss >/dev/null 2>&1; then
+      (ss -lntp 2>/dev/null | grep -E ':8000[[:space:]]') || echo "  ⚠ 没有进程监听 8000（服务未绑定或端口不对）"
+    else
+      (netstat -lntp 2>/dev/null | grep -E ':8000[[:space:]]') || echo "  ⚠ 没找到监听 8000 的进程"
+    fi
+    warn "── ③ 直连探测（看是拒绝连接还是超时）──"
+    curl -sS -o /dev/null -w "  http_code=%{http_code} time=%{time_total}s\n" \
+      --max-time 5 "$HEALTH_URL" 2>&1 || true
+    warn "── ④ 最近日志 ──"
+    $SUDO journalctl -u "$SERVICE" -n 40 --no-pager || true
+    die "部署失败（按上面 ①②③ 判断：①inactive=没起来 / ②空=端口没监听 / ③拒绝=nginx或端口冲突）"
   fi
 else
   log "已跳过重启（--no-restart）"
