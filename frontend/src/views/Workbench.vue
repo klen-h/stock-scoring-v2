@@ -466,6 +466,13 @@
                       {{ woShort(x.washout) }}</span>
                   </div>
                 </div>
+                <!-- ★ 2026-11-06：持仓未被覆盖时必须显式说明，
+                     否则"我的票怎么不见了"会被当成功能坏了 -->
+                <div v-if="(rg.mine_missing || []).length"
+                     class="text-[10px] text-muted/70 mb-1.5 leading-snug">
+                  未纳入区间计算：{{ rg.mine_missing.join('、') }}
+                  （K 线不足 120 根或被跳过）
+                </div>
                 <div class="text-[10px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
                 <div v-for="x in rgTop" :key="'r' + x.code"
                      class="flex items-center gap-1.5 text-[11px] leading-tight">

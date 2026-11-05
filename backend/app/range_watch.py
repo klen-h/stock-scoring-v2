@@ -262,7 +262,6 @@ def compute(day: str = None, codes: List[str] = None, limit: int = 0) -> Dict:
     if limit:
         codes = codes[:int(limit)]
     imap = get_industry_map() or {}
-    names: Dict[str, str] = {}
 
     # ★ 批量取 K 线（见 `_bulk_klines`）；逐只 while 会超时
     klmap = _bulk_klines(ps, codes)
@@ -279,7 +278,8 @@ def compute(day: str = None, codes: List[str] = None, limit: int = 0) -> Dict:
             skipped += 1
             continue
         rows.append({
-            "code": str(code), "name": names.get(code, ""),
+            # name 稍后由 `stock_facts_wide` 一次性补齐（数据包里没有名称字段）
+            "code": str(code), "name": "",
             "industry": imap.get(str(code), ""), **m,
         })
 
@@ -347,6 +347,29 @@ def compute(day: str = None, codes: List[str] = None, limit: int = 0) -> Dict:
     }
 
 
+def _to_item(x: Dict) -> Dict:
+    """一行 DB 记录 → 前端 item。
+
+    ★ 单点转换：`load()` 的主查询与"补查的持仓"必须用**同一个**映射，
+      否则两批数据字段会漂移（前端拿到的 mine 里可能少字段）。
+    """
+    return {
+        "code": str(x.get("code") or ""), "name": x.get("name") or "",
+        "industry": x.get("industry") or "",
+        "close": _f(x.get("close")),
+        "range_low": _f(x.get("range_low")),
+        "range_high": _f(x.get("range_high")),
+        "amp60": _f(x.get("amp60")),
+        "amp20": _f(x.get("amp20")),
+        "range_days": x.get("range_days"),
+        "pos": _f(x.get("pos_in_range")),
+        "state": x.get("state") or "",
+        "in_range": bool(x.get("in_range")),
+        "vol_ratio": _f(x.get("vol_ratio")),
+        "washout": None,          # 占位：字段恒定存在，前端不必判 undefined
+    }
+
+
 def _holdings_codes() -> List[str]:
     """我的持仓代码（`user_portfolio`）——前端最关心"我手上这些在不在区间里"。"""
     try:
@@ -381,24 +404,9 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
     except Exception as e:
         return {"date": day, "rows": [], "note": f"读取失败: {str(e)[:80]}"}
 
-    items = []
-    for x in rows or []:
-        items.append({
-            "code": str(x.get("code") or ""), "name": x.get("name") or "",
-            "industry": x.get("industry") or "",
-            "close": _f(x.get("close")),
-            "range_low": _f(x.get("range_low")),
-            "range_high": _f(x.get("range_high")),
-            "amp60": _f(x.get("amp60")),
-            "amp20": _f(x.get("amp20")),
-            "range_days": x.get("range_days"),
-            "pos": _f(x.get("pos_in_range")),
-            "state": x.get("state") or "",
-            "in_range": bool(x.get("in_range")),
-            "vol_ratio": _f(x.get("vol_ratio")),
-        })
+    items = [_to_item(x) for x in rows or []]
 
-    # 统计 + 我的持仓切片（一次查询全搞定，前端不必再过滤）
+    # 统计（一次聚合，前端不必再过滤）
     try:
         agg = db.fetch(
             f"SELECT state, COUNT(*) AS n, SUM(in_range) AS ir FROM {_TABLE} "
@@ -408,11 +416,30 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
     counts = {str(a.get("state")): int(a.get("n") or 0) for a in agg or []}
     total_in = sum(int(a.get("ir") or 0) for a in agg or [])
 
+    # ★★ 2026-11-06 审查修复（真 BUG）：`mine` 不能只从 `items` 里筛 ——
+    #   `items` 受 `limit` 约束（默认 200），而持仓票的排序位置完全不可控
+    #   （实测 000429 排第 164 位，恰好在内；再靠后一点就**整个丢掉**）。
+    #   而"我的持仓"是这张卡最重要的部分，用户开卡片第一眼看的就是它。
+    #   ⇒ 对不在 `items` 里的持仓**单独补查**，再统一 annotate。
     holds = set(_holdings_codes())
+    if holds:
+        _shown = {x["code"] for x in items}
+        _miss = sorted(holds - _shown)
+        if _miss:
+            try:
+                _ph = ",".join(["%s"] * len(_miss))
+                _extra = db.fetch(
+                    f"SELECT * FROM {_TABLE} WHERE date=%s AND code IN ({_ph})",
+                    tuple([d] + _miss))
+                items.extend(_to_item(x) for x in _extra or [])
+            except Exception as e:
+                print(f"[range] holdings query failed: {str(e)[:80]}")
+
     # ★★ 功能 2（2026-11-06）：给"到下沿/已破位"的票补「洗盘 vs 破位」分项证据。
     #   只读本地表（`range_watch` + `stock_facts_wide`），零外呼。
     #   ⚠️ 只对 pos ≤ 0.25 的票打分：区间中部/上沿没有"该不该割"的问题，
     #      给它们打分只会制造噪音。失败静默（主表照常展示）。
+    #   ⚠️ annotate 必须在**持仓合并之后**，否则补查进来的持仓没有 washout 字段。
     wa_date = ""
     try:
         from app import washout_alert as wa
@@ -420,6 +447,11 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
     except Exception as e:
         print(f"[range] washout annotate failed: {str(e)[:80]}")
     mine = [it for it in items if it["code"] in holds]
+    # ★ 2026-11-06：**没被覆盖的持仓不能静默消失**。
+    #   典型原因：K 线不足 120 根（次新股/长期停牌）或被 `compute` 跳过。
+    #   用户看到"我的工行怎么不见了"会以为是 bug，必须显式说明"未纳入计算"。
+    _in_table = {it["code"] for it in items}
+    mine_missing = sorted(h for h in holds if h not in _in_table)
 
     return {
         "date": d,
@@ -428,6 +460,9 @@ def load(day: str = None, state: str = None, limit: int = 300) -> Dict:
         "state_counts": counts,
         "rows": items,
         "mine": mine,
+        # 持仓里"未纳入区间计算"的代码（数据不足 120 根 / 被跳过）——
+        # 前端必须显示，否则用户找不到自己的票会以为功能坏了
+        "mine_missing": mine_missing,
         # `stock_facts_wide` 的日期（洗盘打分用的资金流/涨跌幅来自它）；
         # 与 `date` 不同时前端要提示，否则会把旧资金流当成当日
         "washout_stats_date": wa_date,
