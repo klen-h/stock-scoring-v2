@@ -265,6 +265,11 @@ jobs:
           # 与兜底读取的日志口径对齐：本步骤不碰策略链，抑制无关自检告警
           ENV_CHECK_SKIP_LLM: '1'
         run: |
+          # ★★ 2026-11-05（CI 实测 FileNotFoundError）：`data/` 在 .gitignore 里，
+          #   干净 workspace **没有这个目录** ⇒ 脚本 `open('./data/kline/xxx','wb')` 直接炸，
+          #   而且重试 6 次全是同一个错（目录不会自己出现）。
+          #   脚本侧已加 makedirs 兜底，这里再显式建一次（双保险，也方便排障）。
+          mkdir -p ./data/kline
           for i in $(seq 1 6); do
             python scripts/update_backend_pack_incremental.py \
               --pack-dir ./data/kline --backfill && exit 0

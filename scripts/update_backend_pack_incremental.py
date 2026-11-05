@@ -46,6 +46,16 @@ def _load_mod(name, path):
 def _download_raw(url, dest, label="文件"):
     """流式下载原始字节（不解释内容）。Actions 里也要用，避免 66MB 卡死。"""
     import requests
+    # ★★ 2026-11-05（用户贴出 CI 失败）：
+    #   `FileNotFoundError: './data/kline/_backend_prev.db.download.gz'`
+    #   —— workflow 直接传 `--pack-dir ./data/kline`，而 `.gitignore` 里有 `data/`
+    #   ⇒ **CI 的干净 workspace 里这个目录根本不存在**，`open(dest,'wb')` 直接炸。
+    #   重试 6 次 × 10 分钟全是同一个错误（目录不会自己长出来）。
+    #   ⇒ 下载前把父目录建好（幂等；目录已存在时零副作用）。
+    #   ⚠️ 这类"脚本假定目录存在"的错在本地永远复现不了（本地跑过一次就有目录了）。
+    _parent = os.path.dirname(dest)
+    if _parent:
+        os.makedirs(_parent, exist_ok=True)
     print(f"  下载{label}: {url}")
     r = requests.get(url, timeout=(20, 60), stream=True)
     r.raise_for_status()
