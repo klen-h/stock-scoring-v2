@@ -398,6 +398,52 @@ async def macro_daily_loop():
         await asyncio.sleep(60)
 
 
+# ── 人物立场时间线（金十「重要人物讲话」整理版）──
+# ★★ 2026-11-06 补齐：`people_watch.sync_all` **此前只有
+#   `POST /system/people-watch/refresh` 一个调用点，日批 / 调度器里从未注册** ——
+#   而前端卡片却写着"等日批拉取（约 22:00）"，于是那张卡**永远是 0 条且无任何报错**。
+#   这是最坏的一种失败：静默（看起来像"今天没人讲话"，实际是根本没去拉）。
+#
+# 时点为什么是 22:00：金十这个接口是**编辑整理后**发布的，有延迟 ——
+#   实测 11-05 22:00 时，最新一条是 11-05 01:29。太早拉等于白跑（当天稿还没整理完）。
+#   `days=30` 每次全量 + `ON CONFLICT DO NOTHING` ⇒ 当天漏的次日自动补，不会丢。
+#
+# 不加 `is_trading_day`：周末 / 节假日照样有人讲话（央行行长周末访谈很常见）。
+PEOPLE_WINDOW = (1320, 1439)   # 北京时间 22:00-23:59
+
+
+async def people_watch_loop():
+    """每日 22:00 后拉一次「人物立场」（历史结构化，T-1 及更早）。
+
+    当日实时**不在这里**：这个接口本身有延迟，实时归 `flash_brief` / 快讯流。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            t = now.hour * 60 + now.minute
+            if (PEOPLE_WINDOW[0] <= t < PEOPLE_WINDOW[1]
+                    and not store.is_schedule_done("people_watch")):
+                from app import people_watch as pww
+                res = await asyncio.to_thread(pww.sync_all, 30)
+                items = res.get("items") or []
+                ok_n = sum(1 for x in items if x.get("ok"))
+                if ok_n:
+                    store.mark_schedule_done("people_watch")
+                    print(f"[scheduler] 人物立场已拉取: 新增 {res.get('saved') or 0} 条 "
+                          f"（{ok_n}/{len(items)} 人成功）")
+                else:
+                    # ★ 全部失败（多半是 JIN10_X_TOKEN 失效）**不记账**：
+                    #   记账就把"一次 token 过期"变成"一整天空白"，而且没人知道。
+                    #   不记账 ⇒ 5 分钟后自动重试，日志里也能看到原因。
+                    errs = "；".join(
+                        f"{x.get('name')}: {str(x.get('error'))[:40]}" for x in items[:3])
+                    print(f"[scheduler] 人物立场全部失败（不记账，稍后重试）: {errs}")
+        except Exception as e:
+            print(f"[scheduler] 人物立场拉取失败: {e}")
+            _notify_failure("人物立场", str(e))
+        await asyncio.sleep(300)
+
+
 # ── K线数据库缓存每日刷新 ──
 KLINE_CACHE_REFRESHED_TODAY = False
 
@@ -2689,6 +2735,10 @@ async def start():
              #   ★ 成本核算：每天 1 次 HTTP（金十 14 天日历，单次约百 KB），
              #     与本进程其余循环不是一个量级 ⇒ 与 `macro_daily_loop` 同类处理。
              asyncio.create_task(calendar_loop()),
+             # ★ 2026-11-06：人物立场（金十「重要人物讲话」整理版）——
+             #   此前**只有手动端点**，日批从未注册 ⇒ 前端"等日批拉取"是空头承诺。
+             #   每日 1 次、8 人 × 1~2 页 HTTP，与 calendar_loop 同量级 ⇒ 只读模式保留。
+             asyncio.create_task(people_watch_loop()),
              *_heavy(industry_map_loop),
              *_heavy(mainline_loop),
              *_heavy(sector_snapshot_loop),
@@ -2714,6 +2764,7 @@ async def start():
           f"矛盾扫描每日{CONTRADICTION_SCAN_WINDOW[0] // 60}:"
           f"{CONTRADICTION_SCAN_WINDOW[0] % 60:02d} / "
           f"宏观锁定每日{MACRO_DAILY_WINDOW[0] // 60}:{MACRO_DAILY_WINDOW[0] % 60:02d} / "
+          f"人物立场每日{PEOPLE_WINDOW[0] // 60}:{PEOPLE_WINDOW[0] % 60:02d} / "
           f"复盘窗口 {REVIEW_WINDOWS} | LLM{'✅' if llm_configured() else '❌未配置'} "
           f"金十{'✅' if FLASH_COOKIE else '❌未配置'} 微信{'✅' if WECHAT_WEBHOOK else '❌未配置'}")
     return tasks

@@ -609,7 +609,8 @@
                   </button>
                 </div>
                 <div v-if="!(ppl.items || []).length" class="text-[10px] text-muted">
-                  暂无已入库讲话。该数据靠日批拉取（约 22:00），也可在服务器手动触发
+                  暂无已入库讲话。调度器每日 22:00 自动拉取（金十编辑整理版，本身有延迟，
+                  当日实时请看快讯）。也可手动触发
                   <code class="text-[9px]">POST /system/people-watch/refresh</code>。
                 </div>
                 <div v-else class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
@@ -4750,7 +4751,9 @@ const pplLine = computed(() => {
   const last = (d.items || [])[0]
   return last
     ? `${d.name} · ${d.n} 条 · 最新 ${last.date}`
-    : `${d.name} · 暂无已入库讲话（等日批拉取）`
+    // ★ 2026-11-06：原文案写"等日批拉取"，但**日批从未注册这个任务** ——
+    //   那句话实际等于"永远等不到"。现在调度器 22:00 会真跑，文案才对得上。
+    : `${d.name} · 暂无已入库讲话（每日 22:00 自动拉取）`
 })
 async function loadPeople() {
   if (pplBusy.value) return
