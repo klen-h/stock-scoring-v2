@@ -1484,6 +1484,40 @@ def task_macro_class():
         return f"宏观分类: WARN {str(e)[:70]}"
 
 
+def task_policy_tone_watch():
+    """政策定调窗口关键词账本（2026-11-07 拍板冻结）。**纯事实日志观察器**。
+
+    ★ 设计：`docs/plans/20261107_政策定调窗口观察计划_v1.md` §3.1（v1.1）。
+      对既有快讯表（flash_news + jin10_tidy_news）做**本地文本匹配**，
+      命中账本按日落库（含 0 命中的"预留词"）⇒ **零新增外呼**。
+
+    ★ 为什么必须排在 `jin10_tidy` 之后：它读 tidy 当日写入的行；
+      flash_news 由线上 scheduler 盘中轮询写入，日批时点已齐。
+
+    ★「语料为空 / 全 0 命中」不是 WARN：热榜子集的常规空日是合法状态
+      （12 月会议周才有主事件）；真正要警惕的是**静默断流**
+      （FLASH_COOKIE 失效）——用语料条数暴露它，连续 2 日 <10 条人工介入。
+
+    ★ 失败不抛：观察器缺一天不影响主链。
+    """
+    try:
+        from app import policy_tone_watch as ptw
+        day = _batch_trading_day().isoformat()
+        r = ptw.snapshot(day=day)
+        bc = r.get("by_category") or {}
+        neg = bc.get("reverse") or 0
+        hit_total = sum(v for k, v in bc.items() if k != "reverse")
+        alert = " ·⚠️语料<10条(疑似断流)" if r.get("n_items", 0) < 10 else ""
+        neg_part = f" ·反向词命中{neg}" if neg else ""
+        return (f"政策定调: 命中{hit_total}条"
+                f"（定调{bc.get('tone', 0)}/资金{bc.get('funds', 0)}"
+                f"/基本面{bc.get('fundamental', 0)}{neg_part}）"
+                f" ·语料{r.get('n_items', 0)}条"
+                f" ·v{ptw.KEYWORD_VERSION}{alert}")
+    except Exception as e:
+        return f"政策定调: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1743,6 +1777,12 @@ TASKS = {
     #   读 `thesis_evidence` 当日快照 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
     #   设计：docs/宏观状态概率账设计_20261107.md
     "macro_class": (task_macro_class, "宏观状态概率账（四类分布，纯观察器）"),
+    # ★ 2026-11-07：政策定调关键词账本（12 月定调窗口预登记，**纯事实日志**）。
+    #   不进评分/闸门/仓位/模拟盘；零外呼（本地匹配既有快讯表）。
+    #   读 jin10_tidy 当日产物 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
+    #   判据冻结：docs/plans/20261107_政策定调窗口观察计划_v1.md §3.1
+    "policy_tone_watch": (task_policy_tone_watch,
+                          "政策定调关键词账本（事实日志，纯观察器）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1862,6 +1902,9 @@ DEFAULT_ORDER = ["backfill",
                 "news_snapshot", "jin10_tidy",
                 # ★ 2026-11-05：人物讲话与 jin10_tidy 同源同 token，紧跟其后跑。
                 "people_watch",
+                # ★ 2026-11-07：政策定调账本读 flash_news（scheduler 盘中已写）+
+                #   jin10_tidy（上面任务刚写）⇒ 必须排在 jin10_tidy 之后。
+                "policy_tone_watch",
                 # ★ 2026-10-30：滞胀档依赖 macro_daily 当日快照 ⇒ 排在消息面采集之后
                 "stagflation",
                 # ★ 2026-10-31：Thesis Tracker 证据快照（同依赖 macro_daily，紧排其后）
