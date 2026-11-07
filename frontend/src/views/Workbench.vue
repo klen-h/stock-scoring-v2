@@ -311,11 +311,11 @@
                  占高且每次都在抢注意力 ⇒ 收进标题旁的 `?`（悬停看全文，内容一字不减）。 -->
             <div class="text-sm font-semibold flex items-center gap-1">
               <span>观察器</span>
-              <span class="text-[10px] text-muted font-normal">（纯观察 · 不进决策链）</span>
-              <span class="text-[10px] text-muted cursor-help border border-border rounded-full px-1 leading-[14px]"
+              <span class="text-[11px] text-muted font-normal">（纯观察 · 不进决策链）</span>
+              <span class="text-[11px] text-muted cursor-help border border-border rounded-full px-1 leading-[14px]"
                     :title="obsHelp">?</span>
             </div>
-            <button type="button" class="text-[10px] text-muted hover:text-accent"
+            <button type="button" class="text-[11px] text-muted hover:text-accent"
                     :title="obsAllOpen ? '全部收起' : '全部展开'"
                     @click="toggleAllObs">{{ obsAllOpen ? '全部收起 ▴' : '全部展开 ▾' }}</button>
           </div>
@@ -327,9 +327,9 @@
                     :title="wsPick?.reasons?.map(x => x.text).join('；') || ''"
                     @click="wsOpen = !wsOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="wsDot"></span>
-              <span class="text-xs font-semibold shrink-0">盘中变化</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ wsLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ wsOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">盘中变化</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ wsLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ wsOpen ? '▾' : '▸' }}</span>
             </button>
 
           <div v-if="wsOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
@@ -343,17 +343,17 @@
               <div class="flex flex-wrap gap-1.5 mt-2">
                 <button v-for="r in wsRows" :key="r.slot"
                         @click.stop="wsSel = r.slot; wsOpen = true"
-                        class="px-1.5 py-0.5 rounded border text-[11px] font-mono transition"
+                        class="px-1.5 py-0.5 rounded border text-xs font-mono transition"
                         :class="[wsColor(r.score), wsSel === r.slot ? 'ring-1 ring-accent' : 'opacity-80 hover:opacity-100']"
                         :title="(r.reasons || []).map(x => x.text + (x.pts ? ' +' + x.pts : '')).join('\n')">
                   {{ r.slot }}<span v-if="r.worth" class="ml-0.5" :class="wsVerdict(r).cls">●</span><span class="ml-1">{{ r.score }}</span>
                 </button>
               </div>
 
-              <div v-if="wsOpen && wsPick" class="mt-2 border-t border-border/40 pt-2 text-xs space-y-1">
+              <div v-if="wsOpen && wsPick" class="mt-2 border-t border-border/40 pt-2 text-sm space-y-1">
                 <div class="flex items-center justify-between">
                   <span class="text-muted">{{ wsPick.slot }} · 交易 {{ wsPick.trading_min }} 分钟<span v-if="wsPick.as_of"> · {{ wsPick.as_of }}</span></span>
-                  <span :class="wsVerdict(wsPick).cls">
+                  <span class="font-semibold" :class="wsVerdict(wsPick).cls">
                     {{ wsVerdict(wsPick).cn }}<template v-if="wsPick.bias"> · 方向 {{ wsBiasText(wsPick) }}</template>
                     · {{ wsPick.score }} 分</span>
                 </div>
@@ -361,14 +361,14 @@
                 <div v-for="(x, i) in (wsPick.reasons || [])" :key="i" class="flex gap-2">
                   <span class="text-muted font-mono w-20 shrink-0" :title="x.tag">{{ wsTagCn(x.tag) }}</span>
                   <!-- 逐条方向：利多/利空（红/绿）或中性；后端 dir 字段（老数据为空 ⇒ 中性） -->
-                  <span class="shrink-0 text-[10px] w-7" :class="wsDirCls(x.dir)">{{ wsDirCn(x.dir) }}</span>
+                  <span class="shrink-0 text-[11px] w-7" :class="wsDirCls(x.dir)">{{ wsDirCn(x.dir) }}</span>
                   <span class="flex-1">{{ x.text }}</span>
                   <span v-if="x.pts" class="text-accent font-mono shrink-0">+{{ x.pts }}</span>
                 </div>
                 <div v-if="wsPick.leader_cur" class="text-muted">领涨板块：{{ wsPick.leader_cur }}</div>
               </div>
 
-              <div class="text-[10px] text-muted mt-2">
+              <div class="text-[11px] text-muted mt-2">
                 判据：指数 30 分钟移动 / 宽度翻转 / 涨跌停变化 / 领涨切换 / 区间成交额 / 快讯；
                 ≥40 分为「有变化」，再按方向分 <b class="text-rose-300">正影响</b>/<b class="text-emerald-300">反影响</b>
                 （|方向分|≥20），方向不明记「中性变化」。放量/换主线/快讯条数只算变化、不判方向。
@@ -390,9 +390,9 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="xmkOpen = !xmkOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="xmkDot"></span>
-              <span class="text-xs font-semibold shrink-0">跨市场异动</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ xmkLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ xmkOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">跨市场异动</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ xmkLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ xmkOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="xmkOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="!xmk" class="text-xs text-muted">加载中…</div>
@@ -400,20 +400,20 @@
               <template v-else>
                 <div class="space-y-0.5">
                   <div v-for="m in xmk.markets" :key="m.key"
-                       class="flex items-center gap-2 text-xs">
+                       class="flex items-center gap-2 text-sm">
                     <span class="w-1 h-1 rounded-full shrink-0" :class="xmkDotOf(m.level)"></span>
                     <span class="text-gray-300 shrink-0 w-[68px] truncate">{{ m.name }}</span>
                     <span class="font-mono text-gray-200 shrink-0 w-[66px] text-right">
                       {{ m.price == null ? '—' : m.price.toFixed(2) }}</span>
-                    <span class="font-mono shrink-0 w-[58px] text-right" :class="xmkChgCls(m.chg)">
+                    <span class="font-mono font-semibold shrink-0 w-[58px] text-right" :class="xmkChgCls(m.chg)">
                       {{ m.chg == null ? '—' : (m.chg >= 0 ? '+' : '') + m.chg.toFixed(2) + '%' }}</span>
-                    <span class="text-[10px] text-muted truncate flex-1" :title="m.caliber">
+                    <span class="text-xs text-gray-300/80 truncate flex-1" :title="m.caliber">
                       {{ m.caliber }}<template v-if="m.time"> · {{ m.time }}</template></span>
                   </div>
                 </div>
                 <div v-if="xmk.divergence"
-                     class="mt-1.5 pt-1.5 border-t border-border/50 text-[11px]"
-                     :class="xmk.divergence.on ? 'text-amber-300' : 'text-muted'">
+                     class="mt-1.5 pt-1.5 border-t border-border/50 text-xs"
+                     :class="xmk.divergence.on ? 'text-amber-300 font-semibold' : 'text-muted'">
                   区域背离：中国 {{ xmk.divergence.cn_avg >= 0 ? '+' : '' }}{{ xmk.divergence.cn_avg.toFixed(2) }}%
                   vs {{ xmk.divergence.asia_label || '韩国' }} {{ xmk.divergence.asia_avg >= 0 ? '+' : '' }}{{ xmk.divergence.asia_avg.toFixed(2) }}%
                   ⇒ 差 {{ xmk.divergence.gap >= 0 ? '+' : '' }}{{ xmk.divergence.gap.toFixed(1) }}pp
@@ -422,7 +422,7 @@
                 </div>
                 <div v-if="xmk.summary"
                      class="mt-1 text-[11px] text-gray-300 leading-snug">{{ xmk.summary }}</div>
-                <div class="mt-1 text-[10px] text-muted leading-snug">{{ xmk.note }}</div>
+                <div class="mt-1 text-[11px] text-muted leading-snug">{{ xmk.note }}</div>
               </template>
             </div>
           </div>
@@ -436,9 +436,9 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="toggleRg()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="rgDot"></span>
-              <span class="text-xs font-semibold shrink-0">震荡区间</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ rgLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ rgOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">震荡区间</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ rgLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ rgOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="rgOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="rgBusy && !rg" class="text-xs text-muted">加载中…</div>
@@ -446,22 +446,22 @@
               <div v-else-if="!rg.total" class="text-xs text-muted">{{ rg.note || '暂无数据' }}</div>
               <template v-else>
                 <div v-if="(rg.mine || []).length" class="mb-2">
-                  <div class="text-[10px] text-muted mb-0.5">我的持仓</div>
+                  <div class="text-[11px] text-muted mb-0.5">我的持仓</div>
                   <div v-for="x in rg.mine" :key="'m' + x.code"
-                       class="flex items-center gap-1.5 text-[11px] leading-tight">
+                       class="flex items-center gap-1.5 text-xs leading-snug">
                     <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
                     <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
-                    <span class="shrink-0 px-1 rounded text-[10px]" :class="rgStateCls(x.state)">
+                    <span class="shrink-0 px-1 rounded text-[11px] font-semibold" :class="rgStateCls(x.state)">
                       {{ x.state }}</span>
                     <span class="font-mono text-muted shrink-0 w-[62px] text-right">
                       pos {{ (x.pos == null ? '—' : x.pos.toFixed(2)) }}</span>
                     <span class="font-mono text-muted shrink-0 w-[44px] text-right">
                       {{ x.range_days }}日</span>
-                    <span class="text-[10px] text-muted truncate flex-1"
+                    <span class="text-xs text-gray-300/80 truncate flex-1"
                           :title="`区间 [${x.range_low}, ${x.range_high}]`">
                       [{{ x.range_low }}, {{ x.range_high }}]</span>
                     <span v-if="x.washout"
-                          class="shrink-0 px-1 rounded text-[9px] cursor-help"
+                          class="shrink-0 px-1 rounded text-[10px] cursor-help"
                           :class="woCls(x.washout)" :title="woTitle(x.washout)">
                       {{ woShort(x.washout) }}</span>
                   </div>
@@ -469,30 +469,30 @@
                 <!-- ★ 2026-11-06：持仓未被覆盖时必须显式说明，
                      否则"我的票怎么不见了"会被当成功能坏了 -->
                 <div v-if="(rg.mine_missing || []).length"
-                     class="text-[10px] text-muted/70 mb-1.5 leading-snug">
+                     class="text-[11px] text-muted/70 mb-1.5 leading-snug">
                   未纳入区间计算：{{ rg.mine_missing.join('、') }}
                   （K 线不足 120 根或被跳过）
                 </div>
-                <div class="text-[10px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
+                <div class="text-[11px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
                 <div v-for="x in rgTop" :key="'r' + x.code"
-                     class="flex items-center gap-1.5 text-[11px] leading-tight">
+                     class="flex items-center gap-1.5 text-xs leading-snug">
                   <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
                   <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
-                  <span class="shrink-0 px-1 rounded text-[10px]" :class="rgStateCls(x.state)">
+                  <span class="shrink-0 px-1 rounded text-[11px] font-semibold" :class="rgStateCls(x.state)">
                     {{ x.state }}</span>
                   <span class="font-mono text-muted shrink-0 w-[62px] text-right">
                     pos {{ (x.pos == null ? '—' : x.pos.toFixed(2)) }}</span>
                   <span class="font-mono text-muted shrink-0 w-[44px] text-right">
                     {{ x.range_days }}日</span>
-                  <span class="text-[10px] text-muted truncate flex-1"
+                  <span class="text-xs text-gray-300/80 truncate flex-1"
                         :title="`振幅 ${((x.amp60 || 0) * 100).toFixed(0)}%`">
                     [{{ x.range_low }}, {{ x.range_high }}]</span>
                   <span v-if="x.washout"
-                        class="shrink-0 px-1 rounded text-[9px] cursor-help"
+                        class="shrink-0 px-1 rounded text-[10px] cursor-help"
                         :class="woCls(x.washout)" :title="woTitle(x.washout)">
                     {{ woShort(x.washout) }}</span>
                 </div>
-                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                <div class="mt-1 pt-1 border-t border-border/40 text-[11px] text-muted leading-snug">
                   {{ rg.note }}
                 </div>
               </template>
@@ -509,9 +509,9 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="evtOpen = !evtOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="evtDot"></span>
-              <span class="text-xs font-semibold shrink-0">事件落点</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ evtLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ evtOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">事件落点</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ evtLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ evtOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="evtOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="!evt" class="text-xs text-muted">加载中…</div>
@@ -519,17 +519,17 @@
               <template v-else>
                 <!-- 约束先摆出来：它才是"能不能动手"的前提，不是名单 -->
                 <div v-if="evt.constraint?.position_hint"
-                     class="text-[10px] text-amber-300/90 mb-1.5 leading-snug">
+                     class="text-[11px] text-amber-300/90 mb-1.5 leading-snug">
                   {{ evt.constraint.position_hint }}
                 </div>
-                <div v-if="evt.fallback" class="text-[10px] text-amber-400/80 mb-1">
+                <div v-if="evt.fallback" class="text-[11px] text-amber-400/80 mb-1">
                   请求 {{ evt.requested_date }} 数据未生成，以下为 {{ evt.date }} 口径
                 </div>
                 <!-- 主题切换：点已选中的取消，回到自动 -->
                 <div class="flex flex-wrap gap-1 mb-1.5">
                   <button v-for="t in evtThemes.filter(x => x.mapped)" :key="t.theme"
                           type="button"
-                          class="px-1.5 py-0.5 rounded border text-[10px]"
+                          class="px-1.5 py-0.5 rounded border text-[11px]"
                           :class="evtPick === t.theme
                             ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                             : 'border-border/60 text-muted hover:bg-white/10'"
@@ -544,12 +544,12 @@
                   </div>
                   <div v-for="g in th.groups" :key="g.industry"
                        class="pl-1.5 border-l border-border/40 mb-1">
-                    <div class="text-[10px] text-muted">{{ g.industry }}</div>
-                    <div v-if="!(g.targets || []).length" class="text-[10px] text-muted/60">
+                    <div class="text-[11px] text-muted">{{ g.industry }}</div>
+                    <div v-if="!(g.targets || []).length" class="text-[11px] text-muted/60">
                       {{ g.empty_reason }}
                     </div>
                     <template v-for="x in g.targets" :key="x.code">
-                      <div class="flex items-center gap-1.5 text-[11px] leading-tight">
+                      <div class="flex items-center gap-1.5 text-xs leading-snug">
                         <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
                         <span class="text-gray-200 shrink-0 w-[60px] truncate">{{ x.name }}</span>
                         <span class="font-mono shrink-0 w-[34px] text-right" :class="evtScoreCls(x.score)">
@@ -559,19 +559,19 @@
                         <span class="font-mono shrink-0 w-[54px] text-right"
                               :class="(x.flow5 || 0) < 0 ? 'text-emerald-400' : 'text-rose-400'">
                           {{ evtNum(x.flow5, 2) }}亿</span>
-                        <span class="text-[10px] text-muted shrink-0 w-[26px]">{{ x.phase_cn }}</span>
+                        <span class="text-[11px] text-muted shrink-0 w-[26px]">{{ x.phase_cn }}</span>
                       </div>
                       <div v-if="(x.risks || []).length"
-                           class="pl-[44px] text-[10px] text-amber-400/80 leading-snug">
+                           class="pl-[44px] text-[11px] text-amber-400/80 leading-snug">
                         ⚠ {{ x.risks.join('；') }}
                       </div>
                     </template>
                   </div>
-                  <div v-if="(th.verify || []).length" class="text-[10px] text-muted leading-snug">
+                  <div v-if="(th.verify || []).length" class="text-[11px] text-muted leading-snug">
                     验证：{{ th.verify.join(' / ') }}
                   </div>
                 </div>
-                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                <div class="mt-1 pt-1 border-t border-border/40 text-[11px] text-muted leading-snug">
                   {{ evt.note }}
                 </div>
               </template>
@@ -588,9 +588,9 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="togglePpl()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="pplDot"></span>
-              <span class="text-xs font-semibold shrink-0">人物立场</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ pplLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ pplOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">人物立场</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ pplLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ pplOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="pplOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="pplBusy && !ppl" class="text-xs text-muted">加载中…</div>
@@ -599,7 +599,7 @@
               <template v-else>
                 <div class="flex flex-wrap gap-1 mb-1.5">
                   <button v-for="p in pplPeople" :key="p.id" type="button"
-                          class="px-1.5 py-0.5 rounded border text-[10px]"
+                          class="px-1.5 py-0.5 rounded border text-[11px]"
                           :class="pplId === p.id
                             ? 'bg-sky-500/20 text-sky-300 border-sky-500/40'
                             : 'border-border/60 text-muted hover:bg-white/10'"
@@ -608,21 +608,21 @@
                     {{ p.name }}<span class="opacity-60 ml-0.5">{{ p.n }}</span>
                   </button>
                 </div>
-                <div v-if="!(ppl.items || []).length" class="text-[10px] text-muted">
+                <div v-if="!(ppl.items || []).length" class="text-[11px] text-muted">
                   暂无已入库讲话。调度器每日 22:00 自动拉取（金十编辑整理版，本身有延迟，
                   当日实时请看快讯）。也可手动触发
-                  <code class="text-[9px]">POST /system/people-watch/refresh</code>。
+                  <code class="text-[10px]">POST /system/people-watch/refresh</code>。
                 </div>
                 <div v-else class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
                   <div v-for="it in ppl.items" :key="it.id" class="pl-1.5 border-l border-border/40">
-                    <div class="text-[10px] text-muted font-mono">{{ it.time }}</div>
+                    <div class="text-[11px] text-muted font-mono">{{ it.time }}</div>
                     <div v-for="(k, i) in it.keys" :key="i"
-                         class="text-[11px] text-gray-300 leading-snug">· {{ k }}</div>
+                         class="text-xs text-gray-200 leading-snug">· {{ k }}</div>
                     <div v-if="!(it.keys || []).length && it.excerpt"
-                         class="text-[11px] text-gray-400 leading-snug">{{ it.excerpt }}</div>
+                         class="text-xs text-gray-400 leading-snug">{{ it.excerpt }}</div>
                   </div>
                 </div>
-                <div class="mt-1 pt-1 border-t border-border/40 text-[10px] text-muted leading-snug">
+                <div class="mt-1 pt-1 border-t border-border/40 text-[11px] text-muted leading-snug">
                   只呈现原文与金十高亮句，不做立场判断 —— "他改口了"要自己看出来。
                   本数据 T+1 更新，当日实时请看快讯。
                 </div>
@@ -635,9 +635,9 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="crowdOpen = !crowdOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="crowdDot"></span>
-              <span class="text-xs font-semibold shrink-0">拥挤与关键位</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ crowdLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ crowdOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">拥挤与关键位</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ crowdLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ crowdOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="crowdOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
           <div v-if="riskLoading" class="text-xs text-muted">加载中…</div>
@@ -661,7 +661,7 @@
                         :title="'pos120≥0.9 的成员占比'">{{ Math.round((r.pos_high || 0) * 100) }}%</span>
                   <span class="w-14 text-right font-mono"
                         :class="(r.dd120 || 0) <= -25 ? 'text-rose-400' : 'text-muted'">{{ fmtPct(r.dd120) }}</span>
-                  <span class="px-1 rounded text-[10px]" :class="crowdBadge(r.level)">{{ r.level }}</span>
+                  <span class="px-1.5 rounded text-[11px] font-semibold" :class="crowdBadge(r.level)">{{ r.level }}</span>
                 </div>
               </div>
             </div>
@@ -685,12 +685,12 @@
                   <span class="w-12 text-right font-mono"
                         :class="(r.dist_pct ?? 99) <= 1.5 ? 'text-amber-300' : 'text-muted'">{{ fmtPct(r.dist_pct) }}</span>
                   <!-- ★ 2026-11-05：盘中已跌破、但尚未收盘确认（`broke` 只在收盘置位） -->
-                  <span v-if="r.live_broke" class="px-1 rounded text-[10px] bg-rose-500/20 text-rose-300"
+                  <span v-if="r.live_broke" class="px-1.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300"
                         title="盘中已跌破支撑；`broke` 只在收盘确认时置位，这里是实时提醒">盘中跌破</span>
                   <!-- 支撑位与现价差一个量级以上 ⇒ 落库数据本身可疑 -->
-                  <span v-else-if="r.support_suspect" class="px-1 rounded text-[10px] bg-slate-500/20 text-slate-300"
+                  <span v-else-if="r.support_suspect" class="px-1.5 rounded text-xs font-semibold bg-slate-500/20 text-slate-300"
                         title="支撑位与现价差一个量级以上，落库数据可疑；距离已回退为收盘口径">支撑存疑</span>
-                  <span class="px-1 rounded text-[10px]" :class="keyBadge(r.status)">{{ r.status }}</span>
+                  <span class="px-1.5 rounded text-xs font-semibold" :class="keyBadge(r.status)">{{ r.status }}</span>
                 </div>
               </div>
             </div>
@@ -709,16 +709,16 @@
                     @click="jin10Open = !jin10Open; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0"
                     :class="(jin10?.sections || []).length ? 'bg-sky-400' : 'bg-slate-500'"></span>
-              <span class="text-xs font-semibold shrink-0">金十消息面</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ jin10Line }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ jin10Open ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">金十消息面</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ jin10Line }}</span>
+              <span class="text-xs text-muted shrink-0">{{ jin10Open ? '▾' : '▸' }}</span>
             </button>
             <div v-if="jin10Open" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div v-if="!(jin10?.sections || []).length" class="text-xs text-muted">
                 暂无数据（汇总每天盘后生成；若长期为空，请检查服务器 .env 里的 JIN10_X_TOKEN 是否过期）
               </div>
               <template v-else>
-                <div class="flex items-center gap-1.5 text-[10px] text-muted mb-1.5">
+                <div class="flex items-center gap-1.5 text-[11px] text-muted mb-1.5">
                   <span>{{ jin10.date }}</span>
                   <span v-if="jin10.fallback" class="text-amber-400/80"
                         :title="`请求 ${jin10.requested_date} 无数据，此处显示最近一期`">
@@ -738,16 +738,16 @@
                           title="抓最新 + LLM 跨条目主线归纳（按日缓存，重复点不重复烧）"
                           @click="refreshJin10(true)">{{ jin10Busy ? '…' : 'AI 解读' }}</button>
                 </div>
-                <div v-if="jin10Err" class="text-[10px] text-rose-300 mb-1">{{ jin10Err }}</div>
-                <div v-if="jin10Hint" class="text-[10px] text-amber-400/80 mb-1">{{ jin10Hint }}</div>
+                <div v-if="jin10Err" class="text-[11px] text-rose-300 mb-1">{{ jin10Err }}</div>
+                <div v-if="jin10Hint" class="text-[11px] text-amber-400/80 mb-1">{{ jin10Hint }}</div>
                 <div v-if="jin10.summary"
                      class="mb-1.5 rounded border border-sky-500/20 bg-sky-500/5 p-1.5">
-                  <div class="text-[10px] text-sky-300/80 mb-0.5">AI 主线归纳（{{ jin10.date }}）</div>
-                  <div class="text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap">{{ jin10.summary }}</div>
+                  <div class="text-[11px] text-sky-300/80 mb-0.5">AI 主线归纳（{{ jin10.date }}）</div>
+                  <div class="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap">{{ jin10.summary }}</div>
                 </div>
                 <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
                   <div v-for="sec in jin10.sections" :key="sec.category_id" class="space-y-0.5">
-                    <div class="text-[11px] font-medium text-gray-300 flex items-center gap-1.5">
+                    <div class="text-sm font-semibold text-gray-200 flex items-center gap-1.5">
                       <span>{{ sec.name }}</span>
                       <span class="text-muted font-normal">{{ sec.items.length }} 条</span>
                     </div>
@@ -755,12 +755,12 @@
                          class="pl-1.5 border-l border-border/40">
                       <button type="button" class="w-full text-left flex items-start gap-1.5"
                               @click="openJin10 = (openJin10 === sec.category_id + '-' + i ? '' : sec.category_id + '-' + i)">
-                        <span class="text-[11px] text-gray-300 leading-snug flex-1">{{ it.title }}</span>
+                        <span class="text-xs text-gray-200 leading-snug flex-1">{{ it.title }}</span>
                         <span v-for="t in it.tags" :key="t"
-                              class="shrink-0 px-1 rounded text-[9px]" :class="jin10TagCls(t)">{{ t }}</span>
+                              class="shrink-0 px-1 rounded text-[10px]" :class="jin10TagCls(t)">{{ t }}</span>
                       </button>
                       <div v-if="openJin10 === sec.category_id + '-' + i"
-                           class="text-[10px] text-muted leading-relaxed mt-0.5">
+                           class="text-[11px] text-muted leading-relaxed mt-0.5">
                         {{ it.content || '（该条只有标题，无正文）' }}
                       </div>
                     </div>
@@ -775,14 +775,14 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="scenOpen = !scenOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="scenDot"></span>
-              <span class="text-xs font-semibold shrink-0">推演证伪</span>
-              <span v-if="scen" class="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium"
+              <span class="text-sm font-semibold shrink-0">推演证伪</span>
+              <span v-if="scen" class="shrink-0 px-1.5 py-0.5 rounded text-sm font-bold"
                     :class="scenBadgeClass">{{ scen.scenario }}</span>
               <span v-if="scen && scen.scenario_candidate"
-                    class="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-rose-500/20 text-rose-300"
+                    class="shrink-0 px-1.5 py-0.5 rounded text-xs font-bold bg-rose-500/20 text-rose-300"
                     :title="scen.scenario_candidate">候选</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ scenLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ scenOpen ? '▾' : '▸' }}</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ scenLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ scenOpen ? '▾' : '▸' }}</span>
             </button>
             <!-- ★ 2026-10-24（用户："展开内容没有边框和背景色、不明显、边距太挤"）：
                  与「盘中变化 / 拥挤与关键位」统一成同一视觉块（圆角+边框+浅底+内边距），
@@ -790,12 +790,12 @@
             <div v-if="scenOpen"
                  class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2.5">
               <div v-if="!scen" class="text-xs text-muted">加载中…</div>
-              <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-xs">
+              <div v-else class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2 text-sm">
                 <div v-for="s in scen.signals" :key="s.key"
                      class="flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-white/[0.03]">
                   <span class="w-2 h-2 rounded-full shrink-0" :class="leanDot(s.lean)"></span>
-                  <span class="text-muted shrink-0">{{ s.label }}</span>
-                  <span class="font-mono text-gray-200" :title="s.note">{{ scenVal(s) }}</span>
+                  <span class="text-gray-300 shrink-0">{{ s.label }}</span>
+                  <span class="font-mono font-semibold text-gray-100" :title="s.note">{{ scenVal(s) }}</span>
                 </div>
               </div>
               <div v-if="scen"
@@ -807,25 +807,25 @@
                 </span>
               </div>
               <div v-if="scen" class="mt-2 pt-2 border-t border-border/50 space-y-1">
-                <div v-if="scen.anchor" class="text-[10px]"
+                <div v-if="scen.anchor" class="text-[11px]"
                      :class="scen.anchor.state === '跌破' ? 'text-rose-300' : 'text-emerald-300'">
                   锚点 {{ scen.anchor.level }}：{{ scen.anchor.state }}
                   <span v-if="scen.anchor.close">（收盘 {{ scen.anchor.close }}）</span>；
                   跌破 → 下看 {{ scen.anchor.downside }}；{{ scen.anchor.fix }}
                 </div>
-                <div v-if="scen.geo_alert" class="text-[10px] text-rose-300">
+                <div v-if="scen.geo_alert" class="text-[11px] text-rose-300">
                   ★ 地缘硬触发：金十已出现伊朗实际动能事件（空袭/布雷/封锁等）；情景仍按油价/10Y/点位判定。
                 </div>
-                <div v-if="scen.geo_candidate" class="text-[10px] text-rose-300">
+                <div v-if="scen.geo_candidate" class="text-[11px] text-rose-300">
                   ★ 地缘候选：近 48h 动能 ≥3 条 ⇒ 熊市情景候选（仅提示，不自动改仓）。
                 </div>
                 <!-- ★ 2026-10-31（用户："降档等只出文字提示，不碰仓位"）：
                      高影响事件（选举/FOMC）T-N 天内的文字提示。
                      刻意**不做成自动降档** —— 仓位由人决定，系统只按时提醒。 -->
-                <div v-if="scen.event_alert?.active" class="text-[10px] text-amber-300">
+                <div v-if="scen.event_alert?.active" class="text-[11px] text-amber-300">
                   {{ scen.event_alert.text }}
                 </div>
-                <div class="text-[10px] text-muted leading-relaxed">{{ scen.note }}</div>
+                <div class="text-[11px] text-muted leading-relaxed">{{ scen.note }}</div>
               </div>
             </div>
           </div>
@@ -835,17 +835,17 @@
             <button type="button" class="w-full flex items-center gap-2 text-left"
                     @click="aiOpen = !aiOpen; saveObs()">
               <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="aiDot"></span>
-              <span class="text-xs font-semibold shrink-0">AI 硬件篮子</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ aiLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ aiOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">AI 硬件篮子</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ aiLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ aiOpen ? '▾' : '▸' }}</span>
             </button>
-            <div v-if="aiOpen" class="mt-1.5 text-xs rounded-md border border-border/60 bg-white/[0.06] p-2">
+            <div v-if="aiOpen" class="mt-1.5 text-sm rounded-md border border-border/60 bg-white/[0.06] p-2">
               <div class="flex items-center gap-3 flex-wrap">
-                <span class="font-mono" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
+                <span class="font-mono font-semibold" :class="(aiBasket.basket.dd120 || 0) <= -25 ? 'text-rose-300' : 'text-muted'">
                   回撤 {{ fmtPct(aiBasket.basket.dd120) }}</span>
-                <span class="font-mono" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                <span class="font-mono font-semibold" :class="(aiBasket.basket.ret5 || 0) >= 0 ? 'text-rise' : 'text-fall'">
                   5日 {{ fmtPct(aiBasket.basket.ret5) }}</span>
-                <span class="font-mono" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">
+                <span class="font-mono font-semibold" :class="(aiBasket.basket.ret30 || 0) >= 0 ? 'text-rise' : 'text-fall'">
                   30日 {{ fmtPct(aiBasket.basket.ret30) }}</span>
                 <span class="text-muted">高位占比
                   {{ Math.round((aiBasket.basket.pos120 || 0) * 100) }}%</span>
@@ -870,17 +870,17 @@
                     :class="obsAI.loading ? 'bg-sky-400 animate-pulse'
                             : (obsAI.error ? 'bg-amber-400'
                                : (obsAI.conclusion ? 'bg-accent' : 'bg-slate-500'))"></span>
-              <span class="text-xs font-semibold shrink-0">AI 解读</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ obsAISummary }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ obsAIOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">AI 解读</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ obsAISummary }}</span>
+              <span class="text-xs text-muted shrink-0">{{ obsAIOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="obsAIOpen"
                  class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2.5">
-              <div class="flex items-center gap-2 flex-wrap text-[10px] text-muted mb-1">
+              <div class="flex items-center gap-2 flex-wrap text-[11px] text-muted mb-1">
                 <span v-if="obsAI.as_of">数据截至 {{ obsAI.as_of }}</span>
                 <span v-if="obsAI.cached">· 当日缓存</span>
                 <span v-if="obsAI.loading">· 分析中…</span>
-                <button class="ml-auto px-2 py-0.5 rounded border border-border text-[10px]
+                <button class="ml-auto px-2 py-0.5 rounded border border-border text-[11px]
                                text-accent hover:border-accent/50 disabled:opacity-50"
                         :disabled="obsAI.loading"
                         title="强制重算（消耗 1 次 LLM 调用）"
@@ -916,30 +916,35 @@
               <span class="w-1.5 h-1.5 rounded-full shrink-0"
                     :class="!pbw ? 'bg-slate-500'
                             : (pbw.n_checked >= (pbw.n_pass || 4) ? 'bg-rose-400' : 'bg-amber-400')"></span>
-              <span class="text-xs font-semibold shrink-0">市场底确认清单</span>
-              <span class="text-[10px] text-muted truncate flex-1">{{ pbwLine }}</span>
-              <span class="text-[10px] text-muted shrink-0">{{ pbwOpen ? '▾' : '▸' }}</span>
+              <span class="text-sm font-semibold shrink-0">市场底确认清单</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ pbwLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ pbwOpen ? '▾' : '▸' }}</span>
             </button>
             <div v-if="pbwOpen && pbw" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
-              <div class="flex items-center justify-between mb-1 text-[10px]">
-                <span :class="pbw.n_checked >= (pbw.n_pass || 4) ? 'text-red-400' : 'text-amber-400'">
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-xs font-semibold"
+                      :class="pbw.n_checked >= (pbw.n_pass || 4) ? 'text-red-400' : 'text-amber-400'">
                   {{ pbw.position_hint }}</span>
-                <span class="text-muted font-mono">{{ pbw.n_checked }}/{{ pbw.n_total }}</span>
+                <!-- ★ 2026-11-08（用户："数据更直观、重点高亮"）：达成计数对齐快讯解读的
+                     text-base font-bold 数字风格，颜色随达成态（红=已确认/琥珀=未达） -->
+                <span class="text-base font-bold font-mono"
+                      :class="pbw.n_checked >= (pbw.n_pass || 4) ? 'text-red-400' : 'text-amber-400'">
+                  {{ pbw.n_checked }}/{{ pbw.n_total }}</span>
               </div>
-              <div class="space-y-1 text-[11px]">
+              <div class="space-y-1 text-xs">
                 <div v-for="it in pbwItems" :key="it.key" class="space-y-0.5">
                   <div class="flex items-start gap-2">
                     <span class="shrink-0" :class="it.checked ? 'text-emerald-400' : 'text-muted'">
                       {{ it.checked ? '✅' : '⬜' }}<template
-                        v-if="!it.checked && it.insufficient"><span class="text-[10px]">数据不足</span></template>
+                        v-if="!it.checked && it.insufficient"><span class="text-[11px]">数据不足</span></template>
                     </span>
                     <span class="text-muted w-20 shrink-0">{{ it.label }}</span>
                     <span class="flex-1 break-all">{{ it.detail }}</span>
                     <span v-if="it.key === 'nation_team_ann' && it.hintCount"
-                          class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px]"
+                          class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[11px]"
                           :title="it.hintText">{{ it.hintCount }} 条公告</span>
                     <button v-if="it.key === 'nation_team_ann'"
-                            class="px-1.5 py-0.5 rounded border border-border/60 text-[10px] hover:border-accent shrink-0"
+                            class="px-1.5 py-0.5 rounded border border-border/60 text-[11px] hover:border-accent shrink-0"
                             :title="it.checked ? '取消人工确认' : '人工确认（有汇金/国新等公告时点这里）'"
                             @click.stop="toggleNationTeam">
                       {{ it.checked ? '取消' : '打勾' }}
@@ -950,11 +955,11 @@
                        class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
                     <a v-for="h in it.hints.slice(0, 6)" :key="h.id"
                        :href="h.url || undefined" target="_blank" rel="noopener"
-                       class="block text-[10px] text-amber-300/90 hover:underline break-all"
+                       class="block text-[11px] text-amber-300/90 hover:underline break-all"
                        :title="h.reason + (h.url ? '' : '（该条无原文链接）')">
                       🔔 {{ h.date }} {{ h.code }} {{ h.name }}：{{ h.title }}
                     </a>
-                    <div class="flex items-center gap-2 text-[10px]"
+                    <div class="flex items-center gap-2 text-[11px]"
                          :class="it.hintStatus === 'unavailable' ? 'text-red-400'
                                  : (it.hintCount ? 'text-amber-400/80' : 'text-muted')">
                       <span class="flex-1 break-all">{{ it.hintText || '自动检查：尚未运行' }}</span>
@@ -968,7 +973,7 @@
                   </div>
                   <div v-if="it.key === 'nation_team_ann'"
                        class="ml-6 pl-1.5 border-l border-border/40 space-y-0.5">
-                    <div class="flex items-center gap-2 text-[10px]"
+                    <div class="flex items-center gap-2 text-[11px]"
                          :class="it.etfStatus === 'confirmed' ? 'text-red-400'
                                  : (it.etfStatus === 'watch' ? 'text-amber-400/80' : 'text-muted')">
                       <span class="flex-1 break-all">{{ it.etfText || '份额异动：尚未运行' }}</span>
@@ -980,7 +985,7 @@
                       </button>
                     </div>
                     <div v-for="r in it.etfHits.slice(0, 5)" :key="r.code"
-                         class="text-[10px] text-muted break-all">
+                         class="text-[11px] text-muted break-all">
                       {{ r.code }} {{ r.name }}：今日
                       <span :class="r.chg_pct >= 8 ? 'text-amber-400' : ''">{{ Number(r.chg_pct).toFixed(2) }}%</span>
                       <template v-if="r.prev_chg_pct !== null && r.prev_chg_pct !== undefined">
@@ -988,8 +993,8 @@
                       </template>
                       <span v-if="r.streak >= 2" class="text-red-400">｜连续 {{ r.streak }} 日</span>
                     </div>
-                    <div v-if="it.flowText" class="text-[10px] text-muted">{{ it.flowText }}</div>
-                    <div v-if="it.manualDecided" class="text-[10px] text-muted">
+                    <div v-if="it.flowText" class="text-[11px] text-muted">{{ it.flowText }}</div>
+                    <div v-if="it.manualDecided" class="text-[11px] text-muted">
                       （已有人工判断，自动结果不覆盖）
                     </div>
                   </div>
