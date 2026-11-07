@@ -203,6 +203,24 @@ def _bj_now() -> datetime:
     return datetime.now(_BJ)
 
 
+def _default_day() -> str:
+    """默认日期 = **最近已完成交易日**（与日批 `_batch_trading_day()` 同源）。
+
+    ★★ 2026-11-07 实测踩坑：原实现用"今天"。周六手动跑一次就写进了 `date=11-07`
+      （一个不存在的交易日），而 `load()` 是 `ORDER BY date DESC` ⇒ **11-07 永远排在
+      11-06 前面**，"最近一天"从此指向那份伪日期，且没有任何报错。
+      这与项目反复踩的「写入时刻 ≠ 数据所属时刻」是同一类错误。
+    """
+    try:
+        from app.flash.rules import latest_completed_trading_day
+        d = str(latest_completed_trading_day())[:10]
+        if d:
+            return d
+    except Exception:
+        pass
+    return _bj_now().strftime("%Y-%m-%d")
+
+
 def _pct(cur, prev):
     try:
         c, p = float(cur), float(prev)
@@ -277,7 +295,7 @@ def features(day: str = None) -> Dict:
 def snapshot(day: str = None, ev: Dict = None, write: bool = True) -> Dict:
     """算当日分布并落库。`write=False` 只算不写（试跑/核对用）。"""
     ensure_tables()
-    day = str(day or _bj_now().strftime("%Y-%m-%d"))[:10]
+    day = str(day or _default_day())[:10]
     ev = ev if ev is not None else features(day)
     res = compute(ev)
 

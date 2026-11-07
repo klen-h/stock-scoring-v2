@@ -130,6 +130,21 @@ def main():
     check("[12] 同样输入两次结果相同（可复算）", a["dist"] == b["dist"])
     check("[13] 不修改入参", stag == before)
 
+    print("\n=== 六、默认日期口径 ===")
+    from app.macro_regime_class import _default_day
+    d = _default_day()
+    ok_fmt = isinstance(d, str) and len(d) == 10 and d[4] == "-" and d[7] == "-"
+    check("[14] 默认日期是 YYYY-MM-DD", ok_fmt, str(d))
+    # ★ 关键：不能是"今天"这种可能落在周末/节假日的口径 —— 这里只做弱断言，
+    #   因为 `latest_completed_trading_day()` 依赖交易日历，可能在无 DB 环境下 fallback。
+    import datetime as _dt
+    try:
+        wd = _dt.date.fromisoformat(d).weekday()
+        check("[15] 默认日期落在工作日（交易日历可用时）", wd < 5,
+              f"{d} weekday={wd}")
+    except Exception as e:
+        check("[15] 默认日期可解析", False, str(e))
+
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")
     assert _failed == 0, f"有 {_failed} 个场景未通过"
     print("ASSERTION PASSED")

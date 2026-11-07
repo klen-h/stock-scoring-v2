@@ -1447,6 +1447,43 @@ def task_thesis_resolve():
         return f"假设裁决: WARN {str(e)[:70]}"
 
 
+def task_macro_class():
+    """宏观状态概率账（2026-11-07）。**纯观察器**，不进评分/闸门/仓位/模拟盘。
+
+    ★ 设计：`docs/宏观状态概率账设计_20261107.md`。
+      四类（软着陆/滞胀/衰退/过热）由**规则打分 → 归一化**得到分布，
+      输入全部来自 `thesis_evidence`（已由上一个任务抄好）⇒ **零新增数据源**。
+
+    ★ 为什么必须排在 `thesis_evidence` 之后：它读的就是那一行快照。
+      顺序错 ⇒ 读不到当日证据，只能回退到前一日（虽然不会崩，但会静静地慢一天）。
+
+    ★ 「证据不足」不是错误，不要当 WARN 报：
+      某个类别当日可评估证据 < 2 条时，整体返回 `insufficient` 且 **dist=None**。
+      这是**如实**（缺数据 ≠ 该类不成立），与 `policy_bottom_watch` 同一条纪律。
+      把它写成 WARN 会让人以为日批挂了，实际是"今天证据不够下结论"。
+
+    ★ 失败不抛：观察器缺一天不影响主链。
+    """
+    try:
+        from app import macro_regime_class as mrc
+        day = _batch_trading_day().isoformat()
+        r = mrc.snapshot(day=day)
+        status = r.get("evidence_status")
+        data_day = ((r.get("evidence") or {}).get("_data_date") or "-")
+        if status != "ok" or not r.get("dist"):
+            # 不标 WARN：证据不足是合法状态（周末/数据未积累都会这样）
+            return (f"宏观分类: 证据不足（可评估类别 <2）· 数据日 {data_day}"
+                    f" · {str(r.get('note'))[:60]}")
+        cn = mrc.CLASS_CN
+        dist = r["dist"]
+        parts = [f"{cn.get(k, k)} {v * 100:.0f}%"
+                 for k, v in sorted(dist.items(), key=lambda kv: -kv[1])]
+        return (f"宏观分类: {' / '.join(parts)}"
+                f"（v{mrc.SCORER_VERSION}·数据日 {data_day}）")
+    except Exception as e:
+        return f"宏观分类: WARN {str(e)[:70]}"
+
+
 def task_scenario_watch():
     """磨底 2.0 推演证伪记分卡（2026-10-23）。**纯观察器**。
 
@@ -1701,6 +1738,11 @@ TASKS = {
     #   （"登记了却永远不结算"比判错更糟）。只裁决已到期的；manual 缺证据时
     #   保持 open 并提示"待录入"，不会误判 lose。
     "thesis_resolve": (task_thesis_resolve, "假设裁决（Thesis Tracker，只处理已到期）"),
+    # ★ 2026-11-07：宏观状态概率账（四类互斥分布）。**纯观察器**：
+    #   不进评分/闸门/仓位/模拟盘；只落库、不出界面（观察 5 个交易日再谈展示）。
+    #   读 `thesis_evidence` 当日快照 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
+    #   设计：docs/宏观状态概率账设计_20261107.md
+    "macro_class": (task_macro_class, "宏观状态概率账（四类分布，纯观察器）"),
     # ★ 2026-09-25（用户需求 C1）：风险事件日历（限售解禁）—— 决策卡负面清单的数据底座。
     #   紧跟 calendar（同为"日历"类）；且必须在行情刷新之后（ratio 需 float_cap）。
     "risk_calendar": (task_risk_calendar, "风险事件日历（限售解禁，C1 闸门底座）"),
@@ -1826,6 +1868,9 @@ DEFAULT_ORDER = ["backfill",
                 "thesis_evidence",
                 # ★ 证据采集之后裁决（v1 虽读 macro_daily，但语义上证据先于裁决）
                 "thesis_resolve",
+                # ★ 2026-11-07：宏观分类**读 thesis_evidence 当日快照** ⇒ 必须紧跟其后。
+                #   排在前面会读不到当日证据，静默回退到前一日（不崩，但慢一天）。
+                "macro_class",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
