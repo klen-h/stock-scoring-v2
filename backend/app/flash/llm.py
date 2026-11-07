@@ -1623,7 +1623,7 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
     "narrative_shift_target": "string（若切换最可能的新叙事名，不切换则与 narrative 相同）"}},
   "scenarios": [
     {{"scenario_name": "string", "generation_rule": "单事件推演/多事件推演",
-      "probability_qualitative": "string", "probability_numeric": "0-100整数，所有情景之和在85-115之间即可（不必严格等于100）",
+      "probability_qualitative": "string", "probability_numeric": "0-100整数，**所有情景之和必须等于100**（如 60/30/10）。若给不出可信数字，全部留 null —— 允许不填，但不允许给一组和不为 100 的数字",
       "assumptions": ["string"], "oil_path": "string",
       "affected_etfs": ["string"], "action_if_confirmed": "string", "trigger_to_watch": "string"}}
   ],
@@ -1677,7 +1677,88 @@ def analyze_with_llm(clusters: list, panel: dict, holdings: list, holdings_text:
         return {"degraded": "llm_failed", "market_mood": "未知",
                 "top_events": [], "diagnostic_status": quality}
     result["_model"] = LLM_MODEL
+    # ★ 2026-11-07：情景概率强制归一（Σ=100）。详见 normalize_scenario_probs 注释。
+    normalize_scenario_probs(result)
     return result
+
+
+def normalize_scenario_probs(analysis: dict) -> dict:
+    """把 `scenarios[].probability_numeric` 强制归一到 **Σ=100**（原地修改）。
+
+    ★★ 2026-11-07（用户采纳评估建议；对照「四分类账 Σp=1」需求）：
+      提示词原文写的是「所有情景之和在 85-115 之间即可（**不必严格等于 100**）」
+      —— 一份概率账连加总为 100 都不要求，等于**主动放弃归一性**，
+      之后拿它做任何校准（Brier / 分布漂移审计 / 与"事后哪个情景兑现"对账）都无效。
+      而且实测该字段**代码里从未被读取**（`wechat.py` 与 `_prev_digest` 只用
+      `probability_qualitative`）⇒ "LLM 认真填、没人用"的死字段。
+
+    处置原则（**不强迫编造**）：
+      · 所有情景都给了正数 ⇒ 按比例缩放到 100，原始值留在 `probability_numeric_raw`
+        便于追溯；信息写进 `_scenario_prob`（会随 output_json 一起落库）。
+      · 任一情景缺失/非数字/≤0 ⇒ **整体不归一**，记 `normalized=False` + 原因。
+        **绝不拿 0 顶上** —— 0 会被下游读成"这个情景不可能"，而实际含义是"没说"。
+        这与项目「缺数据填 None 不填 0」是同一条纪律（`_market_avg_change_pct` 等）。
+
+    ⚠️ 归一化不改变 LLM 的**相对**判断（60/30 还是 60/30），只修正量纲，
+       所以不会把一个模型输出变成另一个结论。
+    """
+    scens = analysis.get("scenarios")
+    if not isinstance(scens, list) or not scens:
+        return analysis
+
+    vals = []
+    ok = True
+    for s in scens:
+        v = s.get("probability_numeric")
+        if isinstance(v, bool):          # bool 是 int 子类，必须单独挡掉
+            ok = False
+            break
+        if isinstance(v, str):
+            try:
+                v = float(v.strip().rstrip("%"))
+            except (TypeError, ValueError):
+                ok = False
+                break
+        if not isinstance(v, (int, float)) or v <= 0:
+            ok = False
+            break
+        vals.append(float(v))
+
+    if not ok or not vals:
+        analysis["_scenario_prob"] = {
+            "normalized": False, "sum": None,
+            "invalid": "情景概率缺失或非正数（不归一，也不拿 0 顶替）",
+        }
+        return analysis
+
+    total = sum(vals)
+    dev = total - 100.0
+    if abs(dev) <= 0.5:                  # 加总已在容差内，不缩放
+        # ★ 但**必须把解析后的数值写回**：LLM 常返回 "70%" / "30" 这类字符串，
+        #   不写回就等于把字符串原样落库，下游 `s.get("probability_numeric")`
+        #   拿到的是 `"70%"` 而不是 70（实测踩到）。
+        for s, v in zip(scens, vals):
+            raw = s.get("probability_numeric")
+            if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+                s["probability_numeric_raw"] = raw
+                s["probability_numeric"] = v
+        analysis["_scenario_prob"] = {"normalized": False,
+                                      "sum": round(total, 2), "dev": round(dev, 2)}
+        return analysis
+
+    scaled = [round(v / total * 100, 1) for v in vals]
+    # 末位补齐四舍五入的残差，保证 Σ 精确回到 100.0
+    if scaled:
+        scaled[-1] = round(scaled[-1] + (100.0 - sum(scaled)), 1)
+    for s, v in zip(scens, scaled):
+        s["probability_numeric_raw"] = s.get("probability_numeric")
+        s["probability_numeric"] = v
+    analysis["_scenario_prob"] = {
+        "normalized": True,
+        "sum_raw": round(total, 2), "dev_raw": round(dev, 2),
+        "sum": round(sum(scaled), 1),
+    }
+    return analysis
 
 
 def strip_d_state_violations(analysis: dict) -> list:
