@@ -1462,7 +1462,10 @@ def _format_prev_narrative() -> str:
         name, p = s.get("scenario_name") or "", s.get("probability_qualitative") or ""
         sc.append(f"{name}({p})" if name and p else (name or p))
     if sc:
-        parts.append("情景：" + "、".join(sc))
+        # ★ 2026-11-07：措辞区分 —— 这里是 LLM 的**当日叙事假设**，
+        #   与 `scenario_watch`（固定三情景 + 确定性规则的证伪记分卡）不是一回事。
+        #   喂回上一次时也要标清楚，否则模型自己会把两套混为一谈。
+        parts.append("当日叙事假设：" + "、".join(sc))
     return " | ".join(parts) if parts else ""
 
 
@@ -1622,7 +1625,7 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
     "narrative_shift_probability": "0-100整数（相对上次叙事的切换概率；-1表示无上次记录）",
     "narrative_shift_target": "string（若切换最可能的新叙事名，不切换则与 narrative 相同）"}},
   "scenarios": [
-    {{"scenario_name": "string", "generation_rule": "单事件推演/多事件推演",
+    {{"scenario_name": "string（**当日叙事假设**：描述今天市场可能的走向，不是对未来 N 日的预测概率；系统另有 scenario_watch 推演记分卡，二者不要混为一谈）", "generation_rule": "单事件推演/多事件推演",
       "probability_qualitative": "string", "probability_numeric": "0-100整数，**所有情景之和必须等于100**（如 60/30/10）。若给不出可信数字，全部留 null —— 允许不填，但不允许给一组和不为 100 的数字",
       "assumptions": ["string"], "oil_path": "string",
       "affected_etfs": ["string"], "action_if_confirmed": "string", "trigger_to_watch": "string"}}

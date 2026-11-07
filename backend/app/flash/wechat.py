@@ -286,8 +286,19 @@ def push_analysis(analysis: dict, clusters: list) -> None:
           f"- **当前阶段：** 状态 {corr.get('current_phase', '未知')} ({corr.get('correlation_state', '无法判断')})\n"
           f"- **主导叙事：** {narrative.get('narrative', '未明')}\n"
           f"- **叙事脆弱点：** {narrative.get('fragility', '无')}\n---\n")
-    for s in (analysis.get("scenarios") or [])[:3]:
-        p1 += (f"> **{s.get('scenario_name')}** ({s.get('probability_qualitative')})\n"
+    # ★★ 2026-11-07：加来源标注。
+    #   两套都叫"情景"但完全不同：
+    #     · `scenario_watch` = **可证伪的推演记分卡**（固定三情景/确定性规则/无概率）
+    #     · 这里 = LLM **当日叙事假设**（每次自由命名、前后不可追踪）
+    #   不加区分的话，用户会把叙事假设当成推演结论（同名不同义是本项目踩过多次的坑）。
+    _scens = (analysis.get("scenarios") or [])[:3]
+    if _scens:
+        p1 += "> *以下为当日叙事假设（LLM 生成、不可证伪；推演记分卡见观察器）*\n"
+    for s in _scens:
+        _p = s.get("probability_numeric")
+        _p_txt = (f" {_p:g}%" if isinstance(_p, (int, float)) and not isinstance(_p, bool)
+                  else (f" {s.get('probability_qualitative')}" if s.get("probability_qualitative") else ""))
+        p1 += (f"> **{s.get('scenario_name')}**{_p_txt}\n"
                f"> 路径: {s.get('oil_path', '无')} | 触发: {s.get('trigger_to_watch')}\n\n")
     _send(p1, "诊断摘要", hook)
 
