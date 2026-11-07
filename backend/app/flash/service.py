@@ -123,6 +123,21 @@ def poll_flash_once() -> dict:
 
         store.save_state(state)
         store.save_raw_data(items, new_items)
+
+        # ★ 2026-11-07：观察词命中提醒（计划文档 §3.1a；用户自管词表，每词每日 1 条）。
+        #   挂在轮询尾部、独立 try ⇒ 失败只打一行日志，**绝不影响轮询主链**
+        #   （与 save_raw_data 的容错同级）。日批 policy_tone_watch 兜底停摆期漏网。
+        if new_items:
+            try:
+                from app import policy_tone_watch as _ptw
+                _r = _ptw.watch_check_push([
+                    {"src": "flash", "time": str(i.get("time") or ""),
+                     "text": str(i.get("content") or "")}
+                    for i in new_items])
+                if _r.get("pushed"):
+                    summary["watch_pushed"] = sorted(_r.get("hits") or {})
+            except Exception as e:
+                print(f"[flash] 观察词检查失败（不影响轮询）: {str(e)[:80]}")
     except Exception as e:
         summary["error"] = str(e)[:300]
         print(f"[flash] 轮询异常: {e}")

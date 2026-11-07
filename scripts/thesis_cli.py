@@ -24,6 +24,11 @@ import json
 import os
 import sys
 
+try:  # Windows GBK 控制台下打印中文/箭头不炸（与 tone_cli 同款）
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, os.path.join(_ROOT, "backend"))
@@ -234,7 +239,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("stats", help="轻量统计（排除回填样本，不产出校准结论）")
     sp.set_defaults(func=_cmd_stats)
 
+    sp = sub.add_parser("hints", help="失效条件自动提示（FedWatch 定价 vs 登记阈值）")
+    sp.add_argument("--days", type=int, default=5, help="快讯回看窗口（默认 5 天）")
+    sp.set_defaults(func=_cmd_hints)
+
     return p
+
+
+def _cmd_hints(args) -> int:
+    """失效条件自动提示（2026-11-07 档 1）。**只读快讯 + 只读登记簿，零修订零裁决**。"""
+    from app import thesis_hints as th
+    r = th.scan_fedwatch(days=args.days)
+    if not r.get("ok"):
+        print(f"[hints] 失败: {r.get('error')}")
+        return 1
+    latest = r.get("latest")
+    if not latest:
+        print(f"[hints] 近 {args.days} 天快讯无 FedWatch 概率句（合法状态：无定价快讯）")
+        return 0
+    print(f"\n== FedWatch 最新定价 ==")
+    print(f"  {latest['direction']}{(str(latest['bp']) + 'bp') if latest.get('bp') else ''}"
+          f" 概率 {latest['pct']:.1f}%  （{latest['time']} · {latest['src']}）")
+    print(f"  原句: {latest['head']}")
+    print(f"\n== open 的 fed_event 假设对照 ==")
+    for t in r.get("theses") or []:
+        pm = t.get("p_mine")
+        pmv = f"{pm:.2f}" if isinstance(pm, (int, float)) else "—"
+        pmk = t.get("p_market")
+        pmkv = f"{pmk:.2f}" if isinstance(pmk, (int, float)) else "—"
+        th_ = t.get("threshold")
+        print(f"  #{t['id']}  p_mine={pmv}  p_market快照={pmkv}  "
+              f"失效阈值={f'{th_:.0f}%' if th_ is not None else '未登记（不触发）'}")
+        if t.get("hint"):
+            print(f"     {t['hint']}")
+    print(f"\n（{r['note']}）")
+    return 0
 
 
 def main(argv=None) -> int:

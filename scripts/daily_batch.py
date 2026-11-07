@@ -1431,6 +1431,16 @@ def task_thesis_resolve():
         if not r.get("ok"):
             return f"假设裁决: WARN {str(r.get('error'))[:70]}"
         results = r.get("results") or []
+        # ★ 2026-11-07（档 1）：失效条件自动提示搭车——最新 FedWatch 定价 vs
+        #   用户登记的 invalidation_early 阈值；**只提示不修订**（零写操作），
+        #   失败静默（提示缺一天无所谓，裁决主链不碰）。
+        try:
+            from app import thesis_hints as th
+            _line = th.brief_line()
+            if _line:
+                print(f"[batch] {_line}")
+        except Exception:
+            pass
         done = [x for x in results
                 if x.get("action") in ("resolved_win", "resolved_lose")]
         pend = [x for x in results if x.get("action") == "pending"]
@@ -1509,11 +1519,21 @@ def task_policy_tone_watch():
         hit_total = sum(v for k, v in bc.items() if k != "reverse")
         alert = " ·⚠️语料<10条(疑似断流)" if r.get("n_items", 0) < 10 else ""
         neg_part = f" ·反向词命中{neg}" if neg else ""
+        # ★ 2026-11-07（§3.1a）：观察词命中兜底推送——轮询停摆期间的漏网命中。
+        #   幂等（每词每日 1 条）⇒ 与盘中钩子重复执行无害。
+        wp = ""
+        try:
+            _items = ptw.collect_items(day)
+            _w = ptw.watch_check_push(_items, today=day)
+            if _w.get("pushed"):
+                wp = f" ·观察词推送:{','.join(sorted((_w.get('hits') or {})))}"
+        except Exception as e:
+            print(f"[batch] 观察词兜底检查失败（不影响账本）: {str(e)[:60]}")
         return (f"政策定调: 命中{hit_total}条"
                 f"（定调{bc.get('tone', 0)}/资金{bc.get('funds', 0)}"
                 f"/基本面{bc.get('fundamental', 0)}{neg_part}）"
                 f" ·语料{r.get('n_items', 0)}条"
-                f" ·v{ptw.KEYWORD_VERSION}{alert}")
+                f" ·v{ptw.KEYWORD_VERSION}{alert}{wp}")
     except Exception as e:
         return f"政策定调: WARN {str(e)[:70]}"
 

@@ -129,6 +129,43 @@ def cmd_confirm(args):
     return 0
 
 
+def cmd_watch(args):
+    if args.cmd_word_action == "list":
+        rows = ptw.watch_list()
+        print(f"\n== 观察词表（enabled=1 参与提醒）==")
+        for w in rows:
+            mark = "✓" if w.get("enabled") else "✗"
+            lp = str(w.get("last_pushed_at") or "-")[:10]
+            print(f"  [{mark}] {w['word']}{('｜' + w['note']) if w.get('note') else ''}"
+                  f"  最近推送 {lp}")
+        if not rows:
+            print("  （空——watch add --word 互换便利 添加）")
+        print(f"\n（命中即推企微，每词每日至多 1 条；提示层非信号——计划 §3.1a）")
+        return 0
+    if args.cmd_word_action == "add":
+        r = ptw.watch_add(args.word, note=args.note or "")
+    else:
+        r = ptw.watch_remove(args.word)
+    if not r.get("ok"):
+        print(f"[tone] 拒绝: {r.get('error')}")
+        return 1
+    print(f"[tone] 已{'新增/启用' if args.cmd_word_action == 'add' else '停用'}: {r.get('word')}")
+    return 0
+
+
+def cmd_lag(args):
+    r = ptw.lag_report()
+    if not r.get("ok"):
+        print(f"[tone] 读取失败: {r.get('error')}")
+        return 1
+    print(f"\n== 时滞仪表（政策底领先市场底 X 天，从叙事到实测）==")
+    print(f"  政策侧（基调确认首个非未定日）: {r.get('tone_date') or '—'}")
+    print(f"  市场侧（市场底清单首次 4/5 日）: {r.get('pbw_date') or '—'}")
+    print(f"  时滞: {r.get('lag_days') if r.get('lag_days') is not None else '—'} 天")
+    print(f"  {r.get('note')}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="政策定调关键词账本 CLI（纯事实日志）")
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -153,6 +190,16 @@ def main():
     p.add_argument("--suggested", help=argparse.SUPPRESS)
     p.add_argument("--day", help="默认=最近已完成交易日")
     p.set_defaults(fn=cmd_confirm)
+
+    # ── 观察词（2026-11-07 §3.1a：用户自管词表，命中推企微）──
+    p = sp.add_parser("watch", help="观察词管理（add/remove；list 只读）")
+    p.add_argument("cmd_word_action", choices=["add", "remove", "list"])
+    p.add_argument("--word", help="观察词（2~30 字）")
+    p.add_argument("--note", help="备注（为什么盯这个词）")
+    p.set_defaults(fn=cmd_watch)
+
+    p = sp.add_parser("lag", help="时滞仪表（基调确认日 → 市场底 4/5 日）")
+    p.set_defaults(fn=cmd_lag)
 
     args = ap.parse_args()
     sys.exit(args.fn(args))
