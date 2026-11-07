@@ -237,10 +237,21 @@ def _send_batched(hook: str, title: str, content: str) -> bool:
 
 
 def push_markdown_batched(title: str, content: str, force: bool = False,
-                          category: str = None) -> None:
+                          category: str = None) -> bool:
     """按段落边界分批推送长 Markdown 到主群 webhook（每批 ≤4KB，标题带序号）。
     force=True 用于关键通知（如定时任务失败），不受业务推送开关限制。
     category 传入时改走 notify()（分类群 → 应用 → 主群 解析链）。
+
+    ★ 2026-11-08：返回值 `None` → **`bool`（是否确认送达）**。
+      背景：`policy_tone_watch.watch_check_push` 需要"**推成功才记账**"，
+      否则企微抖一下、记账先落 ⇒ 当天该词永久跳过 ⇒ **静默漏推**
+      （用户以为在盯着，其实早失效）。改前签名 `-> None` 把
+      `_send_batched` 算好的 ok **丢掉了**，调用方无从判断。
+      旧调用方本来就忽略返回值 ⇒ 类型从 None 变 bool **向后兼容**。
+      ⚠️ 三种"没真推"都返回 False，调用方需自知区别：
+         ① 未配置 `WECHAT_WEBHOOK`；② 业务推送开关关闭；③ 真发送失败。
+      ⚠️ `category` 分支走 `notify()`（无返回值）⇒ 仍返回 True（尽力而为），
+         与改前语义一致，不在此收口。
 
     ★ 2026-09-23：本函数是**全部业务推送的单点入口** ⇒ 在此处埋「信号总线」记录器
       （`flash/signal_bus.py`），即可覆盖 ~10 个各自独立的推送入口而**不必改调用方**。
@@ -260,12 +271,12 @@ def push_markdown_batched(title: str, content: str, force: bool = False,
         pass
     if category:
         notify(category, title, content, force=force)
-        return
+        return True          # notify 无返回值，沿用"尽力而为"旧语义
     if not WECHAT_WEBHOOK:
-        return
+        return False
     if not force and not BUSINESS_ALERTS_ENABLED:
-        return
-    _send_batched(WECHAT_WEBHOOK, title, content)
+        return False
+    return _send_batched(WECHAT_WEBHOOK, title, content)
 
 
 def push_analysis(analysis: dict, clusters: list) -> None:

@@ -162,8 +162,13 @@ def main():
     check("[28] wechat 为函数内懒导入（不在模块顶层）",
           "from app.flash import wechat" in src
           and _re.search(r"^from app\.flash import wechat", src, _re.M) is None)
-    _ledger_src = src[src.find("def compute"):src.find("def ensure_tables")]
-    check("[28b] 冻结账本函数（compute/snapshot 路径）零推送",
+    # ★ 2026-11-08（审查修正）：原切片 `def compute`..`def ensure_tables` **不含 `snapshot`**
+    #   —— 后者定义在 ensure_tables 之后，而断言名却写"compute/snapshot 路径"，名不副实，
+    #   挡不住将来有人往 snapshot 里加推送。改切到 `def load` 之前，
+    #   覆盖 compute / ensure_tables / _default_day / collect_items / snapshot /
+    #   validate_tag / confirm 全部只读与写入路径（观察词推送在 load 之后，不误伤）。
+    _ledger_src = src[src.find("def compute"):src.find("def load")]
+    check("[28b] 冻结账本函数（compute/snapshot/confirm 路径）零推送",
           "push_markdown_batched" not in _ledger_src
           and "wechat" not in _ledger_src)
 

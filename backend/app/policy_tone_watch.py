@@ -443,22 +443,35 @@ def watch_check_push(items: List[Dict], today: str = None,
         for s in samples:
             lines.append(f"· {s['time']} ({s['src']})")
     if push:
-        # ★ 记账只在真推送时进行：push=False 是干跑（试跑/测试），不得吃掉
-        #   当天的推送额度（盘中钩子与日批兜底靠 last_pushed_at 做每词每日幂等）。
+        # ★★ 2026-11-08：**先推送、确认送达后再记账**（原顺序是反的）。
+        #   改前先写 `last_pushed_at` 再推 ⇒ 企微一抖动，记账已落，而
+        #   `last_pushed_at[:10] == day` 会把该词**当天后续全部跳过**
+        #   ⇒ **静默漏推**。这比重复推一条严重得多：用户以为在盯着，其实早失效。
+        #   原注释写"可能重复一条"，与实现正好相反 —— 记录在此免得再被误导。
+        #   现在：`push_markdown_batched` 返回 bool（本次一并改造，原签名 `-> None`
+        #   把 `_send_batched` 的 ok 丢掉了），**只有 True 才记账**；
+        #   False（未配 webhook / 业务推送关闭 / 发送失败）一律不记账，
+        #   留给下一次盘中轮询或日批兜底重试。
+        #   代价：极端情况重复一条（推成功但记账时进程死）——**可接受的错方向**。
+        from app.flash import wechat
+        ok = False
+        try:
+            ok = bool(wechat.push_markdown_batched(
+                "🔔 观察词命中（提示非信号）",
+                "\n".join(lines) +
+                "\n\n> 用户自管观察词命中提醒；检索页可看原句，不构成任何操作建议。"))
+        except Exception as e:
+            print(f"[tone] 观察词推送异常（不记账，下次重试）: {str(e)[:80]}")
+            ok = False
+        if not ok:
+            return {"ok": True, "pushed": False, "hits": hit_map, "date": day,
+                    "error": "推送未确认送达，不记账（下次轮询/日批重试）"}
         for w in hit_map:
             try:
                 db.execute(f"UPDATE {_WATCH} SET last_hit_date=%s, "
                            f"last_pushed_at=%s WHERE word=%s", (day, now, w))
             except Exception as e:
                 print(f"[tone] 观察词记账失败 {w}: {str(e)[:60]}")
-        try:
-            from app.flash import wechat
-            wechat.push_markdown_batched(
-                "🔔 观察词命中（提示非信号）",
-                "\n".join(lines) +
-                "\n\n> 用户自管观察词命中提醒；检索页可看原句，不构成任何操作建议。")
-        except Exception as e:
-            print(f"[tone] 观察词推送失败（命中已记账）: {str(e)[:80]}")
     return {"ok": True, "pushed": bool(push), "hits": hit_map, "date": day}
 
 

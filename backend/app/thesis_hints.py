@@ -98,6 +98,16 @@ def scan_fedwatch(days: int = 5) -> Dict:
         print(f"[thesis_hints] jin10_tidy_news 读取失败: {str(e)[:80]}")
 
     matches.sort(key=lambda x: x["sort"], reverse=True)
+    # ★★ 2026-11-08（审查修正）：**按方向分别取最新**，不再只用全局最新一条。
+    #   原 bug：`latest` = 时间最新那一句。若它是「维持利率不变的概率 X%」，
+    #   而假设方向是「加息」，`latest["direction"] != direction` ⇒
+    #   `latest_pct = None` ⇒ **即便加息定价早已跌破 invalidation_early 阈值也不触发**
+    #   ⇒ 静默漏报。会议临近时「维持不变」的表述最容易盖过加息/降息句，
+    #   而这恰恰是最该提示的场景。
+    #   `matches` 已按时间倒序 ⇒ `setdefault` 首次写入的就是该方向的最新句。
+    latest_by_dir: Dict[str, Dict] = {}
+    for _m in matches:
+        latest_by_dir.setdefault(_m["direction"], _m)
     latest = matches[0] if matches else None
 
     # open 的 fed_event 假设
@@ -117,11 +127,13 @@ def scan_fedwatch(days: int = 5) -> Dict:
         th_m = _THRES_RE.search(inv)
         threshold = float(th_m.group(1)) if th_m else None
         latest_pct = None
-        if latest and direction and latest["direction"] == direction:
-            latest_pct = latest["pct"]
+        # ★ 2026-11-08：取**同方向**的最新句（原实现用全局 latest，方向不符即 None）
+        _lm = latest_by_dir.get(direction) if direction else None
+        if _lm:
+            latest_pct = _lm["pct"]
         hint = None
         if latest_pct is not None and threshold is not None and latest_pct <= threshold:
-            hint = (f"⚠️ FedWatch 最新 {latest_pct:.1f}%（{latest['date']}）已跌破你在 "
+            hint = (f"⚠️ FedWatch 最新 {latest_pct:.1f}%（{_lm['date']}）已跌破你在 "
                     f"invalidation_early 登记的 {threshold:.0f}% => 失效检查："
                     f"评估是否转分支；如修订概率必须带 reason（thesis_cli revise），"
                     f"本提示不自动改任何数字")
