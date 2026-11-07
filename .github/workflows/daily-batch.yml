@@ -171,7 +171,8 @@ jobs:
           #     原来硬编码 `deepseek-v4-flash`（当天实测 429 throttling），
           #     所以无论怎么改代码默认值，**日批的 LLM 任务始终用那个不可用的模型**，
           #     表现和"额度用完"一模一样 ⇒ 这是"改代码没生效"的最隐蔽来源。
-          #   ⇒ 现在模型由 `app/flash/llm.py` 的 `_FREE_MODEL_DEFAULT`（glm-5.2）决定，
+          #   ⇒ 现在模型由 `app/flash/llm.py` 的 `_FREE_MODEL_DEFAULT` 决定
+          #     （2026-11-07 起为 glm-5.3；glm-5.2 官方 11-18 下线，已列入 KNOWN_DEAD），
           #     并自动跳过 `KNOWN_DEAD_MODELS`、429 自动换下一个候选。
           #   ⚠️ **只有 KEY 必须留在这里**：密钥不能入库，只能走 Secrets。
           LLM_FREE_API_KEY: ${{ secrets.LLM_FREE_API_KEY }}
