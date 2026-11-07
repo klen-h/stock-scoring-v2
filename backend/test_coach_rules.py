@@ -59,6 +59,17 @@ def _run(rule_id: str, ctx: dict, params=None):
     return cr.evaluate_all("all", config=cfg, ctx=ctx)
 
 
+def _run_multi(rule_ids, ctx, params_map=None):
+    """多规则同时求值（验证市场级规则互斥消解用）。
+
+    `_run` 只喂一条规则，无法复现"同一天三条并存"的真实场景。
+    """
+    cfg = {"rules": [{"id": r, "label": r, "enabled": True, "push": True,
+                      "severity": "warn", "params": (params_map or {}).get(r, {})}
+                     for r in rule_ids]}
+    return cr.evaluate_all("all", config=cfg, ctx=ctx)
+
+
 def check(label: str, hit: bool, want: bool, advices=None):
     global _passed, _failed
     if hit == want:
@@ -184,6 +195,45 @@ def main():
     check("[32] 昨日-0.5% → 不触发", bool(a), False)
     a = _run("reversal_no_panic", _ctx(idx_prev_move={"date": "2026-09-15", "pct": 2.0}))
     check("[33] 昨日+2% → 不触发（方向相反）", bool(a), False)
+
+    # === 六、市场级加仓规则互斥（2026-11-07：11-06 教练卡两结论打架）===
+    print("\n=== 六、市场级加仓规则互斥（gate_add x gate_no_add x no_chase_rally）===")
+    _orig_prev = cr._gate_add_prev_day_hit
+    cr._gate_add_prev_day_hit = lambda *a, **k: True      # 打桩：不查库（测试必须离线）
+    try:
+        _boom = _ctx(regime={"state": "defensive", "ma_trend": "down"},
+                     breadth={"up_down_ratio": 0.884, "limit_down": 0},
+                     market_avg_change_pct=2.21)
+        adv = _run_multi(["gate_no_add", "gate_add", "no_chase_rally"], _boom)
+        ga = [x for x in adv if x.rule_id == "gate_add"]
+        check("[34] 三条同时命中 → gate_add 仍输出（保留事实）", bool(ga), True, ga)
+        check("[35] 但降级为「今日不执行」",
+              bool(ga) and "不执行" in ga[0].message, True, ga)
+        check("[36] 降级原因写明环境闸门",
+              bool(ga) and "regime=defensive" in ga[0].message, True, ga)
+        check("[37] 降级原因写明大涨日",
+              bool(ga) and "大涨日不追加" in ga[0].message, True, ga)
+        check("[38] numbers.blocked = True",
+              bool(ga) and (ga[0].numbers or {}).get("blocked") is True, True, ga)
+        check("[39] label 改为「被否决」",
+              bool(ga) and "被否决" in ga[0].label, True, ga)
+
+        # 无冲突时不得改写（回归保护：消解层不能变成"总是改写"）
+        adv2 = _run_multi(["gate_add"],
+                          _ctx(breadth={"up_down_ratio": 0.884, "limit_down": 0}))
+        ga2 = [x for x in adv2 if x.rule_id == "gate_add"]
+        check("[40] 无冲突 → 不改写 label",
+              bool(ga2) and "被否决" not in ga2[0].label, True, ga2)
+
+        # 个股风控不得被误伤（消解层只动市场级）
+        adv3 = _run_multi(["gate_add", "stop_loss_hit"],
+                          _ctx(positions=[_pos(price=9.2)],
+                               breadth={"up_down_ratio": 0.884, "limit_down": 0},
+                               regime={"state": "defensive"}))
+        sl = [x for x in adv3 if x.rule_id == "stop_loss_hit"]
+        check("[41] 个股风控规则不受消解层影响", bool(sl), True, sl)
+    finally:
+        cr._gate_add_prev_day_hit = _orig_prev
 
     cr._distribution = orig_dist
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")

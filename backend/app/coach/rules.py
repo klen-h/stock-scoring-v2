@@ -572,6 +572,31 @@ def _today_str() -> str:
         return ""
 
 
+def _market_data_date() -> Optional[str]:
+    """行情缓存**数据所属交易日**（YYYY-MM-DD）；取不到返回 None。零网络。
+
+    ★ 为什么不用"现在"：`tencent._cache["data_date"]` 是项目里唯一把
+      「写入时刻」与「数据时刻」分开的字段（见 tencent.py `_cache` 结构注释）。
+      盘前 09:15 缓存里装的是**上一交易日收盘**，直接写"今日"就是错的。
+    """
+    try:
+        from app.tencent import _cache
+        return str(_cache.get("data_date") or "") or None
+    except Exception:
+        return None
+
+
+def _data_stamp() -> str:
+    """数据时点后缀：数据日**不是今天**才追加说明，是今天则留空（默认即当下）。
+
+    返回形如 `"，数据截至 2026-11-05 收盘"`（含前导逗号，便于直接拼接）。
+    """
+    d = _market_data_date()
+    if not d or d == _today_str():
+        return ""
+    return f"，数据截至 {d} 收盘"
+
+
 def _gate_add_prev_day_hit(today_str: str, need_days: int = 2) -> bool:
     """近 need_days-1 个交易日 gate_add 是否均命中（连续 need_days 日确认）。
     任一日无记录（未命中 / 宽度数据缺失）→ False（保守方向：不加仓）。
@@ -620,14 +645,14 @@ def _ev_gate_add(pos, params, ctx):
         if confirmed:
             return {
                 "message": (f"【加仓条件确认（连续 {need_days} 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
-                            f"且跌停 {ld} 家（<{thr_ld}），此前已连续命中 → 确认成立。"
+                            f"且跌停 {ld} 家（<{thr_ld}）{_data_stamp()}，此前已连续命中 → 确认成立。"
                             f"预设剧本的加仓条件已满足（是否执行由你决定）。"),
                 "numbers": {"up_down_ratio": ratio, "limit_down": ld,
                             "confirmed": True, "consecutive_days": need_days},
             }
         return {
             "message": (f"【加仓条件部分命中（第 1 日）】涨跌比 {ratio:.2f}（>{thr_r}）"
-                        f"且跌停 {ld} 家（<{thr_ld}）。★ 需连续 {need_days} 日确认，"
+                        f"且跌停 {ld} 家（<{thr_ld}）{_data_stamp()}。★ 需连续 {need_days} 日确认，"
                         f"明日再命中才成立。"),
             "numbers": {"up_down_ratio": ratio, "limit_down": ld,
                         "confirmed": False, "consecutive_days": need_days},
@@ -659,7 +684,10 @@ def _ev_no_chase_rally(pos, params, ctx):
     if m is None or m < thr:
         return None
     return {
-        "message": (f"【涨了别追】今日全市场等权涨幅 {m:+.2f}%（≥{thr:g}%）。\n"
+        # ★ 2026-11-07：去掉"今日" —— 盘前 09:15 缓存里是**上一交易日收盘**，
+        #   写"今日"会让用户以为这是当天的盘面（实测 11-06 09:15 报的 +2.21%
+        #   其实是 11-05 的）。改为"全市场等权涨幅"+ 数据时点后缀，口径自证。
+        "message": (f"【涨了别追】全市场等权涨幅 {m:+.2f}%（≥{thr:g}%{_data_stamp()}）。\n"
                     f"127 日画像：本市场短期反转（R_(t-1)=-0.169，t=-2.33），大涨后次日"
                     f"平均偏弱；且指数每 +1% 当日主力轧差口径净卖 27 亿——涨日就是主力在卖。"
                     f"大涨日不追加，已有仓位按剧本持有。"),
@@ -872,6 +900,71 @@ EVALUATORS = {
 
 
 # ==============================================================================
+#  规则互斥消解（市场级加仓三条）
+# ==============================================================================
+
+# 能否决 `gate_add` 的规则：环境闸门、大涨日纪律。
+# ⚠️ 只登记"语义上确实相反"的：`gate_no_add`（禁止加仓）与 `no_chase_rally`
+#    （大涨不追加）都是"别加"；`gate_reduce`/`emotion_fuse` 是减仓/风控，
+#    与"加仓条件是否满足"不是一个维度，不该参与否决。
+_BLOCKING_RULES = ("gate_no_add", "no_chase_rally")
+
+
+def _arbitrate(advices: List[Advice]) -> List[Advice]:
+    """消解市场级「加仓」类规则的互相矛盾（`gate_add` × `gate_no_add` / `no_chase_rally`）。
+
+    ★★ 2026-11-07（用户报 11-06 教练卡"两条记录打架"）：
+      实测 11-03 / 11-05 / 11-06 三个交易日，同一天同时落库三条 ——
+        gate_no_add     regime=defensive        → 环境不支持加仓
+        gate_add        ratio=0.884             → 加仓条件确认（可加仓）
+        no_chase_rally  market_avg_pct=+2.21    → 大涨日不追
+      三条规则各自独立求值、彼此不知道对方说了什么，而 `coach_tick()` 拿到结果
+      直接落库推送（中间没有任何消解层）⇒ 等于同时喊"加"和"别加"。
+      用户无法执行，且"已执行/已放弃"两条怎么标都别扭。
+
+    ★ 处置原则：**不否定任何一条的事实，只保证结论唯一。**
+      `gate_add` 继续输出（"条件确实满足"是真事实、有信息量），但降级为
+      「满足但今日不执行」，并把否决它的原因逐条写明。用户看到的是一件事的
+      完整结论，而不是两个相反的建议。
+
+    ★ 刻意**只动市场级（`code` 为空）**：个股风控（止损/持有/出货/拥挤）
+      之间不存在这种互斥，绝不能顺手"统一"掉。
+    """
+    market = {a.rule_id: a for a in advices if not a.code}
+    ga = market.get("gate_add")
+    if ga is None:
+        return advices
+
+    reasons: List[str] = []
+    if "gate_no_add" in market:
+        st = (market["gate_no_add"].numbers or {}).get("regime") or "?"
+        reasons.append(f"环境闸门不放行（regime={st}）")
+    if "no_chase_rally" in market:
+        pct = (market["no_chase_rally"].numbers or {}).get("market_avg_pct")
+        reasons.append(f"大涨日不追加（等权 {pct:+.2f}%）" if pct is not None
+                       else "大涨日不追加")
+    if not reasons:
+        return advices
+
+    n = ga.numbers or {}
+    ratio, ld = n.get("up_down_ratio"), n.get("limit_down")
+    cond = (f"涨跌比 {ratio:.2f}、跌停 {ld} 家"
+            if ratio is not None and ld is not None else "加仓条件")
+    if n.get("confirmed"):
+        head, tail = "【加仓条件满足，但今日不执行】", "条件记住，环境转好再动。"
+    else:
+        head = "【加仓条件部分满足（第 1 日），今日不执行】"
+        tail = "本就需连续确认，环境转好再谈。"
+
+    ga.label = "加仓条件（被否决）"
+    ga.message = (f"{head}{cond} —— 被更高的纪律否决：\n"
+                  f"· " + "\n· ".join(reasons) + f"\n⇒ {tail}")
+    ga.numbers = {**n, "blocked": True,
+                  "blocked_by": [r for r in _BLOCKING_RULES if r in market]}
+    return advices
+
+
+# ==============================================================================
 #  主入口
 # ==============================================================================
 
@@ -913,7 +1006,9 @@ def evaluate_all(tier: str = "light", only_push: bool = False,
                 code=(t or {}).get("code", "") if t else "",
                 name=(t or {}).get("name", "") if t else "",
                 message=hit["message"], numbers=hit.get("numbers") or {}))
-    return out
+    # ★ 2026-11-07：出口统一过一遍互斥消解（只影响市场级 gate_add，
+    #   个股风控规则原样返回；无冲突时不改任何字段）。
+    return _arbitrate(out)
 
 
 def format_batch(advices: list) -> str:
