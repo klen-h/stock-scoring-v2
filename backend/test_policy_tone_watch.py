@@ -157,8 +157,15 @@ def main():
                encoding="utf-8").read()
     check("[27] 零外呼：不 import requests",
           "import requests" not in src and "requests.get" not in src)
-    check("[28] 零推送：不 import wechat",
-          "from app.flash import wechat" not in src and "import wechat" not in src)
+    # ★ 2026-11-07（§3.1a 修订后口径）：wechat 推送**仅限观察词层**且必须函数内懒导入；
+    #   冻结账本函数（compute/snapshot）源码里不得出现任何推送调用。
+    check("[28] wechat 为函数内懒导入（不在模块顶层）",
+          "from app.flash import wechat" in src
+          and _re.search(r"^from app\.flash import wechat", src, _re.M) is None)
+    _ledger_src = src[src.find("def compute"):src.find("def ensure_tables")]
+    check("[28b] 冻结账本函数（compute/snapshot 路径）零推送",
+          "push_markdown_batched" not in _ledger_src
+          and "wechat" not in _ledger_src)
 
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")
     assert _failed == 0, f"有 {_failed} 个场景未通过"
