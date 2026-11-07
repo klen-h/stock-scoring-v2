@@ -771,8 +771,12 @@ def _digest_user_text(payload: Dict) -> str:
     st = h.get("structure") or {}
     if h.get("available") and (h.get("actions") or st):
         lines.append("\n## 持仓（供你判断盘面对这个人的实际影响）")
-        if st.get("total_mv"):
-            lines.append(f"- 持仓市值约 {int(float(st['total_mv']) / 10000)} 万元")
+        # ★ 2026-11-07：与前端同一处精度问题 —— 3050 元写成"0 万元"会让 LLM
+        #   顺着说"持仓市值为 0"，而用户明明有仓。小市值按元说，别硬折成"万"。
+        _mv = float(st.get("total_mv") or 0)
+        if _mv > 0:
+            lines.append(f"- 持仓市值约 {_mv / 10000:.1f} 万元" if _mv >= 10000
+                         else f"- 持仓市值约 {int(_mv)} 元")
         if st.get("concentration_note"):
             lines.append(f"- 集中度：{st['concentration_note']}")
         if st.get("style"):

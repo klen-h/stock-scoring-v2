@@ -321,7 +321,18 @@ const holdingsReason = computed(() => {
 const structureText = computed(() => {
   const s = holdings.value.structure || {}
   const parts = []
-  if (s.total_mv) parts.push(`持仓市值 ${Math.round(s.total_mv / 10000)} 万`)
+  // ★★ 2026-11-07（用户："仓位结构 持仓市值 0 万，这个还是没有解决"）：
+  //   根因**不是 `mv` 缺失**（那个 2026-11-05 已修：市值从盈亏分支里拆出来），
+  //   而是**显示精度**——持仓约 3050 元时 `Math.round(3050 / 10000) = 0`，
+  //   卡片写"持仓市值 0 万"，看起来像"数据没算出来"，实际是真有这个数、
+  //   只是被"万"这个单位四舍五入抹平了。
+  //   ⇒ < 1 万按「元」显示，≥ 1 万按「万」且保留 1 位小数（不再把 1.4 万显示成 1 万）。
+  const mv = Number(s.total_mv) || 0
+  if (mv > 0) {
+    parts.push(mv >= 10000
+      ? `持仓市值 ${(mv / 10000).toFixed(1)} 万`
+      : `持仓市值 ${Math.round(mv)} 元`)
+  }
   if (s.concentration_note) parts.push(s.concentration_note)
   if (s.style) parts.push(s.style)
   return parts.join(' ｜ ')
