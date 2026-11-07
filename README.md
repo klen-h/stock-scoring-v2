@@ -122,3 +122,11 @@ cd frontend && npm run dev                    # 前端工作台
   · 交易日历改 `backend/app/trading_calendar.py`（fuyao `calendar/trading-days`，一次拉 5 年
     ≈1454 个交易日），`flash/rules.is_trading_day()` 优先查它、**手工 `HOLIDAYS` 降为兜底**
     （IO 隔离在新模块，rules 仍无 IO）；日历条数 <800 判为异常并回退，避免"把交易日判成休市"。
+- **2026-11-07** 新增**政策定调窗口观察装置**（预登记判据冻结于
+  `docs/plans/20261107_政策定调窗口观察计划_v1.md`）：
+  · `policy_tone_watch` 关键词账本（日批 `policy_tone_watch`，含反向证伪词表与人工基调确认，
+    **纯事实日志**——不进评分/闸门/仓位/模拟盘）；TH-3/4/5 登记进记分簿；
+  · 快讯**检索与分类**（`/monitor` 新「检索」tab + `GET /api/flash/search`）：语料 =
+    flash_news + jin10_tidy_news，两层分类（cluster 簇 + policy_tone 冻结类别），
+    `EVENT_CLUSTERS` 国内政策扩词 + `POST /api/flash/reclassify` 幂等重算历史（实测 936 扫描/19 迁移）；
+  · `scripts/tone_cli.py`（show/scan/rescan/confirm，12 月会议周人工打标入口）。

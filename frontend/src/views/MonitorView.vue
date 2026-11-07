@@ -222,6 +222,97 @@
       </div>
     </div>
 
+    <!-- ══════════ Tab 2.5: 检索（分类 + 搜索，2026-11-07） ══════════
+         语料 = flash_news（热榜）+ jin10_tidy_news（整理稿）；两层分类：
+         cluster（EVENT_CLUSTERS 写库打标）+ category（复用 policy_tone_watch 冻结词表）。
+         只读检索工具——分类只是过滤维度，不构成多空信号（R2）。 -->
+    <div v-if="activeTab === 'search'" class="space-y-3">
+      <!-- 过滤条 -->
+      <div class="bg-card border border-border rounded-lg p-3 space-y-2">
+        <div class="flex gap-2 flex-wrap">
+          <input v-model="sq" @keyup.enter="searchGo(1)"
+            placeholder="搜关键词（如 互换便利 / 中央汇金 / 稳市机制 / 降准）"
+            class="flex-1 min-w-[220px] bg-white/5 border border-border rounded px-3 py-1.5 text-xs outline-none focus:border-accent/50" />
+          <select v-model="ssource" @change="searchGo(1)"
+            class="bg-white/5 border border-border rounded px-2 py-1.5 text-xs">
+            <option value="all">全部来源</option>
+            <option value="flash">热榜快讯</option>
+            <option value="tidy">金十整理稿</option>
+          </select>
+          <select v-model="sdays" @change="searchGo(1)"
+            class="bg-white/5 border border-border rounded px-2 py-1.5 text-xs">
+            <option :value="7">近 7 天</option>
+            <option :value="30">近 30 天</option>
+            <option :value="60">近 60 天</option>
+            <option :value="120">近 120 天</option>
+          </select>
+          <button @click="searchGo(1)" :disabled="sLoading"
+            class="px-3 py-1.5 rounded bg-accent/20 text-accent text-xs disabled:opacity-40">
+            {{ sLoading ? '检索中…' : '搜索' }}</button>
+          <button @click="resetSearch"
+            class="px-3 py-1.5 rounded bg-white/5 text-muted text-xs hover:text-gray-200">重置</button>
+          <button @click="doReclassify" :disabled="reclLoading"
+            title="EVENT_CLUSTERS 关键词调整后，按最新口径重算窗口内热榜簇标记（幂等，只写 cluster 列）"
+            class="px-3 py-1.5 rounded bg-white/5 text-muted text-xs hover:text-gray-200 disabled:opacity-40">
+            {{ reclLoading ? '重算中…' : '重算分类' }}</button>
+        </div>
+        <!-- cluster chips（facet 数字=当前窗口+来源口径，不受其他筛选影响 ⇒ 稳定可点） -->
+        <div class="flex gap-1.5 flex-wrap text-[11px]">
+          <button @click="toggleCluster('')"
+            :class="!sCluster ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+            class="px-2 py-0.5 rounded">全部簇</button>
+          <button v-for="c in sFacets.clusters" :key="c.name" @click="toggleCluster(c.name)"
+            :class="sCluster === c.name ? 'bg-accent/20 text-accent' : (c.name === '其他' ? 'bg-white/5 text-muted/70 hover:text-gray-300' : 'bg-white/5 text-muted hover:text-gray-200')"
+            class="px-2 py-0.5 rounded">{{ c.name }} {{ c.n }}</button>
+        </div>
+        <!-- 政策类别 chips（词表 = policy_tone_watch 冻结判据，单一事实源） -->
+        <div class="flex gap-1.5 flex-wrap text-[11px]">
+          <button @click="toggleCategory('')"
+            :class="!sCategory ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+            class="px-2 py-0.5 rounded">全部类别</button>
+          <button v-for="c in sFacets.categories" :key="c.name" @click="toggleCategory(c.name)"
+            :class="sCategory === c.name ? 'bg-accent/20 text-accent' : (c.name === 'reverse' ? 'bg-amber-500/10 text-amber-400 hover:text-amber-300' : 'bg-white/5 text-muted hover:text-gray-200')"
+            class="px-2 py-0.5 rounded">{{ c.label }} {{ c.n }}</button>
+        </div>
+        <div v-if="sErr" class="text-xs text-red-400">{{ sErr }}</div>
+      </div>
+
+      <!-- 结果（按日分组） -->
+      <div class="bg-card border border-border rounded-lg overflow-hidden">
+        <div class="px-3 py-2 border-b border-border text-xs text-muted flex justify-between flex-wrap gap-1">
+          <span>共 <b class="text-gray-200">{{ searchTotal }}</b> 条命中</span>
+          <span class="text-[10px]">分类=检索过滤维度，不构成多空信号；簇筛选只作用于热榜（整理稿无簇列）</span>
+        </div>
+        <template v-for="g in searchGroups" :key="g.day">
+          <div class="px-3 py-1 bg-white/5 text-[11px] text-muted font-mono border-b border-border/40">
+            {{ g.day }}（{{ g.items.length }}条）</div>
+          <div v-for="it in g.items" :key="it.src + it.time"
+            class="px-3 py-2 border-b border-border/40 hover:bg-white/3">
+            <div class="flex items-center gap-2 flex-wrap text-[10px] mb-1">
+              <span class="font-mono text-muted">{{ it.src === 'tidy' ? '整理稿' : (it.time?.slice(11, 16) || it.time) }}</span>
+              <span class="px-1.5 rounded bg-white/5 text-muted">{{ it.src === 'tidy' ? '金十整理' : '热榜' }}</span>
+              <span v-if="it.cluster" class="px-1.5 rounded bg-sky-500/10 text-sky-300">{{ it.cluster }}</span>
+              <span v-for="c in it.cats" :key="c" class="px-1.5 rounded"
+                :class="c === 'reverse' ? 'bg-amber-500/15 text-amber-400' : 'bg-emerald-500/10 text-emerald-300'">
+                {{ catLabel(c) }}</span>
+            </div>
+            <p class="text-xs text-gray-300 leading-snug break-words" v-html="hl(it)"></p>
+          </div>
+        </template>
+        <div v-if="!searchItems.length && !sLoading" class="py-10 text-center text-muted text-xs">
+          无命中——换个词或放宽窗口试试（热榜语料 ~44 条/天，常规词可能本来就少）
+        </div>
+        <div v-if="searchTotal > searchSize"
+          class="flex items-center justify-center gap-2 px-3 py-2 border-t border-border text-xs">
+          <button @click="searchPage > 1 && (searchPage--, loadSearch())" :disabled="searchPage <= 1"
+            class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30">上一页</button>
+          <span class="text-muted">{{ searchPage }} / {{ Math.ceil(searchTotal / searchSize) }}（共{{ searchTotal }}条）</span>
+          <button @click="searchPage++; loadSearch()" :disabled="searchPage >= Math.ceil(searchTotal / searchSize)"
+            class="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30">下一页</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ══════════ Tab 3: 信号跟踪 ══════════ -->
     <div v-if="activeTab === 'signals'" class="space-y-4">
       <!-- 绩效 -->
@@ -438,7 +529,7 @@
 import { ref, computed, onMounted } from 'vue'
 // ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（本文件另有"剥离信号 JSON"包装）
 import { renderMd as renderMdRaw } from '../composables/markdown'
-import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReviewHistory, runFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest } from '../api'
+import { getFlashStatus, getFlashDiagnosis, getFlashEvents, getFlashReviewHistory, runFlashReview, getFlashSignals, getFlashAudit, triggerFlashIngest, searchFlash, reclassifyFlash } from '../api'
 // 【2026-09-12】原状态条上的「浏览器镜像」显示已随镜像退役移除
 
 
@@ -446,6 +537,7 @@ const tabs = [
   { key: 'diagnosis', label: '今日诊断' },
   { key: 'reviews', label: '复盘' },
   { key: 'events', label: '事件流' },
+  { key: 'search', label: '检索' },
   { key: 'signals', label: '信号跟踪' },
   { key: 'audit', label: '对账' },
 ]
@@ -565,6 +657,112 @@ async function loadEvents() {
   } catch (e) { console.error(e) }
 }
 
+// ══════════ 检索 tab（2026-11-07：分类 + 搜索）══════════════════════════
+// 语料与两层分类见后端 app/flash_search.py 模块头；此处只做参数装配与展示。
+// ⚠️ 只读检索：任何命中都只是过滤维度，不构成多空信号（R2 同款声明）。
+const sq = ref('')            // 关键词
+const ssource = ref('all')    // all / flash / tidy
+const sd = ref(7)             // 窗口天数（后端封顶 120）
+const sCluster = ref('')      // 选中的事件簇（空=全部）
+const sCategory = ref('')     // 选中的政策类别（空=全部）
+const searchItems = ref([])
+const searchTotal = ref(0)
+const searchPage = ref(1)
+const searchSize = 50
+const sFacets = ref({ clusters: [], categories: [] })
+const sLoading = ref(false)
+const sErr = ref('')
+const reclLoading = ref(false)
+const searchLoaded = ref(false)   // 懒加载标记：首次切到本 tab 才请求
+const CAT_LABELS = { tone: '政策定调', funds: '资金工具', fundamental: '基本面', reverse: '反向词' }
+const catLabel = (c) => CAT_LABELS[c] || c
+
+const searchGroups = computed(() => {
+  const m = new Map()
+  for (const it of searchItems.value) {
+    const d = it.date || String(it.time).slice(0, 10)
+    if (!m.has(d)) m.set(d, { day: d, items: [] })
+    m.get(d).items.push(it)
+  }
+  return [...m.values()]
+})
+
+// 高亮：先整段 HTML 转义，再对命中词（q + 该条命中的冻结关键词）包 <mark>。
+// 转义在前、替换在后 ⇒ v-html 不会有注入面（词与正文都已转义）。
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function hl(it) {
+  let html = esc(it.content)
+  const words = [...new Set([sq.value.trim(), ...(it.kw || [])]
+    .filter(w => w && w.length >= 2))]
+    .sort((a, b) => b.length - a.length)      // 长词优先，防"平准"吃掉"平准基金"
+  for (const w of words) {
+    const e = esc(w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    try {
+      html = html.replace(new RegExp(e, 'gi'),
+        m => `<mark class="bg-amber-400/30 text-amber-100 rounded px-0.5">${m}</mark>`)
+    } catch { /* 非法模式忽略 */ }
+  }
+  return html
+}
+
+async function loadSearch() {
+  sLoading.value = true
+  sErr.value = ''
+  try {
+    const { data } = await searchFlash({
+      q: sq.value.trim() || undefined,
+      cluster: sCluster.value || undefined,
+      category: sCategory.value || undefined,
+      source: ssource.value,
+      days: sd.value,
+      limit: searchSize,
+      offset: (searchPage.value - 1) * searchSize,
+    })
+    if (data.ok === false) {
+      sErr.value = data.error || '检索失败'
+      searchItems.value = []
+      searchTotal.value = 0
+      return
+    }
+    searchItems.value = data.items || []
+    searchTotal.value = data.total || 0
+    sFacets.value = data.facets || { clusters: [], categories: [] }
+    searchLoaded.value = true
+  } catch (e) {
+    sErr.value = e?.response?.data?.detail || e?.message || '检索失败'
+  } finally { sLoading.value = false }
+}
+function searchGo(page = 1) { searchPage.value = page; loadSearch() }
+function toggleCluster(name) { sCluster.value = sCluster.value === name ? '' : name; searchGo(1) }
+function toggleCategory(name) { sCategory.value = sCategory.value === name ? '' : name; searchGo(1) }
+function resetSearch() {
+  sq.value = ''; ssource.value = 'all'; sd.value = 7
+  sCluster.value = ''; sCategory.value = ''
+  searchGo(1)
+}
+// cluster 口径重算（EVENT_CLUSTERS 改词后的历史拉齐入口；幂等、只写 cluster 列）。
+// ⚠️ 写操作必须二次确认——虽然只是改标签列，但"用户不知道点了会写库"本身就是事故形态。
+async function doReclassify() {
+  if (reclLoading.value) return
+  if (!confirm(
+    `按最新关键词口径重算「近 ${sd.value} 天」热榜快讯的簇标记？\n\n` +
+    `· 只写 flash_news.cluster 一列（幂等，同口径重跑 = 0 变更）\n` +
+    `· 金十整理稿无簇列，不在范围\n\n继续？`)) return
+  reclLoading.value = true
+  try {
+    const { data } = await reclassifyFlash({ days: sd.value })
+    if (data.ok === false) { sErr.value = data.error || '重算失败'; return }
+    const lines = Object.entries(data.changes || {}).map(([k, v]) => `  ${k} ×${v}`)
+    alert(`重算完成：扫描 ${data.scanned} 条，更新 ${data.updated} 条` +
+      (lines.length ? `\n${lines.join('\n')}` : '（同口径，无变更）'))
+    searchGo(searchPage.value)
+  } catch (e) {
+    sErr.value = e?.response?.data?.detail || e?.message || '重算失败'
+  } finally { reclLoading.value = false }
+}
+
 async function loadSignals() {
   try { const { data } = await getFlashSignals(); signals.value = data } catch (e) { console.error(e) }
 }
@@ -653,6 +851,7 @@ function switchTab(key) {
   activeTab.value = key
   if (key === 'reviews' && !reviewDates.value.length) loadReviewHistory()
   if (key === 'events' && !events.value.length) loadEvents()
+  if (key === 'search' && !searchLoaded.value) loadSearch()
   if (key === 'signals' && !signals.value.performance) loadSignals()
   if (key === 'audit' && !audit.value.summary) loadAudit()
 }

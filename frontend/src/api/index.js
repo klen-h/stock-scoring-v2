@@ -230,6 +230,12 @@ export const getMacroReserves = (months = 24) => http.get('/macro/reserves', { p
 
 // 快讯监控（事件流 / LLM诊断 / 三段复盘 / 信号跟踪）
 export const getFlashEvents = (params) => http.get('/flash/events', { params })
+// ★ 2026-11-07：快讯检索（分类 facet + 关键词搜索；语料=flash_news + jin10_tidy_news）。
+//   只读零 LLM；category 词表复用 policy_tone_watch 冻结判据（单一事实源）。
+//   ⚠️ 人工按需调用，禁止挂轮询（后端一次最坏 ~1.5MB DB egress）。
+export const searchFlash = (params) => http.get('/flash/search', { params, timeout: 30000 })
+// cluster 口径重算（幂等；EVENT_CLUSTERS 改词后拉齐历史用，返回迁移统计）
+export const reclassifyFlash = (params) => http.post('/flash/reclassify', {}, { params, timeout: 120000 })
 export const getFlashDiagnosis = (params) => http.get('/flash/diagnosis', { params })
 export const getFlashReview = (phase) => http.get(`/flash/review/${phase}`)
 export const getFlashReviewHistory = (phase, limit = 20) => http.get(`/flash/review/${phase}/history`, { params: { limit } })

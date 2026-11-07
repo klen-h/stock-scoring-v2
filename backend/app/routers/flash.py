@@ -5,6 +5,8 @@
 
 URL 前缀 /api/flash：
   GET  /api/flash/events               → 快讯事件流（分页，最新在前）
+  GET  /api/flash/search               → 快讯检索（分类 facet + 关键词，2026-11-07）
+  POST /api/flash/reclassify           → cluster 口径重算（幂等，2026-11-07）
   GET  /api/flash/calendar             → 财经日历（未来N天：经济指标/事件讲话/休市）
   POST /api/flash/calendar/refresh     → 手动刷新日历缓存（正常由调度器每日07:00跑）
   GET  /api/flash/diagnosis            → 最新 LLM 诊断（含历史列表）
@@ -101,6 +103,38 @@ def flash_events(page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200)
     start = (page - 1) * size
     return {"data": items[start:start + size], "total": total,
             "page": page, "size": size}
+
+
+@router.get("/search")
+def flash_search(q: str = Query(None, max_length=50),
+                 cluster: str = Query(None, max_length=30),
+                 category: str = Query(None, max_length=20),
+                 source: str = Query("all", max_length=10),
+                 days: int = Query(7, ge=1, le=120),
+                 limit: int = Query(50, ge=1, le=200),
+                 offset: int = Query(0, ge=0)):
+    """快讯检索（分类 + 关键词）。**只读、零外呼、零 LLM**。
+
+    · 两层分类：cluster（EVENT_CLUSTERS 写库时打标）+ category（复用
+      `policy_tone_watch` 冻结词表，查询时计算——单一事实源，零口径漂移）。
+    · 人工按需调用，**禁止挂轮询**（最坏窗口 ~1.5MB DB egress，表小扛得住偶尔
+      一次，扛不住定时轰炸）。
+    """
+    from app import flash_search as fs
+    return fs.search(q=q, cluster=cluster, category=category, source=source,
+                     days=days, limit=limit, offset=offset)
+
+
+@router.post("/reclassify")
+def flash_reclassify(days: int = Query(120, ge=1, le=120),
+                     _user: dict = Depends(get_current_user)):
+    """按当前 EVENT_CLUSTERS 口径重算窗口内 flash_news 的 cluster（幂等）。
+
+    ★ 2026-11-07 国内政策关键词放宽后的一次性历史拉齐入口；
+      同口径重跑 = 0 变更。返回 from→to 迁移统计，写什么一目了然。
+    """
+    from app import flash_search as fs
+    return fs.reclassify(days)
 
 
 @router.get("/diagnosis")
