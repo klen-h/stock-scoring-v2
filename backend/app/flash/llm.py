@@ -84,8 +84,18 @@ LLM_FREE_API_KEY = (os.environ.get("LLM_FREE_API_KEY") or "").strip()
 #   真有问题还有 11 天缓冲；拖到当天才发现就是"LLM 全挂"且无回滚时间。
 #   ⚠️ 同时把 `glm-5.2` 列入 `_MODEL_KNOWN_DEAD`，专门兜住 Render / env 残留旧值
 #      （`LLM_FREE_MODEL` 是 **env 优先**，只改这里不够，见下方注释）。
-_FREE_MODEL_DEFAULT = "glm-5.3"
-_FREE_MODEL_FALLBACK_DEFAULT = "sensenova-6.8-flash-lite"
+# ★★ 2026-11-07（实测后修正）：**glm-5.3 不能当默认**。
+#   5.3 是推理模型：实测 10232 字提示词下 `reasoning` 吃掉 **15603 token**、
+#   `content` 只有 1 个字符（`finish_reason=length`），且 `enable_thinking:false`
+#   与 `reasoning_effort:low` **对它都无效**。空响应重试与 max_tokens 翻倍
+#   （8192→16384→32768）也救不回来 —— 是**确定性产出空正文**，不是限流。
+#   `sensenova-6.8-flash` 同病（content=0）。
+#   ⇒ 默认改为 `sensenova-6.8-flash-lite`：关 thinking 后能正常出完整 JSON
+#      （xiaopage 实测 24 字段、含 market）。代价是**间歇性空响应**
+#      （3 次里 1~2 次返回 0 字），靠 `_call_provider` 的重试兜住。
+#   ⚠️ glm-5.3 / 6.8-flash 已列入下方 `_MODEL_KNOWN_DEAD`，防止 env 残留顶到链首。
+_FREE_MODEL_DEFAULT = "sensenova-6.8-flash-lite"
+_FREE_MODEL_FALLBACK_DEFAULT = "deepseek-flash"
 
 LLM_FREE_MODEL = ((os.environ.get("LLM_FREE_MODEL") or "").strip()
                   or _FREE_MODEL_DEFAULT)
@@ -114,7 +124,8 @@ LLM_FREE_MODEL_FALLBACK = ((os.environ.get("LLM_FREE_MODEL_FALLBACK") or "").str
 #   沉到后面由 `_MODEL_QUOTA_COOL` 动态处理，比直接删掉更稳（配额恢复后能自动用上）。
 # ★★ 2026-11-07：首位 glm-5.2 → **glm-5.3**（官方 11-18 下线 5.2）。
 #   上面 10-28 / 10-29 的实测记录是**历史事实**，保留不改。
-_FREE_MODEL_BUILTIN = ["glm-5.3", "sensenova-6.8-flash-lite", "deepseek-flash"]
+# ★ 2026-11-07：首位 glm-5.3 → lite（5.3 推理吃光输出，见 `_FREE_MODEL_DEFAULT` 注释）。
+_FREE_MODEL_BUILTIN = ["sensenova-6.8-flash-lite", "deepseek-flash"]
 
 # ── 确定性不可用的模型：**即便 env 里配了也排到链尾** ──────────────────────
 #   为什么需要：用户只改了 Render 的 `LLM_FREE_API_KEY`，`LLM_FREE_MODEL` 很可能
@@ -131,7 +142,14 @@ _FREE_MODEL_BUILTIN = ["glm-5.3", "sensenova-6.8-flash-lite", "deepseek-flash"]
 #   ⚠️ 边界：`_shadow_run()` 直接用 `(LLM_FREE_MODEL, LLM_FREE_MODEL_FALLBACK)`，
 #      不经过 `_free_models()` ⇒ 影子模式**不吃这条护栏**。当前 `LLM_FREE_SHADOW=0`
 #      （影子未启用）故无影响；将来开影子前，记得把那里也改成 `_free_models()`。
-_MODEL_KNOWN_DEAD = ("deepseek-v4-flash", "deepseek-v4.1-flash", "glm-5.2")
+# ★ 2026-11-07 追加 `glm-5.3` / `sensenova-6.8-flash`：
+#   **不是下线，也不是限流** —— 是推理模型在此站会「吃光 max_tokens 却写不出正文」。
+#   实测（10232 字提示词）：glm-5.3 → reasoning 15603 token / content 1 字符；
+#   6.8-flash → content 0。`enable_thinking:false`、`reasoning_effort:low` 均无效。
+#   放进本名单的意义：**env 残留这两个 ID 时会被替换成 lite**，不必登平台改配置。
+#   ⚠️ 将来的模型若确能正常输出，记得从这里移除（本名单是"结构性不可用"）。
+_MODEL_KNOWN_DEAD = ("deepseek-v4-flash", "deepseek-v4.1-flash",
+                     "glm-5.2", "glm-5.3", "sensenova-6.8-flash")
 
 # 配额耗尽的模型（model → 冷却截止时间戳）。★ 为什么需要：
 #   429 其实是两种完全不同的故障，必须区别对待 ——
@@ -749,6 +767,16 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        # ★★ 2026-11-07：**关掉思考**。sensenova 站的推理模型（glm-5.3 / 6.8-flash）
+        #   默认开 thinking，长提示词下 reasoning 会把 `max_tokens` 吃干净、
+        #   `content` 恒为空（实测：15603 reasoning token / content 1 字符），
+        #   而 `finish_reason=length` 会让下面的"翻倍重试"一路涨到 CAP 也没用。
+        #   本站认 `enable_thinking`，**不认** `reasoning_effort`（后者是 OpenAI 风格，
+        #   对本站无效 —— 这就是为什么之前的 reasoning_effort=low 一直没起作用）。
+        #   ⚠️ 只对 sensenova 注入：主力站（SiliconFlow 等）不一定接受该参数，
+        #      避免未知字段导致 400。
+        if "sensenova" in (p.get("base_url") or ""):
+            body["enable_thinking"] = False
         if p.get("reasoning"):
             # 思考开关仅注入支持 reasoning_effort 的站：fast→none（保窗口）/
             # shadow→medium（模型默认，对比期测真实质量）/ slow→low
@@ -809,9 +837,19 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
                 return True, content
             # ── 空响应：记录可定位的诊断信息，并按情况升级参数后重试 ──
             finish = choice.get("finish_reason")
-            reasoning = ((choice.get("message") or {}).get("reasoning_content") or "")
+            # ★★ 2026-11-07：sensenova 的推理字段叫 **`reasoning`**，不是 OpenAI 的
+            #   `reasoning_content`。原先只读后者 ⇒ 日志永远"思考0字"，而这恰恰是
+            #   排查"content 为空"时最该看的信息（本次就是绕了一圈才发现 token
+            #   全烧在 15603 字的 reasoning 上）。两个字段都读，兼容各家。
+            _msg = choice.get("message") or {}
+            reasoning = _msg.get("reasoning") or _msg.get("reasoning_content") or ""
+            _rtok = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+            if _rtok:
+                _last_error_extra = f" reasoning_tokens={_rtok}"
+            else:
+                _last_error_extra = ""
             _last_error = (f"空响应({pkey}/{model} finish_reason={finish} "
-                           f"思考{len(reasoning)}字 completion_tokens="
+                           f"思考{len(reasoning)}字{_last_error_extra} completion_tokens="
                            f"{usage.get('completion_tokens')} max_tokens={max_tokens})")
             print(f"[llm] 第{attempt}次{_last_error}")
             if finish == "length":                       # 思考把额度吃光 → 翻倍再试
