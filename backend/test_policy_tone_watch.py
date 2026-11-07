@@ -172,6 +172,40 @@ def main():
           "push_markdown_batched" not in _ledger_src
           and "wechat" not in _ledger_src)
 
+    print("\n=== 十、审查回归（2026-11-08）——三处静默失效修复 ===")
+    # [29] P1：watch_check_push 必须**先推送、后记账**。
+    #   原实现先写 last_pushed_at 再推 ⇒ 企微一抖动记账已落，而
+    #   `last_pushed_at[:10]==day` 会把该词当天后续全跳过 ⇒ **静默漏推**。
+    #   此处用源码**顺序断言**，保持本文件的离线特性（不连库、不 mock）。
+    _fn = src[src.find("def watch_check_push"):]
+    _cut = _fn.find("\n# ═")
+    if _cut > 0:
+        _fn = _fn[:_cut]
+    _i_push = _fn.find("push_markdown_batched(")
+    _i_acct = _fn.find("last_pushed_at=%s")
+    check("[29] watch_check_push 先推送后记账（顺序断言）",
+          0 <= _i_push < _i_acct, f"push@{_i_push} acct@{_i_acct}")
+    check("[29b] 推送未确认送达时不记账（有 error 分支）",
+          "推送未确认送达" in _fn)
+
+    # [30] P2：FedWatch 多方向并存 —— 纯函数 `latest_by_direction`
+    #   原实现只留全局最新一条：最新句若是「维持利率不变」，加息假设的
+    #   latest_pct 会变 None ⇒ 即便早已跌破阈值也不触发 ⇒ 静默漏报。
+    from app.thesis_hints import latest_by_direction as _lbd
+    _ms = [
+        {"direction": "维持利率不变", "pct": 30.0, "date": "2026-11-07"},
+        {"direction": "加息", "pct": 72.8, "date": "2026-11-06"},
+        {"direction": "加息", "pct": 65.0, "date": "2026-11-05"},
+    ]
+    _snapshot = copy.deepcopy(_ms)
+    _d = _lbd(_ms)
+    check("[30] 按方向取最新（「维持不变」不遮挡「加息」）",
+          _d.get("加息", {}).get("pct") == 72.8
+          and _d.get("维持利率不变", {}).get("pct") == 30.0,
+          str({k: v["pct"] for k, v in _d.items()}))
+    check("[31] latest_by_direction 不修改入参 / 空输入不崩",
+          _ms == _snapshot and _lbd([]) == {} and _lbd(None) == {})
+
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")
     assert _failed == 0, f"有 {_failed} 个场景未通过"
     print("ASSERTION PASSED")

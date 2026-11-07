@@ -49,6 +49,26 @@ def _window_from(days: int) -> str:
     return (now - timedelta(days=int(days))).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def latest_by_direction(matches: List[Dict]) -> Dict[str, Dict]:
+    """按方向取最新一条（**纯函数**，离线可测）。
+
+    ★ 2026-11-08：从 `scan_fedwatch` 抽出来，就是为了能离线测「多方向并存」这个
+      **已经出过 bug** 的场景：原实现只保留全局最新一条，若它是「维持利率不变」，
+      那么「加息」假设的 `latest_pct` 会变 None ⇒ 即使加息定价早已跌破阈值也不触发
+      ⇒ **静默漏报**。会议临近时「维持不变」的表述最容易盖过加息/降息句，
+      恰恰是最该提示的时候。
+
+    入参 `matches` 须**已按时间倒序**（`scan_fedwatch` 里已 sort）；不修改入参。
+    返回 {direction: 该方向最新那条 match}。
+    """
+    out: Dict[str, Dict] = {}
+    for m in (matches or []):
+        d = str((m or {}).get("direction") or "")
+        if d and d not in out:
+            out[d] = m          # 倒序 ⇒ 首次写入即该方向最新
+    return out
+
+
 def scan_fedwatch(days: int = 5) -> Dict:
     """扫最近 N 天快讯里的 FedWatch 概率句，对照 open 的 fed_event 假设。
 
@@ -98,16 +118,11 @@ def scan_fedwatch(days: int = 5) -> Dict:
         print(f"[thesis_hints] jin10_tidy_news 读取失败: {str(e)[:80]}")
 
     matches.sort(key=lambda x: x["sort"], reverse=True)
-    # ★★ 2026-11-08（审查修正）：**按方向分别取最新**，不再只用全局最新一条。
-    #   原 bug：`latest` = 时间最新那一句。若它是「维持利率不变的概率 X%」，
-    #   而假设方向是「加息」，`latest["direction"] != direction` ⇒
-    #   `latest_pct = None` ⇒ **即便加息定价早已跌破 invalidation_early 阈值也不触发**
-    #   ⇒ 静默漏报。会议临近时「维持不变」的表述最容易盖过加息/降息句，
-    #   而这恰恰是最该提示的场景。
-    #   `matches` 已按时间倒序 ⇒ `setdefault` 首次写入的就是该方向的最新句。
-    latest_by_dir: Dict[str, Dict] = {}
-    for _m in matches:
-        latest_by_dir.setdefault(_m["direction"], _m)
+    # ★★ 2026-11-08（审查修正）：按方向分别取最新，不再只用全局最新一条
+    #   （原实现若最新句是「维持利率不变」，加息假设的 latest_pct 会变 None
+    #    ⇒ 即便早已跌破阈值也不触发 ⇒ 静默漏报）。
+    #   逻辑已抽到 `latest_by_direction()`（纯函数），单测覆盖多方向并存。
+    latest_by_dir = latest_by_direction(matches)
     latest = matches[0] if matches else None
 
     # open 的 fed_event 假设
