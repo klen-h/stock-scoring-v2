@@ -12,7 +12,7 @@
 | `docs/EXECUTION_PLAN.md` | 清理/归档/批量 token 的总执行计划（阶段、产出、验收） | living | 2026-10-24 |
 | `docs/DEV_CHECKLIST.md` | 环境变量、依赖命令、数据源限额、发布/回滚、Top12 坑 | active | 2026-10-24 |
 | `docs/ARCHIVE_POLICY.md` | 文档保留/更新/废弃三分法 + 命名规范 | active | 2026-10-24 |
-| `docs/INDEX.md` | 本索引 | living | 2026-10-24 |
+| `docs/INDEX.md` | 本索引 | living | 2026-11-07 |
 | `docs/BACKLOG.md` | 全项目待办盘点（三处交叉：PLAN_NEXT/TODO/FIXME/MEMORY），每条带证据 | living | 2026-10-24 |
 | `docs/CLEANUP_REPORT.md` | 本次清理归档+审查+测试+文档生成的总汇报 | archive | 2026-10-24 |
 
@@ -96,6 +96,14 @@
 | `docs/archive/PLAN_ARCHIVE_2026-09-12.md` | 旧计划归档合集（PLAN_MAINFORCE/PLAN_NEXT_PHASE 等） | archive | 2026-10-24 |
 | `docs/archive/PLAN_LHB_BACKFILL.md` | 龙虎榜历史回填设计与结论（2026-10-14 已完成，428 日/30,706 行） | archive（已完成，superseded-by: `docs/plans/PLAN_NEXT.md` §C3） | 2026-10-24 |
 | `docs/archive/项目进展_20260906.md` | 项目进展快照（2026-09-06 时点） | archive（superseded-by: `docs/architecture/开发文档.md`） | 2026-10-24 |
+
+## 7. docs 根目录专题文档（2026-11 宏观情景系列）
+
+| 路径 | 一句话定位 | 状态 | 最后更新 |
+|---|---|---|---|
+| `docs/情景体系对照与分工_20261107.md` | `scenario_watch` 与 `llm.scenarios` 的分工裁决：确定性可证伪 vs LLM 当日叙事，两套不合并 | active | 2026-11-07 |
+| `docs/宏观状态概率账设计_20261107.md` | 四类互斥概率账的设计推导（规则打分 / 判据阈值 / 表结构 / 不接决策链 / 五步落地顺序） | living（§八 第 4 步待 11-14 核对） | 2026-11-07 |
+| `docs/宏观状态概率账_功能说明_20261107.md` | 概率账功能说明：10 个功能点 / 作用 / 21 条注意事项 / 4 处设计-实现偏差 | active（观察期只落库、不出界面） | 2026-11-07 |
 
 ---
 > 维护约定：新增/迁移文档必须同步本索引；`modules/` 子目录逐文件摘要见该目录内文件头（共 66 份，随模块增删更新）。
