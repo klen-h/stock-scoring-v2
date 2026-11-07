@@ -2901,16 +2901,40 @@
                     class="px-1.5 rounded-full bg-red-500 text-white text-[10px] shrink-0"
                     :title="`${todoCount} 条未决策`">{{ todoCount }}</span>
             </div>
-            <router-link target="_blank" to="/coach"
-                         class="text-xs text-accent hover:underline shrink-0">教练</router-link>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <!-- ★★ 2026-11-07（用户："这个教练卡也加上展开收起功能"）：
+                   2026-11-01 加 tab 时把这颗按钮去掉了（理由"tab 切换已足够"），
+                   但实际用起来是两回事 —— tab 负责**换内容**，折叠负责**腾版面**。
+                   持仓多的时候教练卡会顶掉下面的评分榜，需要能缩起来。
+                   ★ 只在「教练卡」tab 显示：另两个 tab 的内容自带开关（李大霄有 lidxOpen）。
+                   ★ 折叠状态记 localStorage（与观察器 saveObs / 李大霄一致）。 -->
+              <button v-if="sideTab === 'todo'" type="button"
+                      class="text-[10px] px-1.5 py-0.5 rounded border border-border
+                             text-muted hover:text-accent hover:border-accent/40 transition-colors"
+                      :title="todoOpen ? '收起教练卡列表' : '展开教练卡列表'"
+                      @click="todoOpen = !todoOpen; saveTodoOpen()">
+                {{ todoOpen ? '收起 ▲' : '展开 ▼' }}
+              </button>
+              <router-link target="_blank" to="/coach"
+                           class="text-xs text-accent hover:underline shrink-0">教练</router-link>
+            </div>
           </div>
           <!-- ① 教练卡 -->
           <div v-show="sideTab === 'todo'" class="space-y-2">
-            <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
-            <div v-else-if="!todayCoach.length" class="text-muted text-xs">
-              {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+            <template v-if="todoOpen">
+              <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
+              <div v-else-if="!todayCoach.length" class="text-muted text-xs">
+                {{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}
+              </div>
+              <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
+            </template>
+            <!-- 收起态：不渲染列表，但保留"有几条"这一条信息（否则收起=失明） -->
+            <div v-else class="text-[11px] text-muted">
+              <template v-if="todayCoach.length">
+                已收起 {{ todayCoach.length }} 条<template v-if="todoCount">（{{ todoCount }} 条未决策）</template>
+              </template>
+              <template v-else>{{ isReplay ? '当日无教练卡' : '今天暂无教练卡 ✓' }}</template>
             </div>
-            <TodoCard v-for="a in todayCoach" :key="a.id" :alert="a" :readonly="isReplay" @done="loadCoach" />
           </div>
           <!-- ② 李大霄视角 -->
           <div v-show="sideTab === 'lidx'">
@@ -3981,7 +4005,19 @@ const todoCount = computed(() => todoList.value.length)
 // ★ 2026-09-28（用户："只留一份在右栏即可…加上收起展开功能，默认展开"）：
 //   教练卡的**唯一**展示位 = 常驻右栏（盘中/午盘主区那张已删）⇒ 不需要"何时隐藏"的判断；
 //   只留一个折叠态，**默认展开**（同观察池 / 系统时间线）。
-const todoOpen = ref(true)
+// ★★ 2026-11-07：折叠状态**持久化**（原来只在内存，刷新就回弹到展开）。
+//   与观察器的 saveObs、李大霄的 lidxOpen 同一做法：用户既然收起了，
+//   就是当前这一屏真的放不下，不该每次刷新再顶开一次。
+const TODO_OPEN_KEY = 'wb_todo_open'
+const todoOpen = ref((() => {
+  try {
+    const v = localStorage.getItem(TODO_OPEN_KEY)
+    return v == null ? true : v === '1'
+  } catch { return true }   // 隐私模式：默认展开
+})())
+function saveTodoOpen() {
+  try { localStorage.setItem(TODO_OPEN_KEY, todoOpen.value ? '1' : '0') } catch { /* 隐私模式忽略 */ }
+}
 // 外盘四件套行：从宏面板取 price/prev_close，pct 现算
 const globalsRow = computed(() => {
   const defs = [
