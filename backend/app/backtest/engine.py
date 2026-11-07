@@ -45,6 +45,11 @@ def _round_tick(px: float) -> float:
     return math.floor(px * 100 + 0.5) / 100
 
 
+# ★ 2026-11-07（BK-33）：一字板判定的复权舍入容差 = 半Tick 0.005 + 余量 ⇒ 0.006。
+#   旧值 0.001 小于 `_round_tick` 的最大取整误差 ⇒ 除权日附近历史一字板漏判（详见入场处注释）。
+_ONE_WORD_TOL = 0.006
+
+
 def _limit_pct(code: str, name: str = "", is_etf: bool = False) -> float:
     """涨跌停幅度：创业/科创 20%，北交所 30%，ST 5%，ETF/主板 10%。"""
     if is_etf:
@@ -112,12 +117,19 @@ def match_signals(signals: list, prices_map: dict,
         # ★ 涨停一字买不进（2026-09-05 现实化）：
         #   T+1 开盘涨停且全天未开板（low 未低于涨停价）→ 排队买不到，剔除该信号。
         #   开盘涨停但盘中开板（low < 涨停价）→ 视为可在开盘价成交。
+        # ★★ 2026-11-07（BK-33 收口）：容差 0.001 → **0.006（复权舍入半Tick界）**。
+        #   `limit_up = _round_tick(前复权昨收 × 1.1)` 的取整误差 ≤ 半个 tick（0.005），
+        #   而真实一字板在复权空间里可能落在 limit_up − 0.005 之内 ⇒ 旧容差 0.001
+        #   让除权日附近的历史一字板**约半数漏判、按涨停价成交** ⇒ 回测收益/胜率
+        #   系统性虚高（BACKLOG BK-33，review/P0_backtest.md P0）。
+        #   0.006 = 0.005 半Tick + 余量；重放对照见 scripts/_bk33_replay 产物报告。
         limit_pct = _limit_pct(code, s.get("name"), s.get("is_etf", False))
         if entry_i > 0 and limit_pct > 0:
             prev_close = bars[entry_i - 1]["close"]
             limit_up = _round_tick(prev_close * (1 + limit_pct))
             eb = bars[entry_i]
-            if limit_up > 0 and eb["open"] >= limit_up and eb["low"] >= limit_up - 0.001:
+            if limit_up > 0 and (eb["open"] >= limit_up - _ONE_WORD_TOL
+                                 and eb["low"] >= limit_up - _ONE_WORD_TOL):
                 _skip(s, "涨停一字买不进", eb["date"])
                 continue
 
@@ -152,7 +164,10 @@ def match_signals(signals: list, prices_map: dict,
             prev_close = bars[j - 1]["close"]
             limit_down = _round_tick(prev_close * (1 - limit_pct))
             b = bars[j]
-            return not (b["high"] <= limit_down + 0.001 and b["low"] <= limit_down + 0.001
+            # ★ 2026-11-07（BK-33 对称修复）：卖侧同款舍入容差（0.001 → 0.006），
+            #   依据与买侧一致——复权取整半Tick误差界。
+            return not (b["high"] <= limit_down + _ONE_WORD_TOL
+                        and b["low"] <= limit_down + _ONE_WORD_TOL
                         and b["high"] > 0)
 
         for j in range(sellable_i, last_i + 1):

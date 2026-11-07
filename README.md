@@ -129,4 +129,5 @@ cd frontend && npm run dev                    # 前端工作台
   · 快讯**检索与分类**（`/monitor` 新「检索」tab + `GET /api/flash/search`）：语料 =
     flash_news + jin10_tidy_news，两层分类（cluster 簇 + policy_tone 冻结类别），
     `EVENT_CLUSTERS` 国内政策扩词 + `POST /api/flash/reclassify` 幂等重算历史（实测 936 扫描/19 迁移）；
-  · `scripts/tone_cli.py`（show/scan/rescan/confirm，12 月会议周人工打标入口）。
+  · `scripts/tone_cli.py`（show/scan/rescan/confirm，12 月会议周人工打标入口）；
+  · **档 1 增强**（§3.1a 留痕）：观察词命中提醒（用户自管词表 `tone_watch_words`，盘中轮询+日批兜底，每词每日 1 条企微，提示层非信号）+ `thesis_cli hints` 失效条件自动提示（FedWatch 定价 vs 登记阈值，只提示不修订）+ 时滞仪表（`tone_cli lag`，基调确认日→市场底 4/5 日实测间隔）；P0 修复 **BK-33**（回测一字板容差 0.001→0.006 复权半Tick界，重放：716,301 主板样本日新捕获 166 个漏判一字日 +27.1%）与 **BK-49**（行情刷新不完整保留旧缓存，护栏扩到增量路径）。

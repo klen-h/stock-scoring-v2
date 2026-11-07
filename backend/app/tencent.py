@@ -613,11 +613,16 @@ def _refresh_all_stocks_inner(force: bool = False):
         #   `_cache["stocks"] = stocks` 整体替换 + 重建 `_valid_codes`
         #   ⇒ 一次网络抖动就能把池子永久缩小，涨跌家数/成交额同步腰斩且仍标记为「实时」。
         #   真实退市不可能一天减少 10% ⇒ 低于旧池 90% 一律判为「扫描不完整」，保留旧缓存。
+        # ★★ 2026-11-07（BK-49 收口）：护栏从「仅全量路径」扩到**增量路径**——
+        #   增量刷新所有批次失败 ⇒ stocks={} ⇒ 此前无护栏路径直接 `_cache["stocks"] = {}`
+        #   整体替换 ⇒ >2 分钟网络故障即清空全站行情（BACKLOG BK-49 原案）。
+        #   「宁陈旧勿清空」语义对两条路径同等成立；冷启动（旧池为空）不受影响。
         _old_n = len(_cache.get("stocks") or {})
-        _incomplete = bool(do_full_scan and _old_n and len(stocks) < _old_n * 0.9)
+        _incomplete = bool(_old_n and len(stocks) < _old_n * 0.9)
         if _incomplete:
-            print(f"[tencent] 全量扫描仅得 {len(stocks)} 只（旧池 {_old_n} 只，"
-                  f"低于 90%）⇒ 判定扫描不完整，**保留旧缓存**（不覆盖池与有效代码）")
+            print(f"[tencent] {'全量扫描' if do_full_scan else '增量刷新'}仅得 "
+                  f"{len(stocks)} 只（旧池 {_old_n} 只，低于 90%）"
+                  f"⇒ 判定刷新不完整，**保留旧缓存**（宁陈旧勿清空，不覆盖池与有效代码）")
             return _cache["stocks"]
 
         # 全量扫描后更新有效代码缓存（增量扫描不需要更新，因为池子已经是有效代码）
