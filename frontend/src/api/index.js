@@ -5,6 +5,98 @@ const http = axios.create({
   timeout: 30000,
 })
 
+// ==============================================================================
+//  本地开发响应缓存（VITE_LOCAL_CACHE=1 开启；生产构建不带）
+// ==============================================================================
+// ★★ 2026-11-07（用户："可以将请求的数据缓存在本地吗？第二次请求就直接使用"）：
+//   背景是**本地改前端**时反复刷新同一页，每次刷新后端都要重算一遍
+//   （评分精算、雷达、复盘聚合等，重的几秒）。
+//   ⚠️ 导库（`scripts/export_local_sqlite.py`）解决的是**查库耗 egress**；
+//      本层解决的是**重复计算**——两者不重叠，各管一段。
+//
+// ★ 为什么放在 axios 层而不是后端中间件：
+//   ① 不动生产代码（后端中间件要在线上一起跑，读 body 还要重拼 StreamingResponse）；
+//   ② 本地开发只有一个浏览器，localStorage 足够；
+//   ③ 生产构建（`.env.server` / `.env.production`）不含这个变量 ⇒ 零风险。
+//
+// ★ 边界（必须知道）：
+//   · 只缓存 **GET**。POST 一律透传（落库/刷新按钮本来就该走网络）。
+//   · 单条 >150KB 不缓存（榜单/宽表类，localStorage 5MB 装不下几条）。
+//   · 总量超 3MB 按时间 LRU 清理。
+//   · 数据会**停在缓存那一刻**，看新数据要清缓存或带 `params.nocache=1`。
+//   · 控制台可手动清：`clearApiCache()`（已挂到 window）。
+const LOCAL_CACHE = import.meta.env.VITE_LOCAL_CACHE === '1'
+// 0 = 永不过期（默认，符合"第二次直接用"）；要自动失效就设秒数
+const CACHE_TTL_MS = Number(import.meta.env.VITE_LOCAL_CACHE_TTL || 0) * 1000
+const CACHE_PREFIX = 'api_cache:'
+const CACHE_ITEM_MAX = 150 * 1024        // 单条上限（字符数，约 150KB）
+const CACHE_TOTAL_MAX = 3 * 1024 * 1024  // 总量上限
+
+function _cacheKey(config) {
+  const p = config.params ? JSON.stringify(config.params) : ''
+  return CACHE_PREFIX + (config.url || '') + (p ? '|' + p : '')
+}
+
+function _cacheGet(key) {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return null
+    const o = JSON.parse(raw)
+    if (CACHE_TTL_MS > 0 && Date.now() - (o.t || 0) > CACHE_TTL_MS) {
+      localStorage.removeItem(key)
+      return null
+    }
+    return o
+  } catch {
+    return null
+  }
+}
+
+function _cacheTrim(aggressive) {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX))
+  const items = keys.map(k => {
+    const raw = localStorage.getItem(k) || ''
+    let t = 0
+    try { t = JSON.parse(raw).t || 0 } catch { /* 坏数据当最旧处理 */ }
+    return { k, t, n: raw.length }
+  })
+  let total = items.reduce((a, b) => a + b.n, 0)
+  const limit = aggressive ? CACHE_TOTAL_MAX / 2 : CACHE_TOTAL_MAX
+  if (total <= limit) return
+  items.sort((a, b) => a.t - b.t)          // 最旧的先删
+  for (const it of items) {
+    if (total <= limit) break
+    localStorage.removeItem(it.k)
+    total -= it.n
+  }
+}
+
+function _cacheSet(key, data) {
+  let s
+  try {
+    s = JSON.stringify({ t: Date.now(), d: data })
+  } catch {
+    return                                  // 含循环引用等，直接放弃
+  }
+  if (s.length > CACHE_ITEM_MAX) return     // 大响应不缓存
+  try {
+    localStorage.setItem(key, s)
+  } catch {
+    _cacheTrim(true)                        // 配额满：砍半再试一次
+    try { localStorage.setItem(key, s) } catch { /* 仍失败就放弃 */ }
+  }
+  _cacheTrim(false)
+}
+
+/** 清空本地 API 缓存（控制台 `clearApiCache()` 或页面上手动调用）。 */
+export function clearApiCache() {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX))
+  keys.forEach(k => localStorage.removeItem(k))
+  console.info(`[api-cache] 已清空 ${keys.length} 条`)
+  return keys.length
+}
+if (typeof window !== 'undefined') window.clearApiCache = clearApiCache
+
 // ── Token 管理 ──
 const TOKEN_KEY = 'auth_token'
 const USER_KEY = 'auth_user'
@@ -36,19 +128,46 @@ export function isLoggedIn() {
   return !!getToken()
 }
 
-// ── 请求拦截器：自动带 Token ──
+// ── 请求拦截器：自动带 Token + 本地缓存命中短路 ──
 http.interceptors.request.use(config => {
   const token = getToken()
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  // ★ 缓存命中就直接短路，一次网络都不发（省掉后端的重算，不只是省流量）
+  //   ⚠️ axios 的 request 拦截器没有"直接返回响应"的官方口子 ⇒ 用 reject 把命中值
+  //      传给下方 response 拦截器的 error 分支还原（`__cacheHit` 标记）。
+  if (LOCAL_CACHE
+      && (config.method || 'get').toLowerCase() === 'get'
+      && !(config.params && config.params.nocache)) {
+    const hit = _cacheGet(_cacheKey(config))
+    if (hit) {
+      console.debug('[api-cache] HIT', config.url)
+      return Promise.reject({ __cacheHit: true, data: hit.d, config })
+    }
+  }
   return config
 })
 
-// ── 响应拦截器：401 自动跳转登录 ──
+// ── 响应拦截器：写缓存 / 还原缓存命中 / 401 自动跳转登录 ──
 http.interceptors.response.use(
-  response => response,
+  response => {
+    // ★ 成功响应写入缓存（只落 GET）。同 key 已存在则不覆盖 ⇒ 保住最早的时间戳，
+    //   否则每次"绕过缓存"的请求都会刷新 t，LRU 就永远淘汰不到它。
+    if (LOCAL_CACHE && (response.config?.method || 'get').toLowerCase() === 'get') {
+      const key = _cacheKey(response.config)
+      if (!localStorage.getItem(key)) _cacheSet(key, response.data)
+    }
+    return response
+  },
   error => {
+    // ★ 缓存命中（由请求拦截器短路而来）：还原成正常响应
+    if (error && error.__cacheHit) {
+      return Promise.resolve({
+        data: error.data, status: 200, statusText: 'OK (cache)',
+        headers: {}, config: error.config, request: {},
+      })
+    }
     if (error.response?.status === 401) {
       // Token 过期或无效，清除本地状态
       removeToken()
