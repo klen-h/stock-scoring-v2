@@ -767,21 +767,25 @@ def _call_provider(p: dict, pkey: str, system: str, user: str, temperature: floa
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
-        # ★★ 2026-11-07：**关掉思考**。sensenova 站的推理模型（glm-5.3 / 6.8-flash）
-        #   默认开 thinking，长提示词下 reasoning 会把 `max_tokens` 吃干净、
-        #   `content` 恒为空（实测：15603 reasoning token / content 1 字符），
-        #   而 `finish_reason=length` 会让下面的"翻倍重试"一路涨到 CAP 也没用。
-        #   本站认 `enable_thinking`，**不认** `reasoning_effort`（后者是 OpenAI 风格，
-        #   对本站无效 —— 这就是为什么之前的 reasoning_effort=low 一直没起作用）。
-        #   ⚠️ 只对 sensenova 注入：主力站（SiliconFlow 等）不一定接受该参数，
-        #      避免未知字段导致 400。
-        if "sensenova" in (p.get("base_url") or ""):
-            body["enable_thinking"] = False
+        # ★★★ 2026-11-07（实测三轮才找对）：**只有 `none` / `thinking:disabled` 真能关思考**。
+        #   实测（1411 字转录，直接看 `usage.completion_tokens_details.reasoning_tokens`）：
+        #     基线                          → rtok=16384, 180s, content 空
+        #     `enable_thinking:false`       → rtok=16384 ❌ **本参数被静默忽略**
+        #     `thinking:{type:'disabled'}`  → rtok=0, **1.6s**, content 正常 ✅
+        #     `reasoning_effort:'none'`     → rtok=0, **1.6s**, content 正常 ✅
+        #     `reasoning_effort:'low'`      → 等同"开思考"，rtok 吃满 ❌
+        #     `reasoning_effort:'minimal'`  → rtok=16384 ❌
+        #   ⇒ 原先 `slow` tier 用的 `low` **等于没关**；只有 `none` 有效。
+        #   ⚠️ 判断参数是否生效，**只能看 reasoning_tokens 降没降**，
+        #      不能看 content 有没有出来（lite 短提示词下能出来，长提示词就空）。
         if p.get("reasoning"):
-            # 思考开关仅注入支持 reasoning_effort 的站：fast→none（保窗口）/
-            # shadow→medium（模型默认，对比期测真实质量）/ slow→low
-            body["reasoning_effort"] = LLM_FREE_REASONING or {
-                "fast": "none", "shadow": "medium"}.get(tier, "low")
+            # shadow 保留 medium（对比期要测模型真实质量）；其余一律 none。
+            body["reasoning_effort"] = LLM_FREE_REASONING or (
+                "medium" if tier == "shadow" else "none")
+        # sensenova 这一族还认 `thinking.type`，双保险（两个都发不会冲突）。
+        # 只对 sensenova 注入，避免主力站（SiliconFlow 等）因未知字段 400。
+        if "sensenova" in (p.get("base_url") or ""):
+            body["thinking"] = {"type": "disabled"}
         try:
             r = _session.post(f"{p['base_url']}/chat/completions", json=body,
                               headers={"Authorization": f"Bearer {p['key']}"},
