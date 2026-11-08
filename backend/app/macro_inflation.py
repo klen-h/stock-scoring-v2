@@ -199,6 +199,10 @@ def view() -> Dict:
     res["as_of"] = series[-1][0] if series else None
     res["from"] = series[0][0] if series else None
     res["n_loaded"] = len(series)
+    # ★ 2026-11-08：上期值单独透出 —— 描述"最近一期环比"必须用它，
+    #   只看 3 月斜率会得出"下降"，而最近一期可能是回升（实测 3.0→3.1 就是）。
+    res["prev"] = round(series[-2][1], 4) if len(series) >= 2 else None
+    res["prev_as_of"] = series[-2][0] if len(series) >= 2 else None
     res["code"] = "core_pce_yoy"
     res["name"] = _CODE_CN["core_pce_yoy"]
     res["layer_ok"] = bool(res.get("ok"))

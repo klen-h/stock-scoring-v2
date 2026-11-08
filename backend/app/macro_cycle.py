@@ -172,6 +172,14 @@ def _layer_l1() -> Dict:
         "as_of": v.get("as_of"),
         "from": v.get("from"),
         "n_loaded": v.get("n_loaded"),
+        # 结构化字段（给 `_narrative()` 直接取用，避免从 detail 文本里抠数字）
+        "latest": v.get("latest"),
+        "prev": v.get("prev"),
+        "falls": v.get("falls"),
+        "slope": v.get("slope"),
+        "proj": v.get("proj"),
+        "target": v.get("target"),
+        "layer_ok": v.get("layer_ok"),
         "metrics": metrics,
         "text": v.get("text"),
         "detail": v.get("detail"),
@@ -232,6 +240,171 @@ def _layer_l4() -> Dict:
     }
 
 
+def _narrative(layers: List[Dict], price: Dict) -> Dict:
+    """四层读数 → **人话解读**（规则生成，非 LLM；只陈述事实与逻辑链，不含任何操作建议）。
+
+    ★ 设计原则：
+      1. 每一条都能追溯到某个字段（`latest` / `falls` / `triggered` / `hit` …），
+         **不写推测**（"可能"、"或将"这类词不出现）；
+      2. 明确区分"**没有数据**"与"**数据说不满足**"——这是最容易混的两件事；
+      3. 结尾必须带免责说明，明确它不是建议。
+
+    返回 `{headline, items[], cross_read[], disclaimer}`。
+    """
+    by = {x.get("layer"): x for x in layers}
+    l1, l2 = by.get("L1_inflation") or {}, by.get("L2_employment") or {}
+    l3, l4 = by.get("L3_market") or {}, by.get("L4_language") or {}
+    items: List[Dict] = []
+
+    # ── L1 通胀端 ────────────────────────────────────────────────────────
+    if l1.get("status") == "ok":
+        latest, prev = l1.get("latest"), l1.get("prev")
+        falls, proj = l1.get("falls"), l1.get("proj")
+        target, slope = l1.get("target"), l1.get("slope")
+        verdict = "已达成" if l1.get("layer_ok") else "未达成"
+
+        # ★ 2026-11-08 修正：原先只看 slope 判"下降"，会与"最近一期环比上升"矛盾。
+        #   实测 2026-08→09 是 3.0→3.1（**上升**），而 3 个月斜率是负的（3.3→3.1）。
+        #   两种描述都对但含义不同，必须**同时说清**，否则读者会误以为在改善。
+        mom = None
+        if prev is not None and latest is not None:
+            mom = float(latest) - float(prev)
+        mom_txt = ("—" if mom is None else
+                   (f"最近一期环比 **{mom:+.2f}pp**" + ("（回升）" if mom > 0 else
+                                                     ("（继续回落）" if mom < 0 else "（持平）"))))
+        slope_txt = ("—" if slope is None else
+                     f"近 3 月净变化 {float(slope) * 3:+.2f}pp")
+        fall_txt = (f"连续回落 **{falls} 个月**（需 ≥{2}）" if (falls or 0) < 2
+                    else f"连续回落 **{falls} 个月**")
+        items.append({
+            "layer": "L1",
+            "title": "通胀端（美联储口径）",
+            "text": (f"核心PCE 年率 **{latest:.2f}%**（{str(l1.get('as_of'))[:7]}）。"
+                     f"{mom_txt}，{slope_txt}；{fall_txt}。"
+                     f"按近 3 月斜率外推 2 个月为 **{proj:.2f}%**"
+                     f"（目标 ≤{target}%）⇒ **{verdict}**。"),
+        })
+    else:
+        items.append({"layer": "L1", "title": "通胀端（美联储口径）",
+                      "text": f"**无可用数据**：{l1.get('reason') or l1.get('status')}。注意这是"
+                              f"「没读到」，不是「通胀没回落」。"})
+
+    # ── L2 就业端 ────────────────────────────────────────────────────────
+    if l2.get("status") == "ok":
+        t = l2.get("triggered")
+        items.append({
+            "layer": "L2", "title": "就业端（萨姆规则）",
+            "text": (f"萨姆指标 **{(l2.get('sahm_pp') or 0):+.2f}pp**"
+                     f"（阈值 {l2.get('threshold')}）⇒ "
+                     + ("**已触发**，按框架应硬切衰退剧本。"
+                        if t is True else
+                        ("**未触发**：失业率未见加速上行。" if t is False else
+                         "**无法判定**（数据不足或含缺口）。"))
+                     + (f" 序列缺 {', '.join(l2.get('gaps') or [])} 这几个月（按可用月份计算，未插值）。"
+                        if l2.get("gaps") else "")),
+        })
+    else:
+        items.append({"layer": "L2", "title": "就业端（萨姆规则）",
+                      "text": f"**无可用数据**（{l2.get('status')}）。"})
+
+    # ── L3 市场端 ────────────────────────────────────────────────────────
+    if l3.get("status") == "ok":
+        hits = [m for m in (l3.get("metrics") or []) if m.get("hit") is True]
+        miss = [m for m in (l3.get("metrics") or []) if m.get("hit") is False]
+        det = "；".join(f"{m['name']} {m.get('value')}"
+                        + ("（越阈）" if m.get("hit") else "（未越）")
+                        for m in (l3.get("metrics") or []) if m.get("value") is not None)
+        items.append({
+            "layer": "L3", "title": "市场端（金融条件）",
+            "text": f"{det}。其中 **{len(hits)} 项越阈**、{len(miss)} 项未越。"
+                    f"⚠️ 本层在框架里只提升置信度，**不触发阶段跳转**。",
+        })
+    else:
+        items.append({"layer": "L3", "title": "市场端（金融条件）",
+                      "text": f"**无可用数据**（{l3.get('status')}）。"})
+
+    # ── L4 政策端 ────────────────────────────────────────────────────────
+    if l4.get("as_of"):
+        items.append({
+            "layer": "L4", "title": "政策端（FOMC 措辞）",
+            "text": (f"{l4.get('as_of')} 决议：**{l4.get('decision')}**"
+                     f"（{l4.get('vote')}）。措辞关键词候选 "
+                     f"`{l4.get('stage_candidate') or '无'}` —— {l4.get('stage_text') or ''}。"
+                     f"⚠️ 关键词只能给候选，**须人工确认**。"),
+        })
+    else:
+        items.append({"layer": "L4", "title": "政策端（FOMC 措辞）",
+                      "text": f"**声明未接入或无数据**：{str(l4.get('reason'))[:60]}"})
+
+    # ── 跨层串读（本解读最有价值的部分）──────────────────────────────────
+    cross: List[str] = []
+    l1_ok, l2_trig = l1.get("layer_ok"), l2.get("triggered")
+
+    if l1.get("status") == "ok" and l2.get("status") == "ok":
+        if not l1_ok and l2_trig is False:
+            cross.append(
+                "**政策两难**：通胀未回落（核心PCE "
+                f"{l1.get('latest'):.2f}%）压制宽松空间，"
+                "而就业未恶化（萨姆未触发）又抽掉了降息的理由 —— "
+                "**既不能松、也不必救**，这正是框架里 P0 停留期的特征。")
+        elif not l1_ok and l2_trig is True:
+            cross.append(
+                "**衰退优先**：通胀未回落但就业已触发萨姆规则 ⇒ 按框架应"
+                "**先按衰退剧本处理**，通胀让位于就业。")
+        elif l1_ok and l2_trig is False:
+            cross.append(
+                "**通胀条件已满足、就业未恶化** ⇒ 按框架属于「观察期」，"
+                "下一步要看措辞与降息议程，而不是等更多数据。")
+
+    # 长端利率
+    for m in (l3.get("metrics") or []):
+        if m.get("key") == "us30y" and m.get("hit") is True:
+            cross.append(
+                f"**折现率压制仍在**：30Y 美债 {m.get('value')} 已越过 "
+                f"{m.get('threshold')}% —— 30Y 是全球资产折现率的锚，"
+                "它停在阈值上方时，长久期/高估值资产的估值扩张会持续受抑。")
+
+    # PPI-CPI 剪刀差
+    sc = price.get("scissors_pp") if price else None
+    if sc is not None and sc > 3:
+        cn_ppi = (price.get("cn_ppi") or {}).get("latest")
+        cn_cpi = (price.get("cn_cpi") or {}).get("latest")
+        cross.append(
+            f"**成本推动而非需求拉动**：中国 PPI {cn_ppi:.2f}% 与 CPI {cn_cpi:.2f}% "
+            f"的剪刀差为 **{sc:+.2f}pp**，工业品在涨、消费端几乎没动 —— "
+            "这意味着上游涨价并未传导到终端需求，属于供给/成本侧的通胀。")
+
+    # 措辞分期
+    cand = l4.get("stage_candidate")
+    if cand == "stage_transition":
+        cross.append(
+            "**措辞已从「行动」转向「观察」**（出现「随着更多信息的积累…」），"
+            "但**尚未出现「保持耐心 / 政策处于良好位置」** —— "
+            "按框架的分期，这还在 transition，没到 pivot。")
+    elif cand == "stage_pivot":
+        cross.append(
+            "**措辞已出现「耐心 / 良好位置」** —— 按框架属 pivot 档，"
+            "但声明不等于点阵图冻结，仍需数字确认。")
+
+    # ── headline ────────────────────────────────────────────────────────
+    if l1.get("status") != "ok":
+        headline = "数据不足，无法形成解读"
+    elif not l1_ok and cand in (None, "stage_now", "stage_transition"):
+        headline = "通胀未退、政策仍在收紧或观望 —— 框架里属「防御期」"
+    elif not l1_ok:
+        headline = "通胀未回落，但政策措辞有转松迹象 —— 方向待确认"
+    elif l1_ok:
+        headline = "通胀条件已满足 —— 框架里开始进入「观察转向」的阶段"
+
+    return {
+        "headline": headline,
+        "items": items,
+        "cross_read": cross,
+        "disclaimer": ("以上为**规则自动生成的事实串联**：每一句都对应某个字段的读数，"
+                       "不含预测、不含操作建议。资产负债配置请自行判断并承担风险。"),
+    }
+
+
 def snapshot() -> Dict:
     """四层观察快照。**`phase` 恒为 None** —— 见模块头"为什么不判阶段"。"""
     layers = [_layer_l1(), _layer_l2(), _layer_l3(), _layer_l4()]
@@ -275,9 +448,11 @@ def snapshot() -> Dict:
         "layers_ok": hit_count,
         "layers_total": len(layers),
         "price": price,
+        "narrative": _narrative(layers, price),
         "note": ("纯观察器：不产生买卖信号、不给仓位建议（框架 §5.2 的配比表"
                  "已按项目红线降级为参考叙事）。数据缺失一律标 unavailable，"
-                 "**不得当作未触发**。`price` 为框架外补充，**不参与 L1 判定**。"),
+                 "**不得当作未触发**。`price` 为框架外补充，**不参与 L1 判定**。"
+                 "`narrative` 为规则生成的事实串联，同样不含操作建议。"),
         "doc": "docs/plans/全球宏观周期判断与资产配置逻辑框架.md",
     }
 
