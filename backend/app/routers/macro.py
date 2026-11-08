@@ -47,6 +47,22 @@ def macro_panel():
     return get_macro_panel()
 
 
+@router.get("/cycle")
+def macro_cycle():
+    """宏观周期四层观察卡（只读）。
+
+    ★ 2026-11-08：来源 `docs/plans/全球宏观周期判断与资产配置逻辑框架.md`（v1.1）。
+      **`phase` 恒为 None** —— 因为 L1 通胀层在项目内无数据源（无核心PCE），
+      P1→P2 的门槛恒不满足，判阶段只会得到"永远 P0"的假结论。
+      所以这里只输出四层读数与缺口，见 `app/macro_cycle.py` 模块头。
+
+    ★ 纯观察器：不产生买卖信号、**不给仓位建议**（框架 §5.2 的配比表已按红线降级）。
+      该接口只读，无需鉴权。
+    """
+    from app import macro_cycle as mc
+    return mc.snapshot()
+
+
 @router.get("/rules")
 def macro_rules():
     """规则配置表（当前生效的规则集），便于审计与前端展示阈值。"""
