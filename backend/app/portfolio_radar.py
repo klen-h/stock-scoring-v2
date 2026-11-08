@@ -36,7 +36,19 @@ import time
 from typing import Dict, List, Optional
 
 # ── 提示阈值（**刻意克制**：只在真正值得看一眼时出声，噪音纪律见 9-23 东财告警教训）──
-_LOSS_WARN = -8.0          # 浮亏 ≤ -8% ⇒ 提醒（止损线通常 -8%）
+def _display_cfg() -> dict:
+    """展示层阈值（盯盘 G4 融合 Step 1：事实源迁至 coach/rules.yaml `display:` 段）。
+
+    ★ yaml 缺失/读失败 ⇒ 回退下方硬编码原值（BK-63 同款安全闸）；
+      build() 每轮经 load_config 的 mtime 缓存重读 ⇒ 改 yaml 即时生效。
+    """
+    try:
+        from app.coach.rules import load_config
+        return (load_config() or {}).get("display") or {}
+    except Exception:
+        return {}
+
+_LOSS_WARN = -8.0          # 浮亏 ≤ -8% ⇒ 提醒（止损线通常 -8%）【fallback，事实源=rules.yaml display】
 _LOSS_SEVERE = -12.0       # 浮亏 ≤ -12% ⇒ 高优先
 _PROFIT_HIGH = 20.0        # 浮盈 ≥ +20% ⇒ 提示（可考虑保护利润，非建议）
 _DAY_DROP_FROM_HIGH = -5.0  # 当日距日内最高 ≤ -5% ⇒ 提示（个股级「冲高回落」）
@@ -386,6 +398,17 @@ def _warming_placeholder() -> Dict:
 
 
 def build() -> Dict:
+    # ★ 2026-11-08（G4 融合 Step 1）：展示阈值每轮从 rules.yaml display 段刷新（零行为变化）
+    global _LOSS_WARN, _LOSS_SEVERE, _PROFIT_HIGH, _DAY_DROP_FROM_HIGH, _MSG_CAP
+    try:
+        _d = _display_cfg()
+        _LOSS_WARN = float(_d.get("loss_warn_pct", _LOSS_WARN))
+        _LOSS_SEVERE = float(_d.get("loss_severe_pct", _LOSS_SEVERE))
+        _PROFIT_HIGH = float(_d.get("profit_high_pct", _PROFIT_HIGH))
+        _DAY_DROP_FROM_HIGH = float(_d.get("day_drop_from_high_pct", _DAY_DROP_FROM_HIGH))
+        _MSG_CAP = int(_d.get("msg_cap", _MSG_CAP))
+    except (TypeError, ValueError):
+        pass
     """聚合入口（**带 single-flight 保护**）。返回 {as_of, regime, summary, items, market}。"""
     if _build_state["computing"]:
         return _build_state["last"] or _warming_placeholder()

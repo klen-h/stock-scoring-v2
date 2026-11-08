@@ -174,3 +174,13 @@ rules:
 plan:
   trail_trigger_pct: 15.0    # 浮盈达此值后提示止损上移至成本（提醒口径，不自动改单）
   price_pos_cut: 0.75        # 与 distribution_cut.params.price_pos 同源
+# ★★ 2026-11-08（盯盘计划 G4 融合 Step 1）：**展示层阈值段**——portfolio_radar 的
+#   档位/文案阈值迁入（硬编码留 fallback）。语义=纯展示（定级/文案），不推送、
+#   不进决策链；与 rules 段的推送纪律（第一周 2 条）互不影响。
+#   来源：portfolio_radar.py:39-44（原硬编码，无注释依据，照搬不改值）。
+display:
+  loss_warn_pct: -8.0          # 浮亏 ≤ -8% ⇒ 提醒（与 real_stop_loss_pct 同值，语义是展示档位）
+  loss_severe_pct: -12.0       # 浮亏 ≤ -12% ⇒ 高优先（coach rules 原缺"严重"档，必须保留）
+  profit_high_pct: 20.0        # 浮盈 ≥ +20% ⇒ 提示（保护利润，非建议）
+  day_drop_from_high_pct: -5.0 # 当日距日内最高 ≤ -5% ⇒ 冲高回落（coach 原缺）
+  msg_cap: 3                   # 每只股票最多显示条数
