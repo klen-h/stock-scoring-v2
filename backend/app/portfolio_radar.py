@@ -334,8 +334,11 @@ def _alerts_for(item: Dict, industry: Optional[str], ctx: Dict) -> List[Dict]:
     """单只持仓的提示列表（最多 `_MSG_CAP` 条，风险优先）。"""
     out: List[Dict] = []
 
-    def add(level: str, text: str):
-        out.append({"level": level, "text": text})
+    def add(level: str, text: str, severity: str = None):
+        # ★ 2026-11-08（G4 融合 Step 2）：coach 三级定级（alert/warn/info）——
+        #   与 coach 框架重复的条目定级；radar 独有项 severity="detail"（明细行，不定级）。
+        #   决策卡 _position_plan 只认 alert/warn（Step 3），detail 不再触发"处理"。
+        out.append({"level": level, "text": text, "severity": severity})
 
     pnl = item.get("pnl_pct")
     phase = item.get("phase")
@@ -344,14 +347,14 @@ def _alerts_for(item: Dict, industry: Optional[str], ctx: Dict) -> List[Dict]:
     if phase == "distribution":
         add("risk", "主力阶段为『出货』")
     if pnl is not None and pnl <= _LOSS_SEVERE:
-        add("risk", f"浮亏 {pnl:.1f}%（超 -12% 警戒）")
+        add("risk", f"浮亏 {pnl:.1f}%（超 -12% 警戒）", severity="alert")   # coach real_stop_loss alert 档
     elif pnl is not None and pnl <= _LOSS_WARN:
-        add("risk", f"浮亏 {pnl:.1f}%（接近 -8% 止损线）")
+        add("risk", f"浮亏 {pnl:.1f}%（接近 -8% 止损线）", severity="warn")  # coach loss_over_7pct warn 档
     dh = item.get("drop_from_high")
     if dh is not None and dh <= _DAY_DROP_FROM_HIGH:
-        add("risk", f"日内自高点回落 {dh:.1f}%（个股级冲高回落）")
+        add("risk", f"日内自高点回落 {dh:.1f}%（个股级冲高回落）", severity="detail")  # radar 独有，降明细
     if industry and industry in (ctx.get("sectors") or set()):
-        add("risk", f"所属板块『{industry}』被今日矛盾点名")
+        add("risk", f"所属板块『{industry}』被今日矛盾点名", severity="detail")  # radar 独有，降明细
     # ── 机会类 ──
     if ready is not None and ready >= 3:
         add("opportunity", "闸门三条件就绪（主力有根据 + 不追高 + 市况允许）")
@@ -363,7 +366,7 @@ def _alerts_for(item: Dict, industry: Optional[str], ctx: Dict) -> List[Dict]:
     if item.get("in_watch") and (ready is None or ready < 3):
         add("info", f"在观察池（ready {item.get('in_watch_ready')}/{3}）")
     if pnl is not None and pnl >= _PROFIT_HIGH:
-        add("info", f"浮盈 {pnl:.1f}%（可考虑保护利润，非建议）")
+        add("info", f"浮盈 {pnl:.1f}%（可考虑保护利润，非建议）", severity="detail")  # radar 独有，降明细
     return out[:_MSG_CAP]
 
 

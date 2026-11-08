@@ -627,13 +627,29 @@ def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None,
       （沿用 `coach/monitor.py::POSITION_NOTE` 的口径，别写"系统已自动卖出"这类话）。
     """
     # ① 持仓风险 —— 唯一能说"处理"的依据（持仓视角，与买入档位无关）
-    risks = [a for a in (alerts or []) if (a or {}).get("level") == "risk"]
+    # ★★ 2026-11-08（G4 融合 Step 3）：plan_level 改由 **coach severity** 推导——
+    #   只认 alert/warn；radar 独有项（冲高回落/板块点名/浮盈提示）已降 severity="detail"，
+    #   不再触发"处理"（与教练卡"唯一出口"定级同源，防两卡告警级别分叉）。
+    #   旧 level=='risk' 判定保留为兜底（兼容无 severity 的历史/缓存结构）。
+    sev = [a for a in (alerts or [])
+           if (a or {}).get("severity") in ("alert", "warn")]
+    if sev:
+        return {"level": PLAN_ACT,
+                "text": f"优先处理：{sev[0].get('text') or '有风险提示'}"}
+    risks = [a for a in (alerts or []) if (a or {}).get("level") == "risk"
+             and not (a or {}).get("severity")]
     if risks:
         return {"level": PLAN_ACT,
                 "text": f"优先处理：{risks[0].get('text') or '有风险提示'}"}
 
     # ② 高浮盈保护（必须排在③之前，否则被 suggested_pct==0 短路）
-    if pnl is not None and pnl >= 20.0:
+    _p_hi = 20.0
+    try:
+        from app.coach.rules import load_config as _lc
+        _p_hi = float((_lc() or {}).get("display", {}).get("profit_high_pct") or 20.0)
+    except Exception:
+        pass
+    if pnl is not None and pnl >= _p_hi:
         return {"level": PLAN_PROTECT,
                 "text": f"浮盈 {pnl:.1f}% ⇒ 考虑保护利润（上移止盈位或减半）"}
 
