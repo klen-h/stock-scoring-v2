@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -71,17 +71,41 @@ _READY = False
 _API = "https://mp-api.jin10.com/api/tidy-news/details"
 _APP_ID = os.environ.get("JIN10_MP_APP_ID") or "fiXF2nOnDycGutVA"
 
-# 目标栏目（先 4 个，跑顺了再扩）
-#   50029 A股盘前 / 50030 A股回顾 / 50033 存储 / 50034 热门ETF
-#   其余候选：50007 AI、50009 电动车、50010 房地产、50011 投行、50012 债券、
-#            50014 隔日股市、50015 外汇、50016 商品、50017 港股、50020 期货、
-#            50022 昨日今晨、50023 欧盘美盘、50024 美股
+# 目标栏目
+#   ★★ 2026-11-08：**加 50022 / 50023**（政策定调缺口）。
+#   原 4 栏（50029 盘前 / 50030 回顾 / 50033 存储 / 50034 ETF）全是**盘面与题材**，
+#   缺的是**政策定调**。实测（同一 token、同一接口 `?category_id=&date=`）：
+#     [50022] 昨日今晨      contents=19 items=17  ⇒ 国务院支持汇金类平准基金 /
+#                                                 商务部回应欧盟税费 / 上交所并购重组座谈
+#     [50023] 欧盘美盘汇总   contents=16 items=14  ⇒ **名为海外实为国内**：国常会完善
+#                                                 资本市场稳市机制 / 深交所创业板权重上限
+#                                                 调至15% / 6家券商互换便利落地
+#   ⚠️ `_split_contents` 对这两栏**无需改动**（产物同样是 `group_name/title/content/seq`）。
+#
+#   ★ 同时实测确认：**旧的「行业动态预览」接口并非必需**。那条接口虽然 1 请求拿 17 栏、
+#     且免 token，但每栏只有 **6 条头条摘要**；而本接口同栏目有 **17 条全文**。
+#     ⇒ 补政策缺口用本模块加栏目即可，不必新建 `macro_news` 模块/表/卡片。
+#     预览接口的唯一剩余价值 = **token 失效时的免 token 备用通道**（暂不接）。
+#
+#   其余候选（评估后**不加**）：50011 投行观点 / 50015 外汇 / 50016 商品 / 50024 美股
+#     —— 实测 100% 海外内容，对 A 股无增量；50007 AI / 50009 电动车 / 50010 地产
+#     有国内条目但现有关键词打标已能覆盖，需要时再加。
 _TARGETS: Dict[int, str] = {
     50029: "A股盘前",
     50030: "A股回顾",
     50033: "存储",
     50034: "热门ETF",
+    50022: "昨日今晨",
+    50023: "欧美汇总",
 }
+
+# ★ 2026-11-08：**核心栏目** —— 只在"较老日期"抓这几栏，控制请求数。
+#   7 天窗口是为了防假期漏抓（见下文 compute 注释），但没必要 7 天全栏目：
+#     · 最近 `_HOT_DAYS` 天：全部 6 栏（当天/昨天的政策定调最要紧）
+#     · 更早的天数：只补核心 4 栏（历史回补求"不漏"，不求"全"）
+#   ⇒ 日常请求数：2×6 + 5×4 = **32**（全栏目则 42，原 4 栏是 28）。
+_CORE_TARGETS: Tuple[int, ...] = (50029, 50030, 50033, 50034)
+_HOT_DAYS = 2
 
 # 正文只存前 N 字：数字与结论几乎都在前两句，再往后多为"公司表示/符合预期"这类客套
 _CONTENT_MAX = 120
@@ -358,17 +382,26 @@ def compute(days: int = 7, day: str = None) -> Dict:
       ⇒ `id` 不是取数的正确键。扫描法从 2026-10-30 起一直在"扫到空就推进游标"，
         游标越过那段后**永远补不回来**（实测 last_id 60169，而 10-30 数据完全没入库）。
 
-      现在的做法：对最近 `days` 天 × 4 个目标栏目各发 1 个请求
-      （默认 3 天 = **12 个请求**，比原来最多 120 个少 90%），
+      现在的做法：对最近 `days` 天 × 目标栏目各发 1 个请求，
       且天然支持补历史（`day=` 指定任意一天即可回补）。
 
+    ★★ 2026-11-08：栏目从 4 个扩到 6 个（+50022 昨日今晨 / +50023 欧美汇总），
+      **但不能 7 天 × 6 栏全抓**（42 请求/天，比原来 28 涨 50%）。
+      故按"日期新旧"分档：
+        · 最近 `_HOT_DAYS`(2) 天 → **全部 6 栏**（政策定调看当天/昨天就够）
+        · 更早的 5 天          → 只补 `_CORE_TARGETS`(4) 栏（历史回补求不漏，不求全）
+        · 显式传 `day=`（人工补历史）→ 该 `days` 范围内的**每一天都抓全部 6 栏**
+          （人工补历史求"补全"，不省这几个请求；请求数 = days×6）
+      ⇒ 日常 2×6 + 5×4 = **32 请求**，比扩栏后全抓少 10 个。
+
     参数：
-      days: 往回抓几天（含 `day` 当天），默认 3 —— 覆盖"当天还没发布、昨天已发布"的情况
+      days: 往回抓几天（含 `day` 当天），默认 7 —— 覆盖一个完整假期
       day : 结束日期 YYYY-MM-DD，默认今天（北京时间）
 
     返回 `{ok, scanned, saved, dates, per_day, error}`。
     """
     ensure_tables()
+    explicit_day = bool(day)
     end = (str(day)[:10] if day else
            datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d"))
     try:
@@ -383,8 +416,11 @@ def compute(days: int = 7, day: str = None) -> Dict:
     errors: List[str] = []
     per_day: Dict[str, int] = {}
 
-    for dstr in date_list:
-        for cat in _TARGETS:
+    for idx, dstr in enumerate(date_list):
+        # ★ 新鲜度分档：只有"最近的若干天"或"人工点名的那一天"才抓全部栏目
+        cats = (list(_TARGETS) if (idx < _HOT_DAYS or explicit_day)
+                else list(_CORE_TARGETS))
+        for cat in cats:
             d = _fetch_by_date(cat, dstr)
             scanned += 1
             if d is None:
