@@ -1887,52 +1887,11 @@
                而 10-26 盘面速览整合时已声明这些"全站只此一处"（本 phase 同样渲染）
                ⇒ 本卡是合并时漏网的残份。持仓预案卡（positions_scan 唯一来源）保留并转全宽。
                口径细节（板幅/口径日）在盘面速览同款可查。 -->
-          <div>
-          <div class="bg-card border border-border rounded-lg p-4">
-            <div class="text-sm font-semibold mb-2">持仓预案
-              <span class="text-[10px] text-muted font-normal">（今天怎么处理 · 纪律提醒）</span></div>
-            <div v-if="dcLoading" class="text-muted text-xs">生成中…</div>
-            <div v-else-if="!dc" class="text-muted text-xs">
-              待生成今日决策卡后展示——每只持仓给出今天的处理建议与仓位上限
-              <div class="mt-1"><button @click="loadDecisionCard()" :disabled="dcLoading"
-                    class="px-2 py-0.5 rounded border border-border text-muted">生成今日决策卡</button></div>
-            </div>
-            <div v-else-if="!(dc.positions_scan || []).length" class="text-muted text-xs">—（当前无持仓，或后端未返回预案）</div>
-            <div v-else class="space-y-1.5 text-xs">
-              <div v-for="p in dc.positions_scan" :key="p.code" class="py-0.5">
-                <div class="flex items-start gap-1.5 flex-wrap">
-                  <a :href="stockHref(p.code)" target="_blank"
-                     class="font-semibold hover:underline">{{ p.name }}</a>
-                  <span class="font-mono" :class="pctClass(p.pnl_pct)">{{ fmtPct(p.pnl_pct) }}</span>
-                  <!-- ★ 2026-09-25：主力阶段改用**共享** `PHASE_STYLE` 上色（用户："颜色逻辑一致…没生效"）
-                       —— 原来这里是**纯灰文本**（`主力 盘整`），因为后端只下传了 `phase_cn` 中文、
-                       没给英文枚举 ⇒ 前端无法查配色表。现已让后端补 `phase`。 -->
-                  <span v-if="p.phase" class="px-1 rounded cursor-help text-[10px]"
-                        :class="(MF_PHASE_STYLE[p.phase] || {}).cls || 'bg-white/5 text-muted'"
-                        :title="(MF_PHASE_STYLE[p.phase] || {}).tip || ''">{{ p.phase_cn || p.phase }}</span>
-                  <span v-else class="text-muted">主力 {{ p.phase_cn || '—' }}</span>
-                  <span v-if="p.suggested_pct != null"
-                        class="px-1 rounded text-[10px] bg-sky-500/15 text-sky-400 cursor-help"
-                        :title="`建议仓位上限 ${p.suggested_pct}%（个股档位 ${p.position_label || '—'}）${(p.sizing_reasons || []).length ? '：' + p.sizing_reasons.join('；') : ''}`">
-                    ≤{{ p.suggested_pct }}%
-                  </span>
-                  <!-- ★ 2026-09-25 用户："工商银行和中国海油在昨日的一片绿的行情下是红的"
-                       ⇒ **逆势强度**：当日涨幅与「相对全市场等权」的差值。
-                       ⚠️ 只显示客观数值、**不下结论**（阈值需先回测）；市况基准值放 title。 -->
-                  <span v-if="p.day_pct != null" class="text-[10px] cursor-help"
-                        :title="`当日涨幅 ${fmtPct(p.day_pct)}；全市场等权 ${fmtPct(p.market_avg_pct)}；相对强度 = 个股 − 全市场（正 = 强于大盘，逆势红盘即此列）`">
-                    当日 <b :class="pctClass(p.day_pct)">{{ fmtPct(p.day_pct) }}</b>
-                    <template v-if="p.rel_pct != null">
-                      · vs全市场 <b :class="pctClass(p.rel_pct)">{{ signNum(p.rel_pct) }}pp</b>
-                    </template>
-                  </span>
-                </div>
-                <div class="mt-0.5" :class="planClass(p.plan_level)">{{ p.plan || '—' }}</div>
-                <div v-for="(a, j) in (p.alerts || [])" :key="j" class="text-[11px] text-muted">· {{ a.text }}</div>
-              </div>
-            </div>
-          </div>
-          </div>
+          <!-- ★★ 2026-11-08（用户预授权）：持仓预案卡撤下——与右栏教练卡同屏同目的
+               （都是持仓风险提示，阈值体系不同：portfolio_radar -8%/-12% vs coach W 系列）
+               ⇒ 两套阈值并存会打架；与 2608 行"待执行决策已删：与右栏教练卡重复"同款先例。
+               portfolio_radar 数据仍在决策卡 payload（positions_scan）未丢；
+               阈值体系并入教练卡=教练卡融合，待阈值归属拍板后另做。 -->
 
           <!-- ★★ 2026-09-28（用户选定方案 A：顶栏放摘要 + 点开看全文）：
                本卡**整块抽成子组件 `MacroEnvCard.vue`** —— 盘前这里内联、顶栏「宏观」浮层
