@@ -250,8 +250,66 @@ def run_monthly(push: bool = True) -> str:
             else "⚠️ 预登记验证运行异常")
         # force=True：预登记结论是"能不能证明有用"的唯一证据来源，属关键通知
         #   （同 regime_alert / E2 的稀有信号口径）；频次天然受月度闸门限制。
+        # ★ 2026-11-08（回测审视 P-3）：影子/结论时钟对账——影子期"永远影子"、
+        #   命题到期没人裁决、回测样本断档，三类失忆靠月度推送机械化防住。
+        _clock = clock_lines()
+        if _clock:
+            md += "\n\n**⏰ 影子/结论时钟对账**\n" + "\n".join(
+                "· " + x for x in _clock)
         wechat.push_markdown_batched(title, md, force=True)
         return head + " pushed"
     except Exception as e:
         print(f"[edge_verify] push failed: {str(e)[:80]}")
         return head + " push-error"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 影子/结论时钟对账（回测审视 P-3，2026-11-08）——月度推送尾部固定追加
+# ══════════════════════════════════════════════════════════════════════════
+def clock_lines() -> list:
+    """影子榜/命题/样本的**到点对账行**（纯读，失败行跳过）。
+
+    目的（回测审视 P-3）：影子期"永远影子"、命题到期没人裁决、回测样本悄悄断档——
+    三类失忆靠月度推送机械化防住。**只报状态不含建议**。
+    """
+    from datetime import datetime, timedelta, timezone
+    from app.database import db
+    _BJ = timezone(timedelta(hours=8))
+    today = datetime.now(_BJ).date()
+    out = []
+
+    # ① 防御影子榜影子期（H2'，10-23 起算）
+    try:
+        r = db.fetch_one("SELECT MIN(date) AS mn, MAX(date) AS mx FROM shadow_rank_daily")
+        mn, mx = str((r or {}).get("mn") or "")[:10], str((r or {}).get("mx") or "")[:10]
+        if mn:
+            days = (today - datetime.strptime(mn, "%Y-%m-%d").date()).days
+            out.append(f"影子榜(H2'): 影子期起算 {mn}，已 {days} 天（末次 {mx}）——"
+                       f"A2 回避侧结论到点后须对账拍板转正/退役")
+    except Exception:
+        pass
+
+    # ② 记分簿 open 命题到期倒计时
+    try:
+        rows = db.fetch("SELECT id, deadline FROM thesis_registry "
+                        "WHERE status='open' ORDER BY deadline LIMIT 3") or []
+        for x in rows:
+            dl = str(x.get("deadline") or "")[:16]
+            try:
+                dl_d = datetime.strptime(dl, "%Y-%m-%d %H:%M").date()
+                left = (dl_d - today).days
+                out.append(f"命题#{x['id']}: {dl} {'已到期未裁决' if left < 0 else f'剩 {left} 天'}")
+            except (ValueError, TypeError):
+                out.append(f"命题#{x['id']}: deadline={dl}")
+    except Exception:
+        pass
+
+    # ③ 竞价强度回测样本（B1 前置：≥20 交易日）
+    try:
+        r = db.fetch_one("SELECT COUNT(DISTINCT date) AS n FROM market_emotion_daily "
+                         "WHERE auction_count IS NOT NULL AND auction_count <> ''")
+        n = int((r or {}).get("n") or 0)
+        out.append(f"竞价样本(B1 前置): {n}/20 交易日")
+    except Exception:
+        pass
+    return out

@@ -104,9 +104,13 @@ def _ranking_track(fwd: int = 5) -> Dict:
     #   替代此前 per-(day,code) 循环查询（~60 天 × Top10 ≈ 600 次往返/调用）
     _codes_all = sorted({it["code"] for d in dates for it in by_date[d]})
     try:
+        # ★ 2026-11-08（P-5/BK-41 收口）：`code = ANY(%s)` 是 PG 专有写法 ⇒ SQLite 下
+        #   语法错被吞、返回空（同 routers/capital.py:198 教训）。改 IN + 动态占位符
+        #   （双库兼容；_codes_all 全部来自库内代码，无注入面）。
+        _ph = ",".join(["%s"] * len(_codes_all))
         _px_rows = db.fetch(
-            "SELECT code, date, close FROM backtest_prices WHERE code = ANY(%s) "
-            "AND date >= %s ORDER BY code, date ASC", (_codes_all, dates[0])) or []
+            f"SELECT code, date, close FROM backtest_prices WHERE code IN ({_ph}) "
+            "AND date >= %s ORDER BY code, date ASC", tuple(_codes_all) + (dates[0],)) or []
     except Exception:
         _px_rows = []
     _px: Dict[str, list] = {}
