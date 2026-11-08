@@ -391,8 +391,25 @@
   ②方向（flow5 倒 U / 两融，看连续趋势）③时点（仅形态参考，永不进决策链）。红线：盘中观察→盘后确认→次日执行。
   ★ flow5 IC / accum-distribution 是**横截面证据（选股）**，"跟节奏"是**时间序列命题（择时）**——横截面 ≠ 时间序列。
 - **环境传导链**：`mainforce/confluence.py` 四层合成 宏观±2 + regime±2/±1 + 板块±1 + 个股±2，sum(−7~+7)。
-- **LLM**：主力 `deepseek-ai/DeepSeek-R1`；`LLM_FREE_SHADOW=1` = 影子站**排除出正式链**（名字反直觉易设错）；
+- **LLM**（2026-11-07 更新，原条目写的是已下线的主力站 R1）：主力站已主动下线（`LLM_MODEL` 清空），
+  正式链 = 免费站 SenseNova；`LLM_FREE_SHADOW=1` = 影子站**排除出正式链**（名字反直觉易设错）；
   单站连败 2 次→熔断 30min；排障 `/api/system/llm-usage`。`render.yaml` 只是变量清单，不是事实来源。
+  ★★ **跨项目铁律**：另一项目 `D:\stock-scoring\xiaopage`（仓库 `klen-h/xiaopage`，
+  产出「李大霄视角」卡的上游）**共用同一个 SenseNova Token Plan**；两边各维护一份
+  `DEFAULT_MODEL` / `KNOWN_DEAD_MODELS`，对方 `scripts/utils/llm.js` 注释明确要求
+  「与 stock-scoring 的 `_MODEL_KNOWN_DEAD` 保持同一份名单，两处要一起改」。
+  ⇒ **换模型 / 加 dead 名单，必须同时改 `backend/app/flash/llm.py` 和
+  `xiaopage/scripts/utils/llm.js`**；只改一处 ⇒ 那边模型下线后 LLM 全挂，
+  本项目「李大霄视角」卡随之静默断更（不报错，只是不再更新）。
+  两边都是 **env 优先**（这边 `LLM_FREE_MODEL` / 那边 `LLM_MODEL`）⇒ 正确修法是
+  「改默认值 **+** 旧 ID 列入 KNOWN_DEAD 护栏」，不是去各平台改 env。
+  当前状态：本项目已切 `glm-5.3` 且把 `glm-5.2` 列入 dead（`b9052a01`）；
+  **xiaopage 仍是 `glm-5.2`，待同步**（公告 11-18 下线）。
+  ★ 通用铁律（2026-11-07 审查实证）：**跨项目 schema 兼容 ≠ 语义兼容**。
+  lite 字段只增不删、push 链路完好，但上游重写提示词让 `sentiment_score`
+  改按市场计分、`operation_advice` 变成原话摘录 ⇒ 字段名/类型全没变，
+  消费侧却被静默换义，历史与新数据混在一张表且**零报错**。
+  上游改提示词/判据时，消费侧必须有 `prompt_version` 一类的口径标记。
 - **宏观面板**：`macro.py` 已抓 A50/纳指期货/恒生科技/美债/VIX/美元/离岸在岸人民币/金龙指数/原油/黑色系；
   顶栏外盘四件套 = A50/离岸/布伦特/纳指期货 + 隔夜累计变化（自上次 A 股收盘）。`macro.direction` 早盘锁定（08:55–13:00 一次，当日固定）。
 - **coach 外部领先预警**：纳指隔夜 + 美元 5 日，**仅 defensive 市有增量**；⚠️ 纳指隔夜 IC 0.1609 在可交易口径塌陷至 0.0115（已如实标注"解释/风控用途"）。

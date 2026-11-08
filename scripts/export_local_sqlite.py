@@ -77,6 +77,15 @@ _SMALL_BATCH = {"indicator_cache", "kline_cache", "stock_facts_wide",
                 "backtest_prices", "mainflow_history", "sector_daily"}
 SMALL_BATCH = 200
 
+# ★★ 默认**不导**的表（2026-11-07 实测：这两张是导出卡死的主要来源）：
+#   `kline_cache` 单行 `kline_data` ≈ 30KB（2220 行 ≈ 66MB）、
+#   `indicator_cache` 同理，且**单行可能特别大**（某只票的 K 线数组）。
+#   而本项目 `DATA_SOURCE=local` 时 **K 线/指标读的是本地数据包**
+#   （`app.pack_source`），前端详情页根本不查这两张表
+#   ⇒ 本地开发导它们纯属浪费 egress + 增加卡死概率。
+#   确实需要时用 `--include-big` 强制包含。
+_SKIP_DEFAULT = {"kline_cache", "indicator_cache"}
+
 
 def _load_env():
     """读 backend/.env（不覆盖已存在的环境变量，与项目其它脚本一致）。"""
@@ -252,6 +261,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="只统计，不写文件")
     ap.add_argument("--resume", action="store_true",
                     help="续传：不备份旧文件，跳过「目标库已有数据」的表（中断后重跑用）")
+    ap.add_argument("--include-big", action="store_true",
+                    help="包含 kline_cache / indicator_cache（默认跳过：本地读数据包，不查这两张表）")
     args = ap.parse_args()
 
     _load_env()
@@ -273,6 +284,9 @@ def main():
         all_tables = _list_tables(conn)
         want = [t.strip() for t in args.tables.split(",") if t.strip()]
         tables = [t for t in all_tables if (not want or t in want)]
+        if not args.include_big:
+            # 只在"没被显式点名"时剔除：用户用 --tables kline_cache 明确要了就尊重
+            tables = [t for t in tables if t not in _SKIP_DEFAULT or t in want]
         missing = [t for t in want if t not in all_tables]
         if missing:
             print(f"⚠ 源库没有这些表（已跳过）：{missing}\n")
