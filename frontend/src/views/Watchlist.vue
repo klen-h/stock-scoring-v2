@@ -122,6 +122,8 @@
             <th class="text-left py-2.5 px-3">名称/代码</th>
             <th class="text-right py-2.5 px-3">现价</th>
             <th class="text-right py-2.5 px-3">今日</th>
+            <!-- ★ 2026-11-08（盯盘计划 G2）：量比列——腾讯快照 [49] 已解析（useFastQuotes 直取） -->
+            <th class="text-right py-2.5 px-3" title="量比=现成交量/近5日同期均量">量比</th>
             <th class="text-right py-2.5 px-3">目标价</th>
             <th class="text-right py-2.5 px-3">距目标价</th>
             <th class="text-center py-2.5 px-3">评分</th>
@@ -157,6 +159,13 @@
               <span v-if="row.realtime" :class="row.realtime.change_pct >= 0 ? 'text-rise' : 'text-fall'">
                 {{ row.realtime.change_pct >= 0 ? '+' : '' }}{{ row.realtime.change_pct }}%
               </span>
+              <span v-else class="text-muted">-</span>
+            </td>
+            <!-- 量比（G2）：≥1.5 放量红 / ≤0.6 缩量灰 -->
+            <td class="py-2 px-3 text-right font-mono text-xs">
+              <span v-if="row.realtime?.volume_ratio"
+                    :class="row.realtime.volume_ratio >= 1.5 ? 'text-red-400' : (row.realtime.volume_ratio <= 0.6 ? 'text-muted' : '')">
+                {{ row.realtime.volume_ratio }}</span>
               <span v-else class="text-muted">-</span>
             </td>
             <!-- 目标价 -->

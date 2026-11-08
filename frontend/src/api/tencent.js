@@ -143,6 +143,7 @@ function parseTencentResponse(text) {
       const high = parseFloat(fields[41]) || 0         // 最高（后端 data[41]）
       const low = parseFloat(fields[42]) || 0          // 最低（后端 data[42]）
       const amplitude = parseFloat(fields[43]) || 0    // 振幅 %（后端 data[43]）
+      const volume_ratio = parseFloat(fields[49]) || 0 // 量比（后端 data[49]，tencent.py:454 同源）
       // data[44]=流通市值（亿元）、data[45]=总市值（亿元），实测验证；
       // data[57] 实为成交额、data[58] 无效，早期误用已修正。×10000 转万元，与后端单位对齐。
       const market_cap = (parseFloat(fields[45]) || 0) * 10000  // 总市值（万元）
@@ -162,6 +163,7 @@ function parseTencentResponse(text) {
           sell_volume: sellVolume * 100,
           change_pct,
           turnover_rate,
+          volume_ratio,
           pe,
           pb,
           market_cap,            // 万元（与后端单位一致）

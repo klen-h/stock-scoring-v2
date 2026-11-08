@@ -547,6 +547,11 @@ def batch_prices(codes: str = Query(..., description="逗号分隔的股票代�
                 "name": s.get("name", ""),
                 "price": s.get("price", 0),
                 "change_pct": s.get("change_pct", 0),
+                # ★ 2026-11-08（盯盘计划 G2）：量比/换手/成交额随行返回——字段快照已解析
+                #   （tencent.py:454 等），自选/持仓表加列零新增请求
+                "volume_ratio": s.get("volume_ratio"),
+                "turnover_rate": s.get("turnover_rate"),
+                "amount_wan": s.get("amount_wan"),
             })
         as_of = ""
         if meta.get("data_ts"):
