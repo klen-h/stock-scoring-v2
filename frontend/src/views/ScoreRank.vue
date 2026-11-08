@@ -266,7 +266,7 @@
     </div>
 
     <!-- 评分分布概览 -->
-    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'linkage' && activeTab !== 'defensive'" class="bg-card border border-border rounded-lg p-4">
+    <div v-if="stats.total > 0 && activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'linkage' && activeTab !== 'defensive' && activeTab !== 'etf'" class="bg-card border border-border rounded-lg p-4">
       <div class="grid grid-cols-3 md:grid-cols-5 gap-3 text-center text-sm">
         <div class="p-2 bg-bg rounded-lg">
           <div class="text-muted text-xs">评分股票数</div>
@@ -294,6 +294,12 @@
     </div>
 
     <!-- 影子榜对比（生产 vs 梯度衰减 vs ×0 对照，三套 top50） -->
+    <!-- ★★ 2026-11-08（ETF 榜·方案 B）：ETF 热度榜 tab（行情展示非信号） -->
+    <div v-if="activeTab === 'etf'" class="bg-card border border-border rounded-lg p-3">
+      <div class="text-sm font-semibold mb-2">ETF 热度榜
+        <span class="text-[10px] text-muted font-normal">（白名单 120 只主流 ETF · 热度分=量比×|涨跌|×√成交额 · 行情展示非信号）</span></div>
+      <EtfBoardCard :top="20" />
+    </div>
     <div v-if="activeTab === 'shadow'" class="bg-card border border-border rounded-lg overflow-hidden">
       <div class="px-3 py-2 text-xs text-muted border-b border-border bg-white/[0.02] flex items-center justify-between">
         <span>影子榜对比 · 生产 / 梯度衰减（主）/ ×0 对照（各 top50）</span>
@@ -863,7 +869,7 @@
     </div>
 
     <!-- 数据表格 -->
-    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'defensive'" class="bg-card border border-border rounded-lg overflow-hidden">
+    <div v-if="activeTab !== 'verify' && activeTab !== 'backtest' && activeTab !== 'sector' && activeTab !== 'optimize' && activeTab !== 'anomaly' && activeTab !== 'shadow' && activeTab !== 'watch' && activeTab !== 'pattern' && activeTab !== 'defensive' && activeTab !== 'etf'" class="bg-card border border-border rounded-lg overflow-hidden">
       <table class="w-full text-sm">
         <thead>
           <tr class="border-b border-border text-muted text-xs">
@@ -1521,6 +1527,7 @@ const tabs = [
   { key: 'radar', label: '今日雷达' },
   { key: 'watch', label: '观察池' },
   { key: 'pattern', label: '形态扫描' },
+  { key: 'etf', label: 'ETF 热度' },
   { key: 'shadow', label: '衰减对比' },
   { key: 'sector', label: '板块分析' },
   // ★ 2026-10-20：板块联动筛选（强势板块 + 联动版 Top50）。影子期也照常展示，

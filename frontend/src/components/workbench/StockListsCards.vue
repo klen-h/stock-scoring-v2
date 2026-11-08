@@ -113,6 +113,10 @@
         </div>
       </template>
 
+      <!-- ★★ 2026-11-08（ETF 榜·方案 B）：ETF 热度 Top10——排在防御 Top10 之后（用户指定顺序） -->
+      <template v-else-if="cardTab === 'etf'">
+        <EtfBoardCard :top="10" />
+      </template>
       <!-- ③ 观察池（买入闸门候选）—— 由**独立第二张卡**并入本卡，排在防御 Top10 之后
            ★ 2026-11-01（用户："将观察池作为一个 tab 并入评分 top10 卡片，放在防御 top10 的后面，
              也是展示 10 个，文字提示不需要展示了"）：
@@ -167,6 +171,7 @@
 //    （`gwMeta.data_date` 显示实际日期）；评分榜的口径由 `topMode` 标注（本地实时/后端批次）。
 // ==============================================================================
 import { computed, ref, watch } from 'vue'
+import EtfBoardCard from './EtfBoardCard.vue'
 import {
   PHASE_STYLE as MF_PHASE_STYLE, CONSEC_STYLE, strategyShort, phaseCn, readyChipCls,
   stockHref, xqUrl, pctClass, signNum, scoreClass, boardChip,
@@ -218,13 +223,14 @@ function toggleTop() {
 const cardTabs = [
   { key: 'score', label: '评分Top10', tip: '生产评分榜 Top10（与榜单页同源）' },
   { key: 'def', label: '防御Top10', tip: '阴跌防御影子榜 Top10（银行组阴跌段加权；影子期不改生产排序）' },
+  { key: 'etf', label: 'ETF热度10', tip: 'ETF 实时热度榜 Top10（量比×涨跌×成交额；行情展示非信号）' },
   { key: 'watch', label: '观察池', tip: '买入闸门候选（ready≥2）· 日批快照 + 实时涨跌幅' },
 ]
 const CARD_TAB_KEY = 'wb_score_card_tab'
 const cardTab = ref((() => {
   try {
     const v = localStorage.getItem(CARD_TAB_KEY)
-    return (v === 'def' || v === 'watch') ? v : 'score'
+    return (v === 'def' || v === 'watch' || v === 'etf') ? v : 'score'
   } catch { return 'score' }
 })())
 watch(cardTab, (v) => {
