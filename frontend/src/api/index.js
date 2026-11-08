@@ -613,6 +613,8 @@ export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 200
 //   **刷新页面/重启前后端都无效**（请求根本不发）。
 //   ⇒ 遇到时在浏览器控制台执行 `clearApiCache()`，再刷新页面。
 // ★ 2026-11-08（盯盘计划 G1）：持仓参考线（模拟仓 entry/stop/target 落库值 + 真实持仓 cost）
+// ★ 2026-11-08（G7）：涨停原因归类 map（事后描述）
+export const getUlimitReasons = (date) => http.get('/market/uplimit-reasons', { params: { date }, timeout: 15000 })
 export const getPositionLines = (code) => http.get(`/stock/${code}/position-lines`, { timeout: 15000 })
 export const getAuctionPanel = () => http.get('/market/auction-panel', { timeout: 30000 })
 export const refreshAuctionLlm = (force = false) =>

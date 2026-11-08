@@ -2552,6 +2552,11 @@
                   <a v-if="s.stock_code" :href="xqUrl(s.stock_code)" target="_blank" rel="noopener"
                      class="text-muted font-mono hover:text-accent">{{ s.stock_code }}</a>
                   <span v-if="s.up_limit_desc" class="px-1 rounded bg-red-500/15 text-red-400">{{ s.up_limit_desc }}</span>
+                  <!-- ★ 2026-11-08（G7）：涨停原因归类（事后描述非信号） -->
+                  <span v-if="ulReasons[String(s.stock_code || '').slice(-6)]"
+                        class="px-1 rounded bg-sky-500/15 text-sky-300 text-[10px]"
+                        :title="(ulReasons[String(s.stock_code || '').slice(-6)].evidence || []).join('；')">
+                    {{ ulReasons[String(s.stock_code || '').slice(-6)].reason_kind }}<template v-if="ulReasons[String(s.stock_code || '').slice(-6)].themes">·{{ ulReasons[String(s.stock_code || '').slice(-6)].themes }}</template></span>
                   <span v-if="s.up_limit_time" class="text-muted font-mono">{{ s.up_limit_time }}</span>
                   <span v-if="s.amount != null" class="ml-auto text-muted font-mono">成交 {{ s.amount }}亿</span>
                 </div>
@@ -3180,7 +3185,8 @@
              事件驱动：xiaopage 在 LLM 输出解读的时刻 POST 回调落库。
              ★ 2026-11-01：**不再轮询**（用户要求）—— 切到本 tab 时取一次、30 分钟内复用，
                需要最新内容点卡内「↻ 更新」（它走 xiaopage ingest，幂等）。
-             卡面按用户线框定稿：情绪/防御话术/final_conclusion/板块/近14期情绪条。 -->
+             卡面按用户线框定稿：情绪/防御话术/主文案/板块/近14期情绪条。
+             ★ 2026-11-08：主文案由 final_conclusion 切为 summary（与 xiaopage 企微同口径）。 -->
         <div v-if="lidx && lidx.latest" class="p-2">
           <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
             <!-- ★★ 2026-10-26（用户："李大霄视角卡片加上展开收起功能"）：标题即开关 -->
@@ -3194,7 +3200,7 @@
             </button>
             <div class="flex items-center gap-1.5 shrink-0">
               <span class="text-[10px]" :class="lidx.stale ? 'text-amber-400' : 'text-muted'"
-                    :title="`外部观点参考（xiaopage LLM 二手解读，不进决策链）· 数据截至 ${lidx.latest.date || '—'}`">
+                    :title="`外部观点参考（xiaopage LLM 二手解读，不进决策链）· 数据截至 ${lidx.latest.date || '—'} · 口径 ${lidxCur.schema_version || '—'} · 模型 ${lidxCur.llm_model || '—'}`">
                 {{ (lidx.latest.date || '').slice(5, 16) }} · {{ lidx.lag_days == null ? '—' : lidx.lag_days }}天前<template v-if="lidx.stale"> ⚠</template>
               </span>
               <!-- ★ 2026-10-28：手动补拉（推送失败兜底）。盘后也会更新，故不能只靠事件回调。 -->
@@ -3239,9 +3245,16 @@
               情绪 <span class="font-bold font-mono" :class="lidxLevelColor(lidxCur.sentiment_level)">{{ lidxCur.sentiment_score ?? '—' }}</span>
               <span :class="lidxLevelColor(lidxCur.sentiment_level)">· {{ lidxCur.sentiment_level || '—' }}</span>
               <span class="text-muted"> · 防御话术 {{ lidxCur.disclaimer_level ?? '—' }}/5</span>
+              <!-- ★ 2026-11-08：市场维度。缺这一行，读者会把「美股看空」读成「A股看空」 -->
+              <span v-if="lidxCur.market" class="text-muted"> · 市场 {{ lidxMarketLabel(lidxCur.market) }}</span>
+              <span v-if="lidxCur.direction" class="text-muted"> · {{ lidxCur.direction }}</span>
             </div>
-            <div v-if="lidxCur.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
-              ▸ {{ lidxCur.final_conclusion }}
+            <!-- ★ 2026-11-08：主文案改取 summary，与 xiaopage 企微推送同口径。
+                 新提示词下 final_conclusion 是「(1)明说 (2)未表态 (3)适用市场」三段式，
+                 大段是"原文未表态"，信息量低；summary 是 200 字以内、有原话依据的概述。
+                 旧数据 / 异常条目缺 summary 时才回退 final_conclusion。 -->
+            <div v-if="lidxCur.summary || lidxCur.final_conclusion" class="text-xs text-gray-300 mb-1.5 leading-relaxed">
+              ▸ {{ lidxCur.summary || lidxCur.final_conclusion }}
             </div>
             <div v-if="lidxCur.sectors && lidxCur.sectors.length" class="flex flex-wrap gap-1 mb-2">
               <span v-for="s in lidxCur.sectors" :key="s"
@@ -3539,7 +3552,7 @@ import {
   getObserverReview,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
-  getAuctionPanel, refreshAuctionLlm,
+  getAuctionPanel, refreshAuctionLlm, getUlimitReasons,
   getUserPositionSizing,
   getEmotionReview,
   getMarketTailReview,
@@ -4591,6 +4604,12 @@ const lidxItems = computed(() => {
   return (lidx.value && lidx.value.latest) ? [lidx.value.latest] : []
 })
 const lidxCur = computed(() => lidxItems.value[lidxSel.value] || lidxItems.value[0] || {})
+// ★ 2026-11-08：xiaopage v2 的 market 枚举 → 中文（与 xiaopage 企微推送同一套标签）
+const LIDX_MARKET_LABEL = {
+  a_share: 'A股', us: '美股', hk: '港股',
+  other: '其他', mixed: '多市场', unstated: '未指明'
+}
+function lidxMarketLabel(m) { return LIDX_MARKET_LABEL[m] || m || '—' }
 function lidxTabLabel(t) {
   const s = String((t && t.date) || '')
   return s.slice(5, 16) || '—'    // MM-DD HH:MM（同日多条视频靠时刻区分）
@@ -6212,9 +6231,17 @@ function apGapCls(g) {
   return g > 0 ? 'text-red-400' : (g < 0 ? 'text-emerald-400' : 'text-muted')
 }
 // 涨停复盘（zzshare：连板梯队 + 涨停清单；匿名可能空 → 占位）
+const ulReasons = ref({})   // G7：{code: {reason_kind, themes, evidence}}
+async function loadUlimitReasons(day) {
+  try {
+    const { data } = await getUlimitReasons(day)
+    ulReasons.value = data?.reasons || {}
+  } catch { ulReasons.value = {} }
+}
 async function loadLimitReview() {
   try {
     const { data } = await getMarketLimitReview(selectedDate.value !== todayStr ? selectedDate.value : undefined)
+    loadUlimitReasons(String(data?.date || selectedDate.value || todayStr).slice(0, 10))
     limitReview.value = data || { steps: [], stocks: [] }
   } catch { limitReview.value = { steps: [], stocks: [] } }
 }

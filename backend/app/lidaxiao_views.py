@@ -14,6 +14,8 @@ from __future__ import annotations
 上游 schema 实勘（2026-10-25，fresh 484 条全量核实）：
   · 字段：_id / bvid / title / date(北京时间 YYYY-MM-DD HH:MM) /
     sentiment_score(0-100，50=中性) / disclaimer_level(1-5) / summary / tags /
+    ★ 2026-11-08 v2 新增：market(a_share/us/hk/other/mixed/unstated) / direction /
+      schema_version(提示词+词表版本) / llm_model(实际出分模型)。v1 条目这四个为 None。
     structured{core_views, sectors, operation_advice, risk_tips} /
     deep_analysis{final_conclusion, …} /
     logic_factors[{factor_name, factor_value, weight 0-1, direction, description}] /
@@ -24,7 +26,10 @@ from __future__ import annotations
     中性×181 / 看多×2 / 变体 28 种，如"看跌（对美股）""看涨/看跌（分化）"）
     ⇒ 包含式模糊归一，不能 == 比较。
   · 情绪六级口径移植自 xiaopage src/utils/sentiment.ts（保证两站同分同色）。
-  · deep_analysis 整体不入库（体积大头），唯一例外 final_conclusion（卡面主文案）。
+  · deep_analysis 整体不入库（体积大头），唯一例外 final_conclusion ——
+    ★ 2026-11-08 起**仅作兜底**：卡面主文案改取 `summary`（与 xiaopage 企微推送同口径）。
+    新提示词下 final_conclusion 是「(1)明说 (2)未表态 (3)适用市场」三段式，大段是
+    "原文未表态"，信息量低；summary 是 200 字以内、有原话依据的概述。
 
 ★ 预登记声明：不改分数、不进闸门、不改 regime、不碰模拟盘、不进任何决策链。
   卡面为 LLM 二手解读（xiaopage 产物，非本人原文），仅供研究参考。
@@ -51,9 +56,15 @@ _STALE_DAYS = 5
 _NOTE = ("LLM 结构化解读（xiaopage 项目产物，非本人原文）；"
          "观点仅供参考，不构成投资建议，不进入本项目任何决策链")
 
+# ★ 2026-11-08：xiaopage v2 新增的四个溯源/市场字段。
+#   _EXTRA_COLS = None 表示「尚未探测」（单测直接调 _slim 的场景按全字段输出）；
+#   ensure_table() 之后是实际可用的列集合。
+_NEW_COLS = ("market", "direction", "schema_version", "llm_model")
+_EXTRA_COLS = None
+
 
 def ensure_table() -> None:
-    global _READY
+    global _READY, _EXTRA_COLS
     if _READY:
         return
     db.execute("""
@@ -62,6 +73,7 @@ def ensure_table() -> None:
             bvid TEXT, title TEXT, date TEXT,
             sentiment_score INTEGER, sentiment_level TEXT,
             disclaimer_level INTEGER,
+            market TEXT, direction TEXT, schema_version TEXT, llm_model TEXT,
             summary TEXT, tags TEXT,
             core_views TEXT, sectors TEXT, operation_advice TEXT, risk_tips TEXT,
             final_conclusion TEXT,
@@ -69,6 +81,21 @@ def ensure_table() -> None:
             hit_status TEXT, created_at TEXT
         )
     """)
+    # ★ 已有表不会因 CREATE TABLE IF NOT EXISTS 自动加列 ⇒ 必须显式补。
+    #   SQLite 不支持 ADD COLUMN IF NOT EXISTS，故先探测再 ALTER（同 memory_watch 的写法）。
+    #   加不上的列由 ingest_entries 从 row 里剔除，绝不能让一条溯源字段拖垮整批入库。
+    ok = set()
+    for col in _NEW_COLS:
+        try:
+            db.fetch_one(f"SELECT {col} FROM {_TABLE} LIMIT 1")
+            ok.add(col)                      # 列已存在（空表时 SELECT 也不报错）
+        except Exception:
+            try:
+                db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {col} TEXT")
+                ok.add(col)
+            except Exception as e:
+                print(f"[lidaxiao] add column {col} failed, skip it: {str(e)[:80]}")
+    _EXTRA_COLS = ok
     _READY = True
 
 
@@ -181,6 +208,12 @@ def _slim(e: dict) -> Optional[dict]:
         "sentiment_score": score,
         "sentiment_level": sentiment_level(score),
         "disclaimer_level": _int(e.get("disclaimer_level")),
+        # ★ 2026-11-08：市场维度 + 规则/模型溯源（xiaopage v2 才有，v1 为 None）。
+        #   不带 market，工作台会把 A 股 70 分和美股 20 分混进同一个均值。
+        "market": str(e.get("market") or "") or None,
+        "direction": str(e.get("direction") or "") or None,
+        "schema_version": str(e.get("schema_version") or "") or None,
+        "llm_model": str(e.get("llm_model") or "") or None,
         "summary": str(e.get("summary") or "") or None,
         "tags": _arr_json(e.get("tags")),
         "core_views": _arr_json(st.get("core_views"), limit=5),
@@ -210,6 +243,11 @@ def ingest_entries(entries) -> Dict:
             skipped += 1
             reasons.append("缺 date：" + str(e.get("_id") or e.get("title") or "")[:30])
             continue
+        # ★ 旧表补列失败时，把这些列从 row 剔掉再 upsert —— 多一列会让整批
+        #   upsert 报错，连本来能入库的条目一起丢。
+        if _EXTRA_COLS is not None:
+            row = {k: v for k, v in row.items()
+                   if k not in _NEW_COLS or k in _EXTRA_COLS}
         try:
             db.upsert(_TABLE, row, conflict_columns=["entry_id"])
             stored += 1
@@ -406,6 +444,11 @@ def _row_to_latest(r: dict) -> Dict:
         "sentiment_score": r.get("sentiment_score"),
         "sentiment_level": r.get("sentiment_level"),
         "disclaimer_level": r.get("disclaimer_level"),
+        # ★ 2026-11-08：SELECT * 若旧表缺列，r.get() 返回 None（不报错，向后兼容）
+        "market": r.get("market"),
+        "direction": r.get("direction"),
+        "schema_version": r.get("schema_version"),
+        "llm_model": r.get("llm_model"),
         "summary": r.get("summary"),
         "tags": _jload_list(r.get("tags")),
         "final_conclusion": r.get("final_conclusion"),
@@ -449,9 +492,16 @@ def load(limit: int = 14) -> Dict:
     #   ★ 2026-11-01：**前提已变** —— `items` 虽精简，但 `SELECT * ... LIMIT 15` 的**原始行**
     #     每行约 3KB（factors_json / core_views / operation_advice 等大字段），
     #     实测单次响应 ≈45KB、全周 124MB。前端已改为**不轮询**（进 tab 才取）。
+    # ★ 2026-11-08：卡面主文案切到 summary ⇒ items 投影必须带上它。
+    #   前端 lidxCur 优先取 items（卡内 tab 切换选中的那条），items 少一个字段
+    #   就会显示空文案 —— 只有 latest 带 summary 是不够的。
+    #   final_conclusion 保留作兜底（旧数据 / 异常条目）。
+    # ★ 2026-11-08：market/direction 卡面渲染；schema_version/llm_model 进 tooltip
+    #   追溯口径。四个都放进 items，否则切到非最新 tab 时这些字段会消失。
     _ITEM_FIELDS = ("entry_id", "bvid", "title", "date", "video_url",
                     "sentiment_score", "sentiment_level", "disclaimer_level",
-                    "final_conclusion", "sectors")
+                    "market", "direction", "schema_version", "llm_model",
+                    "summary", "final_conclusion", "sectors")
     items = []
     for r in rows[:min(n, 12)]:
         full = _row_to_latest(r)

@@ -2770,3 +2770,23 @@ def lidaxiao_refresh(user: dict = Depends(get_current_user)):
     r = lv.refresh_from_upstream()
     r["view"] = lv.load()
     return r
+
+
+@router.get("/uplimit-reasons")
+def uplimit_reasons(date: str = None):
+    """涨停原因归类（G7，纯事后描述）：{code: {reason_kind, themes, evidence}}。
+
+    读 `uplimit_reason` 表（日批 uplimit_reason 落库）；缺日=空 map（缺失≠0）。零外呼。
+    """
+    from app.uplimit_reason import load
+    return {"ok": True, "date": date, "reasons": load(date)}
+
+
+@router.get("/uplimit-reasons")
+def uplimit_reasons(date: str = None):
+    """涨停原因归类（G7，纯事后描述）：{code: {reason_kind, themes, evidence}}。
+
+    读 `uplimit_reason` 表（日批 uplimit_reason 落库）；缺日=空 map（缺失≠0）。零外呼。
+    """
+    from app.uplimit_reason import load
+    return {"ok": True, "date": date, "reasons": load(date)}
