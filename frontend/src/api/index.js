@@ -607,16 +607,12 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 20000 })
 // ★ 2026-11-08：竞价面板三块增强（指数 vs 昨日关键位/预期区间 + 板块联动 + LLM 解读）。
 //   GET 面板零 LLM；POST 才真烧（按日缓存+数据指纹，同 obsAI/flash_brief 模式）。
-// ★★ 2026-11-08：**必须带 `nocache: 1`**（绕过 VITE_LOCAL_CACHE 本地开发缓存）。
-//   实测踩到：09:47 首次加载时后端还没有当日 K 线（`open_price=null`），这份空响应
-//   被写进 localStorage 且 `VITE_LOCAL_CACHE_TTL` 未设 = **永不过期**
-//   ⇒ 之后无论刷新页面还是重启前后端，前端都直接返回那份空数据、
-//   **一次网络都不发**，表现成"后端明明有值、页面永远是 —"。
-//   竞价面板是实时数据（开盘价/缺口/板块聚合），缓存必然误导，故显式排除。
-//   ⚠️ 其它**实时**类接口（行情/竞价/涨停）若也接本地缓存，同样要带 nocache。
-export const getAuctionPanel = () => http.get('/market/auction-panel', {
-  timeout: 30000, params: { nocache: 1 },
-})
+// ⚠️ 本接口**走本地开发缓存**（`VITE_LOCAL_CACHE=1`，TTL=0 永不过期 —— 用户
+//   有意为之，用来省后端重算与流量）。副作用：若首次加载时后端还没当日 K 线
+//   （`open_price=null`），这份空值会被缓存住 ⇒ 之后一直显示 `—`，
+//   **刷新页面/重启前后端都无效**（请求根本不发）。
+//   ⇒ 遇到时在浏览器控制台执行 `clearApiCache()`，再刷新页面。
+export const getAuctionPanel = () => http.get('/market/auction-panel', { timeout: 30000 })
 export const refreshAuctionLlm = (force = false) =>
   http.post('/market/auction-llm', {}, { params: { force }, timeout: 120000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
