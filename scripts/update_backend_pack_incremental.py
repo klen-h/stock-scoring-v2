@@ -393,7 +393,9 @@ def main():
         ind_out[code]["trend_health"] = v
 
     # 写包
-    date_str = beijing_now().strftime("%Y%m%d")
+    # ★ 2026-11-09（BK-62 收口）：日期改最近已完成交易日（与 update_pack_incremental:324
+    #   同修法）——深夜/盘前跑增量时"日历今天"≠数据所属日，混日期包会被护栏逼出 --force
+    date_str = latest_completed_trading_day(beijing_now()).strftime("%Y%m%d")
     quotes = {c: {"name": v[0], "market_cap": v[1]} for c, v in codes_info.items()}
     out_db = os.path.join(args.pack_dir, "backend-pack.db")
     gbp.write_sqlite(out_db, date_str, quotes, merged, ind_out)
