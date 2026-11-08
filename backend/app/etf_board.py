@@ -12,6 +12,7 @@
   `etf_quote_loop` 写「200 只」，而 `len(_DEFAULT_CODES)` **实际是 55**。
   ⇒ 全部统一为实际值 55。**改白名单时请同步改这里**（三处曾各写一个数，改一处漏两处）。
 """
+import asyncio
 import json
 import math
 import os
@@ -171,17 +172,28 @@ def board(sort: str = "hot", top: int = 20) -> dict:
                     "不含溢价率/资金流（不可得，见方案文档）"}
 
 
-def etf_quote_loop():
-    """独立 60s 循环（仅交易时段；方案 B：白名单 **55 只**，不并入全市场刷新）。"""
+async def etf_quote_loop():
+    """独立 60s 循环（仅交易时段；方案 B：白名单 **55 只**，不并入全市场刷新）。
+
+    ★★ 2026-11-09 **生产启动崩溃根因修复**：原实现是**同步 `def`**，而
+      `flash/scheduler.py` 里写的是 `asyncio.create_task(etf_quote_loop())`。
+      `create_task` 会**先同步求值参数** ⇒ `etf_quote_loop()` 直接进入
+      `while True` 死循环（`time.sleep(60)`）⇒ **永不返回** ⇒ `scheduler.start()`
+      卡死在构造 tasks 列表 ⇒ 生产表现为「startup 卡住被 SIGKILL」或
+      uvicorn 判 startup 失败后 `sys.exit(3)`（`code=exited, status=3/NOTIMPLEMENTED`）。
+      `d343cf54` 引入此函数时就是 sync，之前一直没成功部署过，故从未暴露。
+    ⇒ 改为 `async def`：`time.sleep` → `await asyncio.sleep`；
+      同步的 `refresh_once()` 放进 `asyncio.to_thread`，避免阻塞事件循环。
+    """
     while True:
         try:
             if _trading_now():
                 t0 = time.time()
-                r = refresh_once()
+                r = await asyncio.to_thread(refresh_once)
                 if not r.get("ok"):
                     print(f"[etf_board] refresh failed: {r.get('error')}")
                 elif time.time() - t0 > 20:
                     print(f"[etf_board] refresh slow: {time.time() - t0:.1f}s")
         except Exception as e:
             print(f"[etf_board] loop: {e}")
-        time.sleep(60)
+        await asyncio.sleep(60)

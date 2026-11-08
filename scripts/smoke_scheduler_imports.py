@@ -83,8 +83,71 @@ def main() -> int:
         for x in bad:
             print("   -", x)
         return 1
-    print("✅ scheduler 延迟导入全部可解析（不需要真跑 lifespan）")
+    print("✅ scheduler 延迟导入全部可解析")
+
+    # ★★ 2026-11-09（生产启动崩溃根因 2）：`asyncio.create_task(loop_fn())` 里的
+    #   loop_fn **必须是 async 函数**。若误放同步函数（如 `def etf_quote_loop()` 里
+    #   `while True: time.sleep(60)`），`create_task` 会**先同步求值参数** ⇒
+    #   同步死循环 ⇒ `scheduler.start()` 卡死 ⇒ startup 失败 exit 3 / SIGKILL。
+    #   这个错误 **import 检查抓不到**（名字可解析、是普通函数），必须查
+    #   `asyncio.iscoroutinefunction`。
+    coro_bad = _check_loop_coro(tree, specs)
+    if coro_bad:
+        print("❌ 以下 loop 函数不是 async，`asyncio.create_task(...)` 会同步卡死：")
+        for x in coro_bad:
+            print("   -", x)
+        return 1
+    print("✅ create_task/_heavy 引用的 loop 全部是 async 函数")
     return 0
+
+
+def _check_loop_coro(tree, specs) -> list:
+    """收集 scheduler.py 里 `create_task(NAME(...))` 与 `*_heavy(NAME)` 的名字，
+    逐一验证是 `asyncio.iscoroutinefunction`。返回坏项列表。
+
+    ★ 名字有两种来源，解析方式不同：
+      · `from app.X import Y` 的延迟导入名（如 `etf_quote_loop` / `coach_loop`）——
+        名字是 `start()` 的**局部变量**，不在 `scheduler` 模块命名空间，须回到
+        `app.X.Y` 去 `getattr`（specs 里已有 module→attr 映射）。
+      · scheduler 模块级 `async def NAME(...)` —— `getattr(scheduler, NAME)`。
+    """
+    import asyncio
+    name_map = {}
+    for mod_name, attr, _lineno in specs:
+        name_map.setdefault(attr, (mod_name, attr))
+
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if isinstance(f, ast.Attribute) and f.attr == "create_task":
+            if node.args and isinstance(node.args[0], ast.Call) \
+                    and isinstance(node.args[0].func, ast.Name):
+                names.add((node.args[0].func.id, node.lineno))
+        elif isinstance(f, ast.Name) and f.id == "_heavy":
+            for a in node.args:
+                if isinstance(a, ast.Name):
+                    names.add((a.id, node.lineno))
+
+    from app.flash import scheduler as sched
+    bad = []
+    for name, lineno in sorted(names, key=lambda x: x[1]):
+        if name == "loop_fn":      # _heavy 的形参，不是实参，跳过
+            continue
+        if name in name_map:
+            mod_name, attr = name_map[name]
+            try:
+                fn = getattr(importlib.import_module(mod_name), attr, None)
+            except Exception:
+                fn = None
+        else:
+            fn = getattr(sched, name, None)
+        if fn is None:
+            bad.append(f"line {lineno}: {name} 无法解析（既非延迟导入也非模块函数）")
+        elif not asyncio.iscoroutinefunction(fn):
+            bad.append(f"line {lineno}: {name} 是同步函数（create_task 会同步卡死）")
+    return bad
 
 
 if __name__ == "__main__":
