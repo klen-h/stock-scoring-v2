@@ -2663,6 +2663,9 @@ async def start():
              #   非 `_heavy`：线上只读模式必须能跑，否则等于没做。
              #   成本受 `in_publish_window` + `has_due_event` 双重闸门约束 ⇒ 极少触发外部请求。
              asyncio.create_task(calendar_publish_loop()),
+             # ★ 2026-11-08（ETF 榜·方案 B）：主流 ETF 200 只白名单独立 60s 循环
+             #   （不并入全市场刷新——egress +25% 风险见方案文档）；交易时段才有请求。
+             asyncio.create_task(etf_quote_loop()),
              # ★★ 2026-11-08 停用（G4 收敛，用户确认）：当日口径由 coach emotion_fuse 承担
              #   （rules.yaml push:true）⇒ 两套告警并存即"唯一出口"破功；
              #   函数与 portfolio_alerts.py 保留（浮亏 vs 成本口径如需重启另有 env）。

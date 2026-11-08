@@ -2772,6 +2772,17 @@ def lidaxiao_refresh(user: dict = Depends(get_current_user)):
     return r
 
 
+@router.get("/etf-board")
+def etf_board(sort: str = Query("hot", max_length=8), top: int = Query(20, ge=5, le=50)):
+    """ETF 实时热度榜（方案 B 白名单 200 只，独立 60s 循环）。
+
+    **行情展示非信号**（R2）；热度分=量比×|涨跌|×√成交额（冻结 v1）；
+    不含溢价率/主力资金流（不可得）。缓存空且交易中 ⇒ 现场补一轮。
+    """
+    from app.etf_board import board
+    return board(sort=sort, top=top)
+
+
 @router.get("/uplimit-reasons")
 def uplimit_reasons(date: str = None):
     """涨停原因归类（G7，纯事后描述）：{code: {reason_kind, themes, evidence}}。

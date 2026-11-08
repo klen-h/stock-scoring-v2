@@ -2,7 +2,52 @@
   <div class="fade-in space-y-4">
     <!-- 北向资金概览 -->
         <!-- ★★ 2026-11-08（盯盘计划 G10-A）：行业主力净流入榜（mainflow×industry 聚合，T-1 日批口径） -->
+        <!-- ★★ 2026-11-08（盯盘计划 G10-A 后）：ETF 实时热度榜（行情展示非信号） -->
     <div class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-1">
+        <h2 class="text-base font-bold">ETF 热度榜
+          <span class="text-[10px] text-muted font-normal">（白名单 {{ etfBoard?.n || '—' }} 只 · 60s 循环 · {{ etfBoard?.as_of }}）</span></h2>
+        <div class="flex gap-1">
+          <button v-for="s in [['hot','热度'],['chg','涨幅'],['vr','量比'],['amt','成交额']]" :key="s[0]"
+                  @click="etfSort = s[0]; loadEtfBoard(s[0])"
+                  :class="etfSort === s[0] ? 'bg-accent/20 text-accent border-accent/40' : 'bg-white/5 text-muted border-border/60'"
+                  class="px-2 py-0.5 rounded text-[11px] border transition-colors">{{ s[1] }}</button>
+        </div>
+      </div>
+      <table class="w-full text-xs">
+        <thead class="text-muted">
+          <tr class="border-b border-border">
+            <th class="text-left py-1.5 pr-2">#</th>
+            <th class="text-left py-1.5 px-2">名称/代码</th>
+            <th class="text-right py-1.5 px-2">现价</th>
+            <th class="text-right py-1.5 px-2">涨跌</th>
+            <th class="text-right py-1.5 px-2">量比</th>
+            <th class="text-right py-1.5 px-2">换手</th>
+            <th class="text-right py-1.5 pl-2">成交额</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(r, i) in (etfBoard?.rows || [])" :key="r.code"
+              class="border-b border-border/30 hover:bg-white/[0.03]">
+            <td class="py-1 pr-2 font-mono text-muted">{{ i + 1 }}</td>
+            <td class="py-1 px-2">
+              <a :href="`#/stock/${r.code}`" target="_blank" class="text-gray-200 hover:text-accent hover:underline">{{ r.name }}</a>
+              <a :href="xqUrl(r.code)" target="_blank" rel="noopener" class="font-mono text-[10px] text-muted/80 hover:text-accent ml-1" title="雪球">{{ r.code }}</a>
+            </td>
+            <td class="py-1 px-2 text-right font-mono text-gray-200">{{ r.price }}</td>
+            <td class="py-1 px-2 text-right font-mono font-semibold"
+                :class="r.change_pct > 0 ? 'text-red-400' : r.change_pct < 0 ? 'text-emerald-400' : ''">
+              {{ r.change_pct > 0 ? '+' : '' }}{{ r.change_pct }}%</td>
+            <td class="py-1 px-2 text-right font-mono"
+                :class="r.volume_ratio >= 1.5 ? 'text-red-400' : (r.volume_ratio <= 0.6 ? 'text-muted' : '')">{{ r.volume_ratio }}</td>
+            <td class="py-1 px-2 text-right font-mono text-muted">{{ r.turnover_rate }}%</td>
+            <td class="py-1 pl-2 text-right font-mono text-muted">{{ (r.amount_wan / 10000).toFixed(1) }}亿</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="text-[10px] text-muted mt-1.5">{{ etfBoard?.note }}<template v-if="!etfBoard">—（未就绪，交易时段自动就位）</template></div>
+    </div>
+<div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between mb-2">
         <h2 class="text-base font-bold">行业主力净流入榜
           <span class="text-[10px] text-muted font-normal">（{{ imf?.date }} 收盘 · 日批口径）</span></h2>
@@ -136,9 +181,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import {  ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow, getIndustryMainflow } from '../api'
+import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow, getIndustryMainflow, getEtfBoard } from '../api'
+import { xqUrl } from '../composables/displayMeta'
 import { getXueqiuUrl } from '../composables/stockUtils'
 
 const router = useRouter()
@@ -156,7 +202,19 @@ const total = ref(0)
 const loading = ref(false)
 const error = ref(false)
 const nb = ref({})
-const imf = ref(null)   // G10-A：行业主力净流入榜   // 北向资金对象
+const imf = ref(null)
+// ★ 2026-11-08（ETF 榜·方案 B）：热度榜（热度/涨幅/量比/成交额可切换）
+const etfBoard = ref(null)
+const etfSort = ref('hot')
+const etfLoading = ref(false)
+async function loadEtfBoard(sort = 'hot') {
+  etfLoading.value = true
+  try {
+    const { data } = await getEtfBoard(sort, 20)
+    etfBoard.value = data?.ok ? data : null
+  } catch { etfBoard.value = null }
+  finally { etfLoading.value = false }
+}   // G10-A：行业主力净流入榜   // 北向资金对象
 // ★ 2026-09-27：北向资金净流入**自 2024-08-19 起已停止披露**（沪深港通披露机制调整）。
 //   后端 `eastmoney.get_northbound()` 现返回 `available: false` + `reason` ⇒ 前端据此
 //   显示「已停止披露」，而**不是**把 0 渲染成"净流入 0"（那是把"没有数据"读成"零流入"，
@@ -238,6 +296,7 @@ function flowClass(v) {
 }
 
 onMounted(() => {
+  loadEtfBoard(etfSort.value)
   getIndustryMainflow().then(({ data }) => { imf.value = data?.ok ? data : null }).catch(() => {})
   loadNorthbound()
   loadData()

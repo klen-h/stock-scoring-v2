@@ -618,6 +618,8 @@ export const getUlimitReasons = (date) => http.get('/market/uplimit-reasons', { 
 // ★ 2026-11-08（G10-A）：行业主力净流入榜（mainflow×industry 聚合，T-1 口径）
 // ★ 2026-11-08：后端已删 `days` 参数（原"多日累加"是 for+break 死循环、
 //   实际只返回最新 1 天，且无产品需求）⇒ 前端同步去掉，避免"传了也没用"的误导。
+// ★ 2026-11-08（ETF 榜·方案 B）：ETF 实时热度榜（白名单 200 只，60s 独立循环）
+export const getEtfBoard = (sort = 'hot', top = 20) => http.get('/market/etf-board', { params: { sort, top }, timeout: 20000 })
 export const getIndustryMainflow = () => http.get('/capital/industry-mainflow', { timeout: 20000 })
 export const getPositionLines = (code) => http.get(`/stock/${code}/position-lines`, { timeout: 15000 })
 export const getAuctionPanel = () => http.get('/market/auction-panel', { timeout: 30000 })
