@@ -221,9 +221,9 @@ function toggleTop() {
 // ★★ 2026-11-01（用户："将观察池作为一个 tab 并入评分 top10 卡片，放在防御 top10 的后面"）：
 //   「观察池」从**独立第二张卡**收为第三 tab ⇒ 右栏少一张卡、三榜一处切换。
 const cardTabs = [
-  { key: 'score', label: '评分Top10', tip: '生产评分榜 Top10（与榜单页同源）' },
-  { key: 'def', label: '防御Top10', tip: '阴跌防御影子榜 Top10（银行组阴跌段加权；影子期不改生产排序）' },
-  { key: 'etf', label: 'ETF热度10', tip: 'ETF 实时热度榜 Top10（量比×涨跌×成交额；行情展示非信号）' },
+  { key: 'score', label: '评分', tip: '生产评分榜 Top10（与榜单页同源）' },
+  { key: 'def', label: '防御', tip: '阴跌防御影子榜 Top10（银行组阴跌段加权；影子期不改生产排序）' },
+  { key: 'etf', label: 'ETF', tip: 'ETF 实时热度榜 Top10（量比×涨跌×成交额；行情展示非信号）' },
   { key: 'watch', label: '观察池', tip: '买入闸门候选（ready≥2）· 日批快照 + 实时涨跌幅' },
 ]
 const CARD_TAB_KEY = 'wb_score_card_tab'
