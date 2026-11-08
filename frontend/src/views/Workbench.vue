@@ -301,6 +301,21 @@
              只需要今天新加的卡片即可"）：本段（观察器）在「早盘复盘」阶段整块隐藏。
              理由：早盘复盘是"读结论"，不是"看盘"——它自带盘面/宏观/消息三块，
              下面再压一张观察器会重复且抢注意力。 -->
+        <!-- ★★ 2026-11-08（用户："切到第二个 tab 后，tab 跑到最下面了"）：
+             子 tab 切换器**必须放在区域A/B 之前**——它原本写在竞价模板里（DOM 靠后），
+             tab=obs 时观察器/速览显示出来就把切换器压到底部。门控=仅竞价阶段显示。 -->
+        <div v-if="selectedPhase === 'auction'" class="flex gap-2">
+          <button @click="auctionSubTab = 'panel'"
+                  :class="auctionSubTab === 'panel'
+                    ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
+                    : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
+                  class="px-3 py-1 rounded text-xs border transition-colors">竞价面板</button>
+          <button @click="auctionSubTab = 'obs'"
+                  :class="auctionSubTab === 'obs'
+                    ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
+                    : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
+                  class="px-3 py-1 rounded text-xs border transition-colors">观察器与速览</button>
+        </div>
         <!-- ★★ 2026-11-08（用户："竞价 tab 下顶部加切换 tab"）：竞价阶段本区域让位给
              竞价面板（子 tab 1），观察器整体挪到子 tab 2（"观察器与速览"）——
              v-show 保持挂载（观察器折叠态/面板数据切回来不丢）。非竞价阶段行为不变。 -->
@@ -1378,21 +1393,10 @@
                ③ 高开榜只给名字与幅度，**未标注"是否池内 / 有信号"**（数据现成）。
                ④ 无竞价量比（需"昨日同期竞价额"，本项目无分时数据 ⇒ 短期做不到，诚实标注）。 -->
         <template v-else-if="selectedPhase === 'auction'">
-          <!-- ★★ 2026-11-08（用户需求）：竞价阶段顶部子 tab——
+          <!-- ★★ 2026-11-08（用户需求）：竞价阶段子 tab 内容组——切换器已上移至主工作区顶部
+               （DOM 顺序在观察器区域之前，否则 tab=obs 时切换器被压到底部）。
                ① 竞价面板（默认）：主卡 + 三块增强（昨日关键位/板块联动/计划股/LLM）；
                ② 观察器与速览：观察器容器 + 盘面速览/快讯解读（v-show 切换，保持挂载）。 -->
-          <div class="flex gap-2">
-            <button @click="auctionSubTab = 'panel'"
-                    :class="auctionSubTab === 'panel'
-                      ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
-                      : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
-                    class="px-3 py-1 rounded text-xs border transition-colors">竞价面板</button>
-            <button @click="auctionSubTab = 'obs'"
-                    :class="auctionSubTab === 'obs'
-                      ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
-                      : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
-                    class="px-3 py-1 rounded text-xs border transition-colors">观察器与速览</button>
-          </div>
           <div v-show="auctionSubTab === 'panel'" class="space-y-3">
           <div class="bg-card border border-indigo-500/40 rounded-lg p-3">
             <div class="flex items-center justify-between mb-1.5">
