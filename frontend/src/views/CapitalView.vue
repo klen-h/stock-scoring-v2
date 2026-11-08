@@ -1,7 +1,26 @@
 <template>
   <div class="fade-in space-y-4">
     <!-- 北向资金概览 -->
+        <!-- ★★ 2026-11-08（盯盘计划 G10-A）：行业主力净流入榜（mainflow×industry 聚合，T-1 日批口径） -->
     <div class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-base font-bold">行业主力净流入榜
+          <span class="text-[10px] text-muted font-normal">（{{ imf?.date }} 收盘 · 日批口径）</span></h2>
+        <span class="text-[10px] text-muted">净流入合计，红正绿负</span>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+        <div v-for="(r, i) in (imf?.rows || []).slice(0, 10)" :key="'im' + i"
+             class="flex items-center gap-2 py-0.5 border-b border-border/30">
+          <span class="w-4 shrink-0 text-muted font-mono">{{ i + 1 }}</span>
+          <span class="w-[76px] shrink-0 truncate text-gray-200">{{ r.industry }}</span>
+          <span class="shrink-0 font-mono text-muted text-[10px]">{{ r.up }}/{{ r.n }}</span>
+          <span class="ml-auto font-mono font-semibold" :class="r.net_yi >= 0 ? 'text-red-400' : 'text-emerald-400'">
+            {{ r.net_yi >= 0 ? '+' : '' }}{{ r.net_yi }}亿</span>
+        </div>
+      </div>
+      <div class="text-[10px] text-muted mt-1.5">{{ imf?.note }}</div>
+    </div>
+<div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-lg font-bold">北向资金</h2>
         <span class="text-xs text-muted">{{ nb.time ? '截至 ' + nb.time : '—' }}</span>
@@ -119,7 +138,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow } from '../api'
+import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow, getIndustryMainflow } from '../api'
 import { getXueqiuUrl } from '../composables/stockUtils'
 
 const router = useRouter()
@@ -136,7 +155,8 @@ const tableData = ref([])
 const total = ref(0)
 const loading = ref(false)
 const error = ref(false)
-const nb = ref({})   // 北向资金对象
+const nb = ref({})
+const imf = ref(null)   // G10-A：行业主力净流入榜   // 北向资金对象
 // ★ 2026-09-27：北向资金净流入**自 2024-08-19 起已停止披露**（沪深港通披露机制调整）。
 //   后端 `eastmoney.get_northbound()` 现返回 `available: false` + `reason` ⇒ 前端据此
 //   显示「已停止披露」，而**不是**把 0 渲染成"净流入 0"（那是把"没有数据"读成"零流入"，
@@ -218,6 +238,7 @@ function flowClass(v) {
 }
 
 onMounted(() => {
+  getIndustryMainflow().then(({ data }) => { imf.value = data?.ok ? data : null }).catch(() => {})
   loadNorthbound()
   loadData()
 })
