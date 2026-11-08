@@ -96,7 +96,10 @@ onMounted(async () => {
       <!-- 轨道二：排行榜 -->
       <div class="bg-card border border-border rounded-lg p-4 mb-4">
         <div class="flex items-center justify-between mb-3">
-          <h2 class="text-sm font-bold text-gray-100">② 评分排行榜 Top10（每日等权，T+5）</h2>
+          <h2 class="text-sm font-bold text-gray-100">② 评分排行榜 Top10（每日等权，T+5）
+            <!-- ★ 2026-11-08（回测审视 P-4）：三轨口径徽章对齐——②是半前瞻且窗口重叠，
+                 绝对值不可与①直接比（评分 KILL 的数据面），徽章显式防误读 -->
+            <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/20">半前瞻 · 重叠窗口</span></h2>
           <span v-if="perf.ranking.available" class="text-xs text-muted">
             {{ perf.ranking.start }} ~ {{ perf.ranking.end }} · {{ perf.ranking.days }} 个快照日
           </span>
