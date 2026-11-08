@@ -612,6 +612,8 @@ export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 200
 //   （`open_price=null`），这份空值会被缓存住 ⇒ 之后一直显示 `—`，
 //   **刷新页面/重启前后端都无效**（请求根本不发）。
 //   ⇒ 遇到时在浏览器控制台执行 `clearApiCache()`，再刷新页面。
+// ★ 2026-11-08（盯盘计划 G1）：持仓参考线（模拟仓 entry/stop/target 落库值 + 真实持仓 cost）
+export const getPositionLines = (code) => http.get(`/stock/${code}/position-lines`, { timeout: 15000 })
 export const getAuctionPanel = () => http.get('/market/auction-panel', { timeout: 30000 })
 export const refreshAuctionLlm = (force = false) =>
   http.post('/market/auction-llm', {}, { params: { force }, timeout: 120000 })

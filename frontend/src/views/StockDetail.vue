@@ -637,7 +637,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import * as echarts from 'echarts'
-import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getScoreContext, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag, askStock } from '../api'
+import { getStockKline, getStockRealtime, getStockFundamental, getStockTechnical, getStockScore, getScoreContext, getSupportResistance, getRSISignals, getStockNews, getStockNewsHistory, getRankHistory, getStockFinance, getScoreWeights, getStockAnomalySignals, getStockAnomalyAnalysis, getStockDiag, askStock, getPositionLines } from '../api'
 import { loadLocalKline, computeLocalScore } from '../composables/useFrontendScoring'
 // ★ 2026-11-01：本地评分补 gate —— 判据（阈值/允许市况/条目名）由后端
 //   `/score/weights` 下发，前端只做布尔组合（`buildGate`），**与线上同口径**。
@@ -660,6 +660,8 @@ const code = route.params.code
 
 const stockInfo = ref({})
 const klineData = ref([])
+// ★ 2026-11-08（盯盘计划 G1）：持仓参考线（成本/止损/目标位）——K线横线叠加
+const posLines = ref([])
 const technicalData = ref([])
 const fundamental = ref({ valuation: {}, financial: {} })
 const scoreData = ref({})
@@ -1024,6 +1026,7 @@ function changePeriod(p) {
 }
 
 async function loadKline() {
+  loadPositionLines()   // 参考线随 K 线页签加载（失败静默）
   // ★ 本地优先（PLAN_PACK_MIGRATION Phase 2）：K 线包在本地时零后端请求，
   //   消除 /api/stock/kline 的并发爆发（Render OOM 触发点）。
   //   仅日 K 走本地（周K/月K 需重采样，回退后端）；失败自动回退后端接口。
@@ -1072,6 +1075,14 @@ function buildSRMarkLine() {
   }
 }
 
+
+async function loadPositionLines() {
+  try {
+    const { data } = await getPositionLines(code)
+    posLines.value = (data?.lines || []).filter(l => l.price > 0)
+  } catch { posLines.value = [] }
+}
+
 function renderKline() {
   if (!klineChartRef.value || !klineData.value.length) return
 
@@ -1088,8 +1099,22 @@ function renderKline() {
   const seriesCfg = [
     { name: 'K线', type: 'candlestick', xAxisIndex: 0, yAxisIndex: 0, data: ohlc, itemStyle: { color: '#ef4444', color0: '#22c55e', borderColor: '#ef4444', borderColor0: '#22c55e' },
       markLine: buildSRMarkLine(),
-    },
-  ]
+    },  ]
+  // ★ 2026-11-08（G1）：持仓参考线（成本黄/止损红/目标绿，虚线横线；落库值口径）
+  if (posLines.value.length) {
+    seriesCfg.push({
+      name: 'positionLines', type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: [], silent: true, symbol: 'none',
+      markLine: {
+        silent: true, symbol: 'none', lineStyle: { type: 'dashed', width: 1 },
+        label: { fontSize: 10, position: 'insideEndTop' },
+        data: posLines.value.map(l => ({
+          yAxis: l.price, name: l.label,
+          lineStyle: { color: l.kind === 'stop' ? '#f43f5e' : (l.kind === 'target' ? '#22c55e' : '#eab308') },
+          label: { formatter: `${l.label} ${l.price}` },
+        })),
+      },
+    })
+  }
 
   let gridIdx = 1
 

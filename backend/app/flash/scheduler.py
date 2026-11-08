@@ -125,6 +125,21 @@ async def track_loop():
                 status["last_track"] = result
         await asyncio.sleep(TRACK_INTERVAL)
 
+async def portfolio_alert_loop():
+    """持仓双口径提醒（盯盘计划 G4）：交易时段 60s 一查（读行情缓存，零外呼）。
+
+    失败不抛（提醒层，绝不影响主链）；只读模式不跑（同 track_loop 语义）。"""
+    from app.portfolio_alerts import check_once
+    while True:
+        try:
+            m = rules.get_china_market_status()
+            if m.get("is_open"):
+                await asyncio.to_thread(check_once)
+        except Exception as e:
+            print(f"[scheduler] portfolio_alert: {e}")
+        await asyncio.sleep(60)
+
+
 
 _emotion_snap_day = {}           # {phase: "YYYY-MM-DD"} —— 进程内"今天已落快照"标记
 
@@ -2648,6 +2663,8 @@ async def start():
              #   非 `_heavy`：线上只读模式必须能跑，否则等于没做。
              #   成本受 `in_publish_window` + `has_due_event` 双重闸门约束 ⇒ 极少触发外部请求。
              asyncio.create_task(calendar_publish_loop()),
+             # ★ 2026-11-08（盯盘计划 G4）：持仓双口径提醒——零外呼、去重每码每日每口径
+             asyncio.create_task(portfolio_alert_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
              # ★ 2026-11-01：11:30 早盘定稿（「早盘复盘」标签页的数据基础）。

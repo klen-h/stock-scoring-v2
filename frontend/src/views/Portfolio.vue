@@ -141,6 +141,8 @@
           <tr class="border-b border-border text-muted text-xs">
             <th class="text-left py-2.5 px-3">名称/代码</th>
             <th class="text-right py-2.5 px-3">现价</th>
+            <!-- ★ 2026-11-08（G2）：量比列（快照 [49] 已解析） -->
+            <th class="text-right py-2.5 px-3" title="量比=现成交量/近5日同期均量">量比</th>
             <th class="text-right py-2.5 px-3">今日</th>
             <th class="text-right py-2.5 px-3">成本价</th>
             <th class="text-right py-2.5 px-3">股数</th>
@@ -177,6 +179,13 @@
             <!-- 现价 -->
             <td class="py-2 px-3 text-right font-mono">
               <span v-if="row.realtime">{{ row.realtime.price }}</span>
+              <span v-else class="text-muted">-</span>
+            </td>
+            <!-- 量比（G2）：≥1.5 放量红 / ≤0.6 缩量灰 -->
+            <td class="py-2 px-3 text-right font-mono text-xs">
+              <span v-if="row.realtime?.volume_ratio"
+                    :class="row.realtime.volume_ratio >= 1.5 ? 'text-red-400' : (row.realtime.volume_ratio <= 0.6 ? 'text-muted' : '')">
+                {{ row.realtime.volume_ratio }}</span>
               <span v-else class="text-muted">-</span>
             </td>
             <!-- 今日涨跌 -->

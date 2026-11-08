@@ -1076,3 +1076,46 @@ def stock_anomaly_analysis(symbol: str, refresh: bool = False):
     except Exception as e:
         print(f"[anomaly] cache write failed (still returned): {e}")
     return result
+
+
+@router.get("/stock/{symbol}/position-lines")
+def stock_position_lines(symbol: str, user: dict = Depends(get_current_user)):
+    """持仓参考线（盯盘计划 G1）：模拟仓 entry/stop/target（**落库值**，纪律线冻结语义）
+    + 真实持仓 cost。止损缺失时按 v2 规则现算并标 inferred（不写回）。纯读，零外呼。"""
+    from app.database import db
+    code = str(symbol or "").strip()[-6:]
+    lines = []
+    try:
+        from app.backtest.strategies import WARFARE_STOP_PCT_V2
+        rows = db.fetch("SELECT code, name, entry_price, stop_loss, target_price "
+                        "FROM paper_positions WHERE status='holding'") or []
+        for r in rows:
+            if str(r.get("code"))[-6:] != code:
+                continue
+            ep, sl, tp = r.get("entry_price"), r.get("stop_loss"), r.get("target_price")
+            nm = r.get("name") or code
+            if ep:
+                lines.append({"kind": "cost", "price": float(ep), "source": "paper",
+                              "label": f"模拟仓成本 {nm}"})
+            if sl:
+                lines.append({"kind": "stop", "price": float(sl), "source": "paper",
+                              "label": "止损（落库值）"})
+            elif ep:
+                lines.append({"kind": "stop", "price": round(float(ep) * (1 - WARFARE_STOP_PCT_V2), 2),
+                              "source": "paper", "inferred": True, "label": "止损（v2 规则推算）"})
+            if tp:
+                lines.append({"kind": "target", "price": float(tp), "source": "paper",
+                              "label": "目标位"})
+    except Exception as e:
+        print(f"[position-lines] paper failed: {e}")
+    try:
+        rows = db.fetch("SELECT code, name, shares, cost FROM user_portfolio "
+                        "WHERE user_id=%s", (user.get("user_id"),)) or []
+        for r in rows:
+            if str(r.get("code"))[-6:] != code or not r.get("cost") or not r.get("shares"):
+                continue
+            lines.append({"kind": "cost", "price": float(r["cost"]), "source": "portfolio",
+                          "label": f"持仓成本 {r.get('name') or code}（{r.get('shares')}股）"})
+    except Exception as e:
+        print(f"[position-lines] portfolio failed: {e}")
+    return {"ok": True, "code": code, "lines": lines}
