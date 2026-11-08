@@ -22,6 +22,12 @@
 
 import asyncio
 import os
+# ★ 2026-11-08：`time` 原来**没导入**，但第 296 行（health_loop 的缓存陈旧巡检）用了
+#   `time.strftime` / `time.gmtime`。那条分支只在 `data_date` 缺失时才走（有 data_date 就短路），
+#   所以一直没炸——但一旦腾讯快照缺 `data_date`，这里会 `NameError`，
+#   而它处在 `try/except Exception` 里 ⇒ **巡检静默失效**（行情陈旧也不再告警）。
+#   由 pyflakes `undefined name` 检出（与 `etf_quote_loop` 同批）。
+import time
 
 from app.flash import service, store, rules, calendar, wechat
 from app.flash.source import FLASH_COOKIE
@@ -2643,6 +2649,18 @@ async def start():
 
     # ★ 交易员教练（Coach W1，2026-09-13）：延迟导入（COACH_ENABLED=off 时可不加载）
     from app.coach.monitor import coach_loop
+
+    # ★★ 2026-11-08 **生产启动崩溃修复**：`d343cf54`（ETF 榜·方案 B）在下方
+    #   `asyncio.create_task(etf_quote_loop())` 里用了这个名字，但**没有导入** ⇒
+    #   `NameError: name 'etf_quote_loop' is not defined` ⇒ lifespan 抛异常 ⇒
+    #   uvicorn `Application startup failed. Exiting.` ⇒ 进程退出、8000 端口无人监听、
+    #   健康检查 40s 超时。**整个服务起不来**。
+    #   ⚠️ 为什么 CI 没拦住：`ci.yml` 只有 `python -c "import app.main"`，
+    #   而本函数是在 **lifespan/startup** 里调用的，**import 不会执行它**。
+    #   ⇒ 已在 CI 增加 pyflakes F821（未定义名）+ `smoke_scheduler_imports.py`
+    #     （静态验证全部延迟导入可解析）；两者都不需要真跑 lifespan，见 ci.yml。
+    #   延迟导入的理由同 `coach_loop`：只读模式下本循环仍会启动，但模块本身很轻。
+    from app.etf_board import etf_quote_loop
 
     # 以下 9 个是「API 服务必需 / 交互相关 / 极轻量」→ 只读模式下仍保留
     #   flash(快讯) track(持仓) health(健康检查) paper_*(模拟盘) open_confirmation

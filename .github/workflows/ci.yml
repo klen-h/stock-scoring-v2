@@ -29,6 +29,28 @@ jobs:
       #   ③ backend/tests/generated 单元测试（涨跌停口径/交易日历/衰减/CYQ 等业务语义）。
       - name: 代码卫生门（棘轮基线）
         run: python scripts/code_hygiene_check.py
+      # ★★ 2026-11-08 新增（**生产启动崩溃事故后补的闸**）：
+      #   事故：`d343cf54` 在 `flash/scheduler.py` 的 `start()` 里写了
+      #     `asyncio.create_task(etf_quote_loop())`，但**从没导入** `etf_quote_loop`
+      #     ⇒ uvicorn `NameError: name 'etf_quote_loop' is not defined`
+      #       ⇒ `Application startup failed. Exiting.` ⇒ 进程退出、8000 无监听、
+      #         健康检查 40s 超时、部署失败。
+      #   ⚠️ 为什么原有检查没拦住：`import app.main` **不会执行 lifespan**
+      #      （`scheduler.start()` 是在 startup 事件里才调用的），而 `compileall`
+      #      只查语法。**NameError 属于"语法合法、运行时必崩"，两者都看不见。**
+      #   ⇒ pyflakes 的 `undefined name` 正好是这类问题的静态对应物（F821）。
+      # 只拦 undefined name（其余 pyflakes 告警不拦，避免存量噪音淹没真问题）。
+      - name: 未定义名检查（pyflakes：抓 startup/运行期才暴露的 NameError）
+        run: |
+          cd backend
+          # 扫 app 全量 + scripts（scripts 也是本次同类问题的发现地）
+          python -m pyflakes app ../scripts 2>&1 | tee /tmp/pyflakes.log || true
+          if grep -q "undefined name" /tmp/pyflakes.log; then
+            echo "❌ 发现未定义的变量/函数名（运行到该行必抛 NameError）："
+            grep "undefined name" /tmp/pyflakes.log
+            exit 1
+          fi
+          echo "✅ 无未定义名"
       - name: 日批任务一致性（TASKS == DEFAULT_ORDER）
         run: python scripts/daily_batch.py --list
         env:
@@ -41,6 +63,16 @@ jobs:
           python -m compileall -q app
           # 导入 app.main 会连带导入全部路由/数据源/调度器，抓出缺失依赖和循环导入
           python -c "import app.main; print('✅ app 导入成功, 路由数:', len(app.main.app.routes))"
+          # ★ 2026-11-08：调度器的**延迟导入**（写在 start()/各 loop 函数体内，如
+          #   `from app.etf_board import etf_quote_loop`）在 `import app.main` 时根本不执行。
+          #   本脚本静态收集 scheduler.py 里全部 `from app... import X`（128 个名字 / 56 模块），
+          #   逐个真 import + hasattr 验证，抓「模块路径写错 / 模块里没这个名字」。
+          #   分工：pyflakes 抓「根本没 import」；本脚本抓「import 了但目标不存在」；
+          #   两者合起来覆盖 startup 期的 ImportError + NameError，且**不需要真跑 lifespan**
+          #   （真跑要连库 + 外呼，CI 里会 flaky）。
+          python ../scripts/smoke_scheduler_imports.py
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
 
   frontend:
     name: 前端构建检查
