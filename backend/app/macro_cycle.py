@@ -180,17 +180,54 @@ def _layer_l1() -> Dict:
 
 
 def _layer_l4() -> Dict:
-    """L4 语言层：需人工/LLM 判读，本模块只给"去读什么"。"""
+    """L4 语言层：FOMC 声明对比（`app/fomc_statement.py`）。
+
+    ★ 2026-11-08 接入：框架原本要「点阵图」，但点阵图**季度才有**，
+      而声明**每次会议都有**且金十已做差异标注（新增 highlight / 删除 line-through），
+      更适合做措辞分期的连续素材。
+
+    ★ **状态仍为 `manual`**：关键词只能给候选，`need_manual` 恒 True。
+      不得把候选当结论接进状态机（框架自己也写"媒体转述有噪音，需置信度阈值"）。
+    """
+    try:
+        from app import fomc_statement as _fomc
+        v = _fomc.view()
+    except Exception as e:
+        return {"layer": "L4_language", "name": LAYER_CN["L4_language"],
+                "status": "unavailable", "reason": str(e)[:80], "metrics": []}
+
+    if not v.get("ok"):
+        return {"layer": "L4_language", "name": LAYER_CN["L4_language"],
+                "status": "unavailable",
+                "reason": v.get("detail") or v.get("text") or "声明无数据",
+                "metrics": []}
+
+    metrics = [
+        {"key": "fomc_decision", "name": f"FOMC {v.get('meeting')} 决议",
+         "value": v.get("decision"), "threshold": "—", "op": "—", "hit": None,
+         "note": f"票数 {v.get('vote') or '未识别'}"},
+        {"key": "warsh_rhetoric", "name": "措辞候选",
+         "value": v.get("stage_text"),
+         "threshold": "「保持耐心 / 政策处于良好位置」= pivot",
+         "op": "keyword", "hit": None,
+         "note": f"关键词命中：{v.get('stage_candidate') or '无'}（**需人工确认**）"},
+    ]
     return {
         "layer": "L4_language",
         "name": LAYER_CN["L4_language"],
-        "status": "manual",
-        "reason": "沃什措辞分期需人工或 NLP 判读（S4，未实现）",
-        "metrics": [
-            {"key": "warsh_rhetoric", "name": "沃什措辞", "value": None,
-             "threshold": "「保持耐心 / 政策处于良好位置」", "hit": None,
-             "note": "人工判读；可参考 jin10_tidy 的 50022/50023 政策栏目"},
-        ],
+        "status": "manual",          # 保持 manual：候选不等于结论
+        "as_of": v.get("meeting"),
+        "decision": v.get("decision"),
+        "vote": v.get("vote"),
+        "stage_candidate": v.get("stage_candidate"),
+        "stage_text": v.get("stage_text"),
+        "need_manual": True,
+        "highlights": v.get("highlights") or [],
+        "struck": v.get("struck") or [],
+        "reason": ("有关键词候选，但措辞分期是语义判断 —— **需人工确认**后才能作为 L4 结论；"
+                   "素材见 highlights / struck（struck 里若删除含「加息」表述，"
+                   "按框架定义属 transition 的强信号）"),
+        "metrics": metrics,
         "role": "gate（P2→P3 的必要条件之一）",
     }
 
@@ -199,20 +236,23 @@ def snapshot() -> Dict:
     """四层观察快照。**`phase` 恒为 None** —— 见模块头"为什么不判阶段"。"""
     layers = [_layer_l1(), _layer_l2(), _layer_l3(), _layer_l4()]
 
-    # ★ 2026-11-08：L1 通胀层接入后，**下一道缺口是 FOMC 点阵图**。
-    #   P1→P2 的完整条件是 `L1 ∧ L2 ∧ 点阵图远端点冻结`（框架 §4.1 修订表），
-    #   前两者现在都有数据，但**点阵图项目没有数据源**（需接 FOMC 声明/SEP 文本）。
-    #   ⇒ 仍然不判阶段，但要如实说明"卡在哪"，而不是笼统说"缺数据"。
-    dot_plot_available = False
+    # ★ 2026-11-08：L1/L2/L4 都有数据了，**唯一还缺的是点阵图的数字**。
+    #   但 L4 已接入声明对比（每次会议都有 + 金十做了差异标注）——
+    #   点阵图的核心信息（"委员还打不打算加"）**可以从声明措辞近似判读**。
+    #   ⚠️ 但这只是近似：点阵图给数字分布，声明给措辞，两者不等价。
+    #   ⇒ 仍不自动判阶段，把"能不能近似推进"交给人工依据 L4 素材裁决。
     l1 = next(x for x in layers if x["layer"] == "L1_inflation")
-    if dot_plot_available:
-        phase_reason = "四层可评估，可进入状态机（未实现）"
-    else:
-        phase_reason = (
-            "**不判阶段**：P1→P2 需「L1通胀 ∧ L2就业 ∧ 点阵图远端点冻结」，"
-            f"L1={l1.get('status')}、L2 有数据，但**项目无 FOMC 点阵图数据源** ⇒ "
-            "该门永不成立。当前只报四层读数与缺口。"
-        )
+    l2 = next(x for x in layers if x["layer"] == "L2_employment")
+    l4 = next(x for x in layers if x["layer"] == "L4_language")
+    phase_reason = (
+        "**不判阶段**：P1→P2 需「L1通胀 ∧ L2就业 ∧ 点阵图远端点冻结」。"
+        f"L1={l1.get('status')}、L2={l2.get('status')} 均有数据，"
+        "但**项目无点阵图数字源**（SEP 散点拿不到）。"
+        f"L4 现有 FOMC 声明对比（{l4.get('as_of')}：{l4.get('decision')}）"
+        f"可**近似**判读「还打不打算加」，措辞候选 {l4.get('stage_candidate') or '无'}"
+        "（需人工确认）——但声明不给数字分布，**不能替代点阵图**。"
+        "⇒ 当前只报四层读数与缺口，不假装能判周期。"
+    )
 
     hit_count = sum(1 for x in layers if x.get("status") == "ok")
 
@@ -252,7 +292,10 @@ def brief() -> str:
             hits = [m for m in (x.get("metrics") or []) if m.get("hit") is True]
             parts.append(f"{x['name']}{len(hits)}/{len(x.get('metrics') or [])}")
         elif st == "manual":
-            parts.append(f"{x['name']}待人工")
+            cand = x.get("stage_candidate")
+            # 有候选就显示候选（明确它还是"候选"），没有才显示"待人工"
+            parts.append(f"{x['name']}{str(cand).replace('stage_', '')}" if cand
+                         else f"{x['name']}待人工")
         else:
             parts.append(f"{x['name']}无数据")
     return "｜".join(parts)

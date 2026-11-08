@@ -1566,6 +1566,34 @@ def task_sahm_refresh():
         return f"萨姆规则: WARN {str(e)[:70]}"
 
 
+def task_fomc_statement():
+    """FOMC 声明对比刷新（L4 语言层素材，1 请求/天）。**纯观察器**（2026-11-08）。
+
+    ★ 数据源：`mp-api.jin10.com/api/long-pictures/list?category=FederalReserveFOMCCompare`
+      （**免 token**）。一次拉最近 16 个月，实测含 2025 年 8 期 + 2026 年 7 期。
+    ★★ 两个已在模块里修掉的坑（改这块之前先看 `app/fomc_statement.py`）：
+      1. `contents` 数组**顺序不统一**（有 [上期,本期]、也有 [本期,上期]），
+         必须按 `title` 的月份取最大来定本期 —— 否则会把 9 月当成 7 月，
+         **把加息那次静默吞掉**（已踩过）；
+      2. 声明原文常写「上调25个基点**，至**3.75%**至**4%」，两个"至"连用，
+         正则少写一个连接符就会把这次加息解析成 None（已踩过）。
+    ★ **只出素材与候选**：`need_manual` 恒 True，不自动判定 L4。
+    ★ **失败不抛**：声明缺一天不影响主链。
+    """
+    try:
+        from app import fomc_statement as fs
+        r = fs.refresh(16)
+        if not r.get("ok"):
+            return f"FOMC声明: ⚠ {str(r.get('error'))[:60]}"
+        v = fs.view()
+        return (f"FOMC声明: {v.get('meeting')} {v.get('decision') or '?'}"
+                f"（{v.get('vote') or '?'}）｜措辞候选 "
+                f"{v.get('stage_candidate') or '无'}（需人工确认）"
+                f"·{r.get('saved')} 期·v{fs.SCORER_VERSION}")
+    except Exception as e:
+        return f"FOMC声明: WARN {str(e)[:70]}"
+
+
 def task_macro_cpi():
     """价格类指标刷新（中/美/欧 CPI + 中国 PPI）。**纯观察器**（2026-11-08）。
 
@@ -1940,6 +1968,9 @@ TASKS = {
     #   只做档位标签与剪刀差描述，**不参与 L1 判定**；不进评分/闸门/仓位。
     #   （任务名沿用 macro_cpi 是为了不打断既有排单，实际刷 CPI+PPI）
     "macro_cpi": (task_macro_cpi, "价格类指标刷新（CPI中/美/欧 + 中国PPI）"),
+    # ★ 2026-11-08：FOMC 声明对比（L4 语言层素材）。金十已做差异标注，
+    #   一次拉 16 个月。**只出素材与关键词候选，不自动判定**。
+    "fomc_statement": (task_fomc_statement, "FOMC声明对比刷新（L4素材，纯观察器）"),
     # ★ 2026-11-07：政策定调关键词账本（12 月定调窗口预登记，**纯事实日志**）。
     #   不进评分/闸门/仓位/模拟盘；零外呼（本地匹配既有快讯表）。
     #   读 jin10_tidy 当日产物 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
@@ -2092,8 +2123,11 @@ DEFAULT_ORDER = ["backfill",
                 "sahm_refresh",
                 # ★ 2026-11-08：L1 通胀层（核心PCE），同为金十日历口径，紧跟其后。
                 "macro_inflation",
-                # ★ 2026-11-08：全球 CPI（中/美/欧）——框架外补充，不参与 L1 判定。
+                # ★ 2026-11-08：价格类（CPI 中/美/欧 + 中国 PPI）——框架外补充，不参与 L1。
                 "macro_cpi",
+                # ★ 2026-11-08：FOMC 声明对比（L4 素材）——排在价格类之后，
+                #   与其他宏观观察同段，无数据依赖。
+                "fomc_statement",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
