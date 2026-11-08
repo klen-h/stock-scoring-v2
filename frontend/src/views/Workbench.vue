@@ -2231,8 +2231,10 @@
             </div>
             <div v-else-if="briefPhase !== 'premarket' || !briefMd" class="text-muted text-xs">—（尚未生成）</div>
             <!-- ★ 2026-10-11：简报 prompt 已约定首行 `**结论**：…` ⇒ 走「观点卡」抽出结论条置顶；
-                 「依据」= 该做/该防等原文，**不折叠**（简报本身是给人通读的，折叠只添堵）。 -->
-            <div v-else class="max-h-[320px] overflow-y-auto pr-1">
+                 「依据」= 该做/该防等原文，**不折叠**（简报本身是给人通读的，折叠只添堵）。
+                 ★★ 2026-11-08（用户："决策简报卡片改为不限制高度"）：撤 320px 上限与内滚
+                 ⇒ 简报全文自然展开（页级滚动接管；内容随宏观晨报等增量变长是常态）。 -->
+            <div v-else class="pr-1">
               <InsightBody :text="briefMd" class="text-xs" />
             </div>
           </div>
