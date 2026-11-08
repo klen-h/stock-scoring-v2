@@ -485,9 +485,73 @@ def append_macro_history(panel: dict) -> None:
 #  宏观每日快照（早盘锁定，按日期归档）
 # ================================================================
 
+_MACRO_DAILY_NORMALIZED = False
+
+
+def _iso_day(s: str) -> str:
+    """`2026/9/7` / `2026-9-7` / `2026-09-07` → **`2026-09-07`**；无法解析则原样返回。
+
+    ★ 2026-11-08：`macro_daily.date` 历史上是 `_bj_date()` 的非零填充斜杠格式，
+      在 TEXT 字典序下 `'2026/9/7' > '2026/11/6'` ⇒ `ORDER BY date DESC` 取到 9 月。
+      读侧统一走本函数规范化后再比较/查询。
+    """
+    m = re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", str(s or ""))
+    if not m:
+        return str(s or "")
+    return "%s-%02d-%02d" % (m.group(1), int(m.group(2)), int(m.group(3)))
+
+
+def _normalize_macro_daily_dates() -> None:
+    """把 `macro_daily.date` 的 `2026/9/7` 规范成 ISO `2026-09-07`（幂等，进程内只跑一次）。
+
+    ★ 2026-11-08：同 BK-37 的 `_normalize_etf_close_dates` 做法。
+      为什么要迁移而不是继续让每个读取方特判：
+        · 项目里已有 **5 处**消费方各自解析绕过（`coach/rules._to_date`、
+          `thesis_tracker`、`stagflation`、`backtest/strategies`、
+          `mainforce/confluence` 于 2026-11-08 补），**但每次都有人漏**
+          （`confluence` 就漏到 11-08 才发现，曾一直读 9 月的宏观方向分）；
+        · `GET /api/macro/daily?date=2026-11-06`（ISO）在斜杠行下**永远查不到**，
+          返回 `snapshot: null`。
+      ⚠️ **不动 `_bj_date()` 全局格式** —— `flash_news` 等表仍按旧格式做键
+         （见 BK-37 注释"动它会破坏跨表一致性"），只在本表写入/读取处替换。
+    """
+    global _MACRO_DAILY_NORMALIZED
+    if _MACRO_DAILY_NORMALIZED:
+        return
+    try:
+        rows = db.fetch("SELECT date FROM macro_daily") or []
+    except Exception as e:
+        print(f"[store] macro_daily 日期规范化跳过: {str(e)[:80]}")
+        return
+    moved = 0
+    for r in rows:
+        raw = str(r.get("date") or "")
+        iso = _iso_day(raw)
+        if iso == raw:
+            continue                       # 已是 ISO
+        try:
+            dup = db.fetch_one("SELECT 1 AS x FROM macro_daily WHERE date = %s", (iso,))
+            if dup:
+                # 同日已存在 ISO 行 ⇒ 保留 ISO（新数据），删掉旧斜杠行
+                db.execute("DELETE FROM macro_daily WHERE date = %s", (raw,))
+            else:
+                db.execute("UPDATE macro_daily SET date = %s WHERE date = %s", (iso, raw))
+            moved += 1
+        except Exception as e:
+            print(f"[store] macro_daily 日期迁移失败 {raw}: {str(e)[:70]}")
+    _MACRO_DAILY_NORMALIZED = True
+    if moved:
+        print(f"[store] macro_daily 日期已规范化为 ISO：{moved} 行")
+
+
 def save_macro_daily(snapshot: dict, date_str: str = None) -> None:
-    """保存某日宏观快照（早盘锁定；同日期覆盖，保证一天一份）。"""
-    date = date_str or _bj_date()
+    """保存某日宏观快照（早盘锁定；同日期覆盖，保证一天一份）。
+
+    ★ 2026-11-08：**写入一律用 ISO 日期**（`2026-11-06`），不再用 `_bj_date()` 的斜杠格式。
+      否则同一日期会因主键不同而出现两行（`2026/11/6` 与 `2026-11-06`）。
+    """
+    _normalize_macro_daily_dates()
+    date = _iso_day(date_str or _bj_date())
     try:
         db.upsert("macro_daily", {
             "date": date,
@@ -498,8 +562,14 @@ def save_macro_daily(snapshot: dict, date_str: str = None) -> None:
 
 
 def load_macro_daily(date_str: str = None) -> dict:
-    """加载某日宏观快照（默认今日；无则返回空 dict）。"""
-    date = date_str or _bj_date()
+    """加载某日宏观快照（默认今日；无则返回空 dict）。
+
+    ★ 2026-11-08：入参统一规范成 ISO 再查。原实现直接拿入参去比，
+      而历史行是斜杠格式 ⇒ `GET /api/macro/daily?date=2026-11-06`（前端传 ISO）
+      **永远返回 `snapshot: null`**。迁移后表内已全是 ISO，入参也规范一次兜住老调用方。
+    """
+    _normalize_macro_daily_dates()
+    date = _iso_day(date_str or _bj_date())
     row = db.fetch_one("SELECT * FROM macro_daily WHERE date = %s", (date,))
     if not row:
         return {}
