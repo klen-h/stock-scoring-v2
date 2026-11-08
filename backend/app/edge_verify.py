@@ -267,10 +267,21 @@ def run_monthly(push: bool = True) -> str:
 # 影子/结论时钟对账（回测审视 P-3，2026-11-08）——月度推送尾部固定追加
 # ══════════════════════════════════════════════════════════════════════════
 def clock_lines() -> list:
-    """影子榜/命题/样本的**到点对账行**（纯读，失败行跳过）。
+    """影子榜/命题/样本的**到点对账行**（纯读）。
 
     目的（回测审视 P-3）：影子期"永远影子"、命题到期没人裁决、回测样本悄悄断档——
     三类失忆靠月度推送机械化防住。**只报状态不含建议**。
+
+    ★★ 2026-11-08 审查修正（两处）：
+      1. **① 段的 SQL 写错了列**：`shadow_rank_daily` **没有 `date` 列**
+         （真实列为 `code/name/rank_pos/total_score/decay_age/snapshot_price/
+         dimensions_json/created_at`），`SELECT MIN(date)` 直接抛
+         `UndefinedColumn` ⇒ 被 `except Exception: pass` **静默吞掉** ⇒
+         **影子榜那一行从上线起就一直缺失，而且没有任何提示**。
+         改为 `created_at`（实测格式 `2026-09-16 17:58:33+00`，`[:10]` 即日期）。
+      2. **三段全部 `except: pass` 是这次 bug 藏这么久的根本原因**。
+         现改为**输出一行 ⚠️ 失败提示** —— 对账行本身就是「防失忆」的机制，
+         它自己失败了必须让人看见，否则等于没有。
     """
     from datetime import datetime, timedelta, timezone
     from app.database import db
@@ -278,16 +289,20 @@ def clock_lines() -> list:
     today = datetime.now(_BJ).date()
     out = []
 
-    # ① 防御影子榜影子期（H2'，10-23 起算）
+    # ① 防御影子榜影子期（H2'）
     try:
-        r = db.fetch_one("SELECT MIN(date) AS mn, MAX(date) AS mx FROM shadow_rank_daily")
+        # ⚠️ 用 created_at，**不是 date**（该表无 date 列）
+        r = db.fetch_one("SELECT MIN(created_at) AS mn, MAX(created_at) AS mx "
+                         "FROM shadow_rank_daily")
         mn, mx = str((r or {}).get("mn") or "")[:10], str((r or {}).get("mx") or "")[:10]
         if mn:
             days = (today - datetime.strptime(mn, "%Y-%m-%d").date()).days
             out.append(f"影子榜(H2'): 影子期起算 {mn}，已 {days} 天（末次 {mx}）——"
                        f"A2 回避侧结论到点后须对账拍板转正/退役")
-    except Exception:
-        pass
+        else:
+            out.append("影子榜(H2'): ⚠️ 表内无数据（影子期尚未开始或写入失败）")
+    except Exception as e:
+        out.append(f"影子榜(H2'): ⚠️ 读取失败 {str(e)[:70]}")
 
     # ② 记分簿 open 命题到期倒计时
     try:
@@ -301,8 +316,8 @@ def clock_lines() -> list:
                 out.append(f"命题#{x['id']}: {dl} {'已到期未裁决' if left < 0 else f'剩 {left} 天'}")
             except (ValueError, TypeError):
                 out.append(f"命题#{x['id']}: deadline={dl}")
-    except Exception:
-        pass
+    except Exception as e:
+        out.append(f"命题对账: ⚠️ 读取失败 {str(e)[:70]}")
 
     # ③ 竞价强度回测样本（B1 前置：≥20 交易日）
     try:
@@ -310,6 +325,6 @@ def clock_lines() -> list:
                          "WHERE auction_count IS NOT NULL AND auction_count <> ''")
         n = int((r or {}).get("n") or 0)
         out.append(f"竞价样本(B1 前置): {n}/20 交易日")
-    except Exception:
-        pass
+    except Exception as e:
+        out.append(f"竞价样本(B1 前置): ⚠️ 读取失败 {str(e)[:70]}")
     return out

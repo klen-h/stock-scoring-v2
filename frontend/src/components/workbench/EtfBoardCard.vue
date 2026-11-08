@@ -2,7 +2,7 @@
   <div>
     <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
       <div class="text-[11px] text-muted">
-        热度分=量比×|涨跌|×√成交额 · 白名单 {{ board?.n || '—' }} 只 · {{ board?.as_of }}
+        热度分=量比×|涨跌|×√成交额 · 白名单 {{ board?.whitelist_n || '—' }} 只 · 数据 {{ board?.as_of || '—' }}<span v-if="board?.is_stale" class="text-warn">（已过期 {{ Math.round((board?.stale_sec || 0) / 60) }} 分钟）</span>
       </div>
       <div class="flex gap-1">
         <button v-for="s in sorts" :key="s[0]" @click="sort = s[0]; load(s[0])"

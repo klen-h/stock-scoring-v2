@@ -2774,10 +2774,17 @@ def lidaxiao_refresh(user: dict = Depends(get_current_user)):
 
 @router.get("/etf-board")
 def etf_board(sort: str = Query("hot", max_length=8), top: int = Query(20, ge=5, le=50)):
-    """ETF 实时热度榜（方案 B 白名单 200 只，独立 60s 循环）。
+    """ETF 实时热度榜（方案 B 白名单 **55 只**，独立 60s 循环）。
 
     **行情展示非信号**（R2）；热度分=量比×|涨跌|×√成交额（冻结 v1）；
     不含溢价率/主力资金流（不可得）。缓存空且交易中 ⇒ 现场补一轮。
+
+    ★ 2026-11-08 审查修正：本文原写「白名单 200 只」，与
+      `etf_board._DEFAULT_CODES` 实际 55 只不符（该文件里也有 120/200 两种写法）。
+      白名单数量以 `len(_DEFAULT_CODES)` 为准，改名单请同步改这里。
+
+    ★ 返回里的 `as_of` = **数据时刻**（最后一轮拉取成功），不是请求时刻；
+      另给 `stale_sec` / `is_stale` / `refresh_error` 供前端判断新鲜度。
     """
     from app.etf_board import board
     return board(sort=sort, top=top)
