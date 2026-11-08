@@ -80,6 +80,7 @@
 | BK-31 | 后端 | market_realtime size 无上限 / tail-review、limit-review 每请求外呼无冷却 / `_first_seen_map` 失败缓存 1h | review/P0_routers_scoring_market.md P3（scoring.py/market.py） | P2 | 无 | 1d | size 上限 + 冷却；失败缓存 TTL ≤10min（"降级路径也要缓存"的反例修正）✅ 2026-10-25 已修复（commit 1b734824：size 收口 [1,200] + _index_snapshot 60s TTL + limit-review 直连 300s 冷却 + _first_seen_map 失败 600s/成功 1h；冒烟 4/4） |
 | BK-32 | 后端 | 中文日志违反 ASCII 铁律（routers/scoring.py 等） | review/P0_routers_scoring_market.md P3；Guardrails #9（生产 GBK 编码问题） | P2 | 无 | 0.5d | 生产日志抽查无中文（中文提示走返回值） |
 | BK-64 | 后端 | `test_policy_bottom_watch` **6 项断言与库内数据/代码现状漂移**（2026-10-18 交付时 18/18 全过；11-07 HEAD 复跑 6 FAIL：n_checked 期望值过期、"无数据"分支现在有数据） | `test_policy_bottom_watch.py:81/147` 等；stash 对照 HEAD 复跑同为 6 FAIL ⇒ **非新引入**（2026-11-07 排查，疑似 BK-59 语义变更与库内数据积累未同步测试；测试耦合真实库状态） | P2 | 无 | 0.5d | 测试改 mock 固定数据（不耦合真实库），或文件头声明"依赖库内态"并重录期望 |
+| BK-65 | 后端 | **key_level_watch 中证500/中证全指收盘价量级错误**（存 8.34/16.18，真实应为千点级）⇒ 下游用 prev_close 算缺口会得到荒谬值（auction_panel 实测 +77983%，已加 ±25% suspect 防护） | `key_level_watch` 表 2026-11-05/06 行 `close` 列；同日上证/沪深300/深成/创业板均正常 ⇒ 疑似这两只指数的 K 线来源取错（复权/单位/前缀），与 auction_panel 无关（2026-11-08 发现） | P1 | 无 | 0.5d | 查 `compute()` 对 000905/000985 的 bars 来源（腾讯对指数返回的哪个字段/复权口径），修复后重算近 30 日行 |
 
 ## B. 等时钟 / 等拍板（非开发项，登记防催办）
 

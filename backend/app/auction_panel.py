@@ -88,8 +88,36 @@ def _stock_gaps() -> tuple:
     return gaps, gap_date, bool(stocks)
 
 
-def _index_rows(prev_day: Optional[str], gap_is_today: bool) -> List[Dict]:
-    """指数行：昨日关键位（key_level_watch）+ 竞价实时价（仅当日口径）。"""
+def _index_open_px(code: str, gap_date: str, gap_is_today: bool,
+                   live: Dict) -> tuple:
+    """指数开盘价三级来源（★ 2026-11-08 修休市日空显示）：
+
+      ① live（仅当日竞价/盘中口径，15s 进程缓存）→ open_src='live'
+      ② `backtest_prices` 日批 K 线里 gap_date 当日 bar 的 open（**纯库读零外呼**，
+         休市/盘后也能看到"那一天已完成的开局"，与个股用缓存 open 的口径对齐）
+         → open_src='kline'
+      ③ 都没有 → (None, None)（缺失 ≠ 0，前端显示 —）
+    """
+    if gap_is_today:
+        lq = live.get(code) or {}
+        lpx = _f(lq.get("price"))
+        if lpx:
+            return lpx, "live"
+    try:
+        from app.contradictions.scanner import _db_index_kline
+        for b in (_db_index_kline(code, 6) or []):
+            if str(b.get("date") or "")[:10] == str(gap_date)[:10]:
+                op = _f(b.get("open"))
+                if op:
+                    return op, "kline"
+    except Exception:
+        pass
+    return None, None
+
+
+def _index_rows(prev_day: Optional[str], gap_is_today: bool,
+                gap_date: str) -> List[Dict]:
+    """指数行：昨日关键位（key_level_watch）+ 开盘价（live / K 线定稿）。"""
     try:
         kl = _klw.load(day=prev_day)
     except Exception as e:
@@ -104,15 +132,23 @@ def _index_rows(prev_day: Optional[str], gap_is_today: bool) -> List[Dict]:
     for r in (kl.get("rows") or []):
         code = str(r.get("code") or "")
         prev_close = _f(r.get("close"))
-        lq = live.get(code) or {}
-        lpx = _f(lq.get("price"))
-        gap_pct = round((lpx / prev_close - 1) * 100, 2) \
-            if (lpx and prev_close) else None
+        op_px, op_src = _index_open_px(code, gap_date, gap_is_today, live)
+        gap_pct = round((op_px / prev_close - 1) * 100, 2) \
+            if (op_px and prev_close) else None
+        # ★★ 2026-11-08 防护（实测踩到）：key_level_watch 里中证500/中证全指的 close
+        #   存的是错误量级（8.34/16.18，真实应为千点级）——既有数据 bug，缺口会算出
+        #   +77983% 这种荒谬值。缺口超出 ±25%（超北交所 30cm 上限）一律判 suspect
+        #   ⇒ gap 置 None（缺失 ≠ 荒谬值），不假装可信。
+        suspect = bool(gap_pct is not None and abs(gap_pct) > 25)
+        if suspect:
+            gap_pct = None
         out.append({
             "code": code, "name": r.get("name") or code,
             "prev_close": prev_close,
-            "live_price": lpx,
+            "open_price": op_px,
+            "open_src": op_src,
             "gap_pct": gap_pct,
+            "suspect": suspect,
             "support": _f(r.get("support")),
             "support_type": r.get("support_type") or "",
             "status": r.get("status") or "",
@@ -152,7 +188,7 @@ def _scenario_band(prev_day: Optional[str]) -> Optional[Dict]:
         return {"error": str(e)[:80]}
 
 
-def _sector_rows(gaps: List[Dict]) -> Dict:
+def _sector_rows(gaps: List[Dict], market_avg: Optional[float] = None) -> Dict:
     """板块联动：industry_map × 缺口 → 行业聚合（高开/低开榜 + 领涨/领跌成员）。"""
     try:
         imap = _imap.get_industry_map() or {}
@@ -183,21 +219,29 @@ def _sector_rows(gaps: List[Dict]) -> Dict:
         a["avg_gap"] = round(a["sum_gap"] / a["n"], 2)
         a["up_ratio"] = round(a["up"] / a["n"] * 100, 1)
         a["amount_wan"] = round(a["amount_wan"])
+        # ★★ 2026-11-08（用户实测反馈"普跌日高开板块全是负缺口，语义误导"）：
+        #   加**超额缺口**（行业均值 − 全市场均值）——普跌日"谁更抗跌"（避风港）
+        #   与普涨日"谁更强"是同一个口径，排序也改按超额 ⇒ 两种市况下都可读。
+        a["excess"] = (round(a["avg_gap"] - market_avg, 2)
+                       if market_avg is not None else None)
         mem = sorted(a["members"], key=lambda x: -x["gap_pct"])
         a["leaders"] = mem[:_LEADER_N]        # 领涨成员
         a["laggers"] = list(reversed(mem[-_LEADER_N:])) if len(mem) > _LEADER_N else []
         a.pop("members"), a.pop("sum_gap")
         up_list.append(a)
         down_list.append(a)
-    up_list.sort(key=lambda x: (-x["up_ratio"], -x["avg_gap"]))
-    # ★ 低开榜准入：down 家数 > up 才算"真低开行业"（防止 avg_gap 为正、
-    #   仅因 up_ratio 排序靠后而混进低开榜——2026-11-08 合成测试实测踩到）
+    # 排序口径 = 超额缺口（缺市场均值时退回绝对 avg_gap）
+    def _ex(x):
+        return x["excess"] if x.get("excess") is not None else x["avg_gap"]
+    up_list.sort(key=lambda x: -_ex(x))
+    # 低开榜准入：down 家数 > up（"真低开行业"——防 avg_gap 为正混入，合成测试实测踩到）
     down_list = [a for a in down_list if a["down"] > a["up"]]
-    down_list.sort(key=lambda x: (x["avg_gap"], x["up_ratio"]))
+    down_list.sort(key=lambda x: _ex(x))
     return {"up": up_list[:_SECTOR_TOP], "down": down_list[:_SECTOR_TOP],
             "n_industries": len(agg),
-            "note": f"聚合口径=竞价缺口（开盘/昨收），成员≥{_MIN_SECTOR_N} 只的行业才进榜；"
-                    f"低开榜要求低开家数过半；映射=industry_map（月级重建，新行业名有滞后）"}
+            "note": (f"排序=超额缺口（行业均值−全市场均值{f'{market_avg:+.2f}%' if market_avg is not None else ''}）；"
+                     f"成员≥{_MIN_SECTOR_N} 只的行业才进榜；低开榜要求低开家数过半；"
+                     f"映射=industry_map（月级重建，新行业名有滞后）")}
 
 
 def _emotion_summary(gaps: List[Dict], gap_date: str, gap_is_today: bool) -> Dict:
@@ -233,10 +277,13 @@ def build_panel() -> Dict:
     gaps, gap_date, has_live = _stock_gaps()
     gap_is_today = gap_date == _bj_now().strftime("%Y-%m-%d")
     prev_day = _prev_day(gap_date)
-    indexes = _index_rows(prev_day, gap_is_today) if has_live else []
-    band = _scenario_band(prev_day)
-    sectors = _sector_rows(gaps) if has_live else {"up": [], "down": [], "n_industries": 0, "note": "无行情"}
+    # ★ 顺序：emotion 先算（avg_gap_all 是板块超额的基准）→ 再聚合板块
     emotion = _emotion_summary(gaps, gap_date, gap_is_today) if has_live else {}
+    sectors = (_sector_rows(gaps, market_avg=emotion.get("avg_gap_all"))
+               if has_live else
+               {"up": [], "down": [], "n_industries": 0, "note": "无行情"})
+    indexes = _index_rows(prev_day, gap_is_today, gap_date) if has_live else []
+    band = _scenario_band(prev_day)
     panel = {
         "ok": has_live,
         "gap_date": gap_date,
@@ -327,7 +374,7 @@ def _panel_prompt_core(panel: Dict) -> Dict:
         "scenario_anchor": {k: (panel.get("scenario") or {}).get(k)
                             for k in ("level", "state", "close")},
         "indexes": [{k: x.get(k) for k in
-                     ("name", "prev_close", "live_price", "gap_pct",
+                     ("name", "prev_close", "open_price", "open_src", "gap_pct",
                       "support", "status", "broke")} for x in panel.get("indexes") or []],
         "sectors_up": (panel.get("sectors", {}).get("up") or [])[:5],
         "sectors_down": (panel.get("sectors", {}).get("down") or [])[:5],

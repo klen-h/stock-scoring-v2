@@ -1655,9 +1655,15 @@
                       <td class="py-1.5 pr-2 text-gray-200">{{ x.name }}
                         <span v-if="x.broke" class="text-[10px] text-rose-300" title="昨日首次失守">破</span></td>
                       <td class="py-1.5 px-2 text-right font-mono text-muted">{{ x.prev_close ?? '—' }}</td>
-                      <td class="py-1.5 px-2 text-right font-mono text-gray-200">{{ x.live_price ?? '—' }}</td>
+                      <td class="py-1.5 px-2 text-right font-mono text-gray-200">
+                        {{ x.open_price ?? '—' }}
+                        <span v-if="x.open_src === 'kline'" class="text-[9px] text-muted" title="休市/盘后：开盘价取日批 K 线定稿（与个股同口径）">定</span>
+                        <span v-else-if="x.open_src === 'live'" class="text-[9px] text-emerald-400/80" title="竞价/盘中实时">实</span>
+                      </td>
                       <td class="py-1.5 px-2 text-right font-mono font-semibold" :class="apGapCls(x.gap_pct)">
-                        {{ x.gap_pct == null ? '—' : signNum(x.gap_pct) + '%' }}</td>
+                        <template v-if="x.suspect">⚠️<span class="text-[10px] text-muted" title="key_level 收盘价量级可疑（既有数据问题），缺口不显示">可疑</span></template>
+                        <template v-else>{{ x.gap_pct == null ? '—' : signNum(x.gap_pct) + '%' }}</template>
+                      </td>
                       <td class="py-1.5 px-2 text-right font-mono text-amber-300/90">
                         {{ x.support ?? '—' }}<span class="text-[10px] text-muted"> {{ x.support_type }}</span></td>
                       <td class="py-1.5 px-2 font-mono">
@@ -1669,11 +1675,11 @@
                         <span v-else class="text-muted/60">—</span>
                       </td>
                       <td class="py-1.5 pl-2">
-                        <template v-if="x.code === '000001' && apPanel.scenario?.band && x.live_price">
-                          <span :class="apBandPos(x.live_price, apPanel.scenario.band).cn === '强于预期' ? 'text-rise'
-                                : apBandPos(x.live_price, apPanel.scenario.band).cn === '弱于预期' ? 'text-fall' : 'text-gray-300'"
+                        <template v-if="x.code === '000001' && apPanel.scenario?.band && x.open_price && !x.suspect">
+                          <span :class="apBandPos(x.open_price, apPanel.scenario.band).cn === '强于预期' ? 'text-rise'
+                                : apBandPos(x.open_price, apPanel.scenario.band).cn === '弱于预期' ? 'text-fall' : 'text-gray-300'"
                                 class="font-semibold">
-                            {{ apBandPos(x.live_price, apPanel.scenario.band).cn }}</span>
+                            {{ apBandPos(x.open_price, apPanel.scenario.band).cn }}</span>
                         </template>
                         <span v-else class="text-muted/60">—</span>
                       </td>
@@ -1694,27 +1700,31 @@
                 <span class="text-[10px] text-muted font-normal">（竞价阶段行业聚合：高开占比排序，点开看领涨/领跌成员）</span></div>
               <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
                 <div>
-                  <div class="text-[11px] text-muted mb-1">高开板块 Top8
-                    <span class="cursor-help" title="行业成员≥5 只才进榜（防小样本噪声）；平均缺口与高开占比双排序">成员≥5 才进榜</span></div>
+                  <div class="text-[11px] text-muted mb-1">强势板块 Top8（超额缺口）
+                    <span class="cursor-help" title="排序=行业平均缺口−全市场平均缺口：普跌日看谁抗跌（避风港）、普涨日看谁更强，同一口径。成员≥5 只才进榜">超额=相对全市场</span></div>
                   <div v-for="s in apPanel.sectors?.up || []" :key="'su' + s.industry"
                        class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
                     <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
                     <span class="shrink-0 font-mono" :class="s.up_ratio >= 60 ? 'text-red-400' : 'text-muted'">
-                      {{ s.up }}/{{ s.n }} 高开</span>
-                    <span class="shrink-0 font-mono font-semibold" :class="apGapCls(s.avg_gap)">{{ signNum(s.avg_gap) }}%</span>
+                      {{ s.up }}/{{ s.n }}</span>
+                    <span class="shrink-0 font-mono text-muted">{{ signNum(s.avg_gap) }}%</span>
+                    <span v-if="s.excess != null" class="shrink-0 font-mono font-semibold"
+                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'">{{ signNum(s.excess) }}</span>
                     <span class="flex-1 truncate text-[11px] text-muted" :title="(s.leaders || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
                       ↗ {{ (s.leaders || []).map(m => m.name).join('、') }}</span>
                   </div>
                   <div v-if="!(apPanel.sectors?.up || []).length" class="text-xs text-muted">—（无达标行业）</div>
                 </div>
                 <div class="md:border-l md:border-border/40 md:pl-4">
-                  <div class="text-[11px] text-muted mb-1">低开板块 Top8
-                    <span class="cursor-help" title="低开家数过半才进低开榜">低开过半才进榜</span></div>
+                  <div class="text-[11px] text-muted mb-1">弱势板块 Top8（超额缺口）
+                    <span class="cursor-help" title="低开家数过半才进弱势榜；排序同为超额缺口（越负越弱）">低开过半才进榜</span></div>
                   <div v-for="s in apPanel.sectors?.down || []" :key="'sd' + s.industry"
                        class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
                     <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
-                    <span class="shrink-0 font-mono text-muted">{{ s.down }}/{{ s.n }} 低开</span>
-                    <span class="shrink-0 font-mono font-semibold" :class="apGapCls(s.avg_gap)">{{ signNum(s.avg_gap) }}%</span>
+                    <span class="shrink-0 font-mono text-muted">{{ s.down }}/{{ s.n }}</span>
+                    <span class="shrink-0 font-mono text-muted">{{ signNum(s.avg_gap) }}%</span>
+                    <span v-if="s.excess != null" class="shrink-0 font-mono font-semibold"
+                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'">{{ signNum(s.excess) }}</span>
                     <span class="flex-1 truncate text-[11px] text-muted" :title="(s.laggers || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
                       ↘ {{ (s.laggers || []).map(m => m.name).join('、') }}</span>
                   </div>
@@ -6449,10 +6459,12 @@ function selectPhase(key) {
   }
   stopAmPoll()
   loadPhaseData(key)
-  // ★ 2026-11-08：竞价面板（指数 vs 昨日关键位/预期区间 + 板块联动 + LLM 缓存）——
-  //   进入竞价阶段时拉一次（零 LLM 成本）；LLM 由按钮显式触发。
-  if (key === 'auction') loadAuctionPanel()
 }
+// ★ 2026-11-08：竞价面板用 **watch** 而不是塞进 selectPhase——URL 恢复/回放切换
+//   等路径不改 selectPhase 也能覆盖（用户实测"要手动点重试"的根因）。
+watch(selectedPhase, (k) => {
+  if (k === 'auction') loadAuctionPanel()
+})
 function syncQuery() {
   router.replace({ query: { ...route.query, phase: selectedPhase.value, date: selectedDate.value } })
 }
@@ -6585,6 +6597,10 @@ const { load: loadVer, statusOf: verStatus } = useVerification()
 
 onMounted(async () => {
   await loadDayIndex()
+  // ★ 2026-11-08（用户实测："要手动点重试才会加载接口"）：URL 恢复 phase 时不走
+  //   `selectPhase` ⇒ 竞价面板的钩子不触发。onMounted 时若正处于竞价阶段补一次；
+  //   之后由下方 watch 覆盖切换路径（两处都幂等，重复调用无害）。
+  if (selectedPhase.value === 'auction') loadAuctionPanel()
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
   loadVer()      // 数据可信度总表（幂等，失败不影响主流程）
   // ★ 2026-09-28：初始化前端本地评分引擎（评分榜「本地优先」需要）。
