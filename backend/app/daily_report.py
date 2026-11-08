@@ -1111,6 +1111,20 @@ def _llm_interpret(data_md: str) -> str:
             print(f"[daily_report] _call_json 异常: {e}")
             data = {}
         if data:
+            # ★★ 2026-11-08（看盘序 A1a，docs/plans/20261108_看盘序信息传递盘点 §0.1）：
+            #   结构化 JSON **落库**——此前只渲染进 markdown，`tomorrow_watch` 等字段
+            #   对下游（决策卡/竞价面板）不可读（daily_reports 表只有 date/markdown/created_at）。
+            #   独立 try ⇒ 落库失败只打一行日志，**不影响日报主链**；
+            #   走纯 markdown 兜底的路径（data 为空）天然不写行——没有结构化数据就不假装有。
+            try:
+                _ensure_report_json_table()
+                db.upsert("daily_report_json", {
+                    "date": _today(),
+                    "payload_json": json.dumps(data, ensure_ascii=False),
+                    "created_at": rules.beijing_now().strftime("%Y-%m-%d %H:%M:%S"),
+                }, conflict_columns=["date"])
+            except Exception as e:
+                print(f"[daily_report] JSON 落库失败（不影响日报）: {e}")
             md = _render_llm_json(data, valid_codes)
             if md.strip():
                 return "\n" + md
@@ -1211,3 +1225,47 @@ def latest(date: str = None) -> dict:
     else:
         row = db.fetch_one("SELECT * FROM daily_reports WHERE date = %s", (date,))
     return dict(row) if row else {}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 结构化 JSON 读口（2026-11-08 看盘序 A1a，docs/plans/20261108_看盘序信息传递盘点 §0.1）
+# ══════════════════════════════════════════════════════════════════════════
+def _ensure_report_json_table() -> None:
+    """`daily_report_json`：`_llm_interpret` 结构化输出的按日落库（date 主键幂等覆盖）。
+
+    ★ 为什么必须有这张表：`daily_reports` 只有 date/markdown/created_at 三列，
+      `tomorrow_watch` 等字段此前只渲染进 markdown ⇒ 下游（决策卡/竞价面板）无字段可读。
+    """
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS daily_report_json (
+            date TEXT PRIMARY KEY,
+            payload_json TEXT,
+            created_at TEXT
+        )
+    """)
+
+
+def load_report_json(day: str = None, max_back: int = 7) -> dict:
+    """读某日（默认最近）日报结构化 JSON。
+
+    ★ 日期语义 = **数据所属日**（回退按 `date <= day` 向前找，最多 max_back 天），
+      调用方拿到的 `date` 就是产出日，如实标注（不假装是"今天"）。
+    返回 {} = 没有结构化产出（LLM 失败走了 markdown 兜底的日子）——缺失 ≠ 0。
+    """
+    _ensure_report_json_table()
+    try:
+        if day:
+            d = str(day)[:10]
+            row = db.fetch_one(
+                "SELECT date, payload_json, created_at FROM daily_report_json "
+                "WHERE date <= %s ORDER BY date DESC LIMIT 1", (d,))
+        else:
+            row = db.fetch_one("SELECT date, payload_json, created_at FROM daily_report_json "
+                               "ORDER BY date DESC LIMIT 1")
+        if not row:
+            return {}
+        payload = json.loads(row.get("payload_json") or "{}")
+        return {"date": row.get("date"), "payload": payload,
+                "created_at": row.get("created_at")}
+    except Exception as e:
+        return {"error": str(e)[:120]}

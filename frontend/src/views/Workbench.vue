@@ -1692,6 +1692,21 @@
                 下看 {{ apPanel.scenario.downside_raw }}；{{ apPanel.scenario.fix_raw }}
                 <span class="text-muted/70">（区间只有上证有——锚点体系只定义了上证，其他指数不硬造）</span>
               </div>
+              <!-- ★★ 2026-11-08（看盘序 A1b）：昨日日报的"明日关注"接入竞价面板——
+                   日报收盘后产出（A1a 落库 daily_report_json），次日竞价正是消费时刻。 -->
+              <div v-if="apPanel.tomorrow_watch"
+                   class="text-[11px] mt-1.5 rounded border border-sky-500/20 bg-sky-500/5 px-2 py-1.5">
+                <span class="text-sky-300/90 font-semibold">昨日日报的明日关注</span>
+                <span class="text-[10px] text-muted font-mono">（{{ apPanel.tomorrow_watch.date }} 产出）</span>
+                <ul v-if="(apPanel.tomorrow_watch.items || []).length"
+                    class="mt-1 space-y-0.5 text-gray-200 list-decimal list-inside">
+                  <li v-for="(w, wi) in apPanel.tomorrow_watch.items" :key="wi">{{ w }}</li>
+                </ul>
+                <div v-else class="text-muted mt-0.5">
+                  {{ apPanel.tomorrow_watch.empty_reason || '暂无' }}
+                  <span class="text-muted/70">（11-02~11-06 产出曾中断，11-10 日批起恢复——文档 §0.2）</span>
+                </div>
+              </div>
             </div>
 
             <!-- ② 板块联动 -->
@@ -1746,6 +1761,48 @@
                 </div>
               </div>
               <div class="text-[10px] text-muted mt-1.5">{{ apPanel.sectors?.note }}</div>
+            </div>
+
+            <!-- ②b 计划偏离对照（看盘序 A3，断点 D3）：盘前计划的票 × 今日竞价实际——
+                 **纯事实 join**：候选=盘前评分 Top10、观察=闸门 ready≥2；只陈述不建议。 -->
+            <div class="pt-3 border-t border-border/40">
+              <div class="text-sm font-semibold mb-1.5">我的计划股竞价
+                <span class="text-[10px] text-muted font-normal">（候选=盘前评分 Top10 · 观察=闸门 ready≥2；纯事实对照，非建议）</span></div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+                <div>
+                  <div class="text-[11px] text-muted mb-1">盘前候选
+                    <span class="font-mono">（{{ apPanel.plan?.candidates_date || '—' }}）</span></div>
+                  <div v-for="c in apPanel.plan?.candidates || []" :key="'pc' + c.code"
+                       class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
+                    <a :href="stockHref(c.code)" target="_blank"
+                       class="w-[70px] shrink-0 truncate text-gray-200 hover:text-accent hover:underline"
+                       :title="`${c.name} →本地详情`">{{ c.name }}</a>
+                    <a :href="xqUrl(c.code)" target="_blank" rel="noopener"
+                       class="shrink-0 font-mono text-[10px] text-muted/80 hover:text-accent" title="雪球">{{ c.code }}</a>
+                    <span class="shrink-0 font-mono text-[10px] text-muted">评分{{ c.total_score ?? '—' }}</span>
+                    <span class="flex-1 text-right font-mono font-semibold" :class="apGapCls(c.gap_pct)">
+                      {{ c.gap_pct == null ? '—' : signNum(c.gap_pct) + '%' }}</span>
+                  </div>
+                  <div v-if="!(apPanel.plan?.candidates || []).length" class="text-xs text-muted">—（无候选）</div>
+                </div>
+                <div class="md:border-l md:border-border/40 md:pl-4">
+                  <div class="text-[11px] text-muted mb-1">观察池 ready≥2
+                    <span class="font-mono">（{{ apPanel.plan?.watch_date || '—' }}）</span></div>
+                  <div v-for="w in apPanel.plan?.watch || []" :key="'pw' + w.code"
+                       class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
+                    <a :href="stockHref(w.code)" target="_blank"
+                       class="w-[70px] shrink-0 truncate text-gray-200 hover:text-accent hover:underline">{{ w.name }}</a>
+                    <a :href="xqUrl(w.code)" target="_blank" rel="noopener"
+                       class="shrink-0 font-mono text-[10px] text-muted/80 hover:text-accent" title="雪球">{{ w.code }}</a>
+                    <span class="shrink-0 px-1 rounded text-[10px]"
+                          :class="w.ready >= 3 ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/10 text-amber-300'">ready{{ w.ready }}</span>
+                    <span class="flex-1 text-right font-mono font-semibold" :class="apGapCls(w.gap_pct)">
+                      {{ w.gap_pct == null ? '—' : signNum(w.gap_pct) + '%' }}</span>
+                  </div>
+                  <div v-if="!(apPanel.plan?.watch || []).length" class="text-xs text-muted">—（观察池空或全部未就绪）</div>
+                </div>
+              </div>
+              <div class="text-[10px] text-muted mt-1">{{ apPanel.plan?.note }}</div>
             </div>
 
             <!-- ③ LLM 解读 -->
@@ -1948,6 +2005,19 @@
               <button class="px-2 py-0.5 rounded border border-border text-muted" @click="loadDecisionCard()">重试</button>
             </div>
             <template v-else-if="dc">
+              <!-- ★★ 2026-11-08（看盘序 A1b）：昨日日报的"明日关注"——盘前正是消费时刻。
+                   数据=daily_report_json（A1a 落库）；无产出日如实空态（11-10 恢复前常空）。 -->
+              <div v-if="dc.prev_tomorrow_watch" class="mb-2 rounded border border-sky-500/20 bg-sky-500/5 px-2 py-1.5">
+                <div class="text-[11px]">
+                  <span class="text-sky-300/90 font-semibold">昨日日报的明日关注</span>
+                  <span class="text-[10px] text-muted font-mono">（{{ dc.prev_tomorrow_watch.date }} 收盘后产出）</span>
+                </div>
+                <ul v-if="(dc.prev_tomorrow_watch.items || []).length"
+                    class="mt-0.5 text-xs text-gray-200 list-decimal list-inside space-y-0.5">
+                  <li v-for="(w, wi) in dc.prev_tomorrow_watch.items" :key="wi">{{ w }}</li>
+                </ul>
+                <div v-else class="text-[11px] text-muted mt-0.5">该期无 tomorrow_watch 条目</div>
+              </div>
               <!-- 做不做（★ 2026-09-25：dc.stance 可能缺失 ⇒ 必须局部保护。
                    此前 dbdb3cf 给 dc.do/how_much/if_wrong/environment 都加了 `?.`，唯独漏了
                    stance ⇒ 模板渲染即抛 TypeError: Cannot read properties of undefined
@@ -2240,6 +2310,39 @@
              独立成一段（不与早盘/午盘共用模板）—— 它是"复盘 + 研判"，是**读**不是**看**，
              结构完全不同：结论条 → 盘面/宏观/消息 → 口径溯源。 -->
         <template v-else-if="selectedPhase === 'amreview'">
+          <!-- ★★ 2026-11-08（看盘序 A4，断点 D4）：盘前计划回顾——午休对读"上午做得如何"
+               之前先看"上午计划是什么"；上午实际由紧随其后的 AmReviewCard 承担（不重复渲染）。
+               dc=今晨决策卡口径（进入本 phase 时拉取）；候选名→本地详情。 -->
+          <div class="bg-card border border-border rounded-lg p-3 mb-3">
+            <div class="text-sm font-semibold mb-1.5">盘前计划回顾
+              <span class="text-[10px] text-muted font-normal">（今晨决策卡口径 · 上午实际见下方卡片）</span></div>
+            <div v-if="dc" class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <div>
+                <span class="text-muted">档位：</span>
+                <b :class="(dc.stance?.level || '').includes('空仓') ? 'text-muted' : 'text-red-400'">{{ dc.stance?.level || '—' }}</b>
+                <span v-if="dc.stance?.total_cap" class="text-muted ml-1">总仓位上限 {{ dc.stance.total_cap }}</span>
+                <span v-if="dc.stance?.single_cap" class="text-muted ml-1">单票 {{ dc.stance.single_cap }}</span>
+              </div>
+              <div v-if="(dc.do?.candidates || []).length">
+                <span class="text-muted">候选：</span>
+                <a v-for="c in dc.do.candidates.slice(0, 3)" :key="c.code"
+                   :href="stockHref(c.code)" target="_blank"
+                   class="text-gray-200 hover:text-accent hover:underline mr-2">
+                  {{ c.name }}<span class="font-mono text-[10px] text-muted ml-0.5">{{ c.total_score ?? '' }}</span></a>
+              </div>
+              <div v-if="(dc.do?.avoid || []).length" class="md:col-span-2">
+                <span class="text-muted">回避方向：</span>
+                <span class="text-amber-300/90">{{ dc.do.avoid.join('、') }}</span>
+              </div>
+              <div v-if="dc.prev_tomorrow_watch?.items?.length" class="md:col-span-2 text-[11px]">
+                <span class="text-sky-300/90">昨日日报明日关注：</span>
+                <span class="text-gray-300">{{ dc.prev_tomorrow_watch.items.join('；') }}</span>
+              </div>
+            </div>
+            <div v-else class="text-xs text-muted">
+              决策卡未加载——<button class="text-accent hover:underline" @click="loadDecisionCard()">加载</button>
+            </div>
+          </div>
           <AmReviewCard :data="amReview" :loading="amReviewLoading"
                         :error="amReviewError" :date="selectedDate"
                         :digest="amDigest" :digest-loading="amDigestLoading"
@@ -2251,6 +2354,25 @@
         <!-- 实时模式 · ② 早盘 / ③ 午盘（执行模式：大字、少文字）
              ★ 2026-09-25 用户要求：指数大字卡删除——与顶栏重复，指数保留顶栏常驻 -->
         <template v-else-if="selectedPhase === 'intraday' || selectedPhase === 'midday'">
+          <!-- ★★ 2026-11-08（看盘序 A2，断点 D2）：竞价定稿摘要——9:25 的判断在 9:30
+               最需要它的时刻不该消失。数据与竞价面板同源（auction_panel，零新请求）；
+               休市/盘后 gap_is_today=false ⇒ 灰显并标注口径日期（诚实纪律）。 -->
+          <div class="bg-card border border-indigo-500/40 rounded-lg p-3 mb-3 flex items-center gap-3 flex-wrap text-xs">
+            <span class="text-sm font-semibold shrink-0">竞价定稿</span>
+            <template v-if="apPanel">
+              <span class="text-[10px] text-muted font-mono">{{ apPanel.gap_date }}</span>
+              <span :class="apPanel.gap_is_today ? 'text-gray-200' : 'text-muted'">
+                高开 {{ apPanel.emotion?.up_open ?? '—' }} / 低开 {{ apPanel.emotion?.down_open ?? '—' }}
+                · 平均缺口 <b class="font-mono">{{ apPanel.emotion?.avg_gap_all ?? '—' }}%</b>
+                <template v-if="apPanel.emotion?.amount_ratio"> · 竞价量比 <b class="font-mono">{{ apPanel.emotion.amount_ratio }}</b></template>
+              </span>
+              <span v-if="(apPanel.sectors?.up || []).length" class="text-muted">
+                强势：<span class="text-gray-200">{{ apPanel.sectors.up.slice(0, 3).map(s => s.industry).join('、') }}</span></span>
+              <span v-if="emotion?.auction?.verdict?.text" class="text-muted">｜判读 {{ emotion.auction.verdict.text }}</span>
+              <span v-if="!apPanel.gap_is_today" class="text-[10px] text-amber-400">非今日口径（休市/盘后读最近交易日定稿）</span>
+            </template>
+            <span v-else class="text-muted">—（面板未就绪，<button class="text-accent hover:underline" @click="loadAuctionPanel">重试</button>）</span>
+          </div>
           <!-- ★★ 2026-09-25（用户："同理，你调整一下盘中的布局" + "这个部分我想用一个长卡片展示"）：
                **① 看盘序 = 全宽长卡，不参与分栏** —— 它内部是 6 格横向指标 + 数行横向信息
                （尾盘承接 / 竞价 Top5；大小盘风格与昨日涨停已移到「盘面速览」涨跌条下方），天然"横着读"
@@ -6476,8 +6598,10 @@ function selectPhase(key) {
 }
 // ★ 2026-11-08：竞价面板用 **watch** 而不是塞进 selectPhase——URL 恢复/回放切换
 //   等路径不改 selectPhase 也能覆盖（用户实测"要手动点重试"的根因）。
+//   看盘序 A2/A4：早盘/午盘/早盘复盘也要面板（竞价定稿摘要）与决策卡（计划对照）。
 watch(selectedPhase, (k) => {
-  if (k === 'auction') loadAuctionPanel()
+  if (k === 'auction' || k === 'intraday' || k === 'midday') loadAuctionPanel()
+  if (k === 'amreview') { loadAuctionPanel(); loadDecisionCard() }
 })
 function syncQuery() {
   router.replace({ query: { ...route.query, phase: selectedPhase.value, date: selectedDate.value } })
@@ -6612,9 +6736,10 @@ const { load: loadVer, statusOf: verStatus } = useVerification()
 onMounted(async () => {
   await loadDayIndex()
   // ★ 2026-11-08（用户实测："要手动点重试才会加载接口"）：URL 恢复 phase 时不走
-  //   `selectPhase` ⇒ 竞价面板的钩子不触发。onMounted 时若正处于竞价阶段补一次；
+  //   `selectPhase` ⇒ 竞价面板的钩子不触发。onMounted 时若正处于相关阶段补一次；
   //   之后由下方 watch 覆盖切换路径（两处都幂等，重复调用无害）。
-  if (selectedPhase.value === 'auction') loadAuctionPanel()
+  if (['auction', 'intraday', 'midday'].includes(selectedPhase.value)) loadAuctionPanel()
+  if (selectedPhase.value === 'amreview') { loadAuctionPanel(); loadDecisionCard() }
   loadStatus()   // 顶栏新鲜度灯的数据源（失败自动置黄灯）
   loadVer()      // 数据可信度总表（幂等，失败不影响主流程）
   // ★ 2026-09-28：初始化前端本地评分引擎（评分榜「本地优先」需要）。

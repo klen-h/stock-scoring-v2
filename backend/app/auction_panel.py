@@ -273,6 +273,59 @@ def _emotion_summary(gaps: List[Dict], gap_date: str, gap_is_today: bool) -> Dic
 # ══════════════════════════════════════════════════════════════════════════
 # 面板组装
 # ══════════════════════════════════════════════════════════════════════════
+def _plan_section(gap_map: Dict[str, Dict]) -> Dict:
+    """计划偏离对照（A3，docs/plans/20261108_看盘序信息传递盘点）：**纯事实 join**。
+
+    · 候选 = `ranking_history` 最新日 Top10（决策卡"做什么"的同源，一次小读）
+    · 观察池 = `gate_snapshot_history` 最新 payload 中 ready≥2 的票（买入闸门就绪底座）
+    · join 竞价缺口 ⇒ "我计划里的票今天竞价如何"；
+      **只陈述，不建议**（R2：竞价数据无检验结论；参考价偏离的解读留给规则判读卡）。
+    """
+    out: Dict = {"candidates": [], "watch": [], "note": ""}
+    try:
+        r = db.fetch_one("SELECT MAX(rank_date) AS d FROM ranking_history")
+        d = (r or {}).get("d")
+        if d:
+            out["candidates_date"] = str(d)[:10]
+            for x in (db.fetch(
+                    "SELECT rank_pos, code, name, total_score, signal "
+                    "FROM ranking_history WHERE rank_date=%s "
+                    "ORDER BY rank_pos LIMIT 10", (d,)) or []):
+                c = str(x.get("code") or "")
+                g = gap_map.get(c)
+                out["candidates"].append({**x, "gap_pct": (g or {}).get("gap_pct")})
+    except Exception as e:
+        out["note"] += "候选读取失败；"
+    try:
+        row = db.fetch_one("SELECT date, payload FROM gate_snapshot_history "
+                           "ORDER BY date DESC LIMIT 1")
+        pay = json.loads((row or {}).get("payload") or "{}")
+        out["watch_date"] = str((row or {}).get("date") or "")[:10]
+        cnt = 0
+        for x in (pay.get("candidates") or []):
+            code = str(x.get("code") or "")
+            ready = x.get("ready")
+            if not code or ready is None:
+                continue
+            try:
+                if int(ready) < 2:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            g = gap_map.get(code)
+            out["watch"].append({"code": code, "name": x.get("name") or code,
+                                 "ready": ready,
+                                 "gap_pct": (g or {}).get("gap_pct")})
+            cnt += 1
+            if cnt >= 20:
+                break
+    except Exception as e:
+        out["note"] += "观察池读取失败；"
+    out["note"] = (out["note"] + "纯事实对照（候选=盘前评分 Top10 / 观察=闸门 ready≥2；"
+                   "缺口=竞价开盘/昨收）；不构成任何操作建议").strip("； ")
+    return out
+
+
 def build_panel() -> Dict:
     gaps, gap_date, has_live = _stock_gaps()
     gap_is_today = gap_date == _bj_now().strftime("%Y-%m-%d")
@@ -298,6 +351,28 @@ def build_panel() -> Dict:
         "note": ("口径与竞价看板主卡一致：非竞价窗口读的是最近已完成交易日的开盘数据；"
                  "预期区间=昨日推演锚点（下看~修复，仅上证）；板块=industry_map 聚合。"),
     }
+    # ★ 2026-11-08（看盘序 A3）：计划偏离对照（纯事实 join，零决策链）
+    gap_map = {g["code"]: g for g in gaps}
+    panel["plan"] = _plan_section(gap_map) if has_live else {
+        "candidates": [], "watch": [], "note": "无行情"}
+    # ★ 2026-11-08（看盘序 A1b）：昨日日报的"明日关键观察指标"接入竞价面板——
+    #   日报收盘后产出（A1a 落库），次日竞价正是它的消费时刻；缺失如实标注（不硬造）。
+    try:
+        from app.daily_report import load_report_json
+        _tw = load_report_json(day=prev_day)
+        if _tw and _tw.get("payload"):
+            panel["tomorrow_watch"] = {
+                "date": _tw["date"],
+                "items": (_tw["payload"].get("tomorrow_watch") or [])[:5],
+            }
+        else:
+            panel["tomorrow_watch"] = {
+                "date": prev_day, "items": [],
+                "empty_reason": "该日日报无结构化产出（LLM 兜底或恢复前）",
+            }
+    except Exception as e:
+        panel["tomorrow_watch"] = {"date": prev_day, "items": [],
+                                   "empty_reason": str(e)[:80]}
     panel["llm_sig_current"] = _sig(panel)
     return panel
 

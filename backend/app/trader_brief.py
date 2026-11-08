@@ -1231,8 +1231,25 @@ def build_decision_card() -> dict:
     except Exception as e:
         print(f"[decision-card] spring festival failed: {e}")       # ASCII（铁律⑥）
 
+    # ★★ 2026-11-08（看盘序 A1b，docs/plans/20261108_看盘序信息传递盘点）：
+    #   昨日日报的"明日关键观察指标"接入决策卡——日报收盘后产出 `tomorrow_watch`
+    #   （结构化，`daily_report_json` 表，A1a 落库），第二天盘前正是它的消费时刻。
+    #   只读展示 + 口径日期如实标注；**不参与档位/候选的任何计算**（R2 纪律）。
+    #   无结构化产出（LLM 兜底日/11-10 恢复前）⇒ 字段缺省，前端显示空态。
+    try:
+        from app.daily_report import load_report_json
+        _tw = load_report_json()
+        if _tw and _tw.get("payload"):
+            data["prev_tomorrow_watch"] = {
+                "date": _tw["date"],
+                "items": (_tw["payload"].get("tomorrow_watch") or [])[:5],
+            }
+    except Exception as e:
+        print(f"[decision-card] tomorrow_watch failed: {e}")        # ASCII（铁律⑥）
+
     return {
         "date": data.get("date"),
+        "prev_tomorrow_watch": data.get("prev_tomorrow_watch"),
         "regime": reg,
         "stance": {"level": stance[0], "total_cap": stance[1],
                    "single_cap": stance[2], "why": stance[3]},
