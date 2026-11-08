@@ -30,7 +30,9 @@
 """
 
 import json
+import re
 import time
+from datetime import datetime
 from typing import Dict, Optional
 
 _VERDICTS = [
@@ -48,6 +50,23 @@ def _verdict(total: int) -> str:
 
 _env_cache = {"ts": 0.0, "snap": None}
 
+_RE_DAY = re.compile(r"(\d{4})[-/](\d{1,2})[-/](\d{1,2})")
+
+
+def _parse_day(s):
+    """`2026/9/7` 与 `2026-09-07` 都能解析成 datetime；失败返回 None。
+
+    ★ `macro_daily.date` 是斜杠不补零格式（见 `flash/store._bj_date`），
+      字符串比较会把 9 月排到 11 月之后 ⇒ 凡是"取最新"都必须走本函数。
+    """
+    m = _RE_DAY.search(str(s or ""))
+    if not m:
+        return None
+    try:
+        return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
 
 def _env_snapshot(max_age: float = 1800) -> dict:
     """环境快照（30min 缓存）：宏观方向分 / regime / 板块资金表 / 主线名单。"""
@@ -61,9 +80,22 @@ def _env_snapshot(max_age: float = 1800) -> dict:
 
     # 1. 宏观方向分
     try:
-        r = db_fetch_one("SELECT data_json FROM macro_daily ORDER BY date DESC LIMIT 1")
-        if r and r.get("data_json"):
-            d = json.loads(r["data_json"]) if isinstance(r["data_json"], str) else r["data_json"]
+        # ★★ 2026-11-08：**不能用 `ORDER BY date DESC`** —— `macro_daily.date` 存的是
+        #   `2026/9/7` 这种**斜杠且不补零**格式（`flash/store._bj_date()` 有意兼容旧项目，
+        #   不是脏数据）。字符串排序下 `'9/7' > '11/6'` ⇒ 取到的"最新"是**9 月**，
+        #   而真实最新是 11-06。后果：`macro_score` 停在两个月前，环境合流拿旧宏观
+        #   判"顺流/逆流"。（实测 `ORDER BY date DESC LIMIT 5` = 9/7, 9/4, 9/30, 9/3, 9/29）
+        #   ⇒ 与 `thesis_tracker` / `stagflation` / `coach.rules._to_date` 同口径：
+        #     **解析成日期再比大小**，不依赖字符串排序。
+        best_dt, best_json = None, None
+        for row in (db_fetch("SELECT date, data_json FROM macro_daily") or []):
+            dt = _parse_day(row.get("date"))
+            if dt is None or not row.get("data_json"):
+                continue
+            if best_dt is None or dt > best_dt:
+                best_dt, best_json = dt, row.get("data_json")
+        if best_json:
+            d = json.loads(best_json) if isinstance(best_json, str) else best_json
             direction = d.get("direction") or {}
             snap["macro_score"] = direction.get("score")
             snap["macro_level"] = direction.get("level")
