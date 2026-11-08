@@ -214,3 +214,50 @@ def dragon_tiger(
         print(f"[capital] dragon-tiger failed: {e}")
         out["note"] = "读取失败"
     return out
+
+
+@router.get("/industry-mainflow")
+def industry_mainflow(days: int = Query(1, ge=1, le=10)):
+    """行业主力净流入榜（盯盘计划 G10-A）：mainflow_history × industry_map 聚合。
+
+    数据=日批主力资金流（T-1 口径，17:00 落库）；纯聚合读，零外呼。
+    返回 {date, rows:[{industry, n, net_yi, up, down}]}，按净流入降序 + 尾部净流出。
+    """
+    from app.database import db
+    try:
+        r = db.fetch_one("SELECT MAX(date) AS d FROM mainflow_history")
+        latest = str((r or {}).get("d") or "")[:10]
+        if not latest:
+            return {"ok": False, "error": "mainflow_history 无数据（日批未跑）"}
+        rows = db.fetch(
+            """SELECT COALESCE(si.main_industry, '未分类') AS industry,
+                      COUNT(*) AS n,
+                      SUM(m.main_net) AS net,
+                      SUM(CASE WHEN m.main_net > 0 THEN 1 ELSE 0 END) AS up
+               FROM mainflow_history m
+               LEFT JOIN stock_industry si ON si.code = m.code
+               WHERE m.date = %s
+               GROUP BY 1 ORDER BY net DESC""", (latest,)) or []
+        for _ in range(max(0, days - 1)):
+            pr = db.fetch_one("SELECT MAX(date) AS d FROM mainflow_history WHERE date < %s",
+                              (latest,))
+            prev = str((pr or {}).get("d") or "")[:10]
+            if not prev:
+                break
+            latest = prev
+            rows = db.fetch(
+                """SELECT COALESCE(si.main_industry, '未分类') AS industry,
+                          COUNT(*) AS n,
+                          SUM(m.main_net) AS net,
+                          SUM(CASE WHEN m.main_net > 0 THEN 1 ELSE 0 END) AS up
+                   FROM mainflow_history m
+                   LEFT JOIN stock_industry si ON si.code = m.code
+                   WHERE m.date = %s
+                   GROUP BY 1 ORDER BY net DESC""", (latest,)) or []
+            break
+        out = [{"industry": x["industry"], "n": x["n"], "up": x["up"],
+                "net_yi": round(float(x["net"] or 0) / 10000, 2)} for x in rows]
+        return {"ok": True, "date": latest, "rows": out,
+                "note": "口径=主力净流入合计（日批 T-1，17:00 落库）；行业=industry_map 月级映射"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:100]}
