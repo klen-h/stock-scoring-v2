@@ -102,6 +102,10 @@ _CN_PPI_BANDS = (
     (99.0, "高位"),
 )
 
+# ★ 剪刀差"大"的阈值（pp）。**经验值，无公认标准** —— 改这里，`scissors_text()`
+#   与 `macro_cycle._narrative()` 会同时生效（原先是两处各写一个 3，改一处漏一处）。
+SCISSORS_BIG = 3.0
+
 
 def ensure_table() -> None:
     global _READY
@@ -168,11 +172,11 @@ def scissors_text(sc: Optional[float]) -> str:
     """剪刀差的人话描述（**只说事实**）。"""
     if sc is None:
         return "剪刀差无数据"
-    if sc > 3:
+    if sc > SCISSORS_BIG:
         return f"剪刀差 {sc:+.2f}pp：上游明显强于下游"
     if sc > 0:
         return f"剪刀差 {sc:+.2f}pp：上游略强于下游"
-    if sc > -3:
+    if sc > -SCISSORS_BIG:
         return f"剪刀差 {sc:+.2f}pp：下游略强于上游"
     return f"剪刀差 {sc:+.2f}pp：下游明显强于上游"
 

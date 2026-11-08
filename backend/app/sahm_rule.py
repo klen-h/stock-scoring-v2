@@ -320,6 +320,47 @@ def refresh_from_jin10(gte: str = None, lte: str = None,
             "months": r.get("rows") or 0, "error": ""}
 
 
+def _insert_if_absent(iso: str, rate: float, source: str = "akshare") -> bool:
+    """**只在缺失时插入**（`ON CONFLICT DO NOTHING`），返回是否真的插入了。
+
+    ★ 2026-11-08：给 akshare 回填用。它只该补 jin10 **覆盖不到的历史**，
+      不能覆盖 jin10 的区间 —— 因为：
+        · jin10 优先取 `revised`（官方修正值），akshare 的 `今值` 是**发布时初值**；
+        · 两者混用会让"主源/备源"的语义反转（实测我把 jin10 的 2021-12~2025-07
+          全刷成了 akshare，`source` 字段也跟着变成 akshare）。
+    """
+    ensure_table()
+    try:
+        before = db.fetch_one(f"SELECT 1 AS x FROM {_TABLE} WHERE date = %s", (iso,))
+        if before:
+            return False
+        db.execute(
+            f"INSERT INTO {_TABLE} (date, rate, source, created_at) "
+            f"VALUES (%s,%s,%s,%s) ON CONFLICT (date) DO NOTHING",
+            (iso, float(rate), str(source),
+             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _minus_one_month(iso: str) -> str:
+    """`2026-09-01` → `2026-08-01`（跨年自动处理）。
+
+    ★ 用于矫正 akshare：它的 `日期` 是**数据发布日**（次月首个周五），
+      不是统计月。直接用会**整体错位 1 个月**（实测 2021-07 存的是 2021-06 的值）。
+    """
+    try:
+        y, m = int(str(iso)[:4]), int(str(iso)[5:7])
+    except (ValueError, IndexError):
+        return str(iso)
+    m -= 1
+    if m == 0:
+        y, m = y - 1, 12
+    return "%04d-%02d-01" % (y, m)
+
+
 def refresh_from_akshare() -> Dict:
     """用 akshare 的 `macro_usa_unemployment_rate` **回填历史**（月度）。
 
@@ -359,10 +400,16 @@ def refresh_from_akshare() -> Dict:
         if not d or v is None or (isinstance(v, float) and v != v):
             continue
         try:
-            iso = upsert_rate(d, float(v), source="akshare")
-            saved += 1
-            if latest is None or iso > latest:
-                latest = iso
+            # ★★ 2026-11-08 修正：akshare 的 `日期` 是**发布日**（次月首个周五），
+            #   统计月要减 1。否则整条序列错位一个月 —— 实测 2021-07 存的是 2021-06 的值
+            #   （真实 2021-06=5.9 / 2021-07=5.4，库内 2021-07 却是 5.9）。
+            #   金十源用的是真统计月，两者混在一张表时必须先对齐口径。
+            iso = _minus_one_month(d)
+            # ★ 只补缺失，**不覆盖**已有行（jin10 优先，它取过 revised 修正值）
+            if _insert_if_absent(iso, float(v), source="akshare"):
+                saved += 1
+                if latest is None or iso > latest:
+                    latest = iso
         except Exception:
             continue
     return {"ok": saved > 0, "saved": saved, "latest": latest, "error": ""}

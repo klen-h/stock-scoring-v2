@@ -158,15 +158,34 @@ def parse_decision(plain: str) -> Dict:
     return {"decision": decision, "vote": vote}
 
 
-def judge_stage(plain: str, struck: List[str]) -> Dict:
+_HIKE_TOKENS = ("加息", "基准利率上调", "提高利率", "收紧货币政策")
+_RE_BP = re.compile(r"上调\s*\d+\s*个基点")
+
+
+def is_hike_wording(s: str) -> bool:
+    """这段文字是否在讲「加息」。
+
+    ★ 2026-11-08：**不能只找"加息"两个字**。金十声明原文写的是
+      「上调25个基点」/「上调25个基点，至3.75%至4%」，**全文不出现"加息"这个词**。
+      原判据 `any("加息" in s ...)` 因此在真实数据上**永远为 False**（单测抓出来的）。
+    """
+    t = str(s or "")
+    return any(tok in t for tok in _HIKE_TOKENS) or bool(_RE_BP.search(t))
+
+
+def judge_stage(plain: str, struck: List[str], decision: str = None) -> Dict:
     """关键词匹配 L4 候选档位。**只给候选，`need_manual` 恒为 True**。
 
-    ★ 额外一条判据：**`struck` 里出现"加息"字样** ⇒ 强 `stage_transition` 信号。
-      因为框架明写「删去加息选项表述」是这个阶段的核心标志，
-      而这个信息**在新增文本里看不到**，只能比对删除项。
+    ★ 额外一条判据：**本期未加息、且删掉了加息表述** ⇒ 强 `stage_transition` 信号。
+      框架明写「删去加息选项表述」是这阶段的标志，而这个信息**只在删除项里**。
+
+      ⚠️ 2026-11-08 补限定（`decision` 参数）：**本期本身就是加息月时不算**。
+         实测 2026-09 那次 `struck` 里有「上调25个基点」（来自反对票描述），
+         但 9 月恰恰是**加息月** —— 把它判成"转向信号"是反的。
     """
     text = str(plain or "")
-    removed_hike = any("加息" in s for s in (struck or []))
+    not_hiking = not (decision and "上调" in str(decision))
+    removed_hike = not_hiking and any(is_hike_wording(s) for s in (struck or []))
     hit = []
     for stage, kws in _STAGE_PATTERNS:
         for kw in kws:
@@ -175,9 +194,10 @@ def judge_stage(plain: str, struck: List[str]) -> Dict:
                 break
 
     if removed_hike:
-        # 删掉了"加息"表述 —— 按框架定义属于 transition 的典型标志
+        # 本期未加息，且上期含加息表述被删 —— 按框架定义属于 transition 的典型标志
         if not any(h["stage"] == "stage_transition" for h in hit):
-            hit.append({"stage": "stage_transition", "keyword": "（删除了含“加息”的表述）"})
+            hit.append({"stage": "stage_transition",
+                        "keyword": "（本期未加息，且删除了含加息语义的表述）"})
 
     if not hit:
         return {"stage_candidate": None, "stage_hit": [],
@@ -339,7 +359,8 @@ def view() -> Dict:
                 "text": "FOMC 声明无数据（未刷新）",
                 "detail": "先在日批跑 `fomc_statement` 或手动 refresh"}
 
-    stage = judge_stage(row.get("raw_text") or "", row.get("struck") or [])
+    stage = judge_stage(row.get("raw_text") or "", row.get("struck") or [],
+                        decision=row.get("decision"))
     return {
         "ok": True,
         "status": "ok",

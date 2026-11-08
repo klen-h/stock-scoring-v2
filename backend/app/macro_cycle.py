@@ -366,7 +366,13 @@ def _narrative(layers: List[Dict], price: Dict) -> Dict:
 
     # PPI-CPI 剪刀差
     sc = price.get("scissors_pp") if price else None
-    if sc is not None and sc > 3:
+    # ★ 阈值统一取 `macro_price.SCISSORS_BIG`，不在本文件另写一个 3
+    _sc_big = 3.0
+    try:
+        from app.macro_price import SCISSORS_BIG as _sc_big   # noqa: N806
+    except Exception:
+        pass
+    if sc is not None and sc > _sc_big:
         cn_ppi = (price.get("cn_ppi") or {}).get("latest")
         cn_cpi = (price.get("cn_cpi") or {}).get("latest")
         cross.append(
