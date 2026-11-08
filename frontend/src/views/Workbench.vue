@@ -301,7 +301,12 @@
              只需要今天新加的卡片即可"）：本段（观察器）在「早盘复盘」阶段整块隐藏。
              理由：早盘复盘是"读结论"，不是"看盘"——它自带盘面/宏观/消息三块，
              下面再压一张观察器会重复且抢注意力。 -->
-        <div v-if="selectedPhase !== 'amreview'" class="grid grid-cols-1 gap-3 items-stretch">
+        <!-- ★★ 2026-11-08（用户："竞价 tab 下顶部加切换 tab"）：竞价阶段本区域让位给
+             竞价面板（子 tab 1），观察器整体挪到子 tab 2（"观察器与速览"）——
+             v-show 保持挂载（观察器折叠态/面板数据切回来不丢）。非竞价阶段行为不变。 -->
+        <div v-if="selectedPhase !== 'amreview'"
+             v-show="selectedPhase !== 'auction' || auctionSubTab === 'obs'"
+             class="grid grid-cols-1 gap-3 items-stretch">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
              原 4 张卡 → 1 张卡 + 4 行摘要（默认收起，localStorage 记忆）。
              摘要行常显关键数字，避免"收起=藏信息"；红点=需关注/硬触发。 -->
@@ -938,7 +943,7 @@
                       {{ it.checked ? '✅' : '⬜' }}<template
                         v-if="!it.checked && it.insufficient"><span class="text-[11px]">数据不足</span></template>
                     </span>
-                    <span class="text-muted w-20 shrink-0">{{ it.label }}</span>
+                    <span class="text-muted w-25 shrink-0">{{ it.label }}</span>
                     <span class="flex-1 break-all">{{ it.detail }}</span>
                     <span v-if="it.key === 'nation_team_ann' && it.hintCount"
                           class="shrink-0 px-1 rounded bg-amber-500/15 text-amber-400 text-[11px]"
@@ -1025,6 +1030,7 @@
         <!-- ★★ 2026-11-01：本段（盘面速览 + 快讯解读）在「早盘复盘」阶段整块隐藏，
              只留 `AmReviewCard`（用户在别的 tab 仍可看到这两张卡）。 -->
         <div v-if="selectedPhase !== 'amreview'"
+             v-show="selectedPhase !== 'auction' || auctionSubTab === 'obs'"
              class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
           <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
                置于观察器下方；消除市场涨跌在多处重复）：
@@ -1372,6 +1378,22 @@
                ③ 高开榜只给名字与幅度，**未标注"是否池内 / 有信号"**（数据现成）。
                ④ 无竞价量比（需"昨日同期竞价额"，本项目无分时数据 ⇒ 短期做不到，诚实标注）。 -->
         <template v-else-if="selectedPhase === 'auction'">
+          <!-- ★★ 2026-11-08（用户需求）：竞价阶段顶部子 tab——
+               ① 竞价面板（默认）：主卡 + 三块增强（昨日关键位/板块联动/计划股/LLM）；
+               ② 观察器与速览：观察器容器 + 盘面速览/快讯解读（v-show 切换，保持挂载）。 -->
+          <div class="flex gap-2">
+            <button @click="auctionSubTab = 'panel'"
+                    :class="auctionSubTab === 'panel'
+                      ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
+                      : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
+                    class="px-3 py-1 rounded text-xs border transition-colors">竞价面板</button>
+            <button @click="auctionSubTab = 'obs'"
+                    :class="auctionSubTab === 'obs'
+                      ? 'bg-indigo-500/20 text-indigo-200 border-indigo-500/40'
+                      : 'bg-white/5 text-muted hover:text-gray-200 border-border/60'"
+                    class="px-3 py-1 rounded text-xs border transition-colors">观察器与速览</button>
+          </div>
+          <div v-show="auctionSubTab === 'panel'" class="space-y-3">
           <div class="bg-card border border-indigo-500/40 rounded-lg p-3">
             <div class="flex items-center justify-between mb-1.5">
               <div class="text-sm font-semibold">竞价看板
@@ -1846,6 +1868,7 @@
             </div>
             <div class="text-[10px] text-muted">{{ apPanel.note }}</div>
           </div>
+          </div><!-- /v-show 竞价面板组 -->
         </template>
 
         <!-- 实时模式 · ① 盘前（阅读模式） -->
@@ -6226,6 +6249,9 @@ async function loadEmotion() {
 // ⚠️ 面板与竞价主卡同源同口径：非竞价窗口读的是最近已完成交易日的开盘数据，
 //    非当日提示横幅已覆盖；失败静默（三块是增强，不能拖垮竞价主卡）。
 const apPanel = ref(null)
+// ★ 2026-11-08（用户需求）：竞价阶段子 tab——panel=竞价面板（默认）/ obs=观察器与速览。
+//   v-show 切换保持挂载：面板数据、观察器折叠态切回来不丢。
+const auctionSubTab = ref('panel')
 const apLoading = ref(false)
 const apErr = ref('')
 const apLlmLoading = ref(false)
