@@ -217,11 +217,18 @@ def dragon_tiger(
 
 
 @router.get("/industry-mainflow")
-def industry_mainflow(days: int = Query(1, ge=1, le=10)):
+def industry_mainflow():
     """行业主力净流入榜（盯盘计划 G10-A）：mainflow_history × industry_map 聚合。
 
     数据=日批主力资金流（T-1 口径，17:00 落库）；纯聚合读，零外呼。
-    返回 {date, rows:[{industry, n, net_yi, up, down}]}，按净流入降序 + 尾部净流出。
+    返回 {date, rows:[{industry, n, net_yi, up}]}，按净流入降序。
+
+    ★★ 2026-11-08 修正（审查发现）：原签名带 `days` 参数 + 一个 `for … break`
+      **死循环**（第一次迭代就 break，且每次是**覆盖**不是累加）
+      ⇒ `days=5` 也只返回最新 1 天：参数纯摆设，还会让人误以为拿到了多日数据。
+      多日累加并无产品需求（前端 `CapitalView.vue` 一直不传参），
+      故**删掉参数与循环**，只保留"最新一日"一种语义。
+      若将来要 5 日累计，应另开端点并明确口径（累计 vs 日均），不要在旧签名上打补丁。
     """
     from app.database import db
     try:
@@ -238,23 +245,6 @@ def industry_mainflow(days: int = Query(1, ge=1, le=10)):
                LEFT JOIN stock_industry si ON si.code = m.code
                WHERE m.date = %s
                GROUP BY 1 ORDER BY net DESC""", (latest,)) or []
-        for _ in range(max(0, days - 1)):
-            pr = db.fetch_one("SELECT MAX(date) AS d FROM mainflow_history WHERE date < %s",
-                              (latest,))
-            prev = str((pr or {}).get("d") or "")[:10]
-            if not prev:
-                break
-            latest = prev
-            rows = db.fetch(
-                """SELECT COALESCE(si.main_industry, '未分类') AS industry,
-                          COUNT(*) AS n,
-                          SUM(m.main_net) AS net,
-                          SUM(CASE WHEN m.main_net > 0 THEN 1 ELSE 0 END) AS up
-                   FROM mainflow_history m
-                   LEFT JOIN stock_industry si ON si.code = m.code
-                   WHERE m.date = %s
-                   GROUP BY 1 ORDER BY net DESC""", (latest,)) or []
-            break
         out = [{"industry": x["industry"], "n": x["n"], "up": x["up"],
                 "net_yi": round(float(x["net"] or 0) / 10000, 2)} for x in rows]
         return {"ok": True, "date": latest, "rows": out,

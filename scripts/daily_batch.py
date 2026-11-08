@@ -1996,7 +1996,13 @@ DEFAULT_ORDER = ["backfill",
                 #   与 shadow_defensive 同批即可；漏排会导致名单永远停在手跑那天。
                 "defensive_group",
                  "backtest_preheat",
-                 "lhb", "holdings_lhb_digest", "uplimit_reason", "holdings_news_digest", "intraday_path", "zz_finance", "zz_daily",
+                 # ★★ 2026-11-08 修正（审查发现）：`uplimit_reason` 读 `zz_daily_snapshots`
+                 #   的**当日 payload**（`_zz_payload` 第一条 SQL），必须排在 `zz_daily` 之后。
+                 #   原位置写在 zz_daily 之前 ⇒ 读到空 payload ⇒ 涨停归类永远 0 只，且不报错
+                 #   （静默失效：日志显示"涨停归类: 0 只"，看起来像当天没涨停股）。
+                 "lhb", "holdings_lhb_digest", "holdings_news_digest", "intraday_path",
+                 "zz_finance", "zz_daily",
+                 "uplimit_reason",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
