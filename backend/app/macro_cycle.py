@@ -215,6 +215,17 @@ def snapshot() -> Dict:
         )
 
     hit_count = sum(1 for x in layers if x.get("status") == "ok")
+
+    # ★ 2026-11-08：**框架外的补充观察** —— 全球 CPI。
+    #   框架 L1 只有美国 PCE 系指标，没有 CPI、也没有中国通胀。
+    #   但中国 CPI 决定国内货币政策空间，对 A 股比美国 CPI 更直接。
+    #   ⚠️ 它**不进 L1**（阈值口径完全不同：中国 0.9% 是低通胀、美国 3.7% 是偏高）。
+    try:
+        from app import macro_cpi as _cpi
+        cpi = _cpi.view()
+    except Exception as e:
+        cpi = {"ok": False, "note": f"CPI 模块不可用: {str(e)[:70]}"}
+
     return {
         "ok": True,
         "observed_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -223,9 +234,10 @@ def snapshot() -> Dict:
         "layers": layers,
         "layers_ok": hit_count,
         "layers_total": len(layers),
+        "cpi": cpi,
         "note": ("纯观察器：不产生买卖信号、不给仓位建议（框架 §5.2 的配比表"
                  "已按项目红线降级为参考叙事）。数据缺失一律标 unavailable，"
-                 "**不得当作未触发**。"),
+                 "**不得当作未触发**。`cpi` 为框架外补充，**不参与 L1 判定**。"),
         "doc": "docs/plans/全球宏观周期判断与资产配置逻辑框架.md",
     }
 
