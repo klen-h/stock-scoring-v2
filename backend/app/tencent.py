@@ -282,7 +282,11 @@ def _is_stale_kline(klines: list) -> bool:
         d = datetime.strptime(last, "%Y-%m-%d").date()
     except ValueError:
         return True
-    now = datetime.now()
+    # ★ 2026-11-09（BK-48 收口）：naive `datetime.now()` 在 UTC 部署的 Render 上
+    #   收盘后约 8h 内把上一交易日 K 线判"新鲜"（08-28/08-31 信号事故同款口径）
+    #   ⇒ 改北京时间（与文件内其他时间戳口径一致）。
+    from app.flash.rules import beijing_now
+    now = beijing_now()
     # 15:00 后当日数据应已更新；15:00 前允许停在上一交易日
     ref = now.date() if now.hour >= 15 else now.date() - timedelta(days=1)
     for _ in range(5):          # 跳过周末（节假日按工作日近似，保守）

@@ -404,6 +404,22 @@ def get_china_market_status() -> dict:
     return {"is_open": False, "reason": "已收盘 (15:00后)"}
 
 
+def _warn_holidays_coverage(day_str: str) -> None:
+    """★ 2026-11-09（BK-54b 防静默）：HOLIDAYS 只维护到 2026 ⇒ 跨年后节假日识别
+    失效（把假期当交易日）。国务院公告后应把 2027 年份加入 HOLIDAYS；
+    在那之前，凡查询超出已覆盖年份的日期，打一条告警（限频：每进程一次）。"""
+    _done = getattr(_warn_holidays_coverage, "_done", set())
+    yr = int(str(day_str)[:4]) if str(day_str)[:4].isdigit() else 0
+    if not yr or yr in _done:
+        return
+    _done.add(yr)
+    if yr not in HOLIDAYS:
+        print("[rules] WARNING: year %d not in HOLIDAYS (manual fallback list "
+              "maintained only through 2026); fuyao calendar is primary, but the "
+              "manual fallback will treat holidays as trading days until the "
+              "2027 list is added" % yr)
+
+
 def is_trading_day(dt=None) -> bool:
     """是否为 A 股交易日（只判周末 + 法定节假日，不判盘中时段）。
 
@@ -425,6 +441,7 @@ def is_trading_day(dt=None) -> bool:
             return bool(_v)
     except Exception as e:
         print(f"[rules] trading_calendar failed: {str(e)[:60]}")   # ASCII（铁律⑥）
+    _warn_holidays_coverage(now)   # BK-54b：年份超出 HOLIDAYS 维护范围 ⇒ 告警一次
     md = (now.month, now.day)
     for (lo, hi, _name) in HOLIDAYS.get(now.year, []):
         if lo <= md <= hi:

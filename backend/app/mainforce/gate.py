@@ -119,8 +119,9 @@ def _top_up_bars(cached: dict, latest: str) -> tuple:
     cutoff = min(_d(cached[c][-1].get("date")) for c in tail)
     rows = db.fetch(
         "SELECT code, date, open, high, low, close, volume FROM backtest_prices "
-        "WHERE code = ANY(%s) AND date >= %s ORDER BY code, date",
-        (tail, cutoff)) or []
+        # ★ 2026-11-09（BK-41 收口·闸门主链）：ANY(%s) 为 PG 专有 ⇒ IN+动态占位符
+        "WHERE code IN (" + ", ".join(["%s"] * len(tail)) + ") AND date >= %s ORDER BY code, date",
+        tuple(tail) + (cutoff,)) or []
     added = 0
     for r in rows:
         c = r["code"]
