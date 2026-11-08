@@ -8,6 +8,10 @@
             （数据源 zzshare · 每日 17:45 同步 · <b>读库非实时</b>）</span>
         </div>
         <div class="flex items-center gap-2">
+          <button @click="onlyWatch = !onlyWatch"
+                  :class="onlyWatch ? 'bg-accent/20 text-accent border-accent/40' : 'bg-white/5 text-muted border-border/60'"
+                  class="px-2 py-1 rounded text-xs border transition-colors"
+                  title="只显示自选池内的上榜个股">只看自选</button>
           <select v-model="date" @change="load()"
                   class="bg-card border border-border rounded px-2 py-1 text-xs">
             <option v-for="d in dates" :key="d" :value="d">{{ d }}</option>
@@ -145,7 +149,7 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { getDragonTiger } from '../api'
+import { getDragonTiger, getUserWatchlist } from '../api'
 
 const loading = ref(false)
 const err = ref('')
@@ -168,10 +172,23 @@ const seatsHint = computed(() => {
     : '席位明细仅对评分池内个股富化'
 })
 
-const sides = computed(() => ([
-  { key: 'buy', label: '净买榜（主力买入）', cls: 'text-red-400', rows: topBuy.value },
-  { key: 'sell', label: '净卖榜（主力卖出）', cls: 'text-emerald-400', rows: topSell.value },
-]))
+// ★ 2026-11-08（盯盘计划 G11）：只看自选——真实自选池代码集过滤两榜
+const onlyWatch = ref(false)
+const watchCodes = ref(new Set())
+async function loadWatchCodes() {
+  try {
+    const { data } = await getUserWatchlist()
+    watchCodes.value = new Set((data?.data || data || []).map(x => String(x.code).slice(-6)))
+  } catch { watchCodes.value = new Set() }
+}
+const sides = computed(() => {
+  const f = (rows) => (onlyWatch.value && watchCodes.value.size
+    ? rows.filter(r => watchCodes.value.has(String(r.code).slice(-6))) : rows)
+  return [
+    { key: 'buy', label: '净买榜（主力买入）', cls: 'text-red-400', rows: f(topBuy.value) },
+    { key: 'sell', label: '净卖榜（主力卖出）', cls: 'text-emerald-400', rows: f(topSell.value) },
+  ]
+})
 
 // A 股习惯：红涨绿跌（与项目其它表一致）
 const cls = (v) => (Number(v) > 0 ? 'text-red-400' : Number(v) < 0 ? 'text-emerald-400' : 'text-muted')
@@ -220,5 +237,5 @@ async function toggle(code) {
 }
 function clearStock() { stockCode.value = ''; stockRows.value = []; expanded.value = '' }
 
-onMounted(load)
+onMounted(() => { load(); loadWatchCodes() })
 </script>

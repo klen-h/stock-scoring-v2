@@ -1457,6 +1457,18 @@ def task_thesis_resolve():
         return f"假设裁决: WARN {str(e)[:70]}"
 
 
+def task_holdings_lhb_digest():
+    """持仓龙虎榜夜报（G11）：当日 lhb_history × user_portfolio → 命中推企微。
+
+    零新数据源（榜单日批已落库）；幂等（每码每日一条）；失败不抛不影响主链。"""
+    try:
+        from app.holdings_lhb_digest import run as _run
+        r = _run()
+        return f"持仓龙虎榜: {'命中 ' + str(r.get('hits')) + ' 条' if r.get('hits') else '无上榜'}"
+    except Exception as e:
+        return f"持仓龙虎榜: WARN {str(e)[:70]}"
+
+
 def task_macro_class():
     """宏观状态概率账（2026-11-07）。**纯观察器**，不进评分/闸门/仓位/模拟盘。
 
@@ -1850,6 +1862,9 @@ TASKS = {
     # ★ 2026-10-18：回测缓存预热（原 Render _heavy 组，只读模式从未跑过 ⇒ 缓存长期陈旧）
     "backtest_preheat": (task_backtest_preheat, "回测缓存预热（用户访问不再触发重算）"),
     "lhb": (task_lhb, "龙虎榜同步"),
+    # ★ 2026-11-08（盯盘计划 G11）：持仓龙虎榜夜报——读当日 lhb_history × 真实持仓，
+    #   命中推企微一条（事实陈述）；幂等 portfolio_alert_log。必须排在 lhb 之后。
+    "holdings_lhb_digest": (task_holdings_lhb_digest, "持仓龙虎榜夜报（G11，纯事实）"),
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
     "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
@@ -1946,7 +1961,7 @@ DEFAULT_ORDER = ["backfill",
                 #   与 shadow_defensive 同批即可；漏排会导致名单永远停在手跑那天。
                 "defensive_group",
                  "backtest_preheat",
-                 "lhb", "intraday_path", "zz_finance", "zz_daily",
+                 "lhb", "holdings_lhb_digest", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
