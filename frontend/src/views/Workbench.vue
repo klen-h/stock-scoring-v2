@@ -1701,32 +1701,46 @@
               <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
                 <div>
                   <div class="text-[11px] text-muted mb-1">强势板块 Top8（超额缺口）
-                    <span class="cursor-help" title="排序=行业平均缺口−全市场平均缺口：普跌日看谁抗跌（避风港）、普涨日看谁更强，同一口径。成员≥5 只才进榜">超额=相对全市场</span></div>
+                    <span class="cursor-help" title="排序=行业平均缺口−全市场平均缺口：普跌日看谁抗跌（避风港）、普涨日看谁更强，同一口径。成员≥5 只才进榜。名称→本地详情，代码→雪球">超额=相对全市场</span></div>
                   <div v-for="s in apPanel.sectors?.up || []" :key="'su' + s.industry"
                        class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
                     <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
-                    <span class="shrink-0 font-mono" :class="s.up_ratio >= 60 ? 'text-red-400' : 'text-muted'">
-                      {{ s.up }}/{{ s.n }}</span>
-                    <span class="shrink-0 font-mono text-muted">{{ signNum(s.avg_gap) }}%</span>
-                    <span v-if="s.excess != null" class="shrink-0 font-mono font-semibold"
-                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'">{{ signNum(s.excess) }}</span>
-                    <span class="flex-1 truncate text-[11px] text-muted" :title="(s.leaders || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
-                      ↗ {{ (s.leaders || []).map(m => m.name).join('、') }}</span>
+                    <span class="shrink-0 font-mono w-[52px] text-right" :class="s.up_ratio >= 60 ? 'text-red-400' : 'text-muted'"
+                          title="高开家数/成员数">{{ s.up }}/{{ s.n }}</span>
+                    <span class="shrink-0 font-mono w-[52px] text-right text-muted" title="行业平均竞价缺口">{{ signNum(s.avg_gap) }}%</span>
+                    <span class="shrink-0 font-mono font-semibold w-[48px] text-right"
+                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'"
+                          title="超额缺口=行业均值−全市场均值">{{ signNum(s.excess) }}</span>
+                    <span class="flex-1 min-w-0 truncate text-[11px]">
+                      <template v-for="(m, mi) in (s.leaders || [])" :key="'l' + mi">
+                        <a :href="stockHref(m.code)" target="_blank" class="text-gray-300 hover:text-accent hover:underline"
+                           :title="`${m.name} ${signNum(m.gap_pct)}%（→本地详情）`">{{ m.name }}</a><a
+                          :href="xqUrl(m.code)" target="_blank" rel="noopener"
+                          class="font-mono text-[10px] text-muted/80 hover:text-accent ml-0.5 mr-1" title="雪球">{{ m.code }}</a>
+                      </template>
+                    </span>
                   </div>
                   <div v-if="!(apPanel.sectors?.up || []).length" class="text-xs text-muted">—（无达标行业）</div>
                 </div>
                 <div class="md:border-l md:border-border/40 md:pl-4">
                   <div class="text-[11px] text-muted mb-1">弱势板块 Top8（超额缺口）
-                    <span class="cursor-help" title="低开家数过半才进弱势榜；排序同为超额缺口（越负越弱）">低开过半才进榜</span></div>
+                    <span class="cursor-help" title="低开家数过半才进弱势榜；排序同为超额缺口（越负越弱）。名称→本地详情，代码→雪球">低开过半才进榜</span></div>
                   <div v-for="s in apPanel.sectors?.down || []" :key="'sd' + s.industry"
                        class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
                     <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
-                    <span class="shrink-0 font-mono text-muted">{{ s.down }}/{{ s.n }}</span>
-                    <span class="shrink-0 font-mono text-muted">{{ signNum(s.avg_gap) }}%</span>
-                    <span v-if="s.excess != null" class="shrink-0 font-mono font-semibold"
-                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'">{{ signNum(s.excess) }}</span>
-                    <span class="flex-1 truncate text-[11px] text-muted" :title="(s.laggers || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
-                      ↘ {{ (s.laggers || []).map(m => m.name).join('、') }}</span>
+                    <span class="shrink-0 font-mono w-[52px] text-right text-muted" title="低开家数/成员数">{{ s.down }}/{{ s.n }}</span>
+                    <span class="shrink-0 font-mono w-[52px] text-right text-muted" title="行业平均竞价缺口">{{ signNum(s.avg_gap) }}%</span>
+                    <span class="shrink-0 font-mono font-semibold w-[48px] text-right"
+                          :class="s.excess > 0 ? 'text-red-400' : 'text-emerald-400'"
+                          title="超额缺口=行业均值−全市场均值">{{ signNum(s.excess) }}</span>
+                    <span class="flex-1 min-w-0 truncate text-[11px]">
+                      <template v-for="(m, mi) in (s.laggers || [])" :key="'g' + mi">
+                        <a :href="stockHref(m.code)" target="_blank" class="text-gray-300 hover:text-accent hover:underline"
+                           :title="`${m.name} ${signNum(m.gap_pct)}%（→本地详情）`">{{ m.name }}</a><a
+                          :href="xqUrl(m.code)" target="_blank" rel="noopener"
+                          class="font-mono text-[10px] text-muted/80 hover:text-accent ml-0.5 mr-1" title="雪球">{{ m.code }}</a>
+                      </template>
+                    </span>
                   </div>
                   <div v-if="!(apPanel.sectors?.down || []).length" class="text-xs text-muted">—（无低开过半行业=普涨结构）</div>
                 </div>
