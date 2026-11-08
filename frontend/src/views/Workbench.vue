@@ -1613,6 +1613,158 @@
               </div>
             </template>
           </div>
+
+          <!-- ★★ 2026-11-08（用户需求）竞价看板三块增强：
+               ① 指数开盘 vs 昨日关键位/预期区间（口径=昨日日报同一事实源）
+               ② 板块联动（industry_map 聚合 + 领涨/领跌成员）
+               ③ LLM 解读（性质判断非建议；GET 只读缓存，按钮才真烧） -->
+          <div v-if="!apPanel" class="bg-card border border-border rounded-lg p-3 text-xs text-muted">
+            竞价面板：{{ apErr || '加载中…' }}
+            <button class="ml-2 px-2 py-0.5 rounded border border-border/60 hover:bg-white/10"
+                    @click="loadAuctionPanel">重试</button>
+          </div>
+          <div v-else class="bg-card border border-indigo-500/40 rounded-lg p-3 space-y-4">
+            <!-- ① 开盘 vs 昨日关键位与预期区间 -->
+            <div>
+              <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                <div class="text-sm font-semibold">① 开盘 vs 昨日关键位
+                  <span class="text-[10px] text-muted font-normal">（与昨日日报同一事实源：key_level 支撑位 + 推演锚点）</span></div>
+                <div class="flex items-center gap-2">
+                  <span v-if="apLoadedAt" class="text-[10px] text-muted font-mono">{{ apLoadedAt }}</span>
+                  <button @click="loadAuctionPanel" :disabled="apLoading"
+                          class="px-2 py-0.5 rounded border border-border/60 text-[11px] hover:bg-white/10 disabled:opacity-40">
+                    {{ apLoading ? '…' : '刷新' }}</button>
+                </div>
+              </div>
+              <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                  <thead class="text-muted">
+                    <tr class="border-b border-border">
+                      <th class="text-left py-1.5 pr-2">指数</th>
+                      <th class="text-right py-1.5 px-2">昨收</th>
+                      <th class="text-right py-1.5 px-2">竞价价</th>
+                      <th class="text-right py-1.5 px-2">缺口</th>
+                      <th class="text-right py-1.5 px-2">昨日支撑</th>
+                      <th class="text-left py-1.5 px-2">预期区间（下看~修复）</th>
+                      <th class="text-left py-1.5 pl-2">区间位置</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="x in apPanel.indexes" :key="x.code"
+                        class="border-b border-border/40 hover:bg-white/[0.03]">
+                      <td class="py-1.5 pr-2 text-gray-200">{{ x.name }}
+                        <span v-if="x.broke" class="text-[10px] text-rose-300" title="昨日首次失守">破</span></td>
+                      <td class="py-1.5 px-2 text-right font-mono text-muted">{{ x.prev_close ?? '—' }}</td>
+                      <td class="py-1.5 px-2 text-right font-mono text-gray-200">{{ x.live_price ?? '—' }}</td>
+                      <td class="py-1.5 px-2 text-right font-mono font-semibold" :class="apGapCls(x.gap_pct)">
+                        {{ x.gap_pct == null ? '—' : signNum(x.gap_pct) + '%' }}</td>
+                      <td class="py-1.5 px-2 text-right font-mono text-amber-300/90">
+                        {{ x.support ?? '—' }}<span class="text-[10px] text-muted"> {{ x.support_type }}</span></td>
+                      <td class="py-1.5 px-2 font-mono">
+                        <template v-if="x.code === '000001' && apPanel.scenario?.band">
+                          <span class="text-emerald-400/90">{{ apPanel.scenario.band[0] }}</span>
+                          <span class="text-muted"> ~ </span>
+                          <span class="text-rose-300/90">{{ apPanel.scenario.band[1] }}</span>
+                        </template>
+                        <span v-else class="text-muted/60">—</span>
+                      </td>
+                      <td class="py-1.5 pl-2">
+                        <template v-if="x.code === '000001' && apPanel.scenario?.band && x.live_price">
+                          <span :class="apBandPos(x.live_price, apPanel.scenario.band).cn === '强于预期' ? 'text-rise'
+                                : apBandPos(x.live_price, apPanel.scenario.band).cn === '弱于预期' ? 'text-fall' : 'text-gray-300'"
+                                class="font-semibold">
+                            {{ apBandPos(x.live_price, apPanel.scenario.band).cn }}</span>
+                        </template>
+                        <span v-else class="text-muted/60">—</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="apPanel.scenario" class="text-[11px] text-muted mt-1.5 leading-snug">
+                昨日推演锚点 {{ apPanel.scenario.level }}：<b>{{ apPanel.scenario.state }}</b>（收盘 {{ apPanel.scenario.close }}）；
+                下看 {{ apPanel.scenario.downside_raw }}；{{ apPanel.scenario.fix_raw }}
+                <span class="text-muted/70">（区间只有上证有——锚点体系只定义了上证，其他指数不硬造）</span>
+              </div>
+            </div>
+
+            <!-- ② 板块联动 -->
+            <div class="pt-3 border-t border-border/40">
+              <div class="text-sm font-semibold mb-1.5">② 板块联动
+                <span class="text-[10px] text-muted font-normal">（竞价阶段行业聚合：高开占比排序，点开看领涨/领跌成员）</span></div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1">
+                <div>
+                  <div class="text-[11px] text-muted mb-1">高开板块 Top8
+                    <span class="cursor-help" title="行业成员≥5 只才进榜（防小样本噪声）；平均缺口与高开占比双排序">成员≥5 才进榜</span></div>
+                  <div v-for="s in apPanel.sectors?.up || []" :key="'su' + s.industry"
+                       class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
+                    <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
+                    <span class="shrink-0 font-mono" :class="s.up_ratio >= 60 ? 'text-red-400' : 'text-muted'">
+                      {{ s.up }}/{{ s.n }} 高开</span>
+                    <span class="shrink-0 font-mono font-semibold" :class="apGapCls(s.avg_gap)">{{ signNum(s.avg_gap) }}%</span>
+                    <span class="flex-1 truncate text-[11px] text-muted" :title="(s.leaders || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
+                      ↗ {{ (s.leaders || []).map(m => m.name).join('、') }}</span>
+                  </div>
+                  <div v-if="!(apPanel.sectors?.up || []).length" class="text-xs text-muted">—（无达标行业）</div>
+                </div>
+                <div class="md:border-l md:border-border/40 md:pl-4">
+                  <div class="text-[11px] text-muted mb-1">低开板块 Top8
+                    <span class="cursor-help" title="低开家数过半才进低开榜">低开过半才进榜</span></div>
+                  <div v-for="s in apPanel.sectors?.down || []" :key="'sd' + s.industry"
+                       class="flex items-center gap-2 text-xs py-0.5 border-b border-border/30">
+                    <span class="w-[76px] shrink-0 truncate text-gray-200">{{ s.industry }}</span>
+                    <span class="shrink-0 font-mono text-muted">{{ s.down }}/{{ s.n }} 低开</span>
+                    <span class="shrink-0 font-mono font-semibold" :class="apGapCls(s.avg_gap)">{{ signNum(s.avg_gap) }}%</span>
+                    <span class="flex-1 truncate text-[11px] text-muted" :title="(s.laggers || []).map(m => m.name + ' ' + signNum(m.gap_pct) + '%').join('、')">
+                      ↘ {{ (s.laggers || []).map(m => m.name).join('、') }}</span>
+                  </div>
+                  <div v-if="!(apPanel.sectors?.down || []).length" class="text-xs text-muted">—（无低开过半行业=普涨结构）</div>
+                </div>
+              </div>
+              <div class="text-[10px] text-muted mt-1.5">{{ apPanel.sectors?.note }}</div>
+            </div>
+
+            <!-- ③ LLM 解读 -->
+            <div class="pt-3 border-t border-border/40">
+              <div class="flex items-center justify-between mb-1.5 flex-wrap gap-1">
+                <div class="text-sm font-semibold">③ LLM 解读
+                  <span class="text-[10px] text-muted font-normal">（性质判断，非操作建议；按日缓存+数据指纹，读数变了才需重烧）</span></div>
+                <button @click="loadAuctionLlm(!!apPanel.llm)" :disabled="apLlmLoading"
+                        class="px-2.5 py-1 rounded border border-sky-500/30 text-sky-300/90 text-[11px] hover:bg-sky-500/10 disabled:opacity-40">
+                  {{ apLlmLoading ? '解读中…' : (apPanel.llm ? '重新解读' : '生成解读') }}</button>
+              </div>
+              <div v-if="apPanel.llm && apPanel.llm.sig !== apPanel.llm_sig_current"
+                   class="mb-1.5 text-[11px] text-amber-400">
+                ⚠️ 面板数据与解读生成时已不同（指数/板块读数变了）——建议「重新解读」
+              </div>
+              <div v-if="apLlmLoading" class="text-xs text-muted">解读中…（LLM 同步调用，约十几秒）</div>
+              <template v-else-if="apPanel.llm?.payload">
+                <div class="rounded border border-sky-500/20 bg-sky-500/5 px-2 py-1.5 mb-1.5">
+                  <div class="text-sm font-semibold text-sky-200">{{ apPanel.llm.payload.conclusion }}</div>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                  <div v-if="apPanel.llm.payload.strength">
+                    <span class="text-muted">强弱信号：</span>{{ apPanel.llm.payload.strength }}</div>
+                  <div v-if="apPanel.llm.payload.sentiment">
+                    <span class="text-muted">资金情绪：</span>{{ apPanel.llm.payload.sentiment }}</div>
+                </div>
+                <div v-if="(apPanel.llm.payload.risks || []).length" class="text-xs mt-1.5">
+                  <span class="text-muted">潜在风险：</span>
+                  <span class="text-amber-300/90">{{ apPanel.llm.payload.risks.join('；') }}</span></div>
+                <div v-if="(apPanel.llm.payload.watch_points || []).length" class="text-xs mt-1">
+                  <span class="text-muted">当日关注：</span>
+                  <span class="text-gray-200">{{ apPanel.llm.payload.watch_points.join('；') }}</span></div>
+                <div class="text-[10px] text-muted mt-1.5">
+                  {{ apLlmMsg }}<template v-if="apPanel.llm.created_at"> · 生成于 {{ apPanel.llm.created_at?.slice(5, 16) }}</template>
+                  · LLM 输出可能有误，以面板数字为准</div>
+              </template>
+              <div v-else class="text-xs text-muted">
+                尚无解读——点「生成解读」消耗 1 次 LLM 调用；规则判读见上方主卡，永远可用
+              </div>
+              <div v-if="apLlmMsg && !apPanel.llm" class="text-[11px] text-amber-400 mt-1">{{ apLlmMsg }}</div>
+            </div>
+            <div class="text-[10px] text-muted">{{ apPanel.note }}</div>
+          </div>
         </template>
 
         <!-- 实时模式 · ① 盘前（阅读模式） -->
@@ -3307,6 +3459,7 @@ import {
   getObserverReview,
   getMarketEmotion, getMarketLimitReview, getRealtimeUplimit, getCalendarAhead,
   getAmountRealtime,
+  getAuctionPanel, refreshAuctionLlm,
   getUserPositionSizing,
   getEmotionReview,
   getMarketTailReview,
@@ -5919,6 +6072,62 @@ async function loadEmotion() {
     emotion.value = data || null
   } catch { emotion.value = null }
 }
+
+// ══════════ 竞价面板三块增强（2026-11-08 用户需求）══════════════════════
+// ① 指数开盘 vs 昨日关键位/预期区间（口径=昨日日报同一事实源 key_level + 推演锚点）
+// ② 板块联动（industry_map 聚合，高开/低开板块榜 + 领涨/领跌成员）
+// ③ LLM 解读（GET 只读缓存；POST 才真烧，按日缓存+数据指纹同 obsAI 模式）
+// ⚠️ 面板与竞价主卡同源同口径：非竞价窗口读的是最近已完成交易日的开盘数据，
+//    非当日提示横幅已覆盖；失败静默（三块是增强，不能拖垮竞价主卡）。
+const apPanel = ref(null)
+const apLoading = ref(false)
+const apErr = ref('')
+const apLlmLoading = ref(false)
+const apLlmMsg = ref('')
+const apLoadedAt = ref('')
+
+async function loadAuctionPanel() {
+  apLoading.value = true
+  apErr.value = ''
+  try {
+    const { data } = await getAuctionPanel()
+    apPanel.value = data?.ok ? data : null
+    if (!data?.ok) apErr.value = data?.error || '面板不可用（行情缓存未就绪）'
+    apLoadedAt.value = new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  } catch (e) {
+    apErr.value = e?.response?.data?.detail || e?.message || '加载失败'
+  } finally { apLoading.value = false }
+}
+
+async function loadAuctionLlm(force = false) {
+  if (apLlmLoading.value) return
+  apLlmLoading.value = true
+  apLlmMsg.value = ''
+  try {
+    const { data } = await refreshAuctionLlm(force)
+    if (data?.ok) {
+      if (apPanel.value) apPanel.value.llm = { sig: data.sig, payload: { ...data }, created_at: new Date().toISOString() }
+      apLlmMsg.value = data.cached ? '（当日缓存）' : '（已生成）'
+    } else {
+      apLlmMsg.value = data?.error || 'LLM 不可用'
+    }
+  } catch (e) {
+    apLlmMsg.value = e?.response?.data?.detail || e?.message || '生成失败'
+  } finally { apLlmLoading.value = false }
+}
+
+// 区间位置：开盘 vs 昨日预期区间 [下看, 修复] → 三档定性（纯展示，非信号）
+function apBandPos(gapPx, band) {
+  if (!gapPx || !band || band.length !== 2) return null
+  const [lo, hi] = band
+  if (gapPx > hi) return { cn: '强于预期', cls: 'text-rise font-semibold' }
+  if (gapPx < lo) return { cn: '弱于预期', cls: 'text-fall font-semibold' }
+  return { cn: '预期区间内', cls: 'text-gray-300' }
+}
+function apGapCls(g) {
+  if (g == null) return ''
+  return g > 0 ? 'text-red-400' : (g < 0 ? 'text-emerald-400' : 'text-muted')
+}
 // 涨停复盘（zzshare：连板梯队 + 涨停清单；匿名可能空 → 占位）
 async function loadLimitReview() {
   try {
@@ -6240,6 +6449,9 @@ function selectPhase(key) {
   }
   stopAmPoll()
   loadPhaseData(key)
+  // ★ 2026-11-08：竞价面板（指数 vs 昨日关键位/预期区间 + 板块联动 + LLM 缓存）——
+  //   进入竞价阶段时拉一次（零 LLM 成本）；LLM 由按钮显式触发。
+  if (key === 'auction') loadAuctionPanel()
 }
 function syncQuery() {
   router.replace({ query: { ...route.query, phase: selectedPhase.value, date: selectedDate.value } })

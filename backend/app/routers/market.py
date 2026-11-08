@@ -1749,6 +1749,31 @@ def _auction_read(a: Dict, has_live: bool) -> Optional[Dict]:
 
 
 @router.get("/emotion")
+@router.get("/auction-panel")
+def auction_panel():
+    """竞价面板（2026-11-08 用户需求三块）：指数 vs 昨日关键位/预期区间 + 板块联动 + LLM缓存。
+
+    与 `market_emotion` 的 auction 块同源同口径（stocks = tencent._cache，gap_date
+    语义一致）；非竞价窗口读最近已完成交易日的开盘数据（前端已有非当日提示）。
+    零新增外部请求（指数实时价走 key_level_watch 15s 进程缓存）。
+    """
+    from app.auction_panel import build_panel
+    return build_panel()
+
+
+@router.post("/auction-llm")
+def auction_llm(force: bool = Query(False),
+                _user: dict = Depends(get_current_user)):
+    """竞价 LLM 解读（**只做性质判断，不给买卖建议**）。按日缓存 + 数据指纹：
+
+    · GET /auction-panel 里的 llm 字段 = 只读缓存（不烧 LLM）；
+    · 本端点 = 真烧一次（force=True 强制重算；sig 未变时默认也直接返回缓存）；
+    · 失败降级返回 ok=False（前端显示规则判读，auction.verdict 永远在）。
+    """
+    from app.auction_panel import run_llm
+    return run_llm(force=force)
+
+
 def market_emotion():
     """情绪快照 v0：涨停/跌停家数 + 昨日涨停赚钱效应 + 连板高度近似 + 三档判读。
 

@@ -605,6 +605,11 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 // ── 工作台（2026-09-25）：回放按日期取数（后端 system.py 只读端点）──
 // ── 工作台·盘中看盘序（2026-09-25 交易方法论 A1/A3/B2）──
 export const getMarketEmotion = () => http.get('/market/emotion', { timeout: 20000 })
+// ★ 2026-11-08：竞价面板三块增强（指数 vs 昨日关键位/预期区间 + 板块联动 + LLM 解读）。
+//   GET 面板零 LLM；POST 才真烧（按日缓存+数据指纹，同 obsAI/flash_brief 模式）。
+export const getAuctionPanel = () => http.get('/market/auction-panel', { timeout: 30000 })
+export const refreshAuctionLlm = (force = false) =>
+  http.post('/market/auction-llm', {}, { params: { force }, timeout: 120000 })
 // ★ 2026-09-25 P3：情绪对账（盘前预判 vs 当日实际）—— 读 market_emotion_daily 的两组字段
 export const getEmotionReview = (days = 30) => http.get('/market/emotion-review', { params: { days } })
 // ★ 2026-09-25 需求 3：尾盘承接（14:30 基线 → 现在/收盘）—— 决定是否持仓过夜
