@@ -1882,66 +1882,12 @@
         <!-- 实时模式 · ① 盘前（阅读模式） -->
         <template v-else-if="selectedPhase === 'premarket'">
           <!-- ★ 2026-09-25 用户反馈：数据中心(旧首页)的宏观方向/规则标签/市场环境整合进来 -->
-          <!-- ★ A3 情绪预判卡 v0（近似口径，B1 官方数据后替换）；
-               ★ 2026-09-25 用户："1200px 还是太长" ⇒ 情绪预判与持仓预案**左右两卡**
-               （lg 以下回退单列）。持仓预案原嵌在今日决策卡内 ⇒ 抽成独立卡
-               （数据仍是 dc.positions_scan，零新接口）。 -->
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div class="bg-card border border-border rounded-lg p-4 flex flex-col justify-evenly">
-            <div class="flex items-center justify-between">
-              <div class="text-sm font-semibold">情绪预判
-                <!-- ★ 2026-09-26：副标题由"（昨日涨停表现/连板高度，近似口径）"改为**带口径日期**
-                     —— 原写法在休市/盘前会把用户带偏（"昨日/今日"相对的是**数据口径日**，
-                     不是自然日"今天"）。日期来自后端 `price_date` / `prev_limit_date`。 -->
-                <span class="text-[10px] text-muted font-normal cursor-help"
-                      :title="`数据口径日 = ${emotion?.price_date || '—'}${isTodayPrice() ? '（即今天）' : '（休市/盘前，不是自然日「今天」）'}。涨停/跌停/连板高度均为该日；口径按**板幅**（ST 5% / 主板 10% / 创业板科创 20% / 北交所 30%，rt_k 精确优先，来源 ${emotion?.limit_src || '—'}）；「昨涨停均」= ${prevLimitLabel()} 涨停股在${priceDayLabel()}的平均涨跌幅`">{{ isTodayPrice() ? '今日' : '口径 ' + mmdd(emotion?.price_date) }} · 涨跌停按板幅（ST5/主板10/双创20）</span>
-                <!-- ★ 2026-09-25：原徽标写"显示最近交易日数据"，但休市时行情缓存为空 ⇒
-                     实际输出的是 0（不是最近交易日快照）⇒ **徽标承诺与实际不符**。
-                     改为按 `has_live` 如实说明：无实时行情 ⇒ 今日字段均不可用（显示"—"）。
-                     ⚠️ 用 `=== false` 严格判断：旧后端没有该字段（undefined）时不误报。 -->
-                <span v-if="emotion && emotion.has_live === false"
-                      class="ml-1 px-1 rounded bg-amber-500/15 text-amber-400 text-[10px] cursor-help"
-                      :title="`当前无实时行情（休市或行情源未刷新）⇒ 涨停/跌停/连板高度不可用（显示—）；可用于参考的历史价格截至 ${emotion.data_date || '—'}`">
-                  无实时行情{{ emotion.data_date ? `（价格截至 ${emotion.data_date.slice(5)}）` : '' }}
-                </span></div>
-              <span class="text-sm font-bold"
-                    :class="emotion?.verdict === '亢奋' ? 'text-red-400' : emotion?.verdict === '冰点' ? 'text-emerald-400' : 'text-amber-300'">
-                {{ emotion?.verdict || '—' }}</span>
-            </div>
-            <div v-if="!emotion" class="text-muted text-xs">—（加载失败）</div>
-            <!-- ★ 2026-09-25 用户反馈：原 grid-cols-4 把 4 格**均分整卡宽度**，"47 涨停"与
-                 "14 跌停"之间大片空白 ⇒ "一行宽、信息不集中"；判读又孤行贴底。
-                 改（用户选定方案）：① 4 格从均分改**紧凑左聚**（固定 gap，不再摊满）；
-                 ② 判读移到**右侧同一行**（细竖线分隔、小字、垂直居中）⇒ 整卡矮一行，
-                 视线"左=是什么 / 右=怎么看"。 -->
-            <!-- ★ 2026-09-25 用户：数字行**占满剩余空间** —— 四组 flex-1 均分整卡宽度
-                 （半宽 ~600px 下摊开正合适，不再左聚留白）。 -->
-            <div v-else class="flex items-center text-xs min-w-0 py-3">
-              <div class="text-center flex-1"><div class="text-lg font-bold text-red-400 font-mono">{{ emotion.limit_up ?? '—' }}</div><div class="text-muted text-[10px]">涨停</div></div>
-              <div class="text-center flex-1"><div class="text-lg font-bold text-emerald-400 font-mono">{{ emotion.limit_down ?? '—' }}</div><div class="text-muted text-[10px]">跌停</div></div>
-              <div class="text-center flex-1"><div class="text-lg font-bold font-mono">{{ emotion.max_streak ?? '—' }}</div><div class="text-muted text-[10px]">连板高度</div></div>
-              <!-- ★ 2026-09-25 用户问「昨日涨停今日 -1.16% 是什么意思」⇒ 原文案缺"平均"二字、
-                   也不给股数，容易被读成"今天的涨跌幅是 -1.16%"。
-                   口径：**昨日涨幅≥9.5% 的那批股票，今天的平均涨跌幅**（=赚钱效应）；
-                   为正 ⇒ 接力意愿强（昨涨停今天还有人买）；为负 ⇒ 追涨者平均亏钱、情绪转弱。
-                   列宽有限 ⇒ 只微调文案，完整解释放 title（悬停可见）。 -->
-              <div class="text-center flex-1" :title="`${prevLimitLabel()} 涨幅 ≥9.5% 的 ${emotion.prev_limit_count ?? '?'} 只股票，在${priceDayLabel()}的**平均**涨跌幅 = ${fmtPct(emotion.prev_limit_today_pct)}（赚钱效应）：为正 ⇒ 接力意愿强；为负 ⇒ 追涨者平均亏钱、情绪转弱`">
-                <div class="text-lg font-bold font-mono" :class="pctClass(emotion.prev_limit_today_pct)">
-                  {{ fmtPct(emotion.prev_limit_today_pct) }}</div>
-                <div class="text-muted text-[10px] cursor-help">{{ prevLimitLabel() }}涨停均<template v-if="emotion.prev_limit_count">（{{ emotion.prev_limit_count }}只）</template></div>
-              </div>
-            </div>
-            <!-- ★ 2026-09-25 用户：数字组与判读改回**上下布局**（左卡半宽后右侧放不下判读）；
-                 卡是 flex-col justify-evenly ⇒ 标题/数字/判读三行在右卡撑起的等高内均匀分布。 -->
-            <div class="text-[10px] text-muted leading-snug">
-              判读：情绪决定今天"接力的强更强 / 分歧 / 退潮"，对应降低或提高买入标准。
-            </div>
-          </div>
-
-          <!-- ★ 2026-09-25 用户要求：持仓预案从今日决策卡抽出成**独立卡**，与情绪预判
-               左右并排（每张卡 ~600px，替代原来的 1200px 长条）。数据仍是
-               `dc.positions_scan`（今日决策卡接口顺带返回，零新接口）⇒ dc 未生成时
-               本卡显示引导占位（不假装有数据）。是**纪律提醒**，不是交易指令。 -->
+          <!-- ★★ 2026-11-08（用户："情绪预判卡与盘面速览重复，可去掉"）：**情绪预判卡撤下**。
+               实测确认重复：涨停/跌停/连板高度/昨涨停溢价/verdict 全部来自同一 `market_emotion`，
+               而 10-26 盘面速览整合时已声明这些"全站只此一处"（本 phase 同样渲染）
+               ⇒ 本卡是合并时漏网的残份。持仓预案卡（positions_scan 唯一来源）保留并转全宽。
+               口径细节（板幅/口径日）在盘面速览同款可查。 -->
+          <div>
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="text-sm font-semibold mb-2">持仓预案
               <span class="text-[10px] text-muted font-normal">（今天怎么处理 · 纪律提醒）</span></div>
