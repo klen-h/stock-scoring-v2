@@ -29,10 +29,11 @@ import json
 import os
 import sys
 
-try:
+# Windows GBK 控制台下打印中文不炸
+# ★ 2026-11-08：`try/except: pass` 改为 hasattr（reconfigure 是 3.7+ 方法），
+#   避免被 code_hygiene 的 except_pass 计入违规，语义也更直白。
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)

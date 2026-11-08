@@ -26,10 +26,9 @@ from datetime import datetime, timedelta, timezone
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 
-try:  # Windows 控制台默认 GBK，中文/emoji 会炸
+# Windows 控制台默认 GBK，中文/emoji 会炸（reconfigure 是 3.7+ 方法，用 hasattr 判断）
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 BJ = timezone(timedelta(hours=8))
 

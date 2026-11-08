@@ -647,7 +647,7 @@ def _position_plan(pnl, alerts, suggested_pct, position_label, fit=None,
     try:
         from app.coach.rules import load_config as _lc
         _p_hi = float((_lc() or {}).get("display", {}).get("profit_high_pct") or 20.0)
-    except Exception:
+    except Exception:  # noqa: except_pass  读配置失败就用 20.0 默认值（上一行已赋值兜底）
         pass
     if pnl is not None and pnl >= _p_hi:
         return {"level": PLAN_PROTECT,

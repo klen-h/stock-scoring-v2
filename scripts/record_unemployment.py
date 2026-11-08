@@ -40,10 +40,9 @@ BACKEND = os.path.join(ROOT, "backend")
 sys.path.insert(0, BACKEND)
 os.chdir(BACKEND)
 
-try:
+# Windows GBK 控制台下打印中文不炸（reconfigure 是 3.7+ 方法，用 hasattr 判断）
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 
 def load_env():

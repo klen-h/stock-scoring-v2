@@ -370,7 +370,7 @@ def _narrative(layers: List[Dict], price: Dict) -> Dict:
     _sc_big = 3.0
     try:
         from app.macro_price import SCISSORS_BIG as _sc_big   # noqa: N806
-    except Exception:
+    except Exception:  # noqa: except_pass  导入失败就用上面的 3.0 默认值（已显式兜底）
         pass
     if sc is not None and sc > _sc_big:
         cn_ppi = (price.get("cn_ppi") or {}).get("latest")

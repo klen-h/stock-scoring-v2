@@ -187,7 +187,7 @@ def _default_day() -> str:
         d = str(latest_completed_trading_day())[:10]
         if d:
             return d
-    except Exception:
+    except Exception:  # noqa: except_pass  取不到交易日就退回今天（下方已有显式 return 兜底）
         pass
     return _bj_now().strftime("%Y-%m-%d")
 

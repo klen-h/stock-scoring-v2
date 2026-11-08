@@ -24,10 +24,11 @@ import json
 import os
 import sys
 
-try:  # Windows GBK 控制台下打印中文/箭头不炸（与 tone_cli 同款）
+# Windows GBK 控制台下打印中文/箭头不炸（与 tone_cli 同款）
+# ★ 2026-11-08：原来用 `try/except: pass` 包着，被 code_hygiene 的 except_pass 计入违规。
+#   reconfigure 是 3.7+ 的方法，用 hasattr 判断比吞异常更明确（也省掉一处静默分支）。
+if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)

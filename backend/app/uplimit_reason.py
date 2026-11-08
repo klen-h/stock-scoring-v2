@@ -51,7 +51,7 @@ def _news_blobs(day: str) -> List[str]:
     ):
         try:
             out += [str(x.get("t") or "") for x in (db.fetch(sql, args) or [])]
-        except Exception:
+        except Exception:  # noqa: except_pass  某张表/某天缺数据就跳过，多源拼装本就有缺失可能
             pass
     return out
 

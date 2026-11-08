@@ -247,7 +247,7 @@ def _copy_table(conn, dst, table, days, dry_run):
     #   只读事务 `commit()` 无副作用（不写数据），但能让池化器回收连接。
     try:
         conn.commit()
-    except Exception:
+    except Exception:  # noqa: except_pass  只读事务的 commit 仅用于让池化器回收连接，失败不影响已导出数据
         pass
     return total, copied
 
@@ -344,7 +344,7 @@ def main():
                 if conn.closed or "closed" in str(e).lower():
                     try:
                         conn.close()
-                    except Exception:
+                    except Exception:  # noqa: except_pass  连接已废，close 报错也无所谓；下面会重连
                         pass
                     try:
                         conn = _pg_connect(url)
@@ -354,13 +354,13 @@ def main():
         try:
             dst.execute("ANALYZE")
             dst.commit()
-        except Exception:
+        except Exception:  # noqa: except_pass  ANALYZE 只影响查询计划，失败不影响数据完整性
             pass
         dst.close()
     finally:
         try:
             conn.close()
-        except Exception:
+        except Exception:  # noqa: except_pass  收尾关连接，失败无补救动作且不影响产物
             pass
 
     size = os.path.getsize(out) / 1024 / 1024

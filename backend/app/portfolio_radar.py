@@ -410,7 +410,7 @@ def build() -> Dict:
         _PROFIT_HIGH = float(_d.get("profit_high_pct", _PROFIT_HIGH))
         _DAY_DROP_FROM_HIGH = float(_d.get("day_drop_from_high_pct", _DAY_DROP_FROM_HIGH))
         _MSG_CAP = int(_d.get("msg_cap", _MSG_CAP))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError):  # noqa: except_pass  配置项类型不对就用模块默认值（全部已初始化）
         pass
     """聚合入口（**带 single-flight 保护**）。返回 {as_of, regime, summary, items, market}。"""
     if _build_state["computing"]:

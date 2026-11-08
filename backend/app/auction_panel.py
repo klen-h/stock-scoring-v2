@@ -110,7 +110,7 @@ def _index_open_px(code: str, gap_date: str, gap_is_today: bool,
                 op = _f(b.get("open"))
                 if op:
                     return op, "kline"
-    except Exception:
+    except Exception:  # noqa: except_pass  取不到开盘价就返回 (None,None) 让调用方换源，已有兜底
         pass
     return None, None
 
@@ -485,7 +485,7 @@ def run_llm(force: bool = False) -> Dict:
         try:
             from app.flash import llm as _l
             model = str(getattr(_l, "DEFAULT_MODEL", "") or "")
-        except Exception:
+        except Exception:  # noqa: except_pass  只用于库里记 model 名，取不到留空即可，不影响判定
             pass
         db.upsert(_LLM_TABLE, {
             "date": str(gap_date)[:10], "sig": sig,

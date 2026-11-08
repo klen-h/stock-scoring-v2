@@ -1443,7 +1443,7 @@ def task_thesis_resolve():
             _line = th.brief_line()
             if _line:
                 print(f"[batch] {_line}")
-        except Exception:
+        except Exception:  # noqa: except_pass  只是收尾多加一行提示，失败不该让整批结果作废
             pass
         done = [x for x in results
                 if x.get("action") in ("resolved_win", "resolved_lose")]
