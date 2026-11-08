@@ -1457,6 +1457,23 @@ def task_thesis_resolve():
         return f"假设裁决: WARN {str(e)[:70]}"
 
 
+def task_uplimit_reason():
+    """涨停原因归类（G7）：题材=zzshare 白送映射 + 公告/业绩=快讯关键词。
+
+    **事后描述非预测信号**（模块头红线）；失败不抛不影响主链。"""
+    try:
+        from app.uplimit_reason import snapshot
+        r = snapshot(_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"涨停归类: {str(r.get('note'))[:60]}"
+        kc = r.get("kind_count") or {}
+        return (f"涨停归类: {r.get('n')} 只"
+                f"（业绩{kc.get('业绩', 0)}/公告{kc.get('公告', 0)}"
+                f"/题材{kc.get('题材', 0)}/其他{kc.get('其他', 0)}）")
+    except Exception as e:
+        return f"涨停归类: WARN {str(e)[:70]}"
+
+
 def task_holdings_lhb_digest():
     """持仓龙虎榜夜报（G11）：当日 lhb_history × user_portfolio → 命中推企微。
 
@@ -1865,6 +1882,9 @@ TASKS = {
     # ★ 2026-11-08（盯盘计划 G11）：持仓龙虎榜夜报——读当日 lhb_history × 真实持仓，
     #   命中推企微一条（事实陈述）；幂等 portfolio_alert_log。必须排在 lhb 之后。
     "holdings_lhb_digest": (task_holdings_lhb_digest, "持仓龙虎榜夜报（G11，纯事实）"),
+    # ★ 2026-11-08（盯盘计划 G7）：涨停原因归类（事后描述，纯观察器——不入评分/闸门/推送）。
+    #   读 zz_daily_snapshots 当日 payload（题材映射白送）+ 快讯关键词 ⇒ 必须排在 zz_daily 之后。
+    "uplimit_reason": (task_uplimit_reason, "涨停原因归类（G7，纯事后描述）"),
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
     "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
@@ -1961,7 +1981,7 @@ DEFAULT_ORDER = ["backfill",
                 #   与 shadow_defensive 同批即可；漏排会导致名单永远停在手跑那天。
                 "defensive_group",
                  "backtest_preheat",
-                 "lhb", "holdings_lhb_digest", "intraday_path", "zz_finance", "zz_daily",
+                 "lhb", "holdings_lhb_digest", "uplimit_reason", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
