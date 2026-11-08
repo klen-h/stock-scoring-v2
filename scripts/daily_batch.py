@@ -1457,6 +1457,18 @@ def task_thesis_resolve():
         return f"假设裁决: WARN {str(e)[:70]}"
 
 
+def task_holdings_news_digest():
+    """持仓公告夜报（G11c）：真实持仓 × 当日公告/事件关键词 → 企微一条合并夜报。
+
+    每码一次东财搜索（既有源）；幂等每码每日一条；失败不抛不影响主链。"""
+    try:
+        from app.holdings_news_digest import run as _run
+        r = _run()
+        return f"持仓公告夜报: {'命中 ' + str(r.get('hits')) + ' 条' if r.get('hits') else '无命中'}（{r.get('codes', 0)} 码）"
+    except Exception as e:
+        return f"持仓公告夜报: WARN {str(e)[:70]}"
+
+
 def task_uplimit_reason():
     """涨停原因归类（G7）：题材=zzshare 白送映射 + 公告/业绩=快讯关键词。
 
@@ -1885,6 +1897,9 @@ TASKS = {
     # ★ 2026-11-08（盯盘计划 G7）：涨停原因归类（事后描述，纯观察器——不入评分/闸门/推送）。
     #   读 zz_daily_snapshots 当日 payload（题材映射白送）+ 快讯关键词 ⇒ 必须排在 zz_daily 之后。
     "uplimit_reason": (task_uplimit_reason, "涨停原因归类（G7，纯事后描述）"),
+    # ★ 2026-11-08（盯盘计划 G11c）：持仓当晚公告/事件夜报——东财逐股新闻（既有源）
+    #   × 持仓码关键词筛选；幂等 portfolio_alert_log(rule='news')。
+    "holdings_news_digest": (task_holdings_news_digest, "持仓公告夜报（G11c，事实陈述）"),
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
     "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
@@ -1981,7 +1996,7 @@ DEFAULT_ORDER = ["backfill",
                 #   与 shadow_defensive 同批即可；漏排会导致名单永远停在手跑那天。
                 "defensive_group",
                  "backtest_preheat",
-                 "lhb", "holdings_lhb_digest", "uplimit_reason", "intraday_path", "zz_finance", "zz_daily",
+                 "lhb", "holdings_lhb_digest", "uplimit_reason", "holdings_news_digest", "intraday_path", "zz_finance", "zz_daily",
                  "weekly_report", "subfactor_ic",
                  "verify_monthly", "earnings_pressure", "data_gap", "data_hygiene",
                  # ★ 2026-10-26：选股事实宽表（选股工作台数据底座——读当日全部产物表合成，零外呼）
