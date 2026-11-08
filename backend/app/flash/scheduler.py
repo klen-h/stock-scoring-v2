@@ -2663,8 +2663,10 @@ async def start():
              #   非 `_heavy`：线上只读模式必须能跑，否则等于没做。
              #   成本受 `in_publish_window` + `has_due_event` 双重闸门约束 ⇒ 极少触发外部请求。
              asyncio.create_task(calendar_publish_loop()),
-             # ★ 2026-11-08（盯盘计划 G4）：持仓双口径提醒——零外呼、去重每码每日每口径
-             asyncio.create_task(portfolio_alert_loop()),
+             # ★★ 2026-11-08 停用（G4 收敛，用户确认）：当日口径由 coach emotion_fuse 承担
+             #   （rules.yaml push:true）⇒ 两套告警并存即"唯一出口"破功；
+             #   函数与 portfolio_alerts.py 保留（浮亏 vs 成本口径如需重启另有 env）。
+             # asyncio.create_task(portfolio_alert_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
              # ★ 2026-11-01：11:30 早盘定稿（「早盘复盘」标签页的数据基础）。

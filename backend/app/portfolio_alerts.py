@@ -4,6 +4,8 @@
 口径（计划文档 §0 写死，双口径独立阈值 env 可调）：
   · 浮亏 = 现价 / user_portfolio.cost − 1 ≤ PA_COST_LOSS_PCT（默认 -5%）
   · 当日亏损 = 现价 / prev_close − 1 ≤ PA_DAY_LOSS_PCT（默认 -3%）
+【状态 2026-11-08：scheduler 循环已停用——G4 收敛，当日口径由 coach emotion_fuse 承担
+  （rules.yaml push:true）；本模块保留备用（浮亏 vs 成本口径如需重启，恢复注册即可）】。
 零外呼：行情读 `tencent._cache`（120s 刷新循环维护）；去重=每码每日每口径一条
 （portfolio_alert_log 表 PK）。挂 scheduler.portfolio_alert_loop（交易时段 60s）。
 """
