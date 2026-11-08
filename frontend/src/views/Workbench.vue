@@ -322,8 +322,11 @@
         </div>
         <!-- ★★ 2026-11-08（用户："竞价 tab 下顶部加切换 tab"）：竞价阶段本区域让位给
              竞价面板（子 tab 1），观察器整体挪到子 tab 2（"观察器与速览"）——
-             v-show 保持挂载（观察器折叠态/面板数据切回来不丢）。非竞价阶段行为不变。 -->
-        <div v-if="selectedPhase !== 'amreview'"
+             v-show 保持挂载（观察器折叠态/面板数据切回来不丢）。
+             ★★ 2026-11-08（用户："复盘 tab 下无需展示观察器/盘面速览/快讯解读"）：
+             「复盘 review」与「早盘复盘 amreview」同样整块隐藏——复盘页自带对账/日报/教练，
+             再压看盘卡会重复抢注意力。 -->
+        <div v-if="selectedPhase !== 'amreview' && selectedPhase !== 'review'"
              v-show="selectedPhase !== 'auction' || auctionSubTab === 'obs'"
              class="grid grid-cols-1 gap-3 items-stretch">
         <!-- ★ 2026-10-23：观察器合并（盘中变化 / 拥挤与关键位 / 推演证伪 / AI 篮子）
@@ -1048,7 +1051,7 @@
                  · 右卡 `flex flex-col` + 列表 `flex-1` ⇒ 列表在自己区域内滚，卡本身不滚。 -->
         <!-- ★★ 2026-11-01：本段（盘面速览 + 快讯解读）在「早盘复盘」阶段整块隐藏，
              只留 `AmReviewCard`（用户在别的 tab 仍可看到这两张卡）。 -->
-        <div v-if="selectedPhase !== 'amreview'"
+        <div v-if="selectedPhase !== 'amreview' && selectedPhase !== 'review'"
              v-show="selectedPhase !== 'auction' || auctionSubTab === 'obs'"
              class="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-3 items-stretch">
           <!-- ★★ 2026-10-26（用户：把快讯解读 / 市场涨跌 / 主线Top5 / 持仓状态整合为**一张大卡**，
