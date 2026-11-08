@@ -210,6 +210,19 @@ def main():
     check("[31] latest_by_direction 不修改入参 / 空输入不崩",
           _ms == _snapshot and _lbd([]) == {} and _lbd(None) == {})
 
+    print("\n=== 十、三底时序纯函数（经济底月粒度，2026-11-08）===")
+    check("[29] YYYY-MM 合法", ptw._valid_period("2027-01") == "2027-01")
+    check("[30] 非法 period（日期/缺位/12月外）拒绝",
+          all(ptw._valid_period(x) is None for x in
+              ("2027-1", "2027-13", "2027/01", "abc", "", None, "2027-00")))
+    check("[31] 月差：2008 复盘（市场底 10-28 → 经济底 2009-01）= 3 个月",
+          ptw._month_diff("2009-01", "2008-10-28") == 3)
+    check("[32] 月差：同月 = 0、跨年负数",
+          ptw._month_diff("2027-01", "2027-01-15") == 0
+          and ptw._month_diff("2026-11", "2027-01-15") == -2)
+    check("[33] 月差：脏输入 → None（不抛）",
+          ptw._month_diff("xx", "2027-01-15") is None)
+
     print(f"\n{'=' * 60}\n通过 {_passed} / 失败 {_failed}")
     assert _failed == 0, f"有 {_failed} 个场景未通过"
     print("ASSERTION PASSED")

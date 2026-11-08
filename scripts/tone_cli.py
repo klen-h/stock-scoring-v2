@@ -158,11 +158,37 @@ def cmd_lag(args):
     if not r.get("ok"):
         print(f"[tone] 读取失败: {r.get('error')}")
         return 1
-    print(f"\n== 时滞仪表（政策底领先市场底 X 天，从叙事到实测）==")
-    print(f"  政策侧（基调确认首个非未定日）: {r.get('tone_date') or '—'}")
-    print(f"  市场侧（市场底清单首次 4/5 日）: {r.get('pbw_date') or '—'}")
-    print(f"  时滞: {r.get('lag_days') if r.get('lag_days') is not None else '—'} 天")
+    print(f"\n== 三底时序（政策底 → 市场底 → 经济底，2008 复盘同款三层）==")
+    print(f"  政策底（基调确认首个非未定日，人工）: {r.get('tone_date') or '—'}")
+    print(f"  市场底（市场底清单首次 4/5 日，自动）: {r.get('pbw_date') or '—'}")
+    print(f"  第一段时滞: {r.get('lag_days') if r.get('lag_days') is not None else '—'} 天（2008 参照 ≈ 42 天）")
+    if r.get("economy_period"):
+        print(f"  经济底（人工月粒度标注）: {r['economy_period']}"
+              f" · 第二段时滞约 {r.get('economy_lag_months')} 个月（2008 参照 ≈ 3 个月）")
+    else:
+        print(f"  经济底: 未标注（月度复盘时 tone_cli economy mark --period YYYY-MM）")
     print(f"  {r.get('note')}")
+    return 0
+
+
+def cmd_economy(args):
+    if args.econ_action == "mark":
+        r = ptw.economy_mark(args.period, note=args.note or "")
+    elif args.econ_action == "remove":
+        r = ptw.economy_remove(args.period)
+    else:
+        rows = ptw.economy_list()
+        print(f"\n== 经济底标注历史（月粒度，当前生效=最近 marked_at）==")
+        for x in rows:
+            print(f"  {x['period']}  标注于 {str(x.get('marked_at'))[:16]}"
+                  f"{('｜' + x['note']) if x.get('note') else ''}")
+        if not rows:
+            print("  （空——mark --period 2027-01 --note 'PMI 连续 3 月回上'）")
+        return 0
+    if not r.get("ok"):
+        print(f"[tone] 拒绝: {r.get('error')}")
+        return 1
+    print(f"[tone] 已{'标注' if args.econ_action == 'mark' else '撤销'}经济底: {r.get('period')}")
     return 0
 
 
@@ -198,8 +224,15 @@ def main():
     p.add_argument("--note", help="备注（为什么盯这个词）")
     p.set_defaults(fn=cmd_watch)
 
-    p = sp.add_parser("lag", help="时滞仪表（基调确认日 → 市场底 4/5 日）")
+    p = sp.add_parser("lag", help="三底时序仪表（政策底 → 市场底 → 经济底）")
     p.set_defaults(fn=cmd_lag)
+
+    # ── 经济底人工标注（2026-11-08 三底时序第三层，月粒度）──
+    p = sp.add_parser("economy", help="经济底人工标注（mark/list/remove；月粒度 YYYY-MM）")
+    p.add_argument("econ_action", choices=["mark", "list", "remove"])
+    p.add_argument("--period", help="YYYY-MM（经济底所在月）")
+    p.add_argument("--note", help="依据（如 'PMI 连续 3 月回荣枯线上'）")
+    p.set_defaults(fn=cmd_economy)
 
     args = ap.parse_args()
     sys.exit(args.fn(args))

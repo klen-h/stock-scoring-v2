@@ -486,8 +486,94 @@ def watch_check_push(items: List[Dict], today: str = None,
 _TONE_LAG_TAGS = ("宽松延续", "宽松升级", "宽松回退")
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 三底时序第三层：经济底人工标注（2026-11-08，月粒度）
+# ══════════════════════════════════════════════════════════════════════════
+# 出处：2008 复盘三底序列（政策底 → 市场底 ≈6 周 → 经济底 ≈1 季度）。
+# ★ 为什么是**人工月粒度标注**而不是观察器：经济底是月频/季频的**后验确认**
+#   （PMI 连续回荣枯线上、GDP 止跌等），规则化即未检验信号（R2）——
+#   与 tone_confirm 同款人工层：人打标，系统只计时与展示。
+_ECON = "economy_bottom"
+_ECON_READY = False
+
+
+def _ensure_econ_table() -> None:
+    global _ECON_READY
+    if _ECON_READY:
+        return
+    db.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_ECON} (
+            period TEXT PRIMARY KEY,
+            note TEXT,
+            marked_at TEXT
+        )
+    """)
+    _ECON_READY = True
+
+
+def _valid_period(p) -> Optional[str]:
+    """YYYY-MM 校验（**纯函数**，月粒度）。合法返回原值，否则 None。"""
+    import re
+    s = str(p or "").strip()
+    return s if re.match(r"^\d{4}-(0[1-9]|1[0-2])$", s) else None
+
+
+def _month_diff(period: str, day: str) -> Optional[int]:
+    """period(YYYY-MM) 与 day(YYYY-MM-DD) 的月差（period − day；**纯函数**）。
+
+    例：_month_diff("2009-01", "2008-10-28") = 3（2008 复盘的市场底→经济底 ≈1 季度）。
+    """
+    try:
+        return (int(period[:4]) - int(day[:4])) * 12 + (int(period[5:7]) - int(day[5:7]))
+    except (TypeError, ValueError):
+        return None
+
+
+def economy_mark(period: str, note: str = "") -> Dict:
+    """人工标注经济底（月粒度）。同月重复标注=覆盖改判；不同月=新判并保留历史。"""
+    _ensure_econ_table()
+    p = _valid_period(period)
+    if not p:
+        return {"ok": False, "error": "period 须为 YYYY-MM（月粒度，如 2027-01）"}
+    db.upsert(_ECON, {"period": p, "note": str(note or "")[:300],
+                      "marked_at": _bj_now().strftime("%Y-%m-%d %H:%M:%S")},
+              conflict_columns=["period"])
+    return {"ok": True, "period": p}
+
+
+def economy_remove(period: str) -> Dict:
+    """撤销某月的经济底标注（低频人工操作，误标纠错用）。"""
+    _ensure_econ_table()
+    p = _valid_period(period)
+    if not p:
+        return {"ok": False, "error": "period 须为 YYYY-MM"}
+    db.execute(f"DELETE FROM {_ECON} WHERE period=%s", (p,))
+    return {"ok": True, "period": p}
+
+
+def economy_list() -> List[Dict]:
+    _ensure_econ_table()
+    return db.fetch(f"SELECT period, note, marked_at FROM {_ECON} "
+                    f"ORDER BY marked_at DESC") or []
+
+
+def _current_economy() -> Optional[str]:
+    """当前有效的经济底标注（最近一次 marked_at 的 period）。"""
+    try:
+        _ensure_econ_table()
+        r = db.fetch_one(f"SELECT period FROM {_ECON} ORDER BY marked_at DESC LIMIT 1")
+        return _valid_period((r or {}).get("period"))
+    except Exception:
+        return None
+
+
 def lag_report() -> Dict:
-    """计算 基调确认日 → 市场底清单 4/5 达成日 的时滞（零网络，只读两表）。"""
+    """**三底时序**：政策底 → 市场底 → 经济底（零网络，只读三表）。
+
+    · 政策底 = tone_confirm 首个**非 未定/无会议** 标签日（人工）
+    · 市场底 = policy_bottom_watch 首个 n_checked ≥ 4 日（自动）
+    · 经济底 = economy_bottom 最近人工标注（**月粒度**，与数据频率一致）
+    """
     ensure_tables()
     try:
         # ⚠️ 双库兼容：不用 PG 专有的 = ANY(%s)（BK-41 同款教训），用 IN + 占位符
@@ -511,6 +597,11 @@ def lag_report() -> Dict:
                    - datetime.strptime(tone_date, "%Y-%m-%d")).days
         except Exception:
             lag = None
+
+    # 第三层：经济底（月粒度人工标注）
+    econ = _current_economy()
+    econ_lag_m = _month_diff(econ, pbw_date) if (econ and pbw_date) else None
+
     if not tone_date:
         note = "基调未确认（12 月会议周人工打标后开始计时）"
     elif not pbw_date:
@@ -520,5 +611,21 @@ def lag_report() -> Dict:
                 f"（2008 年参照 ≈ 42 天：09-18 政策底 → 10-28 市场底）"
                 if lag is not None and lag >= 0 else
                 f"市场侧 {pbw_date} 早于政策侧 {tone_date}（{-lag} 天）——市场底先行")
+    if econ:
+        # ★ 边角（2026-11-08 实测）：市场底未确认时谈不上"先后顺序"——
+        #   正确的话术是"待计时"，不是拿 None 去比（曾打出"早于市场底 ? 个月"）
+        if not pbw_date:
+            econ_note = f"经济底 {econ}（人工标注）：待市场底确认后开始第二段计时"
+        elif econ_lag_m is not None and econ_lag_m >= 0:
+            econ_note = (f"经济底 {econ}（人工标注）：较市场底约 {econ_lag_m} 个月"
+                         f"（2008 年参照 ≈ 3 个月；月粒度，与数据频率一致）")
+        else:
+            econ_note = (f"经济底 {econ}（人工标注）早于市场底 "
+                         f"{-econ_lag_m if econ_lag_m is not None else '?'} 个月——顺序异常，建议复核标注")
+        note = f"{note}；{econ_note}" if note else econ_note
+    else:
+        note = f"{note}；经济底未标注（月度复盘人工打标：tone_cli economy mark --period YYYY-MM）"
     return {"ok": True, "tone_date": tone_date, "pbw_date": pbw_date,
-            "lag_days": lag, "note": note}
+            "lag_days": lag,
+            "economy_period": econ, "economy_lag_months": econ_lag_m,
+            "note": note}
