@@ -226,6 +226,10 @@
                           :stagflation="stagflation"
                           :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
                           :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
+            <!-- ★★ 2026-11-08（用户："央行储备（月频慢变量）也放进顶部宏观与环境的弹窗里"）：
+                 ReserveCard 从盘前内联迁入浮层——宏观看深了顺手看慢变量背景；
+                 组件自取数据（onMounted），不参与轮询，随浮层开合挂载。 -->
+            <ReserveCard class="mt-3" />
           </div>
         </Teleport>
       </div>
@@ -1990,13 +1994,11 @@
                同日刚在教练卡上踩过一次）。
                ⚠️ 原来它只会出现在盘前（数据一直在，只是别处不渲染）⇒ 抽出来后
                  顶栏浮层让它在**任何阶段**都能看。 -->
-          <MacroEnvCard :macro="macro" :macro-err="macroErr" :temperature="temperature"
-                        :stagflation="stagflation"
-                        :flash-diag="flashDiag" :sizing="sizing" :sentiment="macroSentiment"
-                        :futures-basis="macroFuturesBasis" :liquidity="macroLiquidity" />
-          <!-- ★ 2026-10-10（P0-2）：央行储备月度面板（月频慢变量，非信号）。紧跟宏观卡，
-               与「宏观与环境」构成"环境 → 慢变量背景"的阅读顺序；自取数据、不参与轮询。 -->
-          <ReserveCard />
+          <!-- ★★ 2026-11-08（用户："盘前的宏观与环境不需要展示了"）：盘前内联的
+               MacroEnvCard + ReserveCard 撤下——内容顶栏「宏观」浮层**仍全量可看**
+               （浮层与卡共用同一实现/同一数据源），盘前页让位给决策卡等计划性内容；
+               数据加载器（loadMacro 等）保留不动。 -->
+          <!-- 央行储备月度面板已随宏观卡迁入顶栏「宏观」浮层（2026-11-08）。 -->
           <!-- ★★ 2026-09-25 用户："信号×行业是战法扫描出来的吗？如果是，今日决策卡的战法内容
                也可以摘出来，剩余的部分跟隔夜与今日（财经日历）形成左右卡片。"
                ⇒ 确认：`signal_industry_cross` 读的就是 `strategy_results`（战法扫描）⇒ 同源。
