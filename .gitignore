@@ -20,7 +20,15 @@ frontend/dist-build/
 
 # 排查用的临时脚手架：跑完即删，绝不入库
 #   2026-09-18：bd03f36 曾误把 scripts/_tmp_sql_probe.py / _tmp_two_items.py 提交进去
-scripts/_tmp_*
+#   2026-11-08：原规则只写了 `scripts/_tmp_*`，结果 backend/ frontend/ 根目录的
+#     _tmp_bk33_rerun.py / _tmp_ml.py / tmp_kill_backfill.ps1 / tmp_proc.ps1 /
+#     tmp_engine_test.mjs **全部被提交进库**（挂了 2 个月没人发现）。
+#   ⇒ 改为**不带路径前缀**（gitignore 无斜杠即匹配任意层级），覆盖所有目录。
+_tmp_*
+tmp_*
+
+# 临时导出/调试日志（同上，只在本机有意义）
+*.err
 
 # 打包产物（本地/Actions 生成，不入库）
 #   data/kline/           前端包、后端包、行情快照、失败黑名单等产物
