@@ -63,10 +63,13 @@ _HEADERS = {
 
 # 已核准的 dataId（见文件头 §二）
 DATA_IDS = {
+    # —— 美国（框架 L1/L2 用）——
     "unemployment": 1178885,
     "core_pce_yoy": 1145458,
     "core_pce_mom": 1145457,
     "pce_yoy": 1145456,
+    # —— 中国（2026-11-08 用户提供；**注意是同比，负值=通缩**）——
+    "cn_ppi_yoy": 1186780,
 }
 
 _RE_XX = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")

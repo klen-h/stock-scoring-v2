@@ -1567,29 +1567,31 @@ def task_sahm_refresh():
 
 
 def task_macro_cpi():
-    """全球 CPI 刷新（中/美/欧，金十 dynamic-data，3 请求）。**纯观察器**（2026-11-08）。
+    """价格类指标刷新（中/美/欧 CPI + 中国 PPI）。**纯观察器**（2026-11-08）。
 
-    ★ 数据源：`mp-api.jin10.com/api/dynamic-data/child?tb_name=_vir_58`（**免 token**）。
-      ★★ 必须**按国家筛选**（`search={"country":"中国"}`）才有 100 个月历史；
-         不筛选时 100 条只够 20 国 × 5 个月（`limit` 服务端硬顶 100，加大无效）。
-    ★ **只做档位标签与走势描述，不参与 L1 判定** —— 中国 0.9% 是低通胀、
-      美国 3.7% 是偏高，两者阈值不可混用（见 `app/macro_cpi.py` 文件头 §二）。
-    ★ **失败不抛**：CPI 缺一天不影响主链。
+    ★ 两个源（不同接口）：
+      · CPI（中/美/欧）：`mp-api.jin10.com/api/dynamic-data/child?tb_name=_vir_58`（**免 token**）
+        ★★ 必须按国家筛选 `search={"country":"中国"}` 才有 8 年历史；
+           `limit` 服务端硬顶 100，加大无效。
+      · 中国 PPI：`z3c.jin10.com/calendarGetSiteChartByDateRange?dataId=1186780`
+        走 `app/jin10_calendar.py` 通用层。
+    ★ **只做档位标签与剪刀差描述，不参与 L1 判定** —— 中国 CPI 0.9% 是低通胀、
+      美国 3.7% 是偏高，阈值不可混用（见 `app/macro_price.py` 文件头 §二）。
+    ★ **失败不抛**：价格数据缺一天不影响主链。
     ★ 排 `macro_inflation` 之后：同为通胀类观察，无数据依赖。
     """
     try:
-        from app import macro_cpi as mcp
-        r = mcp.refresh()
+        from app import macro_price as mpr
+        r = mpr.refresh()
         if not r.get("ok"):
-            return f"全球CPI: ⚠ {str((r.get('detail') or {}))[:60]}"
-        v = mcp.view()
-        return (f"全球CPI: {mcp.brief()}"
+            return "价格: ⚠ CPI/PPI 均未刷新成功"
+        v = mpr.view()
+        return (f"价格: {mpr.brief()}｜{v.get('scissors_text')}"
                 f"（{r.get('saved')} 点·"
-                f"中{str((v.get('cn') or {}).get('as_of'))[:7]}/"
-                f"美{str((v.get('us') or {}).get('as_of'))[:7]}"
-                f"·v{mcp.SCORER_VERSION}）")
+                f"中CPI{str((v.get('cn_cpi') or {}).get('as_of'))[:7]}"
+                f"·v{mpr.SCORER_VERSION}）")
     except Exception as e:
-        return f"全球CPI: WARN {str(e)[:70]}"
+        return f"价格: WARN {str(e)[:70]}"
 
 
 def task_macro_inflation():
@@ -1932,10 +1934,12 @@ TASKS = {
     # ★ 2026-11-08：L1 通胀层（核心PCE年率）。数据源与 sahm_refresh 同一个金十日历接口，
     #   只是 dataId 不同（1145458）。**纯观察器**，不进评分/闸门/仓位。
     "macro_inflation": (task_macro_inflation, "通胀层核心PCE刷新（月度，纯观察器）"),
-    # ★ 2026-11-08：全球 CPI（中/美/欧）。**框架外的补充观察**：
-    #   框架 L1 只有美国 PCE，无 CPI 也无中国通胀；中国 CPI 才是"货币政策空间"的输入。
-    #   只做档位标签，**不参与 L1 判定**；不进评分/闸门/仓位。
-    "macro_cpi": (task_macro_cpi, "全球CPI刷新（中/美/欧，纯观察器）"),
+    # ★ 2026-11-08：价格类指标（中/美/欧 CPI + 中国 PPI）。**框架外的补充观察**：
+    #   框架 L1 只有美国 PCE，无 CPI 也无中国通胀；中国 CPI 是"货币政策空间"的输入，
+    #   中国 PPI 是"上游盈利"的输入，两者剪刀差是 A 股行业分化的经典观察维度。
+    #   只做档位标签与剪刀差描述，**不参与 L1 判定**；不进评分/闸门/仓位。
+    #   （任务名沿用 macro_cpi 是为了不打断既有排单，实际刷 CPI+PPI）
+    "macro_cpi": (task_macro_cpi, "价格类指标刷新（CPI中/美/欧 + 中国PPI）"),
     # ★ 2026-11-07：政策定调关键词账本（12 月定调窗口预登记，**纯事实日志**）。
     #   不进评分/闸门/仓位/模拟盘；零外呼（本地匹配既有快讯表）。
     #   读 jin10_tidy 当日产物 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
