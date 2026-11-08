@@ -10,16 +10,22 @@
   · 月度数据一年只有 **12 个点**，人工录入比接一个老超时的外呼更可靠。
 
 用法：
-  # 录入某月（覆盖率不足 15 个月时会显示"数据不足"）
+  # ★ 主路径：从金十日历接口刷新（1 请求拿 3 年，已挂日批）
+  python scripts/record_unemployment.py --jin10
+
+  # 查看当前序列与判定
+  python scripts/record_unemployment.py --show
+
+  # 人工补录某月（接口缺月时用）
   python scripts/record_unemployment.py 2026-11 4.3
 
   # 一次录多个月（月份在前、值在后，空格分隔）
   python scripts/record_unemployment.py 2026-09 4.2 2026-10 4.3 2026-11 4.4
 
-  # 查看当前序列与判定
-  python scripts/record_unemployment.py --show
+  # 备源：akshare（数据滞后，通常只到 2025-09）
+  python scripts/record_unemployment.py --akshare
 
-  # 尝试从 FRED 补全（国内常超时，失败不影响已有数据）
+  # 备源：FRED（国内常超时，失败不影响已有数据）
   python scripts/record_unemployment.py --try-fred
 
 ★ 萨姆规则口径与"数据不足≠未触发"的纪律见 `backend/app/sahm_rule.py` 文件头。
@@ -68,6 +74,21 @@ def main(argv):
         if v.get("detail"):
             print("说明：" + str(v["detail"]))
         return 0
+
+    if argv[0] == "--jin10":
+        print("正在从金十日历接口刷新（主源，1 请求）...")
+        r = sr.refresh_from_jin10()
+        print("结果：", r)
+        if r.get("ok"):
+            v = sr.view()
+            print("判定：" + v["text"])
+        return 0 if r.get("ok") else 1
+
+    if argv[0] == "--akshare":
+        print("正在从 akshare 回填（数据源滞后，通常只到 2025-09）...")
+        r = sr.refresh_from_akshare()
+        print("结果：", r)
+        return 0 if r.get("ok") else 1
 
     if argv[0] == "--try-fred":
         print("正在尝试 FRED（国内常超时，最多等 12s）...")
