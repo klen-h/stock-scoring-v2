@@ -139,20 +139,43 @@ def _layer_l2() -> Dict:
 
 
 def _layer_l1() -> Dict:
-    """L1 通胀层：**项目无数据**，如实标注。"""
+    """L1 通胀层：核心PCE 年率（金十日历 dataId=1145458，月频）。
+
+    ★ 2026-11-08 接入（用户提供 dataId 清单后确认）：
+      用**月度同比**（年率），不用"年化季率"那些季度口径 —— 见 `app/jin10_calendar.py` §二。
+      判定逻辑见 `app/macro_inflation.py`：连续回落 ≥2 月 **且** 趋势指向 ≤2.8%。
+    """
+    try:
+        from app import macro_inflation as mi
+        v = mi.view()
+    except Exception as e:
+        return {"layer": "L1_inflation", "name": LAYER_CN["L1_inflation"],
+                "status": "unavailable", "reason": str(e)[:80], "metrics": []}
+
+    st = v.get("status")
+    metrics = [{
+        "key": "core_pce_yoy", "name": "核心PCE年率",
+        "value": v.get("latest"),
+        "threshold": f"连续回落≥{mi.MIN_FALLS}月 且 趋势≤{mi.CORE_PCE_TARGET}%",
+        "op": "rule", "hit": v.get("layer_ok") if st == "ok" else None,
+        "note": (f"回落{v.get('falls')}月｜斜率{v.get('slope'):+.2f}/月"
+                 f"｜外推{v.get('proj')}%" if st == "ok" else "数据不足"),
+    }, {
+        "key": "supercore_pce", "name": "超级核心PCE",
+        "value": None, "threshold": "3月年化<3.0%", "hit": None,
+        "note": "金十无该口径（需另行计算或他源），暂缺",
+    }]
     return {
         "layer": "L1_inflation",
         "name": LAYER_CN["L1_inflation"],
-        "status": "unavailable",
-        "reason": ("项目无核心PCE/supercore 数据源（macro_daily.panel 26 个品种全为行情类），"
-                   "需新增月度宏观数据接入才能启用"),
-        "metrics": [
-            {"key": "core_pce", "name": "核心PCE", "value": None,
-             "threshold": "连续2-3月回落，趋势≤2.8%", "hit": None, "note": "无数据源"},
-            {"key": "supercore_pce", "name": "超级核心PCE", "value": None,
-             "threshold": "3月年化<3.0%", "hit": None, "note": "无数据源（沃什最看重）"},
-        ],
-        "role": "gate（P1→P2 的必要条件）——**当前恒不满足**",
+        "status": st,
+        "as_of": v.get("as_of"),
+        "from": v.get("from"),
+        "n_loaded": v.get("n_loaded"),
+        "metrics": metrics,
+        "text": v.get("text"),
+        "detail": v.get("detail"),
+        "role": "gate（P1→P2 的必要条件）",
     }
 
 
@@ -176,12 +199,20 @@ def snapshot() -> Dict:
     """四层观察快照。**`phase` 恒为 None** —— 见模块头"为什么不判阶段"。"""
     layers = [_layer_l1(), _layer_l2(), _layer_l3(), _layer_l4()]
 
-    l1_ok = next(x for x in layers if x["layer"] == "L1_inflation")["status"] == "ok"
-    phase_reason = (
-        "四层均可评估，可进入状态机（未实现）" if l1_ok else
-        "**不判阶段**：L1 通胀层无数据源 ⇒「P1→P2」的必要条件恒不满足，"
-        "任何阶段推进都会是假的。当前只能看四层读数与缺口。"
-    )
+    # ★ 2026-11-08：L1 通胀层接入后，**下一道缺口是 FOMC 点阵图**。
+    #   P1→P2 的完整条件是 `L1 ∧ L2 ∧ 点阵图远端点冻结`（框架 §4.1 修订表），
+    #   前两者现在都有数据，但**点阵图项目没有数据源**（需接 FOMC 声明/SEP 文本）。
+    #   ⇒ 仍然不判阶段，但要如实说明"卡在哪"，而不是笼统说"缺数据"。
+    dot_plot_available = False
+    l1 = next(x for x in layers if x["layer"] == "L1_inflation")
+    if dot_plot_available:
+        phase_reason = "四层可评估，可进入状态机（未实现）"
+    else:
+        phase_reason = (
+            "**不判阶段**：P1→P2 需「L1通胀 ∧ L2就业 ∧ 点阵图远端点冻结」，"
+            f"L1={l1.get('status')}、L2 有数据，但**项目无 FOMC 点阵图数据源** ⇒ "
+            "该门永不成立。当前只报四层读数与缺口。"
+        )
 
     hit_count = sum(1 for x in layers if x.get("status") == "ok")
     return {

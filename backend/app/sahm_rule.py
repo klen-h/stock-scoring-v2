@@ -277,110 +277,47 @@ def evaluate(limit: int = 36) -> Dict:
     return res
 
 
-# ── 金十日历接口（**当前主源**，2026-11-08 用户提供）──────────────────────────
-_JIN10_CAL_URL = ("https://e0430d16720e4211b5e072c26205c890.z3c.jin10.com"
-                  "/calendarGetSiteChartByDateRange")
-# ⚠️ 这个 app-id **不是** flash/jin10_tidy 用的 `fiXF2nOnDycGutVA`，
-#   是日历/图表域（`z3c` CDN）的另一套凭据，别混用。
-_JIN10_CAL_HEADERS = {
-    "x-app-id": "sKKYe29sFuJaeOCJ",
-    "x-version": "2.0",
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://www.jin10.com/",
-}
-# 美国失业率在「金十日历」里的 dataId（对应 U3 季调失业率）
-_JIN10_UNEMP_DATA_ID = 1178885
-
-
-def _jin10_period(x: Dict) -> Optional[str]:
-    """把金十的 `xx`（"2025年 9月"）解析成 `2025-09`。
-
-    退回顺序：`xx` → `year` + `time_period`。都失败返回 None。
-    """
-    import re
-    m = re.match(r"(\d{4})\s*年\s*(\d{1,2})\s*月", str(x.get("xx") or ""))
-    if m:
-        return "%s-%02d" % (m.group(1), int(m.group(2)))
-    my = re.search(r"(\d{4})", str(x.get("year") or ""))
-    mt = re.search(r"(\d{1,2})", str(x.get("time_period") or ""))
-    if my and mt:
-        mo = int(mt.group(1))
-        if 1 <= mo <= 12:
-            return "%s-%02d" % (my.group(1), mo)
-    return None
+# ── 金十日历接口（主源）──────────────────────────────────────────────────────
+# 取数/解析统一走 `app/jin10_calendar.py`（同一接口也被 L1 通胀层复用），
+# 这里只保留"失业率专属"的部分：dataId 与落库表 `macro_unemployment`。
+# ⚠️ 历史教训（写在这里免得又踩）：**一定要用 `revised` 而非 `actual`**、
+#    **一定要用统计月 `xx` 而非 `pub_time`** —— 这两点已在通用层实现，别再本地重写。
 
 
 def refresh_from_jin10(gte: str = None, lte: str = None,
                        timeout: float = 20.0) -> Dict:
-    """从**金十日历图表接口**拉美国失业率历史并 upsert（**当前唯一可靠的自动源**）。
+    """从金十日历拉美国失业率历史并 upsert 到 `macro_unemployment`（**唯一自动源**）。
 
-    ★ 2026-11-08 实测（用户提供地址与凭据）：
-        1 请求 0.1s，返回 `data` 列表，单条字段：
-        `{xx:"2025年 9月", actual:"4.4", revised:"4.5", pub_time, ...}`
-        覆盖 2022-12 ~ 2026-10 共 47 条。
+    ★ 2026-11-08 实测：1 请求 0.1s、47 条、覆盖 2022-12~2026-10。
+      解析细节（revised 优先 / 统计月 / 缺口不插值）见 `app/jin10_calendar.py` 文件头。
 
-    ★★ 三条口径要点（不写清会算错）：
-      1. **优先取 `revised`（修正值）**，无则取 `actual`。失业率会被 BLS 回溯修正，
-         萨姆规则必须用**最新修正值**，否则同一月份在不同时点算出的结果会不一致。
-         （实测样例：2025年12月 actual=4.4 / revised=4.5 ⇒ 取 **4.5**）
-      2. **日期用统计月份（`xx`），不用 `pub_time`**。`pub_time` 是发布时刻
-         （次月首个周五附近），两者差约 1 个月，会整体平移序列。
-      3. **`2025-10` 在源数据里就是空的**（美国政府停摆期间 BLS 未发布），
-         不是拉取失败。缺口由 `evaluate()` 显式跳过并报告，**不插值**。
+    ★ **`2025-10` 在源数据里就是空的**（美国政府停摆期间 BLS 未发布），
+      不是拉取失败。缺口由 `evaluate()` 显式跳过并报告，**不插值**。
 
     返回 `{ok, saved, latest, months, error}`；失败不抛。
     """
-    import requests
+    from app.jin10_calendar import DATA_IDS, fetch_series
 
-    if not gte:
-        from datetime import datetime as _dt
-        from datetime import timedelta as _td
-        gte = (_dt.now() - _td(days=365 * 3)).strftime("%Y%m%d")
-    if not lte:
-        from datetime import datetime as _dt
-        lte = _dt.now().strftime("%Y%m%d")
+    r = fetch_series(DATA_IDS["unemployment"], gte=gte, lte=lte, timeout=timeout)
+    if not r.get("ok"):
+        return {"ok": False, "saved": 0, "latest": None,
+                "months": r.get("rows") or 0, "error": r.get("error")}
 
-    params = {"dataId": _JIN10_UNEMP_DATA_ID, "gteDate": gte, "lteDate": lte}
-    try:
-        r = requests.get(_JIN10_CAL_URL, params=params,
-                         headers=_JIN10_CAL_HEADERS, timeout=timeout)
-        j = r.json()
-    except Exception as e:
-        return {"ok": False, "saved": 0, "latest": None, "months": 0,
-                "error": f"请求失败: {str(e)[:90]}"}
-
-    if str(j.get("status")) not in ("200", "0"):
-        return {"ok": False, "saved": 0, "latest": None, "months": 0,
-                "error": f"status={j.get('status')} {str(j.get('message'))[:60]}"}
-
-    rows = j.get("data") or []
     saved = 0
     latest = None
-    for x in rows:
-        month = _jin10_period(x)
-        if not month:
-            continue
-        raw = x.get("revised")
-        if raw in (None, "", "-"):
-            raw = x.get("actual")
-        if raw in (None, ""):
+    for iso, val in r["points"]:
+        if not (0 < val < 30):          # 失业率合理性护栏
             continue
         try:
-            val = float(str(raw).replace("%", "").strip())
-        except ValueError:
-            continue
-        if not (0 < val < 30):
-            continue
-        try:
-            iso = upsert_rate(month, val, source="jin10_cal")
+            d = upsert_rate(iso, val, source="jin10_cal")
             saved += 1
-            if latest is None or iso > latest:
-                latest = iso
+            if latest is None or d > latest:
+                latest = d
         except Exception:
             continue
 
     return {"ok": saved > 0, "saved": saved, "latest": latest,
-            "months": len(rows), "error": ""}
+            "months": r.get("rows") or 0, "error": ""}
 
 
 def refresh_from_akshare() -> Dict:

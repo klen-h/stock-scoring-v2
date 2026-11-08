@@ -1566,6 +1566,32 @@ def task_sahm_refresh():
         return f"萨姆规则: WARN {str(e)[:70]}"
 
 
+def task_macro_inflation():
+    """L1 通胀层：刷新核心PCE（金十日历，1 请求）并报判定（2026-11-08）。**纯观察器**。
+
+    ★ 数据源：金十日历 `dataId=1145458`（**核心PCE物价指数年率**，月频）。
+      用月度同比，**不用"年化季率"**那些季度口径（见 `app/jin10_calendar.py` §二）。
+    ★ 判定（框架 §4.2 落地）：连续回落 ≥2 月 **且** 趋势指向 ≤2.8%。
+      细则见 `app/macro_inflation.py`（"趋势指向"= 按近 3 月斜率外推 2 个月）。
+    ★ **失败不抛**：拿不到数据时 `view()` 返回 `insufficient`，
+      语义是"数据不足"，**不是"通胀没回落"**（两者不可混）。
+    ★ 排在 `sahm_refresh` 之后：同为金十日历口径的宏观观察层，无数据依赖。
+    """
+    try:
+        from app import macro_inflation as mi
+        r = mi.refresh()
+        if not r.get("ok"):
+            return f"通胀层: ⚠ {str((r.get('detail') or {}).get('core_pce_yoy'))[:60]}"
+        v = mi.view()
+        # 用 detail（不含"通胀层…"前缀），避免"通胀层: 通胀层未达成"这种重复
+        mark = "✅ " if v.get("layer_ok") else "✗ "
+        return (f"通胀层: {mark}{str(v.get('detail'))[:68]}"
+                f"（{r.get('saved')} 点/最新 {str(v.get('as_of'))[:7]}"
+                f"·v{mi.SCORER_VERSION}）")
+    except Exception as e:
+        return f"通胀层: WARN {str(e)[:70]}"
+
+
 def task_policy_tone_watch():
     """政策定调窗口关键词账本（2026-11-07 拍板冻结）。**纯事实日志观察器**。
 
@@ -1877,6 +1903,9 @@ TASKS = {
     #   不接状态机、不进评分/闸门/仓位（S3 才谈消费，且需先拍板）。
     #   主源 = 金十日历接口（1 请求/天）；FRED 超时、BLS 403、东财无 reportName。
     "sahm_refresh": (task_sahm_refresh, "萨姆规则失业率刷新（月度，纯观察器）"),
+    # ★ 2026-11-08：L1 通胀层（核心PCE年率）。数据源与 sahm_refresh 同一个金十日历接口，
+    #   只是 dataId 不同（1145458）。**纯观察器**，不进评分/闸门/仓位。
+    "macro_inflation": (task_macro_inflation, "通胀层核心PCE刷新（月度，纯观察器）"),
     # ★ 2026-11-07：政策定调关键词账本（12 月定调窗口预登记，**纯事实日志**）。
     #   不进评分/闸门/仓位/模拟盘；零外呼（本地匹配既有快讯表）。
     #   读 jin10_tidy 当日产物 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
@@ -2027,6 +2056,8 @@ DEFAULT_ORDER = ["backfill",
                 # ★ 2026-11-08：萨姆规则刷新（月度失业率，1 请求/天）。
                 #   与 macro_class 同为宏观观察层，无数据依赖 ⇒ 紧跟其后。
                 "sahm_refresh",
+                # ★ 2026-11-08：L1 通胀层（核心PCE），同为金十日历口径，紧跟其后。
+                "macro_inflation",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
