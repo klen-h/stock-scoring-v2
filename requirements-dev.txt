@@ -2,3 +2,9 @@
 # 用途：backend/tests/generated 单元测试（.github/workflows/ci.yml backend job）
 # 版本上限：pytest 9 要求 Python >=3.10，生产对齐 3.9 ⇒ 钉在 8.x
 pytest>=8,<9
+
+# ★ 2026-11-08：静态抓 `undefined name`（F821）。
+#   起因：生产部署崩溃 —— `scheduler.start()` 里调用了未导入的 `etf_quote_loop`，
+#   `compileall`（只查语法）和 `import app.main`（不执行 lifespan）**都抓不到**，
+#   而这类错误一旦触发就是**进程启动失败、整站不可用**。
+pyflakes>=3,<4
