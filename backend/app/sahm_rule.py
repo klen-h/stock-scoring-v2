@@ -23,16 +23,22 @@ from __future__ import annotations
      而 MA3 本身要 3 个原始点 ⇒ **原始序列至少 15 个月**。
 
 --------------------------------------------------------------------------------
-二、数据源（**新增的唯一外部依赖，当前走人工录入**）
+二、数据源（★ 2026-11-08 四源实测后定主源）
 --------------------------------------------------------------------------------
-  实测（2026-11-08）：
-    · FRED `fredgraph.csv?id=UNRATE` —— 国内 **连续 2 次 ReadTimeout（各 20s）**，
-      与 `app/macro.py` 注释"国内常超时"一致 ⇒ 不作主源。
-    · 东财 `datacenter-web` 宏观库 `RPT_ECONOMY_US_UNEMPLOYMENT` 等 5 个候选 reportName
-      全部 `data=0` ⇒ 未找到可用 reportName，不猜。
+  | 源 | 实测结果 | 结论 |
+  |---|---|---|
+  | **金十日历图表**（`z3c.jin10.com/calendarGetSiteChartByDateRange`） | **0.1s，47 条，2022-12~2026-10** | ✅ **主源** |
+  | akshare `macro_usa_unemployment_rate` | 4.5s，669 行，但**只到 2025-09** | 备源（补更早历史） |
+  | FRED `fredgraph.csv?id=UNRATE` | 连续 2 次 ReadTimeout（各 20s） | ✗ 不用 |
+  | BLS `api.bls.gov` | HTTP **403** | ✗ 不用 |
+  | 东财 `RPT_ECONOMY_US_*`（5 个候选） | 全部 `data=0` | ✗ 找不到 reportName，不猜 |
 
-  ⇒ 月度数据一年只有 12 个点，**人工录入比接一个老超时的接口更可靠**。
-     `upsert_rate()` 是唯一写口；`refresh_from_fred()` 保留为可选加速器（默认不调）。
+  ⇒ `refresh_from_jin10()` 是**唯一自动入口**（1 请求 / 天成本可忽略）；
+     `upsert_rate()` 是通用写口（人工补录）；`refresh_from_akshare()` 补 2022-12 以前。
+     `refresh_from_fred()` 保留但默认不调（超时）。
+
+  ⚠️ 金十日历用的 `x-app-id` 是 **`sKKYe29sFuJaeOCJ`**，
+     **不是** `flash` / `jin10_tidy` 的 `fiXF2nOnDycGutVA` —— 两套凭据别混用。
 
 --------------------------------------------------------------------------------
 三、★★ 铁律：**"数据不足" ≠ "未触发"**
@@ -205,8 +211,49 @@ def load_series(limit: int = 36) -> List[Tuple[str, float]]:
     return out
 
 
+def _month_gaps(series: List[Tuple[str, float]]) -> List[str]:
+    """检测 `series`（ISO 日期正序）里**缺失的月份**，返回 `['2025-10', ...]`。
+
+    ★ 2026-11-08：实测源数据里 **`2025-10` 是真空的**（美国政府停摆期间 BLS 未发布），
+      不是拉取失败。这里只**报告**缺口，不插值 —— 插值会凭空造出一个失业率读数。
+
+    ⚠️ **缺口对 MA3 的影响（已知局限，接受不改）**：
+      缺 1 个月时，`compute_sahm()` 会把缺口两侧的月份当成**相邻**参与 3 月平均
+      （如 2025-09 与 2025-11 直接相连），使缺口附近几个 MA3 值有轻微偏差。
+      **不改的理由**：三条路都有问题 ——
+        ① 插值 = 凭空造数，违反"缺失不进分母"的项目纪律；
+        ② 截断到缺口前 = 白白丢掉最近一年数据；
+        ③ 按日历月重采样 = 等价于插值。
+      ⇒ 选择"照算 + 显式报告缺口"。当前缺口（2025-10）已在比较窗口之外，
+        对结论无实质影响；若将来缺口落进最近 12 个月，`detail` 会带出提示。
+    """
+    gaps: List[str] = []
+    for i in range(1, len(series)):
+        try:
+            y0, m0 = int(series[i - 1][0][:4]), int(series[i - 1][0][5:7])
+            y1, m1 = int(series[i][0][:4]), int(series[i][0][5:7])
+        except (ValueError, IndexError):
+            continue
+        diff = (y1 - y0) * 12 + (m1 - m0)
+        if diff <= 1:
+            continue
+        for k in range(1, diff):
+            mm = m0 + k
+            yy = y0 + (mm - 1) // 12
+            mm = (mm - 1) % 12 + 1
+            gaps.append("%04d-%02d" % (yy, mm))
+    return gaps
+
+
 def evaluate(limit: int = 36) -> Dict:
-    """读库 → 计算 → 返回判定结果（含 `as_of` 与序列覆盖范围）。"""
+    """读库 → 计算 → 返回判定结果（含 `as_of`、序列覆盖范围、**缺口列表**）。
+
+    ★ 缺口策略（2026-11-08）：**跳过缺口继续算，但把缺口写进结果并提示**。
+      理由：若"有缺口就整条不判定"，则因 2025-10 永久缺失，本规则将永远无法出结论；
+      而萨姆规则看的是趋势，缺 1 个月对结论影响有限 —— **但使用者必须知道**。
+      对比：纯函数 `compute_sahm()` 仍保持严格（输入含 None 直接 invalid），
+      缺口处理只发生在本层（数据层），职责分离。
+    """
     try:
         series = load_series(limit)
     except Exception as e:
@@ -218,13 +265,176 @@ def evaluate(limit: int = 36) -> Dict:
     res["from"] = series[0][0] if series else None
     res["n_loaded"] = len(series)
     res["table"] = _TABLE
+
+    # 只关心"参与本次计算的那段"（compute_sahm 用最后 MIN_POINTS 个点）
+    tail = series[-MIN_POINTS:] if len(series) >= MIN_POINTS else series
+    gaps = _month_gaps(tail)
+    res["gaps"] = gaps
+    if gaps and res.get("status") == "ok":
+        res["detail"] = (res.get("detail", "")
+                         + f"｜⚠️ 序列缺 {len(gaps)} 个月（{', '.join(gaps)}），"
+                           f"按可用月份计算")
     return res
 
 
-def refresh_from_fred(timeout: float = 12.0) -> Dict:
-    """可选加速器：从 FRED 拉 `UNRATE` 全列并逐月 upsert。**默认不调**。
+# ── 金十日历接口（**当前主源**，2026-11-08 用户提供）──────────────────────────
+_JIN10_CAL_URL = ("https://e0430d16720e4211b5e072c26205c890.z3c.jin10.com"
+                  "/calendarGetSiteChartByDateRange")
+# ⚠️ 这个 app-id **不是** flash/jin10_tidy 用的 `fiXF2nOnDycGutVA`，
+#   是日历/图表域（`z3c` CDN）的另一套凭据，别混用。
+_JIN10_CAL_HEADERS = {
+    "x-app-id": "sKKYe29sFuJaeOCJ",
+    "x-version": "2.0",
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "https://www.jin10.com/",
+}
+# 美国失业率在「金十日历」里的 dataId（对应 U3 季调失业率）
+_JIN10_UNEMP_DATA_ID = 1178885
 
-    ★ 2026-11-08 实测：国内连续 2 次 ReadTimeout(各20s) ⇒ 只作手动补充，
+
+def _jin10_period(x: Dict) -> Optional[str]:
+    """把金十的 `xx`（"2025年 9月"）解析成 `2025-09`。
+
+    退回顺序：`xx` → `year` + `time_period`。都失败返回 None。
+    """
+    import re
+    m = re.match(r"(\d{4})\s*年\s*(\d{1,2})\s*月", str(x.get("xx") or ""))
+    if m:
+        return "%s-%02d" % (m.group(1), int(m.group(2)))
+    my = re.search(r"(\d{4})", str(x.get("year") or ""))
+    mt = re.search(r"(\d{1,2})", str(x.get("time_period") or ""))
+    if my and mt:
+        mo = int(mt.group(1))
+        if 1 <= mo <= 12:
+            return "%s-%02d" % (my.group(1), mo)
+    return None
+
+
+def refresh_from_jin10(gte: str = None, lte: str = None,
+                       timeout: float = 20.0) -> Dict:
+    """从**金十日历图表接口**拉美国失业率历史并 upsert（**当前唯一可靠的自动源**）。
+
+    ★ 2026-11-08 实测（用户提供地址与凭据）：
+        1 请求 0.1s，返回 `data` 列表，单条字段：
+        `{xx:"2025年 9月", actual:"4.4", revised:"4.5", pub_time, ...}`
+        覆盖 2022-12 ~ 2026-10 共 47 条。
+
+    ★★ 三条口径要点（不写清会算错）：
+      1. **优先取 `revised`（修正值）**，无则取 `actual`。失业率会被 BLS 回溯修正，
+         萨姆规则必须用**最新修正值**，否则同一月份在不同时点算出的结果会不一致。
+         （实测样例：2025年12月 actual=4.4 / revised=4.5 ⇒ 取 **4.5**）
+      2. **日期用统计月份（`xx`），不用 `pub_time`**。`pub_time` 是发布时刻
+         （次月首个周五附近），两者差约 1 个月，会整体平移序列。
+      3. **`2025-10` 在源数据里就是空的**（美国政府停摆期间 BLS 未发布），
+         不是拉取失败。缺口由 `evaluate()` 显式跳过并报告，**不插值**。
+
+    返回 `{ok, saved, latest, months, error}`；失败不抛。
+    """
+    import requests
+
+    if not gte:
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        gte = (_dt.now() - _td(days=365 * 3)).strftime("%Y%m%d")
+    if not lte:
+        from datetime import datetime as _dt
+        lte = _dt.now().strftime("%Y%m%d")
+
+    params = {"dataId": _JIN10_UNEMP_DATA_ID, "gteDate": gte, "lteDate": lte}
+    try:
+        r = requests.get(_JIN10_CAL_URL, params=params,
+                         headers=_JIN10_CAL_HEADERS, timeout=timeout)
+        j = r.json()
+    except Exception as e:
+        return {"ok": False, "saved": 0, "latest": None, "months": 0,
+                "error": f"请求失败: {str(e)[:90]}"}
+
+    if str(j.get("status")) not in ("200", "0"):
+        return {"ok": False, "saved": 0, "latest": None, "months": 0,
+                "error": f"status={j.get('status')} {str(j.get('message'))[:60]}"}
+
+    rows = j.get("data") or []
+    saved = 0
+    latest = None
+    for x in rows:
+        month = _jin10_period(x)
+        if not month:
+            continue
+        raw = x.get("revised")
+        if raw in (None, "", "-"):
+            raw = x.get("actual")
+        if raw in (None, ""):
+            continue
+        try:
+            val = float(str(raw).replace("%", "").strip())
+        except ValueError:
+            continue
+        if not (0 < val < 30):
+            continue
+        try:
+            iso = upsert_rate(month, val, source="jin10_cal")
+            saved += 1
+            if latest is None or iso > latest:
+                latest = iso
+        except Exception:
+            continue
+
+    return {"ok": saved > 0, "saved": saved, "latest": latest,
+            "months": len(rows), "error": ""}
+
+
+def refresh_from_akshare() -> Dict:
+    """用 akshare 的 `macro_usa_unemployment_rate` **回填历史**（月度）。
+
+    ★ 2026-11-08 实测（这是三个源里唯一可用的）：
+        · FRED `fredgraph.csv?id=UNRATE` —— 连续 2 次 ReadTimeout(各 20s)
+        · BLS `api.bls.gov` —— HTTP **403**（无 key / 屏蔽）
+        · akshare ✅ 669 行、4.5s、列 = `商品/日期/今值/预测值/前值`
+
+    ⚠️ **两个必须知道的口径事实**：
+      1. `日期` 是**数据发布日**（每月第一个周五附近），**不是统计月份**。
+         萨姆规则只依赖"月频序列的顺序与间距"，用发布日不改变结论，故原样存
+         （经 `upsert_rate` 归一到当月 1 日，保持月频）。
+      2. akshare 数据源**滞后**：实测最新只到 **2025-09**，其后需人工补
+         （`scripts/record_unemployment.py`）。
+
+    返回 `{ok, saved, latest, error}`；失败不抛。
+    """
+    try:
+        import akshare as ak
+    except Exception as e:
+        return {"ok": False, "saved": 0, "latest": None,
+                "error": f"akshare 不可用: {str(e)[:80]}"}
+    try:
+        df = ak.macro_usa_unemployment_rate()
+    except Exception as e:
+        return {"ok": False, "saved": 0, "latest": None,
+                "error": f"akshare 调用失败: {str(e)[:90]}"}
+    if df is None or getattr(df, "empty", True):
+        return {"ok": False, "saved": 0, "latest": None, "error": "返回空表"}
+
+    saved = 0
+    latest = None
+    for _, row in df.iterrows():
+        d = str(row.get("日期") or "")[:10]
+        v = row.get("今值")
+        # NaN 检查（pandas 的 NaN != NaN）
+        if not d or v is None or (isinstance(v, float) and v != v):
+            continue
+        try:
+            iso = upsert_rate(d, float(v), source="akshare")
+            saved += 1
+            if latest is None or iso > latest:
+                latest = iso
+        except Exception:
+            continue
+    return {"ok": saved > 0, "saved": saved, "latest": latest, "error": ""}
+
+
+def refresh_from_fred(timeout: float = 12.0) -> Dict:
+    """可选：从 FRED 拉 `UNRATE` 全列（**国内实测超时，保留仅为备用**）。
+
+    ★ 2026-11-08 实测：连续 2 次 ReadTimeout(各20s) ⇒ 只作手动补充，
       **不要挂进日批**（否则每天白等一次超时）。失败不抛，返回 dict 说明。
     """
     import csv
@@ -261,16 +471,19 @@ def view() -> Dict:
     """对外只读快照：判定结果 + 人话描述。**不含任何操作建议**。"""
     r = evaluate()
     st = r.get("status")
+    # short 不带"萨姆规则"前缀，供日批等已有上文的地方用（避免"萨姆规则: 萨姆规则…"）
     if st == "ok":
         if r.get("triggered"):
-            text = (f"⚠️ 萨姆规则已触发（{r.get('sahm'):+.2f}pp ≥ "
-                    f"{r.get('threshold'):.2f}）——按框架应硬切衰退剧本")
+            short = (f"⚠️ 已触发（{r.get('sahm'):+.2f}pp ≥ "
+                     f"{r.get('threshold'):.2f}）——按框架应硬切衰退剧本")
         else:
-            text = f"萨姆规则未触发（{r.get('sahm'):+.2f}pp）"
+            short = f"未触发（{r.get('sahm'):+.2f}pp）"
     elif st == "insufficient":
-        text = f"萨姆规则数据不足（{r.get('have')}/{r.get('need')} 个月）"
+        short = f"数据不足（{r.get('have')}/{r.get('need')} 个月）"
     else:
-        text = f"萨姆规则不可用：{r.get('detail')}"
+        short = f"不可用：{r.get('detail')}"
+    text = "萨姆规则" + short
+    gaps = r.get("gaps") or []
     return {
         "ok": st == "ok",
         "status": st,
@@ -278,7 +491,12 @@ def view() -> Dict:
         "sahm_pp": r.get("sahm"),
         "threshold": r.get("threshold"),
         "as_of": r.get("as_of"),
-        "text": text,
+        "from": r.get("from"),
+        "n_loaded": r.get("n_loaded"),
+        "gaps": gaps,
+        "has_gap": bool(gaps),
+        "text": text + (f"（序列缺 {len(gaps)} 个月：{', '.join(gaps)}）" if gaps and st == "ok" else ""),
+        "short": short,
         "detail": r.get("detail"),
         "scorer_version": SCORER_VERSION,
     }

@@ -36,7 +36,8 @@ if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
 from app.sahm_rule import (  # noqa: E402
-    COMPARE_WINDOW, MIN_POINTS, SAHM_THRESHOLD, _iso_month, compute_sahm,
+    COMPARE_WINDOW, MIN_POINTS, SAHM_THRESHOLD, _iso_month, _month_gaps,
+    compute_sahm,
 )
 
 _passed = 0
@@ -151,6 +152,23 @@ def main():
         check("非法输入抛 ValueError", False, "没有抛异常")
     except ValueError:
         check("非法输入抛 ValueError", True)
+
+    # ---------------------------------------------------------------- 13
+    print("\n[13] _month_gaps 缺口检测（2025-10 美国停摆导致真实缺口）")
+    g = _month_gaps([("2025-08-01", 4.3), ("2025-09-01", 4.4),
+                     ("2025-11-01", 4.6), ("2025-12-01", 4.5)])
+    check("识别出 2025-10", g == ["2025-10"], f"实际 {g}")
+
+    check("连续序列无缺口",
+          _month_gaps([("2026-01-01", 1.0), ("2026-02-01", 2.0),
+                       ("2026-03-01", 3.0)]) == [])
+
+    check("跨年缺口展开正确",
+          _month_gaps([("2025-11-01", 1.0), ("2026-02-01", 2.0)]) == ["2025-12", "2026-01"],
+          f"实际 {_month_gaps([('2025-11-01', 1.0), ('2026-02-01', 2.0)])}")
+
+    check("空序列/单点无缺口",
+          _month_gaps([]) == [] and _month_gaps([("2026-01-01", 1.0)]) == [])
 
     # ---------------------------------------------------------------- 汇总
     print("\n" + "=" * 78)

@@ -1539,6 +1539,33 @@ def task_macro_class():
         return f"宏观分类: WARN {str(e)[:70]}"
 
 
+def task_sahm_refresh():
+    """萨姆规则：刷新美国月度失业率并输出当前判定（2026-11-08）。**纯观察器**。
+
+    ★ 数据源（2026-11-08 四源实测后定的主源，用户提供地址）：
+        `z3c.jin10.com/calendarGetSiteChartByDateRange?dataId=1178885`
+        —— **1 请求**拿 3 年月度失业率（实测 0.1s / 47 条），成本可忽略。
+      FRED 连续 ReadTimeout、BLS 403、东财 reportName 找不到 ⇒ 都不用。
+    ★ **优先取 `revised`（修正值）**：失业率会被 BLS 回溯修正，
+      用 `actual` 会让同一月份在不同时点算出不同结果（违反可复算）。
+    ★ **失败不抛**：拿不到数据时 `view()` 显示"数据不足/不可用"，
+      语义是 **"未判定"而不是"未触发"** —— 不得据此推进任何阶段（见 `app/sahm_rule.py` 文件头）。
+    ★ 排在 `macro_class` 之后：两者同为宏观观察层，无数据依赖。
+    """
+    try:
+        from app import sahm_rule as sr
+        r = sr.refresh_from_jin10()
+        if not r.get("ok"):
+            return f"萨姆规则: ⚠ {str(r.get('error'))[:60]}"
+        v = sr.view()
+        gap = f"·缺{len(v.get('gaps') or [])}月" if v.get("has_gap") else ""
+        return (f"萨姆规则: {v.get('short')[:64]}"
+                f"（{r.get('saved')} 月/最新 {str(r.get('latest'))[:7]}"
+                f"{gap}·v{sr.SCORER_VERSION}）")
+    except Exception as e:
+        return f"萨姆规则: WARN {str(e)[:70]}"
+
+
 def task_policy_tone_watch():
     """政策定调窗口关键词账本（2026-11-07 拍板冻结）。**纯事实日志观察器**。
 
@@ -1845,6 +1872,11 @@ TASKS = {
     #   读 `thesis_evidence` 当日快照 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
     #   设计：docs/宏观状态概率账设计_20261107.md
     "macro_class": (task_macro_class, "宏观状态概率账（四类分布，纯观察器）"),
+    # ★ 2026-11-08：萨姆规则（失业率 3 月均值 vs 过去 12 月低点，≥0.5pp 触发）。
+    #   外部框架把它定为「最高优先级覆盖逻辑」，本任务**只刷新数据 + 报判定**，
+    #   不接状态机、不进评分/闸门/仓位（S3 才谈消费，且需先拍板）。
+    #   主源 = 金十日历接口（1 请求/天）；FRED 超时、BLS 403、东财无 reportName。
+    "sahm_refresh": (task_sahm_refresh, "萨姆规则失业率刷新（月度，纯观察器）"),
     # ★ 2026-11-07：政策定调关键词账本（12 月定调窗口预登记，**纯事实日志**）。
     #   不进评分/闸门/仓位/模拟盘；零外呼（本地匹配既有快讯表）。
     #   读 jin10_tidy 当日产物 ⇒ 必须排在它之后（见 DEFAULT_ORDER）。
@@ -1992,6 +2024,9 @@ DEFAULT_ORDER = ["backfill",
                 # ★ 2026-11-07：宏观分类**读 thesis_evidence 当日快照** ⇒ 必须紧跟其后。
                 #   排在前面会读不到当日证据，静默回退到前一日（不崩，但慢一天）。
                 "macro_class",
+                # ★ 2026-11-08：萨姆规则刷新（月度失业率，1 请求/天）。
+                #   与 macro_class 同为宏观观察层，无数据依赖 ⇒ 紧跟其后。
+                "sahm_refresh",
                 "sector_strength",
                  # ★ 2026-10-26 合并：三个观察器（拥挤赛道/指数关键位/AI篮子）
                  #   ⚠️ 必须排在 scenario_watch 之前（它二次消费关键位结果）
