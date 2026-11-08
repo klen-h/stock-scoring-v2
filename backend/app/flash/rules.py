@@ -408,16 +408,22 @@ def _warn_holidays_coverage(day_str: str) -> None:
     """★ 2026-11-09（BK-54b 防静默）：HOLIDAYS 只维护到 2026 ⇒ 跨年后节假日识别
     失效（把假期当交易日）。国务院公告后应把 2027 年份加入 HOLIDAYS；
     在那之前，凡查询超出已覆盖年份的日期，打一条告警（限频：每进程一次）。"""
-    _done = getattr(_warn_holidays_coverage, "_done", set())
+    # ★★ 2026-11-09 修复（实测）：原写法 `getattr(fn, "_done", set())` 在属性不存在时
+    #   返回的是**一个临时空 set**，`_done.add(yr)` 只改这个临时对象，
+    #   **从未写回 `fn._done`** ⇒ 每次调用都是新的空 set ⇒ "每进程一次"限频完全失效。
+    #   `is_trading_day` 在调度器里被高频调用，2027 年起会**每次都打印告警**（日志刷爆）。
+    #   实测连续 3 次调用 2027 ⇒ 打印 3 次、`hasattr(fn,'_done')` 始终 False。
+    if not hasattr(_warn_holidays_coverage, "_done"):
+        _warn_holidays_coverage._done = set()
+    _done = _warn_holidays_coverage._done
     yr = int(str(day_str)[:4]) if str(day_str)[:4].isdigit() else 0
-    if not yr or yr in _done:
+    if not yr or yr in _done or yr in HOLIDAYS:
         return
-    _done.add(yr)
-    if yr not in HOLIDAYS:
-        print("[rules] WARNING: year %d not in HOLIDAYS (manual fallback list "
-              "maintained only through 2026); fuyao calendar is primary, but the "
-              "manual fallback will treat holidays as trading days until the "
-              "2027 list is added" % yr)
+    _done.add(yr)          # 只记录"已告警过"的缺年份，不把正常年份塞进去
+    print("[rules] WARNING: year %d not in HOLIDAYS (manual fallback list "
+          "maintained only through 2026); fuyao calendar is primary, but the "
+          "manual fallback will treat holidays as trading days until the "
+          "2027 list is added" % yr)
 
 
 def is_trading_day(dt=None) -> bool:
