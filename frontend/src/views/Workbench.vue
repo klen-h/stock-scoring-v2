@@ -5212,9 +5212,15 @@ function jin10TagCls(tag) {
   if (tag === '汽车' || tag === '地产') return 'bg-orange-500/15 text-orange-300'
   return 'bg-border/40 text-muted'
 }
-async function loadRiskWatch() {
-  riskLoading.value = true
-  riskErr.value = ''
+async function loadRiskWatch(silent = false) {
+  // ★ 2026-11-10：`silent=true`（盘中轮询）时**不进 loading 态、不写错误**。
+  //   模板里 `v-if="riskLoading"` 优先于数据渲染 ⇒ 若轮询也置 loading，
+  //   每 5 分钟会把已展开的块刷成"加载中…"闪一下；失败时也应按铁律 11 静默保留上次值，
+  //   而不是把刚拉好的内容换成一行错误提示。
+  if (!silent) {
+    riskLoading.value = true
+    riskErr.value = ''
+  }
   try {
     const [c, k, a] = await Promise.all([
       getCrowdingWatch(selectedDate.value),
@@ -5225,9 +5231,9 @@ async function loadRiskWatch() {
     keyLv.value = k.data || null
     aiBasket.value = a.data || null
   } catch (e) {
-    riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
+    if (!silent) riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
   } finally {
-    riskLoading.value = false
+    if (!silent) riskLoading.value = false
   }
   // ★ 2026-10-30：金十汇总**单独请求**，不放进上面的 Promise.all。
   //   它的失败原因通常是 `JIN10_X_TOKEN` 过期（401）—— 属常态性运维问题，
@@ -5254,12 +5260,16 @@ async function loadRiskWatch() {
   }
   // ★★ 2026-11-05：事件落点（读事实表，回放历史日也能用，会带 fallback 标记）
   loadEventTargets()
+  // ★ 2026-11-10：`silent=true`（轮询调用）时不触发金十外呼 —— 见本函数末尾。
   // ★★ 2026-11-04（用户："B + C，如果请求到今天了，就不要再定时刷新了"）：
   //   **惰性刷新**——打开观察器时看一眼库里有没有"今天"的数据：
   //     · 有 → 什么都不做（用户明确要求：今天已抓到就别再刷）
   //     · 无 → 自动抓一次，`summarize=false`（**不烧 LLM**，只外呼 28 个请求）
   //   ⚠️ 不是定时器：只在"加载观察器"这一刻判一次，页面挂着不动不会再打。
-  maybeAutoRefreshJin10()
+  // ★ 2026-11-10：`silent=true`（盘中观察器轮询调用）时**跳过这一步** ——
+  //   它是唯一会外呼（28 个请求）的动作，不能被 5 分钟轮询反复触发。
+  //   金十汇总本身是日批数据，轮询重拉也刷不出新内容。
+  if (!silent) maybeAutoRefreshJin10()
 }
 // ★★ 2026-11-05：事件落点加载 / 主题切换。
 //   ⚠️ 失败时**不清空上次结果**（铁律 11：静默保留）—— 只有首次失败才写错误，
@@ -6653,6 +6663,23 @@ function startPolling() {
   // ★ 2026-10-22：盘中变化检测器 5 分钟刷一次（采样本身 30 分钟一档；
   //   5 分钟足够让新档出现后不久可见，且只读 2 个小查询，不构成 egress 负担）。
   timers.push(setInterval(() => { if (isLivePhase()) loadWorkbenchScan() }, 300000))
+  // ★★ 2026-11-10（用户："观察器盘中变化目前依赖页面打开才执行"）：
+  //   观察器的 11 个块里，**只有 3 个盘中真会变**，其余是日频/日批数据，轮询它们只是白烧请求：
+  //     · keyLv（关键位）—— 后端 2026-11-05 已"轻量实时化"（实时指数现价 + 15s 进程缓存），
+  //       而前端只在挂载时拉一次 ⇒ **后端做好的实时能力被前端浪费了**。这是本次的真缺口。
+  //     · xmk（跨市场异动）—— 读宏观面板缓存，盘中会变。
+  //     · evt（事件落点）—— 后端 `use_live`，含实时行情维度。
+  //   ⚠️ **crowd（拥挤度）刻意不刷**：`crowding_watch.py` 头注释明确写了
+  //      "盘中用未定稿的当日 bar 算出来的拥挤度会随分钟跳动，比'显示昨日'更容易误导"。
+  //      它不是"忘了实时"，是**作者主动拒绝实时**。照抄"全部定时刷新"会把这个结论推翻。
+  //   ⚠️ rg（震荡区间）用**日线收盘价**算箱体位置（`range_watch.py:147` `close = win[-1].close`），
+  //      盘中不变；ppl/jin10/pbw/scen/ai 分别是 T-1 / 日批 / 读包，同理不动。
+  //   ⇒ 只在**盘中** + **相关块展开着**时才刷，5 分钟一次。这些接口全是本地读库/读包，
+  //     零外部请求；`silent=true` 保证不触发金十那 28 个外呼请求。
+  timers.push(setInterval(() => {
+    if (!isLivePhase()) return
+    if (crowdOpen.value || xmkOpen.value || evtOpen.value) loadRiskWatch(true)
+  }, 300000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
   //   ⇒ 最多刷 5 次，**9:24→9:25 的定稿瞬间可能滞后 ≤2 分钟**（那是最关键的几十秒）。
