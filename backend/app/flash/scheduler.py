@@ -2680,6 +2680,10 @@ async def start():
     #   延迟导入的理由同 `coach_loop`：只读模式下本循环仍会启动，但模块本身很轻。
     from app.etf_board import etf_quote_loop
 
+    # ★ 2026-11-10：日终观察器告警（关键位破位 + 事件落点新主题）。
+    #   延迟导入理由同上：零外部请求、模块很轻，但不必在 import 阶段加载。
+    from app.watch_alert import watch_alert_loop
+
     # 以下 9 个是「API 服务必需 / 交互相关 / 极轻量」→ 只读模式下仍保留
     #   flash(快讯) track(持仓) health(健康检查) paper_*(模拟盘) open_confirmation
     #   news_alert(持仓负面消息) regime(评分权重，每日一次很轻)
@@ -2713,6 +2717,15 @@ async def start():
              asyncio.create_task(am_snapshot_loop()),
             # ★ 2026-09-27：E2 政策脉冲盘后推送（稀有信号触达；簇内只推一次）
             asyncio.create_task(event_alert_loop()),
+            # ★★ 2026-11-10（用户选 C：全量推送）：**日终观察器告警** ——
+            #   关键位破位 + 事件落点新主题。这两项此前"有数据、没出口"：
+            #   `key_level_watch.broke` 只在前端展示、`event_targets` 只是查询接口，
+            #   用户不开页面就永远看不到。
+            #   ⚠️ 刻意**不并入** `intraday_alerts`（那是盘中分钟级、阈值盯"急"），
+            #      本循环是**收盘确认后一天一条**：`broke` 是"首次失守"语义，
+            #      盘中判会随分钟翻转（见 `key_level_watch.py:261`）。
+            #   ⚠️ 不用 `_heavy`：零外部请求（只读库/读日批产物），只读模式也该跑。
+            asyncio.create_task(watch_alert_loop()),
              # ★ 2026-09-23：持仓雷达缓存预热（纯只读、用户交互路径的依赖 ⇒ 只读模式保留）
              asyncio.create_task(portfolio_radar_warm_loop()),
              asyncio.create_task(stock_cache_refresh_loop()),
