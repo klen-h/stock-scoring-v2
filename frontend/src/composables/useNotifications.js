@@ -52,6 +52,26 @@ function saveNotifEnabled() {
  */
 export async function requestPermission() {
   if (!supported) return false
+  // ★★ 2026-11-10（用户："本地可以自由开关，线上点击无反应"——**根因**）：
+  //   Notification **只在 secure context 可用**（https:// 或 localhost）。
+  //   在 http:// 的线上域名下：
+  //     · `'Notification' in window` 仍为 **true** ⇒ 按钮正常显示（`supported` 骗过了 UI）；
+  //     · 但 `Notification.requestPermission()` **直接返回 'default' 且不弹授权框**
+  //       ⇒ 调用方 `ok=false` + `permission` 仍是 `'default'`
+  //       ⇒ 落进"既不成功、也不 denied"的空档 ⇒ **一句提示都没有** = "点击无反应"。
+  //   本地 `localhost` 属于 secure context ⇒ 本地一切正常。**这就是本地/线上差异的唯一来源。**
+  //   ⇒ 显式判定，并把原因说清楚（否则用户永远不知道为什么点不动）。
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    const where = (typeof location !== 'undefined')
+      ? location.protocol + '//' + location.host : '(未知地址)'
+    try {
+      alert('桌面通知需要 HTTPS 环境。\n\n当前页面：' + where +
+            '\n\n浏览器只在 https://（或 localhost）下允许网页发通知。' +
+            '请改用 https:// 访问本站后再开启通知。')
+    } catch (e) { /* 极端环境下 alert 不可用，忽略 */ }
+    console.warn('[notif] 非安全上下文，Notification.requestPermission 会被浏览器忽略:', where)
+    return false
+  }
   if (Notification.permission === 'granted') {
     permission.value = 'granted'
     enabled.value = true
@@ -65,6 +85,14 @@ export async function requestPermission() {
   // default 状态：弹系统授权框
   const result = await Notification.requestPermission()
   permission.value = result
+  // ★ 兜底：调用后仍是 'default'（浏览器既不弹框也不报错，多见于策略拦截/嵌入式 WebView）
+  //   —— 原来这里静默返回，用户只会觉得"按钮坏了"。给一次可见提示。
+  if (result === 'default') {
+    try {
+      alert('浏览器没有弹出通知授权框（可能被浏览器策略或内嵌容器拦截）。\n'
+            + '请检查：① 是否用 https:// 访问；② 浏览器设置里本站的通知是否被"静默阻止"。')
+    } catch (e) { /* ignore */ }
+  }
   if (result === 'granted') {
     enabled.value = true
     saveNotifEnabled()
