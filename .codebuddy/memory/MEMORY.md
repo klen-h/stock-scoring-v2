@@ -210,7 +210,31 @@
 - ★★ **事件类信号进决策链前必须过"次日开盘"这一关**：收盘价入场在 A 股系统性高估（收盘才知道事件，次日开盘已跳空）。
   样板 `scripts/lhb_executability_check.py` / `event_executability_check.py`。
 - ★★ **覆盖率缺口若与效应强度相关，会把结论系统性拉平** ⇒ 见"覆盖率门/子样本限制"先问：缺的是随机样本还是与效应相关的样本？
-- 推送唯一入口 `flash.wechat.push_markdown_batched`；持仓告警已有两处（`coach/monitor.py` + `strategies/exit_alert.py`），新增前防重复。
+- 推送唯一入口 **`flash.wechat.notify(category, title, content, force=)`**
+  （`category ∈ risk/coach/brief/alert`；`push_markdown_batched` 只是它的 webhook 兜底，不是入口）。
+  `force=True` = 穿透 `WECHAT_BUSINESS_ALERTS` 开关（稀有/关键通知专用）。
+- ★★ **告警出口全图（2026-11-10 盘点，新增告警前必须查这张表，防重复造）**：
+
+  | 出口 | 覆盖什么 | 时机 | 价格源 |
+  |---|---|---|---|
+  | `coach.stop_loss_hit` | **持仓破止损**（push:true） | 30s | 实时 `market._cache` |
+  | `coach.emotion_fuse` | **当日浮亏超阈值**（push:true，11-08 G4 收敛） | 30s | 实时 |
+  | `coach.gate_reduce` | 减仓闸门（push:true） | 30s | 实时 |
+  | `scheduler.trade_plan_trigger_loop` | **买点到达 / 目标兑现 / 计划止损** | 60s | 实时 |
+  | `flash.intraday_alerts` | 指数急跌 / 冲高回落 / 涨跌比 / 跌停潮 | 3min | 实时 |
+  | `coach.regime_alert` | 市况转档（defensive 进出） | 日 | — |
+  | `events.alert`（`event_alert_loop`） | E2 政策脉冲（簇内只推一次） | 盘后 | — |
+  | **`watch_alert`（11-10 新增）** | **关键位破位 + 事件落点新主题** | 20:00-23:59 | 日批产物 |
+
+  ⚠️ **`strategies/exit_alert.py` 有完整逻辑但从未接入调度**（grep `exit_alert` 在 scheduler/main/scripts 全无）——
+    它的"跌破止损价"与 `coach.stop_loss_hit` 重复，**不要复活它**，改 `coach` 那条。
+  ⚠️ `portfolio_alerts.py` 是**故意停用**的（`portfolio_alert_loop` 在 scheduler 里被注释掉）——
+    G4 收敛：当日口径归 `coach.emotion_fuse`。两套并存 = "唯一出口"破功。
+  ⚠️ 判定「热点事件主题」**不能用 `event_targets.list_themes()`**：docstring 写"近 7 天"，
+    但 SQL 无时间过滤 ⇒ 实际是**全历史累计**（实测 `伊朗局势` 158 条 = 几十天存量）。
+    要"当日新增"必须自己按 `time >= now-24h` 统计。
+- ★ **推送去重一律落库**（`store.is_schedule_done/mark_schedule_done` → `schedule_state`），
+  **不要只用进程内 dict**：`reload=True`/进程重启会清空 ⇒ 当天重推（2026-09-25 用户"一直在发企微"事故）。
 - ★ `flow_consec` KILL 曾写成"差≤0 **或** P≥0.20"= 单条件过松 ⇒ **KILL 用双条件**或「95%CI 上界<0」；GO 用「差≥阈值 ∧ CI 下界>0」。
 
 ## 8. 信号检验状态（**别重复研究**）
