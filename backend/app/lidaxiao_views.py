@@ -37,6 +37,7 @@ from __future__ import annotations
 """
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -191,18 +192,49 @@ def _top_factors(e: dict, n: int = 3) -> Optional[str]:
     return json.dumps(out, ensure_ascii=False) if out else None
 
 
+# ★★ 2026-11-09 修复（用户报"李大霄视角明明有更新却没有更新 / 日期为— / bv号为unknown"）：
+#   **根因**：上游把 `date='未知'`、`bvid='unknown'` 这类**占位值**也推送上来
+#   （实测库里 536 条中有 1 条：title=「小书为什么不涨价」date='未知' bvid='unknown'）。
+#   `_slim` 原先只校验 `if not date`（非空即可）⇒ '未知' 通过校验入库；
+#   而**字符串排序下 `'未知' > '2026-11-07'`**（中文码位远大于数字）⇒
+#   `ORDER BY date DESC` 把这行顶到第一位 ⇒ `latest` 就是它 ⇒
+#     · 前端 `lag_days` = None（`strptime('未知')` 抛 ValueError）⇒ 显示"· —天前"
+#     · `date` 显示"日期为—"、`bvid` 显示"unknown"
+#     · **真正最新的 11-07 20:54 被挤到第二位** ⇒ 用户看到"有更新却没更新"
+#   ★ 这与"字符串排序把 10 月排到 9 月前面"是同型问题（本项目已踩过多次）。
+_RE_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+# 读取侧防御：历史脏数据（date='未知'）即使还在库里，也不许参与排序。
+# ★ 写法必须**双库兼容**（项目同时跑 PG 与 SQLite）：
+#   · `LIKE '2%'`         ✗ `%` 会被 psycopg2 当占位符（实测 IndexError: tuple index out of range）
+#   · `LEFT(date,1)='2'`  ✗ **SQLite 没有 LEFT 函数** ⇒ 抛错被 except 吞 ⇒ latest=None
+#                            （实测 4 个 lidaxiao 单测全红）
+#   · `SUBSTR(date,1,1)`  ✓ SQLite 与 PG 都内置，且能区分 '未知'（首字符是中文）
+_DATE_OK = "SUBSTR(date, 1, 1) = '2'"
+# 上游/LLM 常见的"空值占位词"，一律按缺失处理（不能当主键/URL 片段）
+_PLACEHOLDER = {"unknown", "未知", "none", "null", "nil", "n/a", "na", "-", "—", ""}
+
+
+def _clean_bvid(v) -> Optional[str]:
+    """bvid 占位值（unknown/未知/…）→ None，避免拼出 `.../video/unknown` 死链。"""
+    s = str(v or "").strip()
+    return None if s.lower() in _PLACEHOLDER else (s or None)
+
+
 def _slim(e: dict) -> Optional[dict]:
-    """上游 entry → 落库行（防御解析；缺 date 返回 None = 跳过该条）。"""
+    """上游 entry → 落库行（防御解析；缺/非法 date 返回 None = 跳过该条）。"""
     date = str(e.get("date") or "").strip()
     key = _entry_key(e)
     if not date or not key:
+        return None
+    # ★ 校验格式（不只判非空）：'未知' 非空但不是日期，会污染 ORDER BY。
+    if not _RE_DATE.match(date):
         return None
     st = e.get("structured") if isinstance(e.get("structured"), dict) else {}
     da = e.get("deep_analysis") if isinstance(e.get("deep_analysis"), dict) else {}
     score = _int(e.get("sentiment_score"))
     return {
         "entry_id": key,
-        "bvid": str(e.get("bvid") or "").strip() or None,
+        "bvid": _clean_bvid(e.get("bvid")),
         "title": str(e.get("title") or ""),
         "date": date,
         "sentiment_score": score,
@@ -260,8 +292,9 @@ def ingest_entries(entries) -> Dict:
 
 def _latest_meta() -> Optional[Dict]:
     try:
+        # ★ 2026-11-09：加 _DATE_OK —— 否则 date='未知' 会被字符串排序顶成"最新"
         r = db.fetch_one(f"SELECT entry_id, title, date FROM {_TABLE} "
-                         f"ORDER BY date DESC LIMIT 1")
+                         f"WHERE {_DATE_OK} ORDER BY date DESC LIMIT 1")
         return {"entry_id": r.get("entry_id"), "title": r.get("title"),
                 "date": r.get("date")} if r else None
     except Exception:
@@ -271,7 +304,7 @@ def _latest_meta() -> Optional[Dict]:
 def _latest_date() -> Optional[str]:
     """表内最新一期的日期（`YYYY-MM-DD HH:MM`），空表返回 None。"""
     try:
-        r = db.fetch_one(f"SELECT MAX(date) AS d FROM {_TABLE}")
+        r = db.fetch_one(f"SELECT MAX(date) AS d FROM {_TABLE} WHERE {_DATE_OK}")
         d = (r or {}).get("d")
         return str(d) if d else None
     except Exception:
@@ -475,7 +508,11 @@ def load(limit: int = 14) -> Dict:
     ensure_table()
     n = max(1, min(int(limit or 14), 60))
     try:
-        rows = db.fetch(f"SELECT * FROM {_TABLE} ORDER BY date DESC LIMIT {n + 1}")
+        # ★ 2026-11-09：加 _DATE_OK —— 历史脏行（date='未知'）不得参与 latest/items 排序。
+        #   这是用户报"明明有更新却没有更新"的直接修复：脏行曾占据 items[0]，
+        #   把真正最新的 11-07 20:54 挤到第二位。
+        rows = db.fetch(f"SELECT * FROM {_TABLE} WHERE {_DATE_OK} "
+                        f"ORDER BY date DESC LIMIT {n + 1}")
     except Exception as e:
         return {"ok": False, "error": f"读取失败: {str(e)[:80]}",
                 "latest": None, "trend": []}

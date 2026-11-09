@@ -476,8 +476,15 @@
                   <div class="text-[11px] text-muted mb-0.5">我的持仓</div>
                   <div v-for="x in rg.mine" :key="'m' + x.code"
                        class="flex items-center gap-1.5 text-xs leading-snug">
-                    <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
-                    <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
+                    <!-- ★ 2026-11-09（用户要求）：与本项目**全站口径**一致 ——
+                         名称→本地个股详情页（`stockHref`），代码→雪球（`xqUrl`）。
+                         此前这里是纯 `<span>`，看到票却点不动。 -->
+                    <a :href="xqUrl(x.code)" target="_blank" rel="noopener"
+                       class="font-mono text-muted shrink-0 w-[44px] hover:text-accent"
+                       title="雪球">{{ x.code }}</a>
+                    <a :href="stockHref(x.code)" target="_blank"
+                       class="text-gray-200 shrink-0 w-[56px] truncate hover:text-accent"
+                       :title="x.name">{{ x.name }}</a>
                     <span class="shrink-0 px-1 rounded text-[11px] font-semibold" :class="rgStateCls(x.state)">
                       {{ x.state }}</span>
                     <span class="font-mono text-muted shrink-0 w-[62px] text-right">
@@ -503,8 +510,13 @@
                 <div class="text-[11px] text-muted mb-0.5">区间内（靠下沿的在前）</div>
                 <div v-for="x in rgTop" :key="'r' + x.code"
                      class="flex items-center gap-1.5 text-xs leading-snug">
-                  <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
-                  <span class="text-gray-200 shrink-0 w-[56px] truncate">{{ x.name }}</span>
+                  <!-- ★ 2026-11-09（用户要求）：名称→个股详情页，代码→雪球（全站口径） -->
+                  <a :href="xqUrl(x.code)" target="_blank" rel="noopener"
+                     class="font-mono text-muted shrink-0 w-[44px] hover:text-accent"
+                     title="雪球">{{ x.code }}</a>
+                  <a :href="stockHref(x.code)" target="_blank"
+                     class="text-gray-200 shrink-0 w-[56px] truncate hover:text-accent"
+                     :title="x.name">{{ x.name }}</a>
                   <span class="shrink-0 px-1 rounded text-[11px] font-semibold" :class="rgStateCls(x.state)">
                     {{ x.state }}</span>
                   <span class="font-mono text-muted shrink-0 w-[62px] text-right">
@@ -577,8 +589,13 @@
                     </div>
                     <template v-for="x in g.targets" :key="x.code">
                       <div class="flex items-center gap-1.5 text-xs leading-snug">
-                        <span class="font-mono text-muted shrink-0 w-[44px]">{{ x.code }}</span>
-                        <span class="text-gray-200 shrink-0 w-[60px] truncate">{{ x.name }}</span>
+                        <!-- ★ 2026-11-09（用户要求）：名称→个股详情页，代码→雪球（全站口径） -->
+                        <a :href="xqUrl(x.code)" target="_blank" rel="noopener"
+                           class="font-mono text-muted shrink-0 w-[44px] hover:text-accent"
+                           title="雪球">{{ x.code }}</a>
+                        <a :href="stockHref(x.code)" target="_blank"
+                           class="text-gray-200 shrink-0 w-[60px] truncate hover:text-accent"
+                           :title="x.name">{{ x.name }}</a>
                         <span class="font-mono shrink-0 w-[34px] text-right" :class="evtScoreCls(x.score)">
                           {{ x.score == null ? '—' : x.score.toFixed(1) }}</span>
                         <span class="font-mono text-muted shrink-0 w-[52px] text-right">
