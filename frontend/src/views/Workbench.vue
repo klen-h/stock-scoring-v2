@@ -787,7 +787,11 @@
                 <div v-if="jin10.summary"
                      class="mb-1.5 rounded border border-sky-500/20 bg-sky-500/5 p-1.5">
                   <div class="text-[11px] text-sky-300/80 mb-0.5">AI 主线归纳（{{ jin10.date }}）</div>
-                  <div class="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap">{{ jin10.summary }}</div>
+                  <!-- ★ 2026-11-09（用户："AI 解读不要空行，也不要 `**` 符号"）：
+                       LLM 输出是 markdown（`1.  **xxx**` + 段间空行），而这里是
+                       `{{ }}` 转义渲染 + `whitespace-pre-wrap` 保留原样 ⇒
+                       `**` 裸露、空行把卡片撑得很长。改用 cleanAiText() 清洗。 -->
+                  <div class="text-xs text-gray-200 leading-relaxed whitespace-pre-wrap">{{ cleanAiText(jin10.summary) }}</div>
                 </div>
                 <div class="space-y-2 max-h-96 overflow-y-auto pr-1">
                   <div v-for="sec in jin10.sections" :key="sec.category_id" class="space-y-0.5">
@@ -4943,6 +4947,20 @@ const crowd = ref(null)
 // ★ 2026-10-30：金十每日汇总（默认收起——每天 50~60 条，展开会撑爆观察器组）
 const jin10 = ref(null)
 const jin10Open = ref(false)
+// ★ 2026-11-09（用户："AI 解读不要空行，也不要 `**` 符号"）：
+//   AI 主线归纳是 LLM 输出的 markdown，而卡面用 `{{ }}` 转义 + `whitespace-pre-wrap`
+//   原样显示 ⇒ `**粗体**` 裸露、段间空行把卡片撑长。
+//   这里做**纯文本化**：只去粗体标记与多余空行，**保留序号与单换行**（分段仍看得出来）。
+//   ⚠️ 不做成通用 markdown 渲染：卡面其余文案都是纯文本，混用会让风格割裂；
+//      且 LLM 输出不可控，转 HTML 有注入面（虽然 Vue 转义了，但没必要开这个口子）。
+function cleanAiText(s) {
+  return String(s || '')
+    .replace(/\*\*/g, '')            // 去粗体标记
+    .replace(/__+/g, '')             // 去下划线粗体
+    .replace(/[ \t]+\n/g, '\n')      // 行尾空白
+    .replace(/\n{2,}/g, '\n')        // 连续空行 → 单换行
+    .replace(/^\n+|\n+$/g, '')       // 首尾空行
+}
 const openJin10 = ref('')          // 当前展开的那一条（`category_id-seq`）
 const jin10Busy = ref(false)       // ★ 2026-11-01：手动刷新/AI 解读进行中
 const jin10Err = ref('')           // ★ 2026-11-01：刷新失败原因（内联展示，不弹窗）

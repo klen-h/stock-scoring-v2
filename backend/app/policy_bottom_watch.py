@@ -375,7 +375,9 @@ def _bank_catchdown(as_of: str = None) -> Dict:
         "lag_pp": round(lag, 2), "rs20_pp": round(rs20, 2), "kline_date": bd,
         "streak": streak, "need_days": PBW_CATCHDOWN_DAYS,
         "detail": (f"银行 {b_chg * 100:+.2f}% vs 全指 {m_chg * 100:+.2f}%"
-                   f"（跑输 {lag:+.2f}pp）；连续逆势跌 **{streak}** 日"
+                   # ★ 2026-11-09：去掉 `**` —— 前端用 `{{ }}` 转义渲染，markdown 粗体只会裸露成
+            #   字面星号（用户实测看到"连续逆势跌 **0** 日"）。文案一律纯文本。
+            f"（跑输 {lag:+.2f}pp）；连续逆势跌 {streak} 日"
                    f"（门槛 ≥{PBW_CATCHDOWN_DAYS}）；"
                    f"近20日超额 {rs20:+.2f}pp（{strong}）"),
     }
@@ -548,7 +550,7 @@ def _position_hint(n_checked: int, n_total: int) -> str:
         return (f"清单 {n_checked}/{n_total} 已达 {PBW_PASS} 条门槛 ⇒ "
                 "市场底**候选确认**（仍属观察结论，不自动改仓位）")
     return (f"清单 {n_checked}/{n_total} 未达 {PBW_PASS} 条 ⇒ "
-            f"建议总仓位上限 {PBW_POSITION_CAP:g}%（**提示，不自动执行**）")
+            f"建议总仓位上限 {PBW_POSITION_CAP:g}%（提示，不自动执行）")
 
 
 _peak_cache: Dict = {"key": None, "val": None}
@@ -655,7 +657,20 @@ def nation_hint(day: str) -> Dict:
     try:
         from app import policy_announcements as pa
         aw = pa.load(day)
-        hint_text = pa.summarize(aw) if aw else "自动检查：尚未运行（日批上线后自动填充）"
+        if aw:
+            hint_text = pa.summarize(aw)
+        else:
+            # ★ 2026-11-09（用户实测："自动检查：尚未运行"其实是假象）：
+            #   原来当日没数据就一律报"尚未运行（日批上线后自动填充）"，
+            #   但实测表里**已有历史数据**（11-06 的 15 条）⇒ 用户以为自动检查从没跑过。
+            #   现区分三种：当日有 / 当日无但历史有 / 真的从未跑过，
+            #   与 `etf_hint`（"当日尚未披露，沿用 X"）口径对齐。
+            _latest = pa.latest_day()
+            if _latest:
+                hint_text = (f"当日（{day}）无公告扫描结果；最近一次 {_latest}"
+                             "（日批每个交易日扫描，非交易日不跑）")
+            else:
+                hint_text = "自动检查：尚未运行（日批上线后自动填充）"
     except Exception:
         aw = None
     hints = (aw or {}).get("hits") or []

@@ -288,6 +288,24 @@ def save(data: Dict) -> bool:
         return False
 
 
+def latest_day() -> Optional[str]:
+    """表内最近一次**成功扫描**的日期（`YYYY-MM-DD`），空表返回 None。
+
+    ★ 2026-11-09：给 `policy_bottom_watch.nation_hint()` 用 —— 原来当日没数据时
+      一律显示"自动检查：尚未运行（日批上线后自动填充）"，而实测表里已有历史数据
+      （11-06 的 15 条）⇒ 用户会以为自动检查**从来没跑起来**。
+      现与 `etf_hint` 的"当日未披露则沿用最近一份"口径对齐：
+      当日无数据但历史有 ⇒ 明确写"当日无结果；最近一次 X 月 X 日"。
+    """
+    ensure_table()
+    try:
+        r = db.fetch_one("SELECT MAX(date) AS d FROM policy_announcement_watch")
+        d = str((r or {}).get("d") or "")[:10]
+        return d or None
+    except Exception:
+        return None
+
+
 def load(day: str) -> Optional[Dict]:
     ensure_table()
     day = str(day or "")[:10]
