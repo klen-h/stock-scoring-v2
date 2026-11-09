@@ -37,7 +37,17 @@ from app.flash.wechat import WECHAT_WEBHOOK
 # 调度参数（可用环境变量覆盖；轮询便宜——LLM 只在新事件簇时才触发，收紧间隔不加 token 成本）
 #   FLASH_POLL_INTERVAL_SEC  快讯轮询间隔，默认 300（5分钟）。再小要留意金十限流/Cookie 风险。
 #   TRACK_INTERVAL_SEC       信号跟踪间隔，默认 300（5分钟），仅盘中执行。
-FLASH_POLL_INTERVAL = int(os.environ.get("FLASH_POLL_INTERVAL_SEC", "300"))
+# ★★ 2026-11-10（用户："快讯解读延迟比较严重，交易时段改到 60，其余保持 300s"）：
+#   **分时段轮询** —— 盘中快讯价值最高（开盘/异动/突发），60s；
+#   非盘中 5 分钟足够（金十全天都有内容，但夜里 5 分钟与 1 分钟对判断无差别，
+#   且能显著降低请求数、避开金十风控）。
+#   ⚠️ 下限**护栏**：原实现 `int(os.environ.get(...))` 无下限，误设 `5` 会让金十
+#     每秒被请求一次（免费接口 + Cookie 鉴权，极易被限流/封）。现 `max(30, ...)`。
+#   ⚠️ env 语义变化：`FLASH_POLL_INTERVAL_SEC` 现在指**盘中**间隔（原为唯一间隔）；
+#     若线上仍配着 300，等价于"盘中/非盘中都 300"（即退化为原行为），不会突然提速。
+FLASH_POLL_INTERVAL = max(30, int(os.environ.get("FLASH_POLL_INTERVAL_SEC", "60")))
+FLASH_POLL_INTERVAL_OFF = max(60, int(os.environ.get(
+    "FLASH_POLL_INTERVAL_OFF_SEC", "300")))
 TRACK_INTERVAL = int(os.environ.get("TRACK_INTERVAL_SEC", "300"))
 REVIEW_WINDOWS = {               # 复盘窗口：任务名 → (开始分钟, 结束分钟)（北京时间）
     # 窗口刻意加宽以支持"错过补跑"：本机部署的电脑不是 24 小时开机，
@@ -73,6 +83,7 @@ status = {
     "last_news_history": None,
     "config": {
         "flash_interval_sec": FLASH_POLL_INTERVAL,
+        "flash_interval_off_sec": FLASH_POLL_INTERVAL_OFF,   # ★ 2026-11-10 分时段
         "track_interval_sec": TRACK_INTERVAL,
         "flash_cookie_configured": bool(FLASH_COOKIE),
         "llm_configured": llm_configured(),
@@ -118,7 +129,14 @@ async def flash_loop():
         result = await _run_sync(service.poll_flash_once)
         if result:
             status["last_flash_poll"] = result
-        await asyncio.sleep(FLASH_POLL_INTERVAL)
+        # ★ 2026-11-10：分时段 —— 盘中快、其余慢（见 FLASH_POLL_INTERVAL 上方注释）。
+        #   判据用 `rules.get_china_market_status()["is_open"]`（与 track_loop /
+        #   portfolio_alert_loop 同一口径，含午休与集合竞价的判定）
+        try:
+            _open = bool(rules.get_china_market_status().get("is_open"))
+        except Exception:
+            _open = False          # 状态取不到 ⇒ 按"非盘中"走慢档（宁可慢，不滥发请求）
+        await asyncio.sleep(FLASH_POLL_INTERVAL if _open else FLASH_POLL_INTERVAL_OFF)
 
 
 async def track_loop():
@@ -2789,7 +2807,8 @@ async def start():
               "（战法扫描/回测回填/资金流/主力行为/龙虎榜/快照/日报/矛盾扫描…），"
               "仅保留 快讯/跟踪/健康检查/持仓消息/评分权重/行情缓存/模拟盘/**宏观快照**"
               "（macro_daily 是刻意留的例外 —— 日批无对应任务，见 start() 内注释）")
-    print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s / 跟踪{TRACK_INTERVAL}s / "
+    print(f"[scheduler] 已启动: 快讯{FLASH_POLL_INTERVAL}s(盘中)/{FLASH_POLL_INTERVAL_OFF}s(非盘中) / "
+          f"跟踪{TRACK_INTERVAL}s / "
           f"行情缓存{STOCK_CACHE_INTERVAL}s / K线缓存每日15:30 / "
           f"指标缓存{'每日16:40 由 GitHub Actions 跑（本进程已关闭）' if not ENABLE_HEAVY_JOBS else '每日16:00（本进程）'} / "
           f"回测价格每日15:40 / 战法扫描每日15:40 / 市场状态每日15:40 / "

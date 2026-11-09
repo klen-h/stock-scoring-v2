@@ -17,9 +17,25 @@
 
 import { ref, computed, reactive } from 'vue'
 import { getFlashBrief, getFlashBriefRun } from '../api'
-import { isTradingTime } from './usePortfolio'
+import { isTradingDay } from './usePortfolio'
 
-const POLL_MS = 60000
+// ★★ 2026-11-10（用户："快讯解读延迟比较严重…要充分利用快讯的快"）：
+//   ① 间隔 60s → **30s**：`/flash/brief` 是**读库聚合**（不烧 LLM、不调外部），
+//      请求翻倍但 egress 很小，换来盘中快讯上屏更快半个周期。
+//   ② 轮询窗从 `isTradingTime()`（严格 9:30-11:30 / 13:00-15:00）**放宽到交易日 08:30-15:30**。
+//      原实现下：早上 8:50 打开页面后，金十在 **9:15-9:25 竞价段**推送的消息
+//      **页面完全不刷新**（必须手动重进），收盘后的消息同理 ⇒ 这是"感觉延迟严重"的一大来源，
+//      而且它和后端抓取间隔无关（后端再快，前端不问就看不到）。
+const POLL_MS = 30000
+const FLASH_WINDOW = [8 * 60 + 30, 15 * 60 + 30]   // 08:30 ~ 15:30（仅交易日）
+
+/** 是否处于"该轮询快讯"的窗口：交易日 + 08:30~15:30。 */
+function _inFlashWindow() {
+  const d = new Date()
+  if (!isTradingDay(d)) return false     // 周末不轮询（节假日照轮，成本极低且消息是真的）
+  const m = d.getHours() * 60 + d.getMinutes()
+  return m >= FLASH_WINDOW[0] && m <= FLASH_WINDOW[1]
+}
 
 const data = ref(null)
 const err = ref('')
@@ -68,7 +84,8 @@ function start(date) {
   if (typeof date === 'string') curDate = date
   if (refs > 1) return
   load()
-  timer = setInterval(() => { if (isTradingTime()) load() }, POLL_MS)
+  // ★ 2026-11-10：轮询窗见 `FLASH_WINDOW`（原 `isTradingTime()` 会漏掉竞价段与盘后）
+  timer = setInterval(() => { if (_inFlashWindow()) load() }, POLL_MS)
 }
 
 function stop() {
