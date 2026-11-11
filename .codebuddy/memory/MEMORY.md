@@ -191,6 +191,14 @@
 - 新看板/tab 自带一行定位（是什么/不是什么/下一步）；榜单=候选池+变化监测，非买点清单。
 
 ## 6. 路由 / 验证纪律
+- ★★★ **一个函数只能挂一个语义的路由**（2026-11-12 事故，藏 4 天）：
+  `@router.get("/emotion")` 和 `@router.get("/auction-panel")` 曾被**堆在同一个 `auction_panel()`** 上，
+  而真正的 `market_emotion()` **一个装饰器都没有** ⇒ `/api/market/emotion` 一直返回竞价面板结构
+  （无 `price_date`/无 `auction`）⇒ 前端常驻"非当日口径 · 属于 —"、看板空白。
+  **⚠️ FastAPI 对重复 path 不报错**（两条都注册成功，按顺序命中前者），
+  `compileall` / `import app.main` / pyflakes **全部通过** ⇒ 只能靠 `scripts/route_audit.py`（已接 CI）。
+  **症状特征**：接口 200、结构"合法但字段全缺" ⇒ 前端显示 `—`/空白，**不报 404**。
+  **改路由后务必跑一次 `python scripts/route_audit.py`。**
 - FastAPI 按注册顺序：`routers/scoring.py` 的 `@router.get("/{symbol}")` 在 L918 ⇒ 单段静态路由必须注册在其**前**
   （`/score/diag/{symbol}` 必须两段，否则被通配吞掉，返回 200 `{"error":...}` 非静默）。
 - `routers/system.py` 挂 `/api/system`；路径错会落 SPA 兜底返回 200 text/html，极难发现（正确路径返回 JSON）。
