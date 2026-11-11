@@ -139,7 +139,18 @@ def _index_rows(prev_day: Optional[str], gap_is_today: bool,
         #   存的是错误量级（8.34/16.18，真实应为千点级）——既有数据 bug，缺口会算出
         #   +77983% 这种荒谬值。缺口超出 ±25%（超北交所 30cm 上限）一律判 suspect
         #   ⇒ gap 置 None（缺失 ≠ 荒谬值），不假装可信。
-        suspect = bool(gap_pct is not None and abs(gap_pct) > 25)
+        # ★★ 2026-11-12（用户："中证全指 15.64、15.39前低，明显有问题"）：
+        #   上面这条只防"缺口荒谬"，**防不住"昨收本身荒谬但算不出缺口"**：
+        #   中证全指的 `open_price` 缺失 ⇒ `gap_pct=None` ⇒ 原判据恒 False
+        #   ⇒ 界面上照常显示 `昨收 15.64 / 支撑 15.39`，**一点提示都没有**。
+        #   ⇒ 补"点位量级自检"：主流指数没有低于 **100 点**的
+        #     （最低的科创50/北证50 也在 1000 上下，中证500 是 6700 级）。
+        #     阈值写死 100 是保守下界；将来若有 <100 的新指数，改这里并加进
+        #     `tencent.INDEX_MAP` 即可（两者必须同步）。
+        bad_prev = bool(prev_close and prev_close < 100)
+        bad_support = bool(_f(r.get("support")) and _f(r.get("support")) < 100)
+        suspect = (bad_prev or bad_support
+                   or bool(gap_pct is not None and abs(gap_pct) > 25))
         if suspect:
             gap_pct = None
         out.append({

@@ -972,6 +972,19 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     if cached and time.time() - cached["ts"] < ttl:
         return cached["data"]
 
+    # ★★ 2026-11-12 **串标的根因修复**：`INDEX_MAP` 必须在 WAF 分支**之前**算好。
+    #   事故：`key_level_watch` 里 `000905 中证500 close=8.26` / `000985 中证全指 15.99`
+    #   连续多日（11-02~11-11），而真实点位是 6713 / 5207。
+    #   链路：日批批量取 K 线 → 某只股票触发 501 ⇒ `_waf_blocked_until` 置位 ⇒
+    #     后续 `get_kline` 全部走"冷却期用缓存"分支 ⇒ 那里用**裸 symbol** 查
+    #     `scoring.kline_cache`（**个股**级缓存，只有裸 6 位代码）⇒
+    #     `000905` 命中**厦门港务**、`000985` 命中**大庆华科** ⇒ 指数价被换成个股价。
+    #   `000001` 之所以没坏：它排在 `INDICES` 第一位，那时 WAF 还没被触发。
+    #   ⇒ 指数**绝不能**读个股缓存，冷却期宁可直接返回空（上层有东财/日批库兜底）。
+    INDEX_MAP = {"000001": "sh", "399001": "sz", "399006": "sz", "000300": "sh",
+                 "000905": "sh", "000688": "sh", "000985": "sh", "399986": "sz"}
+    _is_idx = symbol in INDEX_MAP
+
     # ── WAF 全局限流保护 ──
     # 如果腾讯WAF正在冷却中，直接返回过期缓存（好过被继续封）
     if time.time() < _waf_blocked_until:
@@ -981,7 +994,11 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
             return cached["data"]
         # ★ WAF 冷却期且无内存缓存：查数据库 K 线缓存兜底（评分精算/每日刷新写回的），
         #   避免详情页/持仓页盘中拿不到 K 线（数据为近 36h 内快照，仍可画图）
-        if period == "day":
+        # ★★ 2026-11-12：**`and not _is_idx` 是串标的修复的关键一行** ——
+        #   `kline_cache` 只存个股（裸 6 位代码），指数代码（000905/000985/000001…）
+        #   与深市个股同码 ⇒ 读它会拿到完全不相干的票。指数在冷却期直接返回 []，
+        #   由调用方（`_load_index_kline`）继续走东财 / 日批库兜底。
+        if period == "day" and not _is_idx:
             try:
                 from app.scoring.kline_cache import get_cached_klines
                 db_klines = get_cached_klines(symbol)
@@ -1002,9 +1019,8 @@ def get_kline(symbol: str, period: str = "day", start: str = "", end: str = "", 
     # ★ 2026-10-23：补 000985（中证全指）/ 399986（中证银行）——
     #   市场底清单第⑥条"强势板块补跌"需要这两个指数；不在 map 里会被当股票
     #   （qfqday 键取不到 → 永远空列表），且 000985 会被误配 sz 前缀。
-    INDEX_MAP = {"000001": "sh", "399001": "sz", "399006": "sz", "000300": "sh",
-                 "000905": "sh", "000688": "sh", "000985": "sh", "399986": "sz"}
-    if symbol in INDEX_MAP:
+    # ★ 2026-11-12：`INDEX_MAP` 已上移到函数开头（WAF 分支要用 `_is_idx`），此处复用。
+    if _is_idx:
         prefix = INDEX_MAP[symbol]
         is_index = True
         kline_key = period          # 指数：取 data.sh000001.day
