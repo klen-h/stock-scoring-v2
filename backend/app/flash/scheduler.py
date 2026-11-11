@@ -324,11 +324,25 @@ async def stock_cache_refresh_loop():
                        else str(_lctd())[:10])
             if _day != _expect and _day != last_warn:
                 last_warn = _day
-                print(f"[scheduler] [WARN] 行情缓存陈旧: 数据 {_day} / 期望 {_expect}"
-                      f"（快照={_tq.get('from_snapshot')}，本轮前已连续失败 {fails} 次）"
-                      f"—— 现价/涨跌幅/持仓盈亏都会偏旧，检查腾讯源与上面的刷新失败日志")
-        except Exception:
-            pass
+                _msg = (f"行情缓存陈旧: 数据 {_day} / 期望 {_expect}"
+                        f"（快照={_tq.get('from_snapshot')}，本轮前已连续失败 {fails} 次）"
+                        f"—— 现价/涨跌幅/持仓盈亏都会偏旧，检查腾讯源与上面的刷新失败日志")
+                print(f"[scheduler] [WARN] {_msg}")
+                # ★★ 2026-11-12（用户报"11 日的盘面速览显示的是 10 日的盘中实时，
+                #   重新部署才正常"）：**本条告警原来只有 print** ⇒ 日志一滚就没了，
+                #   用户只能靠肉眼发现"数据怎么不动"（2026-09-24 也是这么暴露的）。
+                #   本项目最贵的故障就是静默失效 ⇒ 推一条企微，让"停更"主动喊出来。
+                #   频次由 `last_warn` 兜住（同一天只推一次），不会刷屏。
+                try:
+                    from app.flash.wechat import notify as _notify
+                    _notify("alert", "⚠️ 行情缓存陈旧", _msg, force=True)
+                except Exception as _e:
+                    print(f"[scheduler] 陈旧告警推送失败: {str(_e)[:70]}")
+        except Exception as e:
+            # ★ 2026-11-12：原来这里是 `except Exception: pass` —— 陈旧巡检**自身**
+            #   出问题会被静默吞掉，于是"巡检失效"和"数据正常"在日志里长得一样。
+            #   与本项目 11-08 修的 `edge_verify.clock_lines` 是同一个病。
+            print(f"[scheduler] 行情陈旧巡检失败: {str(e)[:90]}")
         await asyncio.sleep(STOCK_CACHE_INTERVAL)
 
 

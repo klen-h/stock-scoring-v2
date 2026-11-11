@@ -2,8 +2,20 @@
   <div class="bg-card border border-border rounded-lg p-4">
     <div class="flex items-center justify-between mb-2">
       <div class="text-sm font-semibold">宏观与环境（独立信号，不进个股评分）</div>
-      <span v-if="macro && macro.locked" class="text-[10px] text-accent">
-        今日锁定 · 生成于 {{ hhmm(macro.generated_at) }}
+      <!-- ★★ 2026-11-12（用户："纳斯达克涨了3个多点怎么没显示出来 / 今日锁定是最近新加的吗"）：
+           根因不在"有没有算"，而在**没告诉用户这是哪天的数据**。
+           实测：11-11 08:55 生成的快照里 `nasdaq=0.56%`（= 11-10 收盘），
+           而用户在 11-12 凌晨看到的实时值是 2.62% —— 两者都对，只是**时点不同**。
+           旧文案只说"生成于 08:55"，读起来像"08:55 的数据"，实为前一日收盘价。
+           ⇒ 补上**数据截至**；若非当日再标黄提示具体日期（后端已修 `data_time`
+             恒为 None 的 bug，见 `macro._parse_quote_time`）。 -->
+      <span v-if="macro && macro.locked" class="text-[10px] text-accent cursor-help"
+            :title="`锁定于 ${macro.generated_at || '—'}（当日早盘定调，分数不再漂移）；面板行情最新时刻 ${macro.data_time || '未知'}`">
+        今日锁定 · 生成于 {{ hhmm(macro.generated_at) }}<template v-if="macro.data_time">
+          · 数据截至 {{ hhmm(macro.data_time) }}<span
+            v-if="staleDataDay"
+            class="text-amber-400">（{{ staleDataDay }}）</span>
+        </template>
       </span>
     </div>
     <div v-if="macroErr" class="text-muted text-xs">—（加载失败：{{ macroErr }}）</div>
@@ -166,8 +178,12 @@
                   :class="r.hit ? (r.direction > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-muted/50'">
               {{ r.hit ? (r.direction > 0 ? '＋' : '－') : '·' }}
             </span>
-            <span :class="r.hit ? 'text-gray-200' : 'text-muted/80'">{{ r.id }}</span>
-            <span class="text-muted"> {{ r.metric }} = {{ r.value ?? '—' }}</span>
+            <!-- ★ 2026-11-12（用户："英文改为中文"）：原来直接渲染 `r.id` / `r.metric`，
+                 显示成 "＋hstech_overnight hstech.change_pct = 1.08"。
+                 后端已补 `name` / `metric_label`（见 `macro.RULE_NAMES`），
+                 这里优先用中文，**回落保留英文 id** —— 新规则忘配名字时不会空白。 -->
+            <span :class="r.hit ? 'text-gray-200' : 'text-muted/80'">{{ r.name || r.id }}</span>
+            <span class="text-muted"> {{ r.metric_label || r.metric }} = {{ r.value ?? '—' }}</span>
             <span v-if="r.hit" class="ml-1"
                   :class="r.direction > 0 ? 'text-emerald-400' : 'text-red-400'">{{ r.tag }}</span>
             <!-- ★ 2026-10-28（用户："原油涨了却没算进去"）：未触发但**有说法**的规则
@@ -333,6 +349,20 @@ const props = defineProps({
   //   ⚠️ 默认 false 保持不变 = 内联卡（盘前那处）的「严格单行 + truncate + hover 看全文」
   //      —— 那是 2026-09-25 用户明确要求的，**不能顺手改掉**（两处诉求不同）。
   full: { type: Boolean, default: false },
+})
+
+// ★ 2026-11-12：`data_time` 的日期若不是"今天"，在「数据截至」旁标黄显示具体日期。
+//   为什么不直接用 `todayStr()`：本组件 script 区**没有导入它**（只导了 dirColor 等），
+//   模板里凭空调用会在运行时报 ReferenceError —— 这类错误 `pnpm build` 发现不了。
+//   ⚠️ 必须写在 `defineProps` **之后**：`computed` 的闭包里引用 `props`，
+//      若放在 props 声明之前，模板首次求值时 `props` 仍处于 TDZ ⇒ 白屏。
+const staleDataDay = computed(() => {
+  const d = String(props.macro?.data_time || '').slice(0, 10)
+  if (!d) return ''
+  const n = new Date()
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-`
+    + String(n.getDate()).padStart(2, '0')
+  return d === today ? '' : d.slice(5)
 })
 
 // ★ 2026-10-23（用户："文字过长导致卡片溢出以及弹窗被撑开"）：

@@ -302,7 +302,17 @@ def _tx_parse(code: str, val: str) -> Optional[dict]:
         price, prev = _f(f, 3), _f(f, 4)
         hi = lo = 0.0
         chg = (price / prev - 1) * 100 if prev else 0.0
+        # ★★ 2026-11-12 修 bug：**这里原来硬编码 `t = ""`** ⇒ 所有 `us*` / `hk*` / `gb*`
+        #   品种的 `time` 永远是空 ⇒ `get_macro_snapshot` 的 `data_time` 恒为 None
+        #   ⇒ 界面上「数据截至」永远是 `—` ⇒ 用户无法判断显示的是**哪一天**的数据
+        #   （实测：11-11 08:55 的快照里 nasdaq 显示 0.56%，用户当天的实时值是 2.62%，
+        #    但界面没有任何字段能说明"0.56 是 11-10 收盘"）。
+        #   腾讯 `us*` 族实测 `f[30]` = `2026-11-11 11:43:40`（其余字段见 `_TX_MAP`）。
+        #   ⚠️ 只在与日期形态相符时才采用：`hk*` 族字段布局不同，宁可留空也不要写错时间。
         t = ""
+        cand = _s(f, 30)
+        if len(cand) >= 10 and ("-" in cand or "/" in cand):
+            t = cand
     if not price or not prev:
         return None
     return {"price": round(price, 3), "prev_close": round(prev, 3),
@@ -1018,6 +1028,66 @@ def _no_hit_note(rule: dict, v) -> str:
     return f"当前 {v}，{(' / '.join(parts))} ⇒ 未达阈值" if parts else ""
 
 
+# ★★ 2026-11-12（用户："英文改为中文"）：
+#   `rules_detail` 里原来只有英文 `id` 和英文 `metric`（如 `hstech_overnight` /
+#   `hstech.change_pct`），前端直接原样渲染 ⇒ 用户看到的是
+#   "＋hstech_overnighthstech.change_pct = 1.08恒生科技走强"。
+#   ⇒ 在这里集中映射成中文，**不改 21 处 RULES 定义**（分散改必漏，且规则还在增）。
+#   ⚠️ 新增规则时**必须同步加进 `RULE_NAMES`**，否则界面回落显示英文 id
+#      （有兜底不会崩，但会退化回今天这个状态）。
+#   ⚠️ 为什么不用 `tag_bull` 当名字：tag 是"**触发时**的说法"（如"恒生科技走强"），
+#      未触发时显示"恒生科技走强"会自相矛盾 —— 名字必须是**中性的指标名**。
+RULE_NAMES = {
+    "a50_overnight": "A50 隔夜",
+    "cny_offshore": "离岸人民币",
+    "cny_cnh_basis": "离岸在岸价差",
+    "cn10y_liquidity": "中国 10Y 国债",
+    "nasdaq_overnight": "纳指隔夜",
+    "vix_low": "VIX 低位",
+    "vix_elevated": "VIX 偏高",
+    "vix_panic": "VIX 恐慌",
+    "hstech_overnight": "恒生科技",
+    "dxy_strength": "美元指数",
+    "us2y_surge": "美债 2Y 单日",
+    "us_curve_flatten": "美债期限利差",
+    "us30y_high": "美债 30Y 高位",
+    "us10y_surge": "美债 10Y 单日",
+    "us10y_high": "美债 10Y 高位",
+    "copper_demand": "铜价",
+    "black_demand": "黑色系",
+    "oil_band": "油价区间",
+    "goldsilver_ratio": "金银比",
+    "internal_temp": "市场温度",
+    "northbound": "北向资金",
+}
+
+# metric 键 → 指标中文名（含单位）。按**后缀**匹配的放 `_METRIC_SUFFIX`。
+METRIC_LABELS = {
+    "vix.price": "VIX 值",
+    "us10y.price": "收益率(%)",
+    "us30y.price": "收益率(%)",
+    "us2y_bp_change": "变动(bp)",
+    "us10y_bp_change": "变动(bp)",
+    "us_curve_bp_change": "利差变动(bp)",
+    "cn10y_bp_change": "变动(bp)",
+    "cny_cnh_basis_pips": "价差(pips)",
+    "temperature": "温度",
+    "northbound_net_yi": "净流入(亿)",
+    "black_change_pct": "涨跌幅(%)",
+    "goldsilver_change_pct": "涨跌幅(%)",
+}
+
+
+def metric_label(metric: str) -> str:
+    """指标中文名；`*.change_pct` 统一为「涨跌幅(%)」，未知则回落原文。"""
+    m = str(metric or "")
+    if m in METRIC_LABELS:
+        return METRIC_LABELS[m]
+    if m.endswith(".change_pct"):
+        return "涨跌幅(%)"
+    return m
+
+
 def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
     """
     规则引擎：遍历 RULES，输出 (触发列表, 分组得分, 方向分, 等级, 明细)。
@@ -1083,6 +1153,9 @@ def evaluate_rules(panel: dict, temperature=None, northbound_net_yi=None):
         # ★ 全部规则都记一条（含未触发）—— 这是"可解释"的关键，不能只记触发项
         details.append({
             "id": rule["id"], "group": rule["group"], "metric": rule["metric"],
+            # ★ 2026-11-12：中文名 + 指标中文名（前端优先用它们，回落才是英文 id/metric）
+            "name": RULE_NAMES.get(rule["id"]) or rule["id"],
+            "metric_label": metric_label(rule["metric"]),
             "value": v, "direction": direction,
             "strength": rule["strength"],
             "contribution": round(direction * rule["strength"], 2),
@@ -1335,12 +1408,34 @@ def get_macro_snapshot() -> dict:
 
     # 数据新鲜度：面板各品种行情时间的最新值（非交易时段=最近收盘时间，可能不是今日）
     def _parse_quote_time(s):
+        raw = (s or "").strip()
+        if not raw:
+            return None
         # 兼容新浪各字段族格式：标准 / 斜杠日期（恒科）/ 无冒号（国内期货）
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H%M%S"):
             try:
-                return datetime.strptime(s.strip(), fmt)
+                return datetime.strptime(raw, fmt)
             except ValueError:
                 continue
+        # ★★ 2026-11-12：新浪美股族给的是 `Nov 11 11:43AM EST`，有两个坑：
+        #   ① **无年份** ⇒ 必须补，否则 strptime 直接 ValueError（原来就漏在这里，
+        #      导致 `data_time` 恒为 None、界面「数据截至」永远是 `—`）；
+        #   ② 它是**美东时间**，而腾讯/恒科给的是北京时间 ⇒ 直接丢进 `max()`
+        #      会差 13 小时，把"最新数据时刻"算错。
+        #   ⇒ 先补年份（UTC 年；跨年 8h 边界可能差一年，仅影响 12-31/01-01），
+        #     再统一换算成北京时间、去掉 tzinfo 与其它分支对齐。
+        #   ⚠️ 固定 EST=-5 / EDT=-4；若来源误标时区会差 1 小时，对"数据截至"
+        #      （分钟级展示）影响可忽略，比整条丢弃强。
+        for suffix, off in (("EST", -5), ("EDT", -4)):
+            if not raw.endswith(suffix):
+                continue
+            try:
+                dt = datetime.strptime(raw, "%b %d %I:%M%p " + suffix)
+            except ValueError:
+                continue
+            dt = dt.replace(year=datetime.now(timezone.utc).year,
+                            tzinfo=timezone(timedelta(hours=off)))
+            return dt.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
         return None
     quote_ts = [t for t in (_parse_quote_time(v.get("time")) for v in panel.values()
                             if isinstance(v, dict) and v.get("time")) if t]
