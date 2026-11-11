@@ -16,10 +16,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Python 3.9 对齐生产镜像（backend/Dockerfile 用的 python:3.9-slim）
+      # ★★ 2026-11-12：3.9 → **3.11**（与生产镜像及其余 4 个 workflow 对齐）。
+      #   原注释"Python 3.9 对齐生产镜像（backend/Dockerfile 用的 python:3.9-slim）"
+      #   **早已过时**：`backend/Dockerfile` 在 2026-09-09 就升到 `python:3.11-slim`，
+      #   注释里甚至写着"与 GitHub Actions 的 setup-python 3.11 保持一致"——
+      #   而 `ci.yml` 这一处**漏改**了，一直停在 3.9。
+      #   事故：GitHub 把 `ubuntu-latest` 切到 26.04 后，3.9 已从镜像清单移除
+      #   ⇒ `setup-python` 直接报 `The version '3.9' ... was not found for Ubuntu 26.04`
+      #   ⇒ CI 全线红（3.9 已于 2025-10 停止维护，新镜像只会越来越难找）。
+      #   ⚠️ 对齐口径 = **生产 Dockerfile**，不是"某个曾经能过的版本"。
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.11'
       - name: 安装依赖
         run: pip install -r backend/requirements.txt -r requirements-dev.txt -q
       # ★ 2026-10-24（清理收口，docs/CLEANUP_REPORT.md）：三道新护栏——

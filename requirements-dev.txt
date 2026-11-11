@@ -1,6 +1,9 @@
 # 开发 / CI 专用依赖（生产镜像不装——backend/Dockerfile 只用 requirements.txt）
 # 用途：backend/tests/generated 单元测试（.github/workflows/ci.yml backend job）
-# 版本上限：pytest 9 要求 Python >=3.10，生产对齐 3.9 ⇒ 钉在 8.x
+# 版本上限：pytest 9 要求 Python >=3.10。
+# ★ 2026-11-12：CI 与生产已统一到 **Python 3.11**（原注释写的"生产对齐 3.9"已过时），
+#   但仍**钉在 8.x** —— 升 pytest 大版本会带来插件行为/报告格式变化，
+#   应该单独一轮验证，不跟"环境版本升级"捆在一起顺手做。
 pytest>=8,<9
 
 # ★ 2026-11-08：静态抓 `undefined name`（F821）。
