@@ -1748,7 +1748,18 @@ def _auction_read(a: Dict, has_live: bool) -> Optional[Dict]:
     }
 
 
-@router.get("/emotion")
+# ★★ 2026-11-12 **路由劫持修复**（用户："竞价看板一闪，拿到数据又立即消失"）：
+#   这里原来写着 `@router.get("/emotion")` **和** `@router.get("/auction-panel")` 两行，
+#   即 `/api/market/emotion` 被**错误地绑到了 `auction_panel()`** 上，
+#   而真正的 `market_emotion()`（下方定义）**一个装饰器都没有** ⇒ 它从未被暴露。
+#   后果链：
+#     · 前端 `getMarketEmotion()` → `/market/emotion` → 拿到的是**竞价面板结构**
+#       （`indexes/sectors/llm`），**没有 `price_date`、没有 `auction`**；
+#     · 于是 `mmdd(emotion.price_date)` → `—`、`isTodayPrice()` 恒 false → 顶部常驻
+#       "非当日口径：属于 —"，而竞价主卡内容全空；
+#     · 更要命的是 `loadPulse()` 走的是 `/market/pulse`（那份 `emotion` 是**完整的**），
+#       两个数据源先后写同一个 ref ⇒ **先渲染完整数据（一闪）→ 再被错结构覆盖成空白**。
+#   ⇒ 摘下 `/emotion`，只保留 `/auction-panel`；`/emotion` 还给 `market_emotion()`。
 @router.get("/auction-panel")
 def auction_panel():
     """竞价面板（2026-11-08 用户需求三块）：指数 vs 昨日关键位/预期区间 + 板块联动 + LLM缓存。
@@ -1774,8 +1785,12 @@ def auction_llm(force: bool = Query(False),
     return run_llm(force=force)
 
 
+@router.get("/emotion")
 def market_emotion():
     """情绪快照 v0：涨停/跌停家数 + 昨日涨停赚钱效应 + 连板高度近似 + 三档判读。
+
+    ★ 2026-11-12：本函数此前**没有装饰器**（路由被上面 `auction_panel` 抢走了），
+      补回 `@router.get("/emotion")`。见上方 `auction_panel` 的修复注释。
 
     判读阈值（v0 经验值，B1 官方口径接入后校准）：
       亢奋：涨停 ≥60 家或最高连板 ≥6；冰点：涨停 <20 且赚钱效应 <0；其余=分歧/常态。
