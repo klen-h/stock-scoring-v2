@@ -74,6 +74,23 @@ jobs:
         env:
           DATABASE_URL: "sqlite:///:memory:"
 
+      # ★★ 2026-11-12 新增（路由劫持事故后补的闸）：
+      #   事故：`routers/market.py` 里把 `@router.get("/emotion")` 和
+      #     `@router.get("/auction-panel")` **堆在同一个 `auction_panel()` 上**，
+      #     而真正的 `market_emotion()` **一个装饰器都没有** ⇒ `/api/market/emotion`
+      #     一直返回竞价面板结构（无 `price_date`/无 `auction`）⇒ 竞价看板一闪后空白、
+      #     常驻"非当日口径 · 属于 —"。**藏了约 4 天**。
+      #   ⚠️ 为什么前面所有检查都没拦住：FastAPI 对重复 path **不报错**
+      #     （两条都"注册成功"），`compileall` / `import app.main` / pyflakes
+      #     **全部通过** —— 语法合法、名字存在、导入成功。
+      #   ⇒ 只能靠"查路由表有没有同一 METHOD+path 指向两个函数"。
+      - name: 路由唯一性（同一 METHOD+path 被两个函数占用）
+        run: |
+          cd backend
+          python ../scripts/route_audit.py
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+
   frontend:
     name: 前端构建检查
     runs-on: ubuntu-latest
