@@ -19,6 +19,15 @@
   H2' 防御影子榜前瞻阴跌段（月度自动）、C6 未立项。
 
 ## 1. 架构与运行形态
+- ★ **Workbench CLI v1.0.4 已安装**（2026-11-12，阿里云 ECS 命令行工具）：
+  路径 `C:\Program Files\workbench\workbench.exe`。
+  ⚠️ 装到了 Program Files 而非 `%LOCALAPPDATA%` —— 因为执行 shell 是 **SYSTEM/Administrator**
+  （安装脚本走 `$IsSystem` 分支），配置在 `C:\Users\Administrator\.workbench\config.json`，
+  **与该用户的普通账户配置互不相通**（普通账户跑 `workbench config` 会写到自己的 `%USERPROFILE%`）。
+  · 能力：无公网 IP 直连 ECS —— `list / connect / exec / upload / download`，`-o json` + 语义化退出码
+  · 安装脚本已审：官方 OSS + SHA256 校验 + 不提权 + 只改用户级 PATH
+  · **仍需用户先跑 `workbench config` 填 AccessKey**（交互式，AI 无法代填）
+  · PATH 已加但需重开终端；当前会话用绝对路径调用
 - ★★ **Python 版本口径 = 3.11，全项目唯一**（2026-11-12 对齐）：
   `backend/Dockerfile`（`python:3.11-slim`）+ **全部 5 个 workflow**（ci / backend-pack / daily-batch /
   indicator-refresh / kline-data）。事故：`ci.yml` 曾独自留在 **3.9** 漏改，GitHub 把
