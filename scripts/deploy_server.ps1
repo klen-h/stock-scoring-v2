@@ -52,9 +52,20 @@ if (-not (Test-Path $cfg)) {
 $regionArgs = @()
 if ($Region) { $regionArgs = @('--region', $Region) }
 
+# ★★ The page reads the LOCKED daily snapshot (08:55), not the live endpoint.
+#    Restarting the backend alone leaves today's OLD snapshot (English rule ids)
+#    in place until tomorrow 08:55 -> the fix would look like "it did not work".
+#    So recompute today's snapshot right after the restart.
+$refreshSnap = 'cd /www/wwwroot/stock-scoring-v2/backend && ' +
+               '.venv/bin/python -c "from app.macro import get_macro_snapshot; ' +
+               'from app.flash import store; ' +
+               'store.save_macro_daily(get_macro_snapshot()); ' +
+               'print(\"snapshot refreshed\")"'
+
 $deploy = 'cd /www/wwwroot/stock-scoring-v2 && git pull && ' +
           'sudo systemctl restart stock-scoring && ' +
-          'cd frontend && npm run build:server'
+          $refreshSnap + ' && ' +
+          'cd /www/wwwroot/stock-scoring-v2/frontend && npm run build:server'
 
 if ($DryRun) {
     Write-Host "DRY RUN - would execute on $InstanceId :"
@@ -86,10 +97,13 @@ if (-not $ok) {
 }
 Write-Host '   health OK'
 
-Write-Host '[3/3] verify deployed build (expect Chinese rule names) ...'
+# NOTE: rules_detail lives in /macro/snapshot (get_macro_snapshot),
+#       NOT /market/emotion (that one is the emotion/auction snapshot).
+Write-Host '[3/3] verify deployed build (expect Chinese "name" fields) ...'
 & $WB exec --instance-id $InstanceId @regionArgs `
-    -c 'curl -s http://127.0.0.1:8000/api/market/emotion | head -c 400' `
+    -c 'curl -s http://127.0.0.1:8000/api/macro/snapshot | head -c 600' `
     --timeout 30 --output text
 
 Write-Host ''
 Write-Host 'DONE - if the last output contains Chinese "name" fields, the deploy is good.'
+Write-Host 'Tip: the page itself uses /macro/daily?date=TODAY (locked snapshot).'
