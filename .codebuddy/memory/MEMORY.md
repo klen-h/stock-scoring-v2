@@ -19,6 +19,11 @@
   H2' 防御影子榜前瞻阴跌段（月度自动）、C6 未立项。
 
 ## 1. 架构与运行形态
+- ★★ **Python 版本口径 = 3.11，全项目唯一**（2026-11-12 对齐）：
+  `backend/Dockerfile`（`python:3.11-slim`）+ **全部 5 个 workflow**（ci / backend-pack / daily-batch /
+  indicator-refresh / kline-data）。事故：`ci.yml` 曾独自留在 **3.9** 漏改，GitHub 把
+  `ubuntu-latest` 切到 26.04 后 3.9 从镜像清单移除（3.9 已 2025-10 EOL）⇒ CI 全线红。
+  **改版本时机械核对**：`grep -rn "python-version" .github/workflows/` —— 不要只改你以为的那一处。
 - 单进程 FastAPI（`backend/app/main.py`）`/api/*` + 前端静态；生产 `uvicorn 0.0.0.0:8000`，**不要 `--reload`**。
 - ★★ **生产部署 = 自有服务器**（用户 2026-11-04 确认："确实在用服务器那套，因为 render 会爆内存"）。
   Render 已弃用：512MB 实例一天多次 `Ran out of memory`（11-02 单日 6 次，见 daily）。
