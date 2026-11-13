@@ -498,9 +498,62 @@ def _parse(family: str, f: list) -> dict:
     #     没有一条规则读债券的 `change_pct`（已逐条核对）。
     if family == "bd":
         out["kind"] = "yield"
-        out["bp_change"] = round((price - prev) * 100, 2)
+        # ★ 2026-11-14：`prev == price` 时不给 bp（详见 `_yield_bp` 的完整说明）
+        out["bp_change"] = None if prev == price else round((price - prev) * 100, 2)
         out["change_pct"] = None
     return out
+
+
+def _yield_bp(item) -> Optional[float]:
+    """收益率品种的**日变化（bp）**；数据不可信时返回 `None`（**绝不返回 0**）。
+
+    ★★ 2026-11-14（用户："中国 10Y 国债变动(bp) = 0 · 当前 0.0，
+       多需 < -2 / 空需 > 3 ⇒ 未达阈值是正常的吗"）
+
+      【结论：不正常，是真 bug】
+        库里 **11-04 ~ 11-13 连续 8 个交易日** `cn10y.price == prev_close`
+        ⇒ `cn10y_bp_change` 恒为 **0.00**。
+
+      【根因】
+        那几天新浪 `globalbd_cn10yt` 拉不到（快照自带 `source="eastmoney"`），
+        走东财兜底时返回的是**「全字段同值」的残缺包**：
+          `f2(现价) = f15(高) = f16(低) = f18(昨收)`，`f3(涨跌幅) ≈ ±0.01`
+        这**不是"收益率没变"**，是**数据未更新**（东财在非交易时段/数据未刷时
+        就返回这种自洽但无信息的包）。
+        ⚠️ 顺带印证：同期 `_fetch_em` 并没有"f18 缺失"，而是 **f18 被抄成了 f2** ——
+          所以修在 `_fetch_em` 里判断"f18 是否缺失"是**抓不到的**，必须判"是否相等"。
+
+      【为什么这个 bug 特别阴险】
+        规则 `cn10y_liquidity` 的区间是 `-2 < bp < 3`，假 0 正好落在"未达阈值"
+        ⇒ **界面看起来完全正常**（"当前 0.0，多需 < -2 / 空需 > 3"），8 天无人发现。
+        两个真实代价：
+          · **真信号会被永久漏掉**（真涨 > 3bp 也显示 0.0 ⇒ 永不触发）；
+          · **稀释 china 组分母** —— `evaluate_rules` 的组得分是
+            `Σ(方向×强度) / Σ强度`，假 0 让这条规则"有数据但中性"，
+            把同组其他规则（如 `cny_cnh_basis`）的权重**摊薄一半**：
+            组内 2 条时得分 1.0/2.0=0.5，1 条时 1.0/1.0=1.0。
+
+      【修法】
+        `prev_close == price` ⇒ 返回 `None` ⇒ 规则引擎自动走
+        `"无数据（该条不计分，也不计入分母）"`，**宁缺勿假**。
+        ⚠️ **为什么不改 `_fetch_em` 的 `prev_close` 本身**：
+          置 `None` 会让别处 `prev_close` 的裸运算（金银比 `s_["prev_close"] > 0`、
+          利差 `us10["prev_close"] - us2["prev_close"]`）抛 `TypeError`。
+          在消费端拦截，影响面最小。
+        ⚠️ **为什么判"完全相等"而不是"|chg| 极小"**：
+          完全相等是残缺包的**确定特征**（f18 直接抄 f2）；
+          "极小但不相等"可能是真实的微幅变动，不该误杀。
+
+      【适用范围】`cn10y` / `us10y` / `us2y` 走同一套东财兜底 ⇒ 一并保护。
+    """
+    if not item:
+        return None
+    p, pc = item.get("price"), item.get("prev_close")
+    if not isinstance(p, (int, float)) or not isinstance(pc, (int, float)):
+        return None
+    if p == pc:                 # 残缺包：昨收被抄成现价
+        return None
+    return round((p - pc) * 100, 2)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -781,21 +834,25 @@ def get_macro_panel() -> dict:
     # 2Y 对政策利率最敏感（加息预期），30Y 是全球折现率锚（高估值资产定价），
     # 10Y-2Y 利差刻画曲线形态：短端上行快于长端=曲线走平=市场在定价加息
     us10, us2 = panel.get("us10y"), panel.get("us2y")
-    if us10:
-        derived["us10y_bp_change"] = round((us10["price"] - us10["prev_close"]) * 100, 2)
-    if us2:
-        derived["us2y_bp_change"] = round((us2["price"] - us2["prev_close"]) * 100, 2)
+    # ★ 2026-11-14：统一走 `_yield_bp`（`prev_close == price` ⇒ None），
+    #   否则东财"全字段同值"的残缺包会让日变化恒为 0 ⇒ 规则静默失效。
+    _bp10, _bp2 = _yield_bp(us10), _yield_bp(us2)
+    if _bp10 is not None:
+        derived["us10y_bp_change"] = _bp10
+    if _bp2 is not None:
+        derived["us2y_bp_change"] = _bp2
     if us10 and us2 and us10["price"] and us2["price"]:
         curve_now = (us10["price"] - us2["price"]) * 100
-        curve_prev = ((us10["prev_close"] - us2["prev_close"]) * 100
-                      if us10["prev_close"] and us2["prev_close"] else curve_now)
         derived["us_curve_10y2y_bp"] = round(curve_now, 1)             # 水平值(bp)
-        derived["us_curve_bp_change"] = round(curve_now - curve_prev, 2)  # 日变化(bp)
+        # 日变化 = (Δ10Y − Δ2Y)；任一端不可信就不给，别用 0 冒充"利差没动"
+        if _bp10 is not None and _bp2 is not None:
+            derived["us_curve_bp_change"] = round(_bp10 - _bp2, 2)
 
     # 中国10年国债收益率日变化（bp，1bp=0.01%）
     cn = panel.get("cn10y")
-    if cn:
-        derived["cn10y_bp_change"] = round((cn["price"] - cn["prev_close"]) * 100, 2)
+    _bpcn = _yield_bp(cn)
+    if _bpcn is not None:
+        derived["cn10y_bp_change"] = _bpcn
     # 黑色系均值（螺纹+铁矿）
     rb, ir = panel.get("rebar"), panel.get("iron")
     if rb and ir:
