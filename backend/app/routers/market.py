@@ -1171,6 +1171,46 @@ def _emotion_daily_row(day: str, val: Dict, after_close: bool, old: Dict,
     return base
 
 
+def _close_data_trustworthy(val: Dict, day: str) -> bool:
+    """收盘 `close_*` 是否**确实属于 `day` 这一天**（拦截"旧数据套今天键"）。
+
+    ★★ 2026-11-13 实测事故（本轮修）：
+      【旧守卫的漏洞】`_save_emotion_daily` 原来只挡 `_price_date() != today`，
+        而 `_price_date()` 是**纯时钟**判断（交易日且已过 9:15 ⇒ 直接返回今天），
+        **完全不看行情缓存里到底有没有今天的数据**。因此盘后任何一次调用
+        （前端轮询 `/market/emotion`、清单计算、手工调试…）都能穿过守卫：
+          · 缓存为空 ⇒ 写出 `close_up=None` ⇒ **把当天已有的真值覆盖成 None**；
+          · 缓存冻结在上一交易日 ⇒ 写出与昨日**完全相同**的 up/down。
+      【实测证据】
+        · 10-16 与 10-15 都是 388/4607、10-26 与 10-23 都是 4076/832（冻结）；
+        · 2026-11-13 22:14 一次盘后调用，把 11-13 的 2103/2668 覆盖成 None
+          （已手工还原）。
+      【为什么以前没被发现】`policy_bottom_watch._breadth_series` 有冻结检测，
+        会把这类行标 `insufficient` **剔除**——表现成"清单少一条"，不报错。
+        而 `close_as_of` 的校验（日期 == 行日期）**形同虚设**：它存的是
+        `val["as_of"]` = `_bj_now()`（**写入时刻**），恒等于行日期。
+
+    四道判据（任一不满足即拒写，**宁缺勿错**）：
+      1. `has_live` 必须为真 —— 没有实时行情就没有今天的宽度；
+      2. `quote_as_of`（行情缓存自身的抓取时刻）存在时，其日期必须 == `day`
+         —— 这是**唯一能识别"缓存冻结"**的字段（`data_date` 是日历推断，不可用）；
+         该字段为 None（老版本/无缓存）时**不改判**，交给判据 1/3 兜底；
+      3. `up` / `down` 必须都是有效数字 —— 防"写 None 覆盖真值"；
+      4. `quote_from_snapshot` 为真时拒绝 —— 那是磁盘快照恢复，不是今日实时。
+    """
+    if not val.get("has_live"):
+        return False
+    if val.get("quote_from_snapshot"):
+        return False
+    up, down = val.get("up"), val.get("down")
+    if up is None or down is None:
+        return False
+    qasof = str(val.get("quote_as_of") or "")[:10]
+    if qasof and qasof != str(day)[:10]:
+        return False
+    return True
+
+
 def _save_emotion_daily(val: Dict) -> None:
     """落库：**盘前/盘中**记「预判」，**收盘后**补记「实际结果」。失败静默。
 
@@ -1228,6 +1268,13 @@ def _save_emotion_daily(val: Dict) -> None:
         if after_close and old.get("close_as_of") == val.get("as_of"):
             return
         if not after_close and old.get("verdict"):
+            return
+        # ★★ 2026-11-13：盘后补记 `close_*` 前必须确认这批数据**真的属于今天** ——
+        #   上面的 `_price_date()` 守卫是纯时钟判断，拦不住"缓存为空/冻结"，
+        #   会把当天真值覆盖成 None 或写入昨日同值（详见 `_close_data_trustworthy`）。
+        #   ⚠️ 只作用于 `after_close` 分支：盘前「预判」不看实时行情完整性。
+        #   ⚠️ 拒写**不是错误**：日批后续仍会补，缺失 ≠ 不满足（清单侧已有 insufficient）。
+        if after_close and not _close_data_trustworthy(val, day):
             return
         row = _emotion_daily_row(day, val, after_close, old)
         db.upsert("market_emotion_daily", row, conflict_columns=["date"])
