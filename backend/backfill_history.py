@@ -254,11 +254,24 @@ def backfill_index() -> int:
 def _collect_strategy_codes(days: int = 30) -> list:
     """提取需回填的个股代码（含名称，去重）：
     1. strategy_results 中全部战法选股；
-    2. 近 days 天 ranking_history 中出现过的评分股票。
+    2. 近 days 天 ranking_history 中出现过的评分股票；
+    3. ★ 2026-11-13：`user_portfolio` 里的**用户持仓**。
 
     评分 TopN 每日变动，很多不在战法池中；若只回填战法个股，
     regime_review 分层复盘会因无行情跳过 90%+ 的评分记录、结论失真，
-    因此必须把评分股票一并纳入回填池。"""
+    因此必须把评分股票一并纳入回填池。
+
+    ★★ 为什么还要并入持仓（第 3 条，2026-11-13）：
+      【实测缺口】`backtest_prices` 只覆盖 **1094 只**（`kline_cache` 有 2811），
+        而持仓 `000429 粤高速Ａ`、`601398 工商银行` **两个池都不在**
+        ⇒ 这两只**永远没有日线** ⇒ 持仓盈亏算不出来（前端显示"—"）。
+      【为什么必须修】持仓是用户最关心的那几只；缺价直接影响盈亏展示，
+        也影响"持仓 vs 榜单该不该换"这类判断（没有现价就无法比较）。
+      【成本】持仓通常个位数；zzshare 按天通道本就是 1 请求拿全市场，
+        写入也只是几百行，可忽略。
+      ⚠️ 这里**取全部用户**的持仓：回填是数据层动作，与展示层的用户隔离无关，
+        多回填几只不构成越权（展示侧仍由 `portfolio_scope` 过滤）。
+      ⚠️ `shares > 0` 过滤掉脏行（如 `600150` shares=0 的历史残留）。"""
     codes = {}
     rows = db.fetch("SELECT results_json FROM strategy_results WHERE count > 0")
     for r in rows:
@@ -277,6 +290,16 @@ def _collect_strategy_codes(days: int = 30) -> list:
         c = str(r["code"] or "").strip()
         if len(c) == 6:
             codes.setdefault(c, r.get("name") or c)
+    # ★★ 2026-11-13（第 3 条）：用户持仓并入回填池 —— 见 docstring 的实测缺口说明。
+    #   fail-open：持仓表读不到不该阻断整批回填。
+    try:
+        for r in (db.fetch(
+                "SELECT code, name FROM user_portfolio WHERE shares > 0") or []):
+            c = str(r["code"] or "").strip()
+            if len(c) == 6:
+                codes.setdefault(c, r.get("name") or c)
+    except Exception as e:
+        print(f"[backfill] 持仓并入回填池失败（不影响其余）: {str(e)[:60]}")
     return list(codes.items())
 
 
