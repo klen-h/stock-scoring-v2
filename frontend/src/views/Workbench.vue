@@ -818,6 +818,56 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-13（用户要求 ③）：风格分化 —— 钱在权重还是在成长。
+               【为什么值得常驻】实测同一批 gate_add 触发日的 T+5：
+                 上证50 -0.83% vs 创业板 -4.36%（差 5 倍）⇒ "往哪加/往哪减"
+                 比"加不加"影响更大，不该只在信号触发时才被动算。
+               【不进决策链】纯观察器；教练的 gate_add_weak_direction 与本块
+                 共用 `app.style_spread` 同一份实现，数字必然一致。
+               【口径】日频（日批回填，当日 15:40 后才含当日收盘）⇒ 必须显示 as_of，
+                 不能让人以为这是盘中实时值。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="styleOpen = !styleOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="styleDot"></span>
+              <span class="text-sm font-semibold shrink-0">风格分化</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ styleLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ styleOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="styleOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="styleSpreadErr" class="text-xs text-muted">{{ styleSpreadErr }}</div>
+              <div v-else-if="!styleSpread || !styleSpread.available" class="text-xs text-muted">
+                {{ (styleSpread && styleSpread.note) || '—' }}
+              </div>
+              <div v-else class="text-xs space-y-1.5">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span class="text-muted">近 {{ styleSpread.days }} 日</span>
+                  <span class="font-mono font-semibold"
+                        :class="Number(styleSpread.spread_pp) >= 0 ? 'text-rose-300' : 'text-emerald-300'"
+                        :title="'沪深300 收益 − 创业板 收益（pp）；正=权重跑赢，负=成长跑赢'">
+                    分化 {{ Number(styleSpread.spread_pp) >= 0 ? '+' : '' }}{{ styleSpread.spread_pp }}pp</span>
+                  <span class="font-mono text-muted">沪深300 {{ fmtPct(styleSpread.weight_ret_pct) }}</span>
+                  <span class="font-mono text-muted">创业板 {{ fmtPct(styleSpread.growth_ret_pct) }}</span>
+                  <span class="text-[10px] text-amber-400/80 cursor-help"
+                        :title="'数据来自日批回填，当日 15:40 后才含当日收盘，盘中此值不变'">
+                    · 截至 {{ styleSpread.as_of }}</span>
+                </div>
+                <div class="text-[11px]"
+                     :class="Number(styleSpread.spread_pp) >= Number(styleSpread.threshold || 3) ? 'text-rose-300'
+                       : Number(styleSpread.spread_pp) <= -Number(styleSpread.threshold || 3) ? 'text-emerald-300'
+                       : 'text-muted'">{{ styleSpread.verdict }}</div>
+                <div v-if="styleBars.length" class="flex items-end gap-0.5 h-9 pt-0.5">
+                  <div v-for="b in styleBars" :key="b.date" class="flex-1 rounded-sm"
+                       :class="Number(b.spread_pp) >= 0 ? 'bg-rose-500/60' : 'bg-emerald-500/60'"
+                       :style="{ height: b.h + '%' }"
+                       :title="`${b.date} 分化 ${b.spread_pp >= 0 ? '+' : ''}${b.spread_pp}pp（沪深300 ${b.weight_pct}% / 创业板 ${b.growth_pct}%）`">
+                  </div>
+                </div>
+                <div class="text-[10px] text-muted">{{ styleSpread.note }}</div>
+              </div>
+            </div>
+          </div>
+
           <!-- ③ 推演证伪 -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -3576,6 +3626,8 @@ import {
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
   // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离，纯展示）
   getCrossMarketWatch,
+  // ★★ 2026-11-13：风格分化（钱在权重还是在成长；决定"该往哪加/往哪减"）
+  getStyleSpread,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
   getEventTargets, getEventThemes,
   // ★★ 2026-11-05：震荡区间（箱体上下沿/位置/持续天数，含我的持仓切片）
@@ -4000,6 +4052,11 @@ const sectorTopSrc = ref('')
 //     `sectorFail` = 每级失败原因（挂到标题的 title 上，hover 可见）。
 const sectorTopNote = ref('')
 const sectorFail = ref([])
+// ★★ 2026-11-13（用户要求 ③）：风格分化观察器 —— 钱在权重还是在成长。
+//   实测同一批 `gate_add` 触发日：上证50 -0.83% vs 创业板 -4.36%（差 5 倍）
+//   ⇒ 「该往哪加/往哪减」比「加不加」影响更大，值得常驻而非只在信号里出现。
+const styleSpread = ref(null)
+const styleSpreadErr = ref('')
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
 //   ⚠️ 数据源独立于上面的东财接口 ⇒ 东财被封时上面可能空白、而这块照常显示。
@@ -4799,19 +4856,22 @@ const pplOpen = ref(!!_obs.ppl)
 const rgOpen = ref(!!_obs.rg)
 const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
+// ★★ 2026-11-13（用户要求 ③）：风格分化（默认收起 —— 日频数据，不是每天都变）
+const styleOpen = ref(!!_obs.style)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
       evt: evtOpen.value, ppl: pplOpen.value, rg: rgOpen.value,
-      scen: scenOpen.value, ai: aiOpen.value,
+      scen: scenOpen.value, ai: aiOpen.value, style: styleOpen.value,
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
 }
 const obsAllOpen = computed(() =>
   wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
-  && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value)
+  && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value
+  && styleOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
@@ -4824,6 +4884,7 @@ function toggleAllObs() {
   if (v) loadPeople()
   scenOpen.value = v
   aiOpen.value = v
+  styleOpen.value = v
   pbwOpen.value = v
   try { localStorage.setItem(PBW_KEY, v ? '1' : '0') } catch { /* ignore */ }
   saveObs()
@@ -4866,6 +4927,35 @@ const crowdLine = computed(() => {
 const crowdDot = computed(() =>
   (crowdTop.value || []).some(r => String(r.level || '').includes('退潮'))
     ? 'bg-rose-400' : 'bg-emerald-400')
+// ★★ 2026-11-13（用户要求 ③）：风格分化的摘要行与状态点。
+//   ⚠️ 不要用 `fmtSigned` —— 本文件**没有这个函数**（`signNum`/`pctClass` 也一样，
+//      它们在别处 import；上次已因模板里凭空调用 `signNum` 踩过坑）。
+//      spread 是 pp 不是 %，这里本地格式化最稳。
+const styleLine = computed(() => {
+  const d = styleSpread.value
+  if (!d || !d.available) return styleSpreadErr.value || '—'
+  const v = Number(d.spread_pp)
+  const sign = v >= 0 ? '+' : ''
+  return `${sign}${v.toFixed(2)}pp · ${String(d.verdict || '').split('（')[0]} · ${String(d.as_of || '').slice(5)}`
+})
+const styleDot = computed(() => {
+  const d = styleSpread.value
+  if (!d || !d.available) return 'bg-slate-400'
+  const v = Number(d.spread_pp)
+  if (v >= Number(d.threshold || 3)) return 'bg-rose-400'      // 权重主导：成长在失血
+  if (v <= -Number(d.threshold || 3)) return 'bg-emerald-400'  // 成长主导
+  return 'bg-amber-400'                                        // 无明确方向
+})
+// 近 N 日分化度的柱高（按区间最大绝对值归一化；全 0 时给最小可见高度）
+const styleBars = computed(() => {
+  const s = (styleSpread.value?.series || [])
+  if (!s.length) return []
+  const mx = Math.max(...s.map(x => Math.abs(Number(x.spread_pp) || 0)), 0.01)
+  return s.map(x => ({
+    ...x,
+    h: Math.max(8, Math.round(Math.abs(Number(x.spread_pp) || 0) / mx * 100)),
+  }))
+})
 // ★ 2026-10-24：情景从摘要文字里抽成**彩色徽标**（收起时也能一眼看出倾向）
 const scenBadgeClass = computed(() => {
   const s = scen.value
@@ -5261,6 +5351,19 @@ async function loadRiskWatch(silent = false) {
     jin10.value = t.data || null
   } catch {
     jin10.value = null
+  }
+  // ★★ 2026-11-13（用户要求 ③）：风格分化。
+  //   ⚠️ 数据是**日频**（日批回填，当日 15:40 后才含当日收盘）⇒ 盘中不变，
+  //      **不进 5 分钟轮询**（轮询只会白烧请求），挂载/切日时拉一次即可。
+  //   ⚠️ 失败静默保留上次值（铁律 11）：不能因为一块观察器挂了就清空。
+  if (!silent) {
+    try {
+      const sd = await getStyleSpread(5, 20)
+      styleSpread.value = sd.data || null
+      styleSpreadErr.value = ''
+    } catch {
+      styleSpreadErr.value = '风格分化数据加载失败'
+    }
   }
   // ★★ 2026-11-05：跨市场异动——同样**单独请求**（读宏观面板缓存，通常 <100ms；
   //   但冷缓存时首次抓取可能 10s+，塞进上面的 Promise.all 会拖慢"拥挤/关键位"块）。

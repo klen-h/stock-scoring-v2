@@ -461,12 +461,18 @@ def _ev_gate_no_add(pos, params, ctx):
     st = (ctx.get("regime") or {}).get("state")
     if st not in ("defensive", "neutral_bearish"):
         return None
+    # ★ 2026-11-13（用户要求 ②）：补方向提示 —— 只说"别加"不够，
+    #   用户还得知道"如果非要在里面待着，哪边相对安全"。
+    _sp = (ctx.get("style_spread") or {}).get("spread_pp")
     return {
         "message": (f"【环境不支持加仓】当前 regime = {st}"
                     f"（ma_trend={(ctx.get('regime') or {}).get('ma_trend')}）。"
                     f"该环境下 regime 闸门当前禁止战法新入场（准入矩阵现状）；"
-                    f"存量持仓的处置由你自行决定。"),
-        "numbers": {"regime": st},
+                    f"存量持仓的处置由你自行决定"
+                    + _direction_hint(ctx, "avoid_add",
+                                      params.get("style_spread_min", 3.0))
+                    + "。"),
+        "numbers": {"regime": st, "style_spread_pp": _sp},
     }
 
 
@@ -518,16 +524,23 @@ def _ev_gate_reduce(pos, params, ctx):
         return None
     # ★ 2026-09-29（P0）：补定量上限（此前只有定性"砍到最低仓位"）。
     limit, basis = _reduce_limit_note()
-    limit_txt = (f"引擎仓位上限 **{limit}%**（该砍到多少的定量口径，需人工确认执行）"
+    # ★ 2026-11-13：去掉 `**` —— 前端用 `{{ }}` 渲染，Markdown 粗体只会裸露成
+    #   字面星号（同日 `policy_bottom_watch` 也有同款问题，已一并清理）。
+    limit_txt = (f"引擎仓位上限 {limit}%（该砍到多少的定量口径，需人工确认执行）"
                  if limit is not None else "引擎上限暂不可得，按 regime 档位执行")
+    # ⚠️ `limit_txt` 末尾**不带句号** —— 下面要接 `_direction_hint`（以 `；` 开头），
+    #   两处各带一个句号会拼出 "。；" 这种明显是程序接出来的标点。
     msg = (f"【减仓条件命中】{'；'.join(hits)}。\n"
-           f"→ {limit_txt}。")
+           f"→ {limit_txt}")
+    # ★ 2026-11-13（用户要求 ②）：补"先减哪边"
+    msg += _direction_hint(ctx, "reduce", params.get("style_spread_min", 3.0)) + "。"
     if basis:
         msg += f"\n依据：{basis}"
     return {
         "message": msg,
         "numbers": {"us10y": u10, "dxy": m.get("dxy"), "margin_chg5": chg5,
-                    "sentiment": score, "limit_pct": limit},
+                    "sentiment": score, "limit_pct": limit,
+                    "style_spread_pp": (ctx.get("style_spread") or {}).get("spread_pp")},
     }
 
 
@@ -557,11 +570,50 @@ def _idx_last_move() -> Optional[dict]:
         return None
 
 
-_style_spread_cache = {"key": None, "val": None}
+_style_spread_cache = {"ts": 0.0, "val": None}
 
-# 权重/成长代表指数（`backtest_prices` 里的代码）
-_STYLE_WEIGHT_IDX = "sh000300"      # 沪深300（`sh000016` 上证50 不在库里）
-_STYLE_GROWTH_IDX = "sz399006"      # 创业板指
+# ★ 2026-11-13：指数代码改为从 `app.style_spread` 取 —— **唯一事实源**。
+#   `coach/audit.py` 的评价口径也 import 这两个名字，两处各写一份必然漂移
+#   （与 `_bench_code` 那次"同一份建议两个基准"同类教训）。
+from app.style_spread import GROWTH_IDX as _STYLE_GROWTH_IDX         # noqa: E402
+from app.style_spread import WEIGHT_IDX as _STYLE_WEIGHT_IDX         # noqa: E402
+
+
+def _direction_hint(ctx: dict, kind: str = "reduce", thr: float = 3.0) -> str:
+    """按「权重 vs 成长」分化，给一句"该往哪边偏"的提示。取不到数据返回空串。
+
+    ★★ 2026-11-13（用户要求 ②）：`gate_no_add` 只说"环境不支持加仓"、
+      `gate_reduce` 只说"该砍到多少"，**都不说该往哪个方向动**。
+      而实测方向差异是决定性的（T+5：上证50 -0.83% vs 创业板 -4.36%），
+      用户听完"要减仓"仍不知道该先减哪类。
+
+    `kind`：
+      · `reduce`     —— 减仓场景（先减哪边）
+      · `avoid_add`  —— 禁止加仓场景（若一定要建，只考虑哪边）
+
+    ⚠️ **三档而不是两档**：分化度 `< -3pp` 意味着**成长反而强于权重**，
+      此时"减成长"就是错的。只有 ±3pp 之外才有明确方向，
+      中间区间必须诚实说"没有方向可换"，不能硬凑一句话。
+    ⚠️ **fail-open**：取不到分化度返回空串，调用方拼不上就不拼，
+      **不臆造方向**（缺失 ≠ 无分化）。
+    ⚠️ 纯文本，不含 Markdown（前端 `{{ }}` 会原样显示星号）。
+    """
+    sp = ctx.get("style_spread") or {}
+    v = sp.get("spread_pp")
+    if v is None:
+        return ""
+    t = max(0.5, float(thr))
+    if v >= t:
+        return ("；减仓优先减成长/题材（权重相对抗跌，可作底仓保留）"
+                if kind == "reduce"
+                else "；若确需建仓，只考虑权重/红利，别碰成长题材")
+    if v <= -t:
+        return ("；成长相对强于权重，减仓可先减权重，成长等转弱再动"
+                if kind == "reduce"
+                else "；成长相对强于权重，但环境闸门仍不放行 —— 方向强 ≠ 可以加")
+    return ("；权重与成长无明显分化，没有『换个方向避险』的便宜可占，按纪律执行"
+            if kind == "reduce"
+            else "；权重与成长无明显分化，别把『换方向』当避险")
 
 
 def _style_spread(days: int = 5) -> Optional[dict]:
@@ -586,50 +638,27 @@ def _style_spread(days: int = 5) -> Optional[dict]:
     ⚠️ **样本量小（17 个触发日）**：分组后每组仅 6~8 个样本，
       t 检验不足以支撑"显著"结论。本函数只做**保守否决**，不做反向加仓。
     """
+    # ★ 2026-11-13：算法**委托给 `app.style_spread`**（观察器与教练共用一份实现，
+    #   避免"两处各算一遍、日后换代理指数只改一处"的老问题）。
+    #   这里只做 120s TTL 缓存：数据是日频的，30s 轮询下每分钟最多 1 次真实查询。
+    import time as _t
+    now = _t.time()
+    if (_style_spread_cache.get("val") is not None
+            and now - float(_style_spread_cache.get("ts") or 0) < 120):
+        return _style_spread_cache["val"]
     try:
-        from app.database import db
-        n = max(2, int(days))
-        # ⚠️ `LIMIT` 用 f-string 拼整数（`%d` 与 db.fetch 的 `%s` 参数化不兼容，
-        #    实测会抛异常 → 整个函数静默返回 None，等于规则永远不生效）。
-        #    `n` 已过 `max(2, int(...))` 校验，无注入风险。
-        lim = n + 1
-        w = db.fetch(f"SELECT date, close FROM backtest_prices WHERE code=%s "
-                     f"ORDER BY date DESC LIMIT {lim}", (_STYLE_WEIGHT_IDX,)) or []
-        g = db.fetch(f"SELECT date, close FROM backtest_prices WHERE code=%s "
-                     f"ORDER BY date DESC LIMIT {lim}", (_STYLE_GROWTH_IDX,)) or []
-        if len(w) < n + 1 or len(g) < n + 1:
-            return None
-        key = str(w[0]["date"])[:10]
-        if _style_spread_cache["key"] == key and _style_spread_cache["val"]:
-            return _style_spread_cache["val"]
-        # 两侧日期必须对齐（防"一只更新一只滞后"的错位比较）
-        if str(w[0]["date"])[:10] != str(g[0]["date"])[:10]:
-            return None
-        w0, w1 = float(w[0]["close"] or 0), float(w[n]["close"] or 0)
-        g0, g1 = float(g[0]["close"] or 0), float(g[n]["close"] or 0)
-        if min(w0, w1, g0, g1) <= 0:
-            return None
-        w_ret = (w0 / w1 - 1) * 100
-        g_ret = (g0 / g1 - 1) * 100
-        val = {
-            "spread_pp": round(w_ret - g_ret, 2),
-            "weight_ret_pct": round(w_ret, 2),
-            "growth_ret_pct": round(g_ret, 2),
-            "days": n,
-            "as_of": key,
-        }
-        _style_spread_cache.update(key=key, val=val)
-        return val
+        from app import style_spread
+        val = style_spread.latest(days)
     except Exception as e:
-        # ★ 2026-11-13：吞异常必须可见（GUARDRAILS #11）——
+        # ★ 吞异常必须可见（GUARDRAILS #11）——
         #   本函数挂了只是"不否决"，不会崩，但**静默会让人以为规则在正常工作**。
         #   ⚠️ 本函数在 30s 轮询里被调，按 60s 节流打印，避免刷屏。
-        import time as _t
-        now = _t.time()
         if now - float(_style_spread_cache.get("err_at") or 0) > 60:
             _style_spread_cache["err_at"] = now
             print(f"[coach] style_spread failed: {str(e)[:80]}")     # ASCII（铁律⑥）
         return None
+    _style_spread_cache.update(ts=now, val=val)
+    return val
 
 
 def _market_avg_change_pct() -> Optional[float]:
@@ -997,11 +1026,14 @@ def _ev_external_lead(pos, params, ctx):
     return {
         "message": (
             f"【防御市 + 外部预警】{'；'.join(lead['hits'])}。\n"
-            "回测（regime 重放 687 天）：防御市里**未预警**日未来 5/10 日 "
-            "+1.22%/+2.50%（超跌反弹），而**外部预警**日退到 -0.22%/-0.33% "
-            "⇒ 本次『跌多了会弹』的预期**不成立**。\n"
+            # ★ 2026-11-13：去掉 `**` —— 前端用 `{{ }}` 渲染，Markdown 粗体只会
+            #   裸露成字面星号（用户实测见过"未预警"两侧带 `**` 的原文）。
+            #   需要强调时用「」或措辞，别用 Markdown。
+            "回测（regime 重放 687 天）：防御市里未预警日未来 5/10 日 "
+            "+1.22%/+2.50%（超跌反弹），而外部预警日退到 -0.22%/-0.33% "
+            "⇒ 本次『跌多了会弹』的预期不成立。\n"
             "纪律：① 不抢反弹、不因跌幅大而抄底；② 已持仓仍按剧本离场"
-            "（止损/到期），**不要**因此恐慌提前割 —— 与「昨日大跌不恐慌割肉」"
+            "（止损/到期），不要因此恐慌提前割 —— 与「昨日大跌不恐慌割肉」"
             "不矛盾：不恐慌 ≠ 期待反弹。" + note),
         "numbers": {"regime": regime, "nasdaq_pct": lead["nasdaq_pct"],
                     "usd_pct": lead["usd_pct"], "hits": lead["hits"],

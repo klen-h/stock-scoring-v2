@@ -672,6 +672,12 @@ export const getWorkbenchDecisionCard = () => http.get('/system/workbench/decisi
 export const getWorkbenchScan = (date) => http.get('/system/workbench-scan', { params: { date }, timeout: 30000 })
 export const getWorkbenchScanSummary = (days = 7) => http.get('/system/workbench-scan/summary', { params: { days }, timeout: 30000 })
 
+// ★★ 2026-11-13：风格分化观察器（钱在权重还是在成长）。
+//   零外部请求（只读日批回填的指数日线）⇒ 给 20s 足够。
+//   ⚠️ 不传 date：这是"当前分化度"，历史由返回里的 `series` 自带（近 20 日滚动）。
+export const getStyleSpread = (days = 5, lookback = 20) =>
+  http.get('/market/style-spread', { params: { days, lookback }, timeout: 20000 })
+
 // ★ 2026-10-23：两个观察器（不进决策链）——拥挤赛道 / 指数关键位
 export const getCrowdingWatch = (date) => http.get('/system/crowding-watch', { params: { date }, timeout: 30000 })
 export const getKeyLevelWatch = (date) => http.get('/system/key-level-watch', { params: { date }, timeout: 30000 })

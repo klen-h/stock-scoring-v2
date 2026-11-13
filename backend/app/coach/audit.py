@@ -106,6 +106,12 @@ def ensure_tables() -> None:
                     --   最重要的那批纪律建议**从来没被检验过**。
                     outcome_bench_pct REAL,
                     outcome_bench_date TEXT,
+                    -- ★ 2026-11-13：`gate_add_weak_direction` 专属口径 —— T+N 的
+                    --   「沪深300 − 创业板」收益差（pp，正=权重跑赢）。
+                    --   该规则说"别加在成长上"，用单一基准涨跌评价是答非所问；
+                    --   spread < 0 才说明"成长确实跑输权重"、建议被印证。
+                    outcome_spread_pp REAL,
+                    outcome_spread_date TEXT,
                     created_at TEXT
                 )""",
                 # ★ 审查 P2-⑩：dedupe_key 加唯一索引——此前「先 SELECT 后 INSERT」非原子，
@@ -160,6 +166,13 @@ def _ensure_alert_columns() -> None:
     needed = {
         "outcome_bench_pct": "REAL",
         "outcome_bench_date": "TEXT",
+        # ★ 2026-11-13：`gate_add_weak_direction` 的**专属**评价口径。
+        #   该规则说的是"别加在成长上"，用基准涨跌评价会答非所问
+        #   （基准跌不代表"成长跑输权重"，基准涨也不代表建议错了）。
+        #   本列存 T+N 的「沪深300 − 创业板」收益差（pp，正=权重跑赢）：
+        #     spread < 0 ⇒ 成长确实跑输权重 ⇒ 建议被印证。
+        "outcome_spread_pp": "REAL",
+        "outcome_spread_date": "TEXT",
     }
     try:
         existing = {r["column_name"] for r in db.fetch(
@@ -576,6 +589,10 @@ _RULE_EXPECT = {
     # 「别割在底部 / 允许加仓」⇒ 事后 **涨** 才算被印证
     "reversal_no_panic": "up",
     "gate_add": "up",
+    # ★ 2026-11-13：方向否决类。期望 `spread < 0`（成长跑输权重）才对，
+    #   所以 `"down"` 语义成立——但**必须配合 `_SPREAD_RULES` 用分化列评价**，
+    #   不能落到基准涨跌上（详见 `_spread_change` 与 `rule_stats` 的分支）。
+    "gate_add_weak_direction": "down",
     # 行为约束类（闭嘴模式）：不适用方向评价
     "emotion_fuse": None,
 }
@@ -600,6 +617,56 @@ def _bench_change(start_date: str, days_after: int):
     if base <= 0:
         return None, None
     return round((last / base - 1) * 100, 2), str(bars[days_after]["date"])[:10]
+
+
+# ★ 2026-11-13：用「权重 − 成长」分化评价的规则集合。
+#   这些规则的语义是**方向**（"别往成长加"），不是"市场整体涨跌"，
+#   用 `outcome_bench_pct`（单一基准）评价会答非所问。
+_SPREAD_RULES = ("gate_add_weak_direction",)
+
+
+def _spread_change(start_date: str, days_after: int):
+    """自 `start_date` 起第 N 个交易日的「权重 − 成长」收益差（pp，正=权重跑赢）。
+
+    返回 `(spread_pp, date_str)`；数据不足/未到期返回 `(None, None)`。
+
+    ★ 为什么需要独立口径（2026-11-13）：
+      `gate_add_weak_direction` 说的是"别把仓位加在成长上"。事后检验应当问
+      "成长是不是真的跑输了权重"，而不是"基准指数是不是跌了"——
+      基准跌 ≠ 成长跑输（可能一起跌且权重跌更多，那这条建议就是错的）。
+    ⚠️ 指数代码复用 `coach.rules` 里的常量，**不在这里重新硬编码**：
+      两处若各写一份，日后换代理指数必然漂移（与 `_bench_code` 同一教训）。
+    """
+    try:
+        from app.coach.rules import _STYLE_GROWTH_IDX, _STYLE_WEIGHT_IDX
+    except Exception:
+        return None, None
+
+    def _ret(code):
+        bars = db.fetch(
+            "SELECT date, close FROM backtest_prices WHERE code=%s "
+            "AND date >= %s ORDER BY date ASC LIMIT %s",
+            (code, start_date, days_after + 1))
+        if not bars or len(bars) < days_after + 1:
+            return None, None
+        base = float(bars[0]["close"] or 0)
+        last = float(bars[days_after]["close"] or 0)
+        if base <= 0 or last <= 0:
+            return None, None
+        return (last / base - 1) * 100, str(bars[days_after]["date"])[:10]
+
+    try:
+        w, wd = _ret(_STYLE_WEIGHT_IDX)
+        g, gd = _ret(_STYLE_GROWTH_IDX)
+        if w is None or g is None:
+            return None, None
+        # ⚠️ 两侧到期日必须一致，否则比的是不同长度的区间
+        if wd != gd:
+            return None, None
+        return round(w - g, 2), wd
+    except Exception as e:
+        print(f"[coach] spread_change failed: {str(e)[:70]}")      # ASCII（铁律⑥）
+        return None, None
 
 
 def backfill_outcome(days_after: int = 5) -> int:
@@ -646,8 +713,14 @@ def backfill_outcome(days_after: int = 5) -> int:
     except Exception:
         rows2 = []
     for r in rows2 or []:
+        rid = str(r["rule_id"])
+        # ★ 2026-11-13：方向类规则走 ③ 的专属口径，不能用基准涨跌评价。
+        #   ⚠️ 这里必须**排除**：否则 ③ 永远补不上（`outcome_bench_pct` 一旦填了，
+        #      该行就不再出现在 ③ 的 `outcome_spread_pp IS NULL` 查询里）。
+        if rid in _SPREAD_RULES:
+            continue
         # 未在 `_RULE_EXPECT` 里定义的规则 ⇒ 不评价（不臆造口径）
-        if _RULE_EXPECT.get(str(r["rule_id"])) is None:
+        if _RULE_EXPECT.get(rid) is None:
             continue
         chg, d = _bench_change(r["alert_date"], days_after)
         if chg is None:
@@ -659,9 +732,32 @@ def backfill_outcome(days_after: int = 5) -> int:
             filled_bench += 1
         except Exception:
             continue
-    if filled or filled_bench:
-        print(f"[coach] 结果回填 {filled} 条个股 / {filled_bench} 条基准（T+{days_after}）")
-    return filled + filled_bench
+    # ③ 方向类规则：用「权重 − 成长」分化评价（见 `_spread_change`）
+    filled_spread = 0
+    # 规则名是模块常量，拼进 SQL 无注入风险；`ANY(%s)` 在 SQLite 测试库不兼容
+    _sp_in = ",".join("'%s'" % x for x in _SPREAD_RULES)
+    try:
+        rows3 = db.fetch(
+            "SELECT id, rule_id, alert_date FROM coach_alerts "
+            f"WHERE outcome_spread_pp IS NULL AND rule_id IN ({_sp_in}) "
+            "ORDER BY id DESC LIMIT 300") or []
+    except Exception:
+        rows3 = []
+    for r in rows3:
+        sp, d = _spread_change(r["alert_date"], days_after)
+        if sp is None:
+            continue          # 未到期，下轮再补
+        try:
+            db.execute(
+                "UPDATE coach_alerts SET outcome_spread_pp=%s, outcome_spread_date=%s "
+                "WHERE id=%s", (sp, d, r["id"]))
+            filled_spread += 1
+        except Exception:
+            continue
+    if filled or filled_bench or filled_spread:
+        print(f"[coach] 结果回填 {filled} 条个股 / {filled_bench} 条基准 / "
+              f"{filled_spread} 条分化（T+{days_after}）")
+    return filled + filled_bench + filled_spread
 
 
 def rule_stats(days: int = 90) -> list:
@@ -681,7 +777,7 @@ def rule_stats(days: int = 90) -> list:
     start = _days_ago(int(days))
     try:
         rows = db.fetch(
-            "SELECT rule_id, code, outcome_pct, outcome_bench_pct "
+            "SELECT rule_id, code, outcome_pct, outcome_bench_pct, outcome_spread_pp "
             "FROM coach_alerts WHERE alert_date >= %s", (start,)) or []
     except Exception as e:
         print(f"[coach] 规则统计查询失败: {e}")
@@ -698,9 +794,13 @@ def rule_stats(days: int = 90) -> list:
         expect = _RULE_EXPECT.get(rid)
         if expect is None:
             continue
-        # 个股优先，其次基准
+        # 个股优先 → 方向类用分化 → 其余用基准
+        # ★ 2026-11-13：方向类规则必须走 `outcome_spread_pp`。
+        #   用基准涨跌会答非所问（"基准跌" ≠ "成长跑输权重"）。
         if r.get("outcome_pct") is not None:
             val, basis = float(r["outcome_pct"]), "stock"
+        elif rid in _SPREAD_RULES and r.get("outcome_spread_pp") is not None:
+            val, basis = float(r["outcome_spread_pp"]), "spread"
         elif r.get("outcome_bench_pct") is not None:
             val, basis = float(r["outcome_bench_pct"]), "bench"
         else:

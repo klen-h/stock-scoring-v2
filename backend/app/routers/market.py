@@ -789,6 +789,30 @@ def policy_bottom_etf_shares(
     return d
 
 
+@router.get("/style-spread")
+def style_spread_panel(
+        days: int = Query(5, ge=2, le=20,
+                          description="分化度的回看窗口（交易日）"),
+        lookback: int = Query(20, ge=5, le=60,
+                              description="返回多少天的滚动序列")):
+    """风格分化：**钱在权重还是在成长**（`app.style_spread.build`）。
+
+    ★★ 2026-11-13（用户要求 ③）：把分化度做成观察器里的独立块。
+
+    为什么值得常驻：实测 17 个 `coach.gate_add` 触发日的 T+5 ——
+      上证50 -0.83% ｜ 沪深300 -1.85% ｜ 中证1000 -2.50% ｜ 创业板 -4.36%
+    ⇒ 同一个信号，方向错了代价约 5 倍。而分化度是有区分力的前置变量
+      （≥+3pp 时创业板 T+5 -2.46% 胜率 33%；<+3pp 时 -5.80% 胜率 **0%**）。
+
+    ⚠️ **零外部请求**：只读 `backtest_prices`（日批回填）。
+    ⚠️ 数据是**日频**、当日 15:40 后才含当日收盘 ⇒ 返回里带 `as_of`，
+      前端必须显示它，不能让人以为这是盘中实时值。
+    ⚠️ 不需要登录：观察器公开数据（与 `/policy-bottom` 同级）。
+    """
+    from app import style_spread as ss
+    return ss.build(days=days, lookback=lookback)
+
+
 @router.post("/policy-bottom/etf-shares/refresh")
 def policy_bottom_etf_shares_refresh(
         date: Optional[str] = Query(None, description="交易日，缺省=最近已完成交易日"),
