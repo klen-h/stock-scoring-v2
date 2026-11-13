@@ -158,6 +158,56 @@
       </div>
     </div>
 
+    <!-- ★★ 2026-11-13：**按规则的准确率** —— 补上面「事后归因」覆盖不到的那一半。
+         `attribution` 的 note 自己写着：`gate_add` 等市场类建议**无 code**
+         ⇒ 入场理由的个股收益**无法评估**。而这类建议占 68%
+         （171 条里 116 条），恰恰是 `gate_no_add` / `gate_reduce` 这类最重要的纪律。
+         这里用基准指数的 T+N 方向给它们一个**方向性**评价。 -->
+    <div v-if="(ruleStats || []).length" class="bg-card border border-border rounded-lg p-4 mb-4">
+      <div class="flex items-baseline justify-between gap-2 mb-2 flex-wrap">
+        <h2 class="text-sm font-bold text-gray-100">规则准确率
+          <span class="text-[10px] text-muted font-normal">
+            近 {{ statsDays }} 天 · 触发 {{ statsTotal }} 条 ·
+            可评 {{ statsEval }} 条</span></h2>
+        <span class="text-[10px] text-muted cursor-help"
+              :title="statsNote">口径 ⓘ</span>
+      </div>
+      <table class="w-full text-[11px]">
+        <thead>
+          <tr class="text-[10px] text-muted border-b border-border/60">
+            <th class="text-left font-normal py-0.5">规则</th>
+            <th class="text-right font-normal w-12">触发</th>
+            <th class="text-right font-normal w-12">可评</th>
+            <th class="text-right font-normal w-16">命中率</th>
+            <th class="text-right font-normal w-16">平均结果</th>
+            <th class="text-left font-normal w-12 pl-2">口径</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in ruleStats" :key="r.rule_id"
+              class="border-b border-border/30"
+              :class="{ 'opacity-45': !r.evaluable || r.evaluable < 10 }">
+            <td class="py-0.5 truncate max-w-[12rem]"
+                :title="RULE_CN[r.rule_id] || r.rule_id">
+              {{ RULE_CN[r.rule_id] || r.rule_id }}</td>
+            <td class="text-right font-mono text-muted">{{ r.total }}</td>
+            <td class="text-right font-mono text-muted">{{ r.evaluable }}</td>
+            <td class="text-right font-mono" :class="rateCls(r.hit_rate)">
+              {{ r.hit_rate == null ? '—' : r.hit_rate + '%' }}</td>
+            <td class="text-right font-mono" :class="pctCls(r.avg_result)">
+              {{ r.avg_result == null ? '—' : signNum(r.avg_result) + '%' }}</td>
+            <td class="text-left text-muted pl-2">
+              {{ r.basis === 'bench' ? '指数' : r.basis === 'stock' ? '个股' : '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="text-[10px] text-muted mt-2 leading-relaxed border-t border-border/40 pt-2">
+        ⚠️ **方向性检验，不是收益归因**：只说明"事后方向是否印证了这条建议"，
+        不含仓位 / 时点 / 个股选择。样本 &lt; 10 条置灰，只作方向参考。
+        <span class="text-muted/70">"指数"口径 = 无个股代码的市场级建议，用基准指数 T+5 涨跌代理。</span>
+      </div>
+    </div>
+
     <div class="flex gap-4 items-start">
       <!-- 左：建议历史 + 执行回写 -->
       <div class="flex-1 min-w-0">
@@ -292,6 +342,7 @@ import {
   getCoachPlanExecutionRate,
   getCoachAbandonReasons,
   getCoachAttribution,
+  getCoachRuleStats,
 } from '../api'
 
 const loading = ref(false)
@@ -317,6 +368,47 @@ const DIMS = [
 // 超额配色：正=红（跑赢基准）、负=绿（A 股惯例；与页面其它处一致）
 const excText = (v) => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + 'pt')
 const excCls = (v) => (v == null ? 'text-muted' : v >= 0 ? 'text-rise' : 'text-fall')
+
+// ★★ 2026-11-13：按规则的准确率（补 attribution 覆盖不到的市场级建议）
+const ruleStats = ref([])
+const statsDays = ref(90)
+const statsNote = computed(() => (
+  '口径：命中 = 事后方向印证了建议（"别买/该减"类期待事后跌，"允许加仓/别割"类期待事后涨）。'
+  + '个股级用该股 T+5 涨跌；市场级（无代码）用基准指数 T+5 涨跌代理。'
+  + '⚠️ 这是方向性检验，不是收益归因；样本 <10 只作方向参考。'
+))
+const statsTotal = computed(() => (ruleStats.value || []).reduce((n, r) => n + (r.total || 0), 0))
+const statsEval = computed(() => (ruleStats.value || []).reduce((n, r) => n + (r.evaluable || 0), 0))
+// 规则中文名（与后端 `coach/rules.yaml` 的 id 对齐；未收录的回落显示 id）
+const RULE_CN = {
+  gate_no_add: '禁加仓',
+  gate_reduce: '该减仓',
+  gate_add: '允许加仓',
+  no_chase_rally: '别追高',
+  external_lead_no_rebound: '外盘领跌无反弹',
+  distribution_cut: '出货减仓',
+  stop_loss_hit: '破止损',
+  loss_over_7pct: '亏损超7%',
+  hold_3d_review: '持有3日评估',
+  reversal_no_panic: '反转别慌',
+  reversal_no_add: '反转别加',
+  emotion_fuse: '情绪熔断',
+}
+const rateCls = (v) => (v == null ? 'text-muted' : v >= 70 ? 'text-rise' : v < 40 ? 'text-fall' : 'text-gray-300')
+const pctCls = (v) => (v == null ? 'text-muted' : v >= 0 ? 'text-rise' : 'text-fall')
+// ⚠️ 必须显式定义：Vue 模板**不检查作用域**，模板里写了未定义的标识符
+//    `pnpm build` 照样通过，只在运行时抛 ReferenceError（与 `etf_quote_loop` 同类）。
+const signNum = (v) => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2))
+
+async function loadRuleStats() {
+  try {
+    const { data } = await getCoachRuleStats(statsDays.value)
+    ruleStats.value = data?.data || []
+  } catch (e) {
+    console.warn('规则准确率加载失败', e?.message || e)
+    ruleStats.value = []
+  }
+}
 
 async function loadAttribution() {
   try {
@@ -398,7 +490,8 @@ async function load() {
   try {
     const { data } = await getCoachAlerts(50)
     alerts.value = data?.data || []
-    await Promise.all([loadConsistency(), loadPlanRate(), loadReasons(), loadAttribution()])
+    await Promise.all([loadConsistency(), loadPlanRate(), loadReasons(),
+                       loadAttribution(), loadRuleStats()])
   } catch (e) {
     error.value = '加载失败：' + (e.response?.data?.detail || e.message)
   } finally {
