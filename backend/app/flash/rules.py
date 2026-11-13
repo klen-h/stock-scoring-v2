@@ -440,18 +440,33 @@ def is_trading_day(dt=None) -> bool:
       fuyao 不可用 / 日历条数异常 ⇒ `is_trading_day` 返回 None ⇒ 回退手工 HOLIDAYS。
     """
     now = dt or beijing_now()
+    md = (now.month, now.day)
+    _in_manual = any(lo <= md <= hi for (lo, hi, _n) in HOLIDAYS.get(now.year, []))
     try:
         from app import trading_calendar as _tc
         _v = _tc.is_trading_day(now)
         if _v is not None:
-            return bool(_v)
+            # ★★ 2026-11-13 **线上事故**（"持仓状态·行情 09:35，不实时了"）：
+            #   实测 `quote_as_of=2026-11-13 09:35` 但 `data_date=2026-11-12`
+            #   ⇒ 那一刻 `is_trading_day(11-13)` 返回 **False** ⇒ `is_open=False`
+            #     ⇒ `stock_cache_refresh_loop` **整天不刷新** ⇒ 全站行情/持仓盈亏/涨跌家数
+            #     全部停在开盘那一次抓取（11-13 是普通周五，**不该**判休市）。
+            #   根因：外部日历（fuyao）**明确返回 False 时被无条件采信**，没有和手工表交叉验证。
+            #   ⇒ 现在做**冲突检测**：外部说休市，但"工作日 且 不在法定节假日表" ⇒ 视为数据异常，
+            #     **回退手工判定（按交易日处理）** 并打警告。
+            #   【取舍】手工表保守但可靠，外部日历可能缺天/错天。
+            #     "多跑一天日批"的成本远小于"整站数据停更一天"——后者用户只能靠肉眼发现。
+            if _v is False and now.weekday() < 5 and not _in_manual:
+                print(f"[rules] ⚠️ 日历冲突：{now.strftime('%Y-%m-%d')} 是工作日且不在"
+                      f"法定节假日表，但外部日历判休市 ⇒ 回退手工判定（按交易日处理，"
+                      f"否则行情缓存会整天不刷新）")
+            else:
+                return bool(_v)
     except Exception as e:
         print(f"[rules] trading_calendar failed: {str(e)[:60]}")   # ASCII（铁律⑥）
     _warn_holidays_coverage(now)   # BK-54b：年份超出 HOLIDAYS 维护范围 ⇒ 告警一次
-    md = (now.month, now.day)
-    for (lo, hi, _name) in HOLIDAYS.get(now.year, []):
-        if lo <= md <= hi:
-            return False
+    if _in_manual:
+        return False
     return now.weekday() < 5      # 0=周一 ... 5/6=周六/周日
 
 
