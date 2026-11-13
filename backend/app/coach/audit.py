@@ -107,9 +107,12 @@ def ensure_tables() -> None:
                     outcome_bench_pct REAL,
                     outcome_bench_date TEXT,
                     -- ★ 2026-11-13：`gate_add_weak_direction` 专属口径 —— T+N 的
-                    --   「沪深300 − 创业板」收益差（pp，正=权重跑赢）。
+                    --   「权重 − 创业板」收益差（pp，正=权重跑赢）。
                     --   该规则说"别加在成长上"，用单一基准涨跌评价是答非所问；
                     --   spread < 0 才说明"成长确实跑输权重"、建议被印证。
+                    -- ⚠️ 权重端**不是固定指数**：2026-11-13 ~ 11-13 为沪深300，
+                    --   **2026-11-14 起改为上证50**（与 `style_spread.WEIGHT_IDX` 同步）。
+                    --   两者均值差约 1pp（上证50 更抗跌）⇒ **跨切换点的 spread 不可直接比**。
                     outcome_spread_pp REAL,
                     outcome_spread_date TEXT,
                     created_at TEXT
@@ -169,8 +172,10 @@ def _ensure_alert_columns() -> None:
         # ★ 2026-11-13：`gate_add_weak_direction` 的**专属**评价口径。
         #   该规则说的是"别加在成长上"，用基准涨跌评价会答非所问
         #   （基准跌不代表"成长跑输权重"，基准涨也不代表建议错了）。
-        #   本列存 T+N 的「沪深300 − 创业板」收益差（pp，正=权重跑赢）：
+        #   本列存 T+N 的「权重 − 创业板」收益差（pp，正=权重跑赢）：
         #     spread < 0 ⇒ 成长确实跑输权重 ⇒ 建议被印证。
+        #   ⚠️ 权重端随 `_STYLE_WEIGHT_IDX` 走：2026-11-14 起由沪深300 **改为上证50**
+        #     ⇒ 切换点前后的行**不是同一口径**，统计时要么分段、要么只用切换后的。
         "outcome_spread_pp": "REAL",
         "outcome_spread_date": "TEXT",
     }

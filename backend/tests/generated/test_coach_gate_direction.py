@@ -12,6 +12,9 @@ import pytest
 
 from app.coach import rules as R
 from app.coach.rules import Advice
+# ★ 2026-11-14：阈值断言改为引用**事实源**，不在这里硬编码数字
+#   （口径已从 沪深300@3.0 切到 上证50@4.0）。
+from app.style_spread import SPREAD_THRESHOLD
 
 
 def _adv(rid, msg='m', nums=None, code='', label='l', push=False, sev='info'):
@@ -47,12 +50,20 @@ def test_fail_open_on_missing_data():
     assert R._ev_gate_add_weak_direction(None, p, {}) is None
 
 
-def test_default_threshold_is_3pp():
-    """yaml 缺 `style_spread_min` 时默认 3.0，不能变成 0（否则几乎不触发）。"""
+def test_default_threshold_matches_source():
+    """yaml 缺 `style_spread_min` 时走兜底默认值，且**必须等于事实源常量**。
+
+    ★ 2026-11-14 口径切换（沪深300→上证50）后此值 3.0 → **4.0**。
+      本条**不硬编码 4.0**，而是引用 `style_spread.SPREAD_THRESHOLD`：
+        · 换标的时这里自动跟随（不会再误报）；
+        · 但若 `rules.py` 的兜底值与事实源脱钩，本条立刻失败（这才是要防的漂移）。
+    测试意图不变：兜底值不能塌成 0（否则规则几乎不触发）。
+    """
+    thr = SPREAD_THRESHOLD
     assert R._ev_gate_add_weak_direction(
-        None, {}, {'style_spread': _spread(2.9)}) is not None
+        None, {}, {'style_spread': _spread(thr - 0.1)}) is not None
     assert R._ev_gate_add_weak_direction(
-        None, {}, {'style_spread': _spread(3.1)}) is None
+        None, {}, {'style_spread': _spread(thr + 0.1)}) is None
 
 
 # ── 消解层（关键：只加进 _BLOCKING_RULES 是不够的）──────────────────────────
@@ -100,4 +111,5 @@ def test_rule_registered_in_yaml_and_registry():
     found = [r for r in all_rules if r.get('id') == 'gate_add_weak_direction']
     assert found, 'rules.yaml 缺少 gate_add_weak_direction'
     assert found[0].get('enabled') is True
-    assert float(found[0]['params']['style_spread_min']) == 3.0
+    # ★ 2026-11-14：yaml 是**实际生效值**，必须与事实源一致（此处曾是 3.0）
+    assert float(found[0]['params']['style_spread_min']) == SPREAD_THRESHOLD

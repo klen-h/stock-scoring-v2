@@ -842,25 +842,28 @@
               <div v-else class="text-xs space-y-1.5">
                 <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
                   <span class="text-muted">近 {{ styleSpread.days }} 日</span>
+                  <!-- ★ 2026-11-14：权重端由沪深300 换成上证50，展示名改由后端下发
+                       （`styleSpread.weight_label`），**不要再硬编码指数名** ——
+                       否则换标的时会出现"算的是上证50、界面写沪深300"。 -->
                   <span class="font-mono font-semibold"
                         :class="Number(styleSpread.spread_pp) >= 0 ? 'text-rose-300' : 'text-emerald-300'"
-                        :title="'沪深300 收益 − 创业板 收益（pp）；正=权重跑赢，负=成长跑赢'">
+                        :title="`${styleSpread.weight_label || '上证50'} 收益 − 创业板 收益（pp）；正=权重跑赢，负=成长跑赢`">
                     分化 {{ Number(styleSpread.spread_pp) >= 0 ? '+' : '' }}{{ styleSpread.spread_pp }}pp</span>
-                  <span class="font-mono text-muted">沪深300 {{ fmtPct(styleSpread.weight_ret_pct) }}</span>
+                  <span class="font-mono text-muted">{{ styleSpread.weight_label || '上证50' }} {{ fmtPct(styleSpread.weight_ret_pct) }}</span>
                   <span class="font-mono text-muted">创业板 {{ fmtPct(styleSpread.growth_ret_pct) }}</span>
                   <span class="text-[10px] text-amber-400/80 cursor-help"
                         :title="'数据来自日批回填，当日 15:40 后才含当日收盘，盘中此值不变'">
                     · 截至 {{ styleSpread.as_of }}</span>
                 </div>
                 <div class="text-[11px]"
-                     :class="Number(styleSpread.spread_pp) >= Number(styleSpread.threshold || 3) ? 'text-rose-300'
-                       : Number(styleSpread.spread_pp) <= -Number(styleSpread.threshold || 3) ? 'text-emerald-300'
+                     :class="Number(styleSpread.spread_pp) >= Number(styleSpread.threshold || 4) ? 'text-rose-300'
+                       : Number(styleSpread.spread_pp) <= -Number(styleSpread.threshold || 4) ? 'text-emerald-300'
                        : 'text-muted'">{{ styleSpread.verdict }}</div>
                 <div v-if="styleBars.length" class="flex items-end gap-0.5 h-9 pt-0.5">
                   <div v-for="b in styleBars" :key="b.date" class="flex-1 rounded-sm"
                        :class="Number(b.spread_pp) >= 0 ? 'bg-rose-500/60' : 'bg-emerald-500/60'"
                        :style="{ height: b.h + '%' }"
-                       :title="`${b.date} 分化 ${b.spread_pp >= 0 ? '+' : ''}${b.spread_pp}pp（沪深300 ${b.weight_pct}% / 创业板 ${b.growth_pct}%）`">
+                       :title="`${b.date} 分化 ${b.spread_pp >= 0 ? '+' : ''}${b.spread_pp}pp（${styleSpread.weight_label || '上证50'} ${b.weight_pct}% / 创业板 ${b.growth_pct}%）`">
                   </div>
                 </div>
                 <div class="text-[10px] text-muted">{{ styleSpread.note }}</div>

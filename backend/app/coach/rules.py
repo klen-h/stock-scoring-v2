@@ -470,7 +470,7 @@ def _ev_gate_no_add(pos, params, ctx):
                     f"该环境下 regime 闸门当前禁止战法新入场（准入矩阵现状）；"
                     f"存量持仓的处置由你自行决定"
                     + _direction_hint(ctx, "avoid_add",
-                                      params.get("style_spread_min", 3.0))
+                                      params.get("style_spread_min", _STYLE_THR))
                     + "。"),
         "numbers": {"regime": st, "style_spread_pp": _sp},
     }
@@ -533,7 +533,7 @@ def _ev_gate_reduce(pos, params, ctx):
     msg = (f"【减仓条件命中】{'；'.join(hits)}。\n"
            f"→ {limit_txt}")
     # ★ 2026-11-13（用户要求 ②）：补"先减哪边"
-    msg += _direction_hint(ctx, "reduce", params.get("style_spread_min", 3.0)) + "。"
+    msg += _direction_hint(ctx, "reduce", params.get("style_spread_min", _STYLE_THR)) + "。"
     if basis:
         msg += f"\n依据：{basis}"
     return {
@@ -575,11 +575,18 @@ _style_spread_cache = {"ts": 0.0, "val": None}
 # ★ 2026-11-13：指数代码改为从 `app.style_spread` 取 —— **唯一事实源**。
 #   `coach/audit.py` 的评价口径也 import 这两个名字，两处各写一份必然漂移
 #   （与 `_bench_code` 那次"同一份建议两个基准"同类教训）。
+# ★★ 2026-11-14：**阈值也纳入同一事实源**。此前各处写死 `3.0`，
+#   与 `style_spread.SPREAD_THRESHOLD` 是两份独立常量 —— 换标的时必然只改一处、
+#   另一处静默用旧值（本项目"两处各写一份"的老坑，已踩过 `_bench_code`）。
+#   ⇒ 统一成 `_STYLE_THR`（下面 473 / 536 / 582 / 797 全用它）。
 from app.style_spread import GROWTH_IDX as _STYLE_GROWTH_IDX         # noqa: E402
 from app.style_spread import WEIGHT_IDX as _STYLE_WEIGHT_IDX         # noqa: E402
+from app.style_spread import SPREAD_THRESHOLD as _STYLE_THR          # noqa: E402
+# ⚠️ 展示名（"上证50"）也取事实源，否则界面会说"沪深300"而实际算的是上证50
+from app.style_spread import WEIGHT_LABEL as _STYLE_WEIGHT_LABEL     # noqa: E402
 
 
-def _direction_hint(ctx: dict, kind: str = "reduce", thr: float = 3.0) -> str:
+def _direction_hint(ctx: dict, kind: str = "reduce", thr: float = _STYLE_THR) -> str:
     """按「权重 vs 成长」分化，给一句"该往哪边偏"的提示。取不到数据返回空串。
 
     ★★ 2026-11-13（用户要求 ②）：`gate_no_add` 只说"环境不支持加仓"、
@@ -624,14 +631,29 @@ def _style_spread(days: int = 5) -> Optional[dict]:
         买创业板  -4.36%（胜率 14%）｜ 中证1000 -2.50% ｜ 沪深300 -1.85%
         买上证50  -0.83%（胜率 21%）
       ⇒ **方向错是加对代价的约 5 倍**，「加仓」必须知道往哪加。
-      【用分化度能否提前识别】按触发日「近 5 日 沪深300 − 创业板」分组：
+      【用分化度能否提前识别】按触发日「近 5 日 权重 − 创业板」分组
+      （**v1 口径：沪深300、阈值 3pp**）：
         分化度 ≥ +3pp  → 创业板 T+5 **-2.46%**（胜率 33%，n=6）
         分化度 < +3pp  → 创业板 T+5 **-5.80%**（胜率  0%，n=8）
-      ⇒ 阈值取 +3pp 有区分力（详见 `_ev_gate_add_weak_direction`）。
+      ⇒ 阈值有区分力（详见 `_ev_gate_add_weak_direction`）。
 
-    ⚠️ **为什么不是上证50**：`backtest_prices` 里 `sh000016` 实测 **n=0**
-      （日批未回填该指数），而 `sh000300` 有 780 根且到当天。两者在本轮样本的
-      分组效果几乎一致（上证50：阈值 +3pp 时 强 -3.08% / 弱 -5.65%）。
+    ★★★ 2026-11-14：**权重端由沪深300 改为上证50，阈值 3.0 → 4.0**
+      【为什么换】沪深300 混了中盘成长股，不是"纯权重"。同一批触发日实测
+        上证50 -0.83% ｜ 沪深300 -1.85%（**差 1pp**）
+        ⇒ 用沪深300 等于用"半个权重"回答"该往哪边加"。
+      【旧理由已失效】此前注释写「`sh000016` 实测 n=0（日批未回填）」——
+        2026-11-14 已手工补 726 条并纳入日批 `INDEX_BENCHMARKS`，障碍不存在了。
+      【阈值为何重算】3 年日线（721 个共同交易日）实测"近 5 日分化度"：
+        上证50 标准差 **3.79** vs 沪深300 **2.97**（大 27%！与直觉相反 ——
+        纯权重与创业板相关性更低，差值反而更宽）。
+        沪深300@3.0 的历史触发率 21.8%，上证50 要达到同样 21.8% 需 **4.0**
+        （3.0 时是 31.8%，等于"明显分化"的日子凭空多出 10pp）。
+      【效果验证】14 个可用触发日上，沪深300@3.0 与上证50@4.0 的 9/5 分组
+        **完全相同**（强分化 -3.38% vs 弱分化 -6.13%，差 2.74pp）
+        ⇒ 切换**不改变现有结论**（稳健），但也**不能宣称"新口径更好"**。
+        真实价值是**语义正确**，不是效果提升。
+      ⚠️ 阈值与指数均从 `app.style_spread` 取（`_STYLE_THR` / `_STYLE_WEIGHT_IDX`），
+        **不要再在本文件写死数字** —— 否则换标的后会有一处静默用旧值。
     ⚠️ **口径边界（必须如实披露）**：数据来自日批回填，**当日 15:40 后才更新**
       ⇒ 盘中读到的是**昨日收盘**算出的分化度。它是日频指标、盘中不变，
       不影响判定；但文案里要标日期，不能让人以为含当日。
@@ -774,7 +796,7 @@ def _ev_gate_add_weak_direction(pos, params, ctx):
         **完全不看钱往哪个方向流**。而在权重护盘、成长杀跌的市场里，
         同一个「加仓」信号买权重和买成长，结果差 5 倍：
           实测 T+5：上证50 -0.83% ｜ 沪深300 -1.85% ｜ 创业板 -4.36%。
-      【用分化度提前识别】触发日「近 5 日 沪深300 − 创业板」：
+          【用分化度提前识别】触发日「近 5 日 上证50 − 创业板」（2026-11-14 起）：
         ≥ +3pp → 创业板 T+5 -2.46%（胜率 33%，n=6）
         < +3pp → 创业板 T+5 -5.80%（胜率  0%，n=8）
       ⇒ 分化度不足时否决，把"可加仓"降级为"条件满足但方向不对"。
@@ -794,14 +816,14 @@ def _ev_gate_add_weak_direction(pos, params, ctx):
     val = sp.get("spread_pp")
     if val is None:
         return None                     # fail-open：缺数据不否决
-    thr = float(params.get("style_spread_min") or 3.0)
+    thr = float(params.get("style_spread_min") or _STYLE_THR)
     if val >= thr:
         return None
     return {
         "message": (
             f"【加仓方向不对】近 {sp.get('days')} 日权重跑赢成长 {val:+.2f}pp"
             f"（需 ≥{thr:.0f}pp，数据截至 {sp.get('as_of')}）—— "
-            f"沪深300 {sp.get('weight_ret_pct'):+.2f}% vs 创业板 "
+            f"{_STYLE_WEIGHT_LABEL} {sp.get('weight_ret_pct'):+.2f}% vs 创业板 "
             f"{sp.get('growth_ret_pct'):+.2f}%。"
             f"资金在抱权重、成长在失血，而 gate_add 只看涨跌比、不看方向 ⇒ "
             f"此时按信号加仓大概率加在成长上（历史同组 T+5 均值 -5.8%）。"
