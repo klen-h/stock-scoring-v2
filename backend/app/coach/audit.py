@@ -99,6 +99,13 @@ def ensure_tables() -> None:
                     abandon_reason TEXT,
                     outcome_pct REAL,
                     outcome_date TEXT,
+                    -- ★ 2026-11-13：市场级规则的「同期基准涨跌」（沪深300 T+5，%）。
+                    --   为什么需要：`gate_no_add` / `gate_reduce` 这类建议**没有个股代码**，
+                    --   无法用"个股 5 日涨跌"评价，而它们是占比最高的建议
+                    --   （实测 171 条中 116 条无 code，占 68%）⇒ 缺这列等于
+                    --   最重要的那批纪律建议**从来没被检验过**。
+                    outcome_bench_pct REAL,
+                    outcome_bench_date TEXT,
                     created_at TEXT
                 )""",
                 # ★ 审查 P2-⑩：dedupe_key 加唯一索引——此前「先 SELECT 后 INSERT」非原子，
@@ -143,6 +150,31 @@ def _ensure_columns() -> None:
                 print(f"[coach] 已补列 coach_plans.{col}")
             except Exception as e:
                 print(f"[coach] 补列 coach_plans.{col} 失败: {e}")
+    # ★ 2026-11-13：`coach_alerts` 此前**没有补列机制**（`_ensure_columns` 只管 coach_plans），
+    #   而本次要给它加 `outcome_bench_pct` ⇒ 老库必须能自动补上。
+    _ensure_alert_columns()
+
+
+def _ensure_alert_columns() -> None:
+    """老库自动给 `coach_alerts` 补列（幂等）。只补"新增且非空默认"的列。"""
+    needed = {
+        "outcome_bench_pct": "REAL",
+        "outcome_bench_date": "TEXT",
+    }
+    try:
+        existing = {r["column_name"] for r in db.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='coach_alerts'")}
+    except Exception as e:
+        print(f"[coach] coach_alerts 列探测失败: {e}")
+        return
+    for col, typ in needed.items():
+        if col not in existing:
+            try:
+                db.execute(f"ALTER TABLE coach_alerts ADD COLUMN {col} {typ}")
+                print(f"[coach] 已补列 coach_alerts.{col}")
+            except Exception as e:
+                print(f"[coach] 补列 coach_alerts.{col} 失败: {e}")
 
 
 def close_plan(position_id: int, code: str, fill_date: str,
@@ -506,11 +538,78 @@ def recent_alerts(limit: int = 50, trunc: Optional[int] = 300) -> List[dict]:
         return []
 
 
-def backfill_outcome(days_after: int = 5) -> int:
-    """5 日结果回填（对照审计"规则 vs 规则+LLM"的基准；W1 只回填不评估）。
+# ★★ 2026-11-13：市场级建议的评价映射。
+#   【为什么必须有】实测 `coach_alerts` 171 条里 **116 条没有 `code`**（68%），
+#   它们是 `gate_no_add(39) / gate_reduce(21) / no_chase_rally(15) /
+#   external_lead_no_rebound(17) / gate_add(17)` 这类**市场/组合级纪律**，
+#   天然没有个股 ⇒ 原来的 `backfill_outcome` 直接跳过 ⇒ **最重要的那批建议从未被检验**。
+#   【口径】用 `sh000300` 的 T+5 涨跌作为"若当时听了建议、避开/参与这段"的**方向性**代理。
+#   ⚠️ 这是**方向性检验，不是收益归因**：它只回答"事后方向是否印证了建议"，
+#      不代表"听了就一定赚钱"（仓位、时点、个股选择都不在其中）。
+#   ⚠️ 新增规则若不在此表 ⇒ `None` ⇒ 只落库不评价（不臆造口径）。
+def _bench_code() -> str:
+    """基准代码 —— 唯一的**事实源**是 `app.benchmarks.pick_bench()`。
 
-    用 `backtest_prices` 的收盘价：alert 日之后第 `days_after` 个交易日相对
-    alert 当日收盘的涨跌幅。数据不足（未到期）则跳过，下轮再补。
+    ⚠️ 2026-11-13（初版写错，已改）：一开始硬编码 `sh000300`，
+       而 `coach/attribution.py` 走的是 `pick_bench()`（实测选出 **中证1000
+       `sh000852`**）⇒ 同一份建议在两处用不同基准，命中率与超额会互相矛盾。
+       **凡"基准/交易日/口径"这类全局约定，只能有一个事实源。**
+    """
+    try:
+        from app import benchmarks
+        return str(benchmarks.pick_bench()[0])
+    except Exception as e:
+        print(f"[coach] 基准选取失败，回落 sh000300: {str(e)[:60]}")
+        return "sh000300"
+
+_RULE_EXPECT = {
+    # 「别买/别加/该减/该跑」⇒ 事后 **跌** 才算建议被印证
+    "gate_no_add": "down",
+    "gate_reduce": "down",
+    "no_chase_rally": "down",
+    "external_lead_no_rebound": "down",
+    "distribution_cut": "down",
+    "reversal_no_add": "down",
+    "stop_loss_hit": "down",
+    "loss_over_7pct": "down",
+    "hold_3d_review": "down",
+    # 「别割在底部 / 允许加仓」⇒ 事后 **涨** 才算被印证
+    "reversal_no_panic": "up",
+    "gate_add": "up",
+    # 行为约束类（闭嘴模式）：不适用方向评价
+    "emotion_fuse": None,
+}
+
+
+def _bench_change(start_date: str, days_after: int):
+    """基准指数自 `start_date` 起第 `days_after` 个交易日的涨跌幅(%)。
+
+    返回 `(chg_pct, date_str)`；数据不足/未到期返回 `(None, None)`。
+    """
+    try:
+        bars = db.fetch(
+            "SELECT date, close FROM backtest_prices WHERE code=%s "
+            "AND date >= %s ORDER BY date ASC LIMIT %s",
+            (_bench_code(), start_date, days_after + 1))
+    except Exception:
+        return None, None
+    if not bars or len(bars) < days_after + 1:
+        return None, None
+    base = float(bars[0]["close"] or 0)
+    last = float(bars[days_after]["close"] or 0)
+    if base <= 0:
+        return None, None
+    return round((last / base - 1) * 100, 2), str(bars[days_after]["date"])[:10]
+
+
+def backfill_outcome(days_after: int = 5) -> int:
+    """T+N 结果回填（两类）。
+
+    ① **个股级**（`code` 非空）：用该股 T+N 涨跌填 `outcome_pct`（原有逻辑）。
+    ② **市场级**（`code` 为空且规则在 `_RULE_EXPECT` 里）：用 `sh000300` 的
+       T+N 涨跌填 `outcome_bench_pct`（2026-11-13 新增，见 `_RULE_EXPECT` 注释）。
+
+    未到期（数据不足 N+1 根）跳过，下轮再补。
     """
     ensure_tables()
     try:
@@ -537,9 +636,100 @@ def backfill_outcome(days_after: int = 5) -> int:
             filled += 1
         except Exception:
             continue
-    if filled:
-        print(f"[coach] 结果回填 {filled} 条（T+{days_after}）")
-    return filled
+    # ② 市场级建议：无 code，但规则有明确期望方向 ⇒ 用基准指数给方向性评价
+    filled_bench = 0
+    try:
+        rows2 = db.fetch(
+            "SELECT id, rule_id, alert_date FROM coach_alerts "
+            "WHERE outcome_bench_pct IS NULL AND COALESCE(code,'') = '' "
+            "ORDER BY id DESC LIMIT 300")
+    except Exception:
+        rows2 = []
+    for r in rows2 or []:
+        # 未在 `_RULE_EXPECT` 里定义的规则 ⇒ 不评价（不臆造口径）
+        if _RULE_EXPECT.get(str(r["rule_id"])) is None:
+            continue
+        chg, d = _bench_change(r["alert_date"], days_after)
+        if chg is None:
+            continue          # 未到期，下轮再补
+        try:
+            db.execute(
+                "UPDATE coach_alerts SET outcome_bench_pct=%s, outcome_bench_date=%s "
+                "WHERE id=%s", (chg, d, r["id"]))
+            filled_bench += 1
+        except Exception:
+            continue
+    if filled or filled_bench:
+        print(f"[coach] 结果回填 {filled} 条个股 / {filled_bench} 条基准（T+{days_after}）")
+    return filled + filled_bench
+
+
+def rule_stats(days: int = 90) -> list:
+    """按规则聚合「触发次数 / 可评价数 / 命中数 / 命中率」。
+
+    ★ 2026-11-13：这是"教练到底准不准"的唯一出口。此前只有原始建议和
+      零星回填值，**没有任何聚合** ⇒ 所有规则阈值都是拍的，无法校准。
+
+    命中判定（**方向性检验，不是收益归因**）：
+      · 个股级（有 `outcome_pct`）：`outcome_pct` 符号是否符合 `_RULE_EXPECT`
+      · 市场级（有 `outcome_bench_pct`）：基准涨跌符号是否符合 `_RULE_EXPECT`
+      · `_RULE_EXPECT` 为 `None` 的规则（如 `emotion_fuse`）⇒ `evaluable=0`，不参与命中率
+
+    ⚠️ 命中率高 ≠ 一定赚钱：它只说明"事后方向印证了建议"，
+      仓位、时点、个股选择都不在其中。
+    """
+    start = _days_ago(int(days))
+    try:
+        rows = db.fetch(
+            "SELECT rule_id, code, outcome_pct, outcome_bench_pct "
+            "FROM coach_alerts WHERE alert_date >= %s", (start,)) or []
+    except Exception as e:
+        print(f"[coach] 规则统计查询失败: {e}")
+        return []
+
+    agg = {}
+    for r in rows:
+        rid = str(r.get("rule_id") or "")
+        if not rid:
+            continue
+        a = agg.setdefault(rid, {"total": 0, "evaluable": 0, "hit": 0,
+                                 "sum": 0.0, "basis": ""})
+        a["total"] += 1
+        expect = _RULE_EXPECT.get(rid)
+        if expect is None:
+            continue
+        # 个股优先，其次基准
+        if r.get("outcome_pct") is not None:
+            val, basis = float(r["outcome_pct"]), "stock"
+        elif r.get("outcome_bench_pct") is not None:
+            val, basis = float(r["outcome_bench_pct"]), "bench"
+        else:
+            continue                      # 未到期，不计入分母
+        a["evaluable"] += 1
+        a["basis"] = a["basis"] or basis
+        a["sum"] += val
+        # 方向判定：expect=down 期待事后跌（val<0 为命中）；up 反之
+        if (expect == "down" and val < 0) or (expect == "up" and val > 0):
+            a["hit"] += 1
+
+    out = []
+    for rid, a in agg.items():
+        ev = a["evaluable"]
+        out.append({
+            "rule_id": rid,
+            "total": a["total"],
+            "evaluable": ev,
+            "hit": a["hit"],
+            "hit_rate": round(a["hit"] / ev * 100, 1) if ev else None,
+            "avg_result": round(a["sum"] / ev, 2) if ev else None,
+            "basis": a["basis"] or "-",
+            "expect": _RULE_EXPECT.get(rid),
+        })
+    # 可评价的排前面，再按命中率、触发次数
+    out.sort(key=lambda x: (x["evaluable"] == 0,
+                            -(x["hit_rate"] if x["hit_rate"] is not None else -1),
+                            -x["total"]))
+    return out
 
 
 def _days_ago(days: int) -> str:

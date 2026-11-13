@@ -1281,8 +1281,8 @@
                   </div>
                   <!-- ★ 2026-10-26（用户："持仓状态的内容也有点挤"）：
                        行距 1→1.5、卡片内边距 px-2 py-1 → px-2.5 py-1.5、两行之间 mt-0.5 → mt-1，
-                       可滚动高度 190 → 240（同一屏能舒服看完 3~4 只，不再挤成一坨）。 -->
-                  <div class="space-y-1.5 max-h-[240px] overflow-y-auto pr-1">
+                       可滚动高度 190 → 500。 -->
+                  <div class="space-y-1.5 max-h-[500px] overflow-y-auto pr-1">
                     <div v-for="it in radarItems" :key="it.code"
                          class="border border-border/50 rounded px-2.5 py-1.5">
                       <div class="flex items-center gap-1.5 flex-wrap text-xs">

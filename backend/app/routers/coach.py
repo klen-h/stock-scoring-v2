@@ -99,6 +99,28 @@ def get_abandon_reasons(limit: int = 20, user: dict = Depends(get_current_user))
     return {"data": audit.abandon_reasons(limit=min(max(limit, 1), 100))}
 
 
+@router.get("/rule-stats")
+def get_rule_stats(days: int = 90, user: dict = Depends(get_current_user)):
+    """**按规则**的准确率统计（2026-11-13 新增）—— 补 `/attribution` 覆盖不到的那一半。
+
+    【和 `/attribution` 的分工】
+      · `/attribution`：按「建议类型 / 主力阶段 / 执行结果 / 放弃理由」分组，
+        算 T+5/T+20 **对基准超额** —— 回答"哪类建议逻辑对"。
+      · 本接口：按「**规则 ID**」算**方向命中率** —— 回答"**这条规则该不该继续开**"。
+      两者口径同源（同一份 `coach_alerts` + 同一个基准事实源 `benchmarks.pick_bench()`）。
+
+    【为什么必须补】
+      `attribution` 的 note 自己写着：`gate_add` 等市场类建议**无 `code`**
+      ⇒ 「入场理由」的个股收益**根本无法评估**（数据缺口）。
+      而这类建议占 68%（171 条里 116 条）——**最重要的纪律建议此前没有任何准确率**。
+      现在用基准指数的 T+5 方向给它们一个**方向性**评价（`outcome_bench_pct`）。
+
+    ⚠️ `hit_rate` 是**方向性检验，不是收益归因**：只说"事后方向是否印证了建议"，
+      不含仓位/时点/个股选择。样本小时（<10）不要据此下强结论。
+    """
+    return {"days": days, "data": audit.rule_stats(days=min(max(days, 7), 365))}
+
+
 @router.get("/attribution")
 def get_attribution(days: int = 60, user: dict = Depends(get_current_user)):
     """教练建议**事后归因**（P2 / 缺口 3）—— 补「5 日结果只回填不评估」那一半。
