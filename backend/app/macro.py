@@ -26,6 +26,7 @@
 ================================================================================
 """
 
+import hashlib
 import json
 import os
 import requests
@@ -1085,6 +1086,94 @@ def _no_hit_note(rule: dict, v) -> str:
     return f"当前 {v}，{(' / '.join(parts))} ⇒ 未达阈值" if parts else ""
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  规则指纹（★ 2026-11-14）
+# ══════════════════════════════════════════════════════════════════════════
+# 【要解决的问题】`RULES_VERSION` 是**纯人工维护**的字符串（v1→v4），
+#   没有任何强制约束。有人调了阈值但忘了 bump 版本号 ⇒ 历史快照标着
+#   **同一个版本、实际口径不同** ⇒ **回测被污染，且从数据上完全看不出来**。
+#
+#   这不是假设：2026-11-14 核查「v4 是否影响打钩期」时，唯一的办法是
+#   **逐日翻 `rules_detail` 比对 `us10y` 实测值**，而不是"看版本号"——
+#   因为版本号本身不构成证据。同样的核查以后还要做很多次。
+#
+# 【做法】对**所有影响分数的配置**算 sha256 前 12 位，随每日快照落库：
+#   · 参与：`GROUP_WEIGHTS` + 每条规则的
+#           `id / group / metric / type / strength / bull / bear / band`
+#   · **不参与**：`tag_bull` / `tag_bear` / `tag_neutral` / `why` /
+#     `RULE_NAMES` / `METRIC_LABELS` —— 这些是**展示文案**，
+#     改文案不该触发"口径变了"的告警。
+#     ⚠️ 这条边界很关键：分不清，指纹会天天变，等于没有。
+#
+# 【怎么用】`scripts/macro_rules_fingerprint_audit.py` 扫历史快照，
+#   报告"**同版本号但指纹不同**"的漂移点（= 有人改了规则没改版本号）。
+#
+# ⚠️ **历史快照没有这个字段**（指纹从今天起才有），且**无法回填** ——
+#   算指纹需要"当时那份 RULES 配置"，代码里只有当前这一份。
+#   早期数据仍只能靠 `rules_version`（v1~v4）做粗粒度分段；
+#   指纹提供的是**从今往后**的细粒度校验。
+# ══════════════════════════════════════════════════════════════════════════
+
+# 参与指纹的字段 —— **只放影响分数的**（判据见上方注释）
+_FP_FIELDS = ("id", "group", "metric", "type", "strength", "bull", "bear", "band")
+
+
+def rules_fingerprint() -> str:
+    """当前规则配置的指纹（sha256 前 12 位，供快照留痕与漂移检查）。
+
+    ⚠️ **故意不缓存**：`RULES` 是模块级常量，理论上不会变；但一旦有人
+      （脚本 / 测试 / 热改）动了它，缓存的指纹就会**静默过期** ——
+      而"静默失效"恰恰是这个机制要防的东西。
+      21 条规则算一次 sha256 是微秒级，在 60s 轮询路径上完全可忽略。
+    """
+    payload = {
+        "group_weights": GROUP_WEIGHTS,
+        "rules": [{k: r.get(k) for k in _FP_FIELDS if k in r} for r in RULES],
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                     separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def fingerprint_drift(snapshots) -> dict:
+    """检查一组快照里是否存在「同 `rules_version`、不同指纹」的**口径漂移**。
+
+    参数
+      snapshots : 可迭代的 `(date, snapshot_dict)`；只用到
+                  `snapshot.get("rules_version")` 与 `.get("rules_fingerprint")`
+
+    返回
+      {
+        "by_version": {ver: {fp: [date, ...]}},   # 有指纹的按版本分组
+        "no_fingerprint": [date, ...],            # 指纹机制上线前的快照
+        "drifts": {ver: [fp, ...]},               # 同版本下 ≥2 个指纹 = 漂移
+      }
+
+    ★ 为什么要抽成函数：`scripts/macro_rules_fingerprint_audit.py` 只是读库的薄壳。
+      检测逻辑放这里才**可测** —— 而"能抓到漂移"是这套机制唯一的价值，
+      只验证"没漂移时返回空"等于没验证。
+    ⚠️ 判据是「**同一版本号下出现多个指纹**」，**不是**「当前指纹 ≠ 最新快照指纹」。
+      后者在"刚改完规则、日批还没重算"时天天成立，会产生大量误报。
+    """
+    by_ver = {}
+    no_fp = []
+    for item in (snapshots or []):
+        try:
+            d0, snap = item
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(snap, dict):
+            continue
+        ver = str(snap.get("rules_version") or "(无)")
+        fp = snap.get("rules_fingerprint")
+        if not fp:
+            no_fp.append(d0)
+            continue
+        by_ver.setdefault(ver, {}).setdefault(str(fp), []).append(d0)
+    drifts = {v: list(fps.keys()) for v, fps in by_ver.items() if len(fps) > 1}
+    return {"by_version": by_ver, "no_fingerprint": no_fp, "drifts": drifts}
+
+
 # ★★ 2026-11-12（用户："英文改为中文"）：
 #   `rules_detail` 里原来只有英文 `id` 和英文 `metric`（如 `hstech_overnight` /
 #   `hstech.change_pct`），前端直接原样渲染 ⇒ 用户看到的是
@@ -1556,6 +1645,12 @@ def get_macro_snapshot() -> dict:
         "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
         "data_time": data_time,
         "rules_version": RULES_VERSION,
+        # ★ 2026-11-14：机器可验的**规则指纹**（详见 `rules_fingerprint`）。
+        #   与 `rules_version` 并存：前者给人看、靠人工维护；后者靠算，
+        #   用来抓「改了阈值但忘改版本号」（同版本号却指纹不同 = 口径漂移）。
+        #   `save_macro_daily` 存的是整个 snapshot ⇒ 加这一行就自动落库，
+        #   **不需要改表结构**。
+        "rules_fingerprint": rules_fingerprint(),
         "panel": {k: v for k, v in panel.items() if not k.startswith("_")},
         "derived": panel.get("_derived", {}),
         "rules_triggered": triggered,
