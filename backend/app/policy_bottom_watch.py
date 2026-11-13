@@ -87,6 +87,12 @@ PBW_CATCHDOWN_LAG = float(os.environ.get("PBW_CATCHDOWN_LAG") or 0.0)  # 银行�
 # ★ 2026-10-23：单日逆势跌不算补跌（当天可能只是风格切换尝试），要**连续 2 日**
 PBW_CATCHDOWN_DAYS = int(os.environ.get("PBW_CATCHDOWN_DAYS") or 2)
 
+# ★ 2026-11-13：`close_up/close_down` 的**近似冻结**容差（只）。
+#   背景：2026-11-06 = 638/4321 与 2026-11-09 = 639/4321 只差 1 只，
+#   原判据要求"完全相等"⇒ 漏检 ⇒ 脏行进入判据④（涨跌比连暖）。
+#   ⚠️ 必须与"比值差 < 0.02"**同时**成立才判冻结，见 `_breadth_series`。
+_FROZEN_TOL = 3
+
 _TABLE_READY = False
 
 
@@ -230,6 +236,22 @@ def _breadth_series(limit: int = 10, as_of: str = None) -> Tuple[List[Tuple[str,
             continue
         if prev == (up, down):
             bad.append(f"{d}(与前一日完全相同=疑似冻结)")
+            continue
+        # ★★ 2026-11-13：**近似相同也算冻结**。
+        #   【为什么】原来的判据是"`prev == (up, down)` 完全相等"，而实测
+        #     2026-11-06 = 638/4321、2026-11-09 = **639**/4321 —— **up 只差 1 只**
+        #     就绕过了检测，把"沿用上一日"的脏行当成有效数据喂进判据④。
+        #   【证据链】`close_as_of=2026-11-09 23:26`（深夜补写，行情缓存已回滚到
+        #     周五）；同时 `am_up/am_down=2320/2520`（11:31 定稿）说明当天是**均衡**
+        #     而非普跌；`kline_cache` 重算比值 0.66 亦证 0.15 不可能。
+        #   【阈值】差 ≤ `_FROZEN_TOL` 只 **且** 比值差 < 0.02 ——
+        #     只比数值不比比值会误杀（例如连续两日都接近 2500/2500），
+        #     两个条件同时成立才能认定是同一份数据的轻微扰动。
+        if (prev and prev[0] and prev[1] and down
+                and abs(up - prev[0]) <= _FROZEN_TOL
+                and abs(down - prev[1]) <= _FROZEN_TOL
+                and abs(up / down - prev[0] / prev[1]) < 0.02):
+            bad.append(f"{d}(与前一日近似相同，疑似冻结)")
             continue
         out.append((d, round(up / down, 3)))
         prev = (up, down)
