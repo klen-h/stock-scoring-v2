@@ -1164,9 +1164,16 @@
               <div class="min-w-0 lg:pr-4">
                 <div class="flex items-center justify-between mb-1">
                   <div class="text-xs font-semibold">主线板块 Top5
-                    <span class="text-[10px] text-muted font-normal">
+                    <!-- ★ 2026-11-13：数据源标签补 `local_snap`（本地聚合但用的是收盘快照），
+                         并把"四级各自为什么失败"挂到 hover —— 此前只有一句「快照回退」，
+                         用户无法判断卡在哪一级，只能报"实时都是失败的"。 -->
+                    <span class="text-[10px] text-muted font-normal cursor-help"
+                          :title="sectorFail.length
+                            ? ('四级回退各级失败原因：\n' + sectorFail.join('\n'))
+                            : (sectorTopNote || '当前数据源')">
                       {{ sectorTopSrc === 'east' ? '（实时 · 含领涨股）'
                          : sectorTopSrc === 'local' ? '（实时 · 本地聚合，龙头由涨停原因反推）'
+                         : sectorTopSrc === 'local_snap' ? '（非实时 · 本地聚合用收盘快照）'
                          : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare）'
                          : sectorTopSrc === 'snap' ? '（快照回退）' : '' }}</span></div>
                   <router-link target="_blank" to="/sector" class="text-[10px] text-accent hover:underline">板块详情</router-link>
@@ -2802,8 +2809,12 @@
             <!-- 板块主线（收盘时刻的东财实时接口） -->
             <div v-if="sectorTop.length" class="border-t border-border/40 mt-2 pt-2">
               <div class="text-[11px] text-muted mb-1">板块主线 Top5
-                <span class="text-[10px]">{{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
+                <span class="text-[10px] cursor-help"
+                      :title="sectorFail.length
+                        ? ('四级回退各级失败原因：\n' + sectorFail.join('\n'))
+                        : (sectorTopNote || '当前数据源')">{{ sectorTopSrc === 'east' ? '（实时 · 含板块内领涨股）'
                   : sectorTopSrc === 'local' ? '（实时 · 本地聚合，龙头由涨停原因反推）'
+                  : sectorTopSrc === 'local_snap' ? '（非实时 · 本地聚合用收盘快照）'
                   : sectorTopSrc === 'zz' ? '（收盘定稿 · zzshare 104 板块）'
                   : sectorTopSrc === 'snap' ? '（快照回退 · 东财）' : '' }}</span>
                 <router-link target="_blank" to="/sector" class="text-accent hover:underline ml-1">板块详情</router-link></div>
@@ -3982,6 +3993,13 @@ const sectorTop = ref([])
 //   盘后/复盘走 zzshare 当日快照（**无领涨股**）。不标注会让用户以为"盘后也有领涨股"，
 //   也分不清"这张榜是实时的还是收盘定稿的"。取值：'east' | 'zz' | 'snap' | ''
 const sectorTopSrc = ref('')
+// ★★ 2026-11-13（用户："主线板块 Top5 实时似乎都是失败的"）：
+//   四级回退 east → local → zz → snap 里，**每一级失败的原因从来没被记录** ——
+//   用户只看到「（快照回退）」，不知道卡在哪、为什么卡。
+//   ⇒ 补两个字段：`sectorTopNote` = 当前这一级的口径说明（后端 `data.note`），
+//     `sectorFail` = 每级失败原因（挂到标题的 title 上，hover 可见）。
+const sectorTopNote = ref('')
+const sectorFail = ref([])
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
 //   ⚠️ 数据源独立于上面的东财接口 ⇒ 东财被封时上面可能空白、而这块照常显示。
@@ -6341,6 +6359,9 @@ async function loadIntradayLite() {
 //   ⚠️ 失败/空数据回退快照：休市或接口异常时仍有内容（只是没有领涨股）。
 async function loadSectorTop() {
   const live = selectedPhase.value === 'intraday' || selectedPhase.value === 'midday'
+  // ★ 2026-11-13：每次重算都重置"每级失败原因"，避免上一次的残留误导
+  sectorFail.value = []
+  sectorTopNote.value = ''
   // ★★ 2026-09-30（P2 续）：**盘后/复盘优先 zzshare 当日快照**，不再先问东财。
   //   【为什么】① 东财 push2 盘后常被风控 ⇒ 实时接口失败；② 其回退源 `sector_daily`
   //     （东财快照）行数残缺且**与个股真值矛盾**（实测 09-29 只有 300/996 行，
@@ -6358,7 +6379,11 @@ async function loadSectorTop() {
         sectorTopSrc.value = 'zz'
         return
       }
-    } catch { /* 落到东财实时 */ }
+      sectorFail.value.push('zzshare 当日快照：返回 0 行（日批可能还没落库）')
+    } catch (e) {
+      sectorFail.value.push('zzshare 当日快照：'
+        + (e?.response?.data?.detail || e?.message || '请求失败'))
+    }
   }
   try {
     const { data } = await getSectorIndustry({ limit: 5 })
@@ -6368,7 +6393,11 @@ async function loadSectorTop() {
       sectorTopSrc.value = 'east'
       return
     }
-  } catch { /* 落到本地聚合 */ }
+    sectorFail.value.push('东财实时：返回 0 行')
+  } catch (e) {
+    sectorFail.value.push('东财实时：'
+      + (e?.response?.data?.detail || e?.message || '请求失败（盘中常被风控）'))
+  }
   // ★★ 2026-10-28（用户："27 日盘中主线 Top5 不是实时的"）：
   //   东财 clist 盘中常被风控（实测 10-27 主站 + delay 全挂）⇒ 原来直接退到「快照回退」，
   //   而那是**昨天/更早**的收盘板块数据 ⇒ 盘中看着像"不实时"。
@@ -6404,15 +6433,32 @@ async function loadSectorTop() {
       })
     if (rows.length) {
       sectorTop.value = rows
-      sectorTopSrc.value = 'local'
+      // ★★ 2026-11-13 **这是"实时失败"最误导的一环**：后端
+      //   `sector_industry.industry_amount_share()` 在「腾讯缓存是收盘快照
+      //   且 fuyao 兜底也失败」时会照常返回 rows，但**同时**带
+      //   `from_snapshot=True` —— 那意味着这份数据是**上一交易日收盘**的。
+      //   前端原来无条件标 `'local'`（显示"实时 · 本地聚合"）⇒ 用户以为在看在线数据，
+      //   实际看的是昨天的。现在按后端标记区分：收盘口径单列 `local_snap`。
+      sectorTopSrc.value = (data && data.from_snapshot) ? 'local_snap' : 'local'
+      sectorTopNote.value = (data && data.note) || ''
       return
     }
-  } catch { /* 落到快照回退 */ }
+    sectorFail.value.push('本地聚合：0 行可用'
+      + ((data && data.note) ? `（${data.note}）` : ''))
+  } catch (e) {
+    sectorFail.value.push('本地聚合：'
+      + (e?.response?.data?.detail || e?.message || '请求失败'))
+  }
   try {
     const { data } = await getSectorSnapshot(todayStr, { limit: 5 })
     sectorTop.value = ((data && data.data) || []).slice(0, 5)
     sectorTopSrc.value = 'snap'
-  } catch { sectorTop.value = []; sectorTopSrc.value = '' }
+  } catch (e) {
+    sectorFail.value.push('东财快照：'
+      + (e?.response?.data?.detail || e?.message || '请求失败'))
+    sectorTop.value = []
+    sectorTopSrc.value = ''
+  }
 }
 // ★ 2026-09-25 需求 4：行业成交额占比（失败静默 ⇒ 整块不渲染，不影响板块卡其余部分）。
 //   ⚠️ **刻意不用当日缓存**：资金在板块间的流动是盘中变量（120s 轮询刷新才有意义）。
