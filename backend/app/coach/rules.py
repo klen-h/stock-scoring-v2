@@ -347,6 +347,8 @@ def build_context(tier: str = "light") -> dict:
     ctx = {"regime": _regime(), "breadth": _breadth(), "macro": _macro(),
            "margin": _margin(), "positions": _holdings(heavy=(tier == "all")),
            "idx_prev_move": _idx_last_move(),
+           # ★ 2026-11-13：权重/成长分化度（日频，按最新日期缓存 ⇒ 30s 轮询零重复查询）
+           "style_spread": _style_spread(),
            "market_avg_change_pct": _market_avg_change_pct()}
     ctx["day_pnl_pct"] = None
     try:
@@ -555,6 +557,81 @@ def _idx_last_move() -> Optional[dict]:
         return None
 
 
+_style_spread_cache = {"key": None, "val": None}
+
+# 权重/成长代表指数（`backtest_prices` 里的代码）
+_STYLE_WEIGHT_IDX = "sh000300"      # 沪深300（`sh000016` 上证50 不在库里）
+_STYLE_GROWTH_IDX = "sz399006"      # 创业板指
+
+
+def _style_spread(days: int = 5) -> Optional[dict]:
+    """近 `days` 日「权重 − 成长」相对强弱（pp）。正 = 权重跑赢成长。
+
+    ★★ 2026-11-13（用户："新的加仓命中的规则加入了吗？"）——
+      【为什么需要它】实测 17 个 `gate_add` 触发日的 T+5：
+        买创业板  -4.36%（胜率 14%）｜ 中证1000 -2.50% ｜ 沪深300 -1.85%
+        买上证50  -0.83%（胜率 21%）
+      ⇒ **方向错是加对代价的约 5 倍**，「加仓」必须知道往哪加。
+      【用分化度能否提前识别】按触发日「近 5 日 沪深300 − 创业板」分组：
+        分化度 ≥ +3pp  → 创业板 T+5 **-2.46%**（胜率 33%，n=6）
+        分化度 < +3pp  → 创业板 T+5 **-5.80%**（胜率  0%，n=8）
+      ⇒ 阈值取 +3pp 有区分力（详见 `_ev_gate_add_weak_direction`）。
+
+    ⚠️ **为什么不是上证50**：`backtest_prices` 里 `sh000016` 实测 **n=0**
+      （日批未回填该指数），而 `sh000300` 有 780 根且到当天。两者在本轮样本的
+      分组效果几乎一致（上证50：阈值 +3pp 时 强 -3.08% / 弱 -5.65%）。
+    ⚠️ **口径边界（必须如实披露）**：数据来自日批回填，**当日 15:40 后才更新**
+      ⇒ 盘中读到的是**昨日收盘**算出的分化度。它是日频指标、盘中不变，
+      不影响判定；但文案里要标日期，不能让人以为含当日。
+    ⚠️ **样本量小（17 个触发日）**：分组后每组仅 6~8 个样本，
+      t 检验不足以支撑"显著"结论。本函数只做**保守否决**，不做反向加仓。
+    """
+    try:
+        from app.database import db
+        n = max(2, int(days))
+        # ⚠️ `LIMIT` 用 f-string 拼整数（`%d` 与 db.fetch 的 `%s` 参数化不兼容，
+        #    实测会抛异常 → 整个函数静默返回 None，等于规则永远不生效）。
+        #    `n` 已过 `max(2, int(...))` 校验，无注入风险。
+        lim = n + 1
+        w = db.fetch(f"SELECT date, close FROM backtest_prices WHERE code=%s "
+                     f"ORDER BY date DESC LIMIT {lim}", (_STYLE_WEIGHT_IDX,)) or []
+        g = db.fetch(f"SELECT date, close FROM backtest_prices WHERE code=%s "
+                     f"ORDER BY date DESC LIMIT {lim}", (_STYLE_GROWTH_IDX,)) or []
+        if len(w) < n + 1 or len(g) < n + 1:
+            return None
+        key = str(w[0]["date"])[:10]
+        if _style_spread_cache["key"] == key and _style_spread_cache["val"]:
+            return _style_spread_cache["val"]
+        # 两侧日期必须对齐（防"一只更新一只滞后"的错位比较）
+        if str(w[0]["date"])[:10] != str(g[0]["date"])[:10]:
+            return None
+        w0, w1 = float(w[0]["close"] or 0), float(w[n]["close"] or 0)
+        g0, g1 = float(g[0]["close"] or 0), float(g[n]["close"] or 0)
+        if min(w0, w1, g0, g1) <= 0:
+            return None
+        w_ret = (w0 / w1 - 1) * 100
+        g_ret = (g0 / g1 - 1) * 100
+        val = {
+            "spread_pp": round(w_ret - g_ret, 2),
+            "weight_ret_pct": round(w_ret, 2),
+            "growth_ret_pct": round(g_ret, 2),
+            "days": n,
+            "as_of": key,
+        }
+        _style_spread_cache.update(key=key, val=val)
+        return val
+    except Exception as e:
+        # ★ 2026-11-13：吞异常必须可见（GUARDRAILS #11）——
+        #   本函数挂了只是"不否决"，不会崩，但**静默会让人以为规则在正常工作**。
+        #   ⚠️ 本函数在 30s 轮询里被调，按 60s 节流打印，避免刷屏。
+        import time as _t
+        now = _t.time()
+        if now - float(_style_spread_cache.get("err_at") or 0) > 60:
+            _style_spread_cache["err_at"] = now
+            print(f"[coach] style_spread failed: {str(e)[:80]}")     # ASCII（铁律⑥）
+        return None
+
+
 def _market_avg_change_pct() -> Optional[float]:
     """全市场等权平均涨幅 %（内存缓存推导，零网络；缓存未就绪返回 None）。"""
     stocks = _market_cache()
@@ -658,6 +735,56 @@ def _ev_gate_add(pos, params, ctx):
                         "confirmed": False, "consecutive_days": need_days},
         }
     return None
+
+
+def _ev_gate_add_weak_direction(pos, params, ctx):
+    """方向否决：权重明显弱于成长时，「加仓」的方向是错的。
+
+    ★★ 2026-11-13（用户："新的加仓命中的规则加入了吗？"）——
+      【它解决什么】`gate_add` 只看「涨跌比 > 0.8 且跌停 < 10」，
+        **完全不看钱往哪个方向流**。而在权重护盘、成长杀跌的市场里，
+        同一个「加仓」信号买权重和买成长，结果差 5 倍：
+          实测 T+5：上证50 -0.83% ｜ 沪深300 -1.85% ｜ 创业板 -4.36%。
+      【用分化度提前识别】触发日「近 5 日 沪深300 − 创业板」：
+        ≥ +3pp → 创业板 T+5 -2.46%（胜率 33%，n=6）
+        < +3pp → 创业板 T+5 -5.80%（胜率  0%，n=8）
+      ⇒ 分化度不足时否决，把"可加仓"降级为"条件满足但方向不对"。
+
+    ★ 处置方式复用项目既有的 `_arbitrate` 消解层（与 `gate_no_add` /
+      `no_chase_rally` 同款）：**不否定 `gate_add` 的事实**（涨跌比确实达标），
+      只把结论收敛成唯一一句"今日不执行"，并写明原因。
+
+    ⚠️ **fail-open**：`style_spread` 取不到（日批未回填/数据库缺行）时
+      **不否决**——不能用"缺数据"当"方向不对"，否则日批故障日会静默全面禁加仓
+      （与 GUARDRAILS"缺失 ≠ 不满足"一致）。
+    ⚠️ **只否决、不反向加仓**：即使分化度很高，本规则也不产出"加仓"建议——
+      样本 17 个、每组 6~8 个，不足以支撑反向信号（避免把噪音包装成指令）。
+    ⚠️ 文案纯文本，不含 Markdown 标记（前端用 `{{ }}` 渲染，星号会裸露）。
+    """
+    sp = ctx.get("style_spread") or {}
+    val = sp.get("spread_pp")
+    if val is None:
+        return None                     # fail-open：缺数据不否决
+    thr = float(params.get("style_spread_min") or 3.0)
+    if val >= thr:
+        return None
+    return {
+        "message": (
+            f"【加仓方向不对】近 {sp.get('days')} 日权重跑赢成长 {val:+.2f}pp"
+            f"（需 ≥{thr:.0f}pp，数据截至 {sp.get('as_of')}）—— "
+            f"沪深300 {sp.get('weight_ret_pct'):+.2f}% vs 创业板 "
+            f"{sp.get('growth_ret_pct'):+.2f}%。"
+            f"资金在抱权重、成长在失血，而 gate_add 只看涨跌比、不看方向 ⇒ "
+            f"此时按信号加仓大概率加在成长上（历史同组 T+5 均值 -5.8%）。"
+            f"今日不执行；若一定要加，只考虑权重/红利方向。"
+        ),
+        "numbers": {
+            "style_spread_pp": val, "style_spread_min": thr,
+            "weight_ret_pct": sp.get("weight_ret_pct"),
+            "growth_ret_pct": sp.get("growth_ret_pct"),
+            "style_as_of": sp.get("as_of"),
+        },
+    }
 
 
 def _ev_emotion_fuse(pos, params, ctx):
@@ -892,6 +1019,7 @@ EVALUATORS = {
     "gate_no_add": _ev_gate_no_add,
     "gate_reduce": _ev_gate_reduce,
     "gate_add": _ev_gate_add,
+    "gate_add_weak_direction": _ev_gate_add_weak_direction,
     "emotion_fuse": _ev_emotion_fuse,
     "no_chase_rally": _ev_no_chase_rally,
     "reversal_no_add": _ev_reversal_no_add,
@@ -907,7 +1035,12 @@ EVALUATORS = {
 # ⚠️ 只登记"语义上确实相反"的：`gate_no_add`（禁止加仓）与 `no_chase_rally`
 #    （大涨不追加）都是"别加"；`gate_reduce`/`emotion_fuse` 是减仓/风控，
 #    与"加仓条件是否满足"不是一个维度，不该参与否决。
-_BLOCKING_RULES = ("gate_no_add", "no_chase_rally")
+_BLOCKING_RULES = ("gate_no_add", "no_chase_rally", "gate_add_weak_direction")
+# ★ 2026-11-13 新增 `gate_add_weak_direction`：**方向否决**。
+#   与前两条的区别：`gate_no_add` 说"环境不支持"、`no_chase_rally` 说"涨太多别追"，
+#   本条说的是"**方向选错了**"——涨跌比确实达标（gate_add 的事实成立），
+#   但资金在权重不在成长，按信号默认流向成长会亏得更多（实测 -5.8% vs -2.5%）。
+#   三者都是"今日不执行"，但原因不同，`_arbitrate` 会把各自的理由逐条写明。
 
 
 def _arbitrate(advices: List[Advice]) -> List[Advice]:
@@ -943,6 +1076,18 @@ def _arbitrate(advices: List[Advice]) -> List[Advice]:
         pct = (market["no_chase_rally"].numbers or {}).get("market_avg_pct")
         reasons.append(f"大涨日不追加（等权 {pct:+.2f}%）" if pct is not None
                        else "大涨日不追加")
+    # ★★ 2026-11-13：新增的方向否决。
+    #   ⚠️ 只把它加进 `_BLOCKING_RULES` 而**不在这里收集 reason 是不够的** ——
+    #      `reasons` 为空时下面会 `return advices` 提前返回，规则形同未生效
+    #      （实测第一版就是这样：规则求值说"触发"，但 gate_add 没被降级）。
+    if "gate_add_weak_direction" in market:
+        _d = market["gate_add_weak_direction"].numbers or {}
+        _sp, _need = _d.get("style_spread_pp"), _d.get("style_spread_min")
+        reasons.append(
+            f"方向不对（近5日权重跑赢成长 {_sp:+.2f}pp，需 ≥{_need:.0f}pp；"
+            f"历史同组创业板 T+5 -5.8%）"
+            if _sp is not None and _need is not None
+            else "方向不对（权重明显弱于成长）")
     if not reasons:
         return advices
 
@@ -950,11 +1095,17 @@ def _arbitrate(advices: List[Advice]) -> List[Advice]:
     ratio, ld = n.get("up_down_ratio"), n.get("limit_down")
     cond = (f"涨跌比 {ratio:.2f}、跌停 {ld} 家"
             if ratio is not None and ld is not None else "加仓条件")
+    # ★ 2026-11-13：若否决原因是"方向"而非"环境"，收尾语不能照抄"环境转好"——
+    #   方向问题等环境转好也不会自动消失（权重/成长的分化与 regime 无必然关系）。
+    _dir_blocked = "gate_add_weak_direction" in market
     if n.get("confirmed"):
-        head, tail = "【加仓条件满足，但今日不执行】", "条件记住，环境转好再动。"
+        head = "【加仓条件满足，但今日不执行】"
+        tail = ("条件记住，方向转好再动。" if _dir_blocked
+                else "条件记住，环境转好再动。")
     else:
         head = "【加仓条件部分满足（第 1 日），今日不执行】"
-        tail = "本就需连续确认，环境转好再谈。"
+        tail = ("本就需连续确认，方向转好再谈。" if _dir_blocked
+                else "本就需连续确认，环境转好再谈。")
 
     ga.label = "加仓条件（被否决）"
     ga.message = (f"{head}{cond} —— 被更高的纪律否决：\n"
