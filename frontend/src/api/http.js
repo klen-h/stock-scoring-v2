@@ -34,7 +34,7 @@ const CACHE_PREFIX = 'api_cache:'
 const CACHE_ITEM_MAX = 150 * 1024        // 单条上限（字符数，约 150KB）
 const CACHE_TOTAL_MAX = 3 * 1024 * 1024  // 总量上限
 
-function _cacheKey(config) {
+export function _cacheKey(config) {
   const p = config.params ? JSON.stringify(config.params) : ''
   return CACHE_PREFIX + (config.url || '') + (p ? '|' + p : '')
 }
@@ -54,7 +54,7 @@ export function _cacheGet(key) {
   }
 }
 
-function _cacheTrim(aggressive) {
+export function _cacheTrim(aggressive) {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX))
   const items = keys.map(k => {
     const raw = localStorage.getItem(k) || ''
@@ -91,4 +91,4 @@ export function _cacheSet(key, data) {
 }
 
 /** 清空本地 API 缓存（控制台 `clearApiCache()` 或页面上手动调用）。 */
-export { http, LOCAL_CACHE, CACHE_PREFIX }
+export { http, LOCAL_CACHE, CACHE_TTL_MS, CACHE_PREFIX, CACHE_ITEM_MAX, CACHE_TOTAL_MAX }
