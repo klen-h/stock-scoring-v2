@@ -20,7 +20,8 @@
 3. **模板新增绑定**：必须 grep script 侧声明（未声明变量 build 不报错、运行时才炸）。
 4. **观点输出**：`md-body`+`v-html=renderMd` 或 `InsightBody`；绝不 `whitespace-pre-wrap` 裸文本（markdown.js 全站唯一）。
 5. **轮询**：交易时段才轮（`isTradingTime()` 门控）；新刷新项进 `startPolling()` 组。
-6. **检验徽章**：任何展示"信号/评分"的卡片，徽章口径来自后端 SIGNAL_STATUS 下发，前端不自推导。
+6. **抽取器/拆分产物的运行时验证**（2026-11-14 部署报障教训）：build 绿 ≠ 运行时可用——composable 抽取后必须真 import + 真调用一次；拆分器必须同时断言「删了什么」与「留了什么」（Workbench 侧不得残留原声明）；api 拆分模块引用 http.js 内部件时，http.js 必须显式导出。
+7. **检验徽章**：任何展示"信号/评分"的卡片，徽章口径来自后端 SIGNAL_STATUS 下发，前端不自推导。
 
 ## 大文件拆分计划（LLM 修改的安全底线）
 
