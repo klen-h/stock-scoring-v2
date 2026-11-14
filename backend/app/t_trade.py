@@ -46,7 +46,17 @@ T_RATIO_MAX = 1.0
 
 T_SUPPORT_LOOKBACK = int(os.environ.get("T_SUPPORT_LOOKBACK") or 60)   # 前低/前高
 T_SHORT_LOOKBACK = int(os.environ.get("T_SHORT_LOOKBACK") or 20)        # 短线前高低
-T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 14)
+# ★★ ATR 周期默认 **60**（不是教科书的 14）。
+#   【依据】2026-11-15 用 4 只标的对比 14 日 vs 60 日（同一套支撑/阻力规则）：
+#     000048 净贡献 +3.04% → **+8.40%**（胜率 20.9% → 30.8%）
+#     000429 +0.56% → **+3.08%**
+#     000021 +5.76% → +6.01%
+#     000017 -1.54% → -3.96%（淘汰，单边趋势票本来就不该做T）
+#   【为什么】14 日 ATR 会被**近期异动**打高（000017 的 14 日 6.41% vs 80 日 3.70%），
+#     于是支撑/阻力被设得过宽、当天根本走不到。
+#     做T 要的是"**常态**波动能不能覆盖空间"，所以用更长窗口更稳。
+#   ⚠️ 14 日仍可通过 `T_ATR_PERIOD=14` 覆盖（保留可调，不写死）。
+T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 60)
 
 T_MIN_DIST_PCT = float(os.environ.get("T_MIN_DIST_PCT") or 0.3)   # 候选位距现价下限 %
 T_MAX_DIST_PCT = float(os.environ.get("T_MAX_DIST_PCT") or 3.0)   # 绝对上限 %

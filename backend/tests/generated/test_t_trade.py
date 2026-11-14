@@ -58,9 +58,13 @@ def _mild(n=80, base=10.0, amp=0.08):
 # ── 基础指标 ───────────────────────────────────────────────────────────
 
 def test_atr_positive_and_scales_with_range():
-    """ATR 应随振幅增大；数据不足时返回 0（不抛异常）。"""
-    small = t_trade.atr(_bars(40, step=0.02))
-    big = t_trade.atr(_volatile(40))
+    """ATR 应随振幅增大；数据不足时返回 0（不抛异常）。
+
+    ⚠️ 用 80 根：默认 `T_ATR_PERIOD=60`（见模块注释：14 日会被近期异动打高，
+       做T 判定要用常态波动），数据量必须 > period+1。
+    """
+    small = t_trade.atr(_bars(80, step=0.02))
+    big = t_trade.atr(_volatile(80))
     assert small > 0 and big > 0
     assert big > small * 3, "震荡序列的 ATR 必须显著大于平滑序列"
     assert t_trade.atr([]) == 0.0
