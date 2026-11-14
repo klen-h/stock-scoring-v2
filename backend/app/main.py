@@ -50,6 +50,8 @@ from app.routers import performance as performance_router
 from app.strategies.router import router as strategies_router
 from app.routers.paper import router as paper_router
 from app.routers.coach import router as coach_router
+# ★ 2026-11-15：量化做T（预案/触发/汇总）
+from app.routers.t_trade import router as t_trade_router
 from app.routers import wecom_callback as wecom_callback_router
 
 # ──────────────────────────────────────────────────────────────
@@ -323,6 +325,8 @@ app.include_router(auth_router.router, prefix="/api/auth", tags=["用户认证"]
 app.include_router(wecom_callback_router.router, prefix="/api/wecom", tags=["企微回调"])
 app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"])  # 自选股/交易计划/持仓
 app.include_router(coach_router, prefix="/api/coach", tags=["交易员教练"])  # 建议/执行回写/一致性（W1 补漏）
+# ★ 2026-11-15：做T（预案清单/单只解释/当日汇总/手动补扫）
+app.include_router(t_trade_router, prefix="/api/t-trade", tags=["做T"])
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
 # 重任务触发：转发给 GitHub Actions，本进程零计算（512MB 实例生存关键）
 app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触发"])

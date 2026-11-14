@@ -88,6 +88,13 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 //   需要把重要内容简要常驻到工作台"）：按**日**的三时段复盘对账。
 //   与 rule-stats（按规则）/ attribution（按类型）分工 —— 这里回答"这一天说了什么、对了几条"。
 
+// ★★ 2026-11-15（用户："新增股票量化做T功能…盘中获取实时行情"）：
+//   做T 读接口。`plans` 的 `watch_only=1` 只返回**自选+持仓**里可做的
+//   （全市场今天可能 300+ 只 feasible，全塞给用户等于噪音）。
+export const getTTradeSummary = () => http.get('/t-trade/summary')
+export const getTTradePlans = (params = {}) => http.get('/t-trade/plans', { params })
+export const getTTradeExplain = (code) => http.get('/t-trade/explain', { params: { code } })
+
 export const getCoachReviewSummary = (date = '', days = 20) =>
   http.get('/coach/review-summary', { params: { date, days } })
 // ★ 2026-11-13：按规则的准确率（补 /attribution 覆盖不到的市场级建议）

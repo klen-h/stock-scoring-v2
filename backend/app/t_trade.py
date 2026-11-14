@@ -295,6 +295,109 @@ def suggest_ratio(atr_pct: float, base: Optional[float] = None) -> Dict:
 #  完整计划
 # ══════════════════════════════════════════════════════════════════════════
 
+def resolve_direction(has_position: bool, has_cash: bool) -> List[str]:
+    """按当前持仓/资金，给出**可用且按优先级排序**的做T 方向。
+
+    用户（2026-11-15）："正T/反T 都支持，按当前持仓与资金自动判断。"
+
+    · 有底仓 + 有资金 ⇒ `["short_t", "long_t"]` —— **反T 优先**：
+      反T 用底仓、不占额外资金，且卖出的是昨日及之前的仓位（T+1 合规）；
+      正T 要新买、占用资金且当天不能卖。
+    · 只有底仓 ⇒ 只能反T。
+    · 只有资金 ⇒ 只能正T。
+    · 都没有 ⇒ 不能做（返回空列表，调用方据此跳过）。
+    """
+    if has_position and has_cash:
+        return ["short_t", "long_t"]
+    if has_position:
+        return ["short_t"]
+    if has_cash:
+        return ["long_t"]
+    return []
+
+
+def calc_shares(direction: str, price: float, base_shares: float,
+                cash: float, ratio: float,
+                today_bought: float = 0.0) -> int:
+    """算出这一笔做T 的**股数**（100 股整数倍，A 股最小单位）。
+
+    参数
+      direction     : `long_t`（先买）/ `short_t`（先卖）
+      price         : 触发价
+      base_shares   : 当前底仓股数
+      cash          : 可用资金（元）
+      ratio         : 仓位比例（`suggest_ratio` 给出，默认 1/3）
+      today_bought  : **今日已买入**股数（含手动加仓无法感知，只能扣做T 自己的）
+
+    ★ 反T 的核心保护：卖出量 = `底仓 × ratio`，且不超过 `底仓 − 今日买入`。
+      ⇒ 即使用了 1/3 也接不回来，最多丢 1/3 底仓，不会清仓；
+        并且严格满足 T+1（今日买入的部分不可卖）。
+      用户（2026-11-15）："反T 卖出后接不回来会丢底仓问题，不一定使用全仓操作吧？"
+    """
+    if price <= 0 or ratio <= 0:
+        return 0
+    if direction == "short_t":
+        sellable = max(0.0, float(base_shares) - float(today_bought))
+        want = sellable * ratio
+        return int(want // 100) * 100
+    if direction == "long_t":
+        want = (float(cash) * ratio) / price
+        return int(want // 100) * 100
+    return 0
+
+
+def check_trigger(plan: Dict, price: float, open_side: Optional[str] = None) -> Optional[Dict]:
+    """判断此刻是否触发，返回 `{direction, kind, text_why}` 或 `None`。
+
+    【两阶段语义】—— 这是做T 与"一次买入计划"最大的不同：
+      · `open_side is None` ⇒ 找**开仓**机会：
+          - 正T：现价跌到支撑（≤ 支撑×1.002）
+          - 反T：现价涨到阻力（≥ 阻力×0.998）
+      · `open_side` 已开仓 ⇒ 找**平仓**机会：
+          - 正T（先买）⇒ 涨到阻力平掉 / 跌破止损
+          - 反T（先卖）⇒ 回落到支撑接回 / 涨破止损（接不回来要认错）
+
+    ⚠️ 容差 0.2% 是"贴价"判断：日K 回测里用 `low<=sup` 是理想化的，
+      实盘不可能卖在最低点，所以触发用"接近"而非"等于"。
+    """
+    sup, res = plan.get("support"), plan.get("resistance")
+    a = plan.get("atr") or 0
+    if not (sup and res and price > 0):
+        return None
+    tol = 0.002
+
+    if open_side is None:
+        if price <= sup * (1 + tol):
+            return {"direction": "long_t", "kind": "open",
+                    "text_why": "现价 %.2f 触及支撑 %.2f（%s）" % (
+                        price, sup, plan.get("support_type") or "-")}
+        if price >= res * (1 - tol):
+            return {"direction": "short_t", "kind": "open",
+                    "text_why": "现价 %.2f 触及阻力 %.2f（%s）" % (
+                        price, res, plan.get("resistance_type") or "-")}
+        return None
+
+    stop_buf = a * 0.5      # 止损缓冲：半个 ATR
+    if open_side == "long_t":
+        if price >= res * (1 - tol):
+            return {"direction": "long_t", "kind": "close",
+                    "text_why": "现价 %.2f 触及阻力 %.2f，正T 兑现" % (price, res)}
+        if stop_buf and price <= sup - stop_buf:
+            return {"direction": "long_t", "kind": "stop",
+                    "text_why": "现价 %.2f 跌破 支撑 %.2f − 0.5×ATR ⇒ 正T 止损" % (price, sup)}
+        return None
+
+    if open_side == "short_t":
+        if price <= sup * (1 + tol):
+            return {"direction": "short_t", "kind": "close",
+                    "text_why": "现价 %.2f 回落到支撑 %.2f，反T 接回" % (price, sup)}
+        if stop_buf and price >= res + stop_buf:
+            return {"direction": "short_t", "kind": "stop",
+                    "text_why": "现价 %.2f 涨破 阻力 %.2f + 0.5×ATR ⇒ 反T 接不回，认错" % (price, res)}
+        return None
+    return None
+
+
 def build_plan(code: str, name: str, bars: List[Dict],
                price: Optional[float] = None,
                ratio: Optional[float] = None) -> Dict:

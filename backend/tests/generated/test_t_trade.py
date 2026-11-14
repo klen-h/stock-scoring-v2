@@ -212,3 +212,92 @@ def test_plan_handles_insufficient_data():
     assert p["feasible"] is False and p["reason"]
     p2 = t_trade.build_plan("000429", "x", _bars(3))
     assert p2["feasible"] is False and p2["reason"]
+
+
+# ── 方向选择（用户："正T/反T 都支持，按持仓与资金自动判断"）──────────────
+
+def test_resolve_direction_priority():
+    """有底仓+有资金 ⇒ **反T 优先**（用底仓、不占资金、T+1 合规）。"""
+    assert t_trade.resolve_direction(True, True) == ["short_t", "long_t"]
+    assert t_trade.resolve_direction(True, False) == ["short_t"]
+    assert t_trade.resolve_direction(False, True) == ["long_t"]
+    assert t_trade.resolve_direction(False, False) == []
+
+
+# ── 股数（★ 反T 不用全仓 + T+1 扣减）──────────────────────────────────
+
+def test_calc_shares_short_t_never_full_position():
+    """★ 用户明确"不一定使用全仓"：默认 1/3 底仓，接不回来最多丢 1/3。"""
+    sh = t_trade.calc_shares("short_t", 10.0, base_shares=10000, cash=0, ratio=1 / 3)
+    assert sh == 3300, "10000 × 1/3 取整到 100 股应为 3300"
+    assert sh < 10000, "绝不能卖光底仓"
+
+
+def test_calc_shares_short_t_deducts_today_bought():
+    """T+1：今日买入的部分不可卖，必须从可卖里扣掉。"""
+    sh = t_trade.calc_shares("short_t", 10.0, base_shares=10000, cash=0,
+                             ratio=1 / 3, today_bought=3000)
+    # (10000 − 3000) × 1/3 = 2333 → 向下取整到 2300
+    assert sh == 2300
+
+
+def test_calc_shares_short_t_zero_when_all_bought_today():
+    """今日买入已占满底仓 ⇒ 可卖 0（绝不能卖成"负的"）。"""
+    assert t_trade.calc_shares("short_t", 10.0, 10000, 0, 1 / 3,
+                               today_bought=10000) == 0
+    assert t_trade.calc_shares("short_t", 10.0, 10000, 0, 1 / 3,
+                               today_bought=20000) == 0
+
+
+def test_calc_shares_long_t_uses_cash_ratio():
+    """正T 按可用资金 × 比例买，同样取整到 100 股。"""
+    # 50000 × 1/3 = 16666.7 元，价 10 元 ⇒ 1666 股 → 1600
+    assert t_trade.calc_shares("long_t", 10.0, 0, cash=50000, ratio=1 / 3) == 1600
+    assert t_trade.calc_shares("long_t", 10.0, 0, cash=0, ratio=1 / 3) == 0
+    assert t_trade.calc_shares("long_t", 0, 0, cash=50000, ratio=1 / 3) == 0
+
+
+# ── 触发判断（开仓 / 平仓 / 止损）─────────────────────────────────────
+
+def _p(sup=10.0, res=10.5, atr=0.2):
+    return {"support": sup, "resistance": res, "atr": atr,
+            "support_type": "前低", "resistance_type": "前高"}
+
+
+def test_trigger_open_long_when_touching_support():
+    """价格贴到支撑 ⇒ 正T 开仓（容差 0.2%）。"""
+    r = t_trade.check_trigger(_p(), 10.01)
+    assert r and r["direction"] == "long_t" and r["kind"] == "open"
+
+
+def test_trigger_open_short_when_touching_resistance():
+    """价格贴到阻力 ⇒ 反T 开仓。"""
+    r = t_trade.check_trigger(_p(), 10.49)
+    assert r and r["direction"] == "short_t" and r["kind"] == "open"
+
+
+def test_trigger_none_in_middle():
+    """中间价不触发（否则会天天开仓）。"""
+    assert t_trade.check_trigger(_p(), 10.25) is None
+
+
+def test_trigger_close_and_stop_for_long_t():
+    """持正T：到阻力兑现；跌破 支撑−0.5×ATR 止损。"""
+    close = t_trade.check_trigger(_p(), 10.49, open_side="long_t")
+    assert close and close["kind"] == "close"
+    stop = t_trade.check_trigger(_p(), 9.85, open_side="long_t")   # 10 − 0.1 = 9.9
+    assert stop and stop["kind"] == "stop"
+
+
+def test_trigger_close_and_stop_for_short_t():
+    """持反T：回落到支撑接回；涨破 阻力+0.5×ATR 认错。"""
+    close = t_trade.check_trigger(_p(), 10.01, open_side="short_t")
+    assert close and close["kind"] == "close"
+    stop = t_trade.check_trigger(_p(), 10.65, open_side="short_t")  # 10.5 + 0.1 = 10.6
+    assert stop and stop["kind"] == "stop"
+
+
+def test_trigger_handles_missing_levels():
+    """预案缺位（不可行的票）⇒ 一律不触发，不能抛异常。"""
+    assert t_trade.check_trigger({}, 10.0) is None
+    assert t_trade.check_trigger({"support": None, "resistance": 10.5}, 10.0) is None

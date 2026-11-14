@@ -3370,7 +3370,44 @@
                            class="text-xs text-accent hover:underline shrink-0">教练</router-link>
             </div>
           </div>
-          <!-- ① 教练卡 -->
+          <!-- ★★ 2026-11-15（用户："新增股票量化做T功能，以 000429 为例…"）：
+             **做T 看板** —— 常驻右栏。
+             数据链：盘后 `t_trade_scan_loop` 扫全市场生成次日预案（只存可行的）
+               → 盘中 `t_trade_loop` 60s 读预案 + 实时价比对 → 触发推送 + 记模拟。
+             ⚠️ 显示的是**自选+持仓**里可做的（`watch_only=1`）；
+                全市场今天可能 300+ 只可行，全列出来等于噪音。
+             ⚠️ `plan_date` 必须显示：预案是**上一交易日收盘**算的，不能假装是盘中算的。 -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-xs font-semibold">做T 看板
+              <span class="text-[10px] text-muted font-normal">{{ tPlanDate || '—' }} 预案</span></div>
+            <span class="text-[10px] text-muted">关注 {{ tWatchTotal }}</span>
+          </div>
+          <div v-if="tErr" class="text-[11px] text-muted">—（加载失败）</div>
+          <div v-else-if="!tSummary" class="text-[11px] text-muted">—（暂无数据）</div>
+          <template v-else>
+            <div class="text-[11px] space-y-0.5">
+              <div>
+                全市场可行 <b>{{ tAllTotal }}</b> 只
+                <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
+              </div>
+              <div class="text-muted">
+                今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
+                <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
+              </div>
+              <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
+                   class="flex gap-1.5 pt-0.5" :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
+                <span class="font-mono shrink-0 text-muted">{{ p.code }}</span>
+                <span class="truncate">{{ p.name }}</span>
+                <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
+              </div>
+              <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
+                关注里暂无可做标的（当前市况不适合做T，本身是个有效信号）
+              </div>
+            </div>
+          </template>
+        </div>
+        <!-- ① 教练卡 -->
           <div v-show="sideTab === 'todo'" class="space-y-2">
             <template v-if="todoOpen">
               <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>
@@ -3729,6 +3766,8 @@ import {
  // ★★ 2026-11-14（用户："我主要在企微看，需要将重要内容简要常驻到工作台"）：
  //   按日三时段复盘对账（教练卡 + 重要推送 + 事后命中判定）。
  getCoachReviewSummary,
+ // ★★ 2026-11-15：做T 看板（当日预案/汇总）
+ getTTradeSummary, getTTradePlans,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   // ★ 2026-10-25：H2' 阴跌防御影子榜（工作台「防御 Top10」标签页的数据源，日批快照）
   getShadowDefensive,
@@ -5762,6 +5801,36 @@ async function loadReviewSummary(date = '') {
   }
 }
 
+// ★★ 2026-11-15（用户："新增股票量化做T功能…"）：做T 看板。
+//   【为什么要"关注里可做的"而不是全市场】
+//     实测今天全市场 **368 只** feasible —— 全列出来等于噪音。
+//     用户只关心「自选 + 持仓」里能不能做，所以 `watch_only=1`。
+//   【为什么不缓存】盘中会有开/平仓与实时价变化，缓存会让盈亏停住不动。
+const tSummary = ref(null)
+const tWatchPlans = ref([])
+const tWatchTotal = ref(0)
+const tAllTotal = ref(0)
+const tErr = ref('')
+const tPlanDate = computed(() =>
+  (tWatchPlans.value[0] && tWatchPlans.value[0].plan_date)
+  || (((tSummary.value || {}).plans || [])[0] || {}).plan_date || '')
+async function loadTTrade() {
+  try {
+    const [s, w] = await Promise.all([
+      getTTradeSummary(),
+      getTTradePlans({ watch_only: true, limit: 20 }),
+    ])
+    tSummary.value = (s && s.data) || null
+    const wb = (w && w.data) || {}
+    tWatchPlans.value = wb.data || []
+    tWatchTotal.value = wb.total || 0
+    tAllTotal.value = (((s && s.data) || {}).plans || []).length
+    tErr.value = ''
+  } catch (e) {
+    tErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
+  }
+}
+
 // ★★ 2026-09-25（用户："把合理的都做了"）—— P0 盘后「**今日结算**」。
 //   【为什么要它】盘后原本只有"系统榜 + 推送日志"，**看不到"我今天的结果"**：
 //     `portfolio_radar.summary` 只有 {n, risk, opportunity, in_watch}，全页无盈亏汇总
@@ -6730,7 +6799,7 @@ onMounted(async () => {
   //   首屏就不必为它付一次 `SELECT *`。
   // ★ 2026-11-14：`loadReviewSummary` 也进首屏 —— 右栏"复盘对账"摘要卡**常驻**显示
   //   （用户在企微看推送一滚就没，工作台必须随时能看到"今天说了什么、对了几条"）。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario(), loadReviewSummary(todayStr)])
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario(), loadReviewSummary(todayStr), loadTTrade()])
   if (sideTab.value === 'lidx') ensureLidx()
   loadPhaseData(selectedPhase.value)
   startPolling()

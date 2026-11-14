@@ -1616,6 +1616,170 @@ async def trade_plan_trigger_loop():
         await asyncio.sleep(60)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  做T 触发（2026-11-15，用户："新增股票量化做T功能…盘中获取实时行情"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么这样分两段跑】
+#   支撑/阻力是**日频**的（收盘后才更新）⇒ 盘后用 `t_trade_exec.scan_market()`
+#   扫全市场生成预案落库；盘中本循环只做"读库预案 + 读内存实时价 + 比对"，
+#   **零额外外部请求**（与 `trade_plan_trigger_loop` 同款纪律）。
+#   ⚠️ 盘中绝不重算位 —— 重算会让支撑/阻力漂移，触发判断失去意义。
+#
+# 【只盯"关注列表"】
+#   全市场今天可能有 300+ 只 feasible，全部盯会变成推送灾难。
+#   ⇒ 只处理 **自选（user_watchlist）+ 持仓（user_portfolio）** 的票。
+#     开仓后的平仓除外：那是已发生的头寸，必须盯到平掉。
+#
+# 【各只每天最多 1 次】
+#   去重落在 DB（`t_trade_exec.has_traded`）而不是内存 set ⇒ 进程重启不丢。
+
+# 正T 假设可用资金（系统不知道实盘现金，只能给假设值并在文案里注明）
+_T_TRADE_CASH = float(os.environ.get("T_TRADE_CASH") or 50000)
+# 尾盘强制平仓时刻（分钟数）：14:50 之后不再开新T，已有仓位按现价平掉，不留隔夜
+_T_TRADE_CLOSE_MIN = 890
+
+
+def _t_trade_watch_codes() -> set:
+    """做T 关注的票（自选 + 持仓）。
+
+    ⚠️ 实现只有一份：`t_trade_exec.watch_codes()`（API 的 `watch_only` 也用它）。
+      两处各写一份会漂移 —— 本项目已多次踩这个坑。
+    """
+    from app import t_trade_exec as TX
+    return TX.watch_codes()
+
+
+def _t_trade_tick(TT, TX, stocks: dict, now, t_min: int) -> None:
+    """一次做T 检查（拆出来便于单测；`TT`=t_trade, `TX`=t_trade_exec）。"""
+    from app.flash.wechat import notify
+    day = now.strftime("%Y-%m-%d")
+
+    # ── ① 已开的T：盯平仓（含尾盘强制平） ──
+    for tr in TX.open_trades(day):
+        q = stocks.get(str(tr.get("code") or "")) or {}
+        price = float(q.get("price") or 0)
+        if price <= 0:
+            continue
+        plan = TX.plan_for_trading(tr["code"], day) or {}
+        sig = TT.check_trigger(plan, price, open_side=tr["direction"])
+        force = t_min >= _T_TRADE_CLOSE_MIN
+        if not sig and not force:
+            continue
+        kind = (sig or {}).get("kind") or "close"
+        status = "stopped" if kind == "stop" else "closed"
+        why = (sig or {}).get("text_why") or "尾盘 %.0f 分钟线未平，按现价平掉" % t_min
+        r = TX.close_trade(tr["id"], price, status=status, note=why)
+        if not r:
+            continue
+        dd = "正T" if tr.get("direction") == "long_t" else "反T"
+        try:
+            notify("coach", "做T 平仓", (
+                f"**{dd}平仓** {tr.get('name')}({tr['code']})：{why}\n"
+                f"盈亏 **{r['pnl']:+.2f} 元（{r['pnl_pct']:+.2f}%）**"), force=True)
+        except Exception as e:
+            print(f"[t-trade] close push failed: {e}")
+
+    # ── ② 未开过的：找开仓（只限关注列表） ──
+    if t_min >= _T_TRADE_CLOSE_MIN:
+        return                    # 尾盘不开新T（接不回来）
+    watch = _t_trade_watch_codes()
+    if not watch:
+        return
+    plans = {p["code"]: p for p in TX.list_plans(feasible_only=True)}
+    holds = TX.holdings()
+    cash = _T_TRADE_CASH
+
+    for code in sorted(watch):
+        p = plans.get(code)
+        if not p:
+            continue                    # 今天没有可行预案 ⇒ 不做
+        if TX.has_traded(code, day):
+            continue                    # 每只每天最多 1 次
+        q = stocks.get(code) or {}
+        price = float(q.get("price") or 0)
+        if price <= 0:
+            continue
+        sig = TT.check_trigger(p, price)
+        if not sig:
+            continue
+        direction = sig["direction"]
+        base = float((holds.get(code) or {}).get("shares") or 0)
+        if direction not in TT.resolve_direction(base > 0, cash > 0):
+            continue                    # 无底仓却给反T 信号 ⇒ 跳过
+        ratio = float(p.get("ratio") or TT.T_RATIO_DEFAULT)
+        shares = TT.calc_shares(direction, price, base, cash, ratio,
+                                today_bought=TX.today_bought(code, day))
+        if shares <= 0:
+            continue
+        r = TX.open_trade(code, p.get("name") or "", direction, price, shares,
+                          ratio, note=sig["text_why"], day=day)
+        if not r:
+            continue
+        dd = "正T 买入" if direction == "long_t" else "反T 卖出"
+        extra = ("（注意：若今日有手动加仓，可卖数量需自行核对 T+1）"
+                 if direction == "short_t" else
+                 "（按假设可用资金 %.0f 元计算仓位）" % cash)
+        try:
+            notify("coach", "做T 触发", (
+                f"**{dd}** {p.get('name')}({code}) {shares} 股 @ {price:.2f}："
+                f"{sig['text_why']}\n"
+                f"预案支撑 {p.get('support'):.2f} / 阻力 {p.get('resistance'):.2f}"
+                f"（空间 {p.get('space_pct'):.2f}%），仓位比例 {ratio:.0%}\n"
+                f"{extra}"), force=True)
+        except Exception as e:
+            print(f"[t-trade] open push failed: {e}")
+
+
+async def t_trade_loop():
+    """做T 盘中循环（60s，交易时段自门控）。"""
+    while True:
+        try:
+            now = rules.beijing_now()
+            t_min = now.hour * 60 + now.minute
+            is_open = False
+            try:
+                is_open = bool(rules.get_china_market_status().get("is_open"))
+            except Exception as e:
+                # 吞异常必须可见（GUARDRAILS #11）：静默 = 功能死亡且无迹可查
+                print(f"[t-trade] market status failed: {str(e)[:80]}")
+            if now.weekday() < 5 and 570 <= t_min < 900 and is_open:
+                from app.tencent import _cache as _tc
+                stocks = _tc.get("stocks") or {}
+                if stocks:
+                    from app import t_trade as TT
+                    from app import t_trade_exec as TX
+                    _t_trade_tick(TT, TX, stocks, now, t_min)
+        except Exception as e:
+            print(f"[t-trade] loop error: {str(e)[:90]}")
+        await asyncio.sleep(60)
+
+
+_T_SCAN_LAST = {"day": ""}
+
+
+async def t_trade_scan_loop():
+    """盘后扫全市场生成做T 预案（15:40 后每天一次）。
+
+    ⚠️ **必须 `to_thread`**：`scan_market` 是同步阻塞（实测 72 秒）——
+      直接在协程里跑会把整个调度器（快讯/持仓/教练…）卡死一分多钟。
+    ⚠️ 用模块级日期去重而不是 `schedule_state`：`save_plan` 是 upsert 幂等，
+      进程重启后重跑一次无害（比引一个状态表简单）。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            d = now.strftime("%Y-%m-%d")
+            t_min = now.hour * 60 + now.minute
+            if now.weekday() < 5 and 940 <= t_min < 1440 and _T_SCAN_LAST["day"] != d:
+                from app import t_trade_exec as TX
+                rep = await asyncio.to_thread(TX.scan_market, d, 120, 200, True)
+                _T_SCAN_LAST["day"] = d
+                print(f"[t-trade] scan done {rep}")
+        except Exception as e:
+            print(f"[t-trade] scan error: {str(e)[:90]}")
+        await asyncio.sleep(300)
+
+
 async def open_confirmation_loop():
     """工作日开盘后，对白名单战法最近一次扫描信号做「买点确认」：
     实时开盘价 vs 参考介入价 vs 止损位 → 低吸/正常/回踩/放弃指引，推送企微。
@@ -2706,6 +2870,10 @@ async def start():
              asyncio.create_task(track_loop()),
              # ★ A4 交易计划触发提醒（盘中 60s，内部自门控交易时段）
              asyncio.create_task(trade_plan_trigger_loop()),
+             # ★★ 2026-11-15 做T：盘中 60s 触发/平仓（只盯自选+持仓，零额外请求）
+             asyncio.create_task(t_trade_loop()),
+             # ★★ 2026-11-15 做T：盘后 15:40 扫全市场生成次日预案（to_thread，72s 不阻塞）
+             asyncio.create_task(t_trade_scan_loop()),
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),
