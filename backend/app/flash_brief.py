@@ -115,8 +115,12 @@ def _ensure() -> None:
         except Exception:
             try:
                 db.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {_col}")
-            except Exception:
-                pass
+            except Exception as e:
+                # ★ 2026-11-14（卫生门 GUARDRAILS #11）：SQLite 不支持
+                #   `ADD COLUMN IF NOT EXISTS` ⇒ 回落这条路径，"列已存在"是**预期**；
+                #   但 `pass` 会把权限/语法/表不存在等**其他失败**一并吞掉，
+                #   表现为"建表成功、后面写入却说列不存在"。⇒ 至少留一行可见日志。
+                print(f"[flash_brief] alter {_TABLE} {_col} skipped: {str(e)[:70]}")
     # 历史解读表（append-only，主键用字符串 run_id ⇒ 不依赖 SERIAL/AUTOINCREMENT 双库差异）
     db.execute(f"""
         CREATE TABLE IF NOT EXISTS {_RUN_TABLE} (
@@ -133,15 +137,15 @@ def _ensure() -> None:
     """)
     try:
         db.execute(f"CREATE INDEX IF NOT EXISTS idx_fbr_date_ts ON {_RUN_TABLE} (date, ts)")
-    except Exception:
-        pass
-    # ★ 2026-11-14（三时段复盘）：runs 表补列——老库幂等（列已存在则吞异常）
+    except Exception as e:
+        print(f"[flash_brief] index create skipped: {str(e)[:70]}")
+    # ★ 2026-11-14（三时段复盘）：runs 表补列——老库幂等（列已存在则跳过）
     for _col in ("phase TEXT", "stance TEXT", "stance_reason TEXT", "bullish TEXT",
                  "bearish TEXT", "verdict TEXT", "prev_check TEXT"):
         try:
             db.execute(f"ALTER TABLE {_RUN_TABLE} ADD COLUMN {_col}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[flash_brief] alter {_RUN_TABLE} {_col} skipped: {str(e)[:70]}")
     _READY = True
 
 

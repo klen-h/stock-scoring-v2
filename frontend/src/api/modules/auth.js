@@ -3,7 +3,11 @@
 // 本文件只做「请求定义」：参数进、响应出，无状态。业务状态在 composables/。
 // ==============================================================================
 import { http } from '../http'
-import { LOCAL_CACHE, CACHE_PREFIX, _cacheGet, _cacheSet } from '../http'
+// ★ 2026-11-14（部署报错第 4 批）：`_cacheKey` 在下面 50 行和 65 行都用到了，
+//   但按域拆分时漏进 import ⇒ 运行时 ReferenceError: _cacheKey is not defined。
+//   ⚠️ 为什么 build 抓不到：ESM 的**自由变量** Rollup/Vite 不做静态未定义检查，
+//     只有请求真正走到拦截器（loadSizing 触发 GET）才炸 ⇒ 必须靠 import 对账兜住。
+import { LOCAL_CACHE, CACHE_PREFIX, _cacheKey, _cacheGet, _cacheSet } from '../http'
 
 export function clearApiCache() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX))
