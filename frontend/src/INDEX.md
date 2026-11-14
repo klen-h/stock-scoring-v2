@@ -26,7 +26,7 @@
 
 | 文件 | 行数 | 状态 |
 |---|---|---|
-| `views/Workbench.vue` | **6738**（-395，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。✅ 2026-11-14 已拆④：scen/events→`useScenarioEvents.js`（91 行；DI 注入 obsAI 三成员——loadScenario 换日重置观察器解读的跨簇依赖显式化）。✅ 2026-11-14 已拆⑤两步：日缓存基建→`utils/dayCache.js`（多加载器共用）、简报加载层→`useWorkbenchBrief.js`（DI selectedDate）。下一候选：教练/雷达加载块（loadCoach/loadRadar）——无共享基建耦合，直接按同规程切；或复盘对账块（loadReviewSummary，依赖 dayCache）。
+| `views/Workbench.vue` | **6738**（-395，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。✅ 2026-11-14 已拆④：scen/events→`useScenarioEvents.js`（91 行；DI 注入 obsAI 三成员——loadScenario 换日重置观察器解读的跨簇依赖显式化）。✅ 2026-11-14 已拆⑤两步：日缓存基建→`utils/dayCache.js`（多加载器共用）、简报加载层→`useWorkbenchBrief.js`（DI selectedDate）。下一候选：教练/雷达加载块（loadCoach@5543/loadRadar@5546）——**前置已探明**：refs 与非簇状态交错散布（3941-4007 区间混 sectorMsgOpen/holdingMsgOpen/topItems 及 `fb = useFlashBrief()` 单例），需先收拢 refs 到连续块再切（同拆分④前置）。备选：复盘对账块 loadReviewSummary（依赖 dayCache，已独立）。
 | `views/ScoreRank.vue` | 2909 | 未拆；tab 结构与 Workbench 同型，可复制其拆法 |
 | `views/StockDetail.vue` | 1420 | tab 已独立（score/kline/rank/fund）；诊断区可拆 `components/detail/` |
 | `api/index.js` | 720→**29** | ✅ 2026-11-14 已拆：8 域模块 + http.js + re-export shim（234 导出全部保留，对账通过） |
