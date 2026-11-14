@@ -26,7 +26,7 @@
 
 | 文件 | 行数 | 状态 |
 |---|---|---|
-| `views/Workbench.vue` | **7133** | 拆分进行中：卡已组件化到 `components/workbench/`×9+2；剩余可拆——三时段/防御组数据加载块→`composables/useWorkbenchData.js`、时间轴渲染→子组件。**改此文件先读目标函数上下文 ±30 行，锚点替换后必须 grep 复验** |
+| `views/Workbench.vue` | **6872**（-261，拆分进行中） | ✅ 已拆：lidx→`composables/useLidaxiao.js`、防御组→`composables/useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）；卡已组件化 `components/workbench/`×11。**拆分规程：按函数边界 grep 起止（`^function X`→下一 `^function`），禁按行号硬切；解构同名 ⇒ 模板零改动；每步 build 验证** |
 | `views/ScoreRank.vue` | 2909 | 未拆；tab 结构与 Workbench 同型，可复制其拆法 |
 | `views/StockDetail.vue` | 1420 | tab 已独立（score/kline/rank/fund）；诊断区可拆 `components/detail/` |
 | `api/index.js` | 720→**29** | ✅ 2026-11-14 已拆：8 域模块 + http.js + re-export shim（234 导出全部保留，对账通过） |
