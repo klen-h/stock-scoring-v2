@@ -2,6 +2,7 @@
 // DI：obsAI/obsAIOpen/loadObsAI——loadScenario 换日时重置已抽出的观察器 AI 解读（跨簇依赖显式化，同防御组 DI 模式）。
 import { ref, computed } from 'vue'
 import { getScenarioWatch, getMarketEvents } from '../api'
+export function useScenarioEvents({ selectedDate, obsAI, obsAIOpen, loadObsAI }) {
 // ★ 2026-09-27 事件驱动信号（E2 政策脉冲）—— v0 展示项，不进决策链。
 //   稀有事件（21 年 298 天触发），触发时顶栏显一项；未触发则不占位。
 const eventSignal = ref(null)
@@ -84,7 +85,6 @@ const eventTitle = computed(() => {
 })
 
 
-export function useScenarioEvents({ selectedDate, obsAI, obsAIOpen, loadObsAI }) {
   return {
     scen, scenErr, scenBadge, leanDot, scenVal, loadScenario,
     eventSignal, loadEvents, eventTitle,

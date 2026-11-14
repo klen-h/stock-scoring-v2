@@ -3,6 +3,7 @@
 // 本文件只做「请求定义」：参数进、响应出，无状态。业务状态在 composables/。
 // ==============================================================================
 import { http } from '../http'
+import { LOCAL_CACHE } from '../http'
 
 export function clearApiCache() {
   const keys = Object.keys(localStorage).filter(k => k.startsWith(CACHE_PREFIX))

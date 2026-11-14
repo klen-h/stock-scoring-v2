@@ -91,4 +91,4 @@ function _cacheSet(key, data) {
 }
 
 /** 清空本地 API 缓存（控制台 `clearApiCache()` 或页面上手动调用）。 */
-export { http }
+export { http, LOCAL_CACHE }
