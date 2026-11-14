@@ -5524,6 +5524,9 @@ watch(selectedDate, () => {
 const { scen, scenErr, scenBadge, leanDot, scenVal, loadScenario,
         eventSignal, loadEvents, eventTitle } = useScenarioEvents(
   { selectedDate, obsAI, obsAIOpen, loadObsAI })
+// ★ 2026-11-14：pbwLine 模板引用无 script 定义（Guardrails #8 死绑定，部署后渲染警告）——
+//   最小修复：从 pbw 清单数据派生摘要行（不新增接口/不进决策链）。
+const pbwLine = computed(() => pbw.value?.position_hint || '')
 // ══════════════════════════════════════════════════════════════════════════
 //  当日数据缓存（★ 2026-09-25 用户建议）
 // ══════════════════════════════════════════════════════════════════════════

@@ -39,7 +39,7 @@ function _cacheKey(config) {
   return CACHE_PREFIX + (config.url || '') + (p ? '|' + p : '')
 }
 
-function _cacheGet(key) {
+export function _cacheGet(key) {
   try {
     const raw = localStorage.getItem(key)
     if (!raw) return null
@@ -73,7 +73,7 @@ function _cacheTrim(aggressive) {
   }
 }
 
-function _cacheSet(key, data) {
+export function _cacheSet(key, data) {
   let s
   try {
     s = JSON.stringify({ t: Date.now(), d: data })
@@ -91,4 +91,4 @@ function _cacheSet(key, data) {
 }
 
 /** 清空本地 API 缓存（控制台 `clearApiCache()` 或页面上手动调用）。 */
-export { http, LOCAL_CACHE }
+export { http, LOCAL_CACHE, CACHE_PREFIX }

@@ -43,5 +43,4 @@ async function loadBrief(phase, force = false) {
 
 
 export function useWorkbenchBrief({ selectedDate }) {
-  return { briefMd, briefErr, briefDegraded, briefPhase, briefLoading, loadBrief }
 }
