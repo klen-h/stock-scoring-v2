@@ -495,6 +495,26 @@ def flash_notifications(since: str = ""):
     except Exception as e:
         print(f"[flash] workbench scan 通知读取失败（不影响其它事件）: {str(e)[:80]}")
 
+    # 6. ★ 2026-11-14（用户："新的功能需要加入通知的需要加进去"）：决策简报/日批直推
+    #    （push_log：三时段简报/夜报/周报/风险/告警——教练卡走分类群通道不在此表）。
+    #    用户主要在企微看推送（一滚就没）⇒ 页面开着时同事件镜像弹浏览器通知。
+    #    裁列 + 截断正文（轮询接口纪律）。
+    try:
+        rows = db.fetch(
+            "SELECT ts, title, SUBSTR(content, 1, 120) AS body FROM push_log "
+            "WHERE ts > %s ORDER BY ts ASC LIMIT 20",
+            (since.replace('T', ' ') if since else '',)) or []
+        for r in rows:
+            ts_txt = str(r.get("ts") or "")
+            if _newer(ts_txt):
+                events.append({
+                    "type": "push", "time": ts_txt,
+                    "title": "📨 " + (r.get("title") or "系统推送"),
+                    "body": (r.get("body") or "")[:120],
+                })
+    except Exception as e:
+        print(f"[flash] push_log 通知读取失败（不影响其它事件）: {str(e)[:80]}")
+
     events.sort(key=lambda x: x.get("time") or "")
     # 数据源健康告警/恢复事件也进通知管道（页面铃铛自动弹）
     from app import health

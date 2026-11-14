@@ -91,6 +91,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { searchStock, getFlashNotifications, getUser, removeToken } from './api'
+import { requestPermission } from './composables/useNotifications'
 
 const router = useRouter()
 const route = useRoute()
@@ -192,15 +193,17 @@ async function toggleNotif() {
     localStorage.setItem('page_notif', '0')
     return
   }
-  // 请求浏览器授权（必须由用户点击触发）
-  const perm = Notification.permission === 'granted'
-    ? 'granted' : await Notification.requestPermission()
-  if (perm === 'granted') {
+  // ★★ 2026-11-14（用户："线上点击无反应"根因修复）：改用 useNotifications 的
+  //   requestPermission——它带非安全上下文判定 + 'default' 静默失败的原因提示
+  //   （本处旧内联逻辑两样都没有 ⇒ 线上失败模式"既不成功也不报错"）。
+  const ok = await requestPermission()
+  if (ok) {
     notifOn.value = true
     localStorage.setItem('page_notif', '1')
     notifSince = null   // 重置基线：从现在起新事件才通知
     new Notification('✅ 页面通知已开启', { body: '新的宏观诊断、复盘、信号会及时提醒你' })
   }
+  // 失败原因已由 requestPermission 内 alert 说清（http 访问 / 浏览器策略拦截）
 }
 
 async function pollNotifications() {
@@ -216,7 +219,7 @@ async function pollNotifications() {
       // ★ 2026-10-24：盘中异动解读（brief）点开去工作台看那张卡；其余仍去监控页
       n.onclick = () => {
         window.focus()
-        router.push(ev.type === 'brief' ? '/' : '/monitor')
+        router.push(['brief', 'push'].includes(ev.type) ? '/' : '/monitor')
       }
     }
     notifSince = data.now
