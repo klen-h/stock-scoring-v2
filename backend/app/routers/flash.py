@@ -150,6 +150,16 @@ def flash_diagnosis(limit: int = Query(5, ge=1, le=20)):
             "latest": analyses[0] if analyses else None}
 
 
+@router.get("/brief/review")
+def flash_brief_review(date: str = None):
+    """三时段复盘摘要（盘前/盘中/盘后各时段最新判断 + 确定性 verdict + 矛盾解释）。
+
+    ★ 常驻卡数据源；只读不烧 LLM。时段切点与教练侧复盘对账一致（15:05 缓冲）。
+    """
+    from app import flash_brief as fb
+    return fb.review_summary(date)
+
+
 @router.get("/brief")
 def flash_brief_get(date: str = None, run_id: str = None):
     """快讯解读卡（大盘/板块/个股 + 重要快讯），**只读缓存，绝不触发 LLM**。

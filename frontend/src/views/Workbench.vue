@@ -1405,6 +1405,8 @@
                ★ 2026-11-01：`xl:h-[760px]` 与左卡定高。
                ★★ tab 已归位到**常驻右栏**（教练卡 / 李大霄），本卡只留快讯。 -->
           <div class="min-w-0 h-full">
+            <!-- ★ 2026-11-14：快讯三时段复盘卡（判断 vs 实况 + 矛盾解释） -->
+            <FlashPhaseCard :date="selectedDate" class="mb-2" />
             <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
           </div>
         </div>
@@ -3670,6 +3672,7 @@ import StockListsCards from '../components/workbench/StockListsCards.vue'
 import MacroEnvCard from '../components/workbench/MacroEnvCard.vue'
 // ★ 2026-10-24：右栏「快讯解读」卡（大盘/板块/个股 + 重要快讯 + AI 解读）
 import FlashBriefCard from '../components/workbench/FlashBriefCard.vue'
+import FlashPhaseCard from '../components/workbench/FlashPhaseCard.vue'
 // ★ 2026-11-01（用户："新增一个早盘复盘标签页"）：早盘复盘主视图
 //   （结论条 + 盘面/宏观/消息三块 + 口径溯源表；数据来自 `/market/amreview` 单端点）
 import AmReviewCard from '../components/workbench/AmReviewCard.vue'

@@ -128,12 +128,20 @@ def _ensure() -> None:
             conclusion TEXT,
             llm_json TEXT,
             created_at TEXT
+        , phase TEXT, stance TEXT, stance_reason TEXT, bullish TEXT, bearish TEXT, verdict TEXT, prev_check TEXT
         )
     """)
     try:
         db.execute(f"CREATE INDEX IF NOT EXISTS idx_fbr_date_ts ON {_RUN_TABLE} (date, ts)")
     except Exception:
         pass
+    # ★ 2026-11-14（三时段复盘）：runs 表补列——老库幂等（列已存在则吞异常）
+    for _col in ("phase TEXT", "stance TEXT", "stance_reason TEXT", "bullish TEXT",
+                 "bearish TEXT", "verdict TEXT", "prev_check TEXT"):
+        try:
+            db.execute(f"ALTER TABLE {_RUN_TABLE} ADD COLUMN {_col}")
+        except Exception:
+            pass
     _READY = True
 
 
@@ -502,12 +510,18 @@ SYSTEM = (
     '"news": [{"id":"<该条快讯的 id，照抄输入里的 id= 后面的值>",'
     '"idx":1,"gist":"一句话摘要≤40字","cause":"原因≤40字",'
     '"scope":"影响范围（板块/个股类别）",'
-    '"direction":"利好/利空/中性（对 A 股整体风险偏好，不是对油价/黄金）"}]}\n'
+    '"direction":"利好/利空/中性（对 A 股整体风险偏好，不是对油价/黄金）"}], '
+    '"stance":"进攻/防御/均衡（此刻市场基调，一词）", '
+    '"stance_reason":"≤40字，为何此基调（引用可观测读数）", '
+    '"bullish":["受益方向/板块，≤4条，每条≤15字"], '
+    '"bearish":["受损方向/板块，≤4条，每条≤15字"], '
+    '"prev_check":"<仅当输入含「前序判断」时必填：与前序一致则写「与盘前/午盘一致」；'
+    '矛盾则解释原因，≤60字>"}\n'
     "★ `id` 必须逐字照抄（它是前端把解读对回原文的唯一键）；`idx` 仍要给，作旧版兜底。"
 )
 
 
-def _user_prompt(p: Dict) -> str:
+def _user_prompt(p: Dict, prev_block: str = "") -> str:
     m, s, mv, n = p.get("market") or {}, p.get("sectors") or {}, \
         p.get("movers") or {}, p.get("news") or {}
     lines = [f"## 交易日 {p.get('date')}（数据时点 {p.get('as_of')}）", "", "### 大盘"]
@@ -563,9 +577,24 @@ def _fallback_llm(p: Dict) -> Dict:
         inv = f"推翻条件：涨跌比回升至 1 以上，或{_nm}转涨并站上日内高点"
     else:
         inv = f"推翻条件：{_nm}反向运行超过 1%"
+    # ★ 2026-11-14（三时段复盘）：兜底也带 stance/利好/利空（确定性规则，非 LLM）
+    _st = "均衡"
+    if ratio_v is not None and ratio_v >= 1.1 and (idx.get("chg_pct") or 0) > 0:
+        _st = "进攻"
+    elif ratio_v is not None and ratio_v <= 0.9 or (idx.get("chg_pct") or 0) < -0.5:
+        _st = "防御"
+    _bull = [x.get("name") for x in (p.get("sectors") or {}).get("top", [])[:3]
+             if x.get("name")]
+    _bear = [x.get("name") for x in (p.get("sectors") or {}).get("bottom", [])[:3]
+             if x.get("name")]
     return {
         "conclusion": concl,
         "invalidate": inv,
+        "stance": _st,
+        "stance_reason": f"涨跌比 {m.get('ratio') or '—'}、"
+                         f"{_nm} {(idx.get('chg_pct') or 0):+.2f}%（模板规则）",
+        "bullish": _bull, "bearish": _bear,
+        "prev_check": None,
         "market": "（模板）" + ("；".join(
             f"{x.get('name')} {x.get('chg_pct')}%" for x in (m.get("indices") or [])) or "数据不足"),
         "sectors": [{"name": x.get("name"), "note": f"{x.get('chg_pct')}%"}
@@ -717,9 +746,17 @@ def _save_run(day: str, llm: Dict, trigger: str, source: str,
             "run_id": rid,
             "date": day,
             "ts": ts_text,
+            "phase": _phase_of(ts_text),
             "trigger": trigger or "auto",
             "source": source or "llm",
             "conclusion": llm.get("conclusion") or "",
+            "stance": llm.get("stance") or None,
+            "stance_reason": llm.get("stance_reason") or None,
+            "bullish": json.dumps(llm.get("bullish") or [], ensure_ascii=False)
+                       if llm.get("bullish") else None,
+            "bearish": json.dumps(llm.get("bearish") or [], ensure_ascii=False)
+                       if llm.get("bearish") else None,
+            "prev_check": llm.get("prev_check") or None,
             "llm_json": json.dumps(llm, ensure_ascii=False),
             "created_at": now.isoformat(timespec="seconds"),
         }, conflict_columns=["run_id"])
@@ -745,7 +782,8 @@ def list_runs(day: str, limit: int = 8) -> List[Dict]:
     """
     try:
         rows = db.fetch(
-            f"SELECT run_id, ts, trigger, source, conclusion FROM {_RUN_TABLE} "
+            f"SELECT run_id, ts, trigger, source, conclusion, phase, stance, verdict "
+            f"FROM {_RUN_TABLE} "
             f"WHERE date = %s ORDER BY ts DESC LIMIT {int(limit)}", (day,)) or []
     except Exception as e:
         print(f"[flash_brief] 历史解读读取失败: {str(e)[:80]}")
@@ -758,6 +796,9 @@ def list_runs(day: str, limit: int = 8) -> List[Dict]:
             "ts": r.get("ts"),
             "time": str(r.get("ts") or "")[11:16],      # HH:MM（前端 tab 标签直接用）
             "trigger": r.get("trigger") or "",
+            "phase": r.get("phase") or None,
+            "stance": r.get("stance") or None,
+            "verdict": r.get("verdict") or None,
             "source": r.get("source") or "",
             "conclusion": c[:160],                      # 摘要足够 tab 悬停
         })
@@ -780,6 +821,114 @@ def get_run(run_id: str) -> Dict:
             "ts": row.get("ts"), "trigger": row.get("trigger"),
             "source": row.get("source"), "conclusion": row.get("conclusion") or "",
             "llm": llm}
+
+
+def _phase_of(ts_text: str) -> str:
+    """时段标签（与教练侧复盘对账同切点 15:05 留缓冲）：
+    <09:30 盘前；09:30~15:05 盘中（午盘）；≥15:05 盘后。"""
+    s = str(ts_text or "")
+    hh, mm = int(s[11:13] or 0), int(s[14:16] or 0)
+    t = hh * 60 + mm
+    if t < 570:
+        return "盘前"
+    if t < 905:
+        return "盘中"
+    return "盘后"
+
+
+_GATE_MISS_V = {"warned": set()}
+
+
+def _verify_prev(day: str, cur_phase: str, p: Dict) -> list:
+    """验证链（BK：午盘验盘前、盘后验盘前+午盘）。
+
+    确定性判定（宏观判断 vs 可观测实况，**不改 LLM 判断本身**）：
+      前序 stance=进攻：上证 ≥+0.3% ⇒ 命中；≤−0.3% ⇒ 打脸；其间 ⇒ 待验证；
+      防御：≤−0.3% ⇒ 命中；≥+0.3% ⇒ 打脸；其间 ⇒ 待验证；均衡 ⇒ 待验证。
+      （当前 run 的 snapshot 就是"实况"：盘中 run 用午间读数、盘后用收盘定稿。）
+    判定写回**前序 run 的 verdict 列**（幂等可覆盖）；返回前序清单供 prompt 注入。
+    """
+    from app.database import db
+    try:
+        runs = db.fetch(f"SELECT run_id, ts, phase, stance, stance_reason, conclusion "
+                        f"FROM {_RUN_TABLE} WHERE date = %s ORDER BY ts ASC", (day,)) or []
+    except Exception:
+        return []
+    m = p.get("market") or {}
+    idx0 = (m.get("indices") or [{}])[0]
+    actual = _num(idx0.get("chg_pct"))
+    targets = []
+    if cur_phase == "盘中":
+        targets = [r for r in runs if (r.get("phase") or _phase_of(r.get("ts"))) == "盘前"
+                   and r.get("stance")]
+    elif cur_phase == "盘后":
+        seen_p = set()
+        for r in runs:
+            ph = r.get("phase") or _phase_of(r.get("ts"))
+            if ph in ("盘前", "盘中") and ph not in seen_p and r.get("stance"):
+                seen_p.add(ph)
+                targets.append(r)
+    out = []
+    for r in targets:
+        st = str(r.get("stance") or "")
+        v = "待验证"
+        if actual is not None:
+            if st == "进攻":
+                v = "命中" if actual >= 0.3 else ("打脸" if actual <= -0.3 else "待验证")
+            elif st == "防御":
+                v = "命中" if actual <= -0.3 else ("打脸" if actual >= 0.3 else "待验证")
+        try:
+            db.execute(f"UPDATE {_RUN_TABLE} SET verdict = %s WHERE run_id = %s",
+                       (v, r.get("run_id")))
+        except Exception:
+            pass
+        out.append({"run_id": r.get("run_id"), "phase": r.get("phase") or _phase_of(r.get("ts")),
+                    "ts": str(r.get("ts") or "")[11:16], "stance": st,
+                    "stance_reason": r.get("stance_reason") or "",
+                    "conclusion": (r.get("conclusion") or "")[:60], "verdict": v})
+    if out and cur_phase not in _GATE_MISS_V["warned"]:
+        _GATE_MISS_V["warned"].add(cur_phase)
+        print(f"[flash_brief] prev-check {cur_phase}: "
+              + "; ".join(f"{x['phase']}({x['stance']})={x['verdict']}" for x in out))  # ASCII-ish
+    return out
+
+
+def review_summary(day: str = None) -> Dict:
+    """三时段复盘摘要（常驻卡数据源）：当日每个时段最新一条 run 的
+    stance/结论/利好利空/verdict/prev_check。缺时段 ⇒ null（不编造）。"""
+    from app.database import db
+    d = str(day or _today())[:10]
+    try:
+        rows = db.fetch(f"SELECT run_id, ts, phase, trigger, source, conclusion, stance, "
+                        f"stance_reason, bullish, bearish, verdict, prev_check "
+                        f"FROM {_RUN_TABLE} WHERE date = %s ORDER BY ts ASC", (d,)) or []
+    except Exception:
+        rows = []
+    by_phase = {}
+    for r in rows:
+        ph = r.get("phase") or _phase_of(r.get("ts"))
+        by_phase[ph] = r          # ASC ⇒ 后写覆盖 = 每时段最新一条
+    out = []
+    for ph in ("盘前", "盘中", "盘后"):
+        r = by_phase.get(ph)
+        if not r:
+            out.append({"phase": ph, "ts": None, "conclusion": None})
+            continue
+        def _j(k):
+            try:
+                return json.loads(r.get(k) or "null")
+            except (ValueError, TypeError):
+                return None
+        out.append({
+            "phase": ph, "run_id": r.get("run_id"), "ts": str(r.get("ts") or "")[11:16],
+            "source": r.get("source") or "", "trigger": r.get("trigger") or "",
+            "conclusion": r.get("conclusion") or "", "stance": r.get("stance") or None,
+            "stance_reason": r.get("stance_reason") or None,
+            "bullish": _j("bullish") or [], "bearish": _j("bearish") or [],
+            "verdict": r.get("verdict") or None,
+            "prev_check": r.get("prev_check") or None,
+        })
+    return {"date": d, "phases": out}
 
 
 def analyze(day: Optional[str] = None, refresh: bool = False,
@@ -830,10 +979,22 @@ def analyze(day: Optional[str] = None, refresh: bool = False,
     # ── LLM：一次批量（重要条全进同一个 prompt）──
     llm = None
     err = ""
+    # ★ 2026-11-14（三时段复盘）：本次 run 的时段 + 前序验证链（确定性判定写回前序，
+    #   清单注入 prompt 让 LLM 给 prev_check 矛盾解释）
+    cur_phase = _phase_of(_now().isoformat())
+    prev = _verify_prev(d, cur_phase, p)
+    prev_block = ""
+    if prev:
+        lines = ["## 前序判断（本次需验证；矛盾必须在 prev_check 解释原因）"]
+        for x in prev:
+            lines.append(f"- {x['phase']}({x['ts']}): 基调={x['stance']}，"
+                         f"{x['conclusion']}；该时段实况判定={x['verdict']}")
+        prev_block = "\n".join(lines)
+
     if p["news"]["rows"] or p["movers"]["rows"]:
         try:
             from app.flash.llm import call_llm
-            txt = call_llm(SYSTEM, _user_prompt(p), temperature=0.25,
+            txt = call_llm(SYSTEM, _user_prompt(p) + prev_block, temperature=0.25,
                            tier="fast", json_mode=True)
             llm = _parse_json(txt)
             if not llm:
