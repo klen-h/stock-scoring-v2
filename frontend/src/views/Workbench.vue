@@ -3665,8 +3665,10 @@ import { renderMd } from '../composables/markdown'
 import InsightBody from '../components/InsightBody.vue'
 import { useLidaxiao } from '../composables/useLidaxiao'
 import { useDefensiveBoard } from '../composables/useDefensiveBoard'
+import { useWorkbenchBrief } from '../composables/useWorkbenchBrief'
 import { useObsAIReview } from '../composables/useObsAIReview'
 import { useScenarioEvents } from '../composables/useScenarioEvents'
+import { _dayCache, _dayCached, _dayMark } from '../utils/dayCache'
 import TodoCard from '../components/workbench/TodoCard.vue'
 // ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
@@ -3931,15 +3933,11 @@ function limitTip() {
 //   市场级连板语义**只保留 zzshare 一份**；本卡只在个股级标 `leader_boards_text`。
 const temperature = ref(null)
 const regimeLabel = ref('—')
-const briefMd = ref('')
-const briefErr = ref('')
-const briefDegraded = ref(false)
-// ★★ 2026-09-30（用户："盘前午盘盘后的 llm 分析失败，可以加一个手动重试"）：
-//   `briefMd` 是**多阶段共用**的单个 ref ⇒ 必须记「当前内容属于哪个 phase」，
-//   否则会把盘前简报渲染进「决策简报（盘后）」卡（盘后段原先**根本不加载**简报，
-//   只有切到「复盘」段才拉 ⇒ 该卡要么空着、要么显示盘前内容，属既有缺陷）。
-const briefPhase = ref('')
-const briefLoading = ref(false)
+// ★ 2026-11-14（渐进拆分⑤）：三时段简报加载层抽到 composables/useWorkbenchBrief.js——
+//   DI 注入 selectedDate；缓存基建已独立 utils/dayCache.js（多加载器共用）；
+//   解构同名 ⇒ 模板零改动。
+const { briefMd, briefErr, briefDegraded, briefPhase, briefLoading, loadBrief } =
+  useWorkbenchBrief({ selectedDate })
 const coachList = ref([])
 const coachErr = ref('')
 const radarItems = ref([])
@@ -5541,34 +5539,7 @@ const { scen, scenErr, scenBadge, leanDot, scenVal, loadScenario,
 //    ② **只在拿到有效数据时才记**：失败/空一律不记，下次仍会重试；
 //    ③ 简报若 `degraded`（LLM 失败降级版）⇒ **不记**：后端的盘前循环窗口内还会重试
 //       生成 LLM 版，缓存降级版等于把"临时降级"永久化。
-const _dayCache = {}          // { key: 'YYYY-MM-DD' }
-const _dayCached = (key, day) => _dayCache[key] === day
-const _dayMark = (key, day) => { _dayCache[key] = day }
 
-async function loadBrief(phase, force = false) {
-  const day = selectedDate.value
-  const ck = `brief:${phase}`
-  if (!force && _dayCached(ck, day)) return
-  // ★★ 2026-09-30（用户："llm 分析失败，可以加一个手动重试"）：`force=true` 时
-  //   ① 先清掉"当日已取到"标记 —— 否则重试后切回本段仍被缓存挡住（用户以为没生效）；
-  //   ② 传 `refresh=true` 让后端**重新生成**（消耗 1 次 LLM，api 层已给 180s 超时）。
-  if (force) delete _dayCache[ck]
-  briefErr.value = ''
-  briefLoading.value = true
-  briefPhase.value = phase
-  try {
-    const { data } = await getTraderBrief(!!force, phase)
-    briefMd.value = data?.markdown || ''
-    briefDegraded.value = !!data?.degraded
-    // ★ 纪律③：降级版不缓存（后端窗口内还会重试出 LLM 版）
-    if (briefMd.value && !briefDegraded.value) _dayMark(ck, day)
-  } catch (e) {
-    briefMd.value = ''
-    briefErr.value = (e?.response?.data?.detail || e?.message) || '未知错误'
-  } finally {
-    briefLoading.value = false
-  }
-}
 async function loadCoach() {
   await safe(() => getCoachAlerts(100), d => { coachList.value = (d && d.data) || [] }, s => { coachErr.value = s })
 }
