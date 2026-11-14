@@ -26,7 +26,7 @@
 
 | 文件 | 行数 | 状态 |
 |---|---|---|
-| `views/Workbench.vue` | **6770**（-363，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。✅ 2026-11-14 已拆④：scen/events→`useScenarioEvents.js`（91 行；DI 注入 obsAI 三成员——loadScenario 换日重置观察器解读的跨簇依赖显式化）。下一候选：快讯/简报加载块（loadBrief/loadTraderBrief）或教练/雷达加载块——按同规程。**拆分规程：按函数边界 grep 起止（`^function X`→下一 `^function`），禁按行号硬切；解构同名 ⇒ 模板零改动；每步 build 验证** |
+| `views/Workbench.vue` | **6770**（-363，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。✅ 2026-11-14 已拆④：scen/events→`useScenarioEvents.js`（91 行；DI 注入 obsAI 三成员——loadScenario 换日重置观察器解读的跨簇依赖显式化）。下一候选：快讯/简报加载块（loadBrief@5548 + refs briefMd/briefErr/briefDegraded@3934-3936/briefPhase/briefLoading@3941-3942）——**前置已探明**：`_dayCache/_dayCached`（5544-5545）是工作台共享基建（全文件 19 处使用），拆簇前需先独立成 `utils/dayCache.js`（loadBrief 与其余加载器共用），再按同规程切。教练/雷达加载块同前置。unction X`→下一 `^function`），禁按行号硬切；解构同名 ⇒ 模板零改动；每步 build 验证** |
 | `views/ScoreRank.vue` | 2909 | 未拆；tab 结构与 Workbench 同型，可复制其拆法 |
 | `views/StockDetail.vue` | 1420 | tab 已独立（score/kline/rank/fund）；诊断区可拆 `components/detail/` |
 | `api/index.js` | 720→**29** | ✅ 2026-11-14 已拆：8 域模块 + http.js + re-export shim（234 导出全部保留，对账通过） |
