@@ -26,7 +26,7 @@
 
 | 文件 | 行数 | 状态 |
 |---|---|---|
-| `views/Workbench.vue` | **6837**（-296，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。下一候选：scen/events 簇（refs 散落 5512-5607，**需先收拢 refs 再切**）。**拆分规程：按函数边界 grep 起止（`^function X`→下一 `^function`），禁按行号硬切；解构同名 ⇒ 模板零改动；每步 build 验证** |
+| `views/Workbench.vue` | **6837**（-296，拆分进行中） | ✅ 已拆：lidx→`useLidaxiao.js`、防御组→`useDefensiveBoard.js`（DI 注入 useFrontendScoring 三成员）、观察器AI解读→`useObsAIReview.js`（DI selectedDate）；卡已组件化 `components/workbench/`×12。下一候选：scen/events 簇——**两处前置已探明**：①refs/helpers 散落三处（5512-5531 scen refs+badge/leanDot/scenVal；3933 eventSignal；5578-5600 eventTitle computed），需先收拢到连续块再切；②loadScenario 内部重置已抽出的 obsAI 状态（跨簇依赖）⇒ composable 需 DI 注入 obsAI/obsAIOpen/loadObsAI（同防御组模式）。**拆分规程：按函数边界 grep 起止（`^function X`→下一 `^function`），禁按行号硬切；解构同名 ⇒ 模板零改动；每步 build 验证** |
 | `views/ScoreRank.vue` | 2909 | 未拆；tab 结构与 Workbench 同型，可复制其拆法 |
 | `views/StockDetail.vue` | 1420 | tab 已独立（score/kline/rank/fund）；诊断区可拆 `components/detail/` |
 | `api/index.js` | 720→**29** | ✅ 2026-11-14 已拆：8 域模块 + http.js + re-export shim（234 导出全部保留，对账通过） |
