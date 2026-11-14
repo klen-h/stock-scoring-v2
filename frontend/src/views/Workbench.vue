@@ -91,13 +91,23 @@
           </div>
         </component>
         <div class="w-px self-stretch bg-border"></div>
-        <div v-for="g in globalsRow" :key="g.key" class="text-center px-1">
+        <!-- ★★ 2026-11-15：外盘行支持**可选**雪球链接（目前仅恒生科技有用户指定地址）。
+             与上方 A股 指数同款 `<component :is>`：没给地址就退回 <div> 纯文本，
+             不会生成 href="#" 的假链接，也不会猜 HK/商品代码而指错标的。 -->
+        <component v-for="g in globalsRow" :key="g.key"
+                   :is="g.href ? 'a' : 'div'"
+                   :href="g.href || undefined"
+                   :target="g.href ? '_blank' : undefined"
+                   rel="noopener"
+                   class="text-center px-1"
+                   :class="g.href ? 'rounded hover:bg-white/5 transition-colors cursor-pointer' : ''"
+                   :title="g.href ? `${g.label} 详情（雪球，新标签）` : ''">
           <div class="text-[10px] text-muted">{{ g.label }}</div>
           <div class="text-xs font-mono font-semibold leading-snug">{{ g.price ?? '—' }}</div>
           <div class="text-xs font-mono font-bold" :class="pctClass(g.pct)">
             {{ signNum(g.pct) }}%
           </div>
-        </div>
+        </component>
         <!-- ★ 2026-09-25（用户："A 股开盘前若没总结外盘正常开市的时间，会漏点什么"）：
              外盘是 24h 连续的 ⇒ **同一个涨跌幅在不同时段含义完全不同**（A 股收盘后新涨的
              0.5% 需要消化；收盘前就有的 0.5% 昨天已反映）。故在此常显"**此刻哪些市场在开市**"
@@ -1135,7 +1145,7 @@
                · 持仓状态收进右下（组合风控一行摘要 + 逐只精简行，滚动区内滚，不撑高整卡）；
                · 2026-10-26 调整：快讯解读改为**右侧独立卡片**（本卡只留涨跌/主线/持仓）。
                ⚠️ 数据时刻一律用**数据自身时刻**（ovStyle.data_date / radarQuote），不用请求时刻顶替。 -->
-          <div id="wb-pulse" class="bg-card border border-border rounded-lg p-3 xl:h-[760px] xl:overflow-y-auto">
+          <div id="wb-pulse" class="bg-card border border-border rounded-lg p-3 xl:overflow-y-auto">
             <div class="flex items-center justify-between mb-1.5 flex-wrap gap-2">
               <div class="text-sm font-semibold">盘面速览
                 <span class="text-[10px] text-muted font-normal">涨跌 · 主线 · 持仓</span>
@@ -4498,7 +4508,11 @@ function saveTodoOpen() {
 const globalsRow = computed(() => {
   const defs = [
     { key: 'a50', label: 'A50期货' },
-    { key: 'hstech', label: '恒生科技' },
+    // ★★ 2026-11-15（用户："其中跳转雪球地址：恒生科技指数：
+    //   https://www.xueqiu.com/S/HKHSTECH"）：外盘行原本整列纯文本、不可点。
+    //   恒生科技用**用户指定的完整 URL**（HK 指数不是 6 位数字，不能走 xqIndexUrl），
+    //   其余外盘项没有给地址 ⇒ 保持纯文本（宁可不给链接，也不猜代码指错标的）。
+    { key: 'hstech', label: '恒生科技', href: 'https://www.xueqiu.com/S/HKHSTECH' },
     // ★ 2026-11-04（用户："少了个日经225，想把韩国指数也加上去"）：
     //   两项都由**东财现货指数**提供（新浪的 `hf_NK` 是日经**期货**，且服务器 IP 被新浪封）。
     //   ⚠️ 标签写「日经225」「韩国KOSPI」**不带"期货"**——数据口径是现货，别让人误读。
@@ -4521,12 +4535,12 @@ const globalsRow = computed(() => {
     { key: 'us_spx', label: '标普500' },
     { key: 'cn_hxc', label: '中国金龙' },
   ]
-  return defs.map(({ key, label }) => {
+  return defs.map(({ key, label, href }) => {
     const v = globals.value[key] || {}
     const price = v.price
     const prev = v.prev_close
     const pct = (price && prev) ? (price / prev - 1) * 100 : null
-    return { key, label, price: price ?? null, pct }
+    return { key, label, href: href || '', price: price ?? null, pct }
   })
 })
 // ★ 2026-09-25：当前**正在交易**的市场（顶栏"外盘开市"指示）——
