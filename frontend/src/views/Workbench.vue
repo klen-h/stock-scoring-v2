@@ -1404,10 +1404,19 @@
           <!-- 右卡：快讯解读
                ★ 2026-11-01：`xl:h-[760px]` 与左卡定高。
                ★★ tab 已归位到**常驻右栏**（教练卡 / 李大霄），本卡只留快讯。 -->
-          <div class="min-w-0 h-full">
-            <!-- ★ 2026-11-14：快讯三时段复盘卡（判断 vs 实况 + 矛盾解释） -->
-            <FlashPhaseCard :date="selectedDate" class="mb-2" />
-            <FlashBriefCard :date="selectedDate" :flash-diag="flashDiag" />
+          <!-- ★ 2026-11-14（用户："新增一个父容器，卡片位置和快讯解读同级，
+              使用切换tab方式展示他们两个"）：父容器 = tab 头 + 条件渲染；
+              两张卡保留各自外壳（避免 bare 双壳嵌套）。tab 记忆到 localStorage。 -->
+          <div class="min-w-0 h-full flex flex-col gap-2">
+            <div class="flex items-center gap-1.5">
+              <button v-for="t in flashTabs" :key="t.key" type="button"
+                      class="px-2 py-0.5 rounded text-xs transition-colors shrink-0"
+                      :class="flashTab === t.key ? 'bg-accent/20 text-accent' : 'bg-white/5 text-muted hover:text-gray-200'"
+                      :title="t.tip"
+                      @click="flashTab = t.key">{{ t.label }}</button>
+            </div>
+            <FlashBriefCard v-if="flashTab === 'brief'" :date="selectedDate" :flash-diag="flashDiag" />
+            <FlashPhaseCard v-else :date="selectedDate" />
           </div>
         </div>
 
@@ -4030,6 +4039,23 @@ const sideTabs = [
 ]
 const SIDE_TAB_KEY = 'wb_side_card_tab'
 const SIDE_TAB_KEYS = ['todo', 'lidx', 'cal']
+// ★★ 2026-11-14（用户）：快讯卡父容器 tab（快讯解读 / 三时段复盘）——
+//   两张卡同级，tab 切换；记忆到 localStorage（与 sideTabs 同模式）。
+const flashTabs = [
+  { key: 'brief', label: '快讯解读', tip: '快讯解读（AI 方向判断 + 利好利空 + 持仓影响）' },
+  { key: 'review', label: '三时段复盘', tip: '盘前/午盘/盘后判断 vs 实况（命中/打脸/待验证）' },
+]
+const FLASH_TAB_KEY = 'wb_flash_card_tab'
+const FLASH_TAB_KEYS = ['brief', 'review']
+const flashTab = ref((() => {
+  try {
+    const v = localStorage.getItem(FLASH_TAB_KEY)
+    return FLASH_TAB_KEYS.includes(v) ? v : 'brief'
+  } catch { return 'brief' }
+})())
+watch(flashTab, (v) => {
+  try { localStorage.setItem(FLASH_TAB_KEY, v) } catch (e) { console.warn('[flash-tab] 记忆失败', e?.message) }
+})
 const sideTab = ref((() => {
   try {
     const v = localStorage.getItem(SIDE_TAB_KEY)
