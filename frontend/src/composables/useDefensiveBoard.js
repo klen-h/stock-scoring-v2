@@ -7,6 +7,22 @@ import { getShadowDefensive, getDefensiveGroup } from '../api'
 // ★ 2026-10-25：防御 Top10（H2' 影子榜，日批快照）—— 与 loadTop 解耦：
 //   · 失败只置 `defErr`，**不动 topItems**（两张榜各自独立，铁律 11 保留上次值）；
 //   · 后端 `ok=false`（尚无 defensive 行）时 `defItems=[]` + note 透传，卡内显示「等日批产出」。
+export function useDefensiveBoard({ useFrontendMode, feDbReady, scoreCodeList }) {
+//   ⚠️ 它是**日频**数据，只在切阶段/进页面加载，不挂 120s 轮询（盘中重拉没有意义）。
+const defTopItems = ref([])
+const defMeta = ref({})
+const defErr = ref('')
+// ★★ 2026-10-25（用户："想让它在盘中变动"）：工作台这张卡也支持「实时」预览 ——
+//   官方日批（`variant='defensive'` 快照）↔ 实时（当前精算榜代入同一冻结公式重排）。
+//   `defSnap` 存官方那份，点「日批」直接还原（零请求）；实时首次约 1 分钟（后端 3 分钟缓存）。
+const defSnap = ref({ items: [], meta: {} })
+const defIsLive = ref(false)
+const defLiveLoading = ref(false)
+// ★★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组**名单**（日批小表）。
+//   本地实时 = 名单（≈15KB/日）+ 浏览器内精算 ⇒ 后端零精算 egress、也不读 kline_cache。
+const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, eq_state: '' })
+
+
 async function loadDefTop() {
   try {
     const { data } = await getShadowDefensive(10)
@@ -142,23 +158,6 @@ function toggleDefLive() {
   }
   loadDefLive()
 }
-
-
-
-export function useDefensiveBoard({ useFrontendMode, feDbReady, scoreCodeList }) {
-//   ⚠️ 它是**日频**数据，只在切阶段/进页面加载，不挂 120s 轮询（盘中重拉没有意义）。
-const defTopItems = ref([])
-const defMeta = ref({})
-const defErr = ref('')
-// ★★ 2026-10-25（用户："想让它在盘中变动"）：工作台这张卡也支持「实时」预览 ——
-//   官方日批（`variant='defensive'` 快照）↔ 实时（当前精算榜代入同一冻结公式重排）。
-//   `defSnap` 存官方那份，点「日批」直接还原（零请求）；实时首次约 1 分钟（后端 3 分钟缓存）。
-const defSnap = ref({ items: [], meta: {} })
-const defIsLive = ref(false)
-const defLiveLoading = ref(false)
-// ★★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组**名单**（日批小表）。
-//   本地实时 = 名单（≈15KB/日）+ 浏览器内精算 ⇒ 后端零精算 egress、也不读 kline_cache。
-const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, eq_state: '' })
 
   return {
     defTopItems, defMeta, defErr, defSnap, defIsLive, defLiveLoading, defGroup,
