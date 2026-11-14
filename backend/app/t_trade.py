@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+"""
+================================================================================
+【文件作用】个股做T 的「支撑/阻力预设」—— **纯计算，零 IO 副作用**
+================================================================================
+【用户需求】（2026-11-15）
+  "新增一个股票量化做T功能，以 000429 为例：需支持基于技术指标提前预设该股的
+   支撑位与阻力位，并在盘中获取实时行情数据。"
+
+【用户确认的三点（同轮问答）】
+  1. 触发后**两者都要**：企微推送 + 记模拟盘（推送里带模拟持仓实时盈亏）；
+  2. **正T / 反T 都支持**，按当前持仓与资金自动判断；
+  3. **先回测验证**，再决定是否上线触发。
+
+【★★ 反T 不用全仓 —— 这是本模块的第一个关键设计】
+  卖出数量 = 底仓 × `ratio`（默认 **1/3**，可配 0.1~1.0）。
+  ⇒ 即使"卖了接不回来"，最多丢 1/3 底仓，而不是清仓。
+  价值股（如 000429 粤高速A）波动小，1/3 仓位做T 的收益/风险比更合理；
+  将来做高波动股，把 `ratio` 调小即可，**逻辑不用改**。
+  ⚠️ 反T 卖出仍需扣除"今日买入"部分（T+1 不可卖），这属于执行层，不在本模块。
+
+【★★ 为高波动品种铺路 —— 本模块的第二个关键设计】
+  所有阈值都**参数化 + 由 ATR% 驱动**，不写死单一股票的绝对价差：
+    · `space >= T_MIN_SPACE_ATR × ATR`：ATR 越大，要求日内空间越宽；
+    · `suggest_ratio()`：ATR% 超过 `T_HIGH_VOL_ATR_PCT` 时自动缩小仓位比例。
+  ⇒ 换标的只需调参数（或环境变量），**不用改代码**。
+
+【支撑/阻力的口径（沿用 `key_level_watch` 已验证的"候选位 + 择优"思路）】
+  · 候选位一律来自 **不含今日** 的历史（今日高低不能当支撑/阻力，那是结果不是原因）；
+  · 支撑 = 所有"低于现价"的候选里**最高**的那个；阻力 = "高于现价"里**最低**的；
+  · 距离带 `0.3% ~ 3%`：太近是噪音（一个 tick 就破），太远当日不可达。
+
+【⚠️ 与 `key_level_watch` 的分工】
+  那个模块**只算指数**，且明确"纯观察器、不产生买卖信号"；
+  本模块**面向个股**，输出的是**可执行价位**（供触发层消费）。
+  两者共享"候选位 + 择优"的算法思想，但**不共用代码**（指数与个股的口径不同）。
+================================================================================
+"""
+import os
+from typing import Dict, List, Optional
+
+# ── 可调参数（环境变量覆盖，方便换标的/换波动率档位时不改代码）──
+T_RATIO_DEFAULT = float(os.environ.get("T_RATIO_DEFAULT") or 1 / 3)
+T_RATIO_MIN = 0.1
+T_RATIO_MAX = 1.0
+
+T_SUPPORT_LOOKBACK = int(os.environ.get("T_SUPPORT_LOOKBACK") or 60)   # 前低/前高
+T_SHORT_LOOKBACK = int(os.environ.get("T_SHORT_LOOKBACK") or 20)        # 短线前高低
+T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 14)
+
+T_MIN_DIST_PCT = float(os.environ.get("T_MIN_DIST_PCT") or 0.3)   # 候选位距现价下限 %
+T_MAX_DIST_PCT = float(os.environ.get("T_MAX_DIST_PCT") or 3.0)   # 绝对上限 %
+# ★★ 2026-11-15（000429 回测实测后修正）：距离上限**还要受 ATR 约束**。
+#   【为什么】实测 000429（粤高速A）338 个交易日：
+#       支撑→阻力空间 平均 **3.58%**，而当日振幅平均只有 **1.93%**
+#       ⇒ 109 天"有空间"，但**两端同时触及 0 天**（做T 一天走不完一个来回）。
+#   根因是"前高/前低"这类历史位天然离现价 1.5~2.7%，对低波动价值股太远。
+#   ⇒ 上限改成 `min(T_MAX_DIST_PCT, atr_pct × T_DIST_ATR_MULT)`：
+#     低波动股（ATR%≈1.4）自动收到 1.7% 以内，高波动股（ATR%≈5）放宽到绝对上限。
+T_DIST_ATR_MULT = float(os.environ.get("T_DIST_ATR_MULT") or 1.2)
+# ATR 近端候选倍数：当历史位全都太远时，用 `现价 ± m×ATR` 兜底（类型标「ATR×m」）
+T_ATR_CAND_MULTS = tuple(
+    float(x) for x in (os.environ.get("T_ATR_CAND_MULTS") or "0.5,1.0").split(","))
+# 空间门槛（×ATR）。★ 原写 1.5 与"支撑≈-0.5ATR / 阻力≈+0.5ATR"自相矛盾
+#   （那样 space 至多 1×ATR，永远过不了门槛）。
+#   ★★ 但改成 0.8 后又踩了另一个坑：`ATR×m` 候选让 space 几乎恒等于 ~1×ATR
+#      ⇒ **倍数门槛永远满足，可行性判定形同虚设**（写单测时才发现）。
+#   ⇒ 必须**同时**要求绝对百分比下限（见 `T_MIN_SPACE_PCT`）：
+#     倍数管"相对波动够不够"，百分比管"扣成本后**还剩多少**"。
+T_MIN_SPACE_ATR = float(os.environ.get("T_MIN_SPACE_ATR") or 0.8)
+# 空间绝对下限（%）。做T 双边成本约 0.1%，再留出利润 ⇒ 低于 1% 的来回不值得动手
+#   （ATR% 0.5% 的股票 space 只有 ~0.4%，扣成本剩 0.3%，却要承担方向风险）。
+T_MIN_SPACE_PCT = float(os.environ.get("T_MIN_SPACE_PCT") or 1.0)
+
+# 高波动自动缩量：ATR% ≥ 此值时，仓位比例乘以 SCALE（为未来高波动股铺路）
+T_HIGH_VOL_ATR_PCT = float(os.environ.get("T_HIGH_VOL_ATR_PCT") or 4.0)
+T_HIGH_VOL_RATIO_SCALE = float(os.environ.get("T_HIGH_VOL_RATIO_SCALE") or 0.6)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  基础指标
+# ══════════════════════════════════════════════════════════════════════════
+
+def _f(v) -> Optional[float]:
+    """安全转 float；非法返回 None（不把 "-"/"" 当 0）。"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+def atr(bars: List[Dict], period: int = T_ATR_PERIOD) -> float:
+    """ATR（真实波幅均值）。数据不足返回 0.0。
+
+    ⚠️ **不直接用 `paper_trading._atr14()`**：它内部把日期硬编码成
+      `2026-01-01~2026-12-31` 且只拉 40 根，跨年后就失效；而且做T 需要
+      60 日前低，40 根根本不够。这里从调用方传进来的 bars 算，零额外请求。
+    """
+    if len(bars) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(bars)):
+        h, l = _f(bars[i].get("high")), _f(bars[i].get("low"))
+        pc = _f(bars[i - 1].get("close"))
+        if h is None or l is None or pc is None:
+            continue
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    if len(trs) < period:
+        return 0.0
+    return round(sum(trs[-period:]) / period, 4)
+
+
+def _ma(bars: List[Dict], n: int) -> Optional[float]:
+    if len(bars) < n:
+        return None
+    vals = [_f(b.get("close")) for b in bars[-n:]]
+    if any(v is None for v in vals):
+        return None
+    return round(sum(vals) / n, 4)
+
+
+def round_levels(price: float) -> List[float]:
+    """现价附近的整数/半整数关口（A 股心理位）。
+
+    只返回最近的两个（上一个、下一个），由 `compute_levels` 再按距离过滤。
+    ⚠️ 不用 `floor/ceil` 到整数元：13.79 的 13.00 差 5.7%，超过 3% 上限、永远选不上，
+       白占候选。这里用 **0.5 元步长**，覆盖 13.5 / 14.0 这种真正会形成阻力的位置。
+    """
+    if price <= 0:
+        return []
+    step = 0.5 if price < 50 else (1.0 if price < 200 else 5.0)
+    lo = (int(price / step)) * step
+    hi = lo + step
+    out = []
+    for v in (round(lo, 2), round(hi, 2)):
+        if v > 0 and v not in out:
+            out.append(v)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  支撑 / 阻力
+# ══════════════════════════════════════════════════════════════════════════
+
+def compute_levels(bars: List[Dict], price: Optional[float] = None) -> Dict:
+    """算当前价下方最近支撑、上方最近阻力（含来源解释）。
+
+    参数
+      bars  : 升序日线（最后一项 = 最近交易日）；须含 high/low/close
+      price : 参照价（盘中传实时价；盘前传最新收盘）。缺省用最后收盘。
+
+    返回
+      {price, support, support_type, resistance, resistance_type,
+       atr, atr_pct, candidates: {support: [...], resistance: [...]}, reason}
+      `support`/`resistance` 为 None 时看 `reason`。
+    """
+    out = {"price": None, "support": None, "support_type": "",
+           "resistance": None, "resistance_type": "",
+           "atr": 0.0, "atr_pct": 0.0, "max_dist_pct": 0.0,
+           "candidates": {"support": [], "resistance": []},
+           "reason": ""}
+    if not bars or len(bars) < 2:
+        out["reason"] = "日线不足（需至少 2 根）"
+        return out
+
+    px = _f(price) or _f(bars[-1].get("close"))
+    if not px:
+        out["reason"] = "参照价无效"
+        return out
+    out["price"] = round(px, 3)
+
+    # ★ 候选位**一律来自不含今日的历史**：今日的高低点是"结果"，拿来当支撑/阻力是同义反复
+    hist = bars[:-1]
+    if len(hist) < 2:
+        out["reason"] = "去掉今日后历史不足"
+        return out
+
+    a = atr(bars)
+    out["atr"] = a
+    out["atr_pct"] = round(a / px * 100, 2) if a else 0.0
+
+    # ── 候选池（每条都带类型标签，便于界面解释"为什么是这个价"）──
+    sup_c: List[tuple] = []   # (value, type)
+    res_c: List[tuple] = []
+
+    seg = hist[-T_SUPPORT_LOOKBACK:]
+    closes = [_f(b.get("close")) for b in seg]
+    closes = [c for c in closes if c]
+    if closes:
+        sup_c.append((min(closes), "前低(%d日)" % len(closes)))
+        res_c.append((max(closes), "前高(%d日)" % len(closes)))
+
+    seg2 = hist[-T_SHORT_LOOKBACK:]
+    lows = [_f(b.get("low")) for b in seg2]
+    highs = [_f(b.get("high")) for b in seg2]
+    lows = [x for x in lows if x]
+    highs = [x for x in highs if x]
+    if lows:
+        sup_c.append((min(lows), "近%d日最低" % len(lows)))
+    if highs:
+        res_c.append((max(highs), "近%d日最高" % len(highs)))
+
+    for n, label in ((20, "MA20"), (60, "MA60")):
+        m = _ma(hist, n)
+        if m:
+            sup_c.append((m, label))
+            res_c.append((m, label))
+
+    for v in round_levels(px):
+        if v < px:
+            sup_c.append((v, "整数位"))
+        elif v > px:
+            res_c.append((v, "整数位"))
+
+    # ★★ ATR 近端候选（兜底）：当历史位（前高低/均线）全都落在 ATR 之外时，
+    #   `现价 ± m×ATR` 是**唯一还能当日走到**的位置。没有它，
+    #   低波动价值股会永远"支撑/阻力太远、做T 走不完"（000429 实测 0/109 天）。
+    if a:
+        for m in T_ATR_CAND_MULTS:
+            d = a * m
+            if px - d > 0:
+                sup_c.append((px - d, "ATR×%.1f" % m))
+            res_c.append((px + d, "ATR×%.1f" % m))
+
+    # ── 择优：距离带过滤（下限固定 0.3%，上限受 ATR 约束）──
+    max_dist = T_MAX_DIST_PCT
+    if out["atr_pct"] > 0:
+        max_dist = min(T_MAX_DIST_PCT, out["atr_pct"] * T_DIST_ATR_MULT)
+    out["max_dist_pct"] = round(max_dist, 2)
+
+    def _pick(cands, below: bool):
+        kept = []
+        for v, t in cands:
+            dist = abs(px - v) / px * 100
+            if v == 0 or dist < T_MIN_DIST_PCT or dist > max_dist:
+                continue
+            if below and v >= px:
+                continue
+            if (not below) and v <= px:
+                continue
+            kept.append({"value": round(v, 3), "type": t, "dist_pct": round(dist, 2)})
+        kept.sort(key=lambda x: x["dist_pct"])
+        return kept
+
+    sup_kept = _pick(sup_c, below=True)
+    res_kept = _pick(res_c, below=False)
+    out["candidates"] = {"support": sup_kept, "resistance": res_kept}
+
+    if sup_kept:
+        out["support"] = sup_kept[0]["value"]
+        out["support_type"] = sup_kept[0]["type"]
+    if res_kept:
+        out["resistance"] = res_kept[0]["value"]
+        out["resistance_type"] = res_kept[0]["type"]
+
+    if not sup_kept and not res_kept:
+        out["reason"] = ("现价 %.2f 附近 %.1f%%~%.1f%% 内无有效候选位（波动过小或"
+                         "已贴近前高/前低）" % (px, T_MIN_DIST_PCT, T_MAX_DIST_PCT))
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  仓位比例（★ 反T 不用全仓 + 高波动自动缩量）
+# ══════════════════════════════════════════════════════════════════════════
+
+def suggest_ratio(atr_pct: float, base: Optional[float] = None) -> Dict:
+    """做T 仓位比例建议（占底仓/可用资金的比例）。
+
+    默认 **1/3**；`atr_pct >= T_HIGH_VOL_ATR_PCT` 时再乘 `T_HIGH_VOL_RATIO_SCALE`
+    ⇒ 高波动股自动缩量（同等比例下波动风险更大）。
+    """
+    b = T_RATIO_DEFAULT if base is None else float(base)
+    b = max(T_RATIO_MIN, min(T_RATIO_MAX, b))
+    scaled = b
+    note = "默认 %d%%" % round(b * 100)
+    if atr_pct >= T_HIGH_VOL_ATR_PCT:
+        scaled = max(T_RATIO_MIN, b * T_HIGH_VOL_RATIO_SCALE)
+        note = ("ATR %.2f%% ≥ %.1f%% ⇒ 高波动，比例 %.0f%% → %.0f%%"
+                % (atr_pct, T_HIGH_VOL_ATR_PCT, b * 100, scaled * 100))
+    return {"ratio": round(scaled, 3), "note": note}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  完整计划
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_plan(code: str, name: str, bars: List[Dict],
+               price: Optional[float] = None,
+               ratio: Optional[float] = None) -> Dict:
+    """生成一只股票的做T 预案（支撑/阻力 + 可行性 + 建议仓位）。
+
+    `feasible=True` 的三个条件（缺一不可）：
+      1. 支撑、阻力都找到了；
+      2. 空间 ≥ `T_MIN_SPACE_ATR × ATR`（日内振幅盖不过一个 ATR，做T 没肉）；
+      3. 空间百分比 ≥ `2 × T_MIN_DIST_PCT`（否则买在支撑、卖在阻力还不够覆盖门槛）。
+    """
+    lv = compute_levels(bars, price)
+    a, px = lv["atr"], lv["price"]
+    sup, res = lv["support"], lv["resistance"]
+    ratio_info = suggest_ratio(lv["atr_pct"], ratio)
+
+    plan = {
+        "code": code, "name": name,
+        "price": px, "as_of": (bars[-1].get("date") if bars else None),
+        "support": sup, "support_type": lv["support_type"],
+        "resistance": res, "resistance_type": lv["resistance_type"],
+        "atr": a, "atr_pct": lv["atr_pct"],
+        "max_dist_pct": lv.get("max_dist_pct"),
+        "ratio": ratio_info["ratio"], "ratio_note": ratio_info["note"],
+        "space_abs": None, "space_pct": None, "space_atr_mult": None,
+        "feasible": False, "reason": lv["reason"],
+        "candidates": lv["candidates"],
+    }
+    if not (sup and res and a and px):
+        if not plan["reason"]:
+            plan["reason"] = "支撑/阻力/ATR 至少一项缺失"
+        return plan
+
+    space_abs = round(res - sup, 3)
+    space_pct = round(space_abs / sup * 100, 2)
+    mult = round(space_abs / a, 2)
+    plan.update({"space_abs": space_abs, "space_pct": space_pct,
+                 "space_atr_mult": mult})
+
+    if mult < T_MIN_SPACE_ATR:
+        plan["reason"] = ("空间 %.2f（%.2f%%）= %.2f×ATR < 门槛 %.1f×ATR ⇒ "
+                          "日内空间不够，做T 不划算" % (space_abs, space_pct, mult, T_MIN_SPACE_ATR))
+        return plan
+    # ★ 绝对下限：倍数门槛会被 `ATR×m` 候选"自我满足"（space≈1×ATR 恒 ≥0.8×ATR），
+    #   所以必须再卡一道百分比 —— 这一条才是"扣完成本还剩多少"的真正判据。
+    if space_pct < T_MIN_SPACE_PCT:
+        plan["reason"] = ("空间 %.2f%% < %.1f%% ⇒ 扣掉成本后太薄，不值得为这点差价"
+                          "承担方向风险" % (space_pct, T_MIN_SPACE_PCT))
+        return plan
+
+    plan["feasible"] = True
+    return plan
