@@ -121,6 +121,26 @@ def get_rule_stats(days: int = 90, user: dict = Depends(get_current_user)):
     return {"days": days, "data": audit.rule_stats(days=min(max(days, 7), 365))}
 
 
+@router.get("/review-summary")
+def get_review_summary(date: str = None, days: int = 20,
+                       user: dict = Depends(get_current_user)):
+    """**按日**的三时段复盘对账（2026-11-14，用户："盘前盘中盘后复盘回测验证准确性；
+    我主要在企微看，需要把重要内容简要常驻到工作台"）。
+
+    回答：这一天系统**在什么时段说了什么、哪些事后被验证/打脸/还没到期**，
+    以及近 `days` 日命中率趋势。
+
+    【与既有接口的分工】
+      · `/rule-stats`：按**规则**聚合 —— "这条规则该不该继续开"
+      · `/attribution`：按**建议类型**归因 —— "哪类建议逻辑对"
+      · 本接口：按**日期**聚合 —— "这一天说了什么、对了几条"（复盘的天然单位）
+
+    ⚠️ 数据源 = `coach_alerts`（教练卡走分类群**不进** push_log）+ `push_log`
+      （其余推送统一留痕，已滤运维噪音）。`hit_rate` 为方向性检验，非收益归因。
+    """
+    return audit.daily_review_summary(date=date, days=days)
+
+
 @router.get("/attribution")
 def get_attribution(days: int = 60, user: dict = Depends(get_current_user)):
     """教练建议**事后归因**（P2 / 缺口 3）—— 补「5 日结果只回填不评估」那一半。

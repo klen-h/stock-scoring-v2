@@ -841,3 +841,162 @@ def _days_ago(days: int) -> str:
     from datetime import timedelta
     # ★ 审查 P2-⑫：与 _now/_today 统一北京时间
     return (flash_rules.beijing_now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  按日复盘聚合（★ 2026-11-14，用户："对盘前盘中盘后进行复盘回测，验证准确性
+#  及优化；我主要在企微看，需要把重要内容简要常驻到工作台"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【现状缺口】`rule_stats` 只按**规则**聚合（90 天窗口），`execution_consistency`
+#   只算**执行率** —— 都回答不了"**某一天**系统说了什么、哪些说对了"。
+#   而这恰是复盘最自然的单位：用户在企微看到的推送一滚就没，工作台需要
+#   一个**常驻**的对账视图（什么时段、说了什么、事后对没对）。
+#
+# 【数据源】
+#   · `coach_alerts`：教练纪律卡（含 `pushed` 是否真推到企微、`outcome_*` 事后评价）
+#     ⚠️ 教练卡走分类群通道，**不进 `push_log`** ⇒ 必须直接查这张表
+#   · `push_log`：其余全部推送的统一留痕（brief/risk/alert/None 四类）
+#     None 类 = 日批直推（决策简报/夜报/周报），同为重要内容
+#
+# 【时段划分】按北京时间：盘前 <09:30 ／ 盘中 09:30~15:05 ／ 盘后 >15:05
+#   （15:05 是给"收盘后几分钟内出的快讯/警示"留的缓冲）
+# ══════════════════════════════════════════════════════════════════════════
+
+# push_log 里的**运维噪音**标题关键词（对账不需要"任务失败/内存告警"这类）。
+# ⚠️ 刻意不用"告警/体检"这类可能误伤业务标题的宽词（教练体检卡、风险警示都不该滤）。
+_NOISE_TITLE_KEYS = ("任务失败", "数据断档", "内存", "备份", "心跳",
+                     "健康检查", "测试", "因子体检", "巡检", "清理")
+
+
+def _verdict_by(expect: str, val: float, basis: str):
+    ok = (expect == "down" and val < 0) or (expect == "up" and val > 0)
+    return ("hit" if ok else "miss", basis, val)
+
+
+def _row_verdict(rule_id: str, outcome_pct, outcome_bench_pct, outcome_spread_pp):
+    """单条建议的事后方向判定 → (verdict, basis, val)。
+
+    与 `rule_stats` **同口径**（个股 → 分化 → 基准；`expect=None` 不评价），
+    但抽出来复用 —— `rule_stats` 本体保持不动（避免回归）。
+    """
+    expect = _RULE_EXPECT.get(rule_id)
+    if expect is None:
+        return ("not_evaluable", "-", None)
+    if outcome_pct is not None:
+        return _verdict_by(expect, float(outcome_pct), "stock")
+    if rule_id in _SPREAD_RULES and outcome_spread_pp is not None:
+        return _verdict_by(expect, float(outcome_spread_pp), "spread")
+    if outcome_bench_pct is not None:
+        return _verdict_by(expect, float(outcome_bench_pct), "bench")
+    # 已过 T+5 但还没回填（日批没跑/指数缺数据）⇒ 待验证，不是"不评价"
+    return ("pending", "-", None)
+
+
+def _segment_of(hhmm: str) -> str:
+    """盘前 <09:30 ／ 盘中 09:30~15:05 ／ 盘后 >15:05（北京时间 HH:MM）。"""
+    if hhmm < "09:30":
+        return "premarket"
+    if hhmm <= "15:05":
+        return "intraday"
+    return "postmarket"
+
+
+def daily_review_summary(date: str = None, days: int = 20) -> dict:
+    """某一天的**三时段复盘对账** + 近 `days` 日命中率趋势。
+
+    回答三个问题：
+      1. 这天系统**在什么时段说了什么**（教练卡 + 重要推送，按时间排好）
+      2. 其中**哪些事后被验证 / 打脸 / 还没到期**（方向性判定，非收益归因）
+      3. 近 `days` 日**整体的命中率趋势**（用于观察"准确率是在变好还是变坏"）
+
+    ⚠️ 与 `rule_stats` 的分工：那边按**规则**聚合回答"哪条规则该不该关"；
+      这里按**日期**聚合回答"这一天发生了什么、对了几条"。
+    ⚠️ `hit_rate` 是方向性检验：只说"事后方向是否印证"，不含仓位/时点/个股。
+    """
+    day = date or _today()
+    days = max(5, min(int(days), 90))
+
+    # ── 1. 当日教练建议 ──
+    alerts = db.fetch(
+        "SELECT rule_id, label, severity, code, message, alert_time, "
+        "pushed, executed, outcome_pct, outcome_bench_pct, outcome_spread_pp "
+        "FROM coach_alerts WHERE alert_date=%s ORDER BY alert_time", (day,)) or []
+    items = []
+    summ = {"total": 0, "evaluable": 0, "hit": 0, "miss": 0,
+            "pending": 0, "not_evaluable": 0}
+    for r in alerts:
+        rid = str(r.get("rule_id") or "")
+        v, basis, val = _row_verdict(rid, r.get("outcome_pct"),
+                                     r.get("outcome_bench_pct"),
+                                     r.get("outcome_spread_pp"))
+        hhmm = str(r.get("alert_time") or "")[11:16]
+        summ["total"] += 1
+        summ[v] = summ.get(v, 0) + 1
+        if v in ("hit", "miss"):
+            summ["evaluable"] += 1
+        items.append({
+            "source": "coach", "segment": _segment_of(hhmm), "time": hhmm,
+            "rule_id": rid, "title": str(r.get("label") or rid),
+            "brief": str(r.get("message") or "")[:120],
+            "severity": r.get("severity") or "",
+            "code": r.get("code") or "",
+            "pushed": bool(r.get("pushed")),
+            "executed": r.get("executed") or "",
+            "verdict": v, "basis": basis, "val": val,
+        })
+
+    # ── 2. 当日其余重要推送（滤掉运维噪音）──
+    pushes = db.fetch(
+        "SELECT ts, title, category FROM push_log WHERE date=%s ORDER BY ts",
+        (day,)) or []
+    for r in pushes:
+        title = str(r.get("title") or "")
+        if any(k in title for k in _NOISE_TITLE_KEYS):
+            continue
+        hhmm = str(r.get("ts") or "")[11:16]
+        items.append({
+            "source": "push", "segment": _segment_of(hhmm), "time": hhmm,
+            "rule_id": "", "title": title, "brief": "",
+            "severity": "", "code": "", "pushed": True, "executed": "",
+            "verdict": "not_evaluable", "basis": "-", "val": None,
+            "category": r.get("category") or "",
+        })
+
+    segments = {"premarket": [], "intraday": [], "postmarket": []}
+    for it in items:
+        segments.setdefault(it["segment"], []).append(it)
+    for seg in segments.values():
+        seg.sort(key=lambda x: (x["time"], x["source"]))
+
+    hit_rate = (round(summ["hit"] / summ["evaluable"] * 100, 1)
+                if summ["evaluable"] else None)
+
+    # ── 3. 近 `days` 日趋势（只按教练建议算，push 无方向语义）──
+    start = _days_ago(days)
+    rows = db.fetch(
+        "SELECT alert_date, rule_id, outcome_pct, outcome_bench_pct, "
+        "outcome_spread_pp FROM coach_alerts WHERE alert_date >= %s "
+        "ORDER BY alert_date", (start,)) or []
+    by_day = {}
+    for r in rows:
+        d0 = str(r.get("alert_date") or "")[:10]
+        if not d0:
+            continue
+        a = by_day.setdefault(d0, {"total": 0, "evaluable": 0, "hit": 0})
+        v, _, _ = _row_verdict(str(r.get("rule_id") or ""), r.get("outcome_pct"),
+                               r.get("outcome_bench_pct"), r.get("outcome_spread_pp"))
+        a["total"] += 1
+        if v in ("hit", "miss"):
+            a["evaluable"] += 1
+            if v == "hit":
+                a["hit"] += 1
+    trend = [{"date": d0, **a,
+              "hit_rate": round(a["hit"] / a["evaluable"] * 100, 1) if a["evaluable"] else None}
+             for d0, a in sorted(by_day.items())]
+
+    return {
+        "date": day,
+        "summary": {**summ, "hit_rate": hit_rate},
+        "segments": segments,
+        "trend": trend,
+    }

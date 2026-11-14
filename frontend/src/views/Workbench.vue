@@ -3115,6 +3115,61 @@
             </template>
           </div>
           </div>
+
+          <!-- ★★ 2026-11-14（用户："对盘前盘中盘后进行复盘回测，验证准确性及优化"）：
+               **三时段复盘对账** —— 右栏摘要卡的详情版。
+               盘前/盘中/盘后三列：教练纪律卡（带事后命中判定 ✓/✗/⏳）+ 重要推送留痕。
+               【与 rule-stats 的分工】那边按规则聚合回答"哪条规则该不该关"；
+                 这里按日期聚合回答"这一天说了什么、对了几条"。
+               【为什么推送不计分】push_log 的条目（简报/日报/风险警示）是**观察类内容**，
+                 没有方向语义；只有教练建议（有 _RULE_EXPECT 方向映射）才能做对错判定。 -->
+          <div v-if="reviewSummary" class="bg-card border border-border rounded-lg p-4 mt-3">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-1">
+              <div class="text-sm font-semibold">三时段复盘对账
+                <span class="text-[10px] text-muted font-normal">{{ reviewSummary.date }}</span></div>
+              <div class="text-[11px] text-muted">
+                建议 {{ reviewSummary.summary.total }} 条 ·
+                已验证 {{ reviewSummary.summary.evaluable }} ·
+                <span class="text-emerald-400">命中 {{ reviewSummary.summary.hit }}</span> ·
+                <span class="text-rose-400">打脸 {{ reviewSummary.summary.miss }}</span> ·
+                <span class="text-amber-300">待验证 {{ reviewSummary.summary.pending }}</span>
+                <span v-if="reviewSummary.summary.hit_rate != null">
+                  ｜命中率 {{ reviewSummary.summary.hit_rate }}%</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div v-for="(seg, key) in reviewSummary.segments" :key="key"
+                   class="border border-border/40 rounded p-2 min-w-0">
+                <div class="text-xs font-semibold mb-1">{{ SEG_LABEL[key] || key }}
+                  <span class="text-[10px] text-muted font-normal">（{{ seg.length }}）</span></div>
+                <div v-if="!seg.length" class="text-[11px] text-muted">—（无）</div>
+                <div v-for="(it, i) in seg" :key="i"
+                     class="text-[11px] flex gap-1.5 items-start py-0.5 leading-snug">
+                  <span class="shrink-0 font-mono text-muted">{{ it.time }}</span>
+                  <span class="shrink-0" :class="verdictCls(it.verdict)">{{ VERDICT_MARK[it.verdict] }}</span>
+                  <span class="min-w-0 truncate cursor-help"
+                        :title="it.brief || it.title">{{ it.title }}</span>
+                  <span v-if="it.source === 'coach' && !it.pushed"
+                        class="shrink-0 text-[10px] text-muted" title="未推送到企微（仅落库）">未推</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="reviewSummary.trend && reviewSummary.trend.length"
+                 class="mt-3 pt-2 border-t border-border/40">
+              <div class="text-[11px] text-muted mb-1">
+                近 {{ reviewSummary.trend.length }} 日教练建议命中率
+                （方向性检验，非收益归因；灰色 = 当日建议尚未到 T+5 验证期）</div>
+              <div class="flex items-end gap-1 h-10">
+                <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm group relative"
+                     :class="t.hit_rate == null ? 'bg-white/10'
+                       : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
+                     :style="{ height: t.hit_rate == null ? '18%' : Math.max(t.hit_rate, 8) + '%' }"
+                     :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
+              </div>
+            </div>
+            <div class="text-[10px] text-muted mt-2">
+              ⚠️ 命中率 = 事后 T+5 方向是否印证了建议（规则在 90 天窗口的整体表现见教练页「规则准确率」）。</div>
+          </div>
           <div class="min-w-0">
           <!-- ★★ 2026-09-25（P1「明日准备」）—— 复盘 → 次日的**交接棒**。
                复盘原本 6 块全在回答"今天发生了什么"，**没有一块回答"明天要做什么"**
@@ -3221,7 +3276,50 @@
              「今日系统时间线」在常驻区最底部（见 aside 末尾），不参与本组 tab。
              ⚠️ 教练卡自身的折叠按钮去掉 —— tab 切换已足够，两种收起叠加要多点一次；
                 `todoOpen` 保留（默认展开），不影响列表渲染。 -->
-        <div class="bg-card border border-border rounded-lg p-3">
+
+             <!-- ★★ 2026-11-14（用户："我主要在企微看，需要将重要内容简要常驻到工作台"）：
+             **今日复盘对账**摘要卡 —— 常驻右栏最顶（不随 tab 切走、不随 phase 切走）。
+             企微推送一滚就没，这里回答"今天系统说了什么、哪些事后被验证"：
+              · 三时段条目数（教练卡 + 重要推送，push_log 已滤运维噪音）
+              · 教练建议的事后判定：✓命中 / ✗打脸 / ⏳待验证（T+5 未到期）
+             明细与近 20 日趋势在「复盘」tab 的「三时段复盘对账」区块。 -->
+             <div class="bg-card border border-border rounded-lg p-3">
+             <div class="flex items-center justify-between mb-1.5">
+             <div class="text-xs font-semibold">今日复盘对账
+             <span class="text-[10px] text-muted font-normal">{{ selectedDate || bjToday() }}</span></div>
+             <span class="text-[10px] text-muted">明细在复盘 tab</span>
+             </div>
+             <div v-if="reviewSummaryErr" class="text-[11px] text-muted">—（加载失败：{{ reviewSummaryErr }}）</div>
+             <div v-else-if="!reviewSummary" class="text-[11px] text-muted">—（暂无数据）</div>
+             <template v-else>
+             <div class="text-[11px] space-y-0.5">
+             <div>
+               教练建议 <b>{{ reviewSummary.summary.total }}</b> 条
+               <span v-if="reviewSummary.summary.hit" class="text-emerald-400">✓{{ reviewSummary.summary.hit }}</span>
+               <span v-if="reviewSummary.summary.miss" class="text-rose-400">✗{{ reviewSummary.summary.miss }}</span>
+               <span v-if="reviewSummary.summary.pending" class="text-amber-300">⏳{{ reviewSummary.summary.pending }}</span>
+               <span v-if="reviewSummary.summary.hit_rate != null"
+                     class="text-muted">（{{ reviewSummary.summary.hit_rate }}%）</span>
+             </div>
+             <div class="text-muted">
+               盘前 {{ (reviewSummary.segments.premarket || []).length }} ·
+               盘中 {{ (reviewSummary.segments.intraday || []).length }} ·
+               盘后 {{ (reviewSummary.segments.postmarket || []).length }} 条（含重要推送）
+             </div>
+             <div v-if="reviewSummary.trend && reviewSummary.trend.length" class="pt-1">
+               <div class="text-muted mb-0.5">近 {{ reviewSummary.trend.length }} 日命中率</div>
+               <div class="flex items-end gap-0.5 h-6">
+                 <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm"
+                      :class="t.hit_rate == null ? 'bg-white/10'
+                        : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
+                      :style="{ height: t.hit_rate == null ? '20%' : Math.max(t.hit_rate, 6) + '%' }"
+                      :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
+               </div>
+             </div>
+             </div>
+             </template>
+             </div>
+             <div class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
               <button v-for="t in sideTabs" :key="t.key" type="button"
@@ -3600,6 +3698,9 @@ import { useVerification, STATUS_STYLE, verifyTip } from '../composables/useVeri
 import {
   getWorkbenchDayIndex, getWorkbenchDay,
   getTraderBrief, getCoachAlerts, getCoachConsistency, getCoachPlanExecutionRate,
+ // ★★ 2026-11-14（用户："我主要在企微看，需要将重要内容简要常驻到工作台"）：
+ //   按日三时段复盘对账（教练卡 + 重要推送 + 事后命中判定）。
+ getCoachReviewSummary,
   getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   // ★ 2026-10-25：H2' 阴跌防御影子榜（工作台「防御 Top10」标签页的数据源，日批快照）
   getShadowDefensive,
@@ -5982,6 +6083,34 @@ async function loadTodayExec() {
   }
 }
 
+// ★★ 2026-11-14（用户："对盘前盘中盘后进行复盘回测验证准确性；我主要在企微看，
+//   需要把重要内容简要常驻到工作台"）：**按日三时段复盘对账**。
+//   企微推送一滚就没 ⇒ 这里把"今天说了什么、哪些事后被验证"做成**常驻**视图。
+//   【加载时机】首屏就拉（右栏摘要卡常驻要用，不能等切到复盘 tab 才有数据）；
+//     复盘 phase 进入时复用缓存（`_dayCached` 同款纪律）。
+//   【数据内容】segments = 盘前/盘中/盘后三组条目（教练卡带 verdict 命中判定，
+//     push 为不计分留痕）；summary = 当日计数；trend = 近 N 日命中率。
+const reviewSummary = ref(null)
+const reviewSummaryErr = ref('')
+const SEG_LABEL = { premarket: '盘前', intraday: '盘中', postmarket: '盘后' }
+const VERDICT_MARK = { hit: '✓命中', miss: '✗打脸', pending: '⏳待验证', not_evaluable: '·不计分' }
+function verdictCls(v) {
+  return { hit: 'text-emerald-400', miss: 'text-rose-400',
+           pending: 'text-amber-300', not_evaluable: 'text-muted' }[v] || 'text-muted'
+}
+async function loadReviewSummary(date = '') {
+  const day = date || bjToday()
+  if (_dayCached('reviewSummary', day)) return
+  try {
+    const { data } = await getCoachReviewSummary(day, 20)
+    reviewSummary.value = data || null
+    reviewSummaryErr.value = ''
+    if (reviewSummary.value) _dayMark('reviewSummary', day)   // 纪律②：空则不缓存
+  } catch (e) {
+    reviewSummaryErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
+  }
+}
+
 // ★★ 2026-09-25（用户："把合理的都做了"）—— P0 盘后「**今日结算**」。
 //   【为什么要它】盘后原本只有"系统榜 + 推送日志"，**看不到"我今天的结果"**：
 //     `portfolio_radar.summary` 只有 {n, risk, opportunity, in_watch}，全页无盈亏汇总
@@ -6728,7 +6857,7 @@ async function loadPhaseData(phase) {
   // ★ 2026-09-25（P1）：复盘也拉"待触发计划"（明日准备）—— 复盘正是"把今天结论转成明天待办"的时点
   // ★ 2026-09-30（P2 续）：复盘补「板块 Top5 + 成交占比」—— 复盘要看"今天什么行情、
   //   资金在哪个板块"，而这两块此前**只挂盘中** ⇒ 复盘时段整个板块卡是空的（切过来才残留旧值）。
-  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); await loadSectorTop(); await loadAmountShare(); }
+  else if (phase === 'review') { await loadConsistency(); await loadEmotionReview(); await loadSizing(); await loadTailReview(); await loadBrief('postmarket'); await loadReport(todayStr); await loadPlans(); await loadSectorTop(); await loadAmountShare(); await loadReviewSummary(todayStr); }
   // ★★ 2026-11-01（「早盘复盘」段）：只需两件事 ——
   //   ① `loadPulse()`：顶栏指数 + **给后端 `_OVERVIEW_IDX_SNAP` 预热**
   //      （amreview 的"指数涨跌"读的就是那份快照，刻意不自己外呼）；
@@ -6948,7 +7077,9 @@ onMounted(async () => {
   // ★ 2026-11-01：`loadLidaxiao()` 已从首屏批次移除 —— 改为**切到该 tab 时才取**
   //   （见 `ensureLidx`）。默认 tab 是「教练卡」，绝大多数打开页面的人不会看它，
   //   首屏就不必为它付一次 `SELECT *`。
-  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario()])
+  // ★ 2026-11-14：`loadReviewSummary` 也进首屏 —— 右栏"复盘对账"摘要卡**常驻**显示
+  //   （用户在企微看推送一滚就没，工作台必须随时能看到"今天说了什么、对了几条"）。
+  await Promise.all([loadOverview(), loadTemperature(), loadRegime(), loadEvents(), loadCoach(), loadRadar(), loadPush(todayStr), loadRealtimeUplimit(), loadCalendarAhead(), loadCalendarToday(), loadAmountRt(), loadPolicyBottom(), loadLiquidity(), loadWorkbenchScan(), loadRiskWatch(), loadScenario(), loadReviewSummary(todayStr)])
   if (sideTab.value === 'lidx') ensureLidx()
   loadPhaseData(selectedPhase.value)
   startPolling()

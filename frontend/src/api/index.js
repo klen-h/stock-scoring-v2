@@ -601,6 +601,11 @@ export const getCoachAbandonReasons = (limit = 20) => http.get('/coach/abandon-r
 //   按 建议类型/主力阶段/执行结果/放弃理由 分组算 T+5/T+20 对基准超额 ⇒ 分别对应
 //   「逻辑错 / 时机错 / 执行错」（执行率只覆盖最后一种）。口径与已知限制见后端模块头。
 export const getCoachAttribution = (days = 60) => http.get('/coach/attribution', { params: { days } })
+// ★★ 2026-11-14（用户："对盘前盘中盘后进行复盘回测，验证准确性及优化；我主要在企微看，
+//   需要把重要内容简要常驻到工作台"）：按**日**的三时段复盘对账。
+//   与 rule-stats（按规则）/ attribution（按类型）分工 —— 这里回答"这一天说了什么、对了几条"。
+export const getCoachReviewSummary = (date = '', days = 20) =>
+  http.get('/coach/review-summary', { params: { date, days } })
 // ★ 2026-11-13：按规则的准确率（补 /attribution 覆盖不到的市场级建议）
 export const getCoachRuleStats = (days = 90) => http.get('/coach/rule-stats', { params: { days } })
 
