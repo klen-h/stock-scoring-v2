@@ -3665,6 +3665,7 @@ import { renderMd } from '../composables/markdown'
 import InsightBody from '../components/InsightBody.vue'
 import { useLidaxiao } from '../composables/useLidaxiao'
 import { useDefensiveBoard } from '../composables/useDefensiveBoard'
+import { useObsAIReview } from '../composables/useObsAIReview'
 import TodoCard from '../components/workbench/TodoCard.vue'
 // ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
@@ -5530,46 +5531,10 @@ function scenVal(s) {
   const n = Number(v)
   return `${Number.isInteger(n) ? n : n.toFixed(2)}${s.unit || ''}`
 }
-// ★★ 2026-10-24（用户："观察器什么时候能加上 llm 分析"）：观察器 AI 解读。
-//   · **默认收起、点开才请求** —— 它是同步 LLM 调用；按日缓存 + 数据指纹，30 分钟内重复点免费。
-//   · 只做"性质判断 + 推翻条件"，不给仓位/买卖建议（观察器不进决策链）。
-const obsAIOpen = ref(false)
-const obsAI = ref({ loading: false, error: '', markdown: '', conclusion: '', reasons: [],
-                    cached: false, as_of: '', date: '' })
-const obsAISummary = computed(() => {
-  const o = obsAI.value
-  if (o.loading) return '分析中…（LLM，约十几秒）'
-  if (o.error) return '解读失败（点开查看）'
-  if (o.conclusion) return o.conclusion
-  return '点开让 AI 解读今天的变化（反弹 / 反转 + 推翻条件）'
-})
-async function loadObsAI(force = false) {
-  if (obsAI.value.loading) return
-  obsAI.value = { ...obsAI.value, loading: true, error: '' }
-  try {
-    const { data } = await getObserverReview(selectedDate.value, !!force)
-    if (data && data.ok === false) {
-      obsAI.value = { ...obsAI.value, loading: false, error: data.error || '解读失败' }
-      return
-    }
-    obsAI.value = {
-      loading: false, error: '',
-      markdown: data.markdown || '', conclusion: data.conclusion || '',
-      reasons: data.reasons || [], cached: !!data.cached,
-      as_of: data.as_of || '', date: data.date || '',
-    }
-  } catch (e) {
-    obsAI.value = { ...obsAI.value, loading: false,
-                    error: '请求失败：' + (e?.message || e) }
-  }
-}
-function toggleObsAI() {
-  obsAIOpen.value = !obsAIOpen.value
-  if (obsAIOpen.value && !obsAI.value.loading
-      && !obsAI.value.markdown && !obsAI.value.conclusion) {
-    loadObsAI(false)
-  }
-}
+// ★ 2026-11-14（渐进拆分③）：观察器 AI 解读抽到 composables/useObsAIReview.js——
+//   DI 注入 selectedDate（日期回放联动）；解构同名 ⇒ 模板零改动。
+const { obsAIOpen, obsAI, obsAISummary, loadObsAI, toggleObsAI } =
+  useObsAIReview({ selectedDate })
 
 async function loadScenario() {
   scenErr.value = false
