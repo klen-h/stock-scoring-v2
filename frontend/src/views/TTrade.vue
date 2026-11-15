@@ -104,6 +104,9 @@
             <th class="text-left px-3 py-1.5">代码</th>
             <th class="text-left px-3 py-1.5">名称</th>
             <th class="text-right px-3 py-1.5">现价</th>
+            <th class="text-right px-3 py-1.5">涨跌</th>
+            <th class="text-right px-3 py-1.5">量比</th>
+            <th class="text-right px-3 py-1.5">换手</th>
             <th class="text-right px-3 py-1.5">支撑</th>
             <th class="text-right px-3 py-1.5">阻力</th>
             <th class="text-right px-3 py-1.5">空间</th>
@@ -115,9 +118,19 @@
         </thead>
         <tbody>
           <tr v-for="r in poolRows" :key="r.code" class="border-b border-border/50 hover:bg-white/5">
-            <td class="px-3 py-1.5 font-mono">{{ r.code }}</td>
-            <td class="px-3 py-1.5">{{ r.name || '—' }}</td>
-            <td class="px-3 py-1.5 text-right font-mono">{{ r.price != null ? Number(r.price).toFixed(2) : '—' }}</td>
+            <!-- ★ 代码 → 雪球；名称 → 个股详情页（用户 2026-11-15 明确要求） -->
+            <td class="px-3 py-1.5">
+              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener"
+                 class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ r.code }}</a>
+            </td>
+            <td class="px-3 py-1.5">
+              <router-link :to="'/stock/' + r.code" class="hover:text-accent hover:underline"
+                           :title="`查看 ${r.name || r.code} 详情`">{{ r.name || '—' }}</router-link>
+            </td>
+            <td class="px-3 py-1.5 text-right font-mono">{{ fmt(r.price) }}</td>
+            <td class="px-3 py-1.5 text-right font-mono" :class="chgClass(r.change_pct)">{{ fmtChg(r.change_pct) }}</td>
+            <td class="px-3 py-1.5 text-right font-mono">{{ fmtVol(r.vol_ratio) }}</td>
+            <td class="px-3 py-1.5 text-right font-mono">{{ r.turnover_pct != null ? Number(r.turnover_pct).toFixed(2) + '%' : '—' }}</td>
             <td class="px-3 py-1.5 text-right font-mono" :title="r.support_type">{{ fmt(r.support) }}</td>
             <td class="px-3 py-1.5 text-right font-mono" :title="r.resistance_type">{{ fmt(r.resistance) }}</td>
             <td class="px-3 py-1.5 text-right font-mono">{{ r.space_pct != null ? Number(r.space_pct).toFixed(2) + '%' : '—' }}</td>
@@ -152,6 +165,10 @@
               <th class="text-left px-3 py-1.5">代码</th>
               <th class="text-left px-3 py-1.5">名称</th>
               <th class="text-right px-3 py-1.5">现价</th>
+              <th class="text-right px-3 py-1.5">涨跌</th>
+              <th class="text-right px-3 py-1.5">量比</th>
+              <th class="text-right px-3 py-1.5">换手</th>
+              <th class="text-right px-3 py-1.5">流通市值</th>
               <th class="text-right px-3 py-1.5">支撑</th>
               <th class="text-right px-3 py-1.5">阻力</th>
               <th class="text-right px-3 py-1.5">空间</th>
@@ -162,9 +179,23 @@
           </thead>
           <tbody>
             <tr v-for="r in pagedMarket" :key="r.code" class="border-b border-border/50 hover:bg-white/5">
-              <td class="px-3 py-1.5 font-mono">{{ r.code }}</td>
-              <td class="px-3 py-1.5">{{ r.name || '—' }}</td>
-              <td class="px-3 py-1.5 text-right font-mono">{{ r.price_ref != null ? Number(r.price_ref).toFixed(2) : '—' }}</td>
+              <td class="px-3 py-1.5">
+                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener"
+                   class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ r.code }}</a>
+              </td>
+              <td class="px-3 py-1.5">
+                <router-link :to="'/stock/' + r.code" class="hover:text-accent hover:underline"
+                             :title="`查看 ${r.name || r.code} 详情`">{{ r.name || '—' }}</router-link>
+              </td>
+              <td class="px-3 py-1.5 text-right font-mono">
+                {{ quoteOf(r.code).price != null ? Number(quoteOf(r.code).price).toFixed(2) : fmt(r.price_ref) }}
+              </td>
+              <td class="px-3 py-1.5 text-right font-mono" :class="chgClass(quoteOf(r.code).change_pct)">
+                {{ fmtChg(quoteOf(r.code).change_pct) }}
+              </td>
+              <td class="px-3 py-1.5 text-right font-mono">{{ fmtVol(r.vol_ratio) }}</td>
+              <td class="px-3 py-1.5 text-right font-mono">{{ r.turnover_pct != null ? Number(r.turnover_pct).toFixed(2) + '%' : '—' }}</td>
+              <td class="px-3 py-1.5 text-right font-mono">{{ r.float_cap_yi != null ? Number(r.float_cap_yi).toFixed(0) + '亿' : '—' }}</td>
               <td class="px-3 py-1.5 text-right font-mono" :title="r.support_type">{{ fmt(r.support) }}</td>
               <td class="px-3 py-1.5 text-right font-mono" :title="r.resistance_type">{{ fmt(r.resistance) }}</td>
               <td class="px-3 py-1.5 text-right font-mono">{{ Number(r.space_pct).toFixed(2) }}%</td>
@@ -208,8 +239,13 @@
           </thead>
           <tbody>
             <tr v-for="t in summary.open" :key="t.id" class="border-b border-border/50">
-              <td class="px-2 py-1 font-mono">{{ t.code }}</td>
-              <td class="px-2 py-1">{{ t.name }}</td>
+              <td class="px-2 py-1">
+                <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                   class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
+              </td>
+              <td class="px-2 py-1">
+                <router-link :to="'/stock/' + t.code" class="hover:text-accent hover:underline">{{ t.name }}</router-link>
+              </td>
               <td class="px-2 py-1">{{ t.direction === 'long_t' ? '正T（先买）' : '反T（先卖）' }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ Number(t.open_price).toFixed(2) }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ t.open_shares }}</td>
@@ -238,8 +274,13 @@
           </thead>
           <tbody>
             <tr v-for="t in summary.closed" :key="t.id" class="border-b border-border/50">
-              <td class="px-2 py-1 font-mono">{{ t.code }}</td>
-              <td class="px-2 py-1">{{ t.name }}</td>
+              <td class="px-2 py-1">
+                <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                   class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
+              </td>
+              <td class="px-2 py-1">
+                <router-link :to="'/stock/' + t.code" class="hover:text-accent hover:underline">{{ t.name }}</router-link>
+              </td>
               <td class="px-2 py-1">{{ t.direction === 'long_t' ? '正T' : '反T' }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ Number(t.open_price).toFixed(2) }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ Number(t.close_price || 0).toFixed(2) }}</td>
@@ -306,7 +347,12 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
+  getBatchPricesCached,
 } from '../api'
+// ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
+//   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
+//   不在本页自己拼 URL —— 与评分榜/持仓页同款，避免两处各写一份。
+import { getXueqiuUrl } from '../composables/stockUtils'
 
 const tabs = [
   { key: 'pool', label: '我的池子' },
@@ -335,6 +381,47 @@ const explain = ref(null)
 const explainErr = ref('')
 const explainBusy = ref(false)
 
+// ── 实时行情（与评分排行榜**同口径**）────────────────────────────────
+// 【为什么用 `getBatchPricesCached`（cached=1）】
+//   调度器每 ~120s 已刷全市场行情到内存，这里只读缓存 ⇒ **上游请求 = 0**。
+//   参考 `ScoreRank.vue` / `PaperTrading.vue`：同一接口、同一字段（红涨绿跌）。
+// ⚠️ 返回是**对象** `{ok, cached, rows:[{code,name,price,change_pct}], data_date, as_of}`
+//    （老接口是数组）—— 取 `data.rows`，别再按数组处理。
+const quotes = ref({})
+const quoteAsOf = ref('')
+
+function quoteOf(code) { return quotes.value[String(code)] || {} }
+function chgClass(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 'text-muted'
+  return n > 0 ? 'text-red-400' : n < 0 ? 'text-emerald-400' : 'text-muted'
+}
+function fmtChg(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return (n > 0 ? '+' : '') + n.toFixed(2) + '%'
+}
+function fmtVol(v) {
+  const n = Number(v)
+  return Number.isFinite(n) && n > 0 ? n.toFixed(2) : '—'
+}
+
+async function loadQuotes(codes) {
+  const uniq = [...new Set((codes || []).map((c) => String(c)).filter(Boolean))]
+  if (!uniq.length) return
+  try {
+    const { data } = await getBatchPricesCached(uniq)
+    const arr = (data && data.rows) || (Array.isArray(data) ? data : [])
+    const m = {}
+    arr.forEach((x) => { m[String(x.code)] = x })
+    quotes.value = m
+    quoteAsOf.value = (data && (data.as_of || data.data_date)) || ''
+  } catch (e) {
+    // 行情失败不能把整页打挂（预案仍然可用）⇒ 记在 err 上，表格显示 "—"
+    err.value = '实时行情加载失败（预案数据仍可看）：' + ((e && e.message) || '')
+  }
+}
+
 const stats = computed(() => (summary.value && summary.value.stats) || {})
 const planDate = computed(() => {
   const a = poolPlans.value[0] || marketPlans.value[0]
@@ -344,16 +431,22 @@ const planDate = computed(() => {
 })
 const poolCodes = computed(() => new Set(poolList.value.map((x) => x.code)))
 
-/** 池内每只：能做的用预案数据，不能做的标不可行 */
+/** 池内每只：能做的用预案数据，不能做的标不可行；两者都并上实时行情 */
 const poolRows = computed(() => {
   const pmap = {}
   poolPlans.value.forEach((p) => { pmap[p.code] = p })
   return poolList.value.map((x) => {
     const p = pmap[x.code]
-    if (p) {
-      return { ...p, name: p.name || x.name, feasible: true, price: p.price_ref }
+    const qq = quoteOf(x.code)
+    const base = p ? { ...p, name: p.name || x.name } : { ...x }
+    return {
+      ...base,
+      feasible: !!p,
+      // 现价优先用**实时价**（`price_ref` 是预案生成时的收盘价，盘中已过时）
+      price: qq.price != null ? qq.price : (p ? p.price_ref : null),
+      change_pct: qq.change_pct,
+      reason: p ? '' : '今日无可行预案（空间不足或数据缺失）',
     }
-    return { ...x, feasible: false, reason: '今日无可行预案（空间不足或数据缺失）' }
   })
 })
 
@@ -392,6 +485,12 @@ async function loadAll() {
     marketTotal.value = mb.total || marketPlans.value.length
     poolList.value = ((pl && pl.data) || {}).data || []
     page.value = 0
+    // 实时行情：市场清单 + 池子，**一次合并请求**（只读后端内存缓存，上游 0 请求）
+    const codes = [
+      ...marketPlans.value.map((x) => x.code),
+      ...poolList.value.map((x) => x.code),
+    ]
+    await loadQuotes(codes)
   } catch (e) {
     err.value = (e && e.message) || '加载失败'
   } finally {

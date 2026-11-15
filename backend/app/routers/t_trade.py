@@ -22,8 +22,49 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 
 from app import t_trade_exec as TX
 from app.auth import get_current_user
+from app.database import db
 
 router = APIRouter()
+
+
+def _enrich_facts(rows: list):
+    """给预案补**日频量能字段**（`stock_facts_wide` 最新快照）。
+
+    【为什么分两套行情】
+      · **实时涨跌幅**：前端调 `/score/batch-prices`（与评分榜**同口径**，
+        零新增机制）—— 那个接口只给 `{code, name, price, change_pct}`；
+      · **量比 / 换手 / 流通市值**：本项目已经按日算好存在 `stock_facts_wide`，
+        一次批量查询即可，没必要让前端再算一遍。
+    ⚠️ 日频字段是**上一交易日**的，接口返回 `facts_date` 让前端显示清楚，
+      不能让人误以为是盘中实时。
+    """
+    if not rows:
+        return rows, None
+    codes = [str(r.get("code") or "") for r in rows if r.get("code")]
+    if not codes:
+        return rows, None
+    facts_date = None
+    try:
+        facts_date = (db.fetch_one(
+            "SELECT MAX(date) AS d FROM stock_facts_wide") or {}).get("d")
+        if not facts_date:
+            return rows, None
+        ph = ",".join(["%s"] * len(codes))
+        facts = db.fetch(
+            f"SELECT code, vol_ratio, turnover_pct, float_cap_yi, phase "
+            f"FROM stock_facts_wide WHERE date=%s AND code IN ({ph})",
+            tuple([facts_date] + codes)) or []
+        fm = {str(f["code"]): dict(f) for f in facts}
+        for r in rows:
+            f = fm.get(str(r.get("code") or "")) or {}
+            r["vol_ratio"] = f.get("vol_ratio")
+            r["turnover_pct"] = f.get("turnover_pct")
+            r["float_cap_yi"] = f.get("float_cap_yi")
+            r["phase"] = f.get("phase")
+    except Exception as e:
+        # 吞异常必须可见（GUARDRAILS #11）——否则"量能列一直是空的"无从排查
+        print(f"[t-trade] enrich facts failed: {str(e)[:80]}")
+    return rows, str(facts_date)[:10] if facts_date else None
 
 
 @router.get("/plans")
@@ -41,7 +82,10 @@ def get_plans(date: str = None, only_feasible: bool = True,
         rows = [r for r in rows if str(r.get("code") or "") in w]
     rows.sort(key=lambda x: -(x.get("space_atr_mult") or 0))
     lim = min(max(limit, 1), 500)
-    return {"data": rows[:lim], "total": len(rows), "watch_only": watch_only}
+    # 先截断再补字段：只查真正要返回的那几条，省一次大 IN 查询
+    data, facts_date = _enrich_facts(rows[:lim])
+    return {"data": data, "total": len(rows), "watch_only": watch_only,
+            "facts_date": facts_date}
 
 
 @router.get("/plan")
@@ -53,8 +97,11 @@ def get_plan(code: str = "", date: str = None,
         raise HTTPException(400, "缺少 code")
     p = TX.load_plan(c, date)
     if p:
-        return {"data": p, "source": "db"}
-    return {"data": TX.explain(c, date), "source": "live"}
+        rows, facts_date = _enrich_facts([p])
+        return {"data": rows[0], "source": "db", "facts_date": facts_date}
+    e = TX.explain(c, date)
+    rows, facts_date = _enrich_facts([e])
+    return {"data": rows[0], "source": "live", "facts_date": facts_date}
 
 
 @router.get("/explain")
@@ -71,7 +118,9 @@ def get_explain(code: str = "",
 def get_pool(user: dict = Depends(get_current_user)):
     """做T 池（**独立于自选** —— 自选是"想盯的票"，这里是"能做T 的票"）。"""
     rows = TX.pool_codes()
-    return {"data": rows, "total": len(rows)}
+    # 池里"今日不可做"的票没有预案行，也把量能补上 —— 否则那几行只有代码和名字
+    rows, facts_date = _enrich_facts(rows)
+    return {"data": rows, "total": len(rows), "facts_date": facts_date}
 
 
 @router.post("/pool")

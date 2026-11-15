@@ -3331,10 +3331,19 @@
                      今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
                      <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
                    </div>
+                   <!-- ★ 2026-11-15（用户："需要展示当前个股的实时涨跌幅…参考评分排行榜，
+                        而且但凡涉及个股的都要展示股票代码和股票名称，点击代码跳转雪球，
+                        名称跳转个股详情页"）：代码→雪球、名称→详情、末尾加实时涨跌。 -->
                    <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
-                        class="flex gap-1.5 pt-0.5" :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
-                     <span class="font-mono shrink-0 text-muted">{{ p.code }}</span>
-                     <span class="truncate">{{ p.name }}</span>
+                        class="flex gap-1.5 pt-0.5 items-baseline"
+                        :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
+                     <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
+                        class="font-mono shrink-0 text-muted hover:text-accent hover:underline"
+                        title="在雪球查看">{{ p.code }}</a>
+                     <router-link :to="'/stock/' + p.code"
+                                  class="truncate hover:text-accent hover:underline"
+                                  :title="`查看 ${p.name || p.code} 详情`">{{ p.name || p.code }}</router-link>
+                     <span class="shrink-0 font-mono" :class="tChgCls(tQuote(p.code).change_pct)">{{ tChgTxt(tQuote(p.code).change_pct) }}</span>
                      <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
                    </div>
                    <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
@@ -3808,6 +3817,9 @@ import {
   getAmReviewDigest,
   runAmReviewDigest,
 } from '../api'
+// ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
+//   雪球链接用项目唯一实现，**不在本页自己拼 URL**（与榜单/持仓/回测同款）。
+import { getXueqiuUrl } from '../composables/stockUtils'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
 
@@ -5777,6 +5789,21 @@ const tWatchPlans = ref([])
 const tWatchTotal = ref(0)
 const tAllTotal = ref(0)
 const tErr = ref('')
+// ★ 2026-11-15：做T 卡的**实时行情**（与评分排行榜同口径）。
+//   用 `getBatchPricesCached`（cached=1）⇒ 只读后端内存缓存，上游 0 请求。
+//   返回是对象 `{rows:[...], as_of}` 而不是数组 —— 取 `data.rows`。
+const tQuotes = ref({})
+function tQuote(code) { return tQuotes.value[String(code)] || {} }
+function tChgCls(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return 'text-muted'
+  return n > 0 ? 'text-red-400' : n < 0 ? 'text-emerald-400' : 'text-muted'
+}
+function tChgTxt(v) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  return (n > 0 ? '+' : '') + n.toFixed(2) + '%'
+}
 const tPlanDate = computed(() =>
   (tWatchPlans.value[0] && tWatchPlans.value[0].plan_date)
   || (((tSummary.value || {}).plans || [])[0] || {}).plan_date || '')
@@ -5792,6 +5819,20 @@ async function loadTTrade() {
     tWatchTotal.value = wb.total || 0
     tAllTotal.value = (((s && s.data) || {}).plans || []).length
     tErr.value = ''
+    // 实时涨跌幅（只读后端缓存，零上游请求）
+    const codes = (wb.data || []).map((p) => p.code).filter(Boolean)
+    if (codes.length) {
+      try {
+        const { data } = await getBatchPricesCached(codes)
+        const arr = (data && data.rows) || (Array.isArray(data) ? data : [])
+        const m = {}
+        arr.forEach((x) => { m[String(x.code)] = x })
+        tQuotes.value = m
+      } catch (e2) {
+        // 行情失败**不能把预案卡打挂**（预案本身仍可用）⇒ 只留痕，表格显示 "—"
+        tErr.value = '行情加载失败（预案仍可看）'
+      }
+    }
   } catch (e) {
     tErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
   }
