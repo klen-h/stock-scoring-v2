@@ -164,22 +164,28 @@ def get_pool(include_holdings: bool = True,
     rows = TX.pool_codes()
     if include_holdings:
         try:
+            # ★ 2026-11-16：`holdings()` 现在 = 真实持仓 + **模拟底仓**（sim=True）。
+            #   `source` 必须能区分三层，否则用户分不清"这 300 股是真买的还是
+            #   系统自动建的模拟仓"（两者处置完全不同：真实持仓要自己能卖，
+            #   模拟仓随时可清）。
             held = TX.holdings()
             in_pool = {str(r.get("code") or "") for r in rows}
             for r in rows:
                 r["source"] = "pool"
             for code, h in held.items():
+                _sim = bool(h.get("sim"))
+                _src = "sim" if _sim else None
                 if code in in_pool:
                     for r in rows:
                         if str(r.get("code")) == code:
-                            r["source"] = "both"          # 既是持仓又在池
+                            r["source"] = _src or "both"   # 模拟仓优先标注
                             r["shares"] = h.get("shares")
                             break
                 else:
                     rows.append({
                         "code": code, "name": h.get("name") or code,
                         "note": "", "added_at": "",
-                        "source": "holding",              # 仅持仓（自动监控）
+                        "source": _src or "holding",       # 仅持仓 / 仅模拟仓
                         "shares": h.get("shares"),
                     })
         except Exception as e:
@@ -222,6 +228,64 @@ def del_pool(code: str, user: dict = Depends(get_current_user)):
     if not ok:
         raise HTTPException(500, "移除失败")
     return {"success": True, "code": code}
+
+
+@router.get("/sim")
+def get_sim(user: dict = Depends(get_current_user)):
+    """做T **模拟底仓**清单（自动建仓的落点）。
+
+    ⚠️ 与 `user_portfolio`（真实持仓）是**两张表**：系统没有券商接口，
+      自动建仓只能是模拟。真实买入后建议在这里清掉，避免两层底仓并存。
+    """
+    held = TX.sim_holdings()
+    return {"data": TX.sim_positions(),
+            # ★ `total` 只算**持有中**的：`data` 含 closed 历史行，
+            #   拿 `len(data)` 当前端"模拟仓 N 只"会越用越大（把平掉的也算进去）。
+            "total": len(held),
+            "holding_codes": sorted(held.keys()),
+            "auto_build": bool(getattr(TT, "_AUTO_BUILD", False)),
+            "note": "模拟仓：不涉及真实资金；做T 盈亏仅作参考"}
+
+
+@router.delete("/sim/{code}")
+def del_sim(code: str, user: dict = Depends(get_current_user)):
+    """平掉/清除模拟底仓（只改 status，不删历史）。"""
+    ok = TX.close_sim(code, note="用户手动清除")
+    if not ok:
+        raise HTTPException(500, "清除失败")
+    return {"success": True, "code": code}
+
+
+@router.post("/sim")
+def add_sim(payload: dict = Body(...),
+            user: dict = Depends(get_current_user)):
+    """手动建一笔模拟底仓（不想等建仓点、想立刻验证做T 时用）。
+
+    请求体：`{"code": "000415", "shares": 300, "price": 4.66}`
+    `shares` 缺省按 `min_base_shares(ratio)` 反算。
+    """
+    code = str(payload.get("code") or "").strip()
+    if not code:
+        raise HTTPException(400, "缺少 code")
+    price = float(payload.get("price") or 0)
+    if price <= 0:
+        p = TX.load_plan(code) or TX.explain(code) or {}
+        price = float(p.get("price_ref") or p.get("price") or 0)
+    if price <= 0:
+        raise HTTPException(400, "无法确定价格，请显式传 price")
+    shares = int(payload.get("shares") or 0)
+    if shares <= 0:
+        ratio = TT.T_RATIO_DEFAULT
+        try:
+            ratio = float((TX.load_plan(code) or {}).get("ratio") or ratio)
+        except Exception as e:
+            print(f"[t-trade] add_sim ratio {code} failed: {str(e)[:60]}")
+        shares = max(300, TT.min_base_shares(ratio))
+    r = TX.auto_build(code, payload.get("name") or code, price, shares,
+                      note="手动建立模拟底仓")
+    if not r:
+        raise HTTPException(500, "建立模拟底仓失败")
+    return {"success": True, **r}
 
 
 @router.post("/build-plan")
@@ -299,7 +363,11 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
                            float(p.get("space_pct") or 0),
                            float(p.get("space_atr_mult") or 0),
                            ratio * 100, suggest_shares),
-            "status": "waiting", "plan_type": "trial", "user_id": uid,
+            # ★ 2026-11-16：`plan_type` 由 `trial` 改为 **`t_build`** ——
+            #   `trade_plan_trigger_loop` 靠它识别"这条计划命中买点后要**自动建
+            #   模拟底仓**（用户：价格到位，系统自动处理）"。
+            #   用独立取值而不是匹配 `reason` 里的中文：字符串匹配一改文案就失效。
+            "status": "waiting", "plan_type": "t_build", "user_id": uid,
         }, conflict_columns=["id"])
     except Exception as e:
         raise HTTPException(500, "建计划失败：%s" % str(e)[:90])

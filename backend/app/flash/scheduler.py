@@ -1524,6 +1524,53 @@ def _calc_vol_ratios(codes: list, quotes: dict) -> dict:
 _PLAN_TRIGGER_DEDUPE = {"date": None, "keys": set()}
 
 
+def _plan_auto_build(p: dict, price: float, day: str) -> dict:
+    """建仓点命中 ⇒ **自动建一笔模拟底仓**（用户：价格到位，系统自动处理）。
+
+    【只对 `plan_type='t_build'` 生效】
+      普通试仓计划（`trial`）命中买点仍然只是"提醒"—— 那是用户自己的决策。
+      只有从做T 台「设建仓点」建出来的计划，语义才是"我要把这只票做T 的底仓
+      准备好"，才适合自动执行。
+
+    【为什么建模拟仓而不是真实持仓】
+      没有券商接口 ⇒ 不可能真实成交。`user_portfolio` 是用户手工维护的真实
+      持仓（无 source 列可区分），自动写入会让人误以为已经买入 ⇒ 只写
+      `t_sim_positions`，并在推送里明说"模拟"。
+
+    【为什么用现价而不是 buy_price】
+      `buy_price` 是"计划价"，实际触发时现价已经落在它 ±2% 内。
+      用现价，模拟盈亏才有意义（否则一开始就带着一个假的成本偏差）。
+
+    返回 `{built, shares, price}` 或 `{}`（未建）。
+    """
+    from app import t_trade as TT
+    from app import t_trade_exec as TX
+
+    # 判定收敛在 `TT.should_auto_build`（可单测；两处各写一份必然漂移）
+    if not TT.should_auto_build(p.get("plan_type")):
+        return {}
+    code = str(p.get("code") or "")
+    if not code or price <= 0:
+        return {}
+    # ratio 在 `t_plans`（日频预案）里，计划表本身不带 —— 取不到就用默认 1/3
+    ratio = TT.T_RATIO_DEFAULT
+    try:
+        pp = TX.load_plan(code) or {}
+        ratio = float(pp.get("ratio") or ratio)
+    except Exception as e:
+        print(f"[plan-trigger] auto_build ratio {code} failed: {str(e)[:60]}")
+    shares = max(300, TT.min_base_shares(ratio))
+    r = TX.auto_build(code, p.get("name") or code, price, shares,
+                      plan_id=str(p.get("id") or ""),
+                      note="建仓点触发自动建（模拟）", day=day)
+    if not r:
+        return {}
+    if r.get("skipped"):
+        # 已有模拟底仓 ⇒ 只需把计划闭环，不重复建
+        return {"built": False, "skipped": True, "shares": r.get("shares")}
+    return {"built": True, "shares": r.get("shares"), "price": r.get("price")}
+
+
 async def trade_plan_trigger_loop():
     while True:
         try:
@@ -1628,6 +1675,21 @@ async def trade_plan_trigger_loop():
                             if key in _PLAN_TRIGGER_DEDUPE["keys"]:
                                 continue
                             _PLAN_TRIGGER_DEDUPE["keys"].add(key)
+                            # ★★ 2026-11-16（用户："价格到位，系统自动处理"）：
+                            #   做T 建仓计划命中买点 ⇒ **自动建模拟底仓**，随后盘中
+                            #   做T 循环就能对它工作，全链路无人值守。
+                            #   ⚠️ 只对 `t_build` 生效；普通试仓仍只是提醒。
+                            built = {}
+                            if kind == "buy":
+                                built = _plan_auto_build(p, price, today)
+                                if built.get("built"):
+                                    text = (text + "\n**已自动建模拟底仓** %d 股 @ %.2f"
+                                            "（模拟记账，**未真实下单**）；"
+                                            "盘中将自动按预案做T"
+                                            % (built["shares"], built["price"]))
+                                elif built.get("skipped"):
+                                    text = (text + "\n（已有模拟底仓 %.0f 股，不重复建）"
+                                            % float(built.get("shares") or 0))
                             # ★★ 2026-11-15（用户："重新审视…交易计划的交易逻辑，
                             #   有可能已经落后项目了"）：**按语义分流**，原来 5 种全走 risk。
                             #   · `stop` = 要认错，**真风险** ⇒ `risk` 群（必须立刻看到）
@@ -1647,6 +1709,13 @@ async def trade_plan_trigger_loop():
                                 db.execute(
                                     "UPDATE user_trade_plans SET status='hit', hit_at=%s WHERE id=%s",
                                     (now.isoformat(), p["id"]))
+                            elif built.get("built") or built.get("skipped"):
+                                # 建仓已落地 ⇒ **闭环计划**（status='waiting' 会被 60s
+                                # 循环反复命中，不闭环就会天天重复建/重复推）。
+                                # 用 `filled` 而不是 `hit`：`hit` 语义是"止损/兑现"。
+                                db.execute(
+                                    "UPDATE user_trade_plans SET status='filled', hit_at=%s "
+                                    "WHERE id=%s", (now.isoformat(), p["id"]))
         except Exception as e:
             print(f"[plan-trigger] error: {e}")
         await asyncio.sleep(60)
@@ -1792,6 +1861,10 @@ def _t_trade_tick(TT, TX, stocks: dict, now, t_min: int) -> None:
         extra = ("（注意：若今日有手动加仓，可卖数量需自行核对 T+1）"
                  if direction == "short_t" else
                  "（仓位按底仓 %d 股的 %.0f%% 计算）" % (int(base), ratio * 100))
+        # ★ 2026-11-16：底仓若是**模拟**的，必须在推送里说清 ——
+        #   否则用户会以为"系统用我的真实持仓在做T"。
+        if (holds.get(code) or {}).get("sim"):
+            extra += "\n⚠️ 底仓为**模拟仓**（自动建仓，非真实成交）；盈亏仅作参考"
         try:
             notify("coach", "做T 触发", (
                 f"**{dd}** {p.get('name')}({code}) {shares} 股 @ {price:.2f}："

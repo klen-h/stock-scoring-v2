@@ -105,6 +105,11 @@ export const testTTradePush = () => http.post('/t-trade/test-push')
 // 用预案支撑位建「底仓建仓」交易计划（**这是建仓不是做T**，走 user_trade_plans）
 export const buildTTradePlan = (code) =>
   http.post('/t-trade/build-plan', null, { params: { code } })
+// ★ 2026-11-16（用户："价格到位，系统自动处理"）：**模拟底仓**
+//   建仓点命中后系统自动在 `t_sim_positions` 建一笔（不真实下单、不写真实持仓），
+//   于是这只票立刻"有底仓"⇒ 盘中的做T 循环能对它工作。
+export const getTTradeSim = () => http.get('/t-trade/sim')
+export const delTTradeSim = (code) => http.delete(`/t-trade/sim/${code}`)
 
 export const getCoachReviewSummary = (date = '', days = 20) =>
   http.get('/coach/review-summary', { params: { date, days } })

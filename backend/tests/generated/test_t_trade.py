@@ -266,6 +266,26 @@ def test_calc_shares_short_t_zero_when_all_bought_today():
                                today_bought=20000) == 0
 
 
+def test_should_auto_build_only_for_t_build():
+    """★ 只有「设建仓点」建的 `t_build` 计划才自动建模拟底仓。
+
+    用户：\"价格到位，系统自动处理。\"
+    · `t_build` ⇒ 是（这是用户明确要求的自动化）
+    · `trial` / 空 / 其它 ⇒ 否（普通试仓是用户自己的决策，系统不代劳）
+    """
+    assert t_trade.should_auto_build("t_build", enabled=True) is True
+    assert t_trade.should_auto_build("trial", enabled=True) is False
+    assert t_trade.should_auto_build("", enabled=True) is False
+    assert t_trade.should_auto_build(None, enabled=True) is False
+    # 总开关关闭 ⇒ 一律不自动建
+    assert t_trade.should_auto_build("t_build", enabled=False) is False
+
+
+def test_should_auto_build_default_on():
+    """默认开启（用户要求自动处理）；`T_AUTO_BUILD=0` 才关。"""
+    assert t_trade.should_auto_build("t_build") is True
+
+
 def test_min_base_shares_matches_ratio():
     """★ 按 ratio 反算最小底仓 —— 建完仓必须真的能做T。
 

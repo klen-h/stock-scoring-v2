@@ -64,6 +64,24 @@ T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 60)
 #     "先卖后买"在当前规则下不成立。
 _ALLOW_SHORT_T = str(os.environ.get("T_ALLOW_SHORT_T") or "").lower() in ("1", "true", "yes")
 
+# ★★ 2026-11-16（用户："价格到位，系统自动处理"）：**建仓点命中时自动建模拟底仓**。
+#
+#   【它到底做了什么】建仓计划（`plan_type='t_build'`）的买价被触发时，
+#     系统**在 `t_sim_positions` 里记一笔模拟底仓**（股数按 `min_base_shares`），
+#     于是这只票立刻"有底仓"⇒ 盘中 `t_trade_loop` 能对它做T，全链路无人值守。
+#
+#   【它**没有**做什么（必须让用户知道）】
+#     · **没有真实下单**（没有券商接口），也不写 `user_portfolio`；
+#     · 不会替用户花一分钱 —— 所有盈亏都是模拟记账。
+#     真实买入仍需用户自己操作；真实买入后建议把模拟仓清掉
+#     （`DELETE /api/t-trade/sim/{code}`），否则同一只票会有两层底仓
+#     （`holdings()` 里真实优先，所以只是展示噪音，不会算错量）。
+#
+#   【为什么默认开】用户明确要求"系统自动处理"。
+#     关掉：环境变量 `T_AUTO_BUILD=0`。
+_AUTO_BUILD = str(os.environ.get("T_AUTO_BUILD") or "1").lower() not in (
+    "0", "false", "no")
+
 # 正T 的**安全上限**（不是"真实资金"）——真实资金系统拿不到，见 `calc_shares` 说明。
 # ⚠️ 2026-11-15：曾有"设为不限"的想法，被否 —— 设成 1 亿会算出 526 万股 / 3330 万元。
 #   它只是"别买超过这个数"的兜底，**主依据是底仓**。
@@ -309,6 +327,22 @@ def suggest_ratio(atr_pct: float, base: Optional[float] = None) -> Dict:
 # ══════════════════════════════════════════════════════════════════════════
 #  完整计划
 # ══════════════════════════════════════════════════════════════════════════
+
+def should_auto_build(plan_type: str, enabled: Optional[bool] = None) -> bool:
+    """这条交易计划命中买点时，**是否该自动建模拟底仓**。
+
+    用户（2026-11-16）："价格到位，系统自动处理。"
+
+    · 只对 `plan_type='t_build'`（从做T 台「设建仓点」建出来的）生效；
+    · 普通试仓（`trial`）**仍然只提醒** —— 那是用户自己的决策，系统不代劳；
+    · 总开关 `_AUTO_BUILD`（env `T_AUTO_BUILD=0` 可关）。
+
+    ⚠️ 必须用 `plan_type` 而不是匹配 `reason` 里的中文：
+      文案一改就失效，而且"做T 底仓建仓点"这类字符串在别处也可能出现。
+    """
+    e = _AUTO_BUILD if enabled is None else bool(enabled)
+    return bool(e) and str(plan_type or "") == "t_build"
+
 
 def resolve_direction(has_position: bool, has_cash: bool) -> List[str]:
     """按当前持仓/资金，给出**可用且按优先级排序**的做T 方向。

@@ -29,6 +29,11 @@ from app.flash import rules as flash_rules
 _T_PLAN_TABLE = "t_plans"
 _T_TRADE_TABLE = "t_trades"
 _T_POOL_TABLE = "t_watchlist"
+# ★ 2026-11-16（用户："价格到位，系统自动处理"）：做T **模拟底仓**
+#   【为什么必须单独一张表】系统没有券商接口，自动建仓**不可能真实成交**；
+#     而 `user_portfolio` 是用户手工维护的真实持仓（且无 source 列可区分），
+#     自动写入会让人误以为真的买了 ⇒ 只能建在独立的模拟层。
+_T_SIM_TABLE = "t_sim_positions"
 _ready = False
 
 
@@ -100,6 +105,24 @@ def ensure_tables() -> None:
                 note TEXT DEFAULT '',
                 added_at TEXT
             )""")
+        # ★ 2026-11-16：做T 模拟底仓（"价格到位自动处理"的落点）
+        #   `status`: holding（持有）/ closed（已平）
+        #   `plan_id`: 来自哪条建仓计划（便于回溯，NULL 表示手工建）
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_T_SIM_TABLE} (
+                code TEXT PRIMARY KEY,
+                name TEXT DEFAULT '',
+                shares INTEGER NOT NULL DEFAULT 0,
+                cost REAL DEFAULT 0,
+                open_price REAL DEFAULT 0,
+                open_date TEXT,
+                plan_id TEXT DEFAULT '',
+                status TEXT DEFAULT 'holding',
+                note TEXT DEFAULT '',
+                created_at TEXT, updated_at TEXT
+            )""")
+        db.execute(f"CREATE INDEX IF NOT EXISTS idx_t_sim_status "
+                   f"ON {_T_SIM_TABLE} (status, open_date)")
         _ready = True
     except Exception as e:
         # 吞异常必须可见（GUARDRAILS #11）
@@ -321,6 +344,10 @@ def watch_codes() -> set:
         #   ⚠️ 只改"做T 关注范围"，**没有动 `user_watchlist` 的数据**。
         rows = db.fetch(f"SELECT code FROM {_T_POOL_TABLE}") or []
         out |= {str(r.get("code") or "").strip() for r in rows}
+        # ★ 2026-11-16：**模拟底仓必须继续被盯** ——
+        #   自动建仓的票若从池里被删，只看"持仓+池"就会漏掉，
+        #   等于建了仓却不做T（比不建更糟：白占一个仓位假设）。
+        out |= set(sim_holdings().keys())
     except Exception as e:
         print(f"[t-trade] watch_codes failed: {str(e)[:70]}")   # 吞异常必须可见
     return {c for c in out if c}
@@ -390,7 +417,21 @@ def remove_from_pool(code: str) -> bool:
 
 
 def holdings() -> Dict[str, Dict]:
-    """当前底仓 `{code: {name, shares, cost}}`（与 `portfolio_radar` 同口径）。"""
+    """当前底仓 `{code: {name, shares, cost, sim}}` = **真实持仓 + 模拟底仓**。
+
+    【为什么合并两层，以及为什么真实优先】
+      用户（2026-11-16）："价格到位，系统自动处理。"
+      系统没有券商接口，**不可能真实下单**；自动建仓只能建在**模拟层**。
+      但做T 的判断只需要"账面上有多少股可卖"，所以把两层合起来喂给
+      `calc_shares` 即可 —— **前提是真实持仓永远压过模拟仓**：
+        · 同一只票真实持有 500 股、模拟仓也有 500 股 ⇒ 取真实 500（不叠加，
+          否则会凭空多出可卖数量，算出不存在的 T）；
+        · `sim=True` 让调用方能在文案里说清"这是模拟底仓"。
+
+    ⚠️ **绝不写 `user_portfolio`**：那张表是用户手工维护的真实持仓，
+      自动写入会让人误以为真的买入了（且无 `source` 列可区分）。
+    """
+    ensure_tables()
     out: Dict[str, Dict] = {}
     try:
         from app.portfolio_scope import portfolio_where
@@ -403,10 +444,129 @@ def holdings() -> Dict[str, Dict]:
                 continue
             out[code] = {"name": str(r.get("name") or ""),
                          "shares": float(r.get("shares") or 0),
-                         "cost": float(r.get("cost") or 0)}
+                         "cost": float(r.get("cost") or 0),
+                         "sim": False}
     except Exception as e:
-        print(f"[t-trade] holdings failed: {str(e)[:80]}")
+        print(f"[t-trade] holdings(real) failed: {str(e)[:80]}")
+    # 模拟底仓：只补**真实持仓里没有**的票
+    for code, s in sim_holdings().items():
+        if code not in out:
+            out[code] = s
     return out
+
+
+def sim_holdings() -> Dict[str, Dict]:
+    """做T **模拟底仓** `{code: {name, shares, cost, sim: True, ...}}`。
+
+    由「建仓点触发」自动写入（`_AUTO_BUILD` 开启时），或手动调用
+    `auto_build()`。**与 `user_portfolio` 完全隔离**。
+    """
+    ensure_tables()
+    out: Dict[str, Dict] = {}
+    try:
+        rows = db.fetch(
+            f"SELECT * FROM {_T_SIM_TABLE} WHERE status='holding'") or []
+    except Exception as e:
+        print(f"[t-trade] sim_holdings failed: {str(e)[:80]}")
+        return out
+    for r in rows:
+        code = str(r.get("code") or "").strip()
+        if not code:
+            continue
+        out[code] = {
+            "name": str(r.get("name") or ""),
+            "shares": float(r.get("shares") or 0),
+            "cost": float(r.get("cost") or 0),
+            "sim": True,
+            "plan_id": r.get("plan_id"),
+            "open_date": str(r.get("open_date") or "")[:10],
+            "open_price": float(r.get("open_price") or 0),
+        }
+    return out
+
+
+def resolve_name(code: str, name: str = "") -> str:
+    """取股票名（`name` 已是有效值就直接用）。
+
+    ⚠️ **踩过坑**：`kline_cache` / `backtest_prices` 里部分票（000423 东阿阿胶、
+      000088 盐田港、600483 福能股份、688188 柏楚电子、000415 渤海租赁）
+      的 `name` **是空串** ⇒ 界面显示成代码本身。
+      兜底链把 `t_plans` 放最前（做T 域最权威的名字源）。
+    """
+    nm = str(name or "").strip()
+    c = str(code or "").strip()
+    if nm and nm != c:
+        return nm
+    for tbl in (_T_PLAN_TABLE, "kline_cache", "backtest_prices", "stock_facts_wide"):
+        try:
+            row = db.fetch_one(
+                f"SELECT name FROM {tbl} WHERE code=%s "
+                f"AND name IS NOT NULL AND name<>'' LIMIT 1", (c,))
+            if row and row.get("name"):
+                return str(row["name"])
+        except Exception as e:
+            print(f"[t-trade] resolve_name {c}@{tbl} failed: {str(e)[:40]}")
+    return nm or c
+
+
+def sim_positions() -> List[Dict]:
+    """模拟底仓列表（前端展示 / 清除用）。"""
+    ensure_tables()
+    try:
+        rows = db.fetch(
+            f"SELECT * FROM {_T_SIM_TABLE} ORDER BY open_date DESC, code") or []
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[t-trade] sim_positions failed: {str(e)[:80]}")
+        return []
+
+
+def auto_build(code: str, name: str, price: float, shares: int,
+               plan_id: str = "", note: str = "",
+               day: str = None) -> Optional[Dict]:
+    """**模拟**建仓（建仓点触发时调用）。幂等：已有 holding 行就跳过。
+
+    ⚠️ 这是模拟，不是真实成交。文案必须让用户看到"模拟"两个字。
+    """
+    ensure_tables()
+    c = str(code or "").strip()
+    if not c or shares <= 0 or price <= 0:
+        return None
+    exist = db.fetch_one(
+        f"SELECT * FROM {_T_SIM_TABLE} WHERE code=%s AND status='holding'", (c,))
+    if exist:
+        return {"skipped": True, "code": c,
+                "shares": float(exist.get("shares") or 0)}
+    d = day or _today()
+    ts = _now()
+    try:
+        db.upsert(_T_SIM_TABLE, {
+            "code": c, "name": resolve_name(c, name),
+            "shares": int(shares), "cost": round(float(price), 3),
+            "open_price": round(float(price), 3), "open_date": d,
+            "plan_id": plan_id or "", "status": "holding",
+            "note": note or "", "created_at": ts, "updated_at": ts,
+        }, conflict_columns=["code"])
+        # 策略：同一只票当天只建一次；价格变化不重算成本（避免"越跌越改成本"）
+        return {"skipped": False, "code": c, "shares": int(shares),
+                "price": round(float(price), 3)}
+    except Exception as e:
+        print(f"[t-trade] auto_build {c} failed: {str(e)[:80]}")
+        return None
+
+
+def close_sim(code: str, note: str = "") -> bool:
+    """平掉**模拟底仓**（仅标记 status，不删历史）。"""
+    ensure_tables()
+    try:
+        db.execute(
+            f"UPDATE {_T_SIM_TABLE} SET status='closed', updated_at=%s, "
+            f"note=%s WHERE code=%s AND status='holding'",
+            (_now(), note or "", str(code)))
+        return True
+    except Exception as e:
+        print(f"[t-trade] close_sim failed: {str(e)[:80]}")
+        return False
 
 
 def today_bought(code: str, day: str = None) -> float:

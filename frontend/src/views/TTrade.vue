@@ -75,6 +75,15 @@
         <div class="text-[10px] text-muted">
           持仓 + 池 · 今日可做 <b class="text-accent">{{ poolPlans.length }}</b> 只
         </div>
+        <!-- ★ 2026-11-16：模拟底仓（自动建仓）—— 与真实持仓分开计数，
+             否则"监控范围"会把模拟仓也算成你的持仓 -->
+        <div v-if="(simInfo && simInfo.total) || (simInfo && simInfo.auto_build)"
+             class="text-[10px] mt-0.5">
+          <span v-if="simInfo.total" class="text-amber-300">模拟仓 {{ simInfo.total }}</span>
+          <span v-if="simInfo.auto_build" class="text-muted"
+                title="建仓点命中后自动建模拟底仓（不真实下单），随即自动做T">· 自动建仓 开</span>
+          <span v-else class="text-muted" title="T_AUTO_BUILD=0">· 自动建仓 关</span>
+        </div>
       </div>
       <div class="bg-card border border-border rounded-lg p-3">
         <div class="text-[11px] text-muted">今日成交</div>
@@ -162,6 +171,11 @@
                     title="持仓自动纳入监控，不需要加进池">持仓</span>
               <span v-else-if="r.source === 'both'" class="text-[10px] text-cyan-300"
                     title="既是持仓，也在观察池里">持仓+池</span>
+              <!-- ★ 2026-11-16（用户："价格到位，系统自动处理"）：
+                   建仓点命中后系统自动建的是**模拟底仓**（不真实下单）⇒
+                   必须与真实持仓在视觉上分开，否则用户会以为已经买进了。 -->
+              <span v-else-if="r.source === 'sim'" class="text-[10px] text-amber-300"
+                    title="建仓点触发后系统自动建的模拟底仓（未真实下单）；真实买入后可清除它">模拟仓</span>
               <span v-else class="text-[10px] text-muted"
                     title="手动加入的观察标的（无底仓时不会触发）">池</span>
             </td>
@@ -198,6 +212,11 @@
                       class="text-[11px] text-accent hover:underline"
                       :title="`用支撑 ${fmt(r.support)} 建底仓计划（止损 ${fmt((r.support || 0) - (r.atr || 0) * 0.5)}，目标 ${fmt(r.resistance)}）⚠️ 这是建仓不是做T`"
                       @click="makePlan(r.code)">设建仓点</button>
+              <!-- ★ 模拟底仓：随时可清（真实买入后**必须清**，否则两层底仓并存） -->
+              <button v-if="r.source === 'sim'" type="button"
+                      class="text-[11px] text-amber-300 hover:underline"
+                      title="清除模拟底仓。若你已真实买入，请先在持仓里录入，再清掉这里"
+                      @click="clearSim(r.code)">清模拟仓</button>
               <!-- 仅持仓的行不在池里，"移除"无意义（它由持仓自动纳入） -->
               <button v-if="r.source !== 'holding'" type="button"
                       class="text-[11px] text-muted hover:text-rose-300"
@@ -409,6 +428,7 @@ import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
   getBatchPricesCached, testTTradePush, buildTTradePlan,
+  getTTradeSim, delTTradeSim,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
@@ -426,6 +446,8 @@ const tab = ref('pool')
 const busy = ref(false)
 const scanning = ref(false)
 const err = ref('')
+// ★ 2026-11-16：模拟底仓信息（`auto_build` = 建仓点命中后是否自动建模拟仓）
+const simInfo = ref(null)
 
 const summary = ref(null)
 const poolPlans = ref([])
@@ -537,12 +559,15 @@ async function loadAll() {
   busy.value = true
   err.value = ''
   try {
-    const [s, wp, mp, pl] = await Promise.all([
+    const [s, wp, mp, pl, sm] = await Promise.all([
       getTTradeSummary(),
       getTTradePlans({ watch_only: true, limit: 200 }),
       getTTradePlans({ watch_only: false, limit: 500 }),
       getTTradePool(),
+      // ★ 2026-11-16：模拟底仓（自动建仓的落点）——只用来展示"自动建仓是否开启"
+      getTTradeSim(),
     ])
+    simInfo.value = (sm && sm.data) || null
     summary.value = (s && s.data) || null
     poolPlans.value = ((wp && wp.data) || {}).data || []
     const mb = (mp && mp.data) || {}
@@ -620,6 +645,19 @@ async function makePlan(code) {
     }
   } catch (e) {
     err.value = (e && e.message) || '建立仓计划失败'
+  }
+}
+
+/** ★ 清除模拟底仓（价格到位后系统自动建的那笔，不是真实持仓）。 */
+async function clearSim(code) {
+  err.value = ''
+  notice.value = ''
+  try {
+    await delTTradeSim(code)
+    notice.value = `${code} 模拟底仓已清除`
+    await loadAll()
+  } catch (e) {
+    err.value = (e && e.message) || '清除失败'
   }
 }
 
