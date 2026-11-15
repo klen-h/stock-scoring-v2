@@ -40,7 +40,14 @@ def check_once() -> dict:
     _ensure()
     alerts = []
     try:
-        rows = db.fetch("SELECT code, name, shares, cost FROM user_portfolio") or []
+        # ★ 2026-11-15：补 user 隔离（本模块目前**已被停用**，见
+        #   `scheduler.py` 里 `portfolio_alert_loop` 的注释；但代码留着，
+        #   将来重启时不改这里就会把别人的持仓当自己的 ⇒ 一并修掉）。
+        from app.portfolio_scope import portfolio_where
+
+        _w, _p = portfolio_where()
+        rows = db.fetch(f"SELECT code, name, shares, cost FROM user_portfolio {_w}",
+                        _p) or []
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
     for r in rows:

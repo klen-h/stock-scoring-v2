@@ -1071,8 +1071,16 @@ def _holdings_impact(llm_news: list) -> list:
         from app.industry_map import get_industry_map
         from app.mainforce.state import load_latest
 
-        pf = db.fetch("SELECT code, name, created_at FROM user_portfolio "
-                      "ORDER BY code, created_at DESC") or []
+        # ★ 2026-11-15（全项目过时逻辑审查）：**补 user 隔离**。
+        #   `portfolio_scope` 文件头已记录：项目从单用户演进到多用户后，
+        #   前端接口全部按 `user_id` 过滤，但**后台全局组件仍在全表读** ⇒
+        #   会把别的账号的持仓当成"本部署用户的"（实锤案例：admin 的简报里
+        #   出现 sky 的持仓）。本处是遗留未修点之一。
+        from app.portfolio_scope import portfolio_where
+
+        _w, _p = portfolio_where()
+        pf = db.fetch(f"SELECT code, name, created_at FROM user_portfolio {_w} "
+                      f"ORDER BY code, created_at DESC", _p) or []
         seen = set()
         holdings = []
         for x in pf:

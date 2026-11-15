@@ -2387,7 +2387,14 @@ def _check_holding_news_once():
         _news_alerted["date"] = today
         _news_alerted["codes"] = set()
 
-    rows = db.fetch("SELECT DISTINCT code, name FROM user_portfolio")
+    # ★ 2026-11-15（全项目过时逻辑审查）：**补 user 隔离**。
+    #   否则这条"持仓负面新闻告警"会**推别人的股票**（`portfolio_scope` 文件头
+    #   明确记录过这个坑与实锤案例）。`portfolio_where` 拿不到主用户时 fail-open
+    #   （回退不过滤）⇒ 单人部署行为不变。
+    from app.portfolio_scope import portfolio_where as _pf_where
+
+    _pw, _pp = _pf_where()
+    rows = db.fetch(f"SELECT DISTINCT code, name FROM user_portfolio {_pw}", _pp)
     alerts = []
     for r in rows or []:
         code = r["code"]

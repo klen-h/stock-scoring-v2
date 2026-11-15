@@ -18,7 +18,11 @@ def run() -> dict:
     try:
         rows = db.fetch("SELECT code, name, net_buy, quote_change FROM lhb_history "
                         "WHERE date=%s", (day,)) or []
-        held = db.fetch("SELECT code, name FROM user_portfolio") or []
+        # ★ 2026-11-15：补 user 隔离（同 `portfolio_scope` 文件头记录的问题：后台全局组件全表读）
+        from app.portfolio_scope import portfolio_where
+
+        _w, _p = portfolio_where()
+        held = db.fetch(f"SELECT code, name FROM user_portfolio {_w}", _p) or []
     except Exception as e:
         return {"ok": False, "error": str(e)[:100]}
     if not rows or not held:

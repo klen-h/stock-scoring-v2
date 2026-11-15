@@ -21,7 +21,11 @@ def run() -> dict:
     day = datetime.now(_BJ).strftime("%Y-%m-%d")
     _ensure_log()
     try:
-        held = db.fetch("SELECT code, name FROM user_portfolio") or []
+        # ★ 2026-11-15：补 user 隔离（同 `portfolio_scope` 文件头记录的问题：后台全局组件全表读）
+        from app.portfolio_scope import portfolio_where
+
+        _w, _p = portfolio_where()
+        held = db.fetch(f"SELECT code, name FROM user_portfolio {_w}", _p) or []
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
     codes = [str(h.get("code"))[-6:] for h in held
