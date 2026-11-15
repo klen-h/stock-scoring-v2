@@ -1861,15 +1861,31 @@ async def score_health_loop():
             now = rules.beijing_now()
             wk = now.strftime("%Y-W%W")
             t_min = now.hour * 60 + now.minute
+            # ★ 2026-11-16：时间窗 **16:00 → 20:00**。
+            #   原定 16:00 与盘后全市场扫描（15:40 起）**撞在同一时段**，
+            #   两个重活一起打库正是上次超时的放大因素。
+            #   挪到 20:00：夜间无人访问，慢一点也没有感知。
             if (_SCORE_HEALTH_ENABLED and now.weekday() == 0
-                    and 960 <= t_min < 1440
+                    and 1200 <= t_min < 1440
                     and _SCORE_HEALTH_LAST["week"] != wk):
                 # ★ 先占位：本次无论成败都算"已跑过"，**绝不重试**。
                 _SCORE_HEALTH_LAST["week"] = wk
                 try:
+                    import time as _t
+
                     from app.scoring.ranking_history import get_bucket_stats
 
+                    # ★ 2026-11-16：**记录单次耗时**。
+                    #   上次故障之所以难定位，就是因为"跑多久"没有任何日志——
+                    #   只有"接口都超时了"这个现象。有耗时才能在下次直接看出
+                    #   "这个循环开始变慢了"，而不是等它把库打满。
+                    _t0 = _t.time()
                     rep = await asyncio.to_thread(get_bucket_stats, 60)
+                    _cost = _t.time() - _t0
+                    print(f"[score-health] bucket_stats done in {_cost:.0f}s")
+                    if _cost > 180:
+                        print("[score-health] WARN too slow, consider disabling "
+                              "SCORE_HEALTH_CHECK")
                     concl = str((rep or {}).get("conclusion") or "")
                     if "负相关" in concl:
                         from app.flash.wechat import notify
@@ -1937,10 +1953,17 @@ async def t_trade_scan_loop():
                 #   修法：**先占位再跑**，成败都算"今天已扫过"，绝不重试。
                 _T_SCAN_LAST["day"] = d
                 try:
+                    import time as _t
+
                     from app import t_trade_exec as TX
 
+                    # ★ 2026-11-16：同上 —— 记录耗时，慢了自己看得见
+                    _t0 = _t.time()
                     rep = await asyncio.to_thread(TX.scan_market, d, 120, 200, True)
-                    print(f"[t-trade] scan done {rep}")
+                    _cost = _t.time() - _t0
+                    print(f"[t-trade] scan done in {_cost:.0f}s {rep}")
+                    if _cost > 180:
+                        print("[t-trade] WARN scan too slow, consider T_TRADE_SCAN=0")
                 except Exception as e2:
                     # 不回滚标记：宁可今天没有预案，也不能变成重试风暴
                     print(f"[t-trade] scan failed (no retry today): {str(e2)[:90]}")
