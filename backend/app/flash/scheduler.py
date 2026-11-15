@@ -1843,39 +1843,74 @@ _SCORE_HEALTH_LAST = {"week": ""}
 
 
 async def score_health_loop():
-    """评分有效性周检：分数与未来收益负相关时**主动推企微**。"""
+    """评分有效性周检：分数与未来收益负相关时**主动推企微**。
+
+    ⚠️⚠️ 2026-11-16 故障复盘（用户："线上怎么接口请求都超时了？"）：
+      原实现在 `try` 里跑回测、**成功后才写 `_SCORE_HEALTH_LAST`**
+      ⇒ 一旦回测抛异常（或超时被中断），标记不更新
+      ⇒ 这个循环**每 600 秒重跑一次**，从 16:00 到 24:00 最多 **48 次**。
+      实测 `get_bucket_stats(120)` 单次 **167 秒** ⇒
+        48 × 167 ≈ **13360 秒（3.7 小时）几乎全天在打数据库**
+      ⇒ 把连接打满 ⇒ **所有接口跟着超时**。
+      修法两条：
+        ① **无论成败都先记"本周已跑"**，异常只留痕、不重试；
+        ② 窗口 **120 → 60 天**（单次负载减半，结论方向不变）。
+    """
     while True:
         try:
             now = rules.beijing_now()
             wk = now.strftime("%Y-W%W")
             t_min = now.hour * 60 + now.minute
-            if (now.weekday() == 0 and 960 <= t_min < 1440
+            if (_SCORE_HEALTH_ENABLED and now.weekday() == 0
+                    and 960 <= t_min < 1440
                     and _SCORE_HEALTH_LAST["week"] != wk):
-                from app.scoring.ranking_history import get_bucket_stats
-
-                rep = await asyncio.to_thread(get_bucket_stats, 120)
-                concl = str((rep or {}).get("conclusion") or "")
-                if "负相关" in concl:
-                    from app.flash.wechat import notify
-
-                    notify("coach", "评分有效性告警", (
-                        "**近 120 天分桶回测：评分与未来收益负相关**"
-                        "（高分反而跌得更多）。\n\n"
-                        "当前 `defensive` 档把 **质量 0.35**（最高权重）"
-                        "给了实测 **-2.42pp** 的维度、把技术面 0.12（最低）"
-                        "给了 **+1.93pp** 的维度。\n\n"
-                        "可用 `SCORE_WEIGHT_PRESET=neutral_guard` 试跑修正口径"
-                        "（默认关闭，需重启后端生效）。\n\n"
-                        + concl[:260]), force=True)
-                else:
-                    print("[score-health] 本周无负相关，不推")
+                # ★ 先占位：本次无论成败都算"已跑过"，**绝不重试**。
                 _SCORE_HEALTH_LAST["week"] = wk
+                try:
+                    from app.scoring.ranking_history import get_bucket_stats
+
+                    rep = await asyncio.to_thread(get_bucket_stats, 60)
+                    concl = str((rep or {}).get("conclusion") or "")
+                    if "负相关" in concl:
+                        from app.flash.wechat import notify
+
+                        notify("coach", "评分有效性告警", (
+                            "**近 60 天分桶回测：评分与未来收益负相关**"
+                            "（高分反而跌得更多）。\n\n"
+                            "当前 `defensive` 档把 **质量 0.35**（最高权重）"
+                            "给了实测 **-2.42pp** 的维度、把技术面 0.12（最低）"
+                            "给了 **+1.93pp** 的维度。\n\n"
+                            "可用 `SCORE_WEIGHT_PRESET=neutral_guard` 试跑修正口径"
+                            "（默认关闭，需重启后端生效）。\n\n"
+                            + concl[:260]), force=True)
+                    else:
+                        print("[score-health] 本周无负相关，不推")
+                except Exception as e2:
+                    # 不回滚标记：宁可这周不做，也不能变成重试风暴
+                    print(f"[score-health] run failed (no retry this week): {str(e2)[:90]}")
         except Exception as e:
             print(f"[score-health] error: {str(e)[:90]}")
         await asyncio.sleep(600)
 
 
 _T_SCAN_LAST = {"day": ""}
+
+# ══════════════════════════════════════════════════════════════════════════
+#  ★★ 2026-11-16：两个重活的**应急开关**（默认开启，可 env 关闭）
+# ══════════════════════════════════════════════════════════════════════════
+# 背景（用户："线上怎么接口请求都超时了？"）：
+#   `t_trade_scan_loop`（全市场扫描 ~72s）与 `score_health_loop`
+#   （2800 条 × K 线回测）都是**重活**，且原实现在失败时会反复重试。
+#   虽然已修成"失败不重试"，但仍需要一个**不用改代码就能停掉**的开关：
+#
+#     T_TRADE_SCAN=0        停盘后全市场扫描（做T 预案停止更新）
+#     SCORE_HEALTH_CHECK=0  停评分有效性周检
+#
+# ⚠️ 只影响这两个重活，**不影响做T 盘中触发**（那个只读内存，很轻）。
+_T_SCAN_ENABLED = str(os.environ.get("T_TRADE_SCAN") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
+_SCORE_HEALTH_ENABLED = str(os.environ.get("SCORE_HEALTH_CHECK") or "1").strip().lower() \
+    not in ("0", "false", "off", "no")
 
 
 async def t_trade_scan_loop():
@@ -1891,11 +1926,24 @@ async def t_trade_scan_loop():
             now = rules.beijing_now()
             d = now.strftime("%Y-%m-%d")
             t_min = now.hour * 60 + now.minute
-            if now.weekday() < 5 and 940 <= t_min < 1440 and _T_SCAN_LAST["day"] != d:
-                from app import t_trade_exec as TX
-                rep = await asyncio.to_thread(TX.scan_market, d, 120, 200, True)
+            if not _T_SCAN_ENABLED:
+                pass                     # 应急关闭（见 `_T_SCAN_ENABLED`）
+            elif (now.weekday() < 5 and 940 <= t_min < 1440
+                    and _T_SCAN_LAST["day"] != d):
+                # ⚠️⚠️ 2026-11-16 故障复盘：原实现**成功后才写 `_T_SCAN_LAST`**
+                #   ⇒ 一旦 `scan_market` 抛异常（或超时被中断），标记不更新
+                #   ⇒ **每 300 秒重跑一次 72 秒的扫描**，全天反复打 DB
+                #   ⇒ 数据库连接被打满 ⇒ 所有接口超时。
+                #   修法：**先占位再跑**，成败都算"今天已扫过"，绝不重试。
                 _T_SCAN_LAST["day"] = d
-                print(f"[t-trade] scan done {rep}")
+                try:
+                    from app import t_trade_exec as TX
+
+                    rep = await asyncio.to_thread(TX.scan_market, d, 120, 200, True)
+                    print(f"[t-trade] scan done {rep}")
+                except Exception as e2:
+                    # 不回滚标记：宁可今天没有预案，也不能变成重试风暴
+                    print(f"[t-trade] scan failed (no retry today): {str(e2)[:90]}")
         except Exception as e:
             print(f"[t-trade] scan error: {str(e)[:90]}")
         await asyncio.sleep(300)
