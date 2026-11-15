@@ -190,6 +190,77 @@ def del_pool(code: str, user: dict = Depends(get_current_user)):
     return {"success": True, "code": code}
 
 
+@router.post("/build-plan")
+def build_plan(code: str = "", user: dict = Depends(get_current_user)):
+    """用做T 预案的**支撑位**，建一条「底仓建仓点」交易计划。
+
+    用户（2026-11-15）："我的池子符合做T，可以加入某个支撑位买入底仓的功能吗？"
+
+    【为什么复用 `user_trade_plans` 而不是新写一套】
+      `trade_plan_trigger_loop`（`scheduler.py`）**已经在盯 `buy_price`**：
+      现价距买价 ±2% 就推「到达买点附近，按预案试仓」。
+      再写一个"到支撑位提醒"的循环 = **重复造 + 两套阈值打架**
+      （本项目已多次踩"两处各写一份必然漂移"，如 `_bench_code`、`SPREAD_THRESHOLD`）。
+
+    【⚠️ 这是建仓，不是做T —— 风险特征完全不同】
+      · 做T：净仓位**不变**（卖自己的持仓、买回自己的持仓）；
+      · 建仓：**新增敞口**，方向错了就是实亏。
+      ⇒ 所以 `stop_loss` 必须给（支撑 − 0.5×ATR，与做T 止损同一口径），
+        并且 `target` 用预案阻力位，保证"盈亏比"从一开始就是清楚的。
+
+    【资金说明】`buy_price = 支撑`，一次买多少**不由本接口决定**
+      （系统不知道实盘现金）—— 建议至少 300 股，否则 1/3 仓不足 100 股，做T 仍做不了。
+    """
+    import time as _t
+
+    c = str(code or "").strip()
+    if not c:
+        raise HTTPException(400, "缺少 code")
+
+    p = TX.load_plan(c) or TX.explain(c)
+    if not p or not p.get("feasible"):
+        raise HTTPException(
+            400, "该票今日无可行预案（不设建仓点）：%s"
+                 % ((p or {}).get("reason") or "无数据"))
+
+    sup, res = p.get("support"), p.get("resistance")
+    atr = p.get("atr") or 0
+    if not (sup and res):
+        raise HTTPException(400, "预案缺支撑/阻力，无法设建仓点")
+
+    # 与 `check_trigger` 的止损口径一致：支撑 − 0.5×ATR
+    stop = round(float(sup) - float(atr) * 0.5, 2) if atr else round(float(sup) * 0.97, 2)
+
+    from app.portfolio_scope import primary_user_id
+
+    uid = primary_user_id()
+    # **幂等**：同一只票已有 waiting 计划 ⇒ 更新它，不重复建
+    #   （否则用户点三次就有三条计划，推送也会 ×3）
+    exist = db.fetch_one(
+        "SELECT id FROM user_trade_plans WHERE code=%s AND status='waiting' "
+        "AND user_id=%s LIMIT 1", (c, uid))
+    pid = (exist or {}).get("id") or ("tp_%d_%s" % (int(_t.time() * 1000), c))
+
+    try:
+        db.upsert("user_trade_plans", {
+            "id": pid, "code": c, "name": p.get("name") or c,
+            "buy_price": float(sup), "stop_loss": stop, "target": float(res),
+            "reason": "做T 底仓建仓点：支撑 %.2f（%s）；建完仓才能做T"
+                      % (float(sup), p.get("support_type") or "-"),
+            "expected": "空间 %.2f%%（%.2f×ATR）；建议底仓 ≥300 股，否则 1/3 仓不足 100 股"
+                        % (float(p.get("space_pct") or 0),
+                           float(p.get("space_atr_mult") or 0)),
+            "status": "waiting", "plan_type": "trial", "user_id": uid,
+        }, conflict_columns=["id"])
+    except Exception as e:
+        raise HTTPException(500, "建计划失败：%s" % str(e)[:90])
+
+    return {"success": True, "id": pid, "code": c,
+            "buy_price": float(sup), "stop_loss": stop, "target": float(res),
+            "note": "已建立仓计划；现价到 %.2f 附近（±2%%）会推企微提醒" % float(sup),
+            "warning": "这是**建仓**（新增敞口），不是做T；请先想好仓位与止损"}
+
+
 @router.post("/test-push")
 def test_push(user: dict = Depends(get_current_user)):
     """发一条做T 测试消息，验证企微通道是否真的通。

@@ -102,6 +102,9 @@ export const delTTradePool = (code) => http.delete(`/t-trade/pool/${code}`)
 export const triggerTTradeScan = () => http.post('/t-trade/scan')
 // 做T 推送自检（验证企微 coach 分类通道是否通）
 export const testTTradePush = () => http.post('/t-trade/test-push')
+// 用预案支撑位建「底仓建仓」交易计划（**这是建仓不是做T**，走 user_trade_plans）
+export const buildTTradePlan = (code) =>
+  http.post('/t-trade/build-plan', null, { params: { code } })
 
 export const getCoachReviewSummary = (date = '', days = 20) =>
   http.get('/coach/review-summary', { params: { date, days } })

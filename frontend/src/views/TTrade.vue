@@ -173,7 +173,16 @@
               </template>
               <span v-else class="text-muted" :title="r.reason">不可行</span>
             </td>
-            <td class="px-3 py-1.5 text-right">
+            <td class="px-3 py-1.5 text-right space-x-2 whitespace-nowrap">
+              <!-- ★ 2026-11-15（用户："我的池子符合做T，可以加入某个支撑位买入底仓的功能吗？"）：
+                   只对**可行 + 无底仓**的票显示 —— 有底仓的不需要建仓点；
+                   不可行的票没有可信支撑位，不该让人照着买。
+                   ⚠️ 这是**建仓**（新增敞口），不是做T（净仓位不变）。 -->
+              <button v-if="r.feasible && !(Number(r.base_shares) > 0)"
+                      type="button"
+                      class="text-[11px] text-accent hover:underline"
+                      :title="`用支撑 ${fmt(r.support)} 建底仓计划（止损 ${fmt((r.support || 0) - (r.atr || 0) * 0.5)}，目标 ${fmt(r.resistance)}）⚠️ 这是建仓不是做T`"
+                      @click="makePlan(r.code)">设建仓点</button>
               <button type="button" class="text-[11px] text-muted hover:text-rose-300"
                       @click="removeFromPool(r.code)">移除</button>
             </td>
@@ -380,7 +389,7 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
-  getBatchPricesCached, testTTradePush,
+  getBatchPricesCached, testTTradePush, buildTTradePlan,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
@@ -569,6 +578,25 @@ async function addFromMarket(p) {
     await loadAll()
   } catch (e) {
     err.value = (e && e.message) || '加入失败'
+  }
+}
+
+/** ★ 用支撑位建「底仓建仓点」交易计划（走 user_trade_plans，复用既有买点提醒） */
+async function makePlan(code) {
+  err.value = ''
+  notice.value = ''
+  try {
+    const { data } = await buildTTradePlan(code)
+    const d = data || {}
+    if (d.success) {
+      notice.value = d.note
+        || `已建立仓计划：买 ${d.buy_price} / 止损 ${d.stop_loss} / 目标 ${d.target}`
+      err.value = ''
+    } else {
+      err.value = d.note || '建立仓计划失败'
+    }
+  } catch (e) {
+    err.value = (e && e.message) || '建立仓计划失败'
   }
 }
 
