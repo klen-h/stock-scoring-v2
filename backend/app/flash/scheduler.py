@@ -1628,9 +1628,19 @@ async def trade_plan_trigger_loop():
                             if key in _PLAN_TRIGGER_DEDUPE["keys"]:
                                 continue
                             _PLAN_TRIGGER_DEDUPE["keys"].add(key)
+                            # ★★ 2026-11-15（用户："重新审视…交易计划的交易逻辑，
+                            #   有可能已经落后项目了"）：**按语义分流**，原来 5 种全走 risk。
+                            #   · `stop` = 要认错，**真风险** ⇒ `risk` 群（必须立刻看到）
+                            #   · `target`/`buy`/`high_open`/`volume_break` = 纪律与机会
+                            #     ⇒ `coach` 群，与做T 的触发/平仓**同一出口**
+                            #   【为什么】全塞 risk 会让"买点到了"淹没"跌破止损"；
+                            #     而且做T 已经走 coach，交易动作该在同一个群。
+                            #   ⚠️ coach 群未配置时 `notify` 会**回落主群**
+                            #     （`wechat.py:147`）⇒ 不会丢消息，改这里没有"收不到"风险。
+                            cat = "risk" if kind == "stop" else "coach"
                             try:
                                 from app.flash.wechat import notify
-                                notify("risk", "交易计划触发", text, force=True)
+                                notify(cat, "交易计划触发", text, force=True)
                             except Exception as e2:
                                 print(f"[plan-trigger] push failed: {e2}")
                             if kind in ("stop", "target"):
