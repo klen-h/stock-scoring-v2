@@ -95,8 +95,19 @@
 
     <!-- ── ① 我的池子 ── -->
     <div v-show="tab === 'pool'" class="bg-card border border-border rounded-lg overflow-hidden">
-      <div v-if="!poolList.length" class="p-4 text-xs text-muted">
-        池子是空的。去「全市场可行」挑几只加进来 —— 只有池里的票才会被盘中循环监控。
+      <!-- ★ 2026-11-15（用户："按你建议来" ⇒ 清掉 19 只无底仓的票）：
+           空态必须说清"持仓不需要进池"，否则用户会以为池空 = 没有票被监控。 -->
+      <div v-if="!poolList.length" class="p-4 text-xs text-muted space-y-1.5">
+        <div>池子是空的。</div>
+        <div>
+          <b class="text-gray-300">你的持仓会自动被监控</b>，不需要加进池
+          （做T 的关注范围 = <b>持仓 + 池</b>）。
+        </div>
+        <div>
+          池子放的是「还没建仓、先观察」的票 ——
+          但<span class="text-amber-300">做T 必须有底仓</span>（A 股 T+1），
+          无底仓的票只会显示「无底仓」，永远不会触发。
+        </div>
       </div>
       <table v-else class="w-full text-xs">
         <thead class="text-muted border-b border-border">
