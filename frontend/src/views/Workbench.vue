@@ -3311,47 +3311,63 @@
                   ★ 完整页面在 `/t-trade`（全市场清单 + 池子管理 + 成交明细）。 -->
              <div class="bg-card border border-border rounded-lg p-3">
                <div class="flex items-center justify-between mb-1.5">
-                 <div class="text-xs font-semibold">做T 看板
-                   <span class="text-[10px] text-muted font-normal">{{ tPlanDate || '—' }} 预案</span></div>
-                 <div class="flex items-center gap-2 shrink-0">
-                   <span class="text-[10px] text-muted">关注 {{ tWatchTotal }}</span>
+                 <div class="flex items-center gap-1.5 min-w-0">
+                   <span class="text-xs font-semibold shrink-0">做T 看板</span>
+                   <span class="text-[10px] text-muted font-normal truncate">{{ tPlanDate || '—' }} 预案</span>
+                   <!-- ★ 收起时**关键数字留在标题行** —— 否则收起 = 完全看不到，卡就废了 -->
+                   <span v-if="!tOpen && tSummary" class="text-[10px] text-muted shrink-0">
+                     可行 {{ tAllTotal }}<span v-if="tWatchTotal"> · 关注 {{ tWatchTotal }}</span>
+                     <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
+                       {{ Number(tSummary.stats.pnl) > 0 ? '+' : '' }}{{ tSummary.stats.pnl }}</span>
+                   </span>
+                 </div>
+                 <div class="flex items-center gap-1.5 shrink-0">
+                   <button type="button"
+                           class="text-[10px] px-1.5 py-0.5 rounded border border-border
+                                  text-muted hover:text-accent hover:border-accent/40 transition-colors"
+                           :title="tOpen ? '收起做T 看板' : '展开做T 看板'"
+                           @click="tOpen = !tOpen; saveTOpen()">
+                     {{ tOpen ? '收起 ▲' : '展开 ▼' }}
+                   </button>
                    <router-link target="_blank" to="/t-trade"
                                 class="text-xs text-accent hover:underline">详情</router-link>
                  </div>
                </div>
-               <div v-if="tErr" class="text-[11px] text-muted">—（加载失败）</div>
-               <div v-else-if="!tSummary" class="text-[11px] text-muted">—（暂无数据）</div>
-               <template v-else>
-                 <div class="text-[11px] space-y-0.5">
-                   <div>
-                     全市场可行 <b>{{ tAllTotal }}</b> 只
-                     <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
+               <template v-if="tOpen">
+                 <div v-if="tErr" class="text-[11px] text-muted">—（加载失败）</div>
+                 <div v-else-if="!tSummary" class="text-[11px] text-muted">—（暂无数据）</div>
+                 <template v-else>
+                   <div class="text-[11px] space-y-0.5">
+                     <div>
+                       全市场可行 <b>{{ tAllTotal }}</b> 只
+                       <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
+                     </div>
+                     <div class="text-muted">
+                       今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
+                       <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
+                     </div>
+                     <!-- ★ 2026-11-15（用户："需要展示当前个股的实时涨跌幅…参考评分排行榜，
+                          而且但凡涉及个股的都要展示股票代码和股票名称，点击代码跳转雪球，
+                          名称跳转个股详情页"）：代码→雪球、名称→详情、末尾加实时涨跌。 -->
+                     <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
+                          class="flex gap-1.5 pt-0.5 items-baseline"
+                          :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
+                       <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
+                          class="font-mono shrink-0 text-muted hover:text-accent hover:underline"
+                          title="在雪球查看">{{ p.code }}</a>
+                       <router-link :to="'/stock/' + p.code"
+                                    class="truncate hover:text-accent hover:underline"
+                                    :title="`查看 ${p.name || p.code} 详情`">{{ p.name || p.code }}</router-link>
+                       <span class="shrink-0 font-mono" :class="tChgCls(tQuote(p.code).change_pct)">{{ tChgTxt(tQuote(p.code).change_pct) }}</span>
+                       <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
+                     </div>
+                     <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
+                       关注里暂无可做标的（当前市况不适合做T，本身是个有效信号）
+                     </div>
                    </div>
-                   <div class="text-muted">
-                     今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
-                     <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
-                   </div>
-                   <!-- ★ 2026-11-15（用户："需要展示当前个股的实时涨跌幅…参考评分排行榜，
-                        而且但凡涉及个股的都要展示股票代码和股票名称，点击代码跳转雪球，
-                        名称跳转个股详情页"）：代码→雪球、名称→详情、末尾加实时涨跌。 -->
-                   <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
-                        class="flex gap-1.5 pt-0.5 items-baseline"
-                        :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
-                     <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
-                        class="font-mono shrink-0 text-muted hover:text-accent hover:underline"
-                        title="在雪球查看">{{ p.code }}</a>
-                     <router-link :to="'/stock/' + p.code"
-                                  class="truncate hover:text-accent hover:underline"
-                                  :title="`查看 ${p.name || p.code} 详情`">{{ p.name || p.code }}</router-link>
-                     <span class="shrink-0 font-mono" :class="tChgCls(tQuote(p.code).change_pct)">{{ tChgTxt(tQuote(p.code).change_pct) }}</span>
-                     <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
-                   </div>
-                   <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
-                     关注里暂无可做标的（当前市况不适合做T，本身是个有效信号）
-                   </div>
-                 </div>
+                 </template>
                </template>
-             </div>
+               </div>
              <div class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 gap-2">
             <div class="flex items-center gap-1.5 min-w-0">
@@ -4520,6 +4536,22 @@ const todoOpen = ref((() => {
 })())
 function saveTodoOpen() {
   try { localStorage.setItem(TODO_OPEN_KEY, todoOpen.value ? '1' : '0') } catch { /* 隐私模式忽略 */ }
+}
+
+// ★ 2026-11-15（用户："做T 看板支持展开收起功能"）：
+//   与 `todoOpen` / `saveObs` / `lidxOpen` **同一做法** —— 折叠状态记 localStorage。
+//   用户既然收起了，就是这一屏真的放不下，不该每次刷新再顶开一次。
+//   ★ 收起时**关键数字留在标题行**（可行数/关注数/今日盈亏），
+//     否则收起 = 完全看不到，等于把这张卡废掉。
+const T_OPEN_KEY = 'wb_ttrade_open'
+const tOpen = ref((() => {
+  try {
+    const v = localStorage.getItem(T_OPEN_KEY)
+    return v == null ? true : v === '1'
+  } catch { return true }   // 隐私模式：默认展开
+})())
+function saveTOpen() {
+  try { localStorage.setItem(T_OPEN_KEY, tOpen.value ? '1' : '0') } catch { /* 隐私模式忽略 */ }
 }
 // 外盘四件套行：从宏面板取 price/prev_close，pct 现算
 const globalsRow = computed(() => {
