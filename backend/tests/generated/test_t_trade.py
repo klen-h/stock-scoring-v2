@@ -266,6 +266,41 @@ def test_calc_shares_short_t_zero_when_all_bought_today():
                                today_bought=20000) == 0
 
 
+def test_min_base_shares_matches_ratio():
+    """★ 按 ratio 反算最小底仓 —— 建完仓必须真的能做T。
+
+    2026-11-16 实际踩到：接口硬编码 `suggest_shares=300`，
+    但 `ratio=0.2`（000878 云南铜业）时 300 股只能卖 60 股 ⇒ **建了仓也做不了**。
+    """
+    # 1/3 ⇒ 300 股正好（100/(1/3)=300.00000000000006，若用 ceil 会错要 400）
+    assert t_trade.min_base_shares(1 / 3) == 300
+    assert t_trade.min_base_shares(0.333333) == 300
+    # 0.2 ⇒ 必须 500 股（100/0.2 = 500）
+    assert t_trade.min_base_shares(0.2) == 500
+    # 0.25 ⇒ 400；0.5 ⇒ 200；1.0 ⇒ 100
+    assert t_trade.min_base_shares(0.25) == 400
+    assert t_trade.min_base_shares(0.5) == 200
+    assert t_trade.min_base_shares(1.0) == 100
+    # 0.15 ⇒ 100/0.15=666.7 ⇒ 进位到 700（保守，宁多勿少）
+    assert t_trade.min_base_shares(0.15) == 700
+    # 非法输入 ⇒ 0（调用方当作"不适用"，不能抛异常）
+    assert t_trade.min_base_shares(0) == 0
+    assert t_trade.min_base_shares(None) == 0
+    assert t_trade.min_base_shares(-0.3) == 0
+
+
+def test_min_base_shares_actually_enables_trade():
+    """★ 闭环验证：按 `min_base_shares` 买，`calc_shares` 必须真的卖出 ≥100 股。
+
+    只看公式对没用 —— 要用它算出的底仓**真的过 `calc_shares` 那一关**。
+    """
+    for ratio in (1 / 3, 0.333333, 0.2, 0.25, 0.5):
+        base = t_trade.min_base_shares(ratio)
+        sh = t_trade.calc_shares("short_t", 10.0, base_shares=base,
+                                 cash=0, ratio=ratio)
+        assert sh >= 100, "ratio=%.4f 底仓 %d 股仍卖不出 100 股" % (ratio, base)
+
+
 def test_calc_shares_long_t_uses_cash_when_no_position():
     """**无底仓**时只能用资金口径（此时没有"底仓"可言）。"""
     # 50000 × 1/3 = 16666.7 元，价 10 元 ⇒ 1666 股 → 1600

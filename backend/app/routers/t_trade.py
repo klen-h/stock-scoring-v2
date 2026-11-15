@@ -20,6 +20,7 @@ URL 前缀 /api/t-trade（JWT 保护）：
 """
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 
+from app import t_trade as TT
 from app import t_trade_exec as TX
 from app.auth import get_current_user
 from app.database import db
@@ -79,8 +80,6 @@ def _attach_buy_check(rows: list):
       那些是"加新仓"的闸门，做T 净仓位不变，不该被拦住
       （完整理由见 `t_trade.buy_check` 的 docstring）。
     """
-    from app import t_trade as TT
-
     if not rows:
         return rows
     try:
@@ -277,10 +276,15 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
     pid = (exist or {}).get("id") or ("tp_%d_%s" % (int(_t.time() * 1000), c))
 
     # ★ 2026-11-15（用户："建仓时直接买到 300 股以上"）：
-    #   做T 的 `1/3` 仓必须 ≥100 股 ⇒ **底仓至少 300 股**，否则买完照样做不了 T。
-    #   与其让用户自己算，不如把"建议股数 + 需要多少钱"直接给出来。
-    #   ⚠️ 只是**建议**：资金不够时不阻止建计划（价格到位仍会提醒）。
-    suggest_shares = 300
+    #   做T 的 `ratio` 仓必须 ≥100 股 ⇒ 底仓至少要 `100 / ratio` 股。
+    #   ⚠️ **2026-11-16 修正**：原先硬编码 300 股是错的 ——
+    #      `ratio=0.333` 时 300 股正好够（容差补到 100），
+    #      但 `ratio=0.2`（如 000878 云南铜业）买 300 股只能卖 60 股 ⇒ **做不了 T**，
+    #      用户会"照建议建完仓发现白做"。必须按 ratio 反算最小底仓。
+    #   `int(round(need/100))*100` 而不是 ceil：`100/0.333333 = 300.0003`
+    #   ⇒ ceil 会要 400 股（不必要），round 得 300（与 `calc_shares` 的容差一致）。
+    ratio = float(p.get("ratio") or 0)
+    suggest_shares = max(300, TT.min_base_shares(ratio))
     suggest_cash = round(suggest_shares * float(sup), 2)
 
     try:
@@ -290,10 +294,11 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
             "reason": "做T 底仓建仓点：支撑 %.2f（%s）；建完仓才能做T"
                       % (float(sup), p.get("support_type") or "-"),
             "expected": "建议买 %d 股（约 %.0f 元），空间 %.2f%%（%.2f×ATR）；"
-                        "少于 300 股则 1/3 仓不足 100 股，做不了 T"
+                        "仓位比例 %.0f%%，少于 %d 股则不足 100 股，做不了 T"
                         % (suggest_shares, suggest_cash,
                            float(p.get("space_pct") or 0),
-                           float(p.get("space_atr_mult") or 0)),
+                           float(p.get("space_atr_mult") or 0),
+                           ratio * 100, suggest_shares),
             "status": "waiting", "plan_type": "trial", "user_id": uid,
         }, conflict_columns=["id"])
     except Exception as e:

@@ -429,6 +429,30 @@ def calc_shares(direction: str, price: float, base_shares: float,
     return 0
 
 
+def min_base_shares(ratio: float) -> int:
+    """按仓位比例反算**最小可用底仓股数**（100 股整数倍）。
+
+    【为什么需要】做T 卖出的量 = `底仓 × ratio`，要成一手（100 股）才行。
+      ⇒ 底仓至少要 `100 / ratio` 股，否则**建完仓也做不了 T**。
+
+    【踩过的坑（2026-11-16）】接口原先**硬编码 `suggest_shares = 300`**：
+      · `ratio = 1/3` ⇒ 300 × 0.3333 ≈ 100 ✓ 正好够
+      · `ratio = 0.2`（000878 云南铜业）⇒ 300 × 0.2 = **60 股** ⇒ 不够！
+      用户"照建议建完仓，结果还是做不了"，等于白建。
+
+    【为什么用 round 而不是 ceil】
+      `100 / (1/3) = 300.00000000000006` ⇒ `ceil` 会要 **400 股**（多花 3000 元），
+      而 `calc_shares` 有"整手边界容差"（`_floor_lot`），300 股确实够。
+      ⇒ 四舍五入到整百，与 `calc_shares` 的口径**保持一致**。
+
+    · `ratio <= 0` ⇒ 返回 0（无法反算，调用方当作"不适用"）。
+    """
+    if ratio is None or float(ratio) <= 0:
+        return 0
+    need = 100.0 / float(ratio)
+    return max(100, int(round(need / 100.0)) * 100)
+
+
 def buy_check(base_shares: float, cash: float, price: float, ratio: float,
               today_bought: float = 0.0) -> Dict:
     """这一笔**能不能真的下单**？返回 `{ok, shares, need_cash, reason}`。
