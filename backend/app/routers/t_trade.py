@@ -190,6 +190,32 @@ def del_pool(code: str, user: dict = Depends(get_current_user)):
     return {"success": True, "code": code}
 
 
+@router.post("/test-push")
+def test_push(user: dict = Depends(get_current_user)):
+    """发一条做T 测试消息，验证企微通道是否真的通。
+
+    【为什么需要这个接口】
+      做T 的触发/平仓都走 `notify("coach", ...)`，但 `push_log` 里
+      **从没出现过 `coach` 分类** ⇒ 没法从历史判断这个分类群配没配。
+      与其"等真信号触发时才发现没收到"，不如让用户主动验证一次。
+
+    【通道解析顺序】（见 `flash/wechat.py` 文件头）
+      ① `WECHAT_HOOK_COACH`（分类群机器人）
+      ② `WECHAT_NOTIFY_COACH`（应用消息）
+      ③ `WECHAT_WEBHOOK`（主群兜底）
+      ⇒ 只要 ① 或 ③ 有一个配了就能收到；**全没配时推送静默跳过**（只走 Web）。
+    """
+    from app.flash.wechat import notify
+
+    ok = notify("coach", "做T 通道自检",
+                "收到这条说明**做T 的触发/平仓通知能送达**。\n"
+                "本消息由 `/api/t-trade/test-push` 发起，不是真实交易信号。",
+                force=True)
+    return {"success": bool(ok),
+            "note": ("已发送，请查企微" if ok else
+                     "未送达 —— 检查 WECHAT_HOOK_COACH 或 WECHAT_WEBHOOK 是否配置")}
+
+
 @router.get("/summary")
 def get_summary(date: str = None, user: dict = Depends(get_current_user)):
     """当日做T 汇总（预案 + 未平 + 已平 + 模拟盈亏）。"""

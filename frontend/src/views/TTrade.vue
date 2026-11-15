@@ -43,11 +43,23 @@
                 :disabled="scanning" @click="rescan">
           {{ scanning ? '扫描中…' : '补跑扫描' }}
         </button>
+        <!-- ★ 2026-11-15（用户："交易信息会通知到我吗？"）：
+             做T 走 `notify("coach")`，但历史上从没触发过该分类
+             ⇒ 加个自检按钮，别等真信号来了才发现没收到。 -->
+        <button type="button" class="px-2.5 py-1 rounded text-xs border border-border
+                                     text-muted hover:text-accent hover:border-accent/40
+                                     transition-colors"
+                :disabled="pushTesting" @click="testPush">
+          {{ pushTesting ? '发送中…' : '测试推送' }}
+        </button>
       </div>
     </div>
 
     <div v-if="err" class="text-xs text-rose-300 bg-rose-500/10 border border-rose-500/30
                             rounded-lg px-3 py-2">{{ err }}</div>
+    <!-- 成功提示（测试推送等）；与 err 分开，否则"已发送"会用红色显示 -->
+    <div v-if="notice" class="text-xs text-emerald-300 bg-emerald-500/10
+                              border border-emerald-500/30 rounded-lg px-3 py-2">{{ notice }}</div>
 
     <!-- ── 概览 ── -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -368,7 +380,7 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
-  getBatchPricesCached,
+  getBatchPricesCached, testTTradePush,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
@@ -529,6 +541,25 @@ async function rescan() {
     err.value = (e && e.message) || '启动失败'
   } finally {
     scanning.value = false
+  }
+}
+
+const pushTesting = ref(false)
+const notice = ref('')
+async function testPush() {
+  pushTesting.value = true
+  err.value = ''
+  notice.value = ''
+  try {
+    const { data } = await testTTradePush()
+    const ok = !!(data && data.success)
+    const msg = (data && data.note) || (ok ? '已发送' : '未送达')
+    if (ok) notice.value = msg
+    else err.value = msg
+  } catch (e) {
+    err.value = (e && e.message) || '发送失败'
+  } finally {
+    pushTesting.value = false
   }
 }
 
