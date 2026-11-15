@@ -748,6 +748,46 @@ _bucket_cache = {"ts": 0.0, "data": None, "key": None}
 _BUCKET_CACHE_TTL = 600
 
 
+@router.get("/weight-preset")
+def weight_preset():
+    """当前生效的评分权重方案（**用于确认 `SCORE_WEIGHT_PRESET` 有没有生效**）。
+
+    【为什么需要这个接口】
+      权重试跑开关是环境变量，改 `backend/.env` + 重启才生效。
+      "重启了但改的是别的文件"、"env 没被读到"这类问题**没有出口可查**——
+      用户只能靠观察榜单分数变化去猜。
+      本接口把 `preset` / `state` / 实际权重一次返回，一眼就能确认。
+
+    返回：
+      `preset`  空字符串 = 用内置默认表（未启用试跑）
+      `state`   当前市况
+      `weights` 实际生效的五维权重
+    """
+    from app.backtest.market_regime import active_weight_preset, get_regime_weights
+    from app.scoring.decay import resolve_weights
+
+    preset = active_weight_preset()
+    try:
+        state, weights = resolve_weights()
+    except Exception as e:
+        # 吞异常必须可见（GUARDRAILS #11）
+        print(f"[score] resolve_weights failed: {str(e)[:80]}")
+        state, weights = None, None
+
+    # `resolve_weights` 取不到时退回状态无关的默认表，保证接口永远有值
+    if not weights:
+        weights = get_regime_weights(state or "neutral")
+
+    return {
+        "preset": preset,
+        "preset_active": bool(preset),
+        "state": state,
+        "weights": {k: round(float(v), 4) for k, v in (weights or {}).items()},
+        "note": ("未启用试跑（用内置默认表）" if not preset
+                 else "试跑已生效：%s" % preset),
+    }
+
+
 @router.get("/bucket-stats")
 def bucket_stats(days: int = Query(default=120, ge=30, le=365)):
     """
