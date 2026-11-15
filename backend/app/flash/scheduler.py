@@ -1716,9 +1716,12 @@ def _t_trade_tick(TT, TX, stocks: dict, now, t_min: int) -> None:
         if not r:
             continue
         dd = "正T 买入" if direction == "long_t" else "反T 卖出"
+        # ★ 2026-11-15：正T 文案不再说"按假设资金" —— 仓位已改为**以底仓为基准**
+        #   （`calc_shares` 的完整说明）。系统拿不到实盘现金，说"假设资金"
+        #   会让用户以为系统知道他有多少钱。
         extra = ("（注意：若今日有手动加仓，可卖数量需自行核对 T+1）"
                  if direction == "short_t" else
-                 "（按假设可用资金 %.0f 元计算仓位）" % cash)
+                 "（仓位按底仓 %d 股的 %.0f%% 计算）" % (int(base), ratio * 100))
         try:
             notify("coach", "做T 触发", (
                 f"**{dd}** {p.get('name')}({code}) {shares} 股 @ {price:.2f}："

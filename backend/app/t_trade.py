@@ -342,24 +342,50 @@ def calc_shares(direction: str, price: float, base_shares: float,
       direction     : `long_t`（先买）/ `short_t`（先卖）
       price         : 触发价
       base_shares   : 当前底仓股数
-      cash          : 可用资金（元）
+      cash          : 可用资金（元）—— **系统并不知道实盘现金**，见下
       ratio         : 仓位比例（`suggest_ratio` 给出，默认 1/3）
       today_bought  : **今日已买入**股数（含手动加仓无法感知，只能扣做T 自己的）
 
-    ★ 反T 的核心保护：卖出量 = `底仓 × ratio`，且不超过 `底仓 − 今日买入`。
-      ⇒ 即使用了 1/3 也接不回来，最多丢 1/3 底仓，不会清仓；
-        并且严格满足 T+1（今日买入的部分不可卖）。
-      用户（2026-11-15）："反T 卖出后接不回来会丢底仓问题，不一定使用全仓操作吧？"
+    ★ 反T：卖出量 = `底仓 × ratio`，且不超过 `底仓 − 今日买入`。
+      ⇒ 即使用了 1/3 也接不回来，最多丢 1/3 底仓，不会清仓；且严格满足 T+1。
+
+    ★★★ 2026-11-15 修正（用户："建议将做T 的资金设为不限吗？"）
+      **原实现只按 `cash × ratio / price` 算正T，这是错的。**
+
+      【为什么错】`cash` 是环境变量 `T_TRADE_CASH`（默认 5 万），
+        **系统根本没有实盘可用资金**（`user_portfolio` 无现金字段，
+        `paper_account.initial_capital` 是模拟盘本金，不是实盘钱）。
+        ⇒ 用假设值当真实资金，会算出**与底仓完全不匹配的量**：
+        实测底仓 200 股粤高速时，正T 却买 **2600 股中国宝安**（13 倍底仓）。
+
+      【为什么不能"设为不限"】实测把资金设成 1 亿 ⇒
+        中国宝安 **526 万股 / 3330 万元**；模拟盈亏随之失真成天文数字，
+        而"不限"本质是**假装系统知道你有多少钱**，比默认 5 万更危险。
+
+      【修法】正T 改为**以底仓为基准**（与反T 对称）：
+        买入量 = `min(底仓 × ratio, cash × ratio / price)`。
+        · 有底仓 ⇒ 底仓约束生效（做T 是**围绕底仓摊薄成本**，不是建仓）；
+        · 无底仓 ⇒ 才退回资金口径（此时没有"底仓"可言，只能按钱算）。
+        ⚠️ `cash` 仍保留为**安全上限**而不是主依据。
+
+      【★ 随之而来的真话】A 股最小 100 股，`1/3` 仓要求底仓 ≥ 300 股。
+        实测当前持仓 工行 100 / 粤高速 200 / 内蒙一机 100 ⇒ **都做不了**。
+        这不是 bug，是"仓位太小，摊薄成本没有意义"。
     """
     if price <= 0 or ratio <= 0:
         return 0
     if direction == "short_t":
         sellable = max(0.0, float(base_shares) - float(today_bought))
-        want = sellable * ratio
-        return int(want // 100) * 100
+        return int((sellable * ratio) // 100) * 100
     if direction == "long_t":
-        want = (float(cash) * ratio) / price
-        return int(want // 100) * 100
+        caps = []
+        if base_shares and base_shares > 0:
+            caps.append(float(base_shares) * ratio)          # ① 底仓为基准
+        if cash and cash > 0:
+            caps.append(float(cash) * ratio / price)         # ② 资金为上限
+        if not caps:
+            return 0
+        return int((min(caps)) // 100) * 100
     return 0
 
 

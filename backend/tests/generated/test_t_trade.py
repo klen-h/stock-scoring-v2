@@ -263,12 +263,36 @@ def test_calc_shares_short_t_zero_when_all_bought_today():
                                today_bought=20000) == 0
 
 
-def test_calc_shares_long_t_uses_cash_ratio():
-    """正T 按可用资金 × 比例买，同样取整到 100 股。"""
+def test_calc_shares_long_t_uses_cash_when_no_position():
+    """**无底仓**时只能用资金口径（此时没有"底仓"可言）。"""
     # 50000 × 1/3 = 16666.7 元，价 10 元 ⇒ 1666 股 → 1600
     assert t_trade.calc_shares("long_t", 10.0, 0, cash=50000, ratio=1 / 3) == 1600
     assert t_trade.calc_shares("long_t", 10.0, 0, cash=0, ratio=1 / 3) == 0
     assert t_trade.calc_shares("long_t", 0, 0, cash=50000, ratio=1 / 3) == 0
+
+
+def test_calc_shares_long_t_capped_by_position():
+    """★ 有底仓时**以底仓为基准**（2026-11-15 修正）。
+
+    原来的实现只按 `cash × ratio / price` 算，会算出与底仓完全不匹配的量：
+    实测底仓 200 股时正T 却买 2600 股（13 倍底仓）—— 那不是做T，是建仓。
+    """
+    # 底仓 300 股 × 1/3 = 100 股；资金上限 50000×1/3/10 = 1666 股 ⇒ 取小 = 100
+    assert t_trade.calc_shares("long_t", 10.0, 300, cash=50000, ratio=1 / 3) == 100
+    # 底仓 3000 股 × 1/3 = 1000 股；资金上限 1666 股 ⇒ 取小 = 1000
+    assert t_trade.calc_shares("long_t", 10.0, 3000, cash=50000, ratio=1 / 3) == 1000
+    # 资金很紧时资金成为约束：1000 元 × 1/3 / 10 = 33 股 → 0
+    assert t_trade.calc_shares("long_t", 10.0, 3000, cash=1000, ratio=1 / 3) == 0
+
+
+def test_calc_shares_long_t_zero_when_position_too_small():
+    """★ 底仓不足 300 股时 1/3 仓取整为 0 —— **A 股最小 100 股，做不了**。
+
+    实测当前持仓：工行 100 / 粤高速 200 / 内蒙一机 100 股 ⇒ 全部做不了。
+    这不是 bug，是"仓位太小，摊薄成本没有意义"。
+    """
+    for base in (100, 200, 299):
+        assert t_trade.calc_shares("long_t", 10.0, base, cash=50000, ratio=1 / 3) == 0
 
 
 # ── 触发判断（开仓 / 平仓 / 止损）─────────────────────────────────────
