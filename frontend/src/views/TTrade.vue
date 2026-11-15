@@ -69,10 +69,11 @@
         <div class="text-[10px] text-muted">当前市况能做T 的标的数</div>
       </div>
       <div class="bg-card border border-border rounded-lg p-3">
-        <div class="text-[11px] text-muted">做T 池</div>
+        <!-- ★ 2026-11-16：这里原叫"做T 池"，现在口径是**完整监控范围**（持仓 + 池） -->
+        <div class="text-[11px] text-muted">监控范围</div>
         <div class="text-xl font-semibold mt-0.5">{{ poolList.length }}</div>
         <div class="text-[10px] text-muted">
-          今日可做 <b class="text-accent">{{ poolPlans.length }}</b> 只
+          持仓 + 池 · 今日可做 <b class="text-accent">{{ poolPlans.length }}</b> 只
         </div>
       </div>
       <div class="bg-card border border-border rounded-lg p-3">
@@ -109,11 +110,12 @@
     <div v-show="tab === 'pool'" class="bg-card border border-border rounded-lg overflow-hidden">
       <!-- ★ 2026-11-15（用户："按你建议来" ⇒ 清掉 19 只无底仓的票）：
            空态必须说清"持仓不需要进池"，否则用户会以为池空 = 没有票被监控。 -->
+      <!-- ★ 2026-11-16：`poolList` 现在**含持仓** ⇒ 只有"既无持仓又无池"才走到这里 -->
       <div v-if="!poolList.length" class="p-4 text-xs text-muted space-y-1.5">
-        <div>池子是空的。</div>
+        <div>既没有持仓、也没有手动加入的标的 —— 做T 目前**没有任何监控对象**。</div>
         <div>
-          <b class="text-gray-300">你的持仓会自动被监控</b>，不需要加进池
-          （做T 的关注范围 = <b>持仓 + 池</b>）。
+          <b class="text-gray-300">有持仓就会自动出现在这里</b>，不需要手动加池
+          （监控范围 = <b>持仓 + 池</b>）。
         </div>
         <div>
           池子放的是「还没建仓、先观察」的票 ——
@@ -126,6 +128,10 @@
           <tr>
             <th class="text-left px-3 py-1.5">代码</th>
             <th class="text-left px-3 py-1.5">名称</th>
+            <!-- ★ 2026-11-16（用户："池子不会自动加入吗？"）：
+                 持仓**本来就在监控范围内**（`watch_codes = 持仓 + 池`），
+                 只是原先表格不显示 ⇒ 池空时看起来像"什么都没盯"。 -->
+            <th class="text-left px-3 py-1.5">来源</th>
             <th class="text-right px-3 py-1.5">现价</th>
             <th class="text-right px-3 py-1.5">涨跌</th>
             <th class="text-right px-3 py-1.5">量比</th>
@@ -149,6 +155,15 @@
             <td class="px-3 py-1.5">
               <router-link :to="'/stock/' + r.code" class="hover:text-accent hover:underline"
                            :title="`查看 ${r.name || r.code} 详情`">{{ r.name || '—' }}</router-link>
+            </td>
+            <!-- 来源：持仓自动监控 / 手动加池 / 两者都有 -->
+            <td class="px-3 py-1.5">
+              <span v-if="r.source === 'holding'" class="text-[10px] text-cyan-300"
+                    title="持仓自动纳入监控，不需要加进池">持仓</span>
+              <span v-else-if="r.source === 'both'" class="text-[10px] text-cyan-300"
+                    title="既是持仓，也在观察池里">持仓+池</span>
+              <span v-else class="text-[10px] text-muted"
+                    title="手动加入的观察标的（无底仓时不会触发）">池</span>
             </td>
             <td class="px-3 py-1.5 text-right font-mono">{{ fmt(r.price) }}</td>
             <td class="px-3 py-1.5 text-right font-mono" :class="chgClass(r.change_pct)">{{ fmtChg(r.change_pct) }}</td>
@@ -183,8 +198,12 @@
                       class="text-[11px] text-accent hover:underline"
                       :title="`用支撑 ${fmt(r.support)} 建底仓计划（止损 ${fmt((r.support || 0) - (r.atr || 0) * 0.5)}，目标 ${fmt(r.resistance)}）⚠️ 这是建仓不是做T`"
                       @click="makePlan(r.code)">设建仓点</button>
-              <button type="button" class="text-[11px] text-muted hover:text-rose-300"
+              <!-- 仅持仓的行不在池里，"移除"无意义（它由持仓自动纳入） -->
+              <button v-if="r.source !== 'holding'" type="button"
+                      class="text-[11px] text-muted hover:text-rose-300"
                       @click="removeFromPool(r.code)">移除</button>
+              <span v-else class="text-[11px] text-muted"
+                    title="来自持仓，删掉持仓才会消失">自动</span>
             </td>
           </tr>
         </tbody>
@@ -483,6 +502,10 @@ const poolRows = computed(() => {
     const base = p ? { ...p, name: p.name || x.name } : { ...x }
     return {
       ...base,
+      // ★ 2026-11-16：**保留来源**（`pool` / `holding` / `both`）。
+      //   ⚠️ 必须显式写，否则被 `...p`（预案行，没有 source）覆盖掉。
+      source: x.source || 'pool',
+      shares: x.shares,
       feasible: !!p,
       // 现价优先用**实时价**（`price_ref` 是预案生成时的收盘价，盘中已过时）
       price: qq.price != null ? qq.price : (p ? p.price_ref : null),

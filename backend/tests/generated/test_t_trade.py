@@ -288,6 +288,19 @@ def test_calc_shares_long_t_capped_by_position():
     assert t_trade.calc_shares("long_t", 10.0, 3000, cash=1000, ratio=1 / 3) == 0
 
 
+def test_calc_shares_300_shares_is_exactly_enough():
+    """★★ 底仓 300 股 × 1/3 = **正好 100 股**（A 股最小单位）。
+
+    【为什么这条必须测】`300 * (1/3)` 在浮点下是 `99.99999999999999`，
+    `// 100 * 100` 直接归零 ⇒ **用户按建议把仓位加到 300 股，仍然显示做不了**。
+    这是实测踩到的真实缺陷（2026-11-16）。
+    """
+    assert t_trade.calc_shares("short_t", 10.0, 300, 0, 1 / 3) == 100
+    assert t_trade.calc_shares("long_t", 10.0, 300, 50000, 1 / 3) == 100
+    # 299 股 × 1/3 = 99.67 ⇒ 仍应归零（容差不能宽到"不足也放行"）
+    assert t_trade.calc_shares("short_t", 10.0, 299, 0, 1 / 3) == 0
+
+
 def test_calc_shares_long_t_zero_when_position_too_small():
     """★ 底仓不足 300 股时 1/3 仓取整为 0 —— **A 股最小 100 股，做不了**。
 

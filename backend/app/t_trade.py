@@ -299,7 +299,11 @@ def suggest_ratio(atr_pct: float, base: Optional[float] = None) -> Dict:
         scaled = max(T_RATIO_MIN, b * T_HIGH_VOL_RATIO_SCALE)
         note = ("ATR %.2f%% ≥ %.1f%% ⇒ 高波动，比例 %.0f%% → %.0f%%"
                 % (atr_pct, T_HIGH_VOL_ATR_PCT, b * 100, scaled * 100))
-    return {"ratio": round(scaled, 3), "note": note}
+    # ★ 2026-11-16：**3 位 → 6 位**。
+    #   原来 `round(1/3, 3) = 0.333` ⇒ `300 × 0.333 = 99.9` ⇒ 差 0.1 股被判"不足"
+    #   ⇒ 用户把底仓加到 300 股（1/3 正好 100 股）仍然显示"做不了"。
+    #   存库字段是 `real`（约 7 位有效数字），6 位足够表达 1/3 且不丢整手边界。
+    return {"ratio": round(scaled, 6), "note": note}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -384,9 +388,35 @@ def calc_shares(direction: str, price: float, base_shares: float,
     """
     if price <= 0 or ratio <= 0:
         return 0
+
+    # ★★★ 2026-11-16（用户："做T 交易台的池子不会自动加入吗？" 顺带实测发现）：
+    #   **浮点误差导致「刚好够」变成「不够」**。
+    #   实测：底仓 **300 股** × `1/3`，数学上正好 **100 股**（A 股最小单位），
+    #   但 `300 * (1/3) = 99.99999999999999` ⇒ `// 100 * 100 = 0`
+    #   ⇒ 用户按建议把仓位加到 300 股，**仍然显示"做不了"**。
+    #   修法：先把"想要的股数"四舍五入到 **6 位小数**（消除 1/3 这类无限小数的尾巴），
+    #     再向下取整到 100 股。这样 99.9 仍归零、100.000000 正确留下。
+    def _floor_lot(x: float) -> int:
+        """向下取整到 100 股，**容忍"整手边界上 <0.01 股"的比例表示误差**。
+
+        【为什么需要】底仓 300 股 × `1/3` **数学上正好 100 股**，
+          但 `ratio` 存库是 `real`（`1/3 → 0.333`），算出 `99.9`
+          ⇒ 直接 `//100` 归零 ⇒ **用户按建议加到 300 股仍然做不了**。
+        【判据】只有"四舍五入后正好是整手、且与整手差 <0.01 股"才进位：
+          · 99.99999 → 100（差 0.00001 ⇒ 是误差）✓
+          · 99.567   → 0  （差 0.433 ⇒ 是真的不够）✓
+          · 199.6    → 100（差 0.4 ⇒ 不够）✓
+          这样不会因为"容差太宽"造成实质超买。
+        """
+        v = float(x)
+        r = round(v)
+        if abs(v - r) < 0.01 and r % 100 == 0 and r > 0:
+            return int(r)
+        return int(v // 100) * 100
+
     if direction == "short_t":
         sellable = max(0.0, float(base_shares) - float(today_bought))
-        return int((sellable * ratio) // 100) * 100
+        return _floor_lot(sellable * ratio)
     if direction == "long_t":
         caps = []
         if base_shares and base_shares > 0:
@@ -395,7 +425,7 @@ def calc_shares(direction: str, price: float, base_shares: float,
             caps.append(float(cash) * ratio / price)         # ② 资金为上限
         if not caps:
             return 0
-        return int((min(caps)) // 100) * 100
+        return _floor_lot(min(caps))
     return 0
 
 

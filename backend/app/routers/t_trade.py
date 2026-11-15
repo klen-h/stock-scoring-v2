@@ -150,9 +150,44 @@ def get_explain(code: str = "",
 
 
 @router.get("/pool")
-def get_pool(user: dict = Depends(get_current_user)):
-    """做T 池（**独立于自选** —— 自选是"想盯的票"，这里是"能做T 的票"）。"""
+def get_pool(include_holdings: bool = True,
+             user: dict = Depends(get_current_user)):
+    """做T 池（**独立于自选** —— 自选是"想盯的票"，这里是"能做T 的票"）。
+
+    ★ 2026-11-16（用户："做T 交易台的池子不会自动加入吗？"）：
+      **持仓本来就会被自动监控**（`watch_codes() = 持仓 + 池`），
+      但本接口原先**只返回 `t_watchlist`** ⇒ 池空时用户看到"池子是空的"，
+      会以为"没有任何票在被监控"，而实际上持仓一直在盯。
+      ⇒ 默认 `include_holdings=1`，把持仓一并返回并标 `source`。
+      **这不会让任何东西"自动进池"**（池仍是手动维护的观察列表），
+      只是把**真实的监控范围**如实展示出来。
+    """
     rows = TX.pool_codes()
+    if include_holdings:
+        try:
+            held = TX.holdings()
+            in_pool = {str(r.get("code") or "") for r in rows}
+            for r in rows:
+                r["source"] = "pool"
+            for code, h in held.items():
+                if code in in_pool:
+                    for r in rows:
+                        if str(r.get("code")) == code:
+                            r["source"] = "both"          # 既是持仓又在池
+                            r["shares"] = h.get("shares")
+                            break
+                else:
+                    rows.append({
+                        "code": code, "name": h.get("name") or code,
+                        "note": "", "added_at": "",
+                        "source": "holding",              # 仅持仓（自动监控）
+                        "shares": h.get("shares"),
+                    })
+        except Exception as e:
+            # 吞异常必须可见（GUARDRAILS #11）
+            print(f"[t-trade] pool include_holdings failed: {str(e)[:80]}")
+            for r in rows:
+                r.setdefault("source", "pool")
     # 池里"今日不可做"的票没有预案行，也把量能补上 —— 否则那几行只有代码和名字
     rows, facts_date = _enrich_facts(rows)
     # ⚠️ 池清单的行**没有** `price_ref` / `ratio`（不是预案行）⇒ 只对有的算，
