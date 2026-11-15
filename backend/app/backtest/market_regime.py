@@ -17,6 +17,7 @@
 
 import json
 import math
+import os
 import time as _time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -502,6 +503,63 @@ def refine_state(state: str, ma_trend: str, base_score: float,
                                  as_of_date=as_of_date)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  ★★ 2026-11-15：**权重试跑开关**（默认关闭；不设 env 时行为一字不改）
+# ══════════════════════════════════════════════════════════════════════════
+# 【背景】评分诊断（2026-08-17~11-13，ranking_history 2800 条）：
+#   实测各维度对 T+10 的**区分力**（高档 − 低档）：
+#     技术面 **+1.93** ｜ 资金面 **+2.82** ｜ 基本面 **+2.80**
+#     成长 **-5.81** ｜ 质量 **-2.42**
+#   而 `DEFENSIVE` 档把 **质量 0.35（最高权重）** 给了 -2.42 的维度、
+#   把 **技术面 0.12（最低权重）** 给了 +1.93 的维度
+#   ⇒ 总分区分力 **-2.44pp**（分数越高，后续跌得越多）。
+#
+#   ⚠️ 本函数 docstring 早已自承「**防御档未验证，待样本覆盖后复核**」——
+#     现在 defensive 有 37 天样本了，复核结论是：**方向反了**。
+#
+# 【两个 preset】（都必须显式 `SCORE_WEIGHT_PRESET=...` 才生效）
+#   · `neutral_guard` —— defensive 时**借用 neutral 权重**。
+#       依据最硬：neutral 档是 2026-09-02 用 350 条快照验证过的
+#       （"震荡市技术面预测力≈0、基本面最强 +0.109"）；
+#       而 2026-09-03 的 450 条回测**已经否决过"防御化权重"**
+#       （`neutral_bearish` 因此保持 neutral 权重）⇒ 本 preset 只是把同一
+#       结论**推到 defensive**，不是新发明的参数。
+#   · `power_v2` —— 按实测区分力分配（正 0.9 / 负 0.1，即诊断里的"方案④"）。
+#       ⚠️ 只基于 120 天单一下跌市，**属于试跑**，不能当长期结论。
+#
+# 【为什么做开关而不是直接改默认值】
+#   1. 榜单/教练/模拟盘全部依赖它 ⇒ 静默改口径风险太大；
+#   2. 只有单一行情样本，需要线上观察 2~4 周；
+#   3. 等 `offensive` 市样本出现后还要再复核（目前 offensive 样本为 0）。
+_PRESETS = {
+    "neutral_guard": {
+        # ⚠️ 注意 `quality` 取 **0.10** 而不是 neutral 原表的 0.11：
+        #   neutral 原表之和是 **1.01**（2026-09-02 权重优化时的既有偏差，
+        #   本函数 docstring 声称"和 = 1.0"但实际不成立）。
+        #   **不改原表**（会改动已上线榜单，且与"27/23/23/17/11"的验证记录不符），
+        #   只在试跑口径里归一 ⇒ 0.11 → 0.10。
+        DEFENSIVE: {"technical": 0.27, "capital": 0.23, "fundamental": 0.23,
+                    "growth": 0.17, "quality": 0.10},
+    },
+    "power_v2": {
+        DEFENSIVE: {"technical": 0.30, "capital": 0.30, "fundamental": 0.30,
+                    "growth": 0.05, "quality": 0.05},
+        NEUTRAL: {"technical": 0.30, "capital": 0.30, "fundamental": 0.30,
+                  "growth": 0.05, "quality": 0.05},
+        NEUTRAL_BEARISH: {"technical": 0.30, "capital": 0.30, "fundamental": 0.30,
+                          "growth": 0.05, "quality": 0.05},
+    },
+}
+
+
+def active_weight_preset() -> str:
+    """当前生效的权重试跑方案名（空字符串 = 用内置默认表，即不启用任何覆盖）。"""
+    try:
+        return (os.environ.get("SCORE_WEIGHT_PRESET") or "").strip()
+    except Exception:
+        return ""
+
+
 def get_regime_weights(state: str) -> dict:
     """
     根据市场状态返回五维度权重（和 = 1.0）。
@@ -538,6 +596,14 @@ def get_regime_weights(state: str) -> dict:
         DEFENSIVE:  {"technical": 0.12, "capital": 0.15, "fundamental": 0.25,
                      "growth": 0.13, "quality": 0.35},
     }
+
+    # ★ 试跑开关（见上方 `_PRESETS` 说明）：只覆盖命中的市况，未设 env 时**完全不影响**。
+    _preset = active_weight_preset()
+    if _preset:
+        _override = (_PRESETS.get(_preset) or {}).get(state)
+        if _override:
+            return dict(_override)
+
     return weights.get(state, weights[NEUTRAL])
 
 

@@ -1827,6 +1827,54 @@ async def t_trade_loop():
         await asyncio.sleep(60)
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  评分有效性周检（2026-11-15）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么需要】
+#   `scoring.ranking_history.get_bucket_stats()` **早就算出了**
+#   "评分与未来收益负相关"（实测 70-80 档 T+20 -10.84% vs 60-70 档 -7.20%），
+#   但结论**只躺在接口返回里**，没有任何出口 ⇒
+#   用户只能靠自己某天发现"怎么高分总在跌"。
+#
+# 【为什么是周检】
+#   分桶回测要跑 2800 条记录 × K 线，重；且这个结论是慢变量，
+#   一天一变反而变噪音。⇒ 每周一 16:00 后跑一次，命中才推。
+_SCORE_HEALTH_LAST = {"week": ""}
+
+
+async def score_health_loop():
+    """评分有效性周检：分数与未来收益负相关时**主动推企微**。"""
+    while True:
+        try:
+            now = rules.beijing_now()
+            wk = now.strftime("%Y-W%W")
+            t_min = now.hour * 60 + now.minute
+            if (now.weekday() == 0 and 960 <= t_min < 1440
+                    and _SCORE_HEALTH_LAST["week"] != wk):
+                from app.scoring.ranking_history import get_bucket_stats
+
+                rep = await asyncio.to_thread(get_bucket_stats, 120)
+                concl = str((rep or {}).get("conclusion") or "")
+                if "负相关" in concl:
+                    from app.flash.wechat import notify
+
+                    notify("coach", "评分有效性告警", (
+                        "**近 120 天分桶回测：评分与未来收益负相关**"
+                        "（高分反而跌得更多）。\n\n"
+                        "当前 `defensive` 档把 **质量 0.35**（最高权重）"
+                        "给了实测 **-2.42pp** 的维度、把技术面 0.12（最低）"
+                        "给了 **+1.93pp** 的维度。\n\n"
+                        "可用 `SCORE_WEIGHT_PRESET=neutral_guard` 试跑修正口径"
+                        "（默认关闭，需重启后端生效）。\n\n"
+                        + concl[:260]), force=True)
+                else:
+                    print("[score-health] 本周无负相关，不推")
+                _SCORE_HEALTH_LAST["week"] = wk
+        except Exception as e:
+            print(f"[score-health] error: {str(e)[:90]}")
+        await asyncio.sleep(600)
+
+
 _T_SCAN_LAST = {"day": ""}
 
 
@@ -2954,6 +3002,8 @@ async def start():
              asyncio.create_task(t_trade_loop()),
              # ★★ 2026-11-15 做T：盘后 15:40 扫全市场生成次日预案（to_thread，72s 不阻塞）
              asyncio.create_task(t_trade_scan_loop()),
+             # ★★ 2026-11-15：评分有效性周检（分数与未来收益负相关时主动告警）
+             asyncio.create_task(score_health_loop()),
              asyncio.create_task(health_loop()),
              asyncio.create_task(news_alert_loop()),
              asyncio.create_task(regime_cache_loop()),
