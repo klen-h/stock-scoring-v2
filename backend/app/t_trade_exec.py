@@ -28,6 +28,7 @@ from app.flash import rules as flash_rules
 
 _T_PLAN_TABLE = "t_plans"
 _T_TRADE_TABLE = "t_trades"
+_T_POOL_TABLE = "t_watchlist"
 _ready = False
 
 
@@ -86,6 +87,19 @@ def ensure_tables() -> None:
             )""")
         db.execute(f"CREATE INDEX IF NOT EXISTS idx_t_trade_date "
                    f"ON {_T_TRADE_TABLE} (trade_date, status)")
+        # ★ 2026-11-15：**做T 独立池**。
+        #   【为什么不用 `user_watchlist`】
+        #     用户自选只有 4 只（精心挑的），把 19 只做T 候选塞进去会变成 23 只
+        #     ⇒ **污染自选页**，而且自选是"我想盯着看的票"，与"今天能做T 的票"
+        #     是两个语义，混在一起后两边都变糊。
+        #   ⇒ 独立表，做T 的关注范围 = 自选 + 持仓 + 本表。
+        db.execute(f"""
+            CREATE TABLE IF NOT EXISTS {_T_POOL_TABLE} (
+                code TEXT PRIMARY KEY,
+                name TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                added_at TEXT
+            )""")
         _ready = True
     except Exception as e:
         # 吞异常必须可见（GUARDRAILS #11）
@@ -292,17 +306,85 @@ def watch_codes() -> set:
     盘中触发只盯这些票 —— 全市场今天可能有 300+ 只 feasible，
     全盯会变成推送灾难（用户只需要"我关心的那几只能不能做"）。
     """
+    ensure_tables()
     out = set()
     try:
         from app.portfolio_scope import portfolio_where
         w, p = portfolio_where()
         rows = db.fetch(f"SELECT code FROM user_portfolio {w}", p) or []
         out |= {str(r.get("code") or "").strip() for r in rows}
+        # 自选（用户主动关注的票）
         rows = db.fetch("SELECT code FROM user_watchlist") or []
+        out |= {str(r.get("code") or "").strip() for r in rows}
+        # ★ 做T 独立池（与自选分开，避免污染自选页）
+        rows = db.fetch(f"SELECT code FROM {_T_POOL_TABLE}") or []
         out |= {str(r.get("code") or "").strip() for r in rows}
     except Exception as e:
         print(f"[t-trade] watch_codes failed: {str(e)[:70]}")   # 吞异常必须可见
     return {c for c in out if c}
+
+
+def pool_codes() -> List[Dict]:
+    """做T 池里的票（独立于自选）。"""
+    ensure_tables()
+    rows = db.fetch(f"SELECT code, name, note, added_at FROM {_T_POOL_TABLE} "
+                    f"ORDER BY added_at DESC, code") or []
+    return [dict(r) for r in rows]
+
+
+def add_to_pool(codes: List[str], note: str = "") -> Dict:
+    """把股票加进做T 池（幂等，已存在的跳过）。
+
+    ⚠️ **不写 `user_watchlist`** —— 自选是"我想盯的票"，
+      与"今天能做T 的票"是两个语义，混在一起会污染自选页。
+    """
+    ensure_tables()
+    added, skipped = [], []
+    for c in codes or []:
+        code = str(c or "").strip()
+        if not code:
+            continue
+        if db.fetch_one(f"SELECT 1 AS x FROM {_T_POOL_TABLE} WHERE code=%s",
+                        (code,)):
+            skipped.append(code)
+            continue
+        # 取名兜底链：`t_plans` → `kline_cache` → `backtest_prices` → `stock_facts_wide`
+        #   ⚠️ 实测：`kline_cache` / `backtest_prices` 里 000423 / 000088 / 600483 /
+        #      688188 / 000415 的 `name` **都是空串**（科创板与部分主板缺失）
+        #      ⇒ `name` 被存成代码本身，界面显示"000423"。
+        #      **`t_plans` 里这些票有名字**（`scan_market` 时从 `backtest_prices.name`
+        #      写入……但那也是空；实际是 `list_plans` 读到的是库里的 name 列有值）
+        #      ⇒ 把 `t_plans` 放**最前**，它是"做T 域"最权威的名字来源。
+        nm = ""
+        for tbl in (_T_PLAN_TABLE, "kline_cache", "backtest_prices", "stock_facts_wide"):
+            try:
+                row = db.fetch_one(
+                    f"SELECT name FROM {tbl} WHERE code=%s "
+                    f"AND name IS NOT NULL AND name<>'' LIMIT 1", (code,))
+                if row and row.get("name"):
+                    nm = str(row["name"])
+                    break
+            except Exception as e:
+                print(f"[t-trade] pool name {code}@{tbl} failed: {str(e)[:40]}")
+        try:
+            db.upsert(_T_POOL_TABLE, {
+                "code": code, "name": nm, "note": note or "", "added_at": _now(),
+            }, conflict_columns=["code"])
+            added.append(code)
+        except Exception as e:
+            print(f"[t-trade] pool add {code} failed: {str(e)[:60]}")
+    return {"added": added, "skipped": skipped,
+            "total": len(pool_codes())}
+
+
+def remove_from_pool(code: str) -> bool:
+    ensure_tables()
+    try:
+        db.execute(f"DELETE FROM {_T_POOL_TABLE} WHERE code=%s", (str(code),))
+        return True
+    except Exception as e:
+        print(f"[t-trade] pool remove failed: {str(e)[:60]}")
+        return False
 
 
 def holdings() -> Dict[str, Dict]:

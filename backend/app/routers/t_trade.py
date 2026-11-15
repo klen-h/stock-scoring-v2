@@ -18,7 +18,7 @@ URL 前缀 /api/t-trade（JWT 保护）：
     原样返回，**前端必须显示它是哪天的**（不能假装是今天盘中算的）。
 ================================================================================
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 
 from app import t_trade_exec as TX
 from app.auth import get_current_user
@@ -65,6 +65,38 @@ def get_explain(code: str = "",
     if not c:
         raise HTTPException(400, "缺少 code")
     return {"data": TX.explain(c)}
+
+
+@router.get("/pool")
+def get_pool(user: dict = Depends(get_current_user)):
+    """做T 池（**独立于自选** —— 自选是"想盯的票"，这里是"能做T 的票"）。"""
+    rows = TX.pool_codes()
+    return {"data": rows, "total": len(rows)}
+
+
+@router.post("/pool")
+def add_pool(payload: dict = Body(...),
+             user: dict = Depends(get_current_user)):
+    """批量加进做T 池（幂等）。
+
+    请求体：`{"codes": ["000415", "000878"], "note": "磨底价值股 2026-11-15"}`
+    """
+    codes = payload.get("codes") or []
+    if isinstance(codes, str):
+        codes = [codes]
+    if not isinstance(codes, list) or not codes:
+        raise HTTPException(400, "codes 不能为空")
+    return TX.add_to_pool([str(c) for c in codes],
+                          note=str(payload.get("note") or ""))
+
+
+@router.delete("/pool/{code}")
+def del_pool(code: str, user: dict = Depends(get_current_user)):
+    """从做T 池移除。"""
+    ok = TX.remove_from_pool(code)
+    if not ok:
+        raise HTTPException(500, "移除失败")
+    return {"success": True, "code": code}
 
 
 @router.get("/summary")
