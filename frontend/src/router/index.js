@@ -18,6 +18,8 @@ const routes = [
   { path: '/calendar', name: 'Calendar', component: () => import('../views/CalendarView.vue') },
   { path: '/backtest', name: 'Backtest', component: () => import('../views/BacktestView.vue') },
   { path: '/paper', name: 'PaperTrading', component: () => import('../views/PaperTrading.vue') },
+  // ★ 2026-11-15：做T 交易台（全市场清单 + 池子管理 + 成交明细 + 单只诊断）
+  { path: '/t-trade', name: 'TTrade', component: () => import('../views/TTrade.vue') },
   { path: '/coach', name: 'Coach', component: () => import('../views/CoachView.vue') },
   { path: '/portfolio', name: 'Portfolio', component: () => import('../views/Portfolio.vue') },
   { path: '/watchlist', name: 'Watchlist', component: () => import('../views/Watchlist.vue') },

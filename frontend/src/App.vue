@@ -148,6 +148,8 @@ const navGroups = [
     { path: '/trade-plans', label: '交易计划' },
     { path: '/portfolio', label: '我的持仓' },
     { path: '/paper', label: '模拟盘' },
+    // ★ 2026-11-15：做T 交易台（独立大页面；工作台右栏只留摘要卡）
+    { path: '/t-trade', label: '做T 交易台' },
     { path: '/coach', label: '交易教练' },
   ]},
   { label: '复盘', items: [

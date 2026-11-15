@@ -3298,47 +3298,50 @@
              ⚠️ 教练卡自身的折叠按钮去掉 —— tab 切换已足够，两种收起叠加要多点一次；
                 `todoOpen` 保留（默认展开），不影响列表渲染。 -->
 
-             <!-- ★★ 2026-11-14（用户："我主要在企微看，需要将重要内容简要常驻到工作台"）：
-             **今日复盘对账**摘要卡 —— 常驻右栏最顶（不随 tab 切走、不随 phase 切走）。
-             企微推送一滚就没，这里回答"今天系统说了什么、哪些事后被验证"：
-              · 三时段条目数（教练卡 + 重要推送，push_log 已滤运维噪音）
-              · 教练建议的事后判定：✓命中 / ✗打脸 / ⏳待验证（T+5 未到期）
-             明细与近 20 日趋势在「复盘」tab 的「三时段复盘对账」区块。 -->
+             <!-- ★★ 2026-11-15（用户："做T 看板的位置替换右栏的今日复盘对账的现位置，
+                  今日复盘对账在复盘 tab 里面有了即可"）：
+                  **做T 看板** —— 常驻右栏最顶，接替原「今日复盘对账」摘要卡的位置。
+                  ⚠️ 对账不再重复：明细与近 20 日趋势已在「复盘」tab 的
+                     「三时段复盘对账」区块（Workbench 顶部 `reviewSummary` 大卡）完整提供。
+                  ★ 数据链：盘后 `t_trade_scan_loop` 扫全市场生成次日预案（只存可行的）
+                     → 盘中 `t_trade_loop` 60s 读预案 + 实时价比对 → 触发推送 + 记模拟。
+                  ⚠️ 只显示**持仓 + 做T 池**里可做的（`watch_only=1`）。
+                     2026-11-15 起**不再含自选** —— 自选是"想盯的票"，做T 池是"能做T 的票"。
+                  ⚠️ `plan_date` 必须显示：预案是**上一交易日收盘**算的，不能假装是盘中算的。
+                  ★ 完整页面在 `/t-trade`（全市场清单 + 池子管理 + 成交明细）。 -->
              <div class="bg-card border border-border rounded-lg p-3">
-             <div class="flex items-center justify-between mb-1.5">
-             <div class="text-xs font-semibold">今日复盘对账
-             <span class="text-[10px] text-muted font-normal">{{ selectedDate || bjToday() }}</span></div>
-             <span class="text-[10px] text-muted">明细在复盘 tab</span>
-             </div>
-             <div v-if="reviewSummaryErr" class="text-[11px] text-muted">—（加载失败：{{ reviewSummaryErr }}）</div>
-             <div v-else-if="!reviewSummary" class="text-[11px] text-muted">—（暂无数据）</div>
-             <template v-else>
-             <div class="text-[11px] space-y-0.5">
-             <div>
-               教练建议 <b>{{ reviewSummary.summary.total }}</b> 条
-               <span v-if="reviewSummary.summary.hit" class="text-emerald-400">✓{{ reviewSummary.summary.hit }}</span>
-               <span v-if="reviewSummary.summary.miss" class="text-rose-400">✗{{ reviewSummary.summary.miss }}</span>
-               <span v-if="reviewSummary.summary.pending" class="text-amber-300">⏳{{ reviewSummary.summary.pending }}</span>
-               <span v-if="reviewSummary.summary.hit_rate != null"
-                     class="text-muted">（{{ reviewSummary.summary.hit_rate }}%）</span>
-             </div>
-             <div class="text-muted">
-               盘前 {{ (reviewSummary.segments.premarket || []).length }} ·
-               盘中 {{ (reviewSummary.segments.intraday || []).length }} ·
-               盘后 {{ (reviewSummary.segments.postmarket || []).length }} 条（含重要推送）
-             </div>
-             <div v-if="reviewSummary.trend && reviewSummary.trend.length" class="pt-1">
-               <div class="text-muted mb-0.5">近 {{ reviewSummary.trend.length }} 日命中率</div>
-               <div class="flex items-end gap-0.5 h-6">
-                 <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm"
-                      :class="t.hit_rate == null ? 'bg-white/10'
-                        : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
-                      :style="{ height: t.hit_rate == null ? '20%' : Math.max(t.hit_rate, 6) + '%' }"
-                      :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
+               <div class="flex items-center justify-between mb-1.5">
+                 <div class="text-xs font-semibold">做T 看板
+                   <span class="text-[10px] text-muted font-normal">{{ tPlanDate || '—' }} 预案</span></div>
+                 <div class="flex items-center gap-2 shrink-0">
+                   <span class="text-[10px] text-muted">关注 {{ tWatchTotal }}</span>
+                   <router-link target="_blank" to="/t-trade"
+                                class="text-xs text-accent hover:underline">详情</router-link>
+                 </div>
                </div>
-             </div>
-             </div>
-             </template>
+               <div v-if="tErr" class="text-[11px] text-muted">—（加载失败）</div>
+               <div v-else-if="!tSummary" class="text-[11px] text-muted">—（暂无数据）</div>
+               <template v-else>
+                 <div class="text-[11px] space-y-0.5">
+                   <div>
+                     全市场可行 <b>{{ tAllTotal }}</b> 只
+                     <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
+                   </div>
+                   <div class="text-muted">
+                     今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
+                     <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
+                   </div>
+                   <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
+                        class="flex gap-1.5 pt-0.5" :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
+                     <span class="font-mono shrink-0 text-muted">{{ p.code }}</span>
+                     <span class="truncate">{{ p.name }}</span>
+                     <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
+                   </div>
+                   <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
+                     关注里暂无可做标的（当前市况不适合做T，本身是个有效信号）
+                   </div>
+                 </div>
+               </template>
              </div>
              <div class="bg-card border border-border rounded-lg p-3">
           <div class="flex items-center justify-between mb-1.5 gap-2">
@@ -3370,44 +3373,7 @@
                            class="text-xs text-accent hover:underline shrink-0">教练</router-link>
             </div>
           </div>
-          <!-- ★★ 2026-11-15（用户："新增股票量化做T功能，以 000429 为例…"）：
-             **做T 看板** —— 常驻右栏。
-             数据链：盘后 `t_trade_scan_loop` 扫全市场生成次日预案（只存可行的）
-               → 盘中 `t_trade_loop` 60s 读预案 + 实时价比对 → 触发推送 + 记模拟。
-             ⚠️ 显示的是**自选+持仓**里可做的（`watch_only=1`）；
-                全市场今天可能 300+ 只可行，全列出来等于噪音。
-             ⚠️ `plan_date` 必须显示：预案是**上一交易日收盘**算的，不能假装是盘中算的。 -->
-        <div class="bg-card border border-border rounded-lg p-3">
-          <div class="flex items-center justify-between mb-1.5">
-            <div class="text-xs font-semibold">做T 看板
-              <span class="text-[10px] text-muted font-normal">{{ tPlanDate || '—' }} 预案</span></div>
-            <span class="text-[10px] text-muted">关注 {{ tWatchTotal }}</span>
-          </div>
-          <div v-if="tErr" class="text-[11px] text-muted">—（加载失败）</div>
-          <div v-else-if="!tSummary" class="text-[11px] text-muted">—（暂无数据）</div>
-          <template v-else>
-            <div class="text-[11px] space-y-0.5">
-              <div>
-                全市场可行 <b>{{ tAllTotal }}</b> 只
-                <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
-              </div>
-              <div class="text-muted">
-                今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
-                <span :class="Number(tSummary.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">{{ tSummary.stats.pnl > 0 ? '+' : '' }}{{ tSummary.stats.pnl }} 元</span>
-              </div>
-              <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
-                   class="flex gap-1.5 pt-0.5" :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
-                <span class="font-mono shrink-0 text-muted">{{ p.code }}</span>
-                <span class="truncate">{{ p.name }}</span>
-                <span class="text-muted shrink-0 font-mono">{{ Number(p.support).toFixed(2) }}/{{ Number(p.resistance).toFixed(2) }}</span>
-              </div>
-              <div v-if="!tWatchPlans.length" class="text-muted pt-0.5">
-                关注里暂无可做标的（当前市况不适合做T，本身是个有效信号）
-              </div>
-            </div>
-          </template>
-        </div>
-        <!-- ① 教练卡 -->
+          <!-- ① 教练卡 -->
           <div v-show="sideTab === 'todo'" class="space-y-2">
             <template v-if="todoOpen">
               <div v-if="coachErr" class="text-muted text-xs">—（加载失败）</div>

@@ -94,6 +94,12 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 export const getTTradeSummary = () => http.get('/t-trade/summary')
 export const getTTradePlans = (params = {}) => http.get('/t-trade/plans', { params })
 export const getTTradeExplain = (code) => http.get('/t-trade/explain', { params: { code } })
+// 做T 池（**独立于自选**：自选是"想盯的票"，池是"能做T 的票"）
+export const getTTradePool = () => http.get('/t-trade/pool')
+export const addTTradePool = (codes, note = '') =>
+  http.post('/t-trade/pool', { codes, note })
+export const delTTradePool = (code) => http.delete(`/t-trade/pool/${code}`)
+export const triggerTTradeScan = () => http.post('/t-trade/scan')
 
 export const getCoachReviewSummary = (date = '', days = 20) =>
   http.get('/coach/review-summary', { params: { date, days } })
