@@ -136,8 +136,18 @@
             <td class="px-3 py-1.5 text-right font-mono">{{ r.space_pct != null ? Number(r.space_pct).toFixed(2) + '%' : '—' }}</td>
             <td class="px-3 py-1.5 text-right font-mono">{{ r.space_atr_mult != null ? Number(r.space_atr_mult).toFixed(2) : '—' }}</td>
             <td class="px-3 py-1.5 text-right font-mono">{{ r.ratio != null ? Math.round(Number(r.ratio) * 100) + '%' : '—' }}</td>
+            <!-- ★ 2026-11-15（用户："要看下资金现状给不给买入"）：
+                 三态必须分开 —— 混淆会让人误判处置方式：
+                   今日可做 = 预案可行 **且** 底仓/资金够下单
+                   仓位不足 = 预案可行但买不了（要么加仓要么换标的）
+                   不可行   = 预案本身不行（等机会） -->
             <td class="px-3 py-1.5">
-              <span v-if="r.feasible" class="text-emerald-300">今日可做</span>
+              <template v-if="r.feasible">
+                <span v-if="r.buy_ok !== false" class="text-emerald-300">今日可做</span>
+                <span v-else class="text-amber-300" :title="r.buy_reason">
+                  {{ Number(r.base_shares) > 0 ? '仓位不足' : '无底仓' }}
+                </span>
+              </template>
               <span v-else class="text-muted" :title="r.reason">不可行</span>
             </td>
             <td class="px-3 py-1.5 text-right">

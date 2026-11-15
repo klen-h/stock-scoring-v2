@@ -217,15 +217,18 @@ def test_plan_handles_insufficient_data():
 # ── 方向选择（用户："正T/反T 都支持，按持仓与资金自动判断"）──────────────
 
 def test_resolve_direction_defaults_to_long_only():
-    """★ 默认**只做正T**。
+    """★ 默认**只做正T**，且**必须有底仓**。
 
     2026-11-15 回测（19 只 × 400 天）：正T 1457 次均值 **+0.122%**，
-    反T 1410 次均值 **-0.046%**（负期望，90% 的卖出在 5 日内被更高价越过）。
-    ⇒ 反T 默认关闭，仅 `T_ALLOW_SHORT_T=1` 时开启。
+    反T 1410 次均值 **-0.046%**（负期望，90% 的卖出在 5 日内被更高价越过）
+    ⇒ 反T 默认关闭（`T_ALLOW_SHORT_T=1` 才开）。
+
+    ★ 正T 也要求底仓：A 股 T+1，今天买的不能今天卖，
+      正T 的"卖出"卖的是**原有底仓** ⇒ 无底仓时按资金买是**建仓**，不是做T。
     """
     assert t_trade.resolve_direction(True, True) == ["long_t"]
     assert t_trade.resolve_direction(True, False) == []
-    assert t_trade.resolve_direction(False, True) == ["long_t"]
+    assert t_trade.resolve_direction(False, True) == []      # 有钱但没底仓 ⇒ 不能做T
     assert t_trade.resolve_direction(False, False) == []
 
 
@@ -234,8 +237,8 @@ def test_resolve_direction_short_t_when_enabled(monkeypatch):
     monkeypatch.setattr(t_trade, "_ALLOW_SHORT_T", True)
     assert t_trade.resolve_direction(True, True) == ["long_t", "short_t"]
     assert t_trade.resolve_direction(True, False) == ["short_t"]
-    # 有资金仍优先正T（顺序即优先级）
-    assert t_trade.resolve_direction(False, True) == ["long_t"]
+    # 无底仓仍然都不能做（正T 要底仓、反T 要底仓）
+    assert t_trade.resolve_direction(False, True) == []
 
 
 # ── 股数（★ 反T 不用全仓 + T+1 扣减）──────────────────────────────────
@@ -339,3 +342,55 @@ def test_trigger_handles_missing_levels():
     """预案缺位（不可行的票）⇒ 一律不触发，不能抛异常。"""
     assert t_trade.check_trigger({}, 10.0) is None
     assert t_trade.check_trigger({"support": None, "resistance": 10.5}, 10.0) is None
+
+
+# ── 能不能下单（用户："要看下资金现状给不给买入"）──────────────────
+
+def test_buy_check_ok_when_position_enough():
+    """底仓 3000 股 × 1/3 = 1000 股 ⇒ 可买，并给出需要的资金。"""
+    r = t_trade.buy_check(3000, 50000, 10.0, 1 / 3)
+    assert r["ok"] is True and r["shares"] == 1000
+    assert r["need_cash"] == 10000.0 and r["reason"] == ""
+
+
+def test_buy_check_reason_position_too_small():
+    """★ 底仓不足 300 股 ⇒ 明确说"不足 100 股"，而不是静默跳过。
+
+    实测当前持仓（工行 100 / 粤高速 200 / 内蒙一机 100）全落在这个分支。
+    """
+    r = t_trade.buy_check(200, 50000, 10.0, 1 / 3)
+    assert r["ok"] is False and r["shares"] == 0
+    assert "100 股" in r["reason"] and "底仓" in r["reason"]
+
+
+def test_buy_check_rejects_when_no_position():
+    """★ 无底仓 ⇒ 一律拒绝（即使有钱）—— 那是建仓，不是做T。
+
+    实测池内 19 只用户全无底仓，旧逻辑会显示"可买 2600 股"，
+    等于在"做T"的名义下推荐建仓。
+    """
+    for cash in (0, 50000, 1e8):
+        r = t_trade.buy_check(0, cash, 10.0, 1 / 3)
+        assert r["ok"] is False and r["shares"] == 0
+        assert "无底仓" in r["reason"]
+
+
+def test_buy_check_reason_bad_price():
+    assert t_trade.buy_check(3000, 50000, 0, 1 / 3)["reason"] == "价格无效"
+
+
+def test_buy_check_does_not_take_regime_or_risk_params():
+    """★★ 做T **不受防御状态影响** —— 用签名做结构保证。
+
+    用户（2026-11-15）："之前防御状态下不影响买入。"
+
+    `buy_check` 的签名里**没有** `regime` / `risk_frozen` / `cooldown` 任何参数，
+    ⇒ 它**不可能**去读 `REGIME_POSITION[defensive]`（=0 禁买）或模拟盘风控。
+    以后若有人想加这类判断，这个测试会先失败，逼他明确"这是不是两回事"。
+    """
+    import inspect
+
+    params = set(inspect.signature(t_trade.buy_check).parameters)
+    for banned in ("regime", "risk_frozen", "cooldown", "cooldown_until",
+                   "trade_gate", "position_gate"):
+        assert banned not in params, "做T 不该被 %s 拦住" % banned

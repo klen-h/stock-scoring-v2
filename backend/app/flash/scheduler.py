@@ -1633,10 +1633,28 @@ async def trade_plan_trigger_loop():
 # 【各只每天最多 1 次】
 #   去重落在 DB（`t_trade_exec.has_traded`）而不是内存 set ⇒ 进程重启不丢。
 
-# 正T 假设可用资金（系统不知道实盘现金，只能给假设值并在文案里注明）
-_T_TRADE_CASH = float(os.environ.get("T_TRADE_CASH") or 50000)
+# 正T 的**安全上限**（真实资金系统拿不到）——事实源在 `t_trade.T_CASH_ASSUMED`，
+# 这里不再自己读环境变量（两处各读一份必然漂移）。
 # 尾盘强制平仓时刻（分钟数）：14:50 之后不再开新T，已有仓位按现价平掉，不留隔夜
 _T_TRADE_CLOSE_MIN = 890
+
+# "为什么没买"的日志去重（每只每天只说一次，否则 60s 一轮会把日志刷满）
+_T_SKIP_LOGGED = {"day": "", "codes": set()}
+
+
+def _t_skip_note(code: str, reason: str, day: str) -> None:
+    """记录"看到了信号但不能下单"的原因（**不推送**，只留痕）。
+
+    ⚠️ 为什么必须留痕：否则用户只会看到"今天没触发"，而实际是"底仓不足以下单"——
+      两者处置完全不同（前者等机会，后者要么加仓要么放弃这个标的）。
+    """
+    if _T_SKIP_LOGGED["day"] != day:
+        _T_SKIP_LOGGED["day"] = day
+        _T_SKIP_LOGGED["codes"] = set()
+    if code in _T_SKIP_LOGGED["codes"]:
+        return
+    _T_SKIP_LOGGED["codes"].add(code)
+    print(f"[t-trade] skip {code}: {reason}")
 
 
 def _t_trade_watch_codes() -> set:
@@ -1687,7 +1705,10 @@ def _t_trade_tick(TT, TX, stocks: dict, now, t_min: int) -> None:
         return
     plans = {p["code"]: p for p in TX.list_plans(feasible_only=True)}
     holds = TX.holdings()
-    cash = _T_TRADE_CASH
+    # ★ 安全上限，不是"真实可用资金"（系统拿不到实盘现金，见 `calc_shares`）。
+    #   ⚠️ **不读 regime / risk_frozen / cooldown** —— 那些是"加新仓"的闸门，
+    #   做T 净仓位不变，不该被它们拦住（用户 2026-11-15 明确要求）。
+    cash = TT.T_CASH_ASSUMED
 
     for code in sorted(watch):
         p = plans.get(code)
@@ -1707,10 +1728,23 @@ def _t_trade_tick(TT, TX, stocks: dict, now, t_min: int) -> None:
         if direction not in TT.resolve_direction(base > 0, cash > 0):
             continue                    # 无底仓却给反T 信号 ⇒ 跳过
         ratio = float(p.get("ratio") or TT.T_RATIO_DEFAULT)
-        shares = TT.calc_shares(direction, price, base, cash, ratio,
-                                today_bought=TX.today_bought(code, day))
-        if shares <= 0:
-            continue
+        bought_today = TX.today_bought(code, day)
+        # ★ 2026-11-15（用户："要看下资金现状给不给买入"）：
+        #   正T 走 `buy_check` —— 算不出数量时**说清原因**（底仓不足 100 股 /
+        #   资金上限不够），而不是静默跳过。反T 仍用 `calc_shares`
+        #   （它的约束是"底仓 − 今日买入"，本来就是卖自己的持仓）。
+        if direction == "long_t":
+            chk = TT.buy_check(base, cash, price, ratio, today_bought=bought_today)
+            if not chk["ok"]:
+                _t_skip_note(code, chk["reason"], day)
+                continue
+            shares = chk["shares"]
+        else:
+            shares = TT.calc_shares(direction, price, base, cash, ratio,
+                                    today_bought=bought_today)
+            if shares <= 0:
+                _t_skip_note(code, "反T 可卖数量不足 100 股（底仓不足或今日已买入）", day)
+                continue
         r = TX.open_trade(code, p.get("name") or "", direction, price, shares,
                           ratio, note=sig["text_why"], day=day)
         if not r:

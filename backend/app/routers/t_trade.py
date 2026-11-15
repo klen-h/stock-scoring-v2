@@ -67,6 +67,40 @@ def _enrich_facts(rows: list):
     return rows, str(facts_date)[:10] if facts_date else None
 
 
+def _attach_buy_check(rows: list):
+    """给每只算**现在能不能下单**（正T 口径）。
+
+    用户（2026-11-15）："要看下资金现状给不给买入。"
+
+    ★ 目的：让前端能显示"**底仓不足**"而不是让用户以为"今天没机会"——
+      前者要加仓或换标的，后者只是等。
+
+    ⚠️ **刻意不读** `regime` / `risk_frozen` / `cooldown_until`：
+      那些是"加新仓"的闸门，做T 净仓位不变，不该被拦住
+      （完整理由见 `t_trade.buy_check` 的 docstring）。
+    """
+    from app import t_trade as TT
+
+    if not rows:
+        return rows
+    try:
+        holds = TX.holdings()
+        cash = TT.T_CASH_ASSUMED
+        for r in rows:
+            code = str(r.get("code") or "")
+            base = float((holds.get(code) or {}).get("shares") or 0)
+            ratio = float(r.get("ratio") or 0.333)
+            chk = TT.buy_check(base, cash, r.get("price_ref"), ratio)
+            r["base_shares"] = base
+            r["buy_ok"] = chk["ok"]
+            r["buy_shares"] = chk["shares"]
+            r["buy_reason"] = chk["reason"]
+    except Exception as e:
+        # 吞异常必须可见（GUARDRAILS #11）——否则"能不能买"这一列永远空着
+        print(f"[t-trade] attach buy_check failed: {str(e)[:80]}")
+    return rows
+
+
 @router.get("/plans")
 def get_plans(date: str = None, only_feasible: bool = True,
               watch_only: bool = False, limit: int = 60,
@@ -84,6 +118,7 @@ def get_plans(date: str = None, only_feasible: bool = True,
     lim = min(max(limit, 1), 500)
     # 先截断再补字段：只查真正要返回的那几条，省一次大 IN 查询
     data, facts_date = _enrich_facts(rows[:lim])
+    data = _attach_buy_check(data)
     return {"data": data, "total": len(rows), "watch_only": watch_only,
             "facts_date": facts_date}
 
@@ -120,6 +155,13 @@ def get_pool(user: dict = Depends(get_current_user)):
     rows = TX.pool_codes()
     # 池里"今日不可做"的票没有预案行，也把量能补上 —— 否则那几行只有代码和名字
     rows, facts_date = _enrich_facts(rows)
+    # ⚠️ 池清单的行**没有** `price_ref` / `ratio`（不是预案行）⇒ 只对有的算，
+    #   不给"今日不可做"的票安上误导性的 `buy_ok=False`（那会被前端显示成
+    #   "仓位不足"，而实际是"今天没预案"——两回事）。
+    #   `_attach_buy_check` 是**原地修改**，所以 `rows` 本身已带上字段；
+    #   **绝不能写成 `rows = _attach_buy_check([...])`** —— 那会把没有预案的行过滤掉，
+    #   池子页就看不到"今日不可做"的票了。
+    _attach_buy_check([r for r in rows if r.get("price_ref")])
     return {"data": rows, "total": len(rows), "facts_date": facts_date}
 
 

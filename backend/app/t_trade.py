@@ -64,6 +64,11 @@ T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 60)
 #     "先卖后买"在当前规则下不成立。
 _ALLOW_SHORT_T = str(os.environ.get("T_ALLOW_SHORT_T") or "").lower() in ("1", "true", "yes")
 
+# 正T 的**安全上限**（不是"真实资金"）——真实资金系统拿不到，见 `calc_shares` 说明。
+# ⚠️ 2026-11-15：曾有"设为不限"的想法，被否 —— 设成 1 亿会算出 526 万股 / 3330 万元。
+#   它只是"别买超过这个数"的兜底，**主依据是底仓**。
+T_CASH_ASSUMED = float(os.environ.get("T_TRADE_CASH") or 50000)
+
 T_MIN_DIST_PCT = float(os.environ.get("T_MIN_DIST_PCT") or 0.3)   # 候选位距现价下限 %
 T_MAX_DIST_PCT = float(os.environ.get("T_MAX_DIST_PCT") or 3.0)   # 绝对上限 %
 # ★★ 2026-11-15（000429 回测实测后修正）：距离上限**还要受 ATR 约束**。
@@ -325,8 +330,13 @@ def resolve_direction(has_position: bool, has_cash: bool) -> List[str]:
     · 有底仓 ⇒ 仅在 `T_ALLOW_SHORT_T=1` 时可做反T（卖出的是昨日及之前的仓位，T+1 合规）。
     · 都没有 ⇒ 返回空列表，调用方据此跳过。
     """
+    # ★★★ 2026-11-15：**正T 也要求有底仓**（原来只要求有资金，这是错的）。
+    #   A 股 T+1：今天买的不能今天卖 ⇒ 正T 的"卖出"卖的是**原有底仓**。
+    #   无底仓时按资金买 = **建仓**，不是做T（实测池内 19 只全无底仓，
+    #   旧逻辑会显示"可买 2600 股"，等于在推荐建仓）。
+    #   ⇒ 无底仓一律返回 []，调用方跳过。
     dirs: List[str] = []
-    if has_cash:
+    if has_position and has_cash:
         dirs.append("long_t")
     if has_position and _ALLOW_SHORT_T:
         dirs.append("short_t")
@@ -387,6 +397,73 @@ def calc_shares(direction: str, price: float, base_shares: float,
             return 0
         return int((min(caps)) // 100) * 100
     return 0
+
+
+def buy_check(base_shares: float, cash: float, price: float, ratio: float,
+              today_bought: float = 0.0) -> Dict:
+    """这一笔**能不能真的下单**？返回 `{ok, shares, need_cash, reason}`。
+
+    【与 `calc_shares` 的分工】
+      · `calc_shares` 只算数量（算不出就 0，**不知道为什么**）；
+      · 本函数**给出"为什么不能"** —— 否则用户只看到"今天没触发"，
+        而实际是"仓位不足以下单"，这两件事的处置完全不同。
+
+    ★★★ 刻意**不检查**的三样东西（用户 2026-11-15："之前防御状态下不影响买入"）：
+
+      · `coach` 的 `REGIME_POSITION[regime]`（`defensive` 档 = **0，禁买**）
+      · `paper_account.risk_frozen`（G2 回撤冻结，钉住等人工解锁）
+      · `paper_account.cooldown_until`（G3 冷却期）
+
+      【为什么】这些闸门拦的是「**加新仓**」。做T 是围绕**已有底仓**做日内差价：
+        卖的是自己的持仓、买回的也是自己的持仓 ⇒ **净仓位不变，不新增风险敞口**。
+        在"需要摊薄成本"的时候把工具锁上，逻辑是反的。
+
+      ⚠️ 但 **资金 / 底仓够不够下单必须检查** —— 那是物理约束，不是风控。
+
+      ⚠️ 若将来真想"防御期不做T"，应当加**独立开关**，
+        而不是顺手读 `REGIME_POSITION` —— 那是两件事。
+
+    【实测背景】A 股最小 100 股，`ratio=1/3` 要求底仓 ≥ 300 股。
+      当前持仓 工行 100 / 粤高速 200 / 内蒙一机 100 股 ⇒ `ok=False` 且原因明确。
+    """
+    if price is None or price <= 0:
+        return {"ok": False, "shares": 0, "need_cash": 0, "reason": "价格无效"}
+    if ratio is None or ratio <= 0:
+        return {"ok": False, "shares": 0, "need_cash": 0, "reason": "仓位比例无效"}
+
+    # ★★★ 2026-11-15：**无底仓就不能做正T**。
+    #   【为什么】A 股 T+1：当天买入**不能当天卖出**。
+    #     做T 的"先买后卖"里，卖出那一步卖的是**原有底仓**（今日买入的部分不可卖）。
+    #     ⇒ 没有底仓时，买了只能等次日 ⇒ **那不是做T，是建仓**。
+    #   【实测踩到】池内 19 只用户都没持仓（底仓 0），
+    #     旧逻辑退回资金口径 ⇒ 显示"可买 2600 股"，
+    #     实际是让系统在用户没底仓时推荐建仓，与"做T"名不符实。
+    #   ⇒ 明确拒绝，并说清原因（用户能据此判断"该加仓还是该换标的"）。
+    if not base_shares or float(base_shares) <= 0:
+        return {"ok": False, "shares": 0, "need_cash": 0,
+                "reason": "无底仓 —— 做T 必须有底仓（A 股 T+1，当天买入不能当天卖）"}
+
+    shares = calc_shares("long_t", price, base_shares, cash, ratio, today_bought)
+    if shares > 0:
+        return {"ok": True, "shares": shares,
+                "need_cash": round(shares * price, 2), "reason": ""}
+
+    b = float(base_shares or 0)
+    c = float(cash or 0)
+    if b > 0 and b * ratio < 100:
+        return {"ok": False, "shares": 0, "need_cash": 0,
+                "reason": "底仓 %d 股 × %.0f%% = %d 股，不足 A 股最小 100 股" % (
+                    int(b), ratio * 100, int(b * ratio))}
+    if b > 0 and c > 0:
+        # 底仓够但资金上限卡住
+        affordable = int((c * ratio / price) // 100) * 100
+        return {"ok": False, "shares": 0, "need_cash": round(c * ratio, 2),
+                "reason": "资金上限 %.0f 元 × %.0f%% 只够 %d 股，不足 100 股" % (
+                    c, ratio * 100, affordable)}
+    if b > 0 and c <= 0:
+        return {"ok": False, "shares": 0, "need_cash": 0,
+                "reason": "底仓 %d 股够但无可用资金（正T 要先买）" % int(b)}
+    return {"ok": False, "shares": 0, "need_cash": 0, "reason": "可买数量不足 100 股"}
 
 
 def check_trigger(plan: Dict, price: float, open_side: Optional[str] = None) -> Optional[Dict]:
