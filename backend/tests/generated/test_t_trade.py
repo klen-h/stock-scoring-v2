@@ -216,12 +216,26 @@ def test_plan_handles_insufficient_data():
 
 # ── 方向选择（用户："正T/反T 都支持，按持仓与资金自动判断"）──────────────
 
-def test_resolve_direction_priority():
-    """有底仓+有资金 ⇒ **反T 优先**（用底仓、不占资金、T+1 合规）。"""
-    assert t_trade.resolve_direction(True, True) == ["short_t", "long_t"]
-    assert t_trade.resolve_direction(True, False) == ["short_t"]
+def test_resolve_direction_defaults_to_long_only():
+    """★ 默认**只做正T**。
+
+    2026-11-15 回测（19 只 × 400 天）：正T 1457 次均值 **+0.122%**，
+    反T 1410 次均值 **-0.046%**（负期望，90% 的卖出在 5 日内被更高价越过）。
+    ⇒ 反T 默认关闭，仅 `T_ALLOW_SHORT_T=1` 时开启。
+    """
+    assert t_trade.resolve_direction(True, True) == ["long_t"]
+    assert t_trade.resolve_direction(True, False) == []
     assert t_trade.resolve_direction(False, True) == ["long_t"]
     assert t_trade.resolve_direction(False, False) == []
+
+
+def test_resolve_direction_short_t_when_enabled(monkeypatch):
+    """显式开启反T 后才允许多方向（有底仓时反T 可用）。"""
+    monkeypatch.setattr(t_trade, "_ALLOW_SHORT_T", True)
+    assert t_trade.resolve_direction(True, True) == ["long_t", "short_t"]
+    assert t_trade.resolve_direction(True, False) == ["short_t"]
+    # 有资金仍优先正T（顺序即优先级）
+    assert t_trade.resolve_direction(False, True) == ["long_t"]
 
 
 # ── 股数（★ 反T 不用全仓 + T+1 扣减）──────────────────────────────────

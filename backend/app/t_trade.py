@@ -58,6 +58,12 @@ T_SHORT_LOOKBACK = int(os.environ.get("T_SHORT_LOOKBACK") or 20)        # 短线
 #   ⚠️ 14 日仍可通过 `T_ATR_PERIOD=14` 覆盖（保留可调，不写死）。
 T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 60)
 
+# ★★ 2026-11-15：**反T 默认关闭**（回测 1410 次均值 -0.046%/次，负期望）。
+#   见 `resolve_direction` 的完整说明。要开：环境变量 `T_ALLOW_SHORT_T=1`。
+#   ⚠️ 这是**数据决定的默认值**，不是保守倾向 —— 关掉它等于承认
+#     "先卖后买"在当前规则下不成立。
+_ALLOW_SHORT_T = str(os.environ.get("T_ALLOW_SHORT_T") or "").lower() in ("1", "true", "yes")
+
 T_MIN_DIST_PCT = float(os.environ.get("T_MIN_DIST_PCT") or 0.3)   # 候选位距现价下限 %
 T_MAX_DIST_PCT = float(os.environ.get("T_MAX_DIST_PCT") or 3.0)   # 绝对上限 %
 # ★★ 2026-11-15（000429 回测实测后修正）：距离上限**还要受 ATR 约束**。
@@ -300,20 +306,31 @@ def resolve_direction(has_position: bool, has_cash: bool) -> List[str]:
 
     用户（2026-11-15）："正T/反T 都支持，按当前持仓与资金自动判断。"
 
-    · 有底仓 + 有资金 ⇒ `["short_t", "long_t"]` —— **反T 优先**：
-      反T 用底仓、不占额外资金，且卖出的是昨日及之前的仓位（T+1 合规）；
-      正T 要新买、占用资金且当天不能卖。
-    · 只有底仓 ⇒ 只能反T。
-    · 只有资金 ⇒ 只能正T。
-    · 都没有 ⇒ 不能做（返回空列表，调用方据此跳过）。
+    ★★★ 2026-11-15 回测后**改过一次**（19 只 × 400 天，1457/1410 次）：
+
+        方向   次数    胜率     单次均值    最差一笔
+        正T    1457   54.2%   **+0.122%**   -9.23%
+        反T    1410   51.8%   **-0.046%**   -9.81%
+
+      **反T 是负期望**。原因在"卖飞"：1392 次反T 卖出后，
+      **90% 的样本在 5 日内最高价都高于卖价**（平均踏空 3.64%、最大 31.71%）。
+      ⇒ 阻力位往往是**突破的起点**而不是终点，先卖再等回落，
+        多数时候等不到，只能追高买回或止损。
+
+      ⇒ **默认只做正T**（`T_ALLOW_SHORT_T=1` 才开反T）。
+        ⚠️ 这不是"保守"，是**数据说不该做**：1/3 仓也只是把 -0.046% 缩成
+          -0.015%，**方向错了，缩仓位救不回来**。
+
+    · 有资金 ⇒ 可做正T。
+    · 有底仓 ⇒ 仅在 `T_ALLOW_SHORT_T=1` 时可做反T（卖出的是昨日及之前的仓位，T+1 合规）。
+    · 都没有 ⇒ 返回空列表，调用方据此跳过。
     """
-    if has_position and has_cash:
-        return ["short_t", "long_t"]
-    if has_position:
-        return ["short_t"]
+    dirs: List[str] = []
     if has_cash:
-        return ["long_t"]
-    return []
+        dirs.append("long_t")
+    if has_position and _ALLOW_SHORT_T:
+        dirs.append("short_t")
+    return dirs
 
 
 def calc_shares(direction: str, price: float, base_shares: float,

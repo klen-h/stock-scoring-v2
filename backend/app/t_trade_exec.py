@@ -313,10 +313,12 @@ def watch_codes() -> set:
         w, p = portfolio_where()
         rows = db.fetch(f"SELECT code FROM user_portfolio {w}", p) or []
         out |= {str(r.get("code") or "").strip() for r in rows}
-        # 自选（用户主动关注的票）
-        rows = db.fetch("SELECT code FROM user_watchlist") or []
-        out |= {str(r.get("code") or "").strip() for r in rows}
-        # ★ 做T 独立池（与自选分开，避免污染自选页）
+        # ★★ 2026-11-15（用户："现有 4 只去掉"）：**不再包含 `user_watchlist`**。
+        #   【为什么】自选是"我想盯的票"，做T 池是"能做T 的票"，两个语义。
+        #     上一版把自选自动并进来 ⇒ 用户自选的 4 只（焦作万方/赞宇科技/
+        #     东方铁塔/冠农股份）会被做T 循环顺带监控，用户明确要去掉。
+        #   【怎么加票】想把某只票拿来做T ⇒ 加进 `t_watchlist`，**不要加自选**。
+        #   ⚠️ 只改"做T 关注范围"，**没有动 `user_watchlist` 的数据**。
         rows = db.fetch(f"SELECT code FROM {_T_POOL_TABLE}") or []
         out |= {str(r.get("code") or "").strip() for r in rows}
     except Exception as e:
