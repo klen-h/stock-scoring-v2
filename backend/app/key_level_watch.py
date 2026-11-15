@@ -325,7 +325,14 @@ def load(day: str = None) -> Dict:
             _ratio = _lpx / support
             if 0.1 <= _ratio <= 10:
                 _dist_live = round((_ratio - 1) * 100, 2)
-        prev = (close / (1 + chg / 100)) if close and chg is not None else None
+        # ★ 2026-11-15（全项目过时逻辑审查）：**`chg == 0` 时不能反推**。
+        #   `close / (1 + 0/100) = close` ⇒ `prev == close`
+        #   ⇒ 下面 `close >= L > prev` **永远为 False** ⇒ "收回"判据静默失效。
+        #   与国债「假 0」、交易计划「反推昨收」是同一类错误：
+        #   **数据缺失被伪装成"没有变化"**。
+        #   ⚠️ 这里没有真实 `prev_close` 可用（`stock_facts_wide` 只有
+        #     `close` + `chg_pct`）⇒ 只能给 None（"不知道"），不能编一个。
+        prev = (close / (1 + chg / 100)) if (close and chg) else None
         extra = []
         for L in extra_map.get(code or "", []):
             extra.append({

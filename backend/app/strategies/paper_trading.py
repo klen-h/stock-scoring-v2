@@ -93,14 +93,53 @@ def _atr14(code: str) -> float:
 
     ★ 不能直接用 tencent.get_kline：它会把 000001/399001 等当指数（INDEX_MAP），
       而战法信号是股票（000001=平安银行）→ 会拉到上证指数 K 线、波动率差一个量级。
-      这里手动构造带市场前缀的股票 K 线请求（qfqday）规避该判定。
+
+    ★★ 2026-11-15 修正（全项目过时逻辑审查）：
+      【原实现】腾讯请求里**写死** `day,2026-01-01,2026-12-31,40,qfq`。
+      【问题】跨年即整条链**静默失效**——2027-01-01 起返回 0.0，
+        而 0 在下游是"ATR 不可用 ⇒ 返回 0 股 ⇒ 不开仓"，
+        **不报错、不告警**，只会表现为"模拟盘突然不开新仓了"，
+        与前面修的"国债假 0 / 反推昨收"是**同一类隐性失效**。
+      【修法】两层：
+        ① **优先读本地 `backtest_prices`**（日批已回填）——零外部请求、无日期问题；
+        ② 读不到才回退腾讯，且**日期动态生成**（今天往前 120 个自然日）。
+      两层都失败才返回 0（保持原语义）。
     """
+    # ── ① 本地日线（首选，零请求）──
+    try:
+        from app.database import db
+        rows = db.fetch(
+            "SELECT high, low, close FROM backtest_prices WHERE code=%s "
+            "ORDER BY date DESC LIMIT %s", (str(code), ATR_PERIOD + 20)) or []
+        if len(rows) >= ATR_PERIOD + 1:
+            rows = list(reversed(rows))
+            trs = []
+            for i in range(1, len(rows)):
+                h = float(rows[i].get("high") or 0)
+                l = float(rows[i].get("low") or 0)
+                pc = float(rows[i - 1].get("close") or 0)
+                if h <= 0 or l <= 0 or pc <= 0:
+                    continue
+                trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+            if len(trs) >= ATR_PERIOD:
+                return sum(trs[-ATR_PERIOD:]) / ATR_PERIOD
+    except Exception as e:
+        # 吞异常必须可见（GUARDRAILS #11）
+        print(f"[paper] atr local failed {code}: {str(e)[:60]}")
+
+    # ── ② 腾讯兜底（**日期必须动态**，不能再写死年份）──
     try:
         import requests
+
+        from app.flash import rules as _fr
+
+        end = _fr.beijing_now()
+        start = end - timedelta(days=120)
         prefix = "sh" if code.startswith("6") else "sz"
         url = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
         r = requests.get(url, params={
-            "param": f"{prefix}{code},day,2026-01-01,2026-12-31,40,qfq"}, timeout=15)
+            "param": f"{prefix}{code},day,{start:%Y-%m-%d},{end:%Y-%m-%d},40,qfq"},
+            timeout=15)
         raw = ((r.json() or {}).get("data") or {}).get(f"{prefix}{code}", {}).get("qfqday") or []
         if len(raw) < ATR_PERIOD + 1:
             return 0.0

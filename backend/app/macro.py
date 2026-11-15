@@ -374,12 +374,27 @@ def _fetch_em(keys) -> dict:
             if not isinstance(price, (int, float)) or not isinstance(chg, (int, float)):
                 continue
             # 昨收优先用 f18（权威）；缺失时退回反推。⚠️ `"-"` 不是数字，必须过 isinstance。
+            # ★★ 2026-11-15（全项目过时逻辑审查）：**`chg == 0` 时不再反推**。
+            #   【为什么】`price / (1 + 0/100) = price` ⇒ `prev_close == price`
+            #     ⇒ 日变化算出来恒为 **0.00**。这正是 11-04~11-13 那 8 个交易日
+            #     中国 10Y 国债 `bp_change` 恒为 0 的**源头**
+            #     （当时只修了消费端 `_yield_bp`，源头还在）。
+            #   【修法】不给数字，给 **None** —— 让下游明确知道"这个昨收不可信"，
+            #     而不是拿到一个看起来合法的假值。
+            #   ⚠️ 下游必须能接 None：`_yield_bp` 已处理（`isinstance` 检查）；
+            #     金银比 `macro.py:818` 也加了判空（否则 `None > 0` 抛 TypeError）。
             prev = x.get("f18")
             if not isinstance(prev, (int, float)) or not prev:
-                prev = price / (1 + chg / 100) if chg != -100 else 0
+                if chg == -100:
+                    prev = 0
+                elif chg == 0:
+                    prev = None          # ← 不可反推，宁缺勿假
+                else:
+                    prev = price / (1 + chg / 100)
             hi, lo = x.get("f15"), x.get("f16")
             out[k] = {
-                "price": round(float(price), 3), "prev_close": round(float(prev), 3),
+                "price": round(float(price), 3),
+                "prev_close": round(float(prev), 3) if prev else None,
                 "change_pct": round(float(chg), 2),
                 "high": round(float(hi), 3) if isinstance(hi, (int, float)) else 0.0,
                 "low": round(float(lo), 3) if isinstance(lo, (int, float)) else 0.0,
@@ -815,7 +830,10 @@ def get_macro_panel() -> dict:
     g, s_ = panel.get("gold"), panel.get("silver")
     if g and s_ and s_["price"] > 0:
         r_now = g["price"] / s_["price"]
-        r_prev = (g["prev_close"] / s_["prev_close"]) if s_["prev_close"] > 0 else r_now
+        # ★ 2026-11-15：`prev_close` 现在可能是 **None**（东财残缺包时不再反推，
+        #   见 `_fetch_em` 的说明）⇒ 这里必须判空，否则 `None > 0` 抛 TypeError。
+        _gp, _sp = g.get("prev_close"), s_.get("prev_close")
+        r_prev = (_gp / _sp) if (_gp and _sp and _sp > 0) else r_now
         derived["gold_silver_ratio"] = round(r_now, 2)
         # 金银比日变化%（上行=避险升温=风险偏好回落）
         derived["goldsilver_change_pct"] = round((r_now / r_prev - 1) * 100, 2) if r_prev > 0 else 0.0
