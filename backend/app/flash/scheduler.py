@@ -1546,10 +1546,21 @@ async def trade_plan_trigger_loop():
                 stocks = _tcache.get("stocks") or {}
                 if stocks:
                     from app.database import db
+                    # ★ 2026-11-15（用户："重新审视一下之前的交易计划的交易逻辑，
+                    #   有可能已经落后项目了"）两处过时修正：
+                    #   ① `LIMIT 100` → **300**：计划变多后 100 条会静默漏掉。
+                    #   ② 加 **90 天过期**：`status='waiting'` 原先是"永久"——
+                    #      三个月前设的买点还在盘中比对，价格早就跑没影了，
+                    #      属于"僵尸计划"。过期只是不参与触发，**不删数据**
+                    #      （用户可能还想看历史）。
+                    from datetime import timedelta as _td
+                    _cutoff = (now - _td(days=90)).strftime("%Y-%m-%d %H:%M:%S")
                     plans = db.fetch(
                         "SELECT id, code, name, buy_price, stop_loss, target, "
                         "plan_type, trigger_high_open, trigger_volume_break "
-                        "FROM user_trade_plans WHERE status = 'waiting' LIMIT 100") or []
+                        "FROM user_trade_plans WHERE status = 'waiting' "
+                        "AND (created_at IS NULL OR created_at >= %s) "
+                        "ORDER BY created_at DESC LIMIT 300", (_cutoff,)) or []
                     for p in plans:
                         q = stocks.get(str(p.get("code") or "")) or {}
                         price = float(q.get("price") or 0)
@@ -1571,12 +1582,18 @@ async def trade_plan_trigger_loop():
                         try:
                             chg = float(q.get("change_pct") or 0)
                             _op = float(q.get("open") or 0)
-                            # 昨收**反推**而非依赖 `prev_close` 字段是否存在：
-                            #   prev = price / (1 + change_pct/100) ⇒ 数学等价，且行情缓存
-                            #   一定同时有 price 与 change_pct（open 可能缺 ⇒ 下面判 0 跳过）。
-                            # ⚠️ 用反推而不是"直接读 prev_close"，是因为不确定行情源是否提供该字段
-                            #   —— 依赖一个不确定存在的字段会让整个条件静默失效（今天已踩过两次）。
-                            prev = price / (1 + chg / 100.0) if abs(chg) < 99 else 0
+                            # ★★ 2026-11-15 修正：**直接读 `prev_close`**，缺失才反推。
+                            #   【原注释已过时】原写"不确定行情源是否提供该字段"——
+                            #     实测 `tencent.py:424` **早已解析 `prev_close`**。
+                            #   【为什么反推危险】`price/(1+chg/100)` 在 **`chg == 0`** 时
+                            #     得到 `prev == price` ⇒ 高开幅度被算成 **0%**，
+                            #     于是"高开试仓"条件永久不成立。
+                            #     这与国债收益率那次**「假 0」是同源错误**：
+                            #     数据缺失被伪装成"没有变化"，而且不报错、看不出来。
+                            #   ⇒ 先信 `prev_close`；确实缺失时才退回反推（保底）。
+                            prev = float(q.get("prev_close") or 0)
+                            if prev <= 0:
+                                prev = price / (1 + chg / 100.0) if abs(chg) < 99 else 0
                             if p.get("trigger_high_open") and _op > 0 and prev > 0:
                                 open_pct = (_op / prev - 1) * 100
                                 thr = float(p["trigger_high_open"])
@@ -1587,13 +1604,22 @@ async def trade_plan_trigger_loop():
                                                  f"，现价 {price:.2f}——按预案试仓"))
                             if p.get("trigger_volume_break"):
                                 tb = float(p["trigger_volume_break"])
-                                # "放量过价"的**可判据近似**：现价站上该价 **且** 当日涨幅 ≥1%
-                                # （真正的"放量"需量比，而量比要读 kline_cache；此处用涨幅过滤
-                                #  横盘磨过价格的情形，够用且零成本）。
-                                if price >= tb and chg >= 1.0:
+                                # ★★ 2026-11-15 修正：**用真实量比**替换"涨幅≥1%"的近似。
+                                #   【原注释已过时】原文写"真正的'放量'需量比，
+                                #     而量比要读 kline_cache"——实测
+                                #     `tencent.py:458` **已解析 `volume_ratio`**，
+                                #     障碍不存在了。
+                                #   【原实现的问题】涨 1% 但**缩量**也算"放量过价"，
+                                #     把"慢慢磨上去"当成"资金推动" ⇒ 误触发。
+                                #   【兜底】量比缺失（0）时退回老口径，
+                                #     否则行情源不含量比就会让这条规则静默失效。
+                                vr = float(q.get("volume_ratio") or 0)
+                                ok_vol = (vr >= 1.2) if vr > 0 else (chg >= 1.0)
+                                if price >= tb and ok_vol:
                                     hits.append(("volume_break",
                                                  f"放量过价触发：{p['name']}({p['code']}) "
-                                                 f"现价 {price:.2f} 站上 {tb:.2f}（当日 {chg:+.2f}%）"
+                                                 f"现价 {price:.2f} 站上 {tb:.2f}"
+                                                 f"（量比 {vr:.2f}，当日 {chg:+.2f}%）"
                                                  f"——按预案执行"))
                         except Exception as e3:
                             print(f"[plan-trigger] structured check failed {p.get('code')}: {e3}")

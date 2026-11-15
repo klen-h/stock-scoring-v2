@@ -241,14 +241,23 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
         "AND user_id=%s LIMIT 1", (c, uid))
     pid = (exist or {}).get("id") or ("tp_%d_%s" % (int(_t.time() * 1000), c))
 
+    # ★ 2026-11-15（用户："建仓时直接买到 300 股以上"）：
+    #   做T 的 `1/3` 仓必须 ≥100 股 ⇒ **底仓至少 300 股**，否则买完照样做不了 T。
+    #   与其让用户自己算，不如把"建议股数 + 需要多少钱"直接给出来。
+    #   ⚠️ 只是**建议**：资金不够时不阻止建计划（价格到位仍会提醒）。
+    suggest_shares = 300
+    suggest_cash = round(suggest_shares * float(sup), 2)
+
     try:
         db.upsert("user_trade_plans", {
             "id": pid, "code": c, "name": p.get("name") or c,
             "buy_price": float(sup), "stop_loss": stop, "target": float(res),
             "reason": "做T 底仓建仓点：支撑 %.2f（%s）；建完仓才能做T"
                       % (float(sup), p.get("support_type") or "-"),
-            "expected": "空间 %.2f%%（%.2f×ATR）；建议底仓 ≥300 股，否则 1/3 仓不足 100 股"
-                        % (float(p.get("space_pct") or 0),
+            "expected": "建议买 %d 股（约 %.0f 元），空间 %.2f%%（%.2f×ATR）；"
+                        "少于 300 股则 1/3 仓不足 100 股，做不了 T"
+                        % (suggest_shares, suggest_cash,
+                           float(p.get("space_pct") or 0),
                            float(p.get("space_atr_mult") or 0)),
             "status": "waiting", "plan_type": "trial", "user_id": uid,
         }, conflict_columns=["id"])
@@ -257,7 +266,11 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
 
     return {"success": True, "id": pid, "code": c,
             "buy_price": float(sup), "stop_loss": stop, "target": float(res),
-            "note": "已建立仓计划；现价到 %.2f 附近（±2%%）会推企微提醒" % float(sup),
+            # ★ 建仓数量建议（用户要求"直接买到 300 股以上"）
+            "suggest_shares": suggest_shares, "suggest_cash": suggest_cash,
+            "note": "已建立仓计划；现价到 %.2f 附近（±2%%）会推企微提醒。"
+                    "建议一次买 %d 股（约 %.0f 元）"
+                    % (float(sup), suggest_shares, suggest_cash),
             "warning": "这是**建仓**（新增敞口），不是做T；请先想好仓位与止损"}
 
 
