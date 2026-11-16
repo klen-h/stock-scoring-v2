@@ -59,6 +59,15 @@ jobs:
             exit 1
           fi
           echo "✅ 无未定义名"
+      # ★★ 2026-11-16 新增（**用户报障"AI 解读失败：selectedDate is not defined"**）：
+      #   composable 拆分后，把**依赖 DI 参数的函数**留在了模块层 ⇒ 运行时 ReferenceError，
+      #   又被 `try/catch` 吞成"请求失败"，界面上看不出是代码错。
+      #   本项目已踩三次（defErr / useWorkbenchBrief 空体 / selectedDate），
+      #   ⇒ 加静态闸：`export function useX({ a })` 的参数名不得在模块层出现。
+      #   ⚠️ pyflakes 只覆盖 Python，前端这类作用域错误**构建期也不报**
+      #     （ESM 下未定义变量被当成全局，vite build 不做检查），只能靠这个脚本。
+      - name: composable 作用域检查（前端 DI 参数泄漏）
+        run: python scripts/check_composable_scope.py
       - name: 日批任务一致性（TASKS == DEFAULT_ORDER）
         run: python scripts/daily_batch.py --list
         env:
