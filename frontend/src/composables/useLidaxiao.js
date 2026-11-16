@@ -53,7 +53,21 @@ async function refreshLidx() {
       }
     }
   } catch (e) {
-    lidxMsg.value = { ok: false, text: '更新失败（网络或超时，可稍后重试）' }
+    // ★ 2026-11-16（用户："更新失败（网络或超时）"）：
+    //   原来"超时"和"真失败"共用一句话，实际是**两件不同的事**：
+    //   · 超时 ⇒ 后端多半还在拉（它预算 90s，前端原默认只等 30s），
+    //     稍后刷新页面可能已经有数据了 —— 不需要重试；
+    //   · 真失败 ⇒ 上游不可用，重试也没用，得看 `data.error`。
+    //   API 层已把超时放宽到 110s，这里仍保留区分以防慢网络。
+    const code = String((e && e.code) || '')
+    const msg = String((e && e.message) || '')
+    const isTimeout = code === 'ECONNABORTED' || /timeout/i.test(msg)
+    lidxMsg.value = {
+      ok: false,
+      text: isTimeout
+        ? '更新超时（后端可能仍在拉取，稍后刷新页面看看）'
+        : '更新失败（网络异常，可稍后重试）',
+    }
   } finally {
     lidxBusy.value = false
     setTimeout(() => { lidxMsg.value = null }, 5000)

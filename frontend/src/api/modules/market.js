@@ -86,7 +86,14 @@ export const getLidaxiaoView = (limit = 14) =>
 //   后端从 xiaopage 的 videos.json（GitHub raw，~6.4MB）补拉 → 走同一个 ingest 落库；
 //   带 ETag 短路（上游没变 → 304 零 body），故重复点击不产生流量。**手动、不进定时**。
 
-export const refreshLidaxiao = () => http.post('/market/lidaxiao/refresh')
+// ⚠️⚠️ 2026-11-16（用户："点更新失败（网络或超时）"）：**必须显式放宽超时**。
+//   后端 `refresh_from_upstream` 的预算是 **90 秒**（多镜像逐个试，lite 150KB
+//   → 回退 full 6.4MB），而全局 axios 默认只有 **30 秒** ⇒ 线上稍慢就前端先超时，
+//   可后端还在跑（用户重试＝白跑两遍，且这次已经成功入库了仍显示失败）。
+//   实测：本地命中 gh-proxy 镜像 **17.3s**（成功），线上到 GitHub 通常更慢。
+//   ⇒ 给 110s（> 后端 90s 预算），保证"后端放弃时前端才放弃"。
+export const refreshLidaxiao = () =>
+  http.post('/market/lidaxiao/refresh', null, { timeout: 110000 })
 
 // ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差，日批落库的历史序列 + 最新一期；
 // 纯观察器不进决策链，口径见后端 app/liquidity_watch.py）。日频数据，进页面加载即可。

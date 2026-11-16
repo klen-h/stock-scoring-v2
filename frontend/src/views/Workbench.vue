@@ -3455,12 +3455,18 @@
                 {{ (lidx.latest.date || '').slice(5, 16) }} · {{ lidx.lag_days == null ? '—' : lidx.lag_days }}天前<template v-if="lidx.stale"> ⚠</template>
               </span>
               <!-- ★ 2026-10-28：手动补拉（推送失败兜底）。盘后也会更新，故不能只靠事件回调。 -->
+              <!-- ★ 2026-11-16（用户："点更新失败（网络或超时）"）：
+                   这是**慢请求**（上游 GitHub raw 6.4MB，多镜像逐个试，后端预算 90s）。
+                   原来 busy 只显示 "…"，用户不知道要等多久，容易以为卡死而反复点。
+                   ⇒ 忙时写明"更新中…"，title 说明耗时区间。 -->
               <button type="button"
                       class="text-[10px] px-1.5 py-0.5 rounded border border-border hover:text-accent hover:border-accent/40 disabled:opacity-50 disabled:cursor-wait"
                       :disabled="lidxBusy"
-                      :title="'从 xiaopage 补拉最新解读（盘后也会更新；上游没变时零流量）'"
+                      :title="lidxBusy
+                        ? '正在从 xiaopage 拉取（约 20~90 秒，上游没变时会很快返回）'
+                        : '从 xiaopage 补拉最新解读（盘后也会更新；上游没变时零流量）'"
                       @click="refreshLidx">
-                {{ lidxBusy ? '…' : '↻ 更新' }}
+                {{ lidxBusy ? '更新中…' : '↻ 更新' }}
               </button>
             </div>
           </div>
