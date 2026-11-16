@@ -1383,6 +1383,25 @@ def cross_market_watch(user: dict = Depends(get_current_user)) -> Dict:
     return xmw.snapshot()
 
 
+@router.get("/tell-watch")
+def tell_watch(user: dict = Depends(get_current_user)) -> Dict:
+    """跨市场危险信号（tell）检测器 —— **纯观察，不进决策链**。
+
+    用户（2026-11-16）：把盘后分析里的那张清单固化成常驻检查
+    「黄金 / 人民币 / 美元 / A50 / 涨跌比 / 铜油 / 美债」——
+    全灭说明恐慌没有扩散（只是箱体内轮动），点亮越多越像流动性问题。
+
+    ★ 判据是**单日变化率**，不是绝对价位：3850 那种数字会随中枢漂移，
+      写死就等于一年后自动失效。
+
+    ⚠️ 刻意**不**改 `market_regime._external_panic()`：它进 regime ⇒
+       连锁改评分权重/准入闸门/模拟盘。本端点只输出事实。
+    ⚠️ 零新增外部请求：全部读 `app.macro` 的 60s 共享缓存 + 内存宽度。
+    """
+    from app import tell_watch as tw
+    return tw.snapshot()
+
+
 @router.get("/event-targets")
 def event_targets(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                   themes: Optional[str] = Query(None, description="逗号分隔的主题，不传则自动取前 2"),

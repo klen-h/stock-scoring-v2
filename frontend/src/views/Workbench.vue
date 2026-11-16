@@ -464,6 +464,53 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-16（用户："可以"）：危险信号（tell）清单。
+               判据不是"跌多少"，而是"**本该一起崩的东西有没有一起崩**"：
+                 箱体内轮动 = 崩的只有高久期资产（成长/AI 链），
+                             而黄金、人民币、美元**纹丝不动**；
+                 系统性清仓 = 连"本该对冲"的也在异动 ⇒ 是流动性问题，不是风格切换。
+               ★ 纯观察：不改分数、不进闸门、不喂 `_external_panic`（理由同跨市场异动）。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="tellOpen = !tellOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="tellDot"></span>
+              <span class="text-sm font-semibold shrink-0">危险信号</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ tellLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ tellOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="tellOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="!tellData" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!tellData.ok" class="text-xs text-muted">{{ tellData.error || '暂无数据' }}</div>
+              <template v-else>
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="px-1.5 rounded text-[10px] font-medium" :class="tellLevelCls">
+                    {{ tellData.level_label }}</span>
+                  <span class="text-xs text-gray-300/80">
+                    点亮 {{ tellData.lit }}/{{ tellData.total }}</span>
+                  <span v-if="tellData.insufficient" class="text-[10px] text-muted">
+                    · {{ tellData.insufficient }} 项数据不足</span>
+                  <span class="ml-auto text-[10px] text-muted font-mono">{{ tellData.as_of }}</span>
+                </div>
+                <div class="mt-1.5 space-y-0.5">
+                  <div v-for="it in tellData.items" :key="it.id"
+                       class="flex items-center gap-1.5 text-[11px]">
+                    <span class="w-1 h-1 rounded-full shrink-0" :class="tellStateDot(it.state)"></span>
+                    <span class="shrink-0 w-[76px] truncate"
+                          :class="it.state === 'lit' ? 'text-amber-200 font-semibold' : 'text-gray-300'">
+                      {{ it.label }}</span>
+                    <span class="truncate flex-1" :class="it.state === 'lit' ? 'text-amber-200/90' : 'text-gray-300/80'"
+                          :title="it.text">{{ it.text }}</span>
+                  </div>
+                </div>
+                <div class="mt-1.5 pt-1 border-t border-border/50 text-[10px] text-muted leading-snug">
+                  {{ tellData.note }}
+                </div>
+                <div v-if="tellData.as_of_source" class="text-[10px] text-muted/70">
+                  时点：{{ tellData.as_of_source }}</div>
+              </template>
+            </div>
+          </div>
+
           <!-- ★★ 2026-11-05（用户："底部震荡常匪夷所思、散户易被洗下车"）：
                震荡区间识别。系统所有卖出判据都是**幅度**（−8% / 回撤 8% / 固定 3 日），
                **没有"这个跌幅在箱体什么位置"的坐标** —— 在区间下沿，−8% 可能只是
@@ -3808,6 +3855,8 @@ import {
   getCrowdingWatch, getKeyLevelWatch, getAiBasketWatch, getScenarioWatch, getJin10Tidy,
   // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离，纯展示）
   getCrossMarketWatch,
+  // ★★ 2026-11-16：危险信号（tell）清单——全灭=轮动，点亮越多越像系统性风险
+  getTellWatch,
   // ★★ 2026-11-13：风格分化（钱在权重还是在成长；决定"该往哪加/往哪减"）
   getStyleSpread,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
@@ -4938,6 +4987,8 @@ const obsHelp = [
 const crowdOpen = ref(!!_obs.crowd)
 // ★ 2026-11-05：跨市场异动（默认收起——正常情况下"没有异动"，不该占版面）
 const xmkOpen = ref(!!_obs.xmk)
+// ★★ 2026-11-16：危险信号清单（默认收起 —— 正常日子"全灭"，天天展开反而制造焦虑）
+const tellOpen = ref(!!_obs.tell)
 // ★ 2026-11-05：事件落点（默认收起 —— 它不是"每天都要看"，是"想动的时候查"）
 const evtOpen = ref(!!_obs.evt)
 // ★ 2026-11-05：人物立场（默认收起，且**展开才加载** —— 它不是盘面，是复盘用的）
@@ -4955,6 +5006,7 @@ function saveObs() {
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
       evt: evtOpen.value, ppl: pplOpen.value, rg: rgOpen.value,
       scen: scenOpen.value, ai: aiOpen.value, style: styleOpen.value,
+      tell: tellOpen.value,   // ★ 2026-11-16：危险信号清单
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
@@ -4962,7 +5014,7 @@ function saveObs() {
 const obsAllOpen = computed(() =>
   wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
   && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value
-  && styleOpen.value)
+  && styleOpen.value && tellOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
@@ -4976,6 +5028,7 @@ function toggleAllObs() {
   scenOpen.value = v
   aiOpen.value = v
   styleOpen.value = v
+  tellOpen.value = v
   pbwOpen.value = v
   try { localStorage.setItem(PBW_KEY, v ? '1' : '0') } catch { /* ignore */ }
   saveObs()
@@ -5169,6 +5222,10 @@ const aiBasket = ref(null)
 // ★ 2026-11-05：跨市场异动（外围极端涨跌 + 中国 vs 日韩背离）。
 //   数据来自宏观面板共享缓存 ⇒ 零新增外部请求；纯展示，不进决策链。
 const xmk = ref(null)
+// ★★ 2026-11-16（用户："可以"）：危险信号（tell）清单。
+//   7 项：黄金/人民币/美元（流动性组） + A50/涨跌比/铜油/美债（风险偏好组）。
+//   用途不是"报警"，而是回答"今天跌得很难看，但恐慌扩散了吗"。
+const tellData = ref(null)
 // ★★ 2026-11-05：事件 → 观察名单落点。
 //   读 `stock_facts_wide`（日批产物）⇒ 零外部请求；**不给买卖建议**，只列事实。
 const evt = ref(null)
@@ -5240,6 +5297,40 @@ function xmkDotOf(level) {
   if (level === 'extreme_down') return 'bg-emerald-400'
   if (level === 'none') return 'bg-slate-600'
   return 'bg-slate-400'
+}
+// ★★ 2026-11-16：危险信号（tell）清单。
+//   【配色语义】这条清单里"点亮"**一律是坏事**（与跨市场异动不同 ——
+//     那边"别人跌我们涨"可能是好事）。所以等级越高越红，不做双向配色。
+const tellDot = computed(() => {
+  const d = tellData.value
+  if (!d || !d.ok) return 'bg-slate-500'
+  if (d.level === 'systemic') return 'bg-rose-400'
+  if (d.level === 'pressure') return 'bg-amber-400'
+  return 'bg-slate-500'      // rotation：全灭是常态，不给颜色吸引眼球
+})
+const tellLevelCls = computed(() => {
+  const lv = tellData.value && tellData.value.level
+  if (lv === 'systemic') return 'bg-rose-500/20 text-rose-300'
+  if (lv === 'pressure') return 'bg-amber-500/20 text-amber-300'
+  return 'bg-white/5 text-muted'
+})
+// 折叠态一行：**必须先说"点亮几项"**，再列具体项 ——
+//   只列名字会让人以为这些都很严重，而实际上"1/7"才是结论。
+const tellLine = computed(() => {
+  const d = tellData.value
+  if (!d) return ''
+  if (!d.ok) return '暂无数据'
+  const n = `${d.lit}/${d.total}`
+  if (!d.lit) {
+    return `${n} 全灭 · ${d.level_label}（恐慌未扩散${d.insufficient ? `，${d.insufficient} 项缺数据` : ''}）`
+  }
+  const names = (d.items || []).filter(x => x.state === 'lit').map(x => x.label).join('、')
+  return `${n} · ${d.level_label}：${names}`
+})
+function tellStateDot(state) {
+  if (state === 'lit') return 'bg-amber-400'
+  if (state === 'insufficient') return 'bg-slate-600'
+  return 'bg-slate-500'
 }
 // ★★ 2026-11-05：事件落点。
 //   状态点：有数据=灰蓝（它不报警，是"要不要动手前查一眼"），数据非当日=琥珀。
@@ -5469,6 +5560,21 @@ async function loadRiskWatch(silent = false) {
     }
   } else {
     xmk.value = { ok: false, error: '仅当日实时可用（回放历史日不显示跨市场异动）' }
+  }
+  // ★★ 2026-11-16（用户："可以"）：危险信号（tell）清单。
+  //   与跨市场异动**同源**（都读宏观面板 60s 缓存 + 内存宽度）⇒ 零新增外呼。
+  //   ⚠️ 同样**只在看今天时请求**：它描述"此刻外面发生了什么"，
+  //      贴到历史日就是"写入时刻冒充数据时刻"。
+  //   ⚠️ 失败静默保留上次值（铁律 11）：一块观察器挂了不能清空别的块。
+  if (selectedDate.value === todayStr) {
+    try {
+      const twRes = await getTellWatch()
+      tellData.value = twRes.data || null
+    } catch {
+      /* 静默保留 */
+    }
+  } else {
+    tellData.value = { ok: false, error: '仅当日实时可用（回放历史日不显示危险信号）' }
   }
   // ★★ 2026-11-05：事件落点（读事实表，回放历史日也能用，会带 fallback 标记）
   loadEventTargets()
@@ -6744,7 +6850,7 @@ function startPolling() {
   //     零外部请求；`silent=true` 保证不触发金十那 28 个外呼请求。
   timers.push(setInterval(() => {
     if (!isLivePhase()) return
-    if (crowdOpen.value || xmkOpen.value || evtOpen.value) loadRiskWatch(true)
+    if (crowdOpen.value || xmkOpen.value || evtOpen.value || tellOpen.value) loadRiskWatch(true)
   }, 300000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s

@@ -149,6 +149,11 @@ export const getScenarioWatch = (date) => http.get('/system/scenario-watch', { p
 //      —— 客户端本来就只展示最新快照。
 
 export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', { timeout: 20000 })
+// ★★ 2026-11-16（用户："可以"）：跨市场危险信号（tell）检测器。
+//   7 项清单：黄金/人民币/美元/A50/涨跌比/铜油/美债。
+//   全灭 = 恐慌未扩散（箱体内轮动）；点亮越多越像流动性问题。
+//   纯读宏观面板共享缓存 + 内存宽度 ⇒ 零新增外部请求，20s 足够。
+export const getTellWatch = () => http.get('/system/tell-watch', { timeout: 20000 })
 // ★★ 2026-11-05：事件 → 观察名单落点（主题 → 行业 → 标的当前状态）。
 //   纯读 stock_facts_wide（日批产物），零外部请求 ⇒ 8s 足够。
 //   ⚠️ 不传 date 时后端取事实表最新日，所以回放历史日也安全（会带 fallback 标记）。
