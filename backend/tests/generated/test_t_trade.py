@@ -326,6 +326,26 @@ def test_auto_build_allowed_rejects_broken_support():
     assert t_trade.auto_build_allowed("t_build", 12.90, 0, enabled=True) is True
 
 
+def test_plan_signals_keep_buy_broken_without_base():
+    """★ 无底仓时 `buy_broken`（跌破买点提示）必须保留。
+
+    它和 `buy` 是**两个独立 kind**，因为去重 key 是 `{id}|{kind}|{today}`：
+    若共用 `buy`，当天先推"已跌破"之后，**盘中站回买点就不推了**
+    —— 恰好吞掉用户等的那个信号（用户：\"等它站回 12.71\"）。
+
+    `plan_signals_for_holding` 只该过滤离场信号（`stop`/`target`），
+    进场类的提示全部保留。
+    """
+    hits = [("buy_broken", "已跌破买点"), ("buy", "到达买点"),
+            ("stop", "认错线"), ("target", "兑现")]
+    kept = t_trade.plan_signals_for_holding(hits, has_base=False)
+    kinds = [k for k, _ in kept]
+    assert "buy_broken" in kinds
+    assert "buy" in kinds
+    assert "stop" not in kinds
+    assert "target" not in kinds
+
+
 def test_should_auto_build_default_on():
     """默认开启（用户要求自动处理）；`T_AUTO_BUILD=0` 才关。"""
     assert t_trade.should_auto_build("t_build") is True
