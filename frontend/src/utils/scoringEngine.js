@@ -45,8 +45,19 @@
 //                                      前端硬编码 ⇒ 后端关开关时两侧会分叉）
 //   extractFactors()              ←→  engine._extract_factors()       ✓ 已修（回退）
 //   deriveSignal()                ←→  engine._derive_signal()         ✓ 阈值一致 80/65/45/20/35
-//   calcBuyPoint()                ←→  engine._calc_buy_point()        ⚠️ 未逐项核对
-//   各 scoreXxx() 子项锚点          ←→  engine._score_xxx()             ⚠️ 未逐项核对
+//   calcBuyPoint()                ←→  engine._calc_buy_point()        ✓ 2026-11-16 已修
+//                                    （buy_timing 原先落后两版：还是"适合介入/等回调/
+//                                      追高风险"的**指令式**文案，后端 10-25 已改为
+//                                      事实描述；同一只票会显示两种说法）
+//   各 scoreXxx() 子项锚点          ←→  engine._score_xxx()             ✓ 2026-11-16 已核
+//                                    （245 组边界样本全 0 差异：RSI/KDJ/BOLL/MACD/MA
+//                                      的每个阈值两侧 + 资金面/基本面各区间；
+//                                      另 64 组成长/质量曲线边界 0 差异）
+//   行业分位（新增）                ←→  engine._industry_pct_score()    ✓ 2026-11-16 同源
+//                                    走 `setIndustryDist` 注入后端下发的分布
+//                                    （GET /api/score/industry-dist），不是抄阈值
+//   extractFactors 文案映射         ←→  engine._extract_factors()       ✓ 2026-11-16 已补
+//                                    （后端缺成长/质量 5 项映射，已由后端补齐）
 //   scoreCapital 归一化            ←→  engine 的 total_w 归一            ✓ 同口径（120）
 //
 // 💡 新增/修改任何子项打分或展示映射时：先看这张表，改完两侧，再在**本地路径**
@@ -1235,20 +1246,24 @@ function calcBuyPoint(techData) {
     if (buyLow >= buyHigh) buyLow = round2(buyHigh * 0.97)
   }
 
+  // ★★ 2026-11-16（逐项核对）：**这里原先落后后端两个版本**。
+  //   后端 2026-10-25 已把三档"指令式判定"（适合介入/等回调/追高风险）
+  //   改成**位置事实描述** —— 理由是那三个词是"该不该买"的指令，
+  //   与评分 KILL 披露矛盾（Guardrails #5：只报事实、不给操作指令）。
+  //   前端没跟上 ⇒ 同一只票详情页会出现后端"贴近支撑位（≤2%）"、
+  //   本地算"适合介入"两种说法，用户会以为系统给了两种建议。
   let timing
   let deviation = 0
   if (buyHigh === null) {
-    // 没有支撑位（价格已在低位或数据不足）
-    timing = '适合介入'
+    timing = '价格处于低位区（无可参考支撑）'
   } else if (price <= buyHigh) {
-    // 当前价已跌入买入区间内或以下
-    timing = '适合介入'
+    timing = '价格处于支撑区内'
     deviation = round2((price - buyHigh) / buyHigh * 100)
   } else {
     deviation = round2((price - buyHigh) / buyHigh * 100)
-    if (deviation <= 2) timing = '适合介入'   // 离最近支撑 2% 以内，可以介入
-    else if (deviation <= 6) timing = '等回调'   // 离支撑还有一段距离
-    else timing = '追高风险'   // 远离所有支撑
+    if (deviation <= 2) timing = '贴近支撑位（≤2%）'
+    else if (deviation <= 6) timing = '高于支撑位 2%~6%'
+    else timing = '高于支撑位 6% 以上'
   }
 
   // 参考买入价（区间中轨，与后端一致）
