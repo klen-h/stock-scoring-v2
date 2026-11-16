@@ -1600,6 +1600,12 @@ async def trade_plan_trigger_loop():
                     #      三个月前设的买点还在盘中比对，价格早就跑没影了，
                     #      属于"僵尸计划"。过期只是不参与触发，**不删数据**
                     #      （用户可能还想看历史）。
+                    # ★ 2026-11-16：一次性读底仓（真实+模拟）。
+                    #   【为什么必须在循环外】300 条计划 × 60s 若每条查一次持仓，
+                    #    会把这个本该"零额外请求"的循环变成 DB 热点。
+                    from app import t_trade_exec as TX
+                    _holds = TX.holdings()
+
                     from datetime import timedelta as _td
                     _cutoff = (now - _td(days=90)).strftime("%Y-%m-%d %H:%M:%S")
                     plans = db.fetch(
@@ -1670,6 +1676,16 @@ async def trade_plan_trigger_loop():
                                                  f"——按预案执行"))
                         except Exception as e3:
                             print(f"[plan-trigger] structured check failed {p.get('code')}: {e3}")
+                        # ★★ 2026-11-16：**没有底仓就没有"兑现/认错"**。
+                        #   建仓点计划若当天直接高开越过 target，原先会先推
+                        #   "按计划兑现"并把计划置 hit ⇒ 买点永远不再触发，
+                        #   用户看到"兑现了"但成交页空的（实测福能/渤海）。
+                        #   判定收敛在纯函数，便于单测。
+                        from app import t_trade as TT
+                        _code = str(p.get("code") or "")
+                        _has_base = float(
+                            (_holds.get(_code) or {}).get("shares") or 0) > 0
+                        hits = TT.plan_signals_for_holding(hits, _has_base)
                         for kind, text in hits:
                             key = f"{p['id']}|{kind}|{today}"
                             if key in _PLAN_TRIGGER_DEDUPE["keys"]:

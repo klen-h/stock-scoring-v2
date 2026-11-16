@@ -266,6 +266,29 @@ def test_calc_shares_short_t_zero_when_all_bought_today():
                                today_bought=20000) == 0
 
 
+def test_plan_signals_need_base_for_exit_signals():
+    """★ 没有底仓就**无仓可兑现、无仓可认错**（2026-11-16 空兑现 bug）。
+
+    建仓点计划 buy=支撑 / target=阻力。若当天跳空高开越过 target，
+    target 先命中 ⇒ 计划被置 hit 并推"按计划兑现"，但底仓从未建成，
+    buy 信号也永远不再触发 ⇒ 用户看到"兑现了"、成交页却是空的。
+    """
+    hits = [("stop", "认错"), ("target", "兑现"), ("buy", "到买点"),
+            ("high_open", "高开"), ("volume_break", "放量")]
+    # 有底仓：全部保留
+    assert t_trade.plan_signals_for_holding(hits, True) == hits
+    # 无底仓：只保留进场信号
+    got = t_trade.plan_signals_for_holding(hits, False)
+    assert [k for k, _ in got] == ["buy", "high_open", "volume_break"]
+
+    # 只有离场信号且无底仓 ⇒ 全部过滤掉，不该推、不该闭环计划
+    assert t_trade.plan_signals_for_holding(
+        [("stop", "x"), ("target", "y")], False) == []
+    # 空输入容错
+    assert t_trade.plan_signals_for_holding([], False) == []
+    assert t_trade.plan_signals_for_holding([], True) == []
+
+
 def test_should_auto_build_only_for_t_build():
     """★ 只有「设建仓点」建的 `t_build` 计划才自动建模拟底仓。
 

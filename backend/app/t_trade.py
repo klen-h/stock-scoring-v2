@@ -328,6 +328,31 @@ def suggest_ratio(atr_pct: float, base: Optional[float] = None) -> Dict:
 #  完整计划
 # ══════════════════════════════════════════════════════════════════════════
 
+def plan_signals_for_holding(hits: list, has_base: bool) -> list:
+    """按"有没有底仓"过滤交易计划信号 —— **无仓可兑现，也无仓可认错**。
+
+    ★★ 2026-11-16（用户：企微收到"按计划兑现"，页面今日成交却是空的）：
+      建仓点计划 `buy=支撑 / target=阻力` 原来是**同一条计划**的两个信号。
+      若当天价格**直接高开越过 target**（没回踩到 buy），`target` 会先命中，
+      计划被置 `hit` 并推"按计划兑现" —— 但**底仓根本没建成**，
+      所谓"兑现"是**空兑现**，随后 buy 信号永远不会再触发。
+      实测今天 600483 福能股份（买 11.10 / 标 11.40，09:52 hit）、
+      000415 渤海租赁（买 4.59 / 标 4.731，09:54 hit）都是这样。
+
+    【规则】离场信号（`stop` / `target`）**必须有仓位才成立**：
+      · 有底仓 ⇒ 全部信号照常；
+      · 无底仓 ⇒ 只保留进场信号（`buy` / `high_open` / `volume_break`）。
+
+    ⚠️ 这是通用规则，不是只对 `t_build` 开特例：
+      用户手工建的计划（plan_type=trial）同样可能"没建仓就兑现"，
+      今天 002241 那条 2026-10-29 的 hit 也是这个毛病。
+    """
+    if has_base:
+        return hits
+    return [(kind, text) for kind, text in hits
+            if kind not in ("stop", "target")]
+
+
 def should_auto_build(plan_type: str, enabled: Optional[bool] = None) -> bool:
     """这条交易计划命中买点时，**是否该自动建模拟底仓**。
 
