@@ -774,9 +774,18 @@
               <template v-else>
                 <div class="flex items-center gap-1.5 text-[11px] text-muted mb-1.5">
                   <span>{{ jin10.date }}</span>
+                  <!-- ★ 2026-11-16（用户："金十消息面停在 11-13，今天没有"）：
+                       「数据源还没发布」与「抓取坏了」必须让人分得清 ——
+                       前者等日批自动补抓即可，后者要动 token/栏目 id。
+                       后端已给出 `pending`（未发布）/ `error`（需人干预）/ `stale_days`。 -->
                   <span v-if="jin10.fallback" class="text-amber-400/80"
-                        :title="`请求 ${jin10.requested_date} 无数据，此处显示最近一期`">
-                    · 非当日（该日无数据）</span>
+                        :title="jin10.note || `请求 ${jin10.requested_date} 无数据，此处显示最近一期`">
+                    <template v-if="jin10.error">· 抓取异常（需处理）</template>
+                    <template v-else-if="jin10.pending">
+                      · 数据源未发布{{ jin10.stale_days ? `（已 ${jin10.stale_days} 天）` : '' }}，
+                      自动补抓中</template>
+                    <template v-else>· 非当日（该日无数据）</template>
+                  </span>
                   <span v-if="!jin10.summary">· 原文未解读</span>
                   <span class="flex-1"></span>
                   <!-- ★ 2026-11-01：日批 22:00 才抓一次，白天看到的常是前一日。

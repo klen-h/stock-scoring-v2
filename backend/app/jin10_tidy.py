@@ -454,6 +454,32 @@ def compute(days: int = 7, day: str = None) -> Dict:
                 errors.append(f"{dstr}/{cat}: {str(e)[:60]}")
                 print(f"[jin10_tidy] 入库失败 {dstr}/{cat}: {str(e)[:80]}")
 
+    # ★★ 2026-11-16（用户："金十消息面停在 11-13，今天没有"）：
+    #   **"抓不到"必须与"数据源没发布"分开，不能都静默成 0 条。**
+    #
+    #   实测：`/details?category_id=50029&date=2026-11-16` 返回
+    #     `status=200, data=null`（11-13 则正常返回 16 条）
+    #   ⇒ 这是**数据源当天没发布**，不是故障。
+    #   但如果金十改了栏目 id / 接口字段，返回的**也是 data=null**
+    #   ——两者在单个请求上完全一样，**光看不出区别**。
+    #
+    #   ⇒ 用「连续多少次抓取 0 条」区分：
+    #     · 日批用 `days=7`，只要这 7 天窗口里有一天有数据，`saved>0`；
+    #     · 连续 3 次（跨 3 天）都是 0 条 ⇒ 7 天窗口内**一条都没有**
+    #       ⇒ 不是"今天没发布"，而是**源变了/权限没了**，必须让人看到。
+    #   ⚠️ 不按"当日为 0 条"判断 —— 那会把周末和延迟发布全变成告警。
+    if saved:
+        _meta_set("empty_streak", "0")
+    else:
+        try:
+            streak = int(_meta_get("empty_streak", "0") or 0) + 1
+        except (TypeError, ValueError):
+            streak = 1
+        _meta_set("empty_streak", str(streak))
+        if streak >= 3 and not _last_error:
+            _last_error = (f"连续 {streak} 次抓取 0 条（近 {len(date_list)} 天窗口内"
+                           f"无任何数据）—— 数据源可能变更或权限失效，请检查栏目 id/x-token")
+
     if _last_error:
         _meta_set("last_error", _last_error)
     elif saved:
@@ -461,7 +487,9 @@ def compute(days: int = 7, day: str = None) -> Dict:
 
     return {"ok": not errors and bool(saved), "scanned": scanned, "saved": saved,
             "dates": date_list, "per_day": per_day,
-            "error": _last_error or ";".join(errors[:3])}
+            # ★ 没抓到**不等于**出错：这里的 error 只表达"需要人介入的原因"。
+            "error": _last_error or ";".join(errors[:3]),
+            "empty_streak": _meta_get("empty_streak", "0")}
 
 
 def load(day: str = None) -> Dict:
@@ -509,10 +537,34 @@ def load(day: str = None) -> Dict:
             "tags": [t for t in str(x.get("tags") or "").split(",") if t],
         })
     note = "金十每日汇总（原文，未经 LLM 改写）；仅作消息面素材，不构成交易建议。"
+    # ★ 2026-11-16：**"数据源还没发布" 与 "抓取坏了" 必须分开说**。
+    #   实测 11-16：金十返回 `status=200, data=null`（11-13 正常），
+    #   即**当天汇总尚未发布**；而 `compute` 的连续空计数（`empty_streak`）
+    #   才是判断"源变了/权限没了"的依据。
+    #   ⇒ 前端据此显示不同文案，避免把"等数据"当成"坏了"、或反之。
+    _err = _meta_get("last_error")
+    _streak = _meta_get("empty_streak", "0")
+    stale_days = 0
+    if fallback and requested and d:
+        try:
+            stale_days = (datetime.strptime(requested, "%Y-%m-%d")
+                          - datetime.strptime(d, "%Y-%m-%d")).days
+        except ValueError:
+            stale_days = 0
+    pending = bool(fallback and not _err)        # 等数据源发布，不是故障
     if fallback:
-        note = f"该日（{requested}）无数据，此处显示 {d} 的结果。" + note
+        if _err:
+            note = f"抓取异常：{_err}。此处显示 {d} 的结果。" + note
+        else:
+            note = (f"数据源尚未发布 {requested} 的汇总（最新 {d}"
+                    f"{'，已 ' + str(stale_days) + ' 天' if stale_days else ''}）；"
+                    f"日批会按 7 天窗口自动补抓，无需手动处理。" + note)
     return {"date": d, "requested_date": requested, "fallback": fallback,
             "sections": list(sections.values()), "note": note,
+            "stale_days": stale_days,
+            "pending": pending,              # True = 数据源未发布（等自动补抓）
+            "error": _err,                   # 非空 = 真的需要人介入
+            "empty_streak": _streak,
             # ★ 2026-11-01：已生成的 AI 主线归纳（按日缓存；没有就是空串）。
             #   前端据此把"原文未解读"换成实际内容，不用额外发请求。
             "summary": _meta_get(f"summary:{d}") if d else ""}
