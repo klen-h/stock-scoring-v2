@@ -2035,6 +2035,27 @@ async def score_health_loop():
 
 _T_SCAN_LAST = {"day": ""}
 
+
+def _scan_data_ready(day: str) -> bool:
+    """当日 K 线是否已回填进 `backtest_prices`（做T 扫描的**唯一输入**）。
+
+    ★★ 2026-11-16（用户："做T 交易台的扫描是最新的了吗？"）：
+      扫描窗口 15:40 早于日批回填完成时刻，原实现**不看数据就绪**就开扫，
+      `scan_market` 读到的最后一根还是前一交易日收盘 ⇒ 算出的"今日预案"
+      其实是旧价位。实测 000878 云南铜业 15:42 写入 `price_ref=13.01`
+      （11-13 收盘），而 11-16 真实收盘 12.62，支撑 12.71 早已失效。
+
+    ⇒ 数据没就绪就**不占当日标记**，下个 300s 周期重试；
+      这与"扫描失败不重试"是两个概念：数据晚到是正常现象。
+    """
+    try:
+        from app.database import db
+        r = db.fetch_one("SELECT MAX(date) AS d FROM backtest_prices") or {}
+        return str(r.get("d") or "")[:10] == day
+    except Exception as e:
+        print(f"[t-trade] data-ready check failed: {str(e)[:80]}")
+        return False
+
 # ══════════════════════════════════════════════════════════════════════════
 #  ★★ 2026-11-16：两个重活的**应急开关**（默认开启，可 env 关闭）
 # ══════════════════════════════════════════════════════════════════════════
@@ -2070,27 +2091,34 @@ async def t_trade_scan_loop():
                 pass                     # 应急关闭（见 `_T_SCAN_ENABLED`）
             elif (now.weekday() < 5 and 940 <= t_min < 1440
                     and _T_SCAN_LAST["day"] != d):
-                # ⚠️⚠️ 2026-11-16 故障复盘：原实现**成功后才写 `_T_SCAN_LAST`**
-                #   ⇒ 一旦 `scan_market` 抛异常（或超时被中断），标记不更新
-                #   ⇒ **每 300 秒重跑一次 72 秒的扫描**，全天反复打 DB
-                #   ⇒ 数据库连接被打满 ⇒ 所有接口超时。
-                #   修法：**先占位再跑**，成败都算"今天已扫过"，绝不重试。
-                _T_SCAN_LAST["day"] = d
-                try:
-                    import time as _t
+                # ★ 2026-11-16：**先确认 K 线已回填**再占标记。
+                #   没有当日数据就开扫 = 用昨天的收盘算"今日预案"（云南铜业事故）。
+                #   数据没就绪 ⇒ 不占标记，300s 后自动重试。
+                if not _scan_data_ready(d):
+                    print(f"[t-trade] scan waiting for K-line data of {d}")
+                else:
+                    # ⚠️⚠️ 2026-11-16 故障复盘：原实现**成功后才写 `_T_SCAN_LAST`**
+                    #   ⇒ 一旦 `scan_market` 抛异常（或超时被中断），标记不更新
+                    #   ⇒ **每 300 秒重跑一次 72 秒的扫描**，全天反复打 DB
+                    #   ⇒ 数据库连接被打满 ⇒ 所有接口超时。
+                    #   修法：**先占位再跑**，成败都算"今天已扫过"，绝不重试。
+                    _T_SCAN_LAST["day"] = d
+                    try:
+                        import time as _t
 
-                    from app import t_trade_exec as TX
+                        from app import t_trade_exec as TX
 
-                    # ★ 2026-11-16：同上 —— 记录耗时，慢了自己看得见
-                    _t0 = _t.time()
-                    rep = await asyncio.to_thread(TX.scan_market, d, 120, 200, True)
-                    _cost = _t.time() - _t0
-                    print(f"[t-trade] scan done in {_cost:.0f}s {rep}")
-                    if _cost > 180:
-                        print("[t-trade] WARN scan too slow, consider T_TRADE_SCAN=0")
-                except Exception as e2:
-                    # 不回滚标记：宁可今天没有预案，也不能变成重试风暴
-                    print(f"[t-trade] scan failed (no retry today): {str(e2)[:90]}")
+                        # ★ 2026-11-16：同上 —— 记录耗时，慢了自己看得见
+                        _t0 = _t.time()
+                        rep = await asyncio.to_thread(
+                            TX.scan_market, d, 120, 200, True)
+                        _cost = _t.time() - _t0
+                        print(f"[t-trade] scan done in {_cost:.0f}s {rep}")
+                        if _cost > 180:
+                            print("[t-trade] WARN scan too slow, T_TRADE_SCAN=0 to stop")
+                    except Exception as e2:
+                        # 不回滚标记：宁可今天没有预案，也不能变成重试风暴
+                        print(f"[t-trade] scan failed (no retry today): {str(e2)[:90]}")
         except Exception as e:
             print(f"[t-trade] scan error: {str(e)[:90]}")
         await asyncio.sleep(300)

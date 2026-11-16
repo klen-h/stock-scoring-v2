@@ -291,9 +291,32 @@ def scan_market(day: str = None, min_bars: int = 120,
             if save:
                 save_plan(p, day=d)
 
+    # ★★ 2026-11-16（用户："做T 交易台的扫描是最新的了吗？"）：
+    #   **把当日"本次没重算"的旧预案标为不可行**。
+    #   原实现只 upsert `feasible=True` 的行，于是一只票从"可行"变"不可行"时，
+    #   旧行仍留在库里且 `feasible=1` ⇒ `/plans`（默认只返回 feasible）继续展示它
+    #   ⇒ 用户按**已经失效的价位**设建仓点。
+    #   实测 000878 云南铜业：15:42 那批按 11-13 基准 13.01 写入
+    #   （支撑 12.71）；22:12 重算后今日收 12.62、空间只剩 0.70×ATR < 0.8
+    #   门槛 ⇒ 不再 feasible ⇒ 没被覆盖 ⇒ 旧预案冒充"今日预案"留在界面上。
+    #   判定口径：`updated_at < 本次开始时间` = 本次没写过；
+    #   只处理 `plan_date=d`，不动历史日期的预案。
+    stale = 0
+    try:
+        stale = int(db.execute(
+            f"UPDATE {_T_PLAN_TABLE} SET feasible=0 "
+            f"WHERE plan_date=%s AND feasible=1 AND updated_at<%s",
+            (d, t0)) or 0)
+        if stale:
+            print(f"[t-trade] marked {stale} stale plans for {d}")
+    except Exception as e:
+        # 吞异常必须可见，但**不能让清理失败毁掉本次已经写好的预案**
+        print(f"[t-trade] mark stale plans failed: {str(e)[:90]}")
+
     return {"date": d, "scanned": total, "feasible": feasible,
+            "stale_marked": stale,
             "started_at": t0, "finished_at": _now(),
-            "note": "只落库 feasible=True 的预案；不可行的用 explain() 实时查"}
+            "note": "只落库 feasible=True 的预案；本次未重算的旧预案标为不可行"}
 
 
 def explain(code: str, day: str = None) -> Dict:
