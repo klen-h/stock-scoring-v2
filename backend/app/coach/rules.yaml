@@ -123,7 +123,7 @@ rules:
   #     · ⚠️ 本值必须与 `app.style_spread.SPREAD_THRESHOLD` 一致；
   #       `rules.py` 的兜底默认值已改为引用该常量，此处是**实际生效值**。
   - id: gate_add_weak_direction
-    label: 加仓方向不对（权重弱于成长）
+    label: 加仓方向不对（权重优势不足）
     enabled: true
     push: false            # 与 gate_add 同属 info 级，不单独推送
     severity: info

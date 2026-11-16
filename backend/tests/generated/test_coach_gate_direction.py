@@ -37,6 +37,43 @@ def test_fires_when_spread_below_threshold():
     assert out['numbers']['style_spread_pp'] == 0.65
 
 
+def test_message_is_neutral_and_does_not_recommend_reverse():
+    """★ 文案三处纠错（2026-11-16 用户："这个文案是不是搞反了？"）。
+
+    ① 规则名原写"权重弱于成长"，但触发条件 `spread < 4pp` 包含
+       "权重仍跑赢、只是优势不足"（实例 +1.14pp）⇒ label 说反了。
+    ② 文案原写"资金在抱权重、成长在失血"—— 写死正负号；
+       但负分化度（成长跑赢）时这句完全错误 ⇒ 改中性表述。
+    ③ 文案原写"若一定要加，只考虑权重/红利方向"—— 这是**反向加仓指令**，
+       与本规则注释的设计原则"只否决、不反向加仓"直接冲突；
+       且历史数字 -5.8% 是 v1（沪深300@3pp），当前阈值是上证50@4pp
+       ⇒ 新口径应报 -6.13%（n=5）。
+    """
+    cfg = R.load_config() or {}
+    rule = next(r for r in cfg.get('rules') or []
+                if r.get('id') == 'gate_add_weak_direction')
+    assert '弱于成长' not in rule['label']
+    assert '优势不足' in rule['label']
+
+    out = R._ev_gate_add_weak_direction(
+        None, {}, {'style_spread': _spread(1.14)})
+    m = out['message']
+    # 中性：不写死"跑赢"，正负分化度都能用
+    assert '权重相对成长 +1.14pp' in m
+    assert '资金在抱权重' not in m
+    # 只否决，不给反向指令
+    assert '若一定要加' not in m
+    assert '不构成反向加仓建议' in m
+    # 数字与当前阈值口径一致（上证50@4pp）
+    assert '-6.13%' in m
+    assert '-5.8%' not in m
+
+    # 负分化度也必须能正常出文案（旧文案在这里会说反话）
+    neg = R._ev_gate_add_weak_direction(
+        None, {}, {'style_spread': _spread(-2.0)})
+    assert '权重相对成长 -2.00pp' in neg['message']
+
+
 def test_not_fires_when_spread_enough():
     assert R._ev_gate_add_weak_direction(
         None, {'style_spread_min': 3.0}, {'style_spread': _spread(4.2)}) is None
