@@ -718,19 +718,41 @@ def load_schedule_state() -> dict:
     return {"done": {r["task"]: r["done_date"] for r in rows}}
 
 
+def _norm_schedule_date(value) -> str:
+    """把调度日期统一成 `YYYY-MM-DD`（**横杠**）。
+
+    ★★ 2026-11-16（企微每 5 分钟重复"日终观察"的根因）：
+      `_bj_date()` 为了兼容老项目返回 **斜杠** `2026/11/16`；
+      而多数调用方显式传 `day = strftime("%Y-%m-%d")` 是 **横杠** `2026-11-16`。
+      旧实现直接拿两者做字符串比较 ⇒ **永远不等** ⇒
+      `is_schedule_done()` 恒 False，带去重的一次性推送变成每轮重推。
+
+      【为什么在 store 层修而不是只改调用方】
+        调用点有 50+ 处，混用两种格式；只修一个调用方，下一个照样踩。
+        统一规范化后：
+          · 历史斜杠数据 `2026/11/16` ⇒ 规范化为 `2026-11-16`，**不需要数据迁移**；
+          · 新写入无论传哪种格式，读的时候都能对上。
+    """
+    return str(value or "").strip().replace("/", "-")[:10]
+
+
 def mark_schedule_done(task: str, date_str: str = None) -> None:
-    """标记某任务在某日已执行"""
-    date = date_str or _bj_date()
+    """标记某任务在某日已执行（日期统一为 `YYYY-MM-DD`）。"""
+    date = _norm_schedule_date(date_str or _bj_date())
     db.upsert("schedule_state", {"task": task, "done_date": date}, conflict_columns=["task"])
 
 
 def is_schedule_done(task: str, date_str: str = None) -> bool:
-    """检查任务是否已完成。
+    """检查任务是否已完成（**日期格式无关**）。
+
     ★ DB 查询失败按「未完成」处理（fail-open）：窗口循环下个周期会重试，
       宁可极小概率多跑一次，也不要让调用方循环静默跳过/死亡
       （2026-09-08 实测：盘前复盘窗口开着却整天不触发）。
+
+    ⚠️ fail-open 只在"DB 真的读不到"时生效；**不要把"日期格式不同"
+       也当成 fail-open** —— 那正是 2026-11-16 重复推送的根因。
     """
-    date = date_str or _bj_date()
+    date = _norm_schedule_date(date_str or _bj_date())
     try:
         row = db.fetch_one(
             "SELECT done_date FROM schedule_state WHERE task = %s",
@@ -739,7 +761,9 @@ def is_schedule_done(task: str, date_str: str = None) -> bool:
     except Exception as e:
         print(f"[store] is_schedule_done({task}) 查询失败，按未完成处理: {e}")
         return False
-    return row and row["done_date"] == date
+    if not row:
+        return False
+    return _norm_schedule_date(row["done_date"]) == date
 
 
 # ================================================================

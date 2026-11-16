@@ -98,7 +98,9 @@ def _last_push_date(task: str) -> str:
         # 吞异常必须可见（GUARDRAILS #11）：读不到就当"从没推过"，宁可多推一次
         print(f"[watch-alert] 读 {task} 失败，按未推过处理: {str(e)[:70]}")
         return ""
-    return str((row or {}).get("done_date") or "")[:10]
+    # 老数据是斜杠 `2026/11/10`，新写入是横杠 `2026-11-10` ⇒ 统一成横杠，
+    # 否则"主题距今几天"会把同一天算成不同天，导致主题被重复提出来。
+    return str((row or {}).get("done_date") or "").strip().replace("/", "-")[:10]
 
 
 # ==============================================================================
@@ -257,7 +259,13 @@ def run_daily(day: str = None, force: bool = False) -> dict:
 
     day = str(day or _bj_now().strftime("%Y-%m-%d"))[:10]
     tag = "watch_alert:" + day
-    if not force and store.is_schedule_done(tag):
+    # ★ 2026-11-16：显式传 `day`（横杠）。
+    #   【为什么不能省略】`store.is_schedule_done()` 不传日期时会用 `_bj_date()`
+    #   —— 它为了兼容老项目返回**斜杠** `2026/11/16`，而 `day` 是横杠
+    #   `2026-11-16`。两边格式不同 ⇒ 去重恒失效 ⇒ 每 5 分钟重推同一条。
+    #   （`store` 层已做格式规范化，这里再显式传一次是双保险：调用方不该依赖
+    #     底层兜底，尤其这是一条"一天最多一次"的推送。）
+    if not force and store.is_schedule_done(tag, day):
         return {"ok": True, "pushed": False, "skipped": "今日已推送"}
 
     # ★ 日批产物存在性检查：没有当日行 ⇒ 日批还没跑完（或今天非交易日）。
