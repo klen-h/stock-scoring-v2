@@ -73,7 +73,11 @@
         <div class="text-[11px] text-muted">监控范围</div>
         <div class="text-xl font-semibold mt-0.5">{{ poolList.length }}</div>
         <div class="text-[10px] text-muted">
-          持仓 + 池 · 今日可做 <b class="text-accent">{{ poolPlans.length }}</b> 只
+          持仓 + 池 · 预案可行 <b class="text-accent">{{ poolPlans.length }}</b> 只
+          <!-- ★ 可下单 ≠ 预案可行：无底仓一律不能做T，必须分开显示 -->
+          <template v-if="canTradeCount !== poolPlans.length">
+            · 可下单 <b class="text-emerald-300">{{ canTradeCount }}</b> 只
+          </template>
         </div>
         <!-- ★ 2026-11-16：模拟底仓（自动建仓）—— 与真实持仓分开计数，
              否则"监控范围"会把模拟仓也算成你的持仓 -->
@@ -548,6 +552,13 @@ const pagedMarket = computed(() =>
   filteredMarket.value.slice(page.value * pageSize, (page.value + 1) * pageSize))
 const inPoolCount = computed(() =>
   marketPlans.value.filter((p) => poolCodes.value.has(p.code)).length)
+// ★ 2026-11-16（用户看着"今日可做 4 只"问"明天是不是只有粤高速"）：
+//   `poolPlans` 是**预案可行**（有支撑阻力）的票，不等于**能下单**。
+//   无底仓时 `buy_check` 会拒绝（A股 T+1：先买后卖卖的是原有底仓，
+//   没有底仓那不是做T 是建仓）⇒ 两个数字差得很远（今天 4 vs 1）。
+//   混在一起显示会让人以为"明天有 4 只机会"，必须分开说。
+const canTradeCount = computed(() =>
+  poolPlans.value.filter((p) => p.buy_ok === true).length)
 
 function fmt(v) {
   if (v === null || v === undefined || v === '') return '—'

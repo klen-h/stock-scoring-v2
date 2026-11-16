@@ -3341,6 +3341,11 @@
                      <div>
                        全市场可行 <b>{{ tAllTotal }}</b> 只
                        <span v-if="tWatchTotal" class="text-accent">· 我的关注 <b>{{ tWatchTotal }}</b> 只</span>
+                       <!-- ★ 2026-11-16：**可下单 ≠ 预案可行**。
+                            无底仓时 `buy_check` 会拒绝（A股 T+1），
+                            今天关注里 4 只可行、实际只有 1 只能下单 ⇒ 必须分开显示。 -->
+                       <span v-if="tCanTrade !== tWatchTotal"
+                             class="text-emerald-300">· 可下单 <b>{{ tCanTrade }}</b> 只</span>
                      </div>
                      <div class="text-muted">
                        今日 已开 {{ tSummary.stats.open }} · 已平 {{ tSummary.stats.closed }} · 盈亏
@@ -5821,6 +5826,12 @@ const tWatchPlans = ref([])
 const tWatchTotal = ref(0)
 const tAllTotal = ref(0)
 const tErr = ref('')
+// ★ 2026-11-16：关注里**真的能下单**的数量（`buy_ok` 来自后端 `buy_check`）。
+//   与 `tWatchTotal`（预案可行）不是一回事：无底仓一律做不了T。
+//   ⚠️ `tWatchTotal` 是后端 `total`（截断前），而 `tWatchPlans` 已按 limit 取回，
+//      所以这里只能算"取回到的里面有多少能下单"，样本足够（今天 4 只全部取回）。
+const tCanTrade = computed(() =>
+  tWatchPlans.value.filter((p) => p.buy_ok === true).length)
 // ★ 2026-11-15：做T 卡的**实时行情**（与评分排行榜同口径）。
 //   用 `getBatchPricesCached`（cached=1）⇒ 只读后端内存缓存，上游 0 请求。
 //   返回是对象 `{rows:[...], as_of}` 而不是数组 —— 取 `data.rows`。
