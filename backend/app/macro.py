@@ -62,6 +62,7 @@ TTL_SNAPSHOT = 60    # 快照 60 秒
 # hk=港股指数, dxy=美元指数, gb=美股ETF
 _SINA_SYMBOLS = [
     "hf_OIL", "hf_CL", "hf_GC", "hf_XAU", "hf_SI", "hf_HG",       # 油/金/银/铜
+    "hf_CAD",                                                     # ★ 2026-11-16：伦铜(LME)
     "hf_NQ", "hf_NK", "rt_hkHSTECH",                               # 纳指/日经/恒科
     "globalbd_us2yt", "globalbd_us10yt", "globalbd_us30yt",        # 美债 2Y/10Y/30Y
     "globalbd_cn10yt",                                             # 中国国债
@@ -105,7 +106,16 @@ _PANEL_MAP = {
     #     ⇒ 已加进 `_TX_MAP`，且 `_fallback_panel` 的顺序是**腾讯 → 东财 → FRED**，
     #       腾讯成功时压根不会走东财。
     "silver":   ("hf_SI", "hf"),
+    # ★★ 2026-11-16（用户："按你建议来"）：美铜（COMEX，**美分/磅**，见下方归一化）
     "copper":   ("hf_HG", "hf"),
+    # ★★ 2026-11-16：**伦铜（LME，美元/吨）** 与美铜并列。
+    #   【为什么两个都要】全球铜定价看 LME；COMEX 受美国关税/库存/挤仓扰动，
+    #     用它单独代表"全球需求"会失真（2025 年起美铜对伦铜长期溢价）。
+    #   【为什么单位不统一】LME 的标准报价就是**美元/吨**（13303），
+    #     强行折成磅会让"13303"这个界面上常见的数消失、读数反而难核对。
+    #     ⇒ 美铜归一化到美元/磅（6.13），伦铜保持美元/吨，两者各自是行业惯例；
+    #       需要横向比较时用派生 `copper_premium_pct`（已折算成同一单位）。
+    "lme_copper": ("hf_CAD", "hf"),
     "nasdaq":   ("hf_NQ", "hf"),
     "nikkei":   ("hf_NK", "hf"),
     "hstech":   ("rt_hkHSTECH", "hk"),
@@ -206,6 +216,7 @@ _TX_MAP = {
     #      **删兜底要谨慎**，正确姿势是"换成同口径的兜底"，不是"不留兜底"。
     "gold": "hf_XAU", "gold_spot": "hf_XAU",
     "silver": "hf_SI", "copper": "hf_HG",
+    "lme_copper": "hf_CAD",        # ★ 2026-11-16：伦铜，与新浪同一个代码
     "nasdaq": "hf_NQ",             # 日经/纳指**期货**（若腾讯有则不必走东财）
     "nikkei": "hf_NK",
     "us_dji": "usDJI", "us_ixic": "usIXIC", "us_spx": "us.INX",
@@ -819,6 +830,30 @@ def get_macro_panel() -> dict:
     core_ok = all((panel.get(k) or {}).get("price") for k in ("brent", "wti", "gold", "nasdaq", "dxy"))
     health.record("sina_macro", core_ok, "" if core_ok else "核心资产价格缺失")
 
+    # ★★ 2026-11-16（用户："按你建议来"）：**美铜单位归一化 —— 修一个 100 倍错误**
+    #
+    #   `hf_HG` 返回的是**美分/磅**（实测 613.19），而本项目的
+    #   `flash/llm.KEY_LEVELS["copper"] = [4.50, 4.80, 5.10]`（**美元/磅**）
+    #   以及下面两个派生比率，历来都按美元/磅理解 ⇒：
+    #
+    #     copper_oil_ratio  = 613.19 / 93.5 = **6.56**（正确应为 0.0656）
+    #     copper_gold_ratio = 613.19 / 3858 = **0.159**（正确应为 0.00159）
+    #
+    #   这两个数会经 `flash/llm.format_macro_snapshot()` 的
+    #   「铜油比 / 铜金比」直接进 LLM 的宏观解读 ⇒ 一直喂错了 100 倍。
+    #
+    #   【为什么用 `> 100` 判据而不是无条件除以 100】
+    #     若上游哪天改回美元/磅（4.x），无脑除会把它压成 0.04，
+    #     又是一次"看起来差不多就顶上"的口径事故。阈值能区分两种量级。
+    #   【为什么只改 price/prev_close/high/low】
+    #     `change_pct` 本身是比值，与单位无关，不能动。
+    _cu = panel.get("copper")
+    if _cu and (_cu.get("price") or 0) > 100:
+        for _k in ("price", "prev_close", "high", "low"):
+            _v = _cu.get(_k)
+            if isinstance(_v, (int, float)) and _v:
+                _cu[_k] = round(float(_v) / 100.0, 4)
+
     # ── 衍生指标 ──
     derived = {}
     # ⚠️ 2026-11-04 口径提示：`gold` 现在是**伦敦金现货**（122.XAU），
@@ -840,11 +875,26 @@ def get_macro_panel() -> dict:
     c, b = panel.get("copper"), panel.get("brent")
     if c and b:
         if b["price"] > 0:
-            derived["copper_oil_ratio"] = round(c["price"] / b["price"], 2)
+            # ★ 2026-11-16：**2 位 → 4 位**。归一化后铜油比是 **0.0656** 量级，
+            #   原来的 `round(..., 2)` 会压成 0.07（丢掉 7% 的信息），
+            #   而这不是"展示精度"问题 —— 它要被当阈值型指标读。
+            derived["copper_oil_ratio"] = round(c["price"] / b["price"], 4)
         if g and g["price"] > 0:
             derived["copper_gold_ratio"] = round(c["price"] / g["price"], 6)
         if b["price"] > 0:
             derived["gold_oil_ratio"] = round(g["price"] / b["price"], 2) if g else None
+    # ★★ 2026-11-16：**美铜溢价**（美铜 − 伦铜，都已折成美元/磅）。
+    #   【为什么值得单独算】它的高低决定了"美铜涨"该怎么读：
+    #     溢价正常 ⇒ 美铜涨 = 全球需求强的同步信号；
+    #     溢价飙升 ⇒ 是 COMEX 被关税/库存/挤仓拉起来的，
+    #                **不能**当成"中国/全球需求强"（这正是"用美铜代表需求"的失真点）。
+    #   正常区间约 0~3%；超过 5% 就该在解读里显式说明。
+    _lc = panel.get("lme_copper")
+    if c and _lc and c.get("price") and _lc.get("price"):
+        _usd_lb = float(_lc["price"]) / 2204.62      # 1 吨 = 2204.62 磅
+        if _usd_lb > 0:
+            derived["copper_premium_pct"] = round(
+                (float(c["price"]) / _usd_lb - 1) * 100, 2)
     # 在岸/离岸人民币基差（pips）：离岸显著弱于在岸 = 贬值压力
     cnh, cny = panel.get("usdcnh"), panel.get("usdcny")
     if cnh and cny and cnh["price"] > 0 and cny["price"] > 0:
@@ -1470,6 +1520,12 @@ _OVERNIGHT_KEYS = [
     ("cn_hxc", "cn_hxc", "中国金龙"),
     # ★ 2026-10-23：费半（SOX）—— 与 A 股 AI 硬件（光模块/存储/PCB）联动最直接的外部指数
     ("sox",    "sox",    "费半现货"),
+    # ★★ 2026-11-16：伦铜 —— A 股有色/铜板块开盘的**直接**参考。
+    #   为什么用伦铜而不是美铜做隔夜：COMEX 受美国关税/库存扰动（`copper_premium_pct`
+    #   会把这件事量化），LME 才是全球定价基准 ⇒ 隔夜变化读伦铜更干净。
+    #   ⚠️ 冷启动：`macro_history` 从今天起才记 `lme_copper` 键 ⇒ 纪律①（缺失即跳过）
+    #     会让这一项在**下一交易日 15:03 后**才出现，不会填 0 冒充。
+    ("lme_copper", "lme_copper", "伦铜"),
 ]
 
 

@@ -1402,6 +1402,22 @@ def tell_watch(user: dict = Depends(get_current_user)) -> Dict:
     return tw.snapshot()
 
 
+@router.get("/copper-watch")
+def copper_watch(user: dict = Depends(get_current_user)) -> Dict:
+    """铜裁决器 —— **纯观察，不进决策链**。
+
+    油价下跌时市场在讲两个相反的故事：**供给驱动**（D1，铜企稳）
+    还是**需求驱动**（D2，铜同步暴跌）。**单看油价分不出来，分开它们的正是铜。**
+
+    ★ 本端点把 `flash/llm.py` prompt 里既有的 D1/D2 判据**显式化成确定性输出** ——
+      那段判据原本只写给 LLM 看，系统侧无法核对，同一行情可能被解释成两种。
+    ⚠️ 判据是单日涨跌 ⇒ `confidence` 恒为 `low`，只作方向提示。
+    ⚠️ 零新增外部请求：读 `app.macro` 60s 共享缓存。
+    """
+    from app import copper_watch as cw
+    return cw.snapshot()
+
+
 @router.get("/event-targets")
 def event_targets(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
                   themes: Optional[str] = Query(None, description="逗号分隔的主题，不传则自动取前 2"),

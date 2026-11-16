@@ -415,6 +415,11 @@ def append_macro_history(panel: dict) -> None:
         "time": _now_iso(),
         "brent": _e("brent"), "wti": _e("wti"), "gold": _e("gold"), "gld": _e("gld"),
         "us10yt": _e("us10y"), "silver": _e("silver"), "copper": _e("copper"),
+        # ★★ 2026-11-16（用户："按你建议来"）：伦铜必须**显式进白名单**。
+        #   本函数是手工白名单（见下方 ★ 2026-09-25 注释）——只加 `macro._PANEL_MAP`
+        #   会出现"面板有数据、历史里没有"⇒ LLM 的「近5日高低」拿不到伦铜，
+        #   而铜恰恰是靠多日走势才能分清"关税挤仓"还是"需求回升"的。
+        "lme_copper": _e("lme_copper"),
         "nasdaq": _e("nasdaq"), "nke": _e("nikkei"), "hstech": _e("hstech"),
         "dxy": _e("dxy"), "usdcnh": _e("usdcnh"),
         # ★ 2026-09-25 新增两项（纯新增，旧记录无此键 ⇒ 消费方须按"缺失跳过"处理）：
@@ -433,6 +438,8 @@ def append_macro_history(panel: dict) -> None:
         "goldSilverRatio": d.get("gold_silver_ratio"),
         "gldRatio": d.get("gold_oil_ratio"),
         "copperGoldRatio": d.get("copper_gold_ratio"),
+        # ★ 2026-11-16：美铜溢价（>5% ⇒ 美铜涨跌含关税/库存成分，不能当需求读）
+        "copperPremiumPct": d.get("copper_premium_pct"),
     }
 
     # ★ 2026-10-10（黄金/商品联动研究）：盘后快照顺手转存「外盘日频收盘表」

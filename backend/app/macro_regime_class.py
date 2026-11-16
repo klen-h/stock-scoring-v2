@@ -285,13 +285,27 @@ def features(day: str = None) -> Dict:
     def _price(tbl, k):
         return (tbl.get(k) or {}).get("price")
 
+    # ★★ 2026-11-16（用户："按你建议来"）：**铜价量级过渡期兼容**。
+    #   `macro.py` 当天把美铜从「美分/磅（613）」归一化成「美元/磅（6.13）」，
+    #   但 `thesis_evidence` 里 5 天前的历史 payload 仍是 613。
+    #   直接相除 ⇒ `copper_chg5 = (6.13/613 - 1)*100 = **-99%**`
+    #   ⇒ 同时满足 `stag`（≤-2）和 `rec`（≤-5）⇒ **凭空判成滞胀/衰退**。
+    #   用"差一个数量级以上即视为量级混用"的判据折回，等 150 条历史刷新完自然失效。
+    _cu_now, _cu_prev = _price(cur_assets, "copper"), _price(prev, "copper")
+    if _cu_now and _cu_prev and min(_cu_now, _cu_prev) > 0:
+        if max(_cu_now, _cu_prev) / min(_cu_now, _cu_prev) > 20:
+            if _cu_now < _cu_prev:
+                _cu_prev = _cu_prev / 100.0
+            else:
+                _cu_now = _cu_now / 100.0
+
     return {
         # `_data_date` 不在 _RULES 里 ⇒ compute() 不会读它，仅用于标注数据来源。
         "_data_date": base_day,
         "brent_chg5": _pct(_price(cur_assets, "brent"), _price(prev, "brent")),
         "us10y_chg5_bp": _bp(_price(cur_assets, "us10y"), _price(prev, "us10y")),
         "dxy_chg5": _pct(_price(cur_assets, "dxy"), _price(prev, "dxy")),
-        "copper_chg5": _pct(_price(cur_assets, "copper"), _price(prev, "copper")),
+        "copper_chg5": _pct(_cu_now, _cu_prev),
         "nasdaq_chg5": _pct(_price(cur_assets, "nasdaq"), _price(prev, "nasdaq")),
         "vix": _price(cur_assets, "vix"),
     }

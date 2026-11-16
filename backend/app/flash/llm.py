@@ -1097,17 +1097,41 @@ def get_postmarket_skill() -> str:
 （盘后复盘不要求输出交易信号 json 块。）"""
 
 
-# 关键心理价位（原项目硬编码在 prompt.js 中，这里抽为模块级配置便于调整）
-KEY_LEVELS = {
-    "wti": [95, 100, 105],
-    "brent": [98, 103, 108],
-    "gold": [4650, 4700, 4750],
-    "silver": [84, 86, 88],
-    "copper": [4.50, 4.80, 5.10],
-    "nasdaq": [28500, 29000, 29500],
-    "dxy": [97.5, 98.0, 98.5],
-    "usdcnh": [6.75, 6.80, 6.85],
+# 关键心理价位：**按"整档步长"围绕现价动态生成**，不再硬编码绝对价位。
+# ★★ 2026-11-16（用户："按你建议来"）：原 `KEY_LEVELS` 是写死的绝对价位，
+#   实测已**整体失效**：
+#     金 4650 vs 现价 3858（**-17%**）｜银 84 vs 46.6（**-45%**）
+#     WTI 95 vs 86.6（-9%）｜DXY 97.5 vs 103.5（**+6%**）
+#     铜 4.50 vs 613.19（**单位都不对**，见 `macro.py` 的美铜归一化）
+#   ⇒ 后果不是"数字略旧"，而是 LLM 拿到的
+#     「阻力 4650（距 21%）」这类描述**完全是虚构的距离**。
+#   硬编码绝对价位注定逐年失效 ⇒ 改成"围绕现价取整档"，永远不会过期。
+LEVEL_STEP = {
+    "wti": 5, "brent": 5,
+    "gold": 50,          # 3858 ⇒ 3850 / 3900 / 3950
+    "silver": 1,         # 46.6 ⇒ 46 / 47 / 48
+    "copper": 0.25,      # 6.13 美元/磅 ⇒ 6.00 / 6.25 / 6.50
+    "lme_copper": 500,   # 13303 美元/吨 ⇒ 13000 / 13500
+    "nasdaq": 500,
+    "dxy": 1,
+    "usdcnh": 0.05,
+    "us10y": 0.1,
 }
+
+
+def _auto_levels(price: float, step: float) -> list:
+    """围绕现价生成 4 个整档位（下两档 + 上两档）。
+
+    `base = floor(price/step)*step` ⇒ `base <= price < base+step`，
+    于是 `get_trend_context` 取 `above`（严格大于现价）必然命中 `base+step`，
+    `below`（严格小于）命中 `base` 或 `base-step` —— 现价正好落在整档时也不会自己撞自己。
+    """
+    import math
+    if not price or not step:
+        return []
+    base = math.floor(price / step) * step
+    return [round(base - step, 4), round(base, 4),
+            round(base + step, 4), round(base + 2 * step, 4)]
 
 
 def get_trend_context(symbol: str, item: dict, history: list) -> str:
@@ -1130,8 +1154,9 @@ def get_trend_context(symbol: str, item: dict, history: list) -> str:
         parts.append("收益率上行" if is_yield else "动能偏多")
     elif price < prev:
         parts.append("收益率下行" if is_yield else "动能偏空")
-    # 关键位
-    levels = KEY_LEVELS.get(symbol, [])
+    # 关键位（★ 2026-11-16：改为围绕现价动态生成，见 `LEVEL_STEP` 处注释）
+    _step = LEVEL_STEP.get(symbol)
+    levels = _auto_levels(price, _step) if _step else []
     above = next((l for l in levels if l > price), None)
     below = next((l for l in reversed(levels) if l < price), None)
     if above:
@@ -1154,6 +1179,12 @@ def get_trend_context(symbol: str, item: dict, history: list) -> str:
     # 近期趋势（历史里该 symbol 的最近 5 条）
     recent = [h.get(symbol, {}).get("price") for h in history[-5:]]
     recent = [p for p in recent if p]
+    # ★★ 2026-11-16：铜的**旧快照**按美分/磅存（613），新快照按美元/磅存（6.13）
+    #   ⇒ 混合比较会得出「近5日高 613 低 6.13」这种荒谬结论，连涨连跌也会判错。
+    #   用现价做量级基准，把明显大一个数量级的历史值折回来（过渡期兼容，
+    #   等 150 条历史全部刷新后这段自然不再命中）。
+    if recent and price:
+        recent = [p / 100.0 if p > price * 20 else p for p in recent]
     if len(recent) >= 2:
         up = down = 0
         for a, b in zip(recent, recent[1:]):
@@ -1212,10 +1243,17 @@ def format_macro_snapshot(panel: dict, history: list) -> str:
     add("黄金现货(伦敦金)", "gold", "gold")
     add("COMEX白银", "silver", "silver")
     add("COMEX铜", "copper", "copper")
+    # ★★ 2026-11-16（用户："按你建议来"）：伦铜与美铜并列。
+    #   【为什么必须两个都给】全球铜定价看 LME；COMEX 受美国关税/库存/挤仓影响。
+    #     只看美铜会把"关税导致的挤仓上涨"误读成"全球需求强"。
+    add("伦铜(LME)", "lme_copper", "lme_copper")
     d = panel.get("_derived", {})
     ratios = []
     if d.get("copper_oil_ratio"):
         ratios.append(f"铜油比: {d['copper_oil_ratio']}")
+    # 美铜溢价：>5% 说明美铜的涨跌里有"关税/库存"成分，不能直接当需求读
+    if d.get("copper_premium_pct") is not None:
+        ratios.append(f"美铜溢价: {d['copper_premium_pct']:+.2f}%")
     if d.get("gold_silver_ratio"):
         ratios.append(f"金银比: {d['gold_silver_ratio']}")
     if d.get("copper_gold_ratio"):
@@ -1606,6 +1644,8 @@ def build_diagnosis_prompt(clusters: list, panel: dict, holdings: list,
 【工业需求与交叉验证】
 - COMEX白银: {_fmt_item(g('silver') or {})}
 - COMEX铜: {_fmt_item(g('copper') or {})}
+- 伦铜(LME): {_fmt_item(g('lme_copper') or {})}
+- 美铜溢价: {d.get('copper_premium_pct', '未知')}%（>5% 时美铜涨跌含关税/库存成分，不可直接当"全球需求"读）
 
 【国内增量数据】
 - 富时A50期货: {_fmt_item(g('a50') or {})}

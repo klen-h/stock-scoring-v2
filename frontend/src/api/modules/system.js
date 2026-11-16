@@ -154,6 +154,9 @@ export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', 
 //   全灭 = 恐慌未扩散（箱体内轮动）；点亮越多越像流动性问题。
 //   纯读宏观面板共享缓存 + 内存宽度 ⇒ 零新增外部请求，20s 足够。
 export const getTellWatch = () => http.get('/system/tell-watch', { timeout: 20000 })
+// ★★ 2026-11-16：铜裁决器 —— 油跌时区分"供给驱动(D1)"与"需求驱动(D2)"。
+//   把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出。
+export const getCopperWatch = () => http.get('/system/copper-watch', { timeout: 20000 })
 // ★★ 2026-11-05：事件 → 观察名单落点（主题 → 行业 → 标的当前状态）。
 //   纯读 stock_facts_wide（日批产物），零外部请求 ⇒ 8s 足够。
 //   ⚠️ 不传 date 时后端取事实表最新日，所以回放历史日也安全（会带 fallback 标记）。

@@ -511,6 +511,64 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-16（用户："按你建议来"）：铜裁决器。
+               油跌时市场在讲两个相反的故事：供给驱动（D1，铜企稳）还是需求驱动
+               （D2，铜同步暴跌）—— **单看油价分不出来，分开它们的正是铜**。
+               ★ 把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出（纯观察）。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="copperOpen = !copperOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="copperDot"></span>
+              <span class="text-sm font-semibold shrink-0">铜裁决</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ copperLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ copperOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="copperOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="!copperData" class="text-xs text-muted">加载中…</div>
+              <div v-else-if="!copperData.ok" class="text-xs text-muted">{{ copperData.error || '暂无数据' }}</div>
+              <template v-else>
+                <div class="flex items-center gap-2 text-sm flex-wrap">
+                  <span class="px-1.5 rounded text-[10px] font-medium" :class="copperVerdictCls">
+                    {{ copperData.verdict_label }}</span>
+                  <span v-if="copperData.confidence === 'low'"
+                        class="text-[10px] text-muted" title="判据为单日涨跌，噪声大，只作方向提示">
+                    单日·仅供参考</span>
+                  <span class="ml-auto text-[10px] text-muted font-mono">{{ copperData.as_of }}</span>
+                </div>
+                <div class="mt-1.5 space-y-0.5 text-[11px]">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-gray-300 shrink-0 w-[76px]">美铜</span>
+                    <span class="font-mono text-gray-200">{{ fmtNum(copperData.copper?.us?.price) }}</span>
+                    <span class="font-mono" :class="xmkChgCls(copperData.copper?.us?.chg)">{{ fmtPct(copperData.copper?.us?.chg) }}</span>
+                    <span class="text-muted text-[10px]">美元/磅</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-gray-300 shrink-0 w-[76px]">伦铜(LME)</span>
+                    <span class="font-mono text-gray-200">{{ fmtNum(copperData.copper?.lme?.price) }}</span>
+                    <span class="font-mono" :class="xmkChgCls(copperData.copper?.lme?.chg)">{{ fmtPct(copperData.copper?.lme?.chg) }}</span>
+                    <span class="text-muted text-[10px]">美元/吨</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-gray-300 shrink-0 w-[76px]">布伦特</span>
+                    <span class="font-mono text-gray-200">{{ fmtNum(copperData.oil?.price) }}</span>
+                    <span class="font-mono" :class="xmkChgCls(copperData.oil?.chg)">{{ fmtPct(copperData.oil?.chg) }}</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-[10px] text-muted pt-0.5">
+                    <span>铜油比 {{ copperData.ratios?.copper_oil ?? '—' }}</span>
+                    <span>铜金比 {{ copperData.ratios?.copper_gold ?? '—' }}</span>
+                    <span v-if="copperData.copper?.premium_pct != null"
+                          :class="Math.abs(copperData.copper.premium_pct) >= 5 ? 'text-amber-300' : ''">
+                      美铜溢价 {{ copperData.copper.premium_pct > 0 ? '+' : '' }}{{ copperData.copper.premium_pct }}%</span>
+                  </div>
+                </div>
+                <div class="mt-1.5 pt-1 border-t border-border/50 text-[11px] text-gray-300 leading-snug">
+                  {{ copperData.reason }}
+                </div>
+                <div class="mt-1 text-[10px] text-muted leading-snug">{{ copperData.note }}</div>
+              </template>
+            </div>
+          </div>
+
           <!-- ★★ 2026-11-05（用户："底部震荡常匪夷所思、散户易被洗下车"）：
                震荡区间识别。系统所有卖出判据都是**幅度**（−8% / 回撤 8% / 固定 3 日），
                **没有"这个跌幅在箱体什么位置"的坐标** —— 在区间下沿，−8% 可能只是
@@ -3857,6 +3915,8 @@ import {
   getCrossMarketWatch,
   // ★★ 2026-11-16：危险信号（tell）清单——全灭=轮动，点亮越多越像系统性风险
   getTellWatch,
+  // ★★ 2026-11-16：铜裁决器——油跌时区分供给驱动(D1)与需求驱动(D2)
+  getCopperWatch,
   // ★★ 2026-11-13：风格分化（钱在权重还是在成长；决定"该往哪加/往哪减"）
   getStyleSpread,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
@@ -4989,6 +5049,8 @@ const crowdOpen = ref(!!_obs.crowd)
 const xmkOpen = ref(!!_obs.xmk)
 // ★★ 2026-11-16：危险信号清单（默认收起 —— 正常日子"全灭"，天天展开反而制造焦虑）
 const tellOpen = ref(!!_obs.tell)
+// ★★ 2026-11-16：铜裁决器（默认收起 —— 只有油价大幅波动时它才有信息量）
+const copperOpen = ref(!!_obs.copper)
 // ★ 2026-11-05：事件落点（默认收起 —— 它不是"每天都要看"，是"想动的时候查"）
 const evtOpen = ref(!!_obs.evt)
 // ★ 2026-11-05：人物立场（默认收起，且**展开才加载** —— 它不是盘面，是复盘用的）
@@ -5007,6 +5069,7 @@ function saveObs() {
       evt: evtOpen.value, ppl: pplOpen.value, rg: rgOpen.value,
       scen: scenOpen.value, ai: aiOpen.value, style: styleOpen.value,
       tell: tellOpen.value,   // ★ 2026-11-16：危险信号清单
+      copper: copperOpen.value,  // ★ 2026-11-16：铜裁决器
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
     }))
   } catch { /* 隐私模式忽略 */ }
@@ -5014,7 +5077,7 @@ function saveObs() {
 const obsAllOpen = computed(() =>
   wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
   && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value
-  && styleOpen.value && tellOpen.value)
+  && styleOpen.value && tellOpen.value && copperOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
@@ -5029,6 +5092,7 @@ function toggleAllObs() {
   aiOpen.value = v
   styleOpen.value = v
   tellOpen.value = v
+  copperOpen.value = v
   pbwOpen.value = v
   try { localStorage.setItem(PBW_KEY, v ? '1' : '0') } catch { /* ignore */ }
   saveObs()
@@ -5226,6 +5290,9 @@ const xmk = ref(null)
 //   7 项：黄金/人民币/美元（流动性组） + A50/涨跌比/铜油/美债（风险偏好组）。
 //   用途不是"报警"，而是回答"今天跌得很难看，但恐慌扩散了吗"。
 const tellData = ref(null)
+// ★★ 2026-11-16：铜裁决器（油跌时判供给 vs 需求，纯观察）。
+//   与 tell 的区别：tell 回答"要不要紧张"，铜裁决回答"在讲哪个故事"。
+const copperData = ref(null)
 // ★★ 2026-11-05：事件 → 观察名单落点。
 //   读 `stock_facts_wide`（日批产物）⇒ 零外部请求；**不给买卖建议**，只列事实。
 const evt = ref(null)
@@ -5332,6 +5399,36 @@ function tellStateDot(state) {
   if (state === 'insufficient') return 'bg-slate-600'
   return 'bg-slate-500'
 }
+// ★★ 2026-11-16：铜裁决器。
+//   【配色语义】供给驱动（D1）不是坏事（成本下行、需求没坏）⇒ 蓝；
+//     需求驱动（D2）才是风险 ⇒ 红。刻意区分，避免"一有结论就飘红"。
+const copperDot = computed(() => {
+  const d = copperData.value
+  if (!d || !d.ok) return 'bg-slate-500'
+  if (d.verdict === 'demand') return 'bg-rose-400'
+  if (d.verdict === 'divergent') return 'bg-violet-400'
+  if (d.verdict === 'supply') return 'bg-sky-400'
+  if (d.verdict === 'reflation') return 'bg-amber-400'
+  return 'bg-slate-500'
+})
+const copperVerdictCls = computed(() => {
+  const v = copperData.value && copperData.value.verdict
+  if (v === 'demand') return 'bg-rose-500/20 text-rose-300'
+  if (v === 'divergent') return 'bg-violet-500/20 text-violet-300'
+  if (v === 'supply') return 'bg-sky-500/20 text-sky-300'
+  if (v === 'reflation') return 'bg-amber-500/20 text-amber-300'
+  return 'bg-white/5 text-muted'
+})
+// 折叠态一行：先给结论，再给铜/油两个数 —— 结论比明细重要
+const copperLine = computed(() => {
+  const d = copperData.value
+  if (!d) return ''
+  if (!d.ok) return '暂无数据'
+  const cu = d.copper && d.copper.us ? d.copper.us.chg : null
+  const oil = d.oil ? d.oil.chg : null
+  const s = (v) => (v == null ? '—' : (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%')
+  return `${d.verdict_label}（铜 ${s(cu)} / 油 ${s(oil)}）`
+})
 // ★★ 2026-11-05：事件落点。
 //   状态点：有数据=灰蓝（它不报警，是"要不要动手前查一眼"），数据非当日=琥珀。
 //   ⚠️ 刻意不用红/绿 —— 这张卡里没有任何方向判断，用颜色会暗示"看好/看空"。
@@ -5575,6 +5672,17 @@ async function loadRiskWatch(silent = false) {
     }
   } else {
     tellData.value = { ok: false, error: '仅当日实时可用（回放历史日不显示危险信号）' }
+  }
+  // ★★ 2026-11-16：铜裁决器 —— 同上（同源于宏观面板缓存，只在当日请求）。
+  if (selectedDate.value === todayStr) {
+    try {
+      const cuRes = await getCopperWatch()
+      copperData.value = cuRes.data || null
+    } catch {
+      /* 静默保留 */
+    }
+  } else {
+    copperData.value = { ok: false, error: '仅当日实时可用（回放历史日不显示铜裁决）' }
   }
   // ★★ 2026-11-05：事件落点（读事实表，回放历史日也能用，会带 fallback 标记）
   loadEventTargets()
@@ -6850,7 +6958,8 @@ function startPolling() {
   //     零外部请求；`silent=true` 保证不触发金十那 28 个外呼请求。
   timers.push(setInterval(() => {
     if (!isLivePhase()) return
-    if (crowdOpen.value || xmkOpen.value || evtOpen.value || tellOpen.value) loadRiskWatch(true)
+    if (crowdOpen.value || xmkOpen.value || evtOpen.value || tellOpen.value
+        || copperOpen.value) loadRiskWatch(true)
   }, 300000))
   timers.push(setInterval(() => loadPush(todayStr), 120000))
   // ★ 2026-09-25（竞价段评估 #2）：竞价窗口只有 10 分钟（9:15-9:25），而主轮询是 120s
