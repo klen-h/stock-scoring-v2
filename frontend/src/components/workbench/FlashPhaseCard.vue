@@ -1,46 +1,65 @@
 <template>
-  <!-- ★ 2026-11-14（用户需求）：快讯三时段复盘卡——盘前/午盘/盘后各时段最新判断 +
+  <!-- ★ 2026-11-14（用户需求）：快讯三时段复盘卡——盘前/盘中/盘后各时段最新判断 +
        确定性 verdict（宏观判断 vs 可观测实况）+ LLM 矛盾解释（prev_check）。
-       数据：GET /flash/brief/review（只读不烧 LLM）；时段切点与教练侧复盘对账一致。 -->
-  <div class="bg-card border border-border rounded-lg p-3 text-xs">
-    <div class="flex items-center gap-2 flex-wrap">
+       数据：GET /flash/brief/review（只读不烧 LLM）；时段切点与教练侧复盘对账一致。
+       ★★ 2026-11-16 样式整理：右栏是定高窄栏 ⇒ 列表区可滚动；利好/利空改 chip 分组；
+          未判定时显式显示"待验证"（原先空白，看着像漏数据）；
+          底部说明去掉内部字段名 `prev_check`。 -->
+  <div class="bg-card border border-border rounded-lg p-3 text-xs h-full flex flex-col min-h-0">
+    <div class="flex items-center gap-2 shrink-0">
       <span class="text-sm font-semibold">快讯三时段</span>
       <span class="text-[10px] text-muted">判断 vs 实况 · 观察参考</span>
       <span v-if="date" class="ml-auto text-[10px] text-muted font-mono">{{ date }}</span>
     </div>
 
-    <div v-if="phases.length" class="mt-2 space-y-2">
+    <div v-if="phases.length" class="mt-2 flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-0.5">
       <div v-for="p in phases" :key="p.phase"
-           class="rounded border border-border/60 px-2 py-1.5 bg-white/[0.04]">
+           class="rounded border px-2 py-1.5"
+           :class="phaseTone(p.phase).box">
+        <!-- 时段 / 时间 / 基调 / 判定 -->
         <div class="flex items-center gap-1.5 flex-wrap">
-          <span class="font-semibold">{{ p.phase }}</span>
+          <span class="w-1 h-3 rounded-full shrink-0" :class="phaseTone(p.phase).dot"></span>
+          <span class="text-[11px] font-semibold" :class="phaseTone(p.phase).label">{{ p.phase }}</span>
           <span v-if="p.ts" class="font-mono text-[10px] text-muted">{{ p.ts }}</span>
           <span v-if="p.stance" class="px-1.5 rounded text-[10px] font-medium"
-                :class="p.stance === '进攻' ? 'bg-red-500/20 text-red-300'
-                        : p.stance === '防御' ? 'bg-sky-500/20 text-sky-300'
-                        : 'bg-white/5 text-muted'">{{ p.stance }}</span>
-          <span v-if="p.verdict" class="px-1.5 rounded text-[10px] font-medium"
-                :class="p.verdict === '命中' ? 'bg-emerald-500/20 text-emerald-300'
-                        : p.verdict === '打脸' ? 'bg-red-500/20 text-red-300'
-                        : 'bg-white/5 text-muted'">{{ p.verdict }}</span>
-          <span v-if="!p.conclusion" class="ml-auto text-[10px] text-muted/70">暂无解读</span>
+                :class="stanceTone(p.stance)">{{ p.stance }}</span>
+          <span v-if="verdictOf(p)" class="px-1.5 rounded text-[10px] font-medium"
+                :class="verdictTone(verdictOf(p))">{{ verdictOf(p) }}</span>
+          <span v-if="!p.conclusion" class="ml-auto text-[10px] text-muted/70">待生成</span>
         </div>
-        <div v-if="p.conclusion" class="mt-0.5 text-[11px] text-gray-200 leading-snug">
+
+        <div v-if="p.conclusion" class="mt-1 text-[11px] text-gray-200 leading-snug break-words">
           {{ p.conclusion }}
         </div>
-        <div v-if="p.bullish?.length || p.bearish?.length" class="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px]">
-          <span v-for="(b, i) in p.bullish" :key="'b' + i" class="text-rise">利好·{{ b }}</span>
-          <span v-for="(b, i) in p.bearish" :key="'x' + i" class="text-fall">利空·{{ b }}</span>
+
+        <!-- 利好/利空：chip 分组（原来 8 条平铺成一行，分不清正反） -->
+        <div v-if="p.bullish?.length" class="mt-1.5 flex flex-wrap items-center gap-1">
+          <span class="text-[9px] text-rise/80 shrink-0 mr-0.5">利好</span>
+          <span v-for="(b, i) in p.bullish" :key="'b' + i"
+                class="px-1 py-px rounded bg-rose-500/10 text-rise text-[10px] leading-tight"
+                :title="b">{{ b }}</span>
         </div>
-        <div v-if="p.prev_check" class="mt-1 text-[10px] text-amber-300/90 leading-relaxed">
-          <span class="text-amber-400">验证</span> {{ p.prev_check }}
+        <div v-if="p.bearish?.length" class="mt-1 flex flex-wrap items-center gap-1">
+          <span class="text-[9px] text-fall/80 shrink-0 mr-0.5">利空</span>
+          <span v-for="(b, i) in p.bearish" :key="'x' + i"
+                class="px-1 py-px rounded bg-emerald-500/10 text-fall text-[10px] leading-tight"
+                :title="b">{{ b }}</span>
+        </div>
+
+        <div v-if="p.prev_check"
+             class="mt-1.5 pt-1 border-t border-white/5 text-[10px] text-amber-300/90 leading-relaxed">
+          <span class="text-amber-400 font-medium">验证</span> {{ p.prev_check }}
         </div>
       </div>
     </div>
-    <div v-else class="mt-2 text-[11px] text-muted">今日尚无解读（盘中自动触发或点「AI 解读」生成）</div>
 
-    <div class="mt-2 text-[10px] text-muted leading-relaxed">
-      盘前/午盘判断由后续时段实况自动判定（上证 ±0.3% 分界）；矛盾由下一次解读的 prev_check 解释。
+    <div v-else class="mt-2 flex-1 flex items-center justify-center text-[11px] text-muted">
+      今日尚无解读（盘中自动触发，或点「AI 解读」生成）
+    </div>
+
+    <div class="mt-2 pt-1.5 border-t border-border/50 text-[10px] text-muted leading-relaxed shrink-0"
+         title="上证涨跌幅 ±0.3% 为分界：与基调一致记命中，相反记打脸，之间记待验证">
+      盘前 / 盘中判断由后续时段实况自动判定；矛盾由下一次解读说明。
     </div>
   </div>
 </template>
@@ -57,6 +76,40 @@ const date = ref('')
 const phases = ref([])
 let timer = null
 
+// Tailwind 只扫描完整类名字符串 ⇒ 这里整串返回，不能拼模板
+function phaseTone(phase) {
+  if (phase === '盘前') return {
+    box: 'border-sky-400/25 bg-sky-400/[0.04]',
+    dot: 'bg-sky-400', label: 'text-sky-300',
+  }
+  if (phase === '盘中') return {
+    box: 'border-amber-400/25 bg-amber-400/[0.04]',
+    dot: 'bg-amber-400', label: 'text-amber-300',
+  }
+  return {
+    box: 'border-violet-400/25 bg-violet-400/[0.04]',
+    dot: 'bg-violet-400', label: 'text-violet-300',
+  }
+}
+
+function stanceTone(s) {
+  if (s === '进攻') return 'bg-rose-500/20 text-rose-300'
+  if (s === '防御') return 'bg-sky-500/20 text-sky-300'
+  return 'bg-white/5 text-muted'
+}
+
+/** 已解读但尚未被后续时段判定 ⇒ 显示"待验证"，不要留空白让人以为漏数据。 */
+function verdictOf(p) {
+  if (p.verdict) return p.verdict
+  return p.conclusion ? '待验证' : ''
+}
+
+function verdictTone(v) {
+  if (v === '命中') return 'bg-emerald-500/20 text-emerald-300'
+  if (v === '打脸') return 'bg-rose-500/20 text-rose-300'
+  return 'bg-white/5 text-muted'
+}
+
 async function load() {
   try {
     const { data } = await axios.get(
@@ -66,6 +119,9 @@ async function load() {
     phases.value = data.phases || []
   } catch { /* 静默：卡不阻塞页面 */ }
 }
+
+// 切换回放日期时重新取数（原实现只在 mounted 拉一次，切日期后卡片一直显示旧日内容）
+watch(() => props.date, load)
 
 onMounted(() => {
   load()

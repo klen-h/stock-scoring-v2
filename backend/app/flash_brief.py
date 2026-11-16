@@ -520,7 +520,8 @@ SYSTEM = (
     '"bullish":["受益方向/板块，≤4条，每条≤15字"], '
     '"bearish":["受损方向/板块，≤4条，每条≤15字"], '
     '"prev_check":"<仅当输入含「前序判断」时必填：与前序一致则写「与盘前/午盘一致」；'
-    '矛盾则解释原因，≤60字>"}\n'
+    '矛盾则解释原因，≤60字。**无前序判断时必须返回空字符串**，'
+    '不要写「无需比对」「未含前序判断」之类说明>"}\n'
     "★ `id` 必须逐字照抄（它是前端把解读对回原文的唯一键）；`idx` 仍要给，作旧版兜底。"
 )
 
@@ -897,6 +898,25 @@ def _verify_prev(day: str, cur_phase: str, p: Dict) -> list:
     return out
 
 
+# ★ 2026-11-16（用户贴出三时段卡内容）：盘前没有前序判断时，LLM 仍会
+#   硬凑一句"输入未含前序判断，无需比对"塞进 `prev_check`。
+#   它不是验证结论，展示出来只会占版面、让人误以为有一条验证。
+#   ⇒ 读出来时过滤；prompt 也已明确要求这种情形返回空串。
+_PREV_CHECK_NOISE = (
+    "无需比对", "未含前序", "没有前序", "无前序判断", "暂无前序", "首次解读",
+)
+
+
+def _clean_prev(value) -> Optional[str]:
+    """过滤 `prev_check` 的占位文案（历史 run 已落库，不能只改 prompt）。"""
+    t = str(value or "").strip()
+    if not t or t.lower() in ("null", "none", "-"):
+        return None
+    if any(k in t for k in _PREV_CHECK_NOISE):
+        return None
+    return t
+
+
 def review_summary(day: str = None) -> Dict:
     """三时段复盘摘要（常驻卡数据源）：当日每个时段最新一条 run 的
     stance/结论/利好利空/verdict/prev_check。缺时段 ⇒ null（不编造）。"""
@@ -930,7 +950,7 @@ def review_summary(day: str = None) -> Dict:
             "stance_reason": r.get("stance_reason") or None,
             "bullish": _j("bullish") or [], "bearish": _j("bearish") or [],
             "verdict": r.get("verdict") or None,
-            "prev_check": r.get("prev_check") or None,
+            "prev_check": _clean_prev(r.get("prev_check")),
         })
     return {"date": d, "phases": out}
 
