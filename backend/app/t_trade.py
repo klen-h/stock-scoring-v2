@@ -369,6 +369,35 @@ def should_auto_build(plan_type: str, enabled: Optional[bool] = None) -> bool:
     return bool(e) and str(plan_type or "") == "t_build"
 
 
+def auto_build_allowed(plan_type: str, price: float, buy_price: float,
+                       enabled: Optional[bool] = None) -> bool:
+    """价格到位时，**是否允许自动建模拟底仓**（`should_auto_build` 的完整判据）。
+
+    ★★ 2026-11-16（用户："云南铜业收盘 12.62，还是按买 12.71 吗？"）：
+      **跌破买点 ≠ 到达买点**。原判据只看 `|dev| <= 2%`，于是
+        支撑 12.71 已被跌破（收 12.62、最低 12.50）时依然算"到买点"，
+      自动建仓就会**建在破位处**。买点的本意是"回踩支撑"，
+      支撑一破前提就不成立。
+
+    【为什么自动盘要比人工更严】
+      人工看到"已跌破"会自己犹豫；自动盘不会。
+      而且破位后止损（支撑 − 0.5×ATR）往往只剩 1~2% 空间，
+      等于"刚建仓就贴着脸止损"。
+
+    【容差 0.2% 而不是严格 `<`】
+      避免价格在买价上下一两个 tick 抖动时反复允许/拒绝。
+
+    · 非 `t_build` / 总开关关 ⇒ False（`should_auto_build` 已判）
+    · `buy_price` 缺失 ⇒ 不拦（没有买点就无从判断，交给调用方）
+    """
+    if not should_auto_build(plan_type, enabled):
+        return False
+    bp = float(buy_price or 0)
+    if bp > 0 and float(price or 0) < bp * 0.998:
+        return False
+    return True
+
+
 def resolve_direction(has_position: bool, has_cash: bool) -> List[str]:
     """按当前持仓/资金，给出**可用且按优先级排序**的做T 方向。
 

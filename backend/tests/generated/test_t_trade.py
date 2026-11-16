@@ -304,6 +304,28 @@ def test_should_auto_build_only_for_t_build():
     assert t_trade.should_auto_build("t_build", enabled=False) is False
 
 
+def test_auto_build_allowed_rejects_broken_support():
+    """★ 跌破买点就不许自动建仓（2026-11-16 云南铜业实例）。
+
+    支撑 12.71 已被跌破（收 12.62、最低 12.50），原判据只看
+    `|现价/买价 - 1| <= 2%` 不分方向 ⇒ 仍算"到买点" ⇒ **自动买在破位处**。
+    """
+    # 买点上方/正好相等 ⇒ 允许
+    assert t_trade.auto_build_allowed("t_build", 12.90, 12.71, enabled=True) is True
+    assert t_trade.auto_build_allowed("t_build", 12.71, 12.71, enabled=True) is True
+    # 微跌（-0.1%）仍在容差内 ⇒ 允许（避免 tick 抖动反复）
+    assert t_trade.auto_build_allowed("t_build", 12.70, 12.71, enabled=True) is True
+    # 跌破 0.998×买点 ⇒ **拒绝**（云南铜业 12.62 < 12.683）
+    assert t_trade.auto_build_allowed("t_build", 12.62, 12.71, enabled=True) is False
+    assert t_trade.auto_build_allowed("t_build", 12.50, 12.71, enabled=True) is False
+    # 非 t_build ⇒ 无论如何都不自动建
+    assert t_trade.auto_build_allowed("trial", 12.90, 12.71, enabled=True) is False
+    # 总开关关 ⇒ 拒绝
+    assert t_trade.auto_build_allowed("t_build", 12.90, 12.71, enabled=False) is False
+    # 没有买点 ⇒ 不拦（无从判断，交给调用方）
+    assert t_trade.auto_build_allowed("t_build", 12.90, 0, enabled=True) is True
+
+
 def test_should_auto_build_default_on():
     """默认开启（用户要求自动处理）；`T_AUTO_BUILD=0` 才关。"""
     assert t_trade.should_auto_build("t_build") is True

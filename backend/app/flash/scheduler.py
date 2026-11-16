@@ -1546,8 +1546,12 @@ def _plan_auto_build(p: dict, price: float, day: str) -> dict:
     from app import t_trade as TT
     from app import t_trade_exec as TX
 
-    # 判定收敛在 `TT.should_auto_build`（可单测；两处各写一份必然漂移）
-    if not TT.should_auto_build(p.get("plan_type")):
+    # 判定收敛在 `TT.auto_build_allowed`（可单测；两处各写一份必然漂移）
+    # ★ 2026-11-16 加了"已跌破买点不建仓"：自动盘不能在破位处接刀。
+    if not TT.auto_build_allowed(p.get("plan_type"), price, p.get("buy_price")):
+        if TT.should_auto_build(p.get("plan_type")):
+            print(f"[plan-trigger] auto_build skip {p.get('code')}: "
+                  f"price {price:.2f} below buy_price {float(p.get('buy_price') or 0):.2f}")
         return {}
     code = str(p.get("code") or "")
     if not code or price <= 0:
@@ -1626,9 +1630,27 @@ async def trade_plan_trigger_loop():
                         if p.get("target") and price >= float(p["target"]):
                             hits.append(("target", f"兑现触发：{p['name']}({p['code']}) "
                                                    f"现价 {price:.2f} 触及目标 {float(p['target']):.2f}——按计划兑现"))
-                        if p.get("buy_price") and abs(price / float(p["buy_price"]) - 1) <= 0.02:
-                            hits.append(("buy", f"到达买点附近：{p['name']}({p['code']}) "
-                                                f"现价 {price:.2f} ≈ 买价 {float(p['buy_price']):.2f}（±2%），按预案试仓"))
+                        if p.get("buy_price"):
+                            # ★★ 2026-11-16（用户："云南铜业收盘 12.62，还是按买 12.71 吗？"）：
+                            #   **跌破买点 ≠ 到达买点**。
+                            #   原实现只看 `abs(dev) <= 2%` 不分方向 ⇒
+                            #   支撑 12.71 已被跌破（收 12.62、最低 12.50），系统依然推
+                            #   "到达买点附近，按预案试仓" —— 等于**在破位处喊买**。
+                            #   买点的语义是"回踩支撑"，支撑一破这个前提就不成立了。
+                            #   ⇒ 拆成两种：上方接近（真买点）/ 已跌破（支撑失效，重估）
+                            _bp = float(p["buy_price"])
+                            _dev = price / _bp - 1 if _bp else 0
+                            if abs(_dev) <= 0.02:
+                                if _dev >= 0:
+                                    _bt = (f"到达买点附近：{p['name']}({p['code']}) "
+                                           f"现价 {price:.2f} ≈ 买价 {_bp:.2f}"
+                                           f"（上方 {_dev * 100:.1f}%），按预案试仓")
+                                else:
+                                    _bt = (f"**已跌破买点**：{p['name']}({p['code']}) "
+                                           f"现价 {price:.2f} 低于买价 {_bp:.2f}"
+                                           f"（{_dev * 100:.1f}%），**支撑可能失效** —— "
+                                           f"别直接试仓，先重估（跌破后原买点不再是支撑）")
+                                hits.append(("buy", _bt))
                         # ★★ 2026-09-25（A4）两条**结构化条件** —— 用户盘前写死"什么情况才动手"，
                         #   盘中由系统判断并提醒 ⇒ 到点只需执行，不用临场决策。
                         #   ⚠️ 零新增请求：全部读 `tencent._cache` 内存行情（与上面同源）。
