@@ -80,6 +80,78 @@ export const DEFAULT_WEIGHTS = {
 export const DIM_KEYS = ['technical', 'capital', 'fundamental', 'growth', 'quality']
 const DECAY_KEYS = ['growth', 'quality']
 
+// ══════════════════════════════════════════════════════════════════════════
+//  ★★ 2026-11-16（用户："评分排行榜的后端计算和前端本地计算差很大"）：
+//     **行业分位**必须与后端同源，否则质量/基本面维度会系统性漂移。
+// ══════════════════════════════════════════════════════════════════════════
+//   实测（同一份输入，两边算）：
+//     工商银行  资产负债率：后端 **75.0**  vs 前端 **26.95**（差 48 分 ⇒ 总分差 2.0）
+//     三一重工  毛利率：    后端 **52.3**  vs 前端 **64.79**（差 12.5 分 ⇒ 总分差 0.4）
+//     其余 all 维度完全一致 ⇒ 差异**全部**来自后端的两条前端没有的逻辑：
+//       ① `_industry_pct_score`：PE / PB / 毛利率 / 负债率**行业内分位优先**
+//       ② 金融行业特判：银行负债率固定 75、证券/保险用子行业分位压缩到 [40,85]
+//
+//   【为什么不把阈值也抄一份】分位依赖的是**当期全市场分布**（33251 个数值 /
+//     5720 只 / 52 个行业桶），写死必然随行情漂移 ⇒ 只能由后端下发
+//     (`GET /api/score/industry-dist`，约 400 KB，按日缓存一次)。
+//   【空分布时必须降级】`dist.pe` / `dist.pb` 来自实时行情缓存，服务刚重启时为空；
+//     此时后端自己也会降级到绝对曲线 ⇒ 前端同样降级，两边才仍一致。
+let _IND = { dist: {}, codeInd: {}, codeSub: {} }
+
+/** 注入行业分布（由 useFrontendScoring 从 `/api/score/industry-dist` 拉取）。 */
+export function setIndustryDist(data) {
+  const d = data || {}
+  _IND = {
+    dist: d.dist || {},
+    codeInd: d.code_ind || {},
+    codeSub: d.code_sub || {},
+  }
+}
+
+/**
+ * 行业内分位 → 0~100 分（与后端 `_industry_pct_score` 完全同口径）。
+ *
+ * 对齐要点（少一个就差几分）：
+ *   · 用 **bisect_left**（严格小于的个数），不是"小于等于"；
+ *   · 样本 < 10 直接返回 null（后端同判据，样本太少分位不可靠）；
+ *   · `higherBetter=false` ⇒ 值越小分数越高（PE/PB/负债率）；
+ *   · 金融股优先用 **子行业桶**（银行/证券/保险不可比）。
+ * 返回 null 表示"无法判定"，调用方**降级绝对曲线**（不要当成 0 分）。
+ */
+function industryPctScore(code, metric, value, higherBetter = false) {
+  if (value === null || value === undefined || !(Number(value) > 0)) return null
+  const c = String(code || '')
+  const bucket = _IND.codeSub[c] || _IND.codeInd[c]
+  if (!bucket) return null
+  const vals = (_IND.dist[metric] || {})[bucket]
+  if (!vals || vals.length < 10) return null
+  // bisect_left：第一个 >= value 的位置
+  let lo = 0
+  let hi = vals.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (vals[mid] < value) lo = mid + 1
+    else hi = mid
+  }
+  const pct = lo / vals.length                 // 0~1
+  const s = higherBetter ? pct * 100 : (1 - pct) * 100
+  return round1(s)
+}
+
+/**
+ * 金融二级细分（与后端 `_fin_sub_industry` 同口径）。
+ *
+ * 正常路径用后端下发的 `code_sub`；本函数是**兜底**（分布数据缺失时
+ * 仍能识别银行特判，不至于把银行负债率按 92% 打成 27 分）。
+ */
+function finSubIndustry(name) {
+  const n = String(name || '')
+  if (n.includes('银行')) return '金融·银行'
+  if (n.includes('证券')) return '金融·证券'
+  if (n.includes('保险') || n.includes('人寿')) return '金融·保险'
+  return '金融·其他'
+}
+
 /** 公告龄 → 成长/质量维度权重乘数（grad 口径） */
 export function decayWeightMult(key, age) {
   if (!DECAY_KEYS.includes(key) || age == null) return 1
@@ -259,9 +331,10 @@ export function scoreStock({ code, name, technicalData, stockInfo, finance, weig
   // 五维度评分
   const dimTech = scoreTechnical(technicalData)
   const dimCap = scoreCapital(technicalData, stockInfo)
-  const dimFund = scoreFundamental(stockInfo)
+  // ★ 2026-11-16：基本面/质量维度需要 code（行业分位、金融特判都按 code 取桶）
+  const dimFund = scoreFundamental(stockInfo, code)
   const dimGrowth = finance ? scoreGrowth(finance) : null
-  const dimQuality = finance ? scoreQuality(finance) : null
+  const dimQuality = finance ? scoreQuality(finance, code, name) : null
 
   // 构建维度列表（带权重，用于加权求和）
   const allDims = [
@@ -771,17 +844,17 @@ function scoreAmount(techData, stockInfo) {
  * 基本面评分（满分 100）
  * 与后端保持一致：PE(30) + PB(20) + 市值(25) + 振幅(25)
  */
-function scoreFundamental(stockInfo) {
+function scoreFundamental(stockInfo, code) {
   const details = {}
   const subScores = []
 
-  // 1. PE 估值（30 分）- 按市值分层
-  const peScore = scorePE(stockInfo.pe, stockInfo.market_cap)
+  // 1. PE 估值（30 分）- **行业内分位优先**，不足降级市值分层
+  const peScore = scorePE(stockInfo.pe, stockInfo.market_cap, code)
   details['PE估值'] = { 分值: peScore, 满分: 30 }
   subScores.push([peScore, 30])
 
-  // 2. PB 估值（20 分）
-  const pbScore = scorePB(stockInfo.pb)
+  // 2. PB 估值（20 分）- 同上
+  const pbScore = scorePB(stockInfo.pb, code)
   details['PB估值'] = { 分值: pbScore, 满分: 20 }
   subScores.push([pbScore, 20])
 
@@ -807,8 +880,12 @@ function scoreFundamental(stockInfo) {
 /**
  * PE 估值评分（30 分）- 按市值分层（成长股/价值股）
  */
-function scorePE(pe, marketCap) {
+function scorePE(pe, marketCap, code) {
   if (!pe || pe <= 0) return 40  // 亏损或无数据，中性偏低
+
+  // ★ 行业内分位优先（与后端 `_score_pe` 一致）；分布为空时返回 null ⇒ 降级
+  const pctScore = industryPctScore(code, 'pe', pe)
+  if (pctScore !== null) return pctScore
 
   // 市值（万元 → 亿元）
   const capYi = (marketCap || 0) / 10000
@@ -836,8 +913,12 @@ function scorePE(pe, marketCap) {
 /**
  * PB 估值评分（20 分）
  */
-function scorePB(pb) {
+function scorePB(pb, code) {
   if (!pb || pb <= 0) return 40
+
+  // ★ 行业内分位优先（与后端 `_score_pb` 一致）
+  const pctScore = industryPctScore(code, 'pb', pb)
+  if (pctScore !== null) return pctScore
 
   if (pb < 1.0) return 95   // 破净
   if (pb < 1.5) return 80
@@ -937,7 +1018,7 @@ function growthCurve(yoy) {
  * finance: { roe, debt_ratio, gross_margin }
  * 三项都缺失返回 null
  */
-function scoreQuality(finance) {
+function scoreQuality(finance, code, name) {
   const roe = finance.roe
   const debt = finance.debt_ratio
   const gross = finance.gross_margin
@@ -954,12 +1035,34 @@ function scoreQuality(finance) {
     parts.push([s, 50])
   }
   if (debt !== null && debt !== undefined) {
-    const s = debtCurve(debt)
+    // ★★ 与后端 `_score_quality` 逐字对齐（2026-11-16）：
+    //   银行负债率 90%+ 是商业模式（存款=负债），按绝对曲线会打到 27 分，
+    //   而后端固定 75 分 ⇒ 实测工商银行质量维度差 16 分、总分差 2.0。
+    const c = String(code || '')
+    const ind = _IND.codeInd[c]
+    // 子行业优先用后端下发的；分布缺失时用名称兜底（与后端 `_fin_sub_industry` 同口径）
+    const sub = _IND.codeSub[c] || (ind === '金融行业' ? finSubIndustry(name) : null)
+    let s
+    if (ind === '金融行业') {
+      if (sub === '金融·银行') {
+        s = 75.0
+      } else if (sub === '金融·证券' || sub === '金融·保险') {
+        const pct = industryPctScore(c, 'debt_ratio', debt)
+        // 分位压缩到 [40,85]：高杠杆在紧缩期是风险，但极端分位过狠
+        s = pct === null ? 70.0 : round1(40 + pct * 0.45)
+      } else {
+        s = 65.0
+      }
+    } else {
+      s = debtCurve(debt)
+    }
     details['资产负债率'] = { 分值: s, 满分: 25, 实际值: round2(debt) }
     parts.push([s, 25])
   }
   if (gross !== null && gross !== undefined) {
-    const s = grossCurve(gross)
+    // ★ 行业内分位优先（白酒 90% 毛利率不该被绝对阈值误伤），样本不足降级
+    const pct = industryPctScore(String(code || ''), 'gross_margin', gross, true)
+    const s = pct !== null ? pct : grossCurve(gross)
     details['毛利率'] = { 分值: s, 满分: 25, 实际值: round2(gross) }
     parts.push([s, 25])
   }
@@ -1208,7 +1311,9 @@ export function roughScore(stockInfo, finance, weights) {
   const extra = []
   if (finance) {
     const g = scoreGrowth(finance)
-    const q = scoreQuality(finance)
+    // ★ 2026-11-16：粗筛也带 code —— 金融特判只看 code，不带会把银行按绝对曲线压低，
+    //   导致候选池排序偏差（虽然当前调用点都传 finance=null，仍按正确签名传）。
+    const q = scoreQuality(finance, stockInfo.code, stockInfo.name)
     if (g) extra.push({ score: g.score, weight: w.growth })
     if (q) extra.push({ score: q.score, weight: w.quality })
   }

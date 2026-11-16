@@ -115,6 +115,13 @@ export const getWeightAdvice = (snapshots = null) =>
 // 当前引擎生效权重 + 市场状态（前端本地评分需同步，避免两套口径漂移）
 
 export const getScoreWeights = () => http.get('/score/weights', { timeout: 10000 })
+
+// ★★ 2026-11-16（用户："评分排行榜的后端计算和前端本地计算差很大"）：
+//   行业指标分布 —— 后端 `_score_quality/_score_pe/_score_pb` 都是
+//   **行业内分位优先**（+ 金融行业特判），前端只有绝对曲线 ⇒ 实测
+//   工商银行负债率 后端 75 vs 前端 26.9。这份分布让前端能复现同一口径。
+//   ⚠️ 约 400 KB ⇒ 调用方必须**按日缓存**，不要每次进页面都拉。
+export const getIndustryDist = () => http.get('/score/industry-dist', { timeout: 20000 })
 // 评分排行快照：后端每日自动落库（含维度分+价格），前端直接读取
 
 export const getSnapshots = (days = 30) => http.get('/score/snapshots', { params: { days } })

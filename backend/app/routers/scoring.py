@@ -896,6 +896,53 @@ async def capture_score_snapshot(_user: dict = Depends(get_current_user)):
     return {"recorded": count, "date": today, "total": len(data)}
 
 
+@router.get("/industry-dist")
+def score_industry_dist():
+    """行业指标分布 + code→行业映射（**供前端本地评分对齐分位逻辑**）。
+
+    ★★ 2026-11-16（用户："评分排行榜的后端计算和前端本地计算差很大"）实测：
+
+        工商银行  资产负债率：后端 **75.0**  vs  前端 **26.95**
+        三一重工  毛利率：    后端 **52.3**  vs  前端 **64.79**
+        （其余 all 维度完全相同）
+
+      根因：后端 `_score_quality` / `_score_pe` / `_score_pb` 都是
+      **行业内分位优先**（外加金融行业特判），而前端只有**绝对曲线**
+      ⇒ 同一只票两边系统性漂移，权重越高、行业越特殊，差得越多。
+
+      「把同样的分布发给前端」是唯一能让两边**逐项一致**的做法：
+      阈值写死两份必然再漂，而分位依赖的是**当期全市场数据**，只能下发。
+
+    【体积】实测约 300~500 KB（33251 个数值 + 5720 条映射）。
+       ⇒ 前端只在**本地计算模式**下拉一次并按日期缓存，不要每次进页面都拉。
+       ⚠️ `dist.pe` / `dist.pb` 依赖实时行情缓存，**服务刚重启时为空**
+          （此时后端自己也降级到绝对曲线，两边反而一致）——
+          所以前端必须**容忍空分布**（空 ⇒ 走绝对曲线）。
+
+    路由位置：必须放在 `/{symbol}` 之前（否则被当成股票代码）。
+    """
+    from app.scoring.engine import IND_METRICS, ScoreEngine
+    try:
+        cache = ScoreEngine._industry_dist()
+    except Exception as e:
+        print(f"[scoring] industry-dist 生成失败: {str(e)[:80]}")
+        return {"dist": {}, "code_ind": {}, "code_sub": {}, "metrics": [],
+                "error": str(e)[:120]}
+
+    dist = {m: {} for m in IND_METRICS}
+    for m in IND_METRICS:
+        for bucket, vals in (cache.get("dist", {}).get(m) or {}).items():
+            dist[m][bucket] = [round(float(v), 3) for v in vals]
+    return {
+        "dist": dist,
+        "code_ind": dict(cache.get("code_ind") or {}),
+        "code_sub": dict(cache.get("code_sub") or {}),
+        "metrics": list(IND_METRICS),
+        "buckets": {m: len(dist[m]) for m in IND_METRICS},
+        "note": "行业分位分布：前端据此复现后端 _industry_pct_score（bisect 左界/长度）",
+    }
+
+
 @router.get("/weights")
 def score_weights():
     """

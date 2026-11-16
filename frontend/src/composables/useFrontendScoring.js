@@ -19,8 +19,12 @@ import {
   importIndicatorsPack,
 } from '../utils/klineDB'
 import { fetchRealtimeQuotes } from '../api/tencent'
-import { getFinanceBatch, getScoreWeights, getSectorStrength } from '../api'
-import { scoreStock, roughScore, setRegimeState, setGateRules, buildGate, decayTotal } from '../utils/scoringEngine'
+import { getFinanceBatch, getScoreWeights, getSectorStrength, getIndustryDist } from '../api'
+import {
+  scoreStock, roughScore, setRegimeState, setGateRules, buildGate, decayTotal,
+  // ★ 2026-11-16：行业分布（本地评分复现后端"行业内分位"的唯一途径）
+  setIndustryDist,
+} from '../utils/scoringEngine'
 import { isTradingDay } from './usePortfolio'
 
 /**
@@ -375,6 +379,42 @@ function buildShadowBoards(results, finMap, weights, top = 50) {
 //   失败/未启用 ⇒ 不过滤（fail-open，与后端一致）。
 const sectorFilterMeta = ref(null)
 
+// ★ 2026-11-16：行业分布只拉一次/天（约 400 KB）。
+//   `sv-SE` 的日期格式恰好是 `YYYY-MM-DD`；用本地日即可，
+//   因为"同一天内多次进页面不重拉"才是目的，跨时区差一天无实际影响。
+const IND_DIST_CACHE_KEY = 'wb_ind_dist_v1'
+function _todayKey() {
+  try { return new Date().toLocaleDateString('sv-SE') } catch { return '' }
+}
+
+async function ensureIndustryDist() {
+  const day = _todayKey()
+  try {
+    const raw = localStorage.getItem(IND_DIST_CACHE_KEY)
+    if (raw) {
+      const c = JSON.parse(raw)
+      if (c && c.day === day && c.data) {
+        setIndustryDist(c.data)
+        return
+      }
+    }
+  } catch { /* 隐私模式 / 配额满 ⇒ 忽略缓存，走网络 */ }
+
+  try {
+    const res = await getIndustryDist()
+    const data = (res && res.data) || res || {}
+    setIndustryDist(data)
+    try {
+      localStorage.setItem(IND_DIST_CACHE_KEY,
+        JSON.stringify({ day, data }))
+    } catch { /* 超配额也照常用（内存里已注入） */ }
+  } catch (e) {
+    // ⚠️ 静默降级的后果：本地分与后端分会在"质量/基本面"维度上分叉。
+    //   所以必须打日志（不能让它无声无息）。
+    console.warn('[前端评分] 行业分布拉取失败，将降级绝对曲线（与后端分位不一致）:', e)
+  }
+}
+
 export async function computeRanking(options = {}) {
   const { mode = 'top', limit = 50, signal = '买入' } = options
 
@@ -404,6 +444,14 @@ export async function computeRanking(options = {}) {
       setRegimeState(null)
       setGateRules(null)
     }
+
+    // ★★ 2026-11-16（用户："后端计算和前端本地计算差很大"）：
+    //   同步**行业指标分布** —— 后端 `_score_quality/_score_pe/_score_pb`
+    //   是"行业内分位优先 + 金融行业特判"，前端原先只有绝对曲线。
+    //   实测 工商银行 负债率 后端 75 / 前端 26.95（总分差 2.0）。
+    //   ⚠️ 约 400 KB ⇒ 按日 localStorage 缓存，一天只拉一次；
+    //     拉取失败 ⇒ 前端降级绝对曲线（与"后端分布为空"时行为一致，不至于更糟）。
+    await ensureIndustryDist()
 
     // 1. 获取所有股票列表
     const allStocks = await getAllStocks()
