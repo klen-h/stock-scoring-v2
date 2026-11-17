@@ -354,19 +354,23 @@ def plan_signals_for_holding(hits: list, has_base: bool) -> list:
 
 
 def should_auto_build(plan_type: str, enabled: Optional[bool] = None) -> bool:
-    """这条交易计划命中买点时，**是否该自动建模拟底仓**。
+    """交易计划命中买点时，**是否自动建模拟仓**。
 
-    用户（2026-11-16）："价格到位，系统自动处理。"
+    ★★ 2026-11-18（用户："不需要我手动上车，自动用模拟仓模拟"）：
+      **取消 `plan_type` 门槛** —— `trial` 和 `t_build` 一律自动建。
 
-    · 只对 `plan_type='t_build'`（从做T 台「设建仓点」建出来的）生效；
-    · 普通试仓（`trial`）**仍然只提醒** —— 那是用户自己的决策，系统不代劳；
-    · 总开关 `_AUTO_BUILD`（env `T_AUTO_BUILD=0` 可关）。
+      【为什么可以放开】
+        这里建的是**模拟仓**（`t_sim_positions`），不花真钱、不碰 `user_portfolio`。
+        原先"trial 只提醒、用户自己决策"的前提是"可能有真实资金后果"；
+        既然全程模拟，让用户手动上车反而制造错觉
+        —— 界面写着"达目标✓"，而用户根本没买，那不是验证，是纸面推演。
 
-    ⚠️ 必须用 `plan_type` 而不是匹配 `reason` 里的中文：
-      文案一改就失效，而且"做T 底仓建仓点"这类字符串在别处也可能出现。
+      【仍然保留的约束】
+        · 总开关 `T_AUTO_BUILD=0` 可关；
+        · `plan_type` 参数**保留**在签名里（历史调用方/测试不用改签名），
+          但不再参与判定 —— 这样以后若要对某类计划关闭，改这一处即可。
     """
-    e = _AUTO_BUILD if enabled is None else bool(enabled)
-    return bool(e) and str(plan_type or "") == "t_build"
+    return bool(_AUTO_BUILD if enabled is None else bool(enabled))
 
 
 def auto_build_allowed(plan_type: str, price: float, buy_price: float,

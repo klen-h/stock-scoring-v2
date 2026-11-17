@@ -123,6 +123,16 @@ def ensure_tables() -> None:
             )""")
         db.execute(f"CREATE INDEX IF NOT EXISTS idx_t_sim_status "
                    f"ON {_T_SIM_TABLE} (status, open_date)")
+        # ★★ 2026-11-18（用户："自动用模拟仓模拟"）：**平仓记账字段**。
+        #   老表只有开仓信息（cost/open_price/status），平仓只能把 status 改成 closed，
+        #   **赚了多少完全没记** ⇒ 界面仍只是"达目标✓"这种纸面状态，
+        #   无法回答"模拟仓到底盈利多少"。补列走幂等 ALTER（老库自动升级）。
+        for _col in ("close_price REAL", "close_date TEXT", "close_reason TEXT",
+                     "pnl REAL", "pnl_pct REAL"):
+            try:
+                db.execute(f"ALTER TABLE {_T_SIM_TABLE} ADD COLUMN {_col}")
+            except Exception:
+                pass     # 列已存在 —— 幂等升级，正常路径
         _ready = True
     except Exception as e:
         # 吞异常必须可见（GUARDRAILS #11）
@@ -575,6 +585,55 @@ def auto_build(code: str, name: str, price: float, shares: int,
                 "price": round(float(price), 3)}
     except Exception as e:
         print(f"[t-trade] auto_build {c} failed: {str(e)[:80]}")
+        return None
+
+
+def close_sim_by_plan(plan_id: str, price: float, reason: str = "") -> Optional[Dict]:
+    """按**交易计划 ID** 平掉模拟仓并**记账盈亏**（幂等，重复调用只记一次）。
+
+    ★★ 2026-11-18（用户："不需要我手动上车，自动用模拟仓模拟"）：
+      原来的 `close_sim(code)` 只把 status 改成 closed、**不记任何盈亏** ——
+      于是 UI 上永远只有"达目标✓"这种价位状态，回答不了"模拟赚了多少"。
+
+    【为什么按 plan_id 而不是 code】
+      `t_sim_positions` 主键是 code（一只票同时只有一个模拟底仓），
+      但计划是按 plan_id 触发的。按 plan_id 查能确保**平的是这条计划建的仓**，
+      不会误平另一条计划的仓位（例如同一只票后来又设了新计划）。
+
+    【盈亏以开仓 cost × shares 计算】
+      `cost` 是建仓时的**实际触发价**（见 `auto_build`），不用 buy_price ——
+      否则一开始就带着一个假的成本偏差。
+
+    返回 `{code, shares, cost, close, pnl, pnl_pct}` 或 None（无仓/数据异常）。
+    """
+    ensure_tables()
+    pid = str(plan_id or "").strip()
+    px = float(price or 0)
+    if not pid or px <= 0:
+        return None
+    row = db.fetch_one(
+        f"SELECT * FROM {_T_SIM_TABLE} WHERE plan_id=%s AND status='holding'", (pid,))
+    if not row:
+        return None
+    cost, shares = float(row.get("cost") or 0), float(row.get("shares") or 0)
+    if cost <= 0 or shares <= 0:
+        return None
+    pnl = round((px - cost) * shares, 2)
+    pnl_pct = round((px / cost - 1) * 100, 2)
+    try:
+        n = db.execute(
+            f"UPDATE {_T_SIM_TABLE} SET status='closed', close_price=%s, "
+            f"close_date=%s, close_reason=%s, pnl=%s, pnl_pct=%s, "
+            f"updated_at=%s, note=%s "
+            f"WHERE plan_id=%s AND status='holding'",
+            (round(px, 3), _today(), reason or "", pnl, pnl_pct, _now(),
+             reason or "", pid))
+        if not n:                      # 并发下另一路已平 ⇒ 不重复记账
+            return None
+        return {"code": row.get("code"), "shares": shares, "cost": cost,
+                "close": round(px, 3), "pnl": pnl, "pnl_pct": pnl_pct}
+    except Exception as e:
+        print(f"[t-trade] close_sim_by_plan {pid} failed: {str(e)[:80]}")
         return None
 
 

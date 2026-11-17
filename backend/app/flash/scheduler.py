@@ -1527,10 +1527,12 @@ _PLAN_TRIGGER_DEDUPE = {"date": None, "keys": set()}
 def _plan_auto_build(p: dict, price: float, day: str) -> dict:
     """建仓点命中 ⇒ **自动建一笔模拟底仓**（用户：价格到位，系统自动处理）。
 
-    【只对 `plan_type='t_build'` 生效】
-      普通试仓计划（`trial`）命中买点仍然只是"提醒"—— 那是用户自己的决策。
-      只有从做T 台「设建仓点」建出来的计划，语义才是"我要把这只票做T 的底仓
-      准备好"，才适合自动执行。
+    【★ 2026-11-18：不再区分 `plan_type`】
+      用户："不需要我手动上车，自动用模拟仓模拟。"
+      原先只对 `t_build` 自动建仓、`trial` 只提醒 —— 但那套区分的前提是
+      "可能动用真实资金"。现在全程模拟（`t_sim_positions`，不碰 `user_portfolio`），
+      让所有计划自动建仓才是自洽的：否则界面报"达目标✓"而用户没上车，
+      那不是验证，是纸面推演。
 
     【为什么建模拟仓而不是真实持仓】
       没有券商接口 ⇒ 不可能真实成交。`user_portfolio` 是用户手工维护的真实
@@ -1612,10 +1614,14 @@ async def trade_plan_trigger_loop():
 
                     from datetime import timedelta as _td
                     _cutoff = (now - _td(days=90)).strftime("%Y-%m-%d %H:%M:%S")
+                    # ★★ 2026-11-18：状态机从"一次性 waiting→filled"扩成完整闭环
+                    #   `waiting`（等买点）→ `holding`（模拟仓已建）→ `targeted`/`stopped`
+                    #   【为什么必须改】原实现建仓后置 `filled`，而本查询只取 waiting
+                    #   ⇒ **后面触目标/止损永远不会触发**，模拟仓建了就没人管。
                     plans = db.fetch(
-                        "SELECT id, code, name, buy_price, stop_loss, target, "
+                        "SELECT id, code, name, buy_price, stop_loss, target, status, "
                         "plan_type, trigger_high_open, trigger_volume_break "
-                        "FROM user_trade_plans WHERE status = 'waiting' "
+                        "FROM user_trade_plans WHERE status IN ('waiting','holding') "
                         "AND (created_at IS NULL OR created_at >= %s) "
                         "ORDER BY created_at DESC LIMIT 300", (_cutoff,)) or []
                     for p in plans:
@@ -1630,7 +1636,10 @@ async def trade_plan_trigger_loop():
                         if p.get("target") and price >= float(p["target"]):
                             hits.append(("target", f"兑现触发：{p['name']}({p['code']}) "
                                                    f"现价 {price:.2f} 触及目标 {float(p['target']):.2f}——按计划兑现"))
-                        if p.get("buy_price"):
+                        # ★ 2026-11-18：`holding`（模拟仓已建）只判目标/止损，
+                        #   不再判买点 —— 否则每 60s 都会重复推"到达买点"，
+                        #   而模拟仓早就建好了（幂等虽能防重复建，防不了推送刷屏）。
+                        if p.get("buy_price") and p.get("status") != "holding":
                             # ★★ 2026-11-16（用户："云南铜业收盘 12.62，还是按买 12.71 吗？"）：
                             #   **跌破买点 ≠ 到达买点**。
                             #   原实现只看 `abs(dev) <= 2%` 不分方向 ⇒
@@ -1757,16 +1766,32 @@ async def trade_plan_trigger_loop():
                             except Exception as e2:
                                 print(f"[plan-trigger] push failed: {e2}")
                             if kind in ("stop", "target"):
+                                # ★★ 2026-11-18（用户："自动用模拟仓模拟"）：
+                                #   到目标/止损 ⇒ **自动平掉模拟仓并记账**，
+                                #   把真实盈亏写进推送（不是只把状态改成"达目标✓"）。
+                                closed = TX.close_sim_by_plan(p["id"], price, kind)
+                                if closed:
+                                    _sg = "+" if closed["pnl"] >= 0 else ""
+                                    text = (
+                                        text + "\n**模拟仓已平** %d股 %.2f→%.2f，"
+                                        "模拟盈亏 %s%.2f 元（%s%.2f%%）"
+                                        "（纯模拟，未真实下单）"
+                                        % (int(closed["shares"]), closed["cost"],
+                                           closed["close"], _sg, closed["pnl"],
+                                           _sg, closed["pnl_pct"]))
+                                # 闭环成终态（不再被上层的 waiting/holding 查询捞到）
+                                _end = "targeted" if kind == "target" else "stopped"
                                 db.execute(
-                                    "UPDATE user_trade_plans SET status='hit', hit_at=%s WHERE id=%s",
-                                    (now.isoformat(), p["id"]))
+                                    "UPDATE user_trade_plans SET status=%s, hit_at=%s "
+                                    "WHERE id=%s", (_end, now.isoformat(), p["id"]))
                             elif built.get("built") or built.get("skipped"):
-                                # 建仓已落地 ⇒ **闭环计划**（status='waiting' 会被 60s
-                                # 循环反复命中，不闭环就会天天重复建/重复推）。
-                                # 用 `filled` 而不是 `hit`：`hit` 语义是"止损/兑现"。
+                                # ★ 2026-11-18：建仓后进入 `holding`（**不是 filled**）。
+                                #   原用 filled 是死路：上层只查 waiting ⇒ 目标/止损
+                                #   永远不会触发，模拟仓建了就没人管。
                                 db.execute(
-                                    "UPDATE user_trade_plans SET status='filled', hit_at=%s "
-                                    "WHERE id=%s", (now.isoformat(), p["id"]))
+                                    "UPDATE user_trade_plans SET status='holding', hit_at=%s "
+                                    "WHERE id=%s AND status='waiting'",
+                                    (now.isoformat(), p["id"]))
         except Exception as e:
             print(f"[plan-trigger] error: {e}")
         await asyncio.sleep(60)

@@ -139,6 +139,8 @@
             <th class="text-right py-2.5 px-3">目标</th>
             <th class="text-center py-2.5 px-3">盈亏比</th>
             <th class="text-center py-2.5 px-3">状态</th>
+            <!-- ★ 2026-11-18：模拟仓（自动建/自动平/记账），不是纸面推演 -->
+            <th class="text-right py-2.5 px-3">模拟仓</th>
             <!-- ★ A4：结构化触发条件（盘中由系统比对并推企微） -->
             <th class="text-left py-2.5 px-3">触发条件</th>
             <th class="text-right py-2.5 px-3">T+1</th>
@@ -173,6 +175,17 @@
               <span class="px-2 py-0.5 rounded-full text-xs" :class="statusBadgeClass(row.plan.status)">
                 {{ statusLabel(row.plan.status) }}
               </span>
+            </td>
+            <!-- ★ 2026-11-18：模拟仓状态/盈亏（系统自动建平，非真实资金） -->
+            <td class="py-2 px-3 text-right font-mono text-xs" :title="simTitle(row.plan)">
+              <span v-if="!simOf(row.plan)" class="text-muted">—</span>
+              <span v-else-if="simOf(row.plan).status === 'holding'" class="text-sky-300">
+                持 {{ simOf(row.plan).shares }}股 @{{ simOf(row.plan).cost }}</span>
+              <span v-else-if="simOf(row.plan).pnl != null"
+                    :class="simOf(row.plan).pnl >= 0 ? 'text-rise' : 'text-fall'">
+                {{ simOf(row.plan).pnl >= 0 ? '+' : '' }}{{ simOf(row.plan).pnl }}元
+                ({{ simOf(row.plan).pnl >= 0 ? '+' : '' }}{{ simOf(row.plan).pnl_pct }}%)</span>
+              <span v-else class="text-muted">已平</span>
             </td>
             <!-- ★ A4 触发条件：只显示**已设置**的项；全空 ⇒ 显示"—（仅三维价位）" -->
             <td class="py-2 px-3 text-xs">
@@ -220,6 +233,11 @@
         <div><span class="text-blue-400">已触及</span>：价格到达买点，开始 T+1 跟踪（A股 T+1，次日才能卖）</div>
         <div><span class="text-emerald-400">达目标✓</span>：价格触及目标价，计划验证成功</div>
         <div><span class="text-red-400">破止损✗</span>：价格跌破止损价，计划验证失败</div>
+        <div class="pt-1 border-t border-border/50">
+          <span class="text-sky-300">模拟仓</span>：价格触及买点时系统**自动建模拟仓**（按建议股数、以触发价成交），
+          触及目标/止损时**自动平仓并记账**；这一列是模拟成交的真实结果，**不涉及真实资金**。
+          状态列的「达目标✓」只是价位验证，两者可能不同步 —— 以模拟仓列的盈亏为准。
+        </div>
         <div class="pt-2 border-t border-border">
           <span class="text-gray-300">盈亏比</span> = (目标-买点)/(买点-止损)。≥2 绿色（高质量），1~2 黄色（及格），&lt;1 红色（不值得做）
         </div>
@@ -235,7 +253,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getStockRealtime, searchStock } from '../api'
+import { getStockRealtime, searchStock, getTTradeSim } from '../api'
 import {
   useTradePlans, addPlan, removePlan, evaluatePlanStatus,
   calcRiskReward, calcDistanceToBuy, calcT1Performance,
@@ -260,6 +278,16 @@ const tradingNow = ref(isTradingTime())
 let timer = null
 
 const summary = usePlansSummary(realtimeMap)
+// ★ 2026-11-18：模拟仓（按 plan_id 索引）。系统自动建平、自动记账，不花真钱。
+//   与页面本地状态机的"达目标✓"不同 —— 这一列是**真实模拟成交**的结果。
+const simByPlan = ref({})
+function simOf(plan) { return simByPlan.value[plan.id] || null }
+function simTitle(plan) {
+  const s = simOf(plan)
+  if (!s) return '到买点时系统自动建模拟仓（未真实下单）'
+  if (s.status === 'holding') return `模拟持仓 ${s.shares} 股，成本 ${s.cost}（触发价）`
+  return `模拟平仓 ${s.close_price}（${s.close_reason || '目标/止损'}），盈亏 ${s.pnl} 元`
+}
 
 // ── 通知开关 ──
 async function toggleNotification() {
@@ -405,6 +433,16 @@ async function refresh() {
     }).catch(() => {})
   )
 
+  // ★ 2026-11-18：模拟仓（自动建/自动平/记账的真实结果）。
+  //   ⚠️ 失败静默保留上次值（铁律 11）—— 不能因为这一列挂了就把整张表刷空。
+  getTTradeSim().then(({ data }) => {
+    const m = {}
+    for (const s of (data && data.data) || []) {
+      if (s.plan_id) m[s.plan_id] = s
+    }
+    simByPlan.value = m
+  }).catch(() => {})
+
   Promise.allSettled(promises).finally(() => {
     // 持久化状态变化 + 通知检查
     localStorage.setItem('trade_plans', JSON.stringify(plans.value))
@@ -436,13 +474,19 @@ function statusBadgeClass(s) {
   return {
     waiting: 'bg-gray-500/20 text-gray-400',
     hit: 'bg-blue-500/20 text-blue-400',
+    holding: 'bg-sky-500/20 text-sky-300',   // ★ 2026-11-18：模拟仓已建，等待目标/止损
+    filled: 'bg-sky-500/20 text-sky-300',     // 历史遗留状态（旧版建仓后置 filled）
     targeted: 'bg-emerald-500/20 text-emerald-400',
     stopped: 'bg-red-500/20 text-red-400',
     expired: 'bg-amber-500/20 text-amber-400',
   }[s] || 'bg-gray-500/20 text-gray-400'
 }
 function statusLabel(s) {
-  return { waiting: '等待', hit: '已触及', targeted: '达目标✓', stopped: '破止损✗', expired: '错过' }[s] || s
+  return {
+    waiting: '等待', hit: '已触及',
+    holding: '模拟持仓中', filled: '模拟持仓中',   // ★ 2026-11-18
+    targeted: '达目标✓', stopped: '破止损✗', expired: '错过',
+  }[s] || s
 }
 
 function goDetail(code) { router.push(`/stock/${code}`) }

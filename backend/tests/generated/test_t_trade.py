@@ -289,19 +289,24 @@ def test_plan_signals_need_base_for_exit_signals():
     assert t_trade.plan_signals_for_holding([], True) == []
 
 
-def test_should_auto_build_only_for_t_build():
-    """★ 只有「设建仓点」建的 `t_build` 计划才自动建模拟底仓。
+def test_should_auto_build_all_plan_types():
+    """★ 2026-11-18（用户："不需要我手动上车，自动用模拟仓模拟"）：
+    **取消 plan_type 门槛** —— trial / t_build 一律自动建模拟仓。
 
-    用户：\"价格到位，系统自动处理。\"
-    · `t_build` ⇒ 是（这是用户明确要求的自动化）
-    · `trial` / 空 / 其它 ⇒ 否（普通试仓是用户自己的决策，系统不代劳）
+    原先"trial 只提醒"的前提是"可能有真实资金后果"；现在全程模拟，
+    让用户手动上车反而制造错觉（界面报"达目标✓"而用户根本没买）。
     """
-    assert t_trade.should_auto_build("t_build", enabled=True) is True
-    assert t_trade.should_auto_build("trial", enabled=True) is False
-    assert t_trade.should_auto_build("", enabled=True) is False
-    assert t_trade.should_auto_build(None, enabled=True) is False
-    # 总开关关闭 ⇒ 一律不自动建
+    for pt in ("t_build", "trial", "", None, "add"):
+        assert t_trade.should_auto_build(pt, enabled=True) is True, pt
+    # 总开关仍然有效（应急可关）
     assert t_trade.should_auto_build("t_build", enabled=False) is False
+    assert t_trade.should_auto_build("trial", enabled=False) is False
+
+
+def test_should_auto_build_rejects_when_disabled():
+    """默认开（`T_AUTO_BUILD=0` 才关），但显式 enabled=False 必须拒绝。"""
+    assert t_trade.should_auto_build("trial") is True
+    assert t_trade.should_auto_build("trial", enabled=False) is False
 
 
 def test_auto_build_allowed_rejects_broken_support():
@@ -318,8 +323,9 @@ def test_auto_build_allowed_rejects_broken_support():
     # 跌破 0.998×买点 ⇒ **拒绝**（云南铜业 12.62 < 12.683）
     assert t_trade.auto_build_allowed("t_build", 12.62, 12.71, enabled=True) is False
     assert t_trade.auto_build_allowed("t_build", 12.50, 12.71, enabled=True) is False
-    # 非 t_build ⇒ 无论如何都不自动建
-    assert t_trade.auto_build_allowed("trial", 12.90, 12.71, enabled=True) is False
+    # ★ 2026-11-18：trial 也自动建（取消 plan_type 门槛），但仍受破位规则约束
+    assert t_trade.auto_build_allowed("trial", 12.90, 12.71, enabled=True) is True
+    assert t_trade.auto_build_allowed("trial", 12.62, 12.71, enabled=True) is False
     # 总开关关 ⇒ 拒绝
     assert t_trade.auto_build_allowed("t_build", 12.90, 12.71, enabled=False) is False
     # 没有买点 ⇒ 不拦（无从判断，交给调用方）
