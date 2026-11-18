@@ -53,6 +53,11 @@
   · 一键部署：根目录 `./deploy.sh`（Python/venv 自动探测 → 依赖变了才装 → build:server
     → 编译检查 → 重启 → 健康检查 + 打印内存）。内存吃紧时 `--skip-frontend`（本地构建后传 dist）。
   · ★ 给用户回复时：**先确认是服务器那套**，别再默认给 Render 相关步骤。
+  · ★★ **"`git pull` + 重启后端" ≠ 部署**（2026-11-19 用户问区别时梳理）：
+    它**完全不构建前端**，也不装依赖、不做语法检查、不跑健康检查。
+    本项目几乎每轮改动都含前端（`Workbench.vue` / `TTrade.vue` / `TradePlans.vue` /
+    `FlashPhaseCard.vue` / `api/modules/*.js`）⇒ 只重启后端的话**页面还是旧的**，
+    而用户会以为是"功能没生效"。**给用户部署指令时一律说 `./deploy.sh`，不要再说"pull + 重启"。**
 - 另有 GitHub Pages 一套静态站（push `frontend/**` 由 `deploy-preview.yml` 自动，base 子路径），
   **仅供外网预览，不是生产**；两套 base 不同，产物不能互换。
 - DB 默认 SQLite，`DATABASE_URL` 走 PG（Supabase 东京）；`app/database.py` 自动转 `%s` 兼容双库。
