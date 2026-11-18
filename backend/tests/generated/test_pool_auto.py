@@ -70,6 +70,44 @@ def test_no_plan_batch_is_safe():
     assert "先跑一次盘后扫描" in r["note"]
 
 
+def test_sql_includes_liquidity_filter():
+    """★ 2026-11-19：选池必须按估算成交额过滤（盘口太薄的票触发信号不可信）。"""
+    seen = []
+
+    def fake_fetch(sql, params=None):
+        seen.append(sql)
+        return []
+
+    with mock.patch("app.t_trade_exec.db.fetch_one",
+                    return_value={"d": "2026-11-19"}), \
+            mock.patch("app.t_trade_exec.db.fetch", side_effect=fake_fetch), \
+            mock.patch("app.t_trade_exec.db.execute", return_value=0):
+        TX.auto_pick_pool("2026-11-19", top=2)
+
+    main = next(s for s in seen if "stock_facts_wide" in s)
+    assert "LEFT JOIN stock_facts_wide" in main
+    assert "float_cap_yi * f.turnover_pct / 100.0" in main
+    # 缺失放行（缺失 ≠ 不满足）
+    assert "f.code IS NULL" in main
+
+
+def test_note_reports_estimated_amount():
+    """note 要写清估算成交额，让人知道为什么这只票被选中。"""
+    upserted = []
+    plans = [{"code": "600001", "name": "A", "space_pct": 4.0, "ratio": 0.333,
+              "float_cap_yi": 50.0, "turnover_pct": 3.0}]
+    _run([plans, [], []], upsert=lambda t, d, **k: upserted.append(d))
+    assert "成交约 1.50 亿" in upserted[0]["note"]   # 50 × 3% = 1.5 亿
+
+
+def test_note_marks_unknown_liquidity():
+    """查不到量能数据 ⇒ 放行但在 note 里如实标"未知"，不能假装有数。"""
+    upserted = []
+    plans = [{"code": "600001", "name": "A", "space_pct": 4.0, "ratio": 0.333}]
+    _run([plans, [], []], upsert=lambda t, d, **k: upserted.append(d))
+    assert "流动性未知" in upserted[0]["note"]
+
+
 def test_add_to_pool_upgrades_auto_to_manual():
     """★ 手动加一只"自动挑的票"要升级为 manual，否则明天会被自动清掉。"""
     ex = {"source": "auto"}

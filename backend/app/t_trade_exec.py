@@ -33,6 +33,21 @@ from app.flash import rules as flash_rules
 #     15 只 ≈ 一天 1~3 条，是可接受的噪音水平。
 POOL_AUTO_TOP = int(os.environ.get("T_POOL_TOP") or 15)
 
+# ★★ 2026-11-19：**流动性下限**（估算日成交额，单位「亿」）。
+#   【为什么必须有这条】`t_plans` 里没有成交额字段，原先选池只看"空间×仓位"
+#     ⇒ 实测把 603229 奥翔药业（期望 1.35%，排第一）选了进来，
+#       但它当天**估算成交只有 0.22 亿**；同时入选的还有新黄浦 0.19 亿、
+#       国旅联合 0.23 亿 —— 这类票盘口薄，
+#       支撑/阻力容易被单笔打穿 ⇒ **触发信号本身不可信**，不只是滑点问题。
+#   【0.5 亿怎么来的】当日 2818 只有量能数据的票，估算成交额
+#     p25=0.73 亿 / 中位 1.52 亿；取 0.5 亿约等于排除最冷的 14%，
+#     既剔掉"没人交易"的，又不会把中小盘正常票（0.6~1 亿）误杀。
+#   【口径】成交额由 `流通市值(亿) × 换手率(%) ÷ 100` 估算 ——
+#     `stock_facts_wide` 没有直接给 amount，但这两个字段齐备且同源。
+#   【缺失怎么办】**放行**（缺失 ≠ 不满足），但 note 里标"流动性未知"，
+#     否则新股/停牌票会因为"查不到"被静默排除，而这正是最难发现的一类错误。
+POOL_MIN_AMOUNT_YI = float(os.environ.get("T_POOL_MIN_AMOUNT_YI") or 0.5)
+
 _T_PLAN_TABLE = "t_plans"
 _T_TRADE_TABLE = "t_trades"
 _T_POOL_TABLE = "t_watchlist"
@@ -522,8 +537,13 @@ def auto_pick_pool(day: str = None, top: int = None) -> Dict:
       · 排除**已持仓 / 已有模拟仓**的票 —— 它们本来就在 `watch_codes` 里，
         再进池只是重复（而且持仓做T 走的是另一条判断）；
       · 排除**手动加的票**（`source='manual'`）—— 用户自己挑的永远不动。
-      ⚠️ 未纳入**流动性**（`t_plans` 无成交额字段）；若某只票日成交极低，
-         进池后可能触发但做不成 —— 后续可 join `stock_facts_wide` 补这条。
+      · **流动性下限**（★ 2026-11-19 补）：`t_plans` 没有成交额字段，
+        改用 `stock_facts_wide` 的「流通市值 × 换手率 ÷ 100」估算日成交额，
+        低于 `POOL_MIN_AMOUNT_YI`（默认 0.5 亿）的**不进池**。
+        【为什么必须要这条】实测不筛流动性时，期望排第一的 603229 奥翔药业
+          估算成交只有 **0.22 亿**（同批还有 0.19 / 0.23 亿的）——
+          这类票盘口薄，支撑/阻力容易被单笔打穿，**触发信号本身不可信**。
+        【缺失放行】查不到量能数据（新股/停牌）不排除，note 里标"流动性未知"。
 
     【为什么不顺便建计划】
       用户 2026-11-16 明确区分过"观察"与"建仓"：池子是"值得盯"，
@@ -546,12 +566,27 @@ def auto_pick_pool(day: str = None, top: int = None) -> Dict:
                 "total": len(pool_codes()),
                 "note": "还没有任何预案批次（先跑一次盘后扫描）"}
 
+    # 流动性用 `stock_facts_wide` 最新快照；表空/日期取不到时 `f.date = NULL`
+    # 永不匹配 ⇒ 全部放行（fail-open，不会因为辅助数据缺失把池子清空）
+    facts_date = None
+    try:
+        facts_date = (db.fetch_one(
+            "SELECT MAX(date) AS d FROM stock_facts_wide") or {}).get("d")
+    except Exception as e:
+        print(f"[t-trade] auto_pick facts_date failed: {str(e)[:70]}")
+
     rows = db.fetch(
-        f"SELECT code, name, space_atr_mult, space_pct, ratio, atr_pct "
-        f"FROM {_T_PLAN_TABLE} WHERE plan_date=%s AND feasible=1 "
-        f"ORDER BY (COALESCE(space_pct,0) * COALESCE(ratio,0)) DESC, "
-        f"         space_atr_mult DESC, COALESCE(atr_pct,0) ASC LIMIT %s",
-        (pd, n_top * 3)) or []
+        f"SELECT p.code, p.name, p.space_atr_mult, p.space_pct, p.ratio, p.atr_pct, "
+        f"       f.turnover_pct, f.float_cap_yi "
+        f"FROM {_T_PLAN_TABLE} p "
+        f"LEFT JOIN stock_facts_wide f ON f.code = p.code AND f.date = %s "
+        f"WHERE p.plan_date = %s AND p.feasible = 1 "
+        f"  AND (f.code IS NULL "                        # 无量能数据 ⇒ 放行（缺失≠不满足）
+        f"       OR f.float_cap_yi IS NULL OR f.turnover_pct IS NULL "
+        f"       OR (f.float_cap_yi * f.turnover_pct / 100.0) >= %s) "
+        f"ORDER BY (COALESCE(p.space_pct,0) * COALESCE(p.ratio,0)) DESC, "
+        f"         p.space_atr_mult DESC, COALESCE(p.atr_pct,0) ASC LIMIT %s",
+        (facts_date, pd, POOL_MIN_AMOUNT_YI, n_top * 3)) or []
 
     held = set(holdings().keys())
     manual = {str(r.get("code") or "").strip() for r in db.fetch(
@@ -582,11 +617,17 @@ def auto_pick_pool(day: str = None, top: int = None) -> Dict:
         try:
             _sp = float(r.get("space_pct") or 0)
             _rt = float(r.get("ratio") or 0)
+            # 估算日成交额（亿）= 流通市值 × 换手率 ÷ 100；缺失就如实说"未知"
+            _amt = None
+            if r.get("float_cap_yi") and r.get("turnover_pct"):
+                _amt = float(r["float_cap_yi"]) * float(r["turnover_pct"]) / 100.0
             db.upsert(_T_POOL_TABLE, {
                 "code": c,
                 "name": resolve_name(c, r.get("name") or ""),
-                "note": "自动挑选（空间 %.2f%% × 仓位 %.0f%% ≈ 期望 %.2f%%）"
-                        % (_sp, _rt * 100, _sp * _rt),
+                "note": "自动挑选（空间 %.2f%% × 仓位 %.0f%% ≈ 期望 %.2f%%%s）"
+                        % (_sp, _rt * 100, _sp * _rt,
+                           ("，成交约 %.2f 亿" % _amt) if _amt is not None
+                           else "，流动性未知"),
                 "added_at": _now(), "source": "auto",
             }, conflict_columns=["code"])
             added.append(c)
