@@ -43,6 +43,16 @@
                 :disabled="scanning" @click="rescan">
           {{ scanning ? '扫描中…' : '补跑扫描' }}
         </button>
+        <!-- ★★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：
+             平时盘后扫描会自动跑；这里用于立即重选（不改手动加的票）。 -->
+        <button type="button" class="px-2.5 py-1 rounded text-xs border border-border
+                                     text-violet-300 hover:border-violet-400/40
+                                     transition-colors"
+                :disabled="autoPicking"
+                title="按当日可行预案的「空间/ATR」自动挑前 N 只进池；只替换自动挑的行"
+                @click="autoPick">
+          {{ autoPicking ? '挑选中…' : '自动选池' }}
+        </button>
         <!-- ★ 2026-11-15（用户："交易信息会通知到我吗？"）：
              做T 走 `notify("coach")`，但历史上从没触发过该分类
              ⇒ 加个自检按钮，别等真信号来了才发现没收到。 -->
@@ -180,8 +190,13 @@
                    必须与真实持仓在视觉上分开，否则用户会以为已经买进了。 -->
               <span v-else-if="r.source === 'sim'" class="text-[10px] text-amber-300"
                     title="建仓点触发后系统自动建的模拟底仓（未真实下单）；真实买入后可清除它">模拟仓</span>
+              <!-- ★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：
+                   必须能看出"这只票是系统挑的还是我加的" ——
+                   自动挑的每天盘后会被替换，手动加的永远不会被自动删掉。 -->
+              <span v-else-if="r.pool_source === 'auto'" class="text-[10px] text-violet-300"
+                    title="系统按当日「空间/ATR」自动挑选，盘后扫描时刷新">自动挑</span>
               <span v-else class="text-[10px] text-muted"
-                    title="手动加入的观察标的（无底仓时不会触发）">池</span>
+                    title="你手动加入的观察标的（自动选池不会删它）">手动</span>
             </td>
             <td class="px-3 py-1.5 text-right font-mono">{{ fmt(r.price) }}</td>
             <td class="px-3 py-1.5 text-right font-mono" :class="chgClass(r.change_pct)">{{ fmtChg(r.change_pct) }}</td>
@@ -224,6 +239,9 @@
               <!-- 仅持仓的行不在池里，"移除"无意义（它由持仓自动纳入） -->
               <button v-if="r.source !== 'holding'" type="button"
                       class="text-[11px] text-muted hover:text-rose-300"
+                      :title="r.pool_source === 'auto'
+                        ? '移除后本次不再显示；下次盘后自动选池若仍排在前 N 会重新加入'
+                        : '移除你手动加的票（自动选池不会再加它）'"
                       @click="removeFromPool(r.code)">移除</button>
               <span v-else class="text-[11px] text-muted"
                     title="来自持仓，删掉持仓才会消失">自动</span>
@@ -432,7 +450,7 @@ import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
   getBatchPricesCached, testTTradePush, buildTTradePlan,
-  getTTradeSim, delTTradeSim,
+  getTTradeSim, delTTradeSim, autoTTradePool,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
@@ -596,6 +614,28 @@ async function loadAll() {
     err.value = (e && e.message) || '加载失败'
   } finally {
     busy.value = false
+  }
+}
+
+/** ★ 2026-11-19：立即自动选池（只替换 source='auto' 的行）。 */
+const autoPicking = ref(false)
+async function autoPick() {
+  autoPicking.value = true
+  err.value = ''
+  notice.value = ''
+  try {
+    const { data } = await autoTTradePool()
+    if (data && data.plan_date) {
+      notice.value = `已按 ${data.plan_date} 预案自动挑选 ${(data.picked || []).length} 只`
+        + `（排除持仓 ${data.excluded_held || 0} / 手动 ${data.excluded_manual || 0}）`
+    } else {
+      notice.value = (data && data.note) || '已执行'
+    }
+    await loadAll()
+  } catch (e) {
+    err.value = (e && e.message) || '自动选池失败'
+  } finally {
+    autoPicking.value = false
   }
 }
 

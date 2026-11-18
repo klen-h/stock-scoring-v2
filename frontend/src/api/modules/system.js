@@ -110,6 +110,10 @@ export const buildTTradePlan = (code) =>
 //   于是这只票立刻"有底仓"⇒ 盘中的做T 循环能对它工作。
 export const getTTradeSim = () => http.get('/t-trade/sim')
 export const delTTradeSim = (code) => http.delete(`/t-trade/sim/${code}`)
+// ★★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：立即自动选池。
+//   平时由盘后扫描自动触发；这个用于手动重跑。
+//   ⚠️ 只替换 `source='auto'` 的行，手动加的票不会被清。
+export const autoTTradePool = (params = {}) => http.post('/t-trade/pool/auto', null, { params })
 
 export const getCoachReviewSummary = (date = '', days = 20) =>
   http.get('/coach/review-summary', { params: { date, days } })

@@ -171,6 +171,10 @@ def get_pool(include_holdings: bool = True,
             held = TX.holdings()
             in_pool = {str(r.get("code") or "") for r in rows}
             for r in rows:
+                # ★ 2026-11-19：保留"这只票是怎么进池的"（auto/manual），
+                #   另用一个字段表示"来自池"，否则前端分不清
+                #   哪些是系统自动挑的、哪些是自己加的。
+                r["pool_source"] = str(r.get("source") or "manual")
                 r["source"] = "pool"
             for code, h in held.items():
                 _sim = bool(h.get("sim"))
@@ -219,6 +223,19 @@ def add_pool(payload: dict = Body(...),
         raise HTTPException(400, "codes 不能为空")
     return TX.add_to_pool([str(c) for c in codes],
                           note=str(payload.get("note") or ""))
+
+
+@router.post("/pool/auto")
+def auto_pool(top: int = None, day: str = None,
+              user: dict = Depends(get_current_user)):
+    """**立即自动选池**（按当日 feasible 预案的 `space_atr_mult` 取前 N 只）。
+
+    平时由盘后扫描自动触发（`scan_market` 末尾）；这个端点用于手动重跑。
+
+    ⚠️ **只替换 `source='auto'` 的行** —— 你手动加的票永远不会被它清掉。
+    ⚠️ 排除已有持仓/模拟仓的票（它们本来就在监控范围内，进池只是重复）。
+    """
+    return TX.auto_pick_pool(day, top)
 
 
 @router.delete("/pool/{code}")

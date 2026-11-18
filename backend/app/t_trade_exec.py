@@ -21,10 +21,17 @@
 ================================================================================
 """
 import json
+import os
 from typing import Dict, List, Optional
 
 from app.database import db
 from app.flash import rules as flash_rules
+
+# ★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：自动选池的数量上限。
+#   【为什么是 15】池子会进 `watch_codes` ⇒ 盘中每 60s 被扫一遍（读内存，成本低），
+#     但**推送**是按"触发"出的：池子越大越容易一天好几次提醒。
+#     15 只 ≈ 一天 1~3 条，是可接受的噪音水平。
+POOL_AUTO_TOP = int(os.environ.get("T_POOL_TOP") or 15)
 
 _T_PLAN_TABLE = "t_plans"
 _T_TRADE_TABLE = "t_trades"
@@ -105,6 +112,17 @@ def ensure_tables() -> None:
                 note TEXT DEFAULT '',
                 added_at TEXT
             )""")
+        # ★★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：**来源列**。
+        #   【为什么必须有】自动选池每次都会"替换自己挑的那批"，
+        #     若不区分来源，就会把**用户手动加的票一起清掉** ——
+        #     用户挑的票被系统删掉，是最不能接受的一类交互事故。
+        #   取值：`auto`（系统挑选，每日可替换）/ `manual`（用户手动，永不自动删）
+        #   ⚠️ 老库升级：默认 `manual` —— 历史行都是用户/我手工加的，归 manual 才对。
+        try:
+            db.execute(f"ALTER TABLE {_T_POOL_TABLE} "
+                       f"ADD COLUMN source TEXT DEFAULT 'manual'")
+        except Exception:
+            pass        # 列已存在 —— 幂等升级的正常路径
         # ★ 2026-11-16：做T 模拟底仓（"价格到位自动处理"的落点）
         #   `status`: holding（持有）/ closed（已平）
         #   `plan_id`: 来自哪条建仓计划（便于回溯，NULL 表示手工建）
@@ -323,10 +341,23 @@ def scan_market(day: str = None, min_bars: int = 120,
         # 吞异常必须可见，但**不能让清理失败毁掉本次已经写好的预案**
         print(f"[t-trade] mark stale plans failed: {str(e)[:90]}")
 
+    # ★★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：
+    #   扫描完**顺手自动选池** —— 池子与预案同源（都是 `t_plans` 的当日 feasible），
+    #   不必再独立跑一遍查询。放在 stale 标记之后，保证只挑**本次有效**的预案。
+    pick = {}
+    try:
+        pick = auto_pick_pool(d)
+    except Exception as e:
+        # 选池失败不能毁掉本次已经写好的预案（吞异常必须可见）
+        print(f"[t-trade] auto_pick after scan failed: {str(e)[:80]}")
+
     return {"date": d, "scanned": total, "feasible": feasible,
             "stale_marked": stale,
+            "pool_picked": len(pick.get("picked") or []),
+            "pool_removed": pick.get("removed") or 0,
             "started_at": t0, "finished_at": _now(),
-            "note": "只落库 feasible=True 的预案；本次未重算的旧预案标为不可行"}
+            "note": "只落库 feasible=True 的预案；本次未重算的旧预案标为不可行；"
+                    "池子只替换自动挑选的行"}
 
 
 def explain(code: str, day: str = None) -> Dict:
@@ -387,28 +418,49 @@ def watch_codes() -> set:
 
 
 def pool_codes() -> List[Dict]:
-    """做T 池里的票（独立于自选）。"""
+    """做T 池里的票（独立于自选），带 `source`（auto / manual）。"""
     ensure_tables()
-    rows = db.fetch(f"SELECT code, name, note, added_at FROM {_T_POOL_TABLE} "
-                    f"ORDER BY added_at DESC, code") or []
+    rows = db.fetch(
+        f"SELECT code, name, note, added_at, "
+        f"COALESCE(source,'manual') AS source FROM {_T_POOL_TABLE} "
+        f"ORDER BY CASE WHEN COALESCE(source,'manual')='manual' THEN 0 ELSE 1 END, "
+        f"added_at DESC, code") or []
     return [dict(r) for r in rows]
 
 
-def add_to_pool(codes: List[str], note: str = "") -> Dict:
-    """把股票加进做T 池（幂等，已存在的跳过）。
+def add_to_pool(codes: List[str], note: str = "", source: str = "manual") -> Dict:
+    """把股票加进做T 池（幂等）。
+
+    ★ 2026-11-19：**手动加会"认领"自动挑的票** ——
+      若该票在池里且 `source='auto'`，手动加入时升级为 `manual`，
+      否则明天的自动选池会把它当"自己挑的"一并清掉（用户手动加的票被系统删掉，
+      是最不能接受的一类交互事故）。
 
     ⚠️ **不写 `user_watchlist`** —— 自选是"我想盯的票"，
       与"今天能做T 的票"是两个语义，混在一起会污染自选页。
     """
     ensure_tables()
-    added, skipped = [], []
+    added, skipped, upgraded = [], [], []
     for c in codes or []:
         code = str(c or "").strip()
         if not code:
             continue
-        if db.fetch_one(f"SELECT 1 AS x FROM {_T_POOL_TABLE} WHERE code=%s",
-                        (code,)):
-            skipped.append(code)
+        exist = db.fetch_one(
+            f"SELECT COALESCE(source,'manual') AS source FROM {_T_POOL_TABLE} "
+            f"WHERE code=%s", (code,))
+        if exist:
+            # 已存在：自动挑的票被手动加入 ⇒ 升级为 manual（防明天被清）
+            if str(exist.get("source") or "manual") == "auto" and source == "manual":
+                try:
+                    db.execute(
+                        f"UPDATE {_T_POOL_TABLE} SET source='manual', "
+                        f"note=%s WHERE code=%s",
+                        (note or "手动加入（原为自动挑选）", code))
+                    upgraded.append(code)
+                except Exception as e:
+                    print(f"[t-trade] pool upgrade {code} failed: {str(e)[:50]}")
+            else:
+                skipped.append(code)
             continue
         # 取名兜底链：`t_plans` → `kline_cache` → `backtest_prices` → `stock_facts_wide`
         #   ⚠️ 实测：`kline_cache` / `backtest_prices` 里 000423 / 000088 / 600483 /
@@ -430,12 +482,13 @@ def add_to_pool(codes: List[str], note: str = "") -> Dict:
                 print(f"[t-trade] pool name {code}@{tbl} failed: {str(e)[:40]}")
         try:
             db.upsert(_T_POOL_TABLE, {
-                "code": code, "name": nm, "note": note or "", "added_at": _now(),
+                "code": code, "name": nm, "note": note or "",
+                "added_at": _now(), "source": source,
             }, conflict_columns=["code"])
             added.append(code)
         except Exception as e:
             print(f"[t-trade] pool add {code} failed: {str(e)[:60]}")
-    return {"added": added, "skipped": skipped,
+    return {"added": added, "skipped": skipped, "upgraded": upgraded,
             "total": len(pool_codes())}
 
 
@@ -447,6 +500,106 @@ def remove_from_pool(code: str) -> bool:
     except Exception as e:
         print(f"[t-trade] pool remove failed: {str(e)[:60]}")
         return False
+
+
+def auto_pick_pool(day: str = None, top: int = None) -> Dict:
+    """盘后**自动挑选**做T 候选进池 —— **只替换 `source='auto'` 的行**。
+
+    ★★ 2026-11-19（用户："池子系统通过挑选自动加入池"）：
+      原先池子完全靠手动（11-15 手工批量写入 19 只，后来因为都没底仓又清空）。
+      手动维护的问题是"挑哪几只"没有口径、也不随时间更新 ——
+      今天可行的票明天可能就不可行了，而池子还停在旧名单上。
+
+    【选票口径 —— 与「全市场可行」同一份数据，不另算】
+      · 当日**最新批次**且 `feasible=1` 的预案；
+      · 按 **`space_pct × ratio`（空间% × 仓位比例）降序** ——
+        这才是"做一次T 对总资产的期望收益"。
+        【为什么不用 `space_atr_mult`】实测当日 343 只 feasible 里 **142 只都是 1.00**
+          （预案的阻力位本就按 1×ATR 设），排序等于失效；当时选出的 15 只
+          期望从 0.99% 一路掉到 **0.57%**，等于随机挑。
+        【为什么不用裸 `space_pct`】那只是价格的函数，高价股天然空间大；
+          而且高波动票的 `ratio` 会被自动压到 0.2，光看空间会挑到"看着大、实际下注小"的票。
+      · 排除**已持仓 / 已有模拟仓**的票 —— 它们本来就在 `watch_codes` 里，
+        再进池只是重复（而且持仓做T 走的是另一条判断）；
+      · 排除**手动加的票**（`source='manual'`）—— 用户自己挑的永远不动。
+      ⚠️ 未纳入**流动性**（`t_plans` 无成交额字段）；若某只票日成交极低，
+         进池后可能触发但做不成 —— 后续可 join `stock_facts_wide` 补这条。
+
+    【为什么不顺便建计划】
+      用户 2026-11-16 明确区分过"观察"与"建仓"：池子是"值得盯"，
+      设建仓点是"准备买"。自动建计划会一次性糊出十几条计划，
+      且每条的买点都是支撑位 —— 那是另一套决策，不该由选池顺手决定。
+
+    返回 `{date, plan_date, picked, removed, total, note}`。
+    """
+    ensure_tables()
+    n_top = max(1, int(top or POOL_AUTO_TOP))
+    d = str(day or _today())[:10]
+
+    # 用"不晚于 d 的最新批次"—— 手动补跑历史日时不会误用今天的预案
+    row = db.fetch_one(
+        f"SELECT MAX(plan_date) AS d FROM {_T_PLAN_TABLE} "
+        f"WHERE plan_date <= %s", (d,)) or {}
+    pd = str(row.get("d") or "")[:10]
+    if not pd:
+        return {"date": d, "plan_date": None, "picked": [], "removed": 0,
+                "total": len(pool_codes()),
+                "note": "还没有任何预案批次（先跑一次盘后扫描）"}
+
+    rows = db.fetch(
+        f"SELECT code, name, space_atr_mult, space_pct, ratio, atr_pct "
+        f"FROM {_T_PLAN_TABLE} WHERE plan_date=%s AND feasible=1 "
+        f"ORDER BY (COALESCE(space_pct,0) * COALESCE(ratio,0)) DESC, "
+        f"         space_atr_mult DESC, COALESCE(atr_pct,0) ASC LIMIT %s",
+        (pd, n_top * 3)) or []
+
+    held = set(holdings().keys())
+    manual = {str(r.get("code") or "").strip() for r in db.fetch(
+        f"SELECT code FROM {_T_POOL_TABLE} "
+        f"WHERE COALESCE(source,'manual') <> 'auto'") or []}
+
+    picked: List[Dict] = []
+    for r in rows:
+        c = str(r.get("code") or "").strip()
+        if not c or c in held or c in manual:
+            continue
+        picked.append(r)
+        if len(picked) >= n_top:
+            break
+
+    # 先清掉"上一轮自动挑的"，再写新一轮（manual 的行一条都不碰）
+    removed = 0
+    try:
+        removed = int(db.execute(
+            f"DELETE FROM {_T_POOL_TABLE} "
+            f"WHERE COALESCE(source,'manual') = 'auto'") or 0)
+    except Exception as e:
+        print(f"[t-trade] auto_pick clear failed: {str(e)[:70]}")
+
+    added: List[str] = []
+    for r in picked:
+        c = str(r.get("code") or "").strip()
+        try:
+            _sp = float(r.get("space_pct") or 0)
+            _rt = float(r.get("ratio") or 0)
+            db.upsert(_T_POOL_TABLE, {
+                "code": c,
+                "name": resolve_name(c, r.get("name") or ""),
+                "note": "自动挑选（空间 %.2f%% × 仓位 %.0f%% ≈ 期望 %.2f%%）"
+                        % (_sp, _rt * 100, _sp * _rt),
+                "added_at": _now(), "source": "auto",
+            }, conflict_columns=["code"])
+            added.append(c)
+        except Exception as e:
+            print(f"[t-trade] auto_pick add {c} failed: {str(e)[:60]}")
+
+    if added or removed:
+        print(f"[t-trade] auto_pick {pd}: +{len(added)} -{removed} "
+              f"(held {len(held)} / manual {len(manual)} skipped)")
+    return {"date": d, "plan_date": pd, "picked": added, "removed": removed,
+            "excluded_held": len(held), "excluded_manual": len(manual),
+            "total": len(pool_codes()),
+            "note": "只替换自动挑选的行；手动加入的票不动"}
 
 
 def holdings() -> Dict[str, Dict]:
