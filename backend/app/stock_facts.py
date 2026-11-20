@@ -141,9 +141,14 @@ def build(day: str) -> Dict:
                         "WHERE data_date = %s ORDER BY saved_at DESC LIMIT 1", (day,))
     stocks = _jload(snap.get("stocks_json")) if snap else {}
 
-    # 行业映射（唯一入口 industry_map 的底表直读——日批时点缓存已过期无妨）
-    imap = {str(r["code"]): str(r.get("main_industry") or "其它行业")
-            for r in db.fetch("SELECT code, main_industry FROM stock_industry") or []}
+    # 行业映射：**统一走 `industry_map` 的 1h 进程缓存**
+    #   ★ 2026-11-20（egress 治理）：原先这里直读底表（5932 行 ≈ 1MB/次），
+    #     而全项目有 4 处各自整表读、实测一天 12 次。
+    #   · 日批是**独立进程** ⇒ 首次查询就是最新，不存在"缓存过期无妨"的问题；
+    #   · 映射表由 `sector_industry.build_map*` **月级全量重建**，日内不变；
+    #   · 缺失的票由下方 `imap.get(code, "其它行业")` 的默认值兜住。
+    from app.industry_map import get_industry_map
+    imap = get_industry_map()
 
     # 收盘价序列（ret5/ret20/距60日高点）——backtest_prices 窗口读
     # ★★ 2026-10-26（审查 P1-⑥）：窗口 -60 **自然日** ≈ 40 个交易日 ⇒ `closes[-60:]`

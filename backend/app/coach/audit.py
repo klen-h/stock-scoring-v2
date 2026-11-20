@@ -135,8 +135,20 @@ def ensure_tables() -> None:
         _columns_ready = True
 
 
+# ★★ 2026-11-20（Supabase egress 治理）：进程级"已检查"标志。
+#   `_ensure_columns` / `_ensure_alert_columns` 原先每次调用都查
+#   `information_schema.columns`；实测一天 1553 次（全库调用次数第一）。
+#   表结构在进程内不变 ⇒ 查一次即可。
+#   ⚠️ 探测异常时早退、**不置位**（下次重试），否则一次网络抖动会让补列永远不执行。
+_COLS_READY = False
+_ALERT_COLS_READY = False
+
+
 def _ensure_columns() -> None:
     """老库自动补列（幂等）：模拟盘完整接入 B-1 新增字段。"""
+    global _COLS_READY
+    if _COLS_READY:
+        return
     needed = {
         "status": "TEXT DEFAULT 'open'",
         "actual_exit_date": "TEXT",
@@ -162,10 +174,14 @@ def _ensure_columns() -> None:
     # ★ 2026-11-13：`coach_alerts` 此前**没有补列机制**（`_ensure_columns` 只管 coach_plans），
     #   而本次要给它加 `outcome_bench_pct` ⇒ 老库必须能自动补上。
     _ensure_alert_columns()
+    _COLS_READY = True
 
 
 def _ensure_alert_columns() -> None:
     """老库自动给 `coach_alerts` 补列（幂等）。只补"新增且非空默认"的列。"""
+    global _ALERT_COLS_READY
+    if _ALERT_COLS_READY:
+        return
     needed = {
         "outcome_bench_pct": "REAL",
         "outcome_bench_date": "TEXT",
@@ -193,6 +209,7 @@ def _ensure_alert_columns() -> None:
                 print(f"[coach] 已补列 coach_alerts.{col}")
             except Exception as e:
                 print(f"[coach] 补列 coach_alerts.{col} 失败: {e}")
+    _ALERT_COLS_READY = True
 
 
 def close_plan(position_id: int, code: str, fill_date: str,

@@ -160,8 +160,12 @@ def build(day: str = None, apply: bool = True) -> dict:
     caps, names = _snap_maps()
 
     try:
-        ind = {r["code"]: r.get("main_industry") or ""
-               for r in db.fetch("SELECT code, main_industry FROM stock_industry")}
+        # ★ 2026-11-20（egress 治理）：走 `industry_map` 的 1h 进程缓存，
+        #   不再每次整表读（5932 行 ≈ 1MB/次，实测一天 12 次重复读）。
+        #   `get_industry_map()` 内部已吞异常并返回空 dict；缺失票由下面
+        #   `ind.get(code) in DIV_INDUSTRIES` / `ind.get(c) or ""` 自然降级。
+        from app.industry_map import get_industry_map
+        ind = get_industry_map()
     except Exception as e:
         print(f"[defensive_group] 行业映射读取失败（dividend 组退化为空）: {str(e)[:80]}")
         ind = {}

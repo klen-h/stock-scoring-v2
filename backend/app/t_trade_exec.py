@@ -211,11 +211,27 @@ def save_plan(plan: Dict, day: str = None) -> bool:
         return False
 
 
+# ★★ 2026-11-20（Supabase egress 治理）：读预案时**排除 `candidates_json`**。
+#   该列平均 **276 字节/行**，而 `/api/t-trade/plans` 一天被调 374 次、
+#   每次约 160 行 ⇒ 约 **16MB/天**纯浪费。
+#   全项目搜索确认：`candidates_json` **只写不读**（仅 `save_plan` 写入，
+#   没有任何消费方），它是 `build_plan` 的候选位调试快照。
+#   ⚠️ 将来给 `t_plans` 加列后，**要同步加进这个清单** —— 否则读出来是 None
+#     且不会报错（这正是"用 SELECT * 省事"的代价，必须留注释）。
+_PLAN_SELECT_COLS = (
+    "id, code, name, plan_date, price_ref, "
+    "support, support_type, resistance, resistance_type, "
+    "atr, atr_pct, space_pct, space_atr_mult, ratio, "
+    "feasible, reason, created_at, updated_at"
+)
+
+
 def load_plan(code: str, day: str = None) -> Optional[Dict]:
     """读某只票某日的预案（默认今天）。没有返回 None。"""
     ensure_tables()
     row = db.fetch_one(
-        f"SELECT * FROM {_T_PLAN_TABLE} WHERE code=%s AND plan_date=%s",
+        f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} "
+        f"WHERE code=%s AND plan_date=%s",
         (str(code), day or _today()))
     return dict(row) if row else None
 
@@ -233,7 +249,7 @@ def plan_for_trading(code: str, day: str = None) -> Optional[Dict]:
     if row:
         return row
     row = db.fetch_one(
-        f"SELECT * FROM {_T_PLAN_TABLE} WHERE code=%s "
+        f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} WHERE code=%s "
         f"ORDER BY plan_date DESC LIMIT 1", (str(code),))
     return dict(row) if row else None
 
@@ -249,16 +265,16 @@ def list_plans(day: str = None, feasible_only: bool = False) -> List[Dict]:
     d = day or _today()
     cond = " AND feasible=1" if feasible_only else ""
     rows = db.fetch(
-        f"SELECT * FROM {_T_PLAN_TABLE} WHERE plan_date=%s{cond} ORDER BY code",
-        (d,)) or []
+        f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} "
+        f"WHERE plan_date=%s{cond} ORDER BY code", (d,)) or []
     if not rows:
         last = db.fetch_one(
             f"SELECT MAX(plan_date) AS d FROM {_T_PLAN_TABLE} WHERE 1=1{cond}") or {}
         d2 = last.get("d")
         if d2 and str(d2) != d:
             rows = db.fetch(
-                f"SELECT * FROM {_T_PLAN_TABLE} WHERE plan_date=%s{cond} "
-                f"ORDER BY code", (d2,)) or []
+                f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} "
+                f"WHERE plan_date=%s{cond} ORDER BY code", (d2,)) or []
     return [dict(r) for r in rows]
 
 
@@ -266,14 +282,28 @@ def _load_bars_batch(codes: List[str], per_code: int = 120) -> Dict[str, List[Di
     """批量取日线（**必须在一条 SQL 里取多只**，否则 1000 只 × 1 次查询要 160 秒）。
 
     ⚠️ `backtest_prices` 里个股是**裸 6 位码**（指数才带 `sh/sz` 前缀）。
+
+    ★★ 2026-11-20（Supabase egress 治理，实测最大单项占日流量 43%）：
+      **原实现把每只票的全部历史都传回来**（表内 630699 行 / 1103 只 ≈ 每只 572 根），
+      然后在 Python 里 `bs[-per_code:]` 只留最后 120 根
+      ⇒ **白传 4.8 倍数据**（200 只 × 572 = 114400 行，实际只用 24000 行）。
+      改成窗口函数在**库内**截断后只返回需要的根数（-79% 行数）。
+      · 语义完全等价：`ORDER BY date DESC` 取前 N，再外层 `ORDER BY code, date` 升序，
+        与"全量取回后按 date 升序切片尾部"结果一致；
+      · 走 `uq_backtest_prices_code_date (code, date)` 唯一索引，不需要额外索引；
+      · Python 里的 `bs[-per_code:]` 保留作双保险（老库若走 SQLite 分支同样安全）。
     """
     out: Dict[str, List[Dict]] = {}
     if not codes:
         return out
     placeholders = ",".join(["%s"] * len(codes))
     rows = db.fetch(
-        f"SELECT code, date, high, low, close FROM backtest_prices "
-        f"WHERE code IN ({placeholders}) ORDER BY code, date", tuple(codes)) or []
+        f"SELECT code, date, high, low, close FROM ("
+        f"  SELECT code, date, high, low, close, "
+        f"         ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn "
+        f"  FROM backtest_prices WHERE code IN ({placeholders})"
+        f") t WHERE rn <= %s ORDER BY code, date",
+        tuple(codes) + (int(per_code),)) or []
     for r in rows:
         c = str(r.get("code") or "")
         out.setdefault(c, []).append({

@@ -50,7 +50,18 @@ def ensure_tables() -> None:
     _ensure_validation_columns()
 
 
+# ★★ 2026-11-20（Supabase egress 治理）：**进程级"已检查"标志**。
+#   原实现每次 `ensure_tables()` 都查一次 `information_schema.columns`，
+#   实测一天 **1553 次**（`egress_stmt_raw` 差分，是当日调用次数最多的语句）。
+#   表结构在进程生命周期内不会变 ⇒ 查一次就够。
+#   ⚠️ 中途抛异常时**不置位**（让下次重试），否则一次抖动会让补列永远不执行。
+_COLS_READY = False
+
+
 def _ensure_validation_columns() -> None:
+    global _COLS_READY
+    if _COLS_READY:
+        return
     cols = db._use_postgres and [
         r["column_name"] for r in db.fetch(
             "SELECT column_name FROM information_schema.columns "
@@ -72,6 +83,7 @@ def _ensure_validation_columns() -> None:
                 pass
         elif not has(name):
             db.execute(sql)
+    _COLS_READY = True
 
 
 def save_contradictions(date: str, items: List[Dict]) -> int:
