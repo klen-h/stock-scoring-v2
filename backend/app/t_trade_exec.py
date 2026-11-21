@@ -136,8 +136,10 @@ def ensure_tables() -> None:
         try:
             db.execute(f"ALTER TABLE {_T_POOL_TABLE} "
                        f"ADD COLUMN source TEXT DEFAULT 'manual'")
-        except Exception:
-            pass        # 列已存在 —— 幂等升级的正常路径
+        except Exception as e:
+            # 列已存在 = 幂等升级的正常路径；但吞异常必须可见（GUARDRAILS #11）
+            if "duplicate column" not in str(e).lower():
+                print(f"[t-trade] add source column failed: {str(e)[:90]}")
         # ★ 2026-11-16：做T 模拟底仓（"价格到位自动处理"的落点）
         #   `status`: holding（持有）/ closed（已平）
         #   `plan_id`: 来自哪条建仓计划（便于回溯，NULL 表示手工建）
@@ -164,8 +166,10 @@ def ensure_tables() -> None:
                      "pnl REAL", "pnl_pct REAL"):
             try:
                 db.execute(f"ALTER TABLE {_T_SIM_TABLE} ADD COLUMN {_col}")
-            except Exception:
-                pass     # 列已存在 —— 幂等升级，正常路径
+            except Exception as e:
+                # 列已存在 = 幂等升级的正常路径；但吞异常必须可见（GUARDRAILS #11）
+                if "duplicate column" not in str(e).lower():
+                    print(f"[t-trade] add column {_col} failed: {str(e)[:90]}")
         _ready = True
     except Exception as e:
         # 吞异常必须可见（GUARDRAILS #11）
