@@ -55,6 +55,10 @@ deploy.pem
 .env
 .env.local
 .env.*.local
+# 迁移/切换连接串时产生的备份同样含密码，绝不能入库
+# （2026-11-21 迁移东京时生成 backend/.env.bak.20261121，原规则不匹配）
+.env.bak*
+.env.*.bak*
 !.env.example
 
 # DB dump (Supabase 402 emergency backup, 2026-10-31)
