@@ -93,6 +93,21 @@ def ensure_tables() -> None:
             PRIMARY KEY (thesis_id, date)
         )
     """)
+    # ★★ 2026-11-22（用户："日批…还需输出推演文本"）：
+    #   企微只发精简版 `_markdown()`，这里存**完整文本**（情景/逐项/修正/证伪全文），
+    #   供页面查看与复制。企微消息会被刷掉，全文必须留在库里。
+    #   ⚠️ sqlite 的 ADD COLUMN 不支持 IF NOT EXISTS ⇒ 分两支。
+    try:
+        if db.is_postgres:
+            db.execute(f"ALTER TABLE {_T_DAILY} "
+                       f"ADD COLUMN IF NOT EXISTS report_text TEXT")
+        else:
+            cols = [r.get("name") for r in
+                    (db.fetch("PRAGMA table_info(%s)" % _T_DAILY) or [])]
+            if "report_text" not in cols:
+                db.execute(f"ALTER TABLE {_T_DAILY} ADD COLUMN report_text TEXT")
+    except Exception as e:
+        print(f"[thesis] add report_text failed: {str(e)[:80]}")
     _READY = True
 
 
@@ -629,10 +644,11 @@ def parse_text(text: str) -> Dict:
 #  落库 + 推送
 # ══════════════════════════════════════════════════════════════════════════
 def save_daily(tid: str, day: str, ev: Dict,
-               review: Optional[Dict]) -> bool:
+               review: Optional[Dict], thesis: Optional[Dict] = None) -> bool:
+    """落库当日对照。thesis 传了就顺带生成完整推演文本（report_text）。"""
     ensure_tables()
     try:
-        db.upsert(_T_DAILY, {
+        row = {
             "thesis_id": tid, "date": day,
             "checked_json": _dumps(ev.get("checked")),
             "scenario_now": (review or {}).get("scenario_now"),
@@ -640,11 +656,96 @@ def save_daily(tid: str, day: str, ev: Dict,
             "llm_json": _dumps(review) if review else None,
             "pushed": 0,
             "created_at": _now(),
-        }, conflict_columns=["thesis_id", "date"])
+        }
+        if thesis:
+            row["report_text"] = _full_text(thesis, day, ev, review)
+        db.upsert(_T_DAILY, row, conflict_columns=["thesis_id", "date"])
         return True
     except Exception as e:
         print(f"[thesis] save_daily failed: {str(e)[:90]}")
         return False
+
+
+def _full_text(thesis: Dict, day: str, ev: Dict,
+               review: Optional[Dict]) -> str:
+    """完整推演文本（落库 + 页面复制）。
+
+    与 `_markdown()` 的区别：markdown 是**企微推送用的精简版**（无表格、短），
+    本函数是**存档全文** —— 情景路径、逐项对照含 note、六个修正字段全给。
+    企微消息会被刷掉，全文必须留在库里。
+    """
+    L = ["【推演复盘】%s" % (thesis.get("title") or ""),
+         "日期：%s　有效期：%s ~ %s"
+         % (day, thesis.get("horizon_start"), thesis.get("horizon_end")),
+         ""]
+
+    L.append("一、情景（登记时）")
+    scs = thesis.get("scenarios") or []
+    if scs:
+        for s in scs:
+            path = ("　—　" + str(s.get("path"))) if s.get("path") else ""
+            L.append("  %s　%s%%%s" % (s.get("name"), s.get("prob"), path))
+    else:
+        L.append("  （未登记）")
+    L.append("")
+
+    L.append("二、当日对照（%s）" % day)
+    checks = ev.get("checked") or []
+    if checks:
+        for x in checks:
+            mark = {"pass": "✓", "fail": "✗", "nodata": "—"}.get(x["verdict"], "?")
+            act = "无数据" if x["actual"] is None else x["actual"]
+            note = ("（%s）" % x["note"]) if x.get("note") else ""
+            L.append("  %s %s %s %s　实际 %s%s"
+                     % (mark, x.get("label"), x.get("op"), x.get("target"),
+                        act, note))
+    else:
+        L.append("  （无验证项）")
+    L.append("  统计：命中 %d / 偏离 %d / 无数据 %d"
+             % (ev.get("n_pass", 0), ev.get("n_fail", 0), ev.get("n_nodata", 0)))
+    L.append("")
+
+    if review:
+        L.append("三、情景判定与概率修正")
+        L.append("  当前最像：%s" % (review.get("scenario_now") or "—"))
+        if review.get("progress"):
+            L.append("  兑现进度：%s" % review["progress"])
+        probs = review.get("probs")
+        if isinstance(probs, dict) and probs:
+            base = {s.get("name"): s.get("prob") for s in scs}
+            seg = []
+            for k, v in probs.items():
+                old = base.get(k)
+                seg.append("%s %s%% → %s%%"
+                           % (k, old if old is not None else "?", v))
+            L.append("  概率：" + "　".join(seg))
+        L.append("")
+
+        L.append("四、已被证伪的假设")
+        inv = review.get("invalidated") or []
+        for x in inv:
+            L.append("  · %s" % x)
+        if not inv:
+            L.append("  （无）")
+        L.append("")
+
+        L.append("五、接下来盯")
+        nw = review.get("next_watch") or []
+        for x in nw:
+            L.append("  · %s" % x)
+        if not nw:
+            L.append("  （无）")
+        L.append("")
+
+        L.append("六、这次修正错在哪")
+        L.append("  %s" % (review.get("falsifier") or "（LLM 未给出）"))
+    else:
+        L.append("三、LLM 修正")
+        L.append("  不可用（未配置 / 调用失败）：以上仅为确定性对照。")
+    L.append("")
+    L.append("生成时间：%s" % _now())
+    L.append("口径：只对照已登记指标，无数据项标「—」不推测。纯复盘，不进决策链。")
+    return "\n".join(L)
 
 
 def _markdown(thesis: Dict, day: str, ev: Dict,
@@ -713,7 +814,7 @@ def run_daily(day: str = None) -> Dict:
         for t in theses:
             ev = evaluate_day(t, d)
             rv = llm_review(t, d, ev)
-            ok_db = save_daily(t["id"], d, ev, rv)
+            ok_db = save_daily(t["id"], d, ev, rv, t)
             pushed = push(t, d, ev, rv) if ok_db else False
             if pushed:
                 try:
@@ -751,5 +852,7 @@ def daily_rows(tid: str, limit: int = 30) -> List[Dict]:
             "scenario_now": r.get("scenario_now"),
             "llm": json.loads(r["llm_json"]) if r.get("llm_json") else None,
             "pushed": bool(r.get("pushed")),
+            # ★ 完整推演文本（企微只发精简版；这里给页面查看/复制）
+            "report_text": r.get("report_text") or "",
         })
     return out

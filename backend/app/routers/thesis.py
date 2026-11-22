@@ -89,7 +89,7 @@ def scenario_review(tid: str,
     day = str(date or _default_day())[:10]
     ev = ts.evaluate_day(t, day)
     rv = ts.llm_review(t, day, ev)
-    saved = ts.save_daily(tid, day, ev, rv)
+    saved = ts.save_daily(tid, day, ev, rv, t)
     pushed = ts.push(t, day, ev, rv) if saved else False
     return {"ok": saved, "date": day, "checked": ev["checked"],
             "n_pass": ev["n_pass"], "n_fail": ev["n_fail"],

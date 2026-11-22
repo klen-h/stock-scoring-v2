@@ -258,6 +258,22 @@
                 <div v-else class="mt-2 text-[10px] text-muted">
                   无 LLM 修正（未配置 / 调用失败）；确定性对照已落库。
                 </div>
+
+                <!-- 完整推演文本（落库全文；企微只发精简版） -->
+                <div v-if="d.report_text" class="mt-2 pt-2 border-t border-border/60">
+                  <div class="flex items-center justify-between">
+                    <button @click="toggleText(d.date)"
+                      class="text-[10px] text-muted hover:text-gray-200 transition-colors">
+                      {{ textOpen === d.date ? '收起推演文本 ▲' : '查看推演文本 ▼' }}
+                    </button>
+                    <button v-if="textOpen === d.date" @click="copyText(d)"
+                      class="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted hover:text-gray-200 transition-colors">
+                      {{ textCopied === d.date ? '已复制' : '复制' }}
+                    </button>
+                  </div>
+                  <pre v-if="textOpen === d.date"
+                    class="mt-1.5 text-[10px] leading-relaxed text-gray-300 bg-bg border border-border rounded p-2 overflow-x-auto whitespace-pre-wrap font-mono">{{ d.report_text }}</pre>
+                </div>
               </div>
             </div>
           </div>
@@ -488,6 +504,10 @@ const parseError = ref('')
 const parseWarn = ref([])
 const sampleCopied = ref(false)
 
+// 完整推演文本：默认收起（太长），按日期展开
+const textOpen = ref(null)
+const textCopied = ref('')
+
 const today = computed(() => fmtDate(new Date()))
 const hasToday = computed(() =>
   (current.value?.data || []).some(d => d.date === today.value))
@@ -688,6 +708,22 @@ async function copySample() {
     setTimeout(() => { sampleCopied.value = false }, 1800)
   } catch (e) {
     parseError.value = '复制失败，请手动选中'
+  }
+}
+
+function toggleText(date) {
+  textOpen.value = textOpen.value === date ? null : date
+}
+
+async function copyText(d) {
+  try {
+    await navigator.clipboard.writeText(d.report_text || '')
+    textCopied.value = d.date
+    setTimeout(() => {
+      if (textCopied.value === d.date) textCopied.value = ''
+    }, 1600)
+  } catch (e) {
+    error.value = '复制失败，请手动选中文本'
   }
 }
 
