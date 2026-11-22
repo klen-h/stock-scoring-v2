@@ -995,6 +995,50 @@
             </div>
           </div>
 
+          <!-- ★★ 2026-11-22（用户："可以"，承接 11-20 复盘）：广度背离。
+               指数（流通市值加权）与个股（等权）的差距 —— 回答"指数还行，我的票在跌"。
+               11-20 实测：加权 -1.44% / 等权 -4.18% / 背离 2.74pp / 92% 在跌。
+               【与风格分化的分工】那个答"钱在权重还是成长"，这个答"指数是否在骗人"。
+               ⚠️ 纯观察器，不进决策链；日频（日批快照），收盘后才有当天值。 -->
+          <div class="border-t border-border/40 py-1.5">
+            <button type="button" class="w-full flex items-center gap-2 text-left"
+                    @click="bdOpen = !bdOpen; saveObs()">
+              <span class="w-1.5 h-1.5 rounded-full shrink-0" :class="bdDot"></span>
+              <span class="text-sm font-semibold shrink-0">广度背离</span>
+              <span class="text-xs text-gray-300/80 truncate flex-1">{{ bdLine }}</span>
+              <span class="text-xs text-muted shrink-0">{{ bdOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="bdOpen" class="mt-1.5 rounded-md border border-border/60 bg-white/[0.06] p-2">
+              <div v-if="bdErr" class="text-xs text-muted">{{ bdErr }}</div>
+              <div v-else-if="!bd || !bd.ok" class="text-xs text-muted">
+                {{ (bd && bd.error) || '加载中…' }}
+              </div>
+              <div v-else class="text-xs space-y-1.5">
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span class="font-mono font-semibold" :class="bdGapCls"
+                        :title="'市值加权 − 等权（pp）；正=大市值抗跌、小市值杀跌（指数假象），负=权重拖累'">
+                    背离 {{ Number(bd.gap_pp) >= 0 ? '+' : '' }}{{ bd.gap_pp }}pp</span>
+                  <span class="font-mono text-muted" title="按流通市值加权 —— 指数想表达的东西">
+                    加权 {{ fmtPct(bd.cap_pct) }}</span>
+                  <span class="font-mono text-muted" title="个股涨跌幅均值 —— 你的真实体感">
+                    等权 {{ fmtPct(bd.equal_pct) }}</span>
+                  <span class="font-mono text-muted">{{ bd.down }}/{{ bd.n }} 下跌</span>
+                  <span class="text-[10px] text-amber-400/80 cursor-help"
+                        title="数据来自日批快照，收盘后更新，盘中不变">· 截至 {{ bd.date }}</span>
+                </div>
+                <div class="text-[11px]" :class="bdToneCls">
+                  <b>{{ bd.level_label }}</b>：{{ bd.hint }}</div>
+                <div v-if="bdBars.length" class="flex items-end gap-0.5 h-9 pt-0.5">
+                  <div v-for="b in bdBars" :key="b.date" class="flex-1 rounded-sm"
+                       :class="Number(b.gap_pp) >= 0 ? 'bg-rise/60' : 'bg-fall/60'"
+                       :style="{ height: b.h + '%' }"
+                       :title="`${b.date} 加权 ${b.cap_pct}% / 等权 ${b.equal_pct}% / 背离 ${b.gap_pp}pp`"></div>
+                </div>
+                <div class="text-[10px] text-muted">{{ bd.note }}</div>
+              </div>
+            </div>
+          </div>
+
           <!-- ③ 推演证伪 -->
           <div class="border-t border-border/40 py-1.5">
             <button type="button" class="w-full flex items-center gap-2 text-left"
@@ -3933,6 +3977,8 @@ import {
   getCopperWatch,
   // ★★ 2026-11-13：风格分化（钱在权重还是在成长；决定"该往哪加/往哪减"）
   getStyleSpread,
+  // ★★ 2026-11-22：广度背离（等权 vs 市值加权；回答"指数还行、我的票在跌"）
+  getBreadthDivergence,
   // ★★ 2026-11-05：事件 → 观察名单（主题 → 行业 → 标的当前状态，纯展示）
   getEventTargets, getEventThemes,
   // ★★ 2026-11-05：震荡区间（箱体上下沿/位置/持续天数，含我的持仓切片）
@@ -4367,6 +4413,11 @@ const sectorFail = ref([])
 //   ⇒ 「该往哪加/往哪减」比「加不加」影响更大，值得常驻而非只在信号里出现。
 const styleSpread = ref(null)
 const styleSpreadErr = ref('')
+// ★★ 2026-11-22（用户："可以"，承接 11-20 复盘）：广度背离。
+//   11-20 沪指 -1.23%，但个股平均 -4.18%、92% 在跌 ⇒ 指数低估了实际亏损。
+//   与"风格分化"互补：那个答"钱在权重还是成长"，这个答"指数是否在骗人"。
+const bd = ref(null)
+const bdErr = ref('')
 // ★ 2026-09-25 需求 4：行业成交额占比（框架「板块主线层 · 成交占比」）——
 //   回答"资金此刻真金白银集中在哪个板块"，与上面"涨幅榜"互补（涨得好≠成交额集中）。
 //   ⚠️ 数据源独立于上面的东财接口 ⇒ 东财被封时上面可能空白、而这块照常显示。
@@ -5076,12 +5127,15 @@ const scenOpen = ref(!!_obs.scen)
 const aiOpen = ref(!!_obs.ai)
 // ★★ 2026-11-13（用户要求 ③）：风格分化（默认收起 —— 日频数据，不是每天都变）
 const styleOpen = ref(!!_obs.style)
+// ★★ 2026-11-22：广度背离（同为日频，默认收起）
+const bdOpen = ref(!!_obs.bd)
 function saveObs() {
   try {
     localStorage.setItem(OBS_KEY, JSON.stringify({
       ws: wsOpen.value, crowd: crowdOpen.value, xmk: xmkOpen.value,
       evt: evtOpen.value, ppl: pplOpen.value, rg: rgOpen.value,
       scen: scenOpen.value, ai: aiOpen.value, style: styleOpen.value,
+      bd: bdOpen.value,   // ★ 2026-11-22：广度背离
       tell: tellOpen.value,   // ★ 2026-11-16：危险信号清单
       copper: copperOpen.value,  // ★ 2026-11-16：铜裁决器
       pbw: pbwOpen.value,     // ★ 2026-10-27：市场底清单并入后一起记忆
@@ -5091,7 +5145,7 @@ function saveObs() {
 const obsAllOpen = computed(() =>
   wsOpen.value && crowdOpen.value && xmkOpen.value && evtOpen.value && pplOpen.value
   && rgOpen.value && scenOpen.value && aiOpen.value && pbwOpen.value
-  && styleOpen.value && tellOpen.value && copperOpen.value)
+  && styleOpen.value && tellOpen.value && copperOpen.value && bdOpen.value)
 function toggleAllObs() {
   const v = !obsAllOpen.value
   wsOpen.value = v
@@ -5105,6 +5159,7 @@ function toggleAllObs() {
   scenOpen.value = v
   aiOpen.value = v
   styleOpen.value = v
+  bdOpen.value = v
   tellOpen.value = v
   copperOpen.value = v
   pbwOpen.value = v
@@ -5176,6 +5231,48 @@ const styleBars = computed(() => {
   return s.map(x => ({
     ...x,
     h: Math.max(8, Math.round(Math.abs(Number(x.spread_pp) || 0) / mx * 100)),
+  }))
+})
+// ★★ 2026-11-22：广度背离的摘要行 / 状态点 / 柱高。
+//   ⚠️ 与 styleLine 同纪律：不要在模板里凭空调 `signNum`（本文件没有该函数）。
+const bdLine = computed(() => {
+  const d = bd.value
+  if (!d || !d.ok) return bdErr.value || '—'
+  const gap = Number(d.gap_pp)
+  return `背离 ${gap >= 0 ? '+' : ''}${gap.toFixed(2)}pp · ${d.level_label}`
+    + ` · ${String(d.date || '').slice(5)}`
+})
+// 红点 = 需要看一眼（指数在骗人）；绿点 = 一致；琥珀 = 轻度
+const bdDot = computed(() => {
+  const d = bd.value
+  if (!d || !d.ok) return 'bg-slate-400'
+  if (d.level === 'severe') return 'bg-rise'
+  if (d.level === 'mild') return 'bg-amber-400'
+  if (d.level === 'reverse') return 'bg-fall'
+  return 'bg-emerald-400'
+})
+const bdGapCls = computed(() => {
+  const d = bd.value
+  if (!d || !d.ok) return 'text-muted'
+  const v = Number(d.gap_pp)
+  if (v >= 1) return 'text-rise'
+  if (v <= -1) return 'text-fall'
+  return 'text-gray-300'
+})
+const bdToneCls = computed(() => {
+  const d = bd.value
+  if (!d || !d.ok) return 'text-muted'
+  if (d.level === 'severe') return 'text-rise'
+  if (d.level === 'mild') return 'text-amber-300'
+  return 'text-muted'
+})
+const bdBars = computed(() => {
+  const s = (bd.value?.series || [])
+  if (!s.length) return []
+  const mx = Math.max(...s.map(x => Math.abs(Number(x.gap_pp) || 0)), 0.01)
+  return s.map(x => ({
+    ...x,
+    h: Math.max(8, Math.round(Math.abs(Number(x.gap_pp) || 0) / mx * 100)),
   }))
 })
 // ★ 2026-10-24：情景从摘要文字里抽成**彩色徽标**（收起时也能一眼看出倾向）
@@ -5650,12 +5747,23 @@ async function loadRiskWatch(silent = false) {
   //      **不进 5 分钟轮询**（轮询只会白烧请求），挂载/切日时拉一次即可。
   //   ⚠️ 失败静默保留上次值（铁律 11）：不能因为一块观察器挂了就清空。
   if (!silent) {
-    try {
-      const sd = await getStyleSpread(5, 20)
-      styleSpread.value = sd.data || null
+    // ★ 2026-11-22：风格分化 + 广度背离**并行**拉（两者同为日频，老库上串行会各等 1~3s）。
+    //   allSettled ⇒ 一块失败不影响另一块（铁律 11：失败静默保留上次值）。
+    const [sr, br] = await Promise.allSettled([
+      getStyleSpread(5, 20),
+      getBreadthDivergence(),
+    ])
+    if (sr.status === 'fulfilled') {
+      styleSpread.value = sr.value.data || null
       styleSpreadErr.value = ''
-    } catch {
+    } else {
       styleSpreadErr.value = '风格分化数据加载失败'
+    }
+    if (br.status === 'fulfilled') {
+      bd.value = br.value.data || null
+      bdErr.value = ''
+    } else {
+      bdErr.value = '广度背离数据加载失败'
     }
   }
   // ★★ 2026-11-05：跨市场异动——同样**单独请求**（读宏观面板缓存，通常 <100ms；

@@ -1363,6 +1363,27 @@ def ai_basket_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，
     return ab.load(date)
 
 
+@router.get("/breadth-divergence")
+def breadth_divergence(date: Optional[str] = Query(None, description="YYYY-MM-DD，默认最新"),
+                       user: dict = Depends(get_current_user)) -> Dict:
+    """广度-指数背离观察器（等权 vs 市值加权，纯观察，不进决策链）。
+
+    ★★ 2026-11-22（用户："可以" —— 承接 11-20 复盘）：
+      11-20 沪指 -1.23%，但全市场个股**平均 -4.18%**、92% 在跌。
+      指数被权重股拉抬掩盖广度崩塌 ⇒ "沪指跌 3% 才减仓"式的指数风控会完全失效。
+
+    【为什么不读现成指数】项目没有持久化指数日线
+      （`market_snapshot` 是个股快照；`market_tail_snapshot.idx_json` 只有当天尾盘）。
+      改用 `stock_facts_wide` 的 `chg_pct × float_cap_yi` 自算，
+      口径自洽；实测 11-20 算得 -1.44%，与当日沪指 -1.23% 吻合。
+
+    ⚠️ **刻意不**进 `market_regime` / 评分 / 闸门：本端点只输出事实。
+    ⚠️ 日频（日批快照）⇒ 收盘后才有当天值，盘中不更新。
+    """
+    from app import breadth_divergence as bd
+    return bd.snapshot(date)
+
+
 @router.get("/cross-market-watch")
 def cross_market_watch(user: dict = Depends(get_current_user)) -> Dict:
     """跨市场异动观察器（外围指数极端异动 + 中国 vs 日韩区域背离）。

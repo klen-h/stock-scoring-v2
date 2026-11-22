@@ -163,6 +163,13 @@ export const getCrossMarketWatch = () => http.get('/system/cross-market-watch', 
 //   全灭 = 恐慌未扩散（箱体内轮动）；点亮越多越像流动性问题。
 //   纯读宏观面板共享缓存 + 内存宽度 ⇒ 零新增外部请求，20s 足够。
 export const getTellWatch = () => http.get('/system/tell-watch', { timeout: 20000 })
+// ★★ 2026-11-22（用户："可以"，承接 11-20 复盘）：广度-指数背离观察器。
+//   等权涨跌（你的体感）vs 流通市值加权（指数想表达的），差 = gap。
+//   11-20 实测：等权 -4.18%、加权 -1.44%（沪指 -1.23%）、gap 2.74pp、92% 在跌
+//   ⇒ 指数只跌 1.2% 时个股已失血 4%，"沪指跌 3% 才减仓"式的风控会失效。
+//   日频（日批快照）⇒ 读库为主，20s 足够；老库慢时可能几秒。
+export const getBreadthDivergence = (date) =>
+  http.get('/system/breadth-divergence', { params: date ? { date } : {}, timeout: 30000 })
 // ★★ 2026-11-16：铜裁决器 —— 油跌时区分"供给驱动(D1)"与"需求驱动(D2)"。
 //   把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出。
 export const getCopperWatch = () => http.get('/system/copper-watch', { timeout: 20000 })
