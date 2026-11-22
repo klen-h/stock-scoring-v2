@@ -120,8 +120,38 @@ def _cluster_of(content: str) -> str:
 _HOT_READY = False
 
 
+def ensure_hot_columns() -> None:
+    """补齐 `flash_news` 的 hot / important 列（幂等；**读路径也会调用**）。
+
+    ★★ 2026-11-22（代码审查 P0）：**必须能被读路径触发**。
+      原实现只在 `save_raw_data()` 里补列，且位置在 `if not new_items: return`
+      **之后** ⇒ Flash Cookie 失效时 `fetch_jin10()` 返回 `[]`、`new_items` 恒为空
+      ⇒ 该函数永远提前返回 ⇒ 列永不建立；
+      而 `_news_section` / `detect_trigger` 已经在 `SELECT hot`
+      ⇒ 快讯块**永久报错**（实测：`column "hot" does not exist`、rows=0）。
+    """
+    global _HOT_READY
+    if _HOT_READY:
+        return
+    ok = True
+    for ddl in ("ALTER TABLE flash_news ADD COLUMN hot TEXT",
+                "ALTER TABLE flash_news ADD COLUMN important INTEGER DEFAULT 0"):
+        try:
+            db.execute(ddl)
+        except Exception as e:
+            # 列已存在 = 幂等升级的正常路径；其余异常必须可见（GUARDRAILS #11）
+            if "duplicate column" not in str(e).lower():
+                print(f"[store] ensure hot columns failed: {str(e)[:80]}")
+                ok = False
+    # 只有全部成功才置位 —— 否则下次重试（避免一次网络抖动导致永久缺列）
+    if ok:
+        _HOT_READY = True
+
+
 def save_raw_data(all_items: list, new_items: list) -> None:
     """原始快讯落盘（默认保留 7 天，按 id 去重，新在前）。"""
+    # ★ 2026-11-22：补列**必须在「无新数据就返回」之前** —— 见 ensure_hot_columns
+    ensure_hot_columns()
     # ★ 2026-09-11 egress：没有新快讯就直接返回——此前每轮轮询都先查一次
     #   现有 ID 全表（实测 401 次/天、238 万行/21天），而绝大多数轮询并无新条目。
     if not new_items:
@@ -137,18 +167,7 @@ def save_raw_data(all_items: list, new_items: list) -> None:
     # 过滤新数据
     unique_new = [i for i in new_items if i.get("id") and i["id"] not in existing_ids]
 
-    # 插入新数据
-    # ★ 2026-11-22：金十官方 `hot`（爆/沸/热）与 `important` 编辑标记入库——
-    #   source.py 抓了但此处丢弃过 ⇒ 下游（触发器/卡片）无高置信信号可用。
-    global _HOT_READY
-    if not _HOT_READY:
-        for ddl in ("ALTER TABLE flash_news ADD COLUMN hot TEXT",
-                    "ALTER TABLE flash_news ADD COLUMN important INTEGER"):
-            try:
-                db.execute(ddl)
-            except Exception:
-                pass                    # 列已存在（幂等）
-        _HOT_READY = True
+    # 插入新数据（hot/important 列已由 ensure_hot_columns 保证存在）
     for item in unique_new:
         try:
             content = item.get("content", "") or ""

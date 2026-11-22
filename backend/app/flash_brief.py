@@ -370,6 +370,12 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
     out = {"rows": [], "scanned": 0, "error": "",
            "new_window_min": NEW_WINDOW_MIN, "new_count": 0}
     try:
+        # ★★ 2026-11-22（代码审查 P0）：**读路径也要补列**。
+        #   原实现只在 save_raw_data 里补，而它位于 `if not new_items: return` 之后
+        #   ⇒ Cookie 失效时列永不建立，本函数 SELECT hot 必报
+        #   `column "hot" does not exist` ⇒ 快讯块永久空。
+        from app.flash.store import ensure_hot_columns
+        ensure_hot_columns()
         rows = db.fetch("SELECT id, time, content, cluster, hot FROM flash_news "
                         "ORDER BY time DESC LIMIT %s", (int(scan),)) or []
     except Exception as e:
@@ -1248,6 +1254,9 @@ def detect_trigger(p: Dict) -> List[str]:
     strong = 0
     boom = 0
     try:
+        # ★ 2026-11-22（审查 P0）：同样先保证列存在，否则本查询报错被吞 ⇒ boom 恒 0
+        from app.flash.store import ensure_hot_columns
+        ensure_hot_columns()
         cutoff = (_now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
         rows = db.fetch("SELECT content, cluster, time, hot FROM flash_news "
                         "WHERE time >= %s ORDER BY time DESC LIMIT 50", (cutoff,)) or []
@@ -1257,8 +1266,9 @@ def detect_trigger(p: Dict) -> List[str]:
                 boom += 1
             if _score_news((r.get("content") or ""), r.get("cluster") or "其他") >= 4:
                 strong += 1
-    except Exception:
-        pass
+    except Exception as e:
+        # 吞异常必须可见（GUARDRAILS #11）——否则 boom/strong 恒 0，无从排查
+        print(f"[flash_brief] detect_trigger 快讯扫描失败: {str(e)[:80]}")
     if boom >= 1:
         reasons.append(f"金十爆级快讯{boom}条")
     if strong >= NEWS_TRIGGER:
