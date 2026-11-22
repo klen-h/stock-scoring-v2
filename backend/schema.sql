@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS flash_news (
     content TEXT NOT NULL,
     time TEXT NOT NULL,
     cluster TEXT,
+    hot TEXT,
+    important INTEGER DEFAULT 0,
     is_pushed INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );

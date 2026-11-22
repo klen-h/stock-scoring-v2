@@ -370,7 +370,7 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
     out = {"rows": [], "scanned": 0, "error": "",
            "new_window_min": NEW_WINDOW_MIN, "new_count": 0}
     try:
-        rows = db.fetch("SELECT id, time, content, cluster FROM flash_news "
+        rows = db.fetch("SELECT id, time, content, cluster, hot FROM flash_news "
                         "ORDER BY time DESC LIMIT %s", (int(scan),)) or []
     except Exception as e:
         out["error"] = f"快讯: {str(e)[:60]}"
@@ -392,6 +392,7 @@ def _news_section(day: str, scan: int = POLL_NEWS_SCAN, limit: int = NEWS_LIMIT)
         scored.append({
             "id": r.get("id"), "time": t,
             "cluster": cluster, "score": sc,
+            "hot": r.get("hot") or None,
             "text": content[:400],
             "gist": _template_gist(content),
             "scope": CLUSTER_SCOPE.get(cluster, "—"),
@@ -1245,15 +1246,21 @@ def detect_trigger(p: Dict) -> List[str]:
         reasons.append(f"涨跌比{ratio}")
     # 近 30 分钟内的强快讯条数
     strong = 0
+    boom = 0
     try:
         cutoff = (_now() - timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        rows = db.fetch("SELECT content, cluster, time FROM flash_news "
+        rows = db.fetch("SELECT content, cluster, time, hot FROM flash_news "
                         "WHERE time >= %s ORDER BY time DESC LIMIT 50", (cutoff,)) or []
         for r in rows:
+            # ★ 爆级计数独立于强快讯评分（金十编辑标记=高置信，单条即触发）
+            if (r.get("hot") or "") == "爆":
+                boom += 1
             if _score_news((r.get("content") or ""), r.get("cluster") or "其他") >= 4:
                 strong += 1
     except Exception:
         pass
+    if boom >= 1:
+        reasons.append(f"金十爆级快讯{boom}条")
     if strong >= NEWS_TRIGGER:
         reasons.append(f"30min强快讯{strong}条")
     return reasons

@@ -117,6 +117,9 @@ def _cluster_of(content: str) -> str:
     return "其他"
 
 
+_HOT_READY = False
+
+
 def save_raw_data(all_items: list, new_items: list) -> None:
     """原始快讯落盘（默认保留 7 天，按 id 去重，新在前）。"""
     # ★ 2026-09-11 egress：没有新快讯就直接返回——此前每轮轮询都先查一次
@@ -135,6 +138,17 @@ def save_raw_data(all_items: list, new_items: list) -> None:
     unique_new = [i for i in new_items if i.get("id") and i["id"] not in existing_ids]
 
     # 插入新数据
+    # ★ 2026-11-22：金十官方 `hot`（爆/沸/热）与 `important` 编辑标记入库——
+    #   source.py 抓了但此处丢弃过 ⇒ 下游（触发器/卡片）无高置信信号可用。
+    global _HOT_READY
+    if not _HOT_READY:
+        for ddl in ("ALTER TABLE flash_news ADD COLUMN hot TEXT",
+                    "ALTER TABLE flash_news ADD COLUMN important INTEGER"):
+            try:
+                db.execute(ddl)
+            except Exception:
+                pass                    # 列已存在（幂等）
+        _HOT_READY = True
     for item in unique_new:
         try:
             content = item.get("content", "") or ""
@@ -145,6 +159,8 @@ def save_raw_data(all_items: list, new_items: list) -> None:
                 "content": content,
                 "time": item.get("time", ""),
                 "cluster": cluster,
+                "hot": item.get("hot") or None,
+                "important": 1 if item.get("important") else 0,
                 "is_pushed": 1 if item.get("isPushed") else 0
             }, conflict_columns=["id"])
         except Exception as e:

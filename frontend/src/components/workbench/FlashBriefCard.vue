@@ -148,6 +148,8 @@
                         @click="openKey = (openKey === n.key ? '' : n.key)">
                   <div class="flex items-center gap-1.5">
                     <span class="font-mono text-[11px] text-muted">{{ hhmm(n.time) }}</span>
+                    <span v-if="n.hot === '爆'" class="px-1 rounded text-[10px] font-bold bg-red-500/25 text-red-300"
+                          title="金十编辑标记：爆（高置信）">🔥爆</span>
                     <span v-if="agoText(n.time)" class="text-[11px] text-muted/70">· {{ agoText(n.time) }}</span>
                     <!-- cluster 已在组头显示，条目内只在无组头时兜底（历史 tab） -->
                     <span v-if="!g.cluster && n.cluster" class="px-1 rounded text-[11px]"
@@ -358,6 +360,7 @@ const cards = computed(() => {
       key: r.id != null ? r.id : i,
       time: r.time,
       cluster: r.cluster || '其他',
+      hot: r.hot || null,
       score: r.score || 0,
       text: r.text,
       gist: l.gist || r.gist,
