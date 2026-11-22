@@ -42,6 +42,22 @@ def create_scenario(payload: Dict = Body(...),
     return r
 
 
+@router.post("/parse")
+def parse_draft(payload: Dict = Body(...),
+                user: dict = Depends(get_current_user)) -> Dict:
+    """把自然语言推演解析成登记草案 —— **只解析，不落库**。
+
+    ★ 2026-11-22（用户："加入一个导入功能…自动写入，我到时审阅"）：
+      刻意**不直接写库**。解析结果回填表单，用户审阅/改数字后自己点「登记」，
+      这样 LLM 认错指标或编造阈值时人工一定看得见。
+    ⚠️ 会调 1 次 LLM（约十几秒），前端给 60s 超时。
+    """
+    r = ts.parse_text(str((payload or {}).get("text") or ""))
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "解析失败")
+    return r
+
+
 @router.get("/scenarios")
 def list_scenarios(active_only: bool = Query(False),
                    date: Optional[str] = Query(None, description="YYYY-MM-DD"),

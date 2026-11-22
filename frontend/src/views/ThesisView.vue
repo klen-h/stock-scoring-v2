@@ -15,6 +15,10 @@
             class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 transition-colors">
             ＋ 登记推演
           </button>
+          <button @click="openImport"
+            class="px-3 py-1.5 rounded text-xs border border-border text-muted hover:text-gray-200 transition-colors">
+            ⇪ 导入文本
+          </button>
           <button @click="reload" :disabled="loading"
             class="px-3 py-1.5 rounded text-xs border border-border text-muted hover:text-gray-200 transition-colors disabled:opacity-50">
             {{ loading ? '加载中…' : '刷新' }}
@@ -261,6 +265,58 @@
       </div>
     </div>
 
+    <!-- ── 导入弹层（只解析 → 回填表单，不写库）── -->
+    <div v-if="showImport"
+      class="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto p-4 md:p-8"
+      @click.self="showImport = false">
+      <div class="w-full max-w-2xl bg-card border border-border rounded-lg p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-base font-bold text-gray-100">导入推演文本</h2>
+          <button @click="showImport = false"
+            class="text-muted hover:text-gray-200 text-lg leading-none">×</button>
+        </div>
+
+        <p class="text-[11px] text-muted leading-relaxed mb-3">
+          粘贴任意格式的推演（也可以直接让 LLM 按下面格式生成），点「解析」后自动填入登记表单。
+          <span class="text-amber-400">解析只回填、不写库</span>，你改完数字再点「登记」。
+        </p>
+
+        <!-- 格式示例 -->
+        <div class="border border-border rounded-lg overflow-hidden mb-3">
+          <div class="flex items-center justify-between px-2.5 py-1.5 bg-bg border-b border-border">
+            <span class="text-[11px] text-muted">格式示例</span>
+            <button @click="copySample"
+              class="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted hover:text-gray-200 transition-colors">
+              {{ sampleCopied ? '已复制' : '复制示例' }}
+            </button>
+          </div>
+          <pre class="px-2.5 py-2 text-[11px] leading-relaxed text-gray-300 overflow-x-auto whitespace-pre-wrap font-mono">{{ SAMPLE_TEXT }}</pre>
+        </div>
+
+        <textarea v-model="importText" rows="10" placeholder="把推演文本粘贴到这里…"
+          class="w-full bg-bg border border-border rounded px-2.5 py-2 text-xs text-gray-200 leading-relaxed focus:outline-none focus:border-accent/50"></textarea>
+
+        <div v-if="parseWarn.length"
+          class="mt-2 bg-amber-500/5 border border-amber-500/20 rounded px-2.5 py-2">
+          <div class="text-[11px] text-amber-400 mb-1">解析提示（登记前请确认）</div>
+          <ul class="space-y-0.5">
+            <li v-for="(w, i) in parseWarn" :key="i" class="text-[11px] text-muted">· {{ w }}</li>
+          </ul>
+        </div>
+
+        <div v-if="parseError" class="mt-2 text-xs text-red-400">{{ parseError }}</div>
+
+        <div class="flex justify-end gap-2 mt-4">
+          <button @click="showImport = false"
+            class="px-3 py-1.5 rounded text-xs border border-border text-muted hover:text-gray-200">取消</button>
+          <button @click="doParse" :disabled="parsing"
+            class="px-4 py-1.5 rounded text-xs bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 transition-colors disabled:opacity-50">
+            {{ parsing ? '解析中…（十几秒）' : '解析并填入表单' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── 登记弹层 ── -->
     <div v-if="showCreate" class="fixed inset-0 z-50 bg-black/60 flex items-start justify-center overflow-y-auto p-4 md:p-8"
       @click.self="showCreate = false">
@@ -376,9 +432,28 @@ import { ref, computed, onMounted } from 'vue'
 import {
   getThesisScenarios, createThesisScenario, getThesisDaily,
   rerunThesisReview, archiveThesisScenario, getThesisMetrics,
+  parseThesisText,
 } from '../api'
 
 const OPS = ['<=', '>=', '<', '>', '==']
+
+// 导入功能的格式示例（也可以直接丢给 LLM 让它按这个格式生成）
+const SAMPLE_TEXT = `【推演】11-23 这周：广度背离能否收敛
+有效期：2026-11-23 ~ 2026-11-27
+
+情景：
+- A 指数补跌、广度修复：35%
+- B 背离继续扩大、结构恶化：40%
+- C 缩量僵持、个股继续失血：25%
+
+验证项：
+- 上证涨跌% <= -1
+- 下跌占比 >= 0.85
+- 广度背离 >= 2
+- 两市成交额 <= 12000
+
+证伪条件：
+- 放量（>15000 亿）站上 3580，且下跌占比 < 0.5`
 
 // 阈值示例：只是提示，不参与计算
 const HINTS = {
@@ -404,6 +479,14 @@ const showCreate = ref(false)
 const saving = ref(false)
 const formError = ref('')
 const form = ref(blankForm())
+
+// ── 导入（粘贴自然语言 → LLM 解析 → 回填表单，不直接写库）──
+const showImport = ref(false)
+const importText = ref('')
+const parsing = ref(false)
+const parseError = ref('')
+const parseWarn = ref([])
+const sampleCopied = ref(false)
 
 const today = computed(() => fmtDate(new Date()))
 const hasToday = computed(() =>
@@ -554,6 +637,58 @@ function openCreate() {
   form.value = blankForm()
   formError.value = ''
   showCreate.value = true
+}
+
+// ── 导入：解析结果只回填表单，用户审阅/改数字后自己点「登记」──
+function openImport() {
+  importText.value = ''
+  parseError.value = ''
+  parseWarn.value = []
+  showImport.value = true
+}
+
+async function doParse() {
+  parseError.value = ''
+  parseWarn.value = []
+  if (!importText.value.trim()) {
+    parseError.value = '请先粘贴推演文本'
+    return
+  }
+  parsing.value = true
+  try {
+    const { data } = await parseThesisText(importText.value)
+    const d = data.draft || {}
+    form.value = {
+      title: d.title || '',
+      horizon_start: d.horizon_start || fmtDate(new Date()),
+      horizon_end: d.horizon_end || fmtDate(new Date()),
+      scenarios: (d.scenarios || []).length
+        ? d.scenarios.map(s => ({ name: s.name, prob: s.prob, path: s.path || '' }))
+        : [{ name: '', prob: 100, path: '' }],
+      checks: (d.checks || []).length
+        ? d.checks.map(c => ({ key: c.key, op: c.op, value: c.value }))
+        : [{ key: 'sh_close', op: '<=', value: null }],
+      invalidators: (d.invalidators || []).length ? d.invalidators : [''],
+    }
+    parseWarn.value = data.warnings || []
+    showImport.value = false
+    showCreate.value = true
+    formError.value = ''
+  } catch (e) {
+    parseError.value = '解析失败：' + (e.response?.data?.detail || e.message)
+  } finally {
+    parsing.value = false
+  }
+}
+
+async function copySample() {
+  try {
+    await navigator.clipboard.writeText(SAMPLE_TEXT)
+    sampleCopied.value = true
+    setTimeout(() => { sampleCopied.value = false }, 1800)
+  } catch (e) {
+    parseError.value = '复制失败，请手动选中'
+  }
 }
 
 function addScenario() {

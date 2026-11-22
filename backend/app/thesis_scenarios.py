@@ -462,6 +462,170 @@ def llm_review(thesis: Dict, day: str, ev: Dict) -> Optional[Dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  文本导入（粘贴 → LLM 结构化 → 回填表单，**不落库**）
+# ══════════════════════════════════════════════════════════════════════════
+# ★★ 2026-11-22（用户："加入一个导入功能，并且有格式举例，内容可以由 llm 生成，
+#   自动写入，我到时审阅，有问题我会自行修改并登记"）
+#   定位：**只解析、不写库** —— 解析结果回填表单，用户审阅/改数字后自己点登记。
+#   这样 LLM 认错指标或编造阈值时，人工一定看得见（直接写库就绕过了审阅）。
+MAX_PARSE_CHARS = 8000
+
+_PARSE_SYSTEM = """你是"推演文本结构化解析器"。把用户粘贴的自然语言推演解析成 JSON。
+
+【唯一允许的指标 key】（不在列表里的一律不要硬塞，放进 unparsed）
+- sh_close       上证收盘（点数）
+- sh_chg_pct     上证涨跌%（百分数，跌为负，如 -1.2）
+- amount_yi      两市成交额（亿元）
+- limit_down     跌停家数
+- limit_up       涨停家数
+- down_ratio     下跌占比（0~1 的小数，如 0.95 表示 95% 在跌）
+- breadth_gap    广度背离（百分点 pp）
+
+【规则】
+1. 只输出 JSON，不要 markdown 代码块、不要解释。
+2. scenarios 的 prob 合计必须等于 100；原文没写概率就按你判断给一个合计 100 的分配，
+   并在 unparsed 里注明"概率为自动分配"。
+3. checks 的 op 只能是 <= >= < > == 之一；value 必须是数字。
+4. 原文提到但无法映射到上面 7 个指标的（纳指、台股、汇率、北向、个股价格、政策等），
+   **放进 unparsed 数组**，不要塞进 checks。
+5. 日期缺失：horizon_start 用今天，horizon_end 用今天+6 天。
+6. invalidators（证伪条件）是给复盘用的文字判据，**原样放进 invalidators 即可**，
+   **不要**因为里面提到点位/成交额就把它塞进 unparsed —— 只有"验证项/判断依据"
+   里出现不可映射内容时才用 unparsed。
+
+【输出格式】
+{
+  "title": "简短标题",
+  "horizon_start": "YYYY-MM-DD",
+  "horizon_end": "YYYY-MM-DD",
+  "scenarios": [{"name": "情景名", "prob": 40, "path": "路径描述"}],
+  "checks": [{"key": "sh_close", "label": "上证收盘", "op": "<=", "value": 3500}],
+  "invalidators": ["证伪条件原文"],
+  "unparsed": ["无法映射的原文片段 + 原因"]
+}"""
+
+
+def _today() -> str:
+    return datetime.now(_BJ).strftime("%Y-%m-%d")
+
+
+def parse_text(text: str) -> Dict:
+    """把自由文本解析成可登记草案。返回 {ok, draft, warnings} 或 {ok:False, error}。
+
+    ⚠️ 绝不落库：即使解析成功也只返回草案，由用户在页面上审阅后自己点「登记」。
+    """
+    t = (text or "").strip()
+    if not t:
+        return {"ok": False, "error": "文本为空"}
+    if len(t) > MAX_PARSE_CHARS:
+        return {"ok": False,
+                "error": f"文本过长（{len(t)} 字），上限 {MAX_PARSE_CHARS}"}
+    if not LLM_ENABLED:
+        return {"ok": False, "error": "LLM 已关闭（THESIS_LLM=0），无法解析"}
+
+    try:
+        from app.flash import llm
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 模块不可用: {str(e)[:60]}"}
+
+    try:
+        txt = llm.call_llm(_PARSE_SYSTEM, t, temperature=0.1,
+                           json_mode=True, tier="slow")
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 调用失败: {str(e)[:80]}"}
+    if not txt:
+        return {"ok": False, "error": "LLM 返回空（provider 未配置/熔断）"}
+
+    s = txt.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        s = s[s.find("{"):] if "{" in s else s
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        i, j = s.find("{"), s.rfind("}")
+        if i < 0 or j <= i:
+            return {"ok": False, "error": "LLM 返回非法 JSON"}
+        try:
+            obj = json.loads(s[i:j + 1])
+        except ValueError:
+            return {"ok": False, "error": "LLM 返回非法 JSON"}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "LLM 返回不是对象"}
+
+    warnings = []
+    for u in (obj.get("unparsed") or []):
+        u = str(u).strip()
+        if u:
+            warnings.append(u)
+
+    # ── 逐项校验/规整（口径与 create 一致，避免"能导入但登记被拒"）──
+    title = str(obj.get("title") or "").strip() or "未命名推演"
+    hs = str(obj.get("horizon_start") or "").strip()[:10] or _today()
+    he = str(obj.get("horizon_end") or "").strip()[:10]
+    if not he:
+        try:
+            he = (datetime.strptime(hs, "%Y-%m-%d")
+                  + timedelta(days=6)).strftime("%Y-%m-%d")
+        except ValueError:
+            he = hs
+    for nm, v in (("horizon_start", hs), ("horizon_end", he)):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            return {"ok": False, "error": f"解析出的 {nm} 不是 YYYY-MM-DD：{v}"}
+    if hs > he:
+        hs, he = he, hs
+        warnings.append("开始/结束日期被自动对调")
+
+    sc_out = []
+    for s_ in (obj.get("scenarios") or []):
+        if not isinstance(s_, dict):
+            continue
+        name = str(s_.get("name") or "").strip()
+        prob = _f(s_.get("prob"))
+        if not name or prob is None:
+            continue
+        sc_out.append({"name": name, "prob": round(prob, 1),
+                       "path": str(s_.get("path") or "").strip()})
+    if not sc_out:
+        return {"ok": False, "error": "解析不出现景，请检查文本格式"}
+    total = sum(x["prob"] for x in sc_out)
+    if abs(total - 100) > 1:
+        warnings.append(f"情景概率合计 {round(total, 1)}%，登记前请改成 100%")
+
+    ck_out = []
+    dropped = []
+    for c_ in (obj.get("checks") or []):
+        if not isinstance(c_, dict):
+            continue
+        key = str(c_.get("key") or "").strip()
+        op = str(c_.get("op") or "<=").strip()
+        val = _f(c_.get("value"))
+        if key not in METRIC_LABELS:
+            dropped.append(f"{key or '?'}（不在可用指标）")
+            continue
+        if op not in _OPS or val is None:
+            dropped.append(f"{METRIC_LABELS[key]}（op 或阈值非法）")
+            continue
+        ck_out.append({"key": key, "label": METRIC_LABELS[key],
+                       "op": op, "value": val})
+    if dropped:
+        warnings.append("已丢弃无法登记的验证项：" + "、".join(dropped))
+    if not ck_out:
+        return {"ok": False, "error": "解析不出可用验证项（指标需在 7 个内置项内）"}
+
+    inv = [str(x).strip() for x in (obj.get("invalidators") or [])
+           if str(x).strip()]
+
+    return {"ok": True,
+            "draft": {"title": title, "horizon_start": hs, "horizon_end": he,
+                      "scenarios": sc_out, "checks": ck_out,
+                      "invalidators": inv},
+            "warnings": warnings}
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  落库 + 推送
 # ══════════════════════════════════════════════════════════════════════════
 def save_daily(tid: str, day: str, ev: Dict,

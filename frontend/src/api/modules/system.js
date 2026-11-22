@@ -174,6 +174,10 @@ export const getBreadthDivergence = (date) =>
 //   周末登记情景/概率/验证项 → 日批自动对照实际数据 + LLM 修正 → 推企微。
 //   纯复盘，不进决策链（与观察器同纪律）。
 export const getThesisMetrics = () => http.get('/thesis/metrics')
+// ★ 2026-11-22：粘贴自然语言推演 → LLM 解析成草案（**只解析不落库**，回填表单供审阅）。
+//   会调 1 次 LLM，给 60s；解析完由用户改数字后自己点登记。
+export const parseThesisText = (text) =>
+  http.post('/thesis/parse', { text }, { timeout: 60000 })
 export const getThesisScenarios = (params = {}) =>
   http.get('/thesis/scenarios', { params })
 export const createThesisScenario = (payload) => http.post('/thesis/scenarios', payload)
