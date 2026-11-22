@@ -269,7 +269,7 @@
                  :class="eventSignal.e2_policy_surge ? 'text-red-400' : 'text-cyan-400'">
               {{ eventSignal.e2_policy_surge ? '政策脉冲' : '冰点' }}
             </div>
-            <div class="text-[10px] text-muted">事件·仅提示</div>
+            <div class="text-[10px] text-muted">事件提示</div>
           </div>
         </template>
       </div>
@@ -3258,53 +3258,6 @@
                  这里按日期聚合回答"这一天说了什么、对了几条"。
                【为什么推送不计分】push_log 的条目（简报/日报/风险警示）是**观察类内容**，
                  没有方向语义；只有教练建议（有 _RULE_EXPECT 方向映射）才能做对错判定。 -->
-          <div v-if="reviewSummary" class="bg-card border border-border rounded-lg p-4 mt-3">
-            <div class="flex items-center justify-between mb-2 flex-wrap gap-1">
-              <div class="text-sm font-semibold">三时段复盘对账
-                <span class="text-[10px] text-muted font-normal">{{ reviewSummary.date }}</span></div>
-              <div class="text-[11px] text-muted">
-                建议 {{ reviewSummary.summary.total }} 条 ·
-                已验证 {{ reviewSummary.summary.evaluable }} ·
-                <span class="text-emerald-400">命中 {{ reviewSummary.summary.hit }}</span> ·
-                <span class="text-rose-400">打脸 {{ reviewSummary.summary.miss }}</span> ·
-                <span class="text-amber-300">待验证 {{ reviewSummary.summary.pending }}</span>
-                <span v-if="reviewSummary.summary.hit_rate != null">
-                  ｜命中率 {{ reviewSummary.summary.hit_rate }}%</span>
-              </div>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div v-for="(seg, key) in reviewSummary.segments" :key="key"
-                   class="border border-border/40 rounded p-2 min-w-0">
-                <div class="text-xs font-semibold mb-1">{{ SEG_LABEL[key] || key }}
-                  <span class="text-[10px] text-muted font-normal">（{{ seg.length }}）</span></div>
-                <div v-if="!seg.length" class="text-[11px] text-muted">—（无）</div>
-                <div v-for="(it, i) in seg" :key="i"
-                     class="text-[11px] flex gap-1.5 items-start py-0.5 leading-snug">
-                  <span class="shrink-0 font-mono text-muted">{{ it.time }}</span>
-                  <span class="shrink-0" :class="verdictCls(it.verdict)">{{ VERDICT_MARK[it.verdict] }}</span>
-                  <span class="min-w-0 truncate cursor-help"
-                        :title="it.brief || it.title">{{ it.title }}</span>
-                  <span v-if="it.source === 'coach' && !it.pushed"
-                        class="shrink-0 text-[10px] text-muted" title="未推送到企微（仅落库）">未推</span>
-                </div>
-              </div>
-            </div>
-            <div v-if="reviewSummary.trend && reviewSummary.trend.length"
-                 class="mt-3 pt-2 border-t border-border/40">
-              <div class="text-[11px] text-muted mb-1">
-                近 {{ reviewSummary.trend.length }} 日教练建议命中率
-                （方向性检验，非收益归因；灰色 = 当日建议尚未到 T+5 验证期）</div>
-              <div class="flex items-end gap-1 h-10">
-                <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm group relative"
-                     :class="t.hit_rate == null ? 'bg-white/10'
-                       : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
-                     :style="{ height: t.hit_rate == null ? '18%' : Math.max(t.hit_rate, 8) + '%' }"
-                     :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
-              </div>
-            </div>
-            <div class="text-[10px] text-muted mt-2">
-              ⚠️ 命中率 = 事后 T+5 方向是否印证了建议（规则在 90 天窗口的整体表现见教练页「规则准确率」）。</div>
-          </div>
           <div class="min-w-0">
           <!-- ★★ 2026-09-25（P1「明日准备」）—— 复盘 → 次日的**交接棒**。
                复盘原本 6 块全在回答"今天发生了什么"，**没有一块回答"明天要做什么"**
@@ -3350,6 +3303,64 @@
           </div>
           </div>
           </div>
+          <!-- ★★ 2026-11-22（用户："优化一下布局"，截图右下大片空白）：
+               `三时段复盘对账` 原先被放在**两列 grid 的第 2 个格子**里，
+               `明日准备` 是第 3 个 ⇒ 变成"2 行 2 列"而第 2 行右半边全空。
+               修法：grid 只保留**语义相配的一对**（执行一致性 ↔ 明日准备，
+               一个答"今天做得对不对"、一个答"明天做什么"——即 2026-09-26 的原意图），
+               三时段对账信息量最大（三段时间线 + 15 日趋势），改为**全宽独立一行**，
+               柱状图也才有宽度铺开。 -->
+          <div v-if="reviewSummary" class="bg-card border border-border rounded-lg p-4">
+            <div class="flex items-center justify-between mb-2 flex-wrap gap-1">
+              <div class="text-sm font-semibold">三时段复盘对账
+                <span class="text-[10px] text-muted font-normal">{{ reviewSummary.date }}</span></div>
+              <div class="text-[11px] text-muted">
+                建议 {{ reviewSummary.summary.total }} 条 ·
+                已验证 {{ reviewSummary.summary.evaluable }} ·
+                <span class="text-emerald-400">命中 {{ reviewSummary.summary.hit }}</span> ·
+                <span class="text-rose-400">打脸 {{ reviewSummary.summary.miss }}</span> ·
+                <span class="text-amber-300">待验证 {{ reviewSummary.summary.pending }}</span>
+                <span v-if="reviewSummary.summary.hit_rate != null">
+                  ｜命中率 {{ reviewSummary.summary.hit_rate }}%</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <!-- ★ 2026-11-22：三个时段框原先完全同款 ⇒ 宽屏下分不清哪列是哪段。
+                   加左侧色条（盘前蓝 / 盘中红 / 盘后紫，与时段按钮同色系）。 -->
+              <div v-for="(seg, key) in reviewSummary.segments" :key="key"
+                   class="border border-border/40 border-l-2 rounded p-2 min-w-0"
+                   :class="SEG_BORDER[key]">
+                <div class="text-xs font-semibold mb-1">{{ SEG_LABEL[key] || key }}
+                  <span class="text-[10px] text-muted font-normal">（{{ seg.length }}）</span></div>
+                <div v-if="!seg.length" class="text-[11px] text-muted">—（无）</div>
+                <div v-for="(it, i) in seg" :key="i"
+                     class="text-[11px] flex gap-1.5 items-start py-0.5 leading-snug">
+                  <span class="shrink-0 font-mono text-muted">{{ it.time }}</span>
+                  <span class="shrink-0" :class="verdictCls(it.verdict)">{{ VERDICT_MARK[it.verdict] }}</span>
+                  <span class="min-w-0 truncate cursor-help"
+                        :title="it.brief || it.title">{{ it.title }}</span>
+                  <span v-if="it.source === 'coach' && !it.pushed"
+                        class="shrink-0 text-[10px] text-muted" title="未推送到企微（仅落库）">未推</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="reviewSummary.trend && reviewSummary.trend.length"
+                 class="mt-3 pt-2 border-t border-border/40">
+              <div class="text-[11px] text-muted mb-1">
+                近 {{ reviewSummary.trend.length }} 日教练建议命中率
+                （方向性检验，非收益归因；灰色 = 当日建议尚未到 T+5 验证期）</div>
+              <div class="flex items-end gap-1 h-12">
+                <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm group relative"
+                     :class="t.hit_rate == null ? 'bg-white/10'
+                       : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
+                     :style="{ height: t.hit_rate == null ? '18%' : Math.max(t.hit_rate, 8) + '%' }"
+                     :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
+              </div>
+            </div>
+            <div class="text-[10px] text-muted mt-2">
+              ⚠️ 命中率 = 事后 T+5 方向是否印证了建议（规则在 90 天窗口的整体表现见教练页「规则准确率」）。</div>
+          </div>
+
           <!-- 长文卡（保持在最后：先看结论与行动，再看长文） -->
           <div class="bg-card border border-border rounded-lg p-4">
             <div class="flex items-center justify-between mb-2">
@@ -6027,6 +6038,12 @@ async function loadTodayExec() {
 const reviewSummary = ref(null)
 const reviewSummaryErr = ref('')
 const SEG_LABEL = { premarket: '盘前', intraday: '盘中', postmarket: '盘后' }
+// ★ 2026-11-22：三时段左侧色条（完整字面量，Tailwind JIT 才能生成）
+const SEG_BORDER = {
+  premarket: 'border-l-sky-500/60',
+  intraday: 'border-l-rose-500/60',
+  postmarket: 'border-l-violet-500/60',
+}
 const VERDICT_MARK = { hit: '✓命中', miss: '✗打脸', pending: '⏳待验证', not_evaluable: '·不计分' }
 function verdictCls(v) {
   return { hit: 'text-emerald-400', miss: 'text-rose-400',
