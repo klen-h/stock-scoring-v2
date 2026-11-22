@@ -3226,8 +3226,10 @@
               <div class="flex-1 flex items-center">
               <div class="flex items-center gap-6 flex-wrap">
                 <div>
+                  <!-- ★ 2026-11-22：配色与教练页「执行率」对齐（那里是 text-rise 红）。
+                       阈值仍保留本卡的 60%（教练页是 80），如需完全统一再单独调。 -->
                   <div class="text-3xl font-bold font-mono"
-                       :class="(consistency.exec_rate_pct || 0) >= 60 ? 'text-emerald-400' : 'text-amber-300'">
+                       :class="(consistency.exec_rate_pct || 0) >= 60 ? 'text-rise' : 'text-amber-300'">
                     {{ consistency.exec_rate_pct ?? '—' }}%
                   </div>
                   <div class="text-[11px] text-muted">执行率（分母=已决策）</div>
@@ -3317,8 +3319,8 @@
               <div class="text-[11px] text-muted">
                 建议 {{ reviewSummary.summary.total }} 条 ·
                 已验证 {{ reviewSummary.summary.evaluable }} ·
-                <span class="text-emerald-400">命中 {{ reviewSummary.summary.hit }}</span> ·
-                <span class="text-rose-400">打脸 {{ reviewSummary.summary.miss }}</span> ·
+                <span class="text-rise">命中 {{ reviewSummary.summary.hit }}</span> ·
+                <span class="text-fall">打脸 {{ reviewSummary.summary.miss }}</span> ·
                 <span class="text-amber-300">待验证 {{ reviewSummary.summary.pending }}</span>
                 <span v-if="reviewSummary.summary.hit_rate != null">
                   ｜命中率 {{ reviewSummary.summary.hit_rate }}%</span>
@@ -3348,11 +3350,12 @@
                  class="mt-3 pt-2 border-t border-border/40">
               <div class="text-[11px] text-muted mb-1">
                 近 {{ reviewSummary.trend.length }} 日教练建议命中率
-                （方向性检验，非收益归因；灰色 = 当日建议尚未到 T+5 验证期）</div>
+                （方向性检验，非收益归因；<span class="text-rise">红</span>=命中率≥50%，
+                <span class="text-fall">绿</span>=低于 50%，灰色 = 当日建议尚未到 T+5 验证期）</div>
               <div class="flex items-end gap-1 h-12">
                 <div v-for="t in reviewSummary.trend" :key="t.date" class="flex-1 rounded-sm group relative"
                      :class="t.hit_rate == null ? 'bg-white/10'
-                       : t.hit_rate >= 50 ? 'bg-emerald-500/60' : 'bg-rose-500/60'"
+                       : t.hit_rate >= 50 ? 'bg-rise/60' : 'bg-fall/60'"
                      :style="{ height: t.hit_rate == null ? '18%' : Math.max(t.hit_rate, 8) + '%' }"
                      :title="`${t.date}：建议 ${t.total} 条，可评价 ${t.evaluable}，命中 ${t.hit}`"></div>
               </div>
@@ -6045,8 +6048,14 @@ const SEG_BORDER = {
   postmarket: 'border-l-violet-500/60',
 }
 const VERDICT_MARK = { hit: '✓命中', miss: '✗打脸', pending: '⏳待验证', not_evaluable: '·不计分' }
+// ★★ 2026-11-22（用户："命中颜色应该是红色"）：
+//   **本项目全局遵循 A 股配色：rise=红=好，fall=绿=差**
+//   （`tailwind.config.js` 里 `rise:#ef4444` / `fall:#22c55e`；
+//    涨跌幅、盈亏、教练页执行率都用这套语义类）。
+//   本卡原来按西方配色写成"命中=绿、打脸=红"，与同页其他数字**语义相反**——
+//   同一个页面里盈亏红=赚、命中绿=好，会让人反复切换心智模型。
 function verdictCls(v) {
-  return { hit: 'text-emerald-400', miss: 'text-rose-400',
+  return { hit: 'text-rise', miss: 'text-fall',
            pending: 'text-amber-300', not_evaluable: 'text-muted' }[v] || 'text-muted'
 }
 async function loadReviewSummary(date = '') {

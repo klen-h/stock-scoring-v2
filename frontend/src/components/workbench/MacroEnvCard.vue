@@ -165,7 +165,7 @@
         <!-- ① 分组贡献：先回答"分数是谁推上去的"（归一值看不出大小，所以算成分） -->
         <div class="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mt-1 text-[10px] font-mono">
           <span v-for="(v, g) in (macro.direction?.group_contrib || {})" :key="g"
-                :class="v > 0 ? 'text-emerald-400' : (v < 0 ? 'text-red-400' : 'text-muted')"
+                :class="v > 0 ? 'text-rise' : (v < 0 ? 'text-fall' : 'text-muted')"
                 :title="`${groupLabel(g)}组：权重 ${groupWeight(g)}，组得分 ${macro.direction?.group_scores?.[g]}，对总分贡献 ${v} 分`">
             {{ groupLabel(g) }} {{ fmtSigned(v) }}
           </span>
@@ -174,8 +174,10 @@
         <!-- ② 逐条：触发的排前面，未触发的灰显并附**为什么没触发** -->
         <div class="mt-1 space-y-0.5">
           <div v-for="r in sortedRules" :key="r.id" class="text-[10px] leading-snug">
+            <!-- ★ 2026-11-22（用户："命中颜色应该是红色"）：方向色也按 A 股语义
+                 （＋ 看多 = rise 红；－ 看空 = fall 绿）。原先写成"涨绿跌红"，与全站相反。 -->
             <span class="font-mono"
-                  :class="r.hit ? (r.direction > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-muted/50'">
+                  :class="r.hit ? (r.direction > 0 ? 'text-rise' : 'text-fall') : 'text-muted/50'">
               {{ r.hit ? (r.direction > 0 ? '＋' : '－') : '·' }}
             </span>
             <!-- ★ 2026-11-12（用户："英文改为中文"）：原来直接渲染 `r.id` / `r.metric`，

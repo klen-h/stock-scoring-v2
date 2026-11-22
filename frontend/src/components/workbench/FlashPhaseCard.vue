@@ -104,9 +104,12 @@ function verdictOf(p) {
   return p.conclusion ? '待验证' : ''
 }
 
+// ★ 2026-11-22（用户："命中颜色应该是红色"）：与 Workbench 复盘卡同一套语义色
+//   （本项目 rise=红=好 / fall=绿=差，A 股配色）。原先这里是"命中绿、打脸红"，
+//   与同页盈亏、涨跌幅语义相反。
 function verdictTone(v) {
-  if (v === '命中') return 'bg-emerald-500/20 text-emerald-300'
-  if (v === '打脸') return 'bg-rose-500/20 text-rose-300'
+  if (v === '命中') return 'bg-rise/20 text-rise'
+  if (v === '打脸') return 'bg-fall/20 text-fall'
   return 'bg-white/5 text-muted'
 }
 
