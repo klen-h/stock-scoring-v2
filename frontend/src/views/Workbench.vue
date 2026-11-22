@@ -5719,15 +5719,34 @@ async function loadRiskWatch(silent = false) {
     riskLoading.value = true
     riskErr.value = ''
   }
+  // ★★ 2026-11-22（用户："哪些是今天不会有变化的，但是切换 tab 或者轮询还是会重新请求"）：
+  //   盘中 5 分钟轮询（`silent=true`）原先会把**三个块一起重拉**，其中两个是日频：
+  //     · crowd（拥挤度）—— `crowding_watch.py` 头注释明确**拒绝**实时（未定稿的当日 bar
+  //       算出来的拥挤度会随分钟跳动，比"显示昨日"更容易误导）；
+  //     · aiBasket（AI 篮子）—— 日批产物，当天不变。
+  //   只有 keyLv（关键位）是真实时（后端 2026-11-05 已轻量实时化）。
+  //   ⇒ 轮询**只刷 keyLv**；日频块当天拉过一次就不再请求（换日/回放自动失效）。
+  //   ⚠️ 判定必须放在本函数：`loadRiskWatch` 是**唯一**入口，五个块共用一个 ticker。
+  //   依据与清单见 `docs/工作台接口缓存策略_20261122.md`。
+  const _rkDay = 'riskwatch_daily'
+  const fetchDaily = !_dayCached(_rkDay, selectedDate.value)
+  let dailyOk = false
   try {
-    const [c, k, a] = await Promise.all([
-      getCrowdingWatch(selectedDate.value),
-      getKeyLevelWatch(selectedDate.value),
-      getAiBasketWatch(selectedDate.value),
-    ])
-    crowd.value = c.data || null
-    keyLv.value = k.data || null
-    aiBasket.value = a.data || null
+    if (fetchDaily) {
+      const [c, k, a] = await Promise.all([
+        getCrowdingWatch(selectedDate.value),
+        getKeyLevelWatch(selectedDate.value),
+        getAiBasketWatch(selectedDate.value),
+      ])
+      crowd.value = c.data || null
+      keyLv.value = k.data || null
+      aiBasket.value = a.data || null
+      dailyOk = true
+    } else {
+      // 轮询快路径：只刷真正会变的那个块
+      const k = await getKeyLevelWatch(selectedDate.value)
+      keyLv.value = k.data || null
+    }
   } catch (e) {
     if (!silent) riskErr.value = '拥挤/关键位数据加载失败（接口需登录）'
   } finally {
@@ -5736,12 +5755,17 @@ async function loadRiskWatch(silent = false) {
   // ★ 2026-10-30：金十汇总**单独请求**，不放进上面的 Promise.all。
   //   它的失败原因通常是 `JIN10_X_TOKEN` 过期（401）—— 属常态性运维问题，
   //   若塞进 Promise.all 会把整个"拥挤/关键位"块拖成加载失败。
-  try {
-    const t = await getJin10Tidy(selectedDate.value)
-    jin10.value = t.data || null
-  } catch {
-    jin10.value = null
+  // ★ 2026-11-22：金十汇总也是**日批数据**（当天 28 个外呼抓一次即定稿）⇒ 同样走日缓存。
+  if (fetchDaily) {
+    try {
+      const t = await getJin10Tidy(selectedDate.value)
+      jin10.value = t.data || null
+    } catch {
+      jin10.value = null
+    }
   }
+  // 成功拉到日频块才落标记（失败不标记 ⇒ 下次调用会重试）
+  if (fetchDaily && dailyOk) _dayMark(_rkDay, selectedDate.value)
   // ★★ 2026-11-13（用户要求 ③）：风格分化。
   //   ⚠️ 数据是**日频**（日批回填，当日 15:40 后才含当日收盘）⇒ 盘中不变，
   //      **不进 5 分钟轮询**（轮询只会白烧请求），挂载/切日时拉一次即可。
@@ -6014,6 +6038,16 @@ async function loadTop(force = false) {
   } catch (e) { topErr.value = (e && e.message) || '未知错误' }
 }
 async function loadGateWatch() {
+  // ★★ 2026-11-22（用户："哪些是今天不会有变化的，但是切换 tab 或者轮询还是会重新请求"）：
+  //   `getGateWatch` 读 **日批产物**（`stock_facts_wide`，当天 15:40 后定稿），
+  //   而 `loadPhaseData()` 每次切阶段都会调它 —— 一天切 5 次阶段就白打 5 遍（约 80 行/次）。
+  //   ⇒ 按日缓存；⚠️ `loadGwPrices()` 是**实时涨跌幅**，不缓存，命中缓存时也照常刷。
+  //   依据见 `docs/工作台接口缓存策略_20261122.md`。
+  const _gwDay = 'gate_watch'
+  if (_dayCached(_gwDay, todayStr) && gwItems.value.length) {
+    loadGwPrices()
+    return
+  }
   try {
     const { data } = await getGateWatch(80)
     gwItems.value = (data && data.items) || []
@@ -6028,6 +6062,8 @@ async function loadGateWatch() {
       data_date: (data && data.data_date) || '',
     }
     gwErr.value = ''
+    // ★ 2026-11-22：有数据才落日标记（空/失败不标记 ⇒ 下次切阶段会重试，不会锁死一天）
+    if (gwItems.value.length) _dayMark(_gwDay, todayStr)
     // ★ 2026-09-30：拿到 code 清单后**顺带拉一次实时涨跌幅**（不阻塞上面的渲染 ——
     //   价格到达前那格显示「—」，见观察池卡内注释）。
     loadGwPrices()

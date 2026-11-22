@@ -3,6 +3,13 @@
 // DI：useFrontendMode/feDbReady/scoreCodeList 来自 useFrontendScoring（本地精算依赖注入）。
 import { ref } from 'vue'
 import { getShadowDefensive, getDefensiveGroup } from '../api'
+import { _dayCached, _dayMark } from '../utils/dayCache'
+
+// 北京日期（与 Workbench 的 bjToday / dayCache 同口径）
+function _bjToday() {
+  const d = new Date(Date.now() + (new Date().getTimezoneOffset() + 480) * 60000)
+  return d.toISOString().slice(0, 10)
+}
 
 // ★ 2026-10-25：防御 Top10（H2' 影子榜，日批快照）—— 与 loadTop 解耦：
 //   · 失败只置 `defErr`，**不动 topItems**（两张榜各自独立，铁律 11 保留上次值）；
@@ -24,23 +31,35 @@ const defGroup = ref({ ok: false, date: '', items: [], counts: {}, gate: false, 
 
 
 async function loadDefTop() {
+  // ★★ 2026-11-22（用户："哪些是今天不会有变化的，但是切换 tab 或者轮询还是会重新请求"）：
+  //   本函数由 `loadPhaseData()` 在**每次切阶段**时调用，而 `getShadowDefensive`
+  //   读的是**日批快照**（当天 15:40 后定稿）⇒ 一天切 5 次阶段就白打 5 遍。
+  //   按日缓存快照；⚠️ 下面的 `loadDefLive()`（实时涨跌幅，本机精算）**照常执行**，
+  //   它不消耗后端 egress，卡内"实时"语义不变。
+  //   依据见 `docs/工作台接口缓存策略_20261122.md`。
+  const _day = _bjToday()
+  const snapshotCached = _dayCached('defboard_snapshot', _day) && defTopItems.value.length > 0
   try {
-    const { data } = await getShadowDefensive(10)
-    if (data && data.ok === false) {
-      defErr.value = data.note || data.reason || '暂无防御影子榜数据'
-      return
+    if (!snapshotCached) {
+      const { data } = await getShadowDefensive(10)
+      // ⚠️ ok=false（尚无 defensive 行）时**不落缓存**：日批产出后当天应能补上
+      if (data && data.ok === false) {
+        defErr.value = data.note || data.reason || '暂无防御影子榜数据'
+        return
+      }
+      defTopItems.value = (data && data.items) || []
+      defMeta.value = {
+        date: (data && data.date) || '',
+        gate: !!(data && data.gate),
+        eq_state: (data && data.eq_state) || '',
+        eq_date: (data && data.eq_date) || '',
+        delta: (data && data.delta != null) ? data.delta : null,
+      }
+      defIsLive.value = false
+      defSnap.value = { items: defTopItems.value, meta: defMeta.value }
+      defErr.value = ''
+      if (defTopItems.value.length) _dayMark('defboard_snapshot', _day)
     }
-    defTopItems.value = (data && data.items) || []
-    defMeta.value = {
-      date: (data && data.date) || '',
-      gate: !!(data && data.gate),
-      eq_state: (data && data.eq_state) || '',
-      eq_date: (data && data.eq_date) || '',
-      delta: (data && data.delta != null) ? data.delta : null,
-    }
-    defIsLive.value = false
-    defSnap.value = { items: defTopItems.value, meta: defMeta.value }
-    defErr.value = ''
     // ★★ 2026-11-01（用户："使用选股工作台的防御组的精算板名次的逻辑"）：
     //   日批榜只是**底座**，这里自动叠一层精算 ——
     //     ① 读宽防御组名单（银行∪高股息∪低波，≈15KB/日）
