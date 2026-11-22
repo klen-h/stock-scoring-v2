@@ -29,6 +29,8 @@ const routes = [
   { path: '/lhb', name: 'Lhb', component: () => import('../views/LhbView.vue') },
   { path: '/report', name: 'DailyReport', component: () => import('../views/DailyReport.vue') },
   { path: '/contradictions', name: 'Contradictions', component: () => import('../views/ContradictionsView.vue') },
+  // ★ 2026-11-22：推演登记 + 逐日对照（P1 前端，后端 API 已于 11-22 上线）
+  { path: '/thesis', name: 'Thesis', component: () => import('../views/ThesisView.vue') },
   { path: '/performance', name: 'Performance', component: () => import('../views/Performance.vue') },
 ]
 

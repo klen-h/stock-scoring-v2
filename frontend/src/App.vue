@@ -155,6 +155,7 @@ const navGroups = [
   { label: '复盘', items: [
     { path: '/report', label: '每日日报' },
     { path: '/contradictions', label: '矛盾扫描' },
+    { path: '/thesis', label: '推演复盘' },
     { path: '/backtest', label: '回测中心' },
     { path: '/performance', label: '系统绩效' },
   ]},
