@@ -855,22 +855,29 @@ async function doExplain() {
 }
 
 // ── 历史成交：切到 tab 时懒加载（不拖慢首屏的 loadAll）──
+// ★ 2026-11-22（审查补）：原实现只在 `!historyData` 时拉 ⇒ **拉过一次就再不刷新**。
+//   但做T 是盘中持续产生的，切回来应该能看到新成交。
+//   ⇒ 加 60s 节流：60 秒内切回来复用，超时才重拉（既不"永不更新"也不"每次切都打"）。
+let _historyTs = 0
 async function loadHistory() {
   historyBusy.value = true
   err.value = ''
   try {
     const { data } = await getTTradeHistory({ limit: 200 })
     historyData.value = data || null
+    _historyTs = Date.now()
   } catch (e) {
     err.value = '历史成交加载失败：' + (e.response?.data?.detail || e.message)
-    historyData.value = null
+    historyData.value = null      // 失败清空 ⇒ 下次切回会重试
   } finally {
     historyBusy.value = false
   }
 }
 
 watch(tab, (v) => {
-  if (v === 'history' && !historyData.value) loadHistory()
+  if (v !== 'history') return
+  if (historyData.value && Date.now() - _historyTs < 60000) return
+  loadHistory()
 })
 
 onMounted(loadAll)

@@ -93,7 +93,7 @@
                 </div>
               </div>
               <div class="flex gap-2">
-                <button @click="rerun(today)"
+                <button @click="rerun(todayStr())"
                   :disabled="running"
                   class="px-2.5 py-1 rounded text-[11px] border border-accent/40 text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
                   {{ running ? '对照中…' : '↻ 今日对照' }}
@@ -150,12 +150,12 @@
           <div v-if="!hasToday" class="bg-card border border-amber-500/30 rounded-lg p-4">
             <div class="flex items-center justify-between gap-3">
               <div class="text-xs text-amber-400">
-                今日（{{ today }}）还没有对照记录
+                今日（{{ todayStr() }}）还没有对照记录
                 <span class="text-[10px] text-muted block mt-0.5">
                   日批会在收盘后自动跑；想立刻看结果点右侧按钮（会调 1 次 LLM，约十几秒）
                 </span>
               </div>
-              <button @click="rerun(today)" :disabled="running"
+              <button @click="rerun(todayStr())" :disabled="running"
                 class="shrink-0 px-3 py-1.5 rounded text-xs bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors disabled:opacity-50">
                 {{ running ? '对照中…' : '立即对照' }}
               </button>
@@ -196,7 +196,7 @@
                     <span class="px-1.5 py-0.5 rounded bg-bg text-muted border border-border">
                       无数据 {{ count(d, 'nodata') }}
                     </span>
-                    <button @click="rerun(d.date, true)" :disabled="running"
+                    <button @click="rerun(d.date)" :disabled="running"
                       class="px-1.5 py-0.5 rounded border border-border text-muted hover:text-gray-200 transition-colors disabled:opacity-50">
                       重跑
                     </button>
@@ -508,9 +508,16 @@ const sampleCopied = ref(false)
 const textOpen = ref(null)
 const textCopied = ref('')
 
-const today = computed(() => fmtDate(new Date()))
+// ★ 2026-11-22（审查修复）：原来写成 `computed(() => fmtDate(new Date()))` ——
+//   它**没有任何响应式依赖** ⇒ Vue 只算一次就缓存，页面跨过午夜后仍返回昨天的日期，
+//   "今日未跑"提示和「立即对照」传的日期都会错（后端 `_default_day()` 反而是准的，
+//   于是出现"前端说今天没跑、后端却按今天跑了"的错位）。
+//   改成普通函数：每次调用取当前北京时间。
+function todayStr() {
+  return fmtDate(new Date())
+}
 const hasToday = computed(() =>
-  (current.value?.data || []).some(d => d.date === today.value))
+  (current.value?.data || []).some(d => d.date === todayStr()))
 
 const probTotal = computed(() =>
   form.value.scenarios.reduce((a, s) => a + (Number(s.prob) || 0), 0))
@@ -623,7 +630,7 @@ async function reload() {
   }
 }
 
-async function rerun(date, inTimeline = false) {
+async function rerun(date) {
   if (!current.value) return
   running.value = true
   error.value = ''

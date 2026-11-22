@@ -28,6 +28,7 @@
 """
 import json
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
@@ -143,6 +144,30 @@ def _f(v) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _f_loose(v) -> Optional[float]:
+    """宽容数值解析 —— **只给 `parse_text` 用**（解析 LLM 输出）。
+
+    ★ 2026-11-22（审查发现）：LLM 常把概率写成 `"35%"`、阈值写成 `"3500点"`，
+    严格 `_f` 对这类一律返回 None ⇒ 情景/验证项被**静默丢弃**，
+    用户只看到"解析不出现景"，完全不知道为什么。
+    这里剥掉单位、取第一个数字。
+
+    ⚠️ **绝不能用于 `evaluate_day`**：实际值必须严格，
+    脏值要显式 `nodata` 而不是"凑一个数出来"（0 会被读成"已实现"）。
+    ⚠️ 不做 万/亿 换算（`"1.2万亿"` 会取到 1.2）—— 这种歧义交给用户核对，
+       解析后的 `warnings` 会提示"有数值来自带单位文本"。
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip().replace(",", "").replace("，", "")
+    if not s:
+        return None
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", s)
+    return float(m.group()) if m else None
 
 
 def _cmp(op: str, actual: Optional[float], target: Optional[float]) -> str:
@@ -594,11 +619,15 @@ def parse_text(text: str) -> Dict:
         warnings.append("开始/结束日期被自动对调")
 
     sc_out = []
+    _loose_n = 0        # 有几个数值是从"带单位文本"剥出来的（最后提示用户核对）
     for s_ in (obj.get("scenarios") or []):
         if not isinstance(s_, dict):
             continue
         name = str(s_.get("name") or "").strip()
-        prob = _f(s_.get("prob"))
+        _raw_prob = s_.get("prob")
+        prob = _f_loose(_raw_prob)
+        if isinstance(_raw_prob, str) and prob is not None:
+            _loose_n += 1
         if not name or prob is None:
             continue
         sc_out.append({"name": name, "prob": round(prob, 1),
@@ -616,7 +645,10 @@ def parse_text(text: str) -> Dict:
             continue
         key = str(c_.get("key") or "").strip()
         op = str(c_.get("op") or "<=").strip()
-        val = _f(c_.get("value"))
+        _raw_val = c_.get("value")
+        val = _f_loose(_raw_val)
+        if isinstance(_raw_val, str) and val is not None:
+            _loose_n += 1
         if key not in METRIC_LABELS:
             dropped.append(f"{key or '?'}（不在可用指标）")
             continue
@@ -627,6 +659,10 @@ def parse_text(text: str) -> Dict:
                        "op": op, "value": val})
     if dropped:
         warnings.append("已丢弃无法登记的验证项：" + "、".join(dropped))
+    if _loose_n:
+        warnings.append(
+            "有 %d 个数值来自带单位的文本（如 35%% / 3500点），"
+            "已按字面数字解析，请核对" % _loose_n)
     if not ck_out:
         return {"ok": False, "error": "解析不出可用验证项（指标需在 7 个内置项内）"}
 
@@ -684,7 +720,9 @@ def _full_text(thesis: Dict, day: str, ev: Dict,
     if scs:
         for s in scs:
             path = ("　—　" + str(s.get("path"))) if s.get("path") else ""
-            L.append("  %s　%s%%%s" % (s.get("name"), s.get("prob"), path))
+            # %g：40.0 → 40，避免文本里出现"40.0%"这种多余小数
+            L.append("  %s　%g%%%s"
+                     % (s.get("name"), s.get("prob") or 0, path))
     else:
         L.append("  （未登记）")
     L.append("")
