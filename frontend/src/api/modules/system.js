@@ -170,6 +170,21 @@ export const getTellWatch = () => http.get('/system/tell-watch', { timeout: 2000
 //   日频（日批快照）⇒ 读库为主，20s 足够；老库慢时可能几秒。
 export const getBreadthDivergence = (date) =>
   http.get('/system/breadth-divergence', { params: date ? { date } : {}, timeout: 30000 })
+// ★★ 2026-11-22（用户："开始做 P0"）：推演登记 + 每日复盘。
+//   周末登记情景/概率/验证项 → 日批自动对照实际数据 + LLM 修正 → 推企微。
+//   纯复盘，不进决策链（与观察器同纪律）。
+export const getThesisMetrics = () => http.get('/thesis/metrics')
+export const getThesisScenarios = (params = {}) =>
+  http.get('/thesis/scenarios', { params })
+export const createThesisScenario = (payload) => http.post('/thesis/scenarios', payload)
+export const getThesisDaily = (id, limit = 30) =>
+  http.get(`/thesis/scenarios/${id}/daily`, { params: { limit } })
+// ⚠️ review 会调 1 次 LLM（同步十几秒）⇒ 给 120s，不能沿用默认 30s
+export const rerunThesisReview = (id, date) =>
+  http.post(`/thesis/scenarios/${id}/review`,
+    null, { params: date ? { date } : {}, timeout: 120000 })
+export const archiveThesisScenario = (id) =>
+  http.post(`/thesis/scenarios/${id}/archive`)
 // ★★ 2026-11-16：铜裁决器 —— 油跌时区分"供给驱动(D1)"与"需求驱动(D2)"。
 //   把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出。
 export const getCopperWatch = () => http.get('/system/copper-watch', { timeout: 20000 })

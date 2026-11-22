@@ -1715,6 +1715,42 @@ def task_scenario_watch():
         return f"推演证伪: WARN {str(e)[:70]}"
 
 
+def task_thesis_review():
+    """推演登记 · 每日复盘（2026-11-22，用户："开始做 P0"）。
+
+    ★ 与 `task_scenario_watch`（2026-10-23 硬编码记分卡）的分工：
+      那个是"磨底 2.0"固定情景/固定 8 项；这个是**用户任意登记**的推演
+      （情景/概率/验证项/证伪条件都可自定义），且**每天多一层 LLM 修正**
+      （兑现进度 / 概率修正 / 已证伪假设 / 次日观察点 / 本次修正的失效条件）。
+
+    ★ 成本：每天 1 次 LLM（无有效推演时直接跳过，不烧 token）。
+    ★ 失败语义：确定性对照先落库；LLM 挂了只是没有"修正建议"，任务算 ⚠ 不算失败。
+    ★ 依赖：`market_amount_daily` / `market_emotion_daily` / `key_level_watch`
+      均已在本任务之前跑完 ⇒ 取数不会拿到半成品。
+    """
+    try:
+        from app import thesis_scenarios as ts
+        r = ts.run_daily(day=_batch_trading_day().isoformat())
+        if not r.get("ok"):
+            return f"推演复盘: WARN {str(r.get('error'))[:70]}"
+        if r.get("skipped"):
+            return f"推演复盘: {r['skipped']}"
+        items = r.get("items") or []
+        parts = []
+        for it in items:
+            seg = ("%s 命中%d/偏离%d/无数据%d"
+                   % (it.get("title") or it.get("id"),
+                      it["n_pass"], it["n_fail"], it["n_nodata"]))
+            if it.get("scenario_now"):
+                seg += " · " + str(it["scenario_now"])
+            if not it.get("llm"):
+                seg += "（LLM 未返回）"
+            parts.append(seg)
+        return "推演复盘: " + " ｜ ".join(parts)
+    except Exception as e:
+        return f"推演复盘: WARN {str(e)[:70]}"
+
+
 def task_ai_basket_watch():
     """AI 硬件主线篮子回撤观察器（2026-10-23）。**纯观察器，不进决策链**。
 
@@ -2069,6 +2105,8 @@ TASKS = {
     #   实时链路早已有（金十两融 + macro 面板），补的是历史序列；fail-open。
     "liquidity_watch": (task_liquidity_watch, "流动性三件套日度落库（两融/基差/利差）"),
     "scenario_watch": (task_scenario_watch, "磨底2.0推演证伪记分卡"),
+    # ★★ 2026-11-22：用户登记的推演 → 每日确定性对照 + LLM 修正（每天 1 次 LLM）
+    "thesis_review": (task_thesis_review, "推演登记每日复盘（对照+LLM修正）"),
     # ★★ 2026-10-26 合并：政策/国家队证据链三合一（ETF 份额 → 增持公告 → 市场底清单）。
     #   三者本是"证据 → 清单"的一条链，靠注释维持顺序不可靠 ⇒ 顺序改由代码保证。
     "policy_watch": (task_policy_watch, "政策链（ETF份额→增持公告→市场底清单）"),
@@ -2155,6 +2193,9 @@ DEFAULT_ORDER = ["backfill",
                 #   位置不变（intraday_path 之后、daily_report 之前），链内顺序由代码保证。
                 "policy_watch",
                  "scenario_watch",
+                # ★ 2026-11-22：推演复盘（依赖上面的成交额/情绪/关键位，且要 1 次 LLM
+                #   ⇒ 排在 daily_report 之前，避免与日报抢 provider 配额）
+                "thesis_review",
                  "daily_report",
                  "trader_brief", "retention", "egress_report",
                  # ★★ 2026-11-04：老缺口回填排最后 —— 实测 3440s（57 分钟）且不产当日

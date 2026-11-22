@@ -327,6 +327,11 @@ app.include_router(user_router.router, prefix="/api/user", tags=["用户数据"]
 app.include_router(coach_router, prefix="/api/coach", tags=["交易员教练"])  # 建议/执行回写/一致性（W1 补漏）
 # ★ 2026-11-15：做T（预案清单/单只解释/当日汇总/手动补扫）
 app.include_router(t_trade_router, prefix="/api/t-trade", tags=["做T"])
+# ★★ 2026-11-22：推演登记 + 每日复盘（用户："开始做 P0"）
+#   周末登记情景/概率/验证项 → 日批自动对照实际数据 + LLM 修正 → 推企微。
+#   纯复盘，不进决策链（与观察器同纪律）。
+from app.routers.thesis import router as thesis_router
+app.include_router(thesis_router, prefix="/api/thesis", tags=["推演复盘"])
 app.include_router(report_router.router, prefix="/api/report", tags=["日报"])  # A股大盘日报（每日16:20生成）
 # 重任务触发：转发给 GitHub Actions，本进程零计算（512MB 实例生存关键）
 app.include_router(tasks_router.router, prefix="/api/tasks", tags=["重任务触发"])
