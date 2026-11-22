@@ -258,6 +258,17 @@ def plan_for_trading(code: str, day: str = None) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+# ★★ 2026-11-22（用户："做T 看板 · 预案加载失败，跟超时有关"）：
+#   实测老库上 list_plans 一次 8~16s，而它一天被读几十次
+#   （daily_summary 内部 1 次 + /plans 1 次 + scheduler 触发循环 60s 一次）。
+#   预案是**盘后批量算好写库、盘中只读**的数据，一天只变 1 次 ⇒ 60s 进程内缓存足够。
+#   缓存命中率高（前端看板 + 触发循环共用），且不牺牲触发时效：
+#   `t_trade_loop` 用的是自己那份 60s 循环，预案若被手动重扫，最多 60s 后生效。
+#   ⚠️ 必须按 (day, feasible_only) 分键；返回**副本**，防调用方 sort/改字段污染缓存。
+_PLANS_CACHE = {"key": None, "ts": 0.0, "rows": None}
+_PLANS_TTL = 60.0
+
+
 def list_plans(day: str = None, feasible_only: bool = False) -> List[Dict]:
     """某日的预案清单；**当天没有则回退到最近一批**（盘前场景）。
 
@@ -265,8 +276,16 @@ def list_plans(day: str = None, feasible_only: bool = False) -> List[Dict]:
       若只认 `plan_date=今天`，界面上班时间永远是空的。
       但返回里保留 `plan_date`，**界面必须显示它是哪天的**（不能假装今天算的）。
     """
-    ensure_tables()
+    import time as _t
+
     d = day or _today()
+    key = (str(d), bool(feasible_only))
+    now = _t.time()
+    if (_PLANS_CACHE["key"] == key and _PLANS_CACHE["rows"] is not None
+            and now - _PLANS_CACHE["ts"] < _PLANS_TTL):
+        return [dict(r) for r in _PLANS_CACHE["rows"]]
+
+    ensure_tables()
     cond = " AND feasible=1" if feasible_only else ""
     rows = db.fetch(
         f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} "
@@ -279,7 +298,9 @@ def list_plans(day: str = None, feasible_only: bool = False) -> List[Dict]:
             rows = db.fetch(
                 f"SELECT {_PLAN_SELECT_COLS} FROM {_T_PLAN_TABLE} "
                 f"WHERE plan_date=%s{cond} ORDER BY code", (d2,)) or []
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    _PLANS_CACHE.update({"key": key, "ts": now, "rows": out})
+    return [dict(r) for r in out]
 
 
 def _load_bars_batch(codes: List[str], per_code: int = 120) -> Dict[str, List[Dict]]:

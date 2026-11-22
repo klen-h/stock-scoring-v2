@@ -91,9 +91,14 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 // ★★ 2026-11-15（用户："新增股票量化做T功能…盘中获取实时行情"）：
 //   做T 读接口。`plans` 的 `watch_only=1` 只返回**自选+持仓**里可做的
 //   （全市场今天可能 300+ 只 feasible，全塞给用户等于噪音）。
-export const getTTradeSummary = () => http.get('/t-trade/summary')
-export const getTTradePlans = (params = {}) => http.get('/t-trade/plans', { params })
-export const getTTradeExplain = (code) => http.get('/t-trade/explain', { params: { code } })
+// ★★ 2026-11-22（用户："做T 看板 · 预案（加载失败），跟超时有关"）：
+//   后端 `daily_summary` 实测 15.9s（内部还调一次 list_plans），`list_plans` 8~16s，
+//   `enrich_facts` +3s、`attach_buy_check` +2.3s。服务器走老库（新加坡）国际链路更慢。
+//   全局默认 30s 会被打穿 ⇒ 前端先超时、后端还在跑（重试=白跑两遍）。
+//   给 90s（与 getScoreTop 同档），保证"后端真失败时前端才失败"。
+export const getTTradeSummary = () => http.get('/t-trade/summary', { timeout: 90000 })
+export const getTTradePlans = (params = {}) => http.get('/t-trade/plans', { params, timeout: 90000 })
+export const getTTradeExplain = (code) => http.get('/t-trade/explain', { params: { code }, timeout: 45000 })
 // 做T 池（**独立于自选**：自选是"想盯的票"，池是"能做T 的票"）
 export const getTTradePool = () => http.get('/t-trade/pool')
 export const addTTradePool = (codes, note = '') =>

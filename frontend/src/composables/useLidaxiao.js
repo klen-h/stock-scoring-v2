@@ -61,13 +61,27 @@ async function refreshLidx() {
     //   API 层已把超时放宽到 110s，这里仍保留区分以防慢网络。
     const code = String((e && e.code) || '')
     const msg = String((e && e.message) || '')
+    const status = Number((e && e.response && e.response.status) || 0)
     const isTimeout = code === 'ECONNABORTED' || /timeout/i.test(msg)
-    lidxMsg.value = {
-      ok: false,
-      text: isTimeout
-        ? '更新超时（后端可能仍在拉取，稍后刷新页面看看）'
-        : '更新失败（网络异常，可稍后重试）',
+    // ★★ 2026-11-22（用户："更新失败（网络异常，可稍后重试）"）：
+    //   实测后端 refresh_from_upstream() 21.3s 成功入库 13 条，上游是通的 ⇒
+    //   用户看到的"网络异常"其实是 **catch 分支**，不是后端 data.error。
+    //   旧文案把 401/500/502 全说成"网络异常"，会误导成"上游不可用"。
+    //   按 HTTP 状态给准信：401 是登录过期（重新登录），5xx 是服务端/网关，
+    //   真正的网络层错误才提示稍后重试。
+    let text
+    if (isTimeout) {
+      text = '更新超时（后端可能仍在拉取，稍后刷新页面看看）'
+    } else if (status === 401 || status === 403) {
+      text = '登录已过期，请重新登录后再更新'
+    } else if (status >= 500) {
+      text = `服务端暂不可用（HTTP ${status}），请稍后重试`
+    } else if (status === 0 && !e.response) {
+      text = '网络异常（连不上服务器），可稍后重试'
+    } else {
+      text = `更新失败（HTTP ${status || '未知'}），请稍后重试`
     }
+    lidxMsg.value = { ok: false, text }
   } finally {
     lidxBusy.value = false
     setTimeout(() => { lidxMsg.value = null }, 5000)
