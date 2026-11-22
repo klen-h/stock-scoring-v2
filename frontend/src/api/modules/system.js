@@ -97,6 +97,10 @@ export const getCoachAttribution = (days = 60) => http.get('/coach/attribution',
 //   全局默认 30s 会被打穿 ⇒ 前端先超时、后端还在跑（重试=白跑两遍）。
 //   给 90s（与 getScoreTop 同档），保证"后端真失败时前端才失败"。
 export const getTTradeSummary = () => http.get('/t-trade/summary', { timeout: 90000 })
+// ★ 2026-11-22：历史成交 + 累计收益（`/summary` 只查当日，隔天/周末打开看不到历史的 T）。
+//   纯单表查询，很快 ⇒ 30s 足够。
+export const getTTradeHistory = (params = {}) =>
+  http.get('/t-trade/history', { params, timeout: 30000 })
 export const getTTradePlans = (params = {}) => http.get('/t-trade/plans', { params, timeout: 90000 })
 export const getTTradeExplain = (code) => http.get('/t-trade/explain', { params: { code }, timeout: 45000 })
 // 做T 池（**独立于自选**：自选是"想盯的票"，池是"能做T 的票"）

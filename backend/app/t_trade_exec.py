@@ -1024,3 +1024,53 @@ def daily_summary(day: str = None) -> Dict:
             "pnl": pnl,
         },
     }
+
+
+def history(limit: int = 200, day_from: Optional[str] = None) -> Dict:
+    """**历史成交 + 累计收益**（跨日，不受"当日"限制）。
+
+    ★ 2026-11-22（用户："做t明明有交易，但是我看不到历史及收益情况"）：
+      原页面只有 `daily_summary()`，查的是 `WHERE trade_date = 今天`
+      ⇒ 周末/隔天打开就是空的，历史那笔 T 永远看不到。
+      本函数按日期倒序取最近 N 笔，并给出**累计口径**的统计。
+
+    ⚠️ 统计只算 `status in ('closed','stopped')` 的行 ——
+      `open` 的盈亏还是浮动的，混进累计会虚高。
+    """
+    ensure_tables()
+    lim = max(1, min(int(limit or 200), 1000))
+    try:
+        if day_from:
+            rows = db.fetch(
+                f"SELECT * FROM {_T_TRADE_TABLE} WHERE trade_date>=%s "
+                f"ORDER BY trade_date DESC, open_time DESC LIMIT %s",
+                (str(day_from)[:10], lim)) or []
+        else:
+            rows = db.fetch(
+                f"SELECT * FROM {_T_TRADE_TABLE} "
+                f"ORDER BY trade_date DESC, open_time DESC LIMIT %s",
+                (lim,)) or []
+    except Exception as e:
+        print(f"[t-trade] history failed: {str(e)[:90]}")
+        return {"data": [], "stats": {}, "error": str(e)[:120]}
+
+    trades = [dict(r) for r in rows]
+    closed = [t for t in trades if t.get("status") in ("closed", "stopped")]
+    opened = [t for t in trades if t.get("status") == "open"]
+    pnl = round(sum(float(t.get("pnl") or 0) for t in closed), 2)
+    win = sum(1 for t in closed if float(t.get("pnl") or 0) > 0)
+    days = len({t.get("trade_date") for t in trades if t.get("trade_date")})
+    return {
+        "data": trades,
+        "stats": {
+            "trades": len(trades),
+            "closed": len(closed),
+            "open": len(opened),
+            "win": win,
+            "win_rate_pct": round(win / len(closed) * 100, 1) if closed else None,
+            "pnl": pnl,
+            "avg_pnl": round(pnl / len(closed), 2) if closed else None,
+            "days": days,
+        },
+        "scope": ("自 %s 起" % str(day_from)[:10]) if day_from else "全部历史",
+    }

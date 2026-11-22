@@ -398,7 +398,118 @@
       </div>
     </div>
 
-    <!-- ── ④ 单只诊断 ── -->
+    <!-- ── ④ 历史成交（跨日 + 累计收益） ── -->
+    <div v-show="tab === 'history'" class="space-y-2">
+      <div v-if="historyBusy"
+           class="bg-card border border-border rounded-lg p-6 text-center text-[11px] text-muted">
+        加载中…
+      </div>
+      <template v-else-if="historyData">
+        <!-- 累计统计（只算已平，未平盈亏仍浮动） -->
+        <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="text-[11px] text-muted">累计盈亏</div>
+            <div class="text-lg font-semibold mt-0.5 font-mono"
+                 :class="Number(historyData.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
+              {{ Number(historyData.stats.pnl) > 0 ? '+' : '' }}{{ Number(historyData.stats.pnl || 0).toFixed(2) }}
+            </div>
+            <div class="text-[10px] text-muted">仅已平仓</div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="text-[11px] text-muted">笔数</div>
+            <div class="text-lg font-semibold mt-0.5">{{ historyData.stats.trades }}</div>
+            <div class="text-[10px] text-muted">已平 {{ historyData.stats.closed }} · 未平 {{ historyData.stats.open }}</div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="text-[11px] text-muted">胜率</div>
+            <div class="text-lg font-semibold mt-0.5">
+              {{ historyData.stats.win_rate_pct == null ? '—' : historyData.stats.win_rate_pct + '%' }}
+            </div>
+            <div class="text-[10px] text-muted">赢 {{ historyData.stats.win }} 笔</div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="text-[11px] text-muted">平均每笔</div>
+            <div class="text-lg font-semibold mt-0.5 font-mono"
+                 :class="Number(historyData.stats.avg_pnl || 0) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
+              {{ historyData.stats.avg_pnl == null
+                  ? '—'
+                  : (Number(historyData.stats.avg_pnl) > 0 ? '+' : '') + Number(historyData.stats.avg_pnl).toFixed(2) }}
+            </div>
+          </div>
+          <div class="bg-card border border-border rounded-lg p-3">
+            <div class="text-[11px] text-muted">涉及交易日</div>
+            <div class="text-lg font-semibold mt-0.5">{{ historyData.stats.days }}</div>
+          </div>
+        </div>
+
+        <!-- 明细 -->
+        <div class="bg-card border border-border rounded-lg p-3">
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="text-xs font-semibold">成交明细</div>
+            <div class="text-[10px] text-muted">
+              {{ historyData.scope }} · 最近 {{ historyData.data.length }} 笔
+            </div>
+          </div>
+          <div v-if="!historyData.data.length" class="text-[11px] text-muted py-4 text-center">
+            还没有任何做T 记录。
+          </div>
+          <table v-else class="w-full text-xs">
+            <thead class="text-muted border-b border-border">
+              <tr>
+                <th class="text-left px-2 py-1">日期</th>
+                <th class="text-left px-2 py-1">代码</th>
+                <th class="text-left px-2 py-1">名称</th>
+                <th class="text-left px-2 py-1">方向</th>
+                <th class="text-right px-2 py-1">开仓</th>
+                <th class="text-right px-2 py-1">平仓</th>
+                <th class="text-right px-2 py-1">股数</th>
+                <th class="text-right px-2 py-1">盈亏</th>
+                <th class="text-left px-2 py-1">状态</th>
+                <th class="text-left px-2 py-1">备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="t in historyData.data" :key="t.id" class="border-b border-border/50">
+                <td class="px-2 py-1 text-muted font-mono">{{ t.trade_date }}</td>
+                <td class="px-2 py-1">
+                  <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                     class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
+                </td>
+                <td class="px-2 py-1">
+                  <router-link :to="'/stock/' + t.code" class="hover:text-accent hover:underline">{{ t.name }}</router-link>
+                </td>
+                <td class="px-2 py-1">{{ t.direction === 'long_t' ? '正T（先买）' : '反T（先卖）' }}</td>
+                <td class="px-2 py-1 text-right font-mono">{{ Number(t.open_price).toFixed(2) }}</td>
+                <td class="px-2 py-1 text-right font-mono">
+                  {{ t.close_price == null ? '—' : Number(t.close_price).toFixed(2) }}
+                </td>
+                <td class="px-2 py-1 text-right font-mono">{{ t.open_shares }}</td>
+                <td class="px-2 py-1 text-right font-mono"
+                    :class="t.pnl == null ? 'text-muted' : (Number(t.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300')">
+                  <template v-if="t.pnl == null">—</template>
+                  <template v-else>
+                    {{ Number(t.pnl) > 0 ? '+' : '' }}{{ Number(t.pnl).toFixed(2) }}
+                    <span class="opacity-70">（{{ Number(t.pnl_pct || 0).toFixed(2) }}%）</span>
+                  </template>
+                </td>
+                <td class="px-2 py-1">
+                  <span class="px-1.5 rounded text-[10px]"
+                        :class="t.status === 'open' ? 'bg-accent/15 text-accent' : 'bg-white/10 text-muted'">
+                    {{ t.status === 'open' ? '未平' : (t.status === 'stopped' ? '止损' : '已平') }}
+                  </span>
+                </td>
+                <td class="px-2 py-1 text-muted truncate max-w-[240px]" :title="t.note">{{ t.note }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+      <div v-else class="bg-card border border-border rounded-lg p-6 text-center text-[11px] text-muted">
+        切到本页会自动加载历史成交。
+      </div>
+    </div>
+
+    <!-- ── ⑤ 单只诊断 ── -->
     <div v-show="tab === 'explain'" class="space-y-2">
       <div class="bg-card border border-border rounded-lg p-3 space-y-2">
         <div class="text-xs font-semibold">为什么某只票能做 / 不能做？</div>
@@ -445,12 +556,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import {
   getTTradeSummary, getTTradePlans, getTTradeExplain,
   getTTradePool, addTTradePool, delTTradePool, triggerTTradeScan,
   getBatchPricesCached, testTTradePush, buildTTradePlan,
-  getTTradeSim, delTTradeSim, autoTTradePool,
+  getTTradeSim, delTTradeSim, autoTTradePool, getTTradeHistory,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
@@ -461,6 +572,9 @@ const tabs = [
   { key: 'pool', label: '我的池子' },
   { key: 'market', label: '全市场可行' },
   { key: 'trades', label: '今日成交' },
+  // ★ 2026-11-22（用户："做t明明有交易，但是我看不到历史及收益情况"）：
+  //   「今日成交」只查当天 ⇒ 隔天/周末打开历史的 T 就消失了。补一个跨日的历史页。
+  { key: 'history', label: '历史成交' },
   { key: 'explain', label: '单只诊断' },
 ]
 
@@ -472,6 +586,9 @@ const err = ref('')
 const simInfo = ref(null)
 
 const summary = ref(null)
+// ★ 2026-11-22：历史成交（跨日）+ 累计收益，切到 tab 时懒加载
+const historyData = ref(null)
+const historyBusy = ref(false)
 const poolPlans = ref([])
 const marketPlans = ref([])
 const marketTotal = ref(0)
@@ -736,6 +853,25 @@ async function doExplain() {
     explainBusy.value = false
   }
 }
+
+// ── 历史成交：切到 tab 时懒加载（不拖慢首屏的 loadAll）──
+async function loadHistory() {
+  historyBusy.value = true
+  err.value = ''
+  try {
+    const { data } = await getTTradeHistory({ limit: 200 })
+    historyData.value = data || null
+  } catch (e) {
+    err.value = '历史成交加载失败：' + (e.response?.data?.detail || e.message)
+    historyData.value = null
+  } finally {
+    historyBusy.value = false
+  }
+}
+
+watch(tab, (v) => {
+  if (v === 'history' && !historyData.value) loadHistory()
+})
 
 onMounted(loadAll)
 </script>

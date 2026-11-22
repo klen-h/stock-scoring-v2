@@ -431,6 +431,17 @@ def get_summary(date: str = None, user: dict = Depends(get_current_user)):
     return TX.daily_summary(date)
 
 
+@router.get("/history")
+def get_history(limit: int = 200, day_from: str = None,
+                user: dict = Depends(get_current_user)):
+    """**历史成交 + 累计收益**（跨日）。
+
+    ★ 2026-11-22（用户："做t明明有交易，但是我看不到历史及收益情况"）：
+      `/summary` 只查当日，隔天/周末打开就看不到历史的 T。本端点补这个缺口。
+    """
+    return TX.history(limit=limit, day_from=day_from)
+
+
 @router.post("/scan")
 def trigger_scan(background: BackgroundTasks, date: str = None,
                  user: dict = Depends(get_current_user)):
