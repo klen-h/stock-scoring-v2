@@ -225,7 +225,10 @@ _SOURCES = [
     #   容忍，实测基本每交易日都有（10-23 三条 / 10-27 17:00 一条盘后）⇒ 收紧到 5 天，
     #   与 `lidaxiao_views._STALE_DAYS` 同步。断流 = 推送失败（可用卡面「↻ 更新」手动补拉）。
     #   ⚠️ 无 `sync_key`：该表由 prometheus 式的 push/手动 refresh 写入，没有日批任务版本号。
-    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送/手动补拉", 5,
+    # ★ 2026-11-22：容忍天数 5 → **3**（与 `lidaxiao_views._STALE_DAYS` 同步）。
+    #   用户："李大霄周末会更新视频" ⇒ 用 5 天算，周末断流要等到第 6 天才亮 ⚠；
+    #   实测 11-21 之后因 B 站 412 风控断流，按 5 天要拖到 11-26 才告警。
+    ("李大霄解读", "SELECT MAX(date) AS v FROM lidaxiao_views", "随B站视频推送/手动补拉", 3,
      None),
     # ★ 2026-10-25：流动性三件套（两融/期指基差/中美利差）日批落库——
     #   两融本身是 T+1 数据（margin_date 列），MAX(date) 取的是落库日
