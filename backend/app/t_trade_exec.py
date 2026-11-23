@@ -421,10 +421,23 @@ def scan_market(day: str = None, min_bars: int = 120,
         # 选池失败不能毁掉本次已经写好的预案（吞异常必须可见）
         print(f"[t-trade] auto_pick after scan failed: {str(e)[:80]}")
 
+    # ★★ 2026-11-23（用户："全自动：选池即建仓，需要精心挑选"）：
+    #   选池之后**顺手建 ≤3 条建仓点计划**（精挑规则见 `auto_build_plans`：
+    #   真实技术支撑 / 期望空间 / 距离窗口 / 数量上限）。
+    #   ⚠️ 只建计划不建仓 —— 模拟底仓仍等价格到买点才触发；
+    #      所以即使精挑选错，也只是多一条没触发的计划，不会凭空多出持仓。
+    plans = {}
+    try:
+        plans = auto_build_plans(d)
+    except Exception as e:
+        # 建计划失败同样不能毁掉预案与选池结果
+        print(f"[t-trade] auto_build_plans after scan failed: {str(e)[:80]}")
+
     return {"date": d, "scanned": total, "feasible": feasible,
             "stale_marked": stale,
             "pool_picked": len(pick.get("picked") or []),
             "pool_removed": pick.get("removed") or 0,
+            "auto_plans": len(plans.get("built") or []),
             "started_at": t0, "finished_at": _now(),
             "note": "只落库 feasible=True 的预案；本次未重算的旧预案标为不可行；"
                     "池子只替换自动挑选的行"}
@@ -696,6 +709,199 @@ def auto_pick_pool(day: str = None, top: int = None) -> Dict:
             "excluded_held": len(held), "excluded_manual": len(manual),
             "total": len(pool_codes()),
             "note": "只替换自动挑选的行；手动加入的票不动"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  选池即建仓（2026-11-23，用户："全自动：选池即建仓，需要精心挑选"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么可以推翻 2026-11-16 的"不顺手建计划"】
+#   当时用户的顾虑原话是"自动建计划会一次性糊出十几条计划"。
+#   本次用**精挑**回应这个顾虑：不是"选 15 只就建 15 条"，
+#   而是从候选里再筛出 **≤3 条**，且每条都必须过下面四道门槛。
+#
+# 【四道门槛，每一条都有实测依据】
+#   ① **支撑必须是真实技术位** —— 只认 `前低(60日)` / `近20日最低` /
+#      `MA20` / `MA60` / `整数位`；**排除 `ATR×0.5`**。
+#      【依据】最新一批 372 只 feasible 里 **259 只的 support_type 是 `ATR×0.5`**，
+#        它是"现价 − 0.5×ATR"算出来的人造位，**没有承接含义**。
+#        实测反例：000878 云南铜业 2026-11-18 自动建仓 @12.76（支撑 12.71），
+#        次日即跌破止损平仓 —— 那个 12.71 就是 ATR 位，不是真支撑。
+#   ② 期望空间 `space_pct × ratio >= 0.8%` —— 与 `auto_pick_pool` 同口径；
+#      实测自动池第 15 名只有 0.57%，那种"建了也白建"。
+#   ③ 现价距支撑 **0.5% ~ 5%** ——
+#      太近（<0.5%）一跌就破位（云南铜业是 +0.39%，正好踩这条坑）；
+#      太远（>5%）等不到成交，白占计划位。
+#   ④ **数量上限 3 只**（`T_AUTO_PLAN_TOP`）—— 模拟仓多了界面乱、也没法逐个复核。
+#
+# 【只建"计划"，不直接建仓】
+#   建出来的计划是 `status='waiting'`，真正的模拟底仓仍由
+#   `trade_plan_trigger_loop` 在**价格到买点**时才创建
+#   （`auto_build_allowed` 还会再拦一次"已跌破买点"）。
+_T_AUTO_PLAN = str(os.environ.get("T_AUTO_PLAN") or "1").lower() not in (
+    "0", "false", "no")
+AUTO_PLAN_TOP = int(os.environ.get("T_AUTO_PLAN_TOP") or 3)
+AUTO_PLAN_MIN_EXPECT = float(os.environ.get("T_AUTO_PLAN_MIN_EXPECT") or 0.8)
+AUTO_PLAN_MIN_DIST = float(os.environ.get("T_AUTO_PLAN_MIN_DIST") or 0.5)
+AUTO_PLAN_MAX_DIST = float(os.environ.get("T_AUTO_PLAN_MAX_DIST") or 5.0)
+
+# 真实技术位白名单：`ATR×0.5` 是兜底人造位，刻意不在内（见上方①）
+_REAL_SUPPORT_KINDS = ("前低", "近20日最低", "MA20", "MA60", "整数位")
+
+
+def build_plan_row(p: Dict, uid: int = None) -> Dict:
+    """由一条预案生成/更新「底仓建仓点」交易计划（**幂等**）。
+
+    ⚠️ 与 `POST /t-trade/build-plan` **共用本函数** —— 两处各写一份必然漂移
+    （项目已多次踩过：`_bench_code`、`SPREAD_THRESHOLD` 都是同型事故）。
+    """
+    import time as _t
+
+    from app import t_trade as TT
+    from app.portfolio_scope import primary_user_id
+
+    c = str((p or {}).get("code") or "").strip()
+    if not c:
+        return {"success": False, "error": "缺 code"}
+    sup, res = p.get("support"), p.get("resistance")
+    if not (sup and res):
+        return {"success": False, "error": "预案缺支撑/阻力"}
+    sup, res = float(sup), float(res)
+    atr = float(p.get("atr") or 0)
+    # 与 `check_trigger` 的止损口径一致：支撑 − 0.5×ATR
+    stop = round(sup - atr * 0.5, 2) if atr else round(sup * 0.97, 2)
+
+    u = uid if uid is not None else primary_user_id()
+    # 幂等：同一只票已有 waiting 计划 ⇒ 更新它，不重复建（否则推送 ×N）
+    exist = db.fetch_one(
+        "SELECT id FROM user_trade_plans WHERE code=%s AND status='waiting' "
+        "AND user_id=%s LIMIT 1", (c, u))
+    pid = (exist or {}).get("id") or ("tp_%d_%s" % (int(_t.time() * 1000), c))
+
+    ratio = float(p.get("ratio") or 0)
+    suggest_shares = max(300, TT.min_base_shares(ratio))
+    suggest_cash = round(suggest_shares * sup, 2)
+    try:
+        db.upsert("user_trade_plans", {
+            "id": pid, "code": c, "name": p.get("name") or c,
+            "buy_price": sup, "stop_loss": stop, "target": res,
+            "reason": "做T 底仓建仓点：支撑 %.2f（%s）；建完仓才能做T"
+                      % (sup, p.get("support_type") or "-"),
+            "expected": "建议买 %d 股（约 %.0f 元），空间 %.2f%%（%.2f×ATR）；"
+                        "仓位比例 %.0f%%，少于 %d 股则不足 100 股，做不了 T"
+                        % (suggest_shares, suggest_cash,
+                           float(p.get("space_pct") or 0),
+                           float(p.get("space_atr_mult") or 0),
+                           ratio * 100, suggest_shares),
+            # `plan_type='t_build'` 是 `trade_plan_trigger_loop` 识别
+            # "命中买点要自动建模拟底仓"的契约（不要改成中文匹配）
+            "status": "waiting", "plan_type": "t_build", "user_id": u,
+        }, conflict_columns=["id"])
+    except Exception as e:
+        print(f"[t-trade] build_plan_row {c} failed: {str(e)[:80]}")
+        return {"success": False, "error": str(e)[:90]}
+    return {"success": True, "id": pid, "code": c, "buy_price": sup,
+            "stop_loss": stop, "target": res,
+            "suggest_shares": suggest_shares, "suggest_cash": suggest_cash}
+
+
+def auto_build_plans(day: str = None, top: int = None,
+                     dry_run: bool = False) -> Dict:
+    """**选池即建仓**：从当日 feasible 预案里精挑 ≤N 只，自动建"建仓点计划"。
+
+    ⚠️ 建的是**计划**（`waiting`），不是仓位 —— 模拟底仓仍等价格到买点才建。
+    这样即使自动盘挑错，也只是"多一条没触发的计划"，不会凭空多出持仓。
+    """
+    ensure_tables()
+    if not _T_AUTO_PLAN:
+        return {"ok": True, "skipped": "T_AUTO_PLAN=0", "built": []}
+    d = day or _today()
+    limit = max(1, int(top or AUTO_PLAN_TOP))
+
+    try:
+        rows = db.fetch(f"""
+            SELECT code, name, price_ref, support, support_type, resistance,
+                   atr, space_pct, space_atr_mult, ratio
+            FROM {_T_PLAN_TABLE}
+            WHERE plan_date=%s AND feasible=1
+              AND support IS NOT NULL AND support > 0
+              AND price_ref IS NOT NULL AND price_ref > 0
+        """, (d,)) or []
+    except Exception as e:
+        print(f"[t-trade] auto_plan query failed: {str(e)[:80]}")
+        return {"ok": False, "error": str(e)[:90], "built": []}
+
+    from app.portfolio_scope import primary_user_id
+
+    uid = primary_user_id()
+    # 已占用的：模拟底仓 + 已有 waiting 计划（真实持仓这边不查 ——
+    #   `sim_holdings` 已覆盖模拟层；真实持仓由用户自己管，不阻止建计划）
+    busy = set(sim_holdings().keys())
+    try:
+        for r in (db.fetch(
+                "SELECT code FROM user_trade_plans WHERE status='waiting' "
+                "AND user_id=%s", (uid,)) or []):
+            busy.add(str(r.get("code")))
+    except Exception as e:
+        print(f"[t-trade] auto_plan busy failed: {str(e)[:60]}")
+
+    scored, dropped = [], {"kind": 0, "dist": 0, "expect": 0, "busy": 0}
+    for r in rows:
+        kind = str(r.get("support_type") or "")
+        if not any(k in kind for k in _REAL_SUPPORT_KINDS):
+            dropped["kind"] += 1          # ① 人造 ATR 位，不建
+            continue
+        price = float(r.get("price_ref") or 0)
+        sup = float(r.get("support") or 0)
+        if price <= 0 or sup <= 0:
+            continue
+        dist = (price / sup - 1) * 100
+        if not (AUTO_PLAN_MIN_DIST <= dist <= AUTO_PLAN_MAX_DIST):
+            dropped["dist"] += 1          # ③ 太近=接刀 / 太远=等不到
+            continue
+        ratio = float(r.get("ratio") or 0)
+        space = float(r.get("space_pct") or 0)
+        score = space * ratio
+        if score < AUTO_PLAN_MIN_EXPECT:
+            dropped["expect"] += 1        # ② 期望空间不够
+            continue
+        c = str(r.get("code") or "")
+        if c in busy:
+            dropped["busy"] += 1          # 已有仓/已有计划
+            continue
+        scored.append((score, dist, r))
+
+    scored.sort(key=lambda x: -x[0])
+    built = []
+    for score, dist, r in scored[:limit]:
+        if dry_run:      # 只回筛选结果，不落库（排查"到底会挑中谁"用）
+            built.append({"code": r.get("code"), "name": r.get("name"),
+                          "buy_price": r.get("support"),
+                          "stop_loss": r.get("support"),
+                          "target": r.get("resistance"),
+                          "dist_pct": round(dist, 2),
+                          "expect_pct": round(score, 2),
+                          "support_type": r.get("support_type"),
+                          "dry_run": True})
+            continue
+        res = build_plan_row(r, uid)
+        if res.get("success"):
+            built.append({"code": res["code"], "name": r.get("name"),
+                          "buy_price": res["buy_price"],
+                          "stop_loss": res["stop_loss"],
+                          "target": res["target"],
+                          "dist_pct": round(dist, 2),
+                          "expect_pct": round(score, 2),
+                          "support_type": r.get("support_type")})
+        else:
+            print(f"[t-trade] auto_plan {r.get('code')} failed: "
+                  f"{res.get('error')}")
+
+    if built:
+        print(f"[t-trade] auto_plan {d}: built {len(built)} "
+              f"(cand {len(scored)} / drop {dropped})")
+    return {"ok": True, "date": d, "built": built,
+            "candidates": len(scored), "dropped": dropped, "top": limit,
+            "note": "只建计划不建仓；价格到买点才自动建模拟底仓"}
 
 
 def holdings() -> Dict[str, Dict]:

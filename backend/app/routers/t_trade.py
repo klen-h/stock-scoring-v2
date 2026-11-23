@@ -326,8 +326,6 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
     【资金说明】`buy_price = 支撑`，一次买多少**不由本接口决定**
       （系统不知道实盘现金）—— 建议至少 300 股，否则 1/3 仓不足 100 股，做T 仍做不了。
     """
-    import time as _t
-
     c = str(code or "").strip()
     if not c:
         raise HTTPException(400, "缺少 code")
@@ -338,64 +336,30 @@ def build_plan(code: str = "", user: dict = Depends(get_current_user)):
             400, "该票今日无可行预案（不设建仓点）：%s"
                  % ((p or {}).get("reason") or "无数据"))
 
-    sup, res = p.get("support"), p.get("resistance")
-    atr = p.get("atr") or 0
-    if not (sup and res):
+    if not (p.get("support") and p.get("resistance")):
         raise HTTPException(400, "预案缺支撑/阻力，无法设建仓点")
 
-    # 与 `check_trigger` 的止损口径一致：支撑 − 0.5×ATR
-    stop = round(float(sup) - float(atr) * 0.5, 2) if atr else round(float(sup) * 0.97, 2)
+    # ★ 2026-11-23：落库逻辑抽到 `TX.build_plan_row()` ——
+    #   自动选池（`auto_build_plans`）与本接口**必须**走同一份代码，
+    #   否则"手动建的"和"自动建的"迟早漂移（项目已多次踩过这个坑）。
+    pp = dict(p)
+    pp.setdefault("code", c)
 
-    from app.portfolio_scope import primary_user_id
+    # 建仓股数按 `ratio` 反算（`100/ratio`），避免"建了仓却做不了T"——
+    #   `ratio=0.2` 买 300 股只能卖 60 股。细则见 `TX.build_plan_row`。
+    r = TX.build_plan_row(pp)
+    if not r.get("success"):
+        raise HTTPException(500, "建计划失败：%s" % r.get("error"))
 
-    uid = primary_user_id()
-    # **幂等**：同一只票已有 waiting 计划 ⇒ 更新它，不重复建
-    #   （否则用户点三次就有三条计划，推送也会 ×3）
-    exist = db.fetch_one(
-        "SELECT id FROM user_trade_plans WHERE code=%s AND status='waiting' "
-        "AND user_id=%s LIMIT 1", (c, uid))
-    pid = (exist or {}).get("id") or ("tp_%d_%s" % (int(_t.time() * 1000), c))
-
-    # ★ 2026-11-15（用户："建仓时直接买到 300 股以上"）：
-    #   做T 的 `ratio` 仓必须 ≥100 股 ⇒ 底仓至少要 `100 / ratio` 股。
-    #   ⚠️ **2026-11-16 修正**：原先硬编码 300 股是错的 ——
-    #      `ratio=0.333` 时 300 股正好够（容差补到 100），
-    #      但 `ratio=0.2`（如 000878 云南铜业）买 300 股只能卖 60 股 ⇒ **做不了 T**，
-    #      用户会"照建议建完仓发现白做"。必须按 ratio 反算最小底仓。
-    #   `int(round(need/100))*100` 而不是 ceil：`100/0.333333 = 300.0003`
-    #   ⇒ ceil 会要 400 股（不必要），round 得 300（与 `calc_shares` 的容差一致）。
-    ratio = float(p.get("ratio") or 0)
-    suggest_shares = max(300, TT.min_base_shares(ratio))
-    suggest_cash = round(suggest_shares * float(sup), 2)
-
-    try:
-        db.upsert("user_trade_plans", {
-            "id": pid, "code": c, "name": p.get("name") or c,
-            "buy_price": float(sup), "stop_loss": stop, "target": float(res),
-            "reason": "做T 底仓建仓点：支撑 %.2f（%s）；建完仓才能做T"
-                      % (float(sup), p.get("support_type") or "-"),
-            "expected": "建议买 %d 股（约 %.0f 元），空间 %.2f%%（%.2f×ATR）；"
-                        "仓位比例 %.0f%%，少于 %d 股则不足 100 股，做不了 T"
-                        % (suggest_shares, suggest_cash,
-                           float(p.get("space_pct") or 0),
-                           float(p.get("space_atr_mult") or 0),
-                           ratio * 100, suggest_shares),
-            # ★ 2026-11-16：`plan_type` 由 `trial` 改为 **`t_build`** ——
-            #   `trade_plan_trigger_loop` 靠它识别"这条计划命中买点后要**自动建
-            #   模拟底仓**（用户：价格到位，系统自动处理）"。
-            #   用独立取值而不是匹配 `reason` 里的中文：字符串匹配一改文案就失效。
-            "status": "waiting", "plan_type": "t_build", "user_id": uid,
-        }, conflict_columns=["id"])
-    except Exception as e:
-        raise HTTPException(500, "建计划失败：%s" % str(e)[:90])
-
-    return {"success": True, "id": pid, "code": c,
-            "buy_price": float(sup), "stop_loss": stop, "target": float(res),
+    return {"success": True, "id": r["id"], "code": c,
+            "buy_price": r["buy_price"], "stop_loss": r["stop_loss"],
+            "target": r["target"],
             # ★ 建仓数量建议（用户要求"直接买到 300 股以上"）
-            "suggest_shares": suggest_shares, "suggest_cash": suggest_cash,
+            "suggest_shares": r["suggest_shares"],
+            "suggest_cash": r["suggest_cash"],
             "note": "已建立仓计划；现价到 %.2f 附近（±2%%）会推企微提醒。"
                     "建议一次买 %d 股（约 %.0f 元）"
-                    % (float(sup), suggest_shares, suggest_cash),
+                    % (r["buy_price"], r["suggest_shares"], r["suggest_cash"]),
             "warning": "这是**建仓**（新增敞口），不是做T；请先想好仓位与止损"}
 
 
