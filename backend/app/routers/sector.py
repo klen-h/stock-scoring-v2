@@ -239,6 +239,22 @@ def zz_history(code: str, days: int = Query(60, ge=1, le=365)):
     return {"data": rows, "total": len(rows)}
 
 
+@router.get("/zz/ma-state/{code}")
+def zz_ma_state(code: str, kind: str = Query("industry"),
+                days: int = Query(60, ge=21, le=250)):
+    """板块 MA20 状态 + 有效信号判定（等价点位口径，**无需新增数据源**）。
+
+    ★ 2026-11-23：`plate_daily_zz` 只有 change_pct 没有点位，但累乘构造的
+      等价点位算出的「距 MA20」与真实点位一致（881168 -8.19% vs 雪球 -8.20%）。
+
+    信号口径（800 根回测）：
+      ✓ 站上 MA20 且当日涨 ≥1.5%  → T+20 +2.41% / 胜率 62%（最佳）
+      ✗ 缩量企稳                  → T+20 -0.76% / 胜率 43%（**负向**，不认）
+    """
+    from app.sector_zz import ma_state
+    return ma_state(code, kind, days)
+
+
 @router.get("/zz/stats")
 def zz_stats():
     """zzshare 板块快照表概况（已积累天数 / 最新日期）。"""

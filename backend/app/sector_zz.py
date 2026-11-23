@@ -136,6 +136,96 @@ def get_history(code: str, days: int = 60) -> list:
     return list(reversed(rows))
 
 
+def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
+    """板块 MA20 状态 + **有效信号判定**（等价点位口径）。
+
+    ★★ 2026-11-23：`plate_daily_zz` 表**只有 change_pct，没有收盘点位**。
+      但用 change_pct 从旧到新**累乘构造等价点位**（设最新 = 1000），
+      算出的「距 MA20」与真实点位**几乎完全一致**：
+
+        881168 累乘口径  -8.19%
+        雪球 BK0068 真实 -8.20%      ⇒ 差 0.01pp
+
+      ⇒ **不必新增数据源/新表**，现有数据就够。（比例类指标与基准无关）
+
+    ★ 信号口径来自 800 根回测（见 memory 2026-11-23）：
+      「站上 MA20 且当日涨 ≥1.5%」T+20 +2.41%、胜率 62%，是**全场最佳**；
+      而「缩量企稳」T+20 -0.76%、胜率 43%，**是负向信号**（下跌中缩量 = 没人接盘）。
+      ⇒ 本函数只认「收复 MA20」，**不认缩量**。
+    """
+    if days < 21:
+        return {"ok": False, "error": "days 至少 21（算 MA20 要 20 根 + 当日）"}
+    rows = get_history(code, days)
+    if len(rows) < 21:
+        return {"ok": False, "code": code,
+                "error": f"历史不足 21 天（当前 {len(rows)} 天，需每天落库积累）",
+                "bars": len(rows)}
+
+    # ── 等价点位：设最新 = 1000，从旧到新累乘 ──
+    lvl = [1000.0]
+    for x in rows[1:]:
+        pct = x.get("change_pct")
+        try:
+            pct = float(pct) if pct is not None else 0.0
+        except (TypeError, ValueError):
+            pct = 0.0
+        lvl.append(lvl[-1] * (1 + pct / 100.0))
+    k = 1000.0 / lvl[-1] if lvl[-1] else 1.0
+    lvl = [v * k for v in lvl]
+
+    cur = lvl[-1]
+    ma20 = sum(lvl[-20:]) / 20.0
+    dist = (cur / ma20 - 1) * 100 if ma20 else None
+
+    # ── 量比：当日成交额 / 前 20 日均额 ──
+    amts = []
+    for x in rows:
+        try:
+            amts.append(float(x.get("trade_money") or 0))
+        except (TypeError, ValueError):
+            amts.append(0.0)
+    amt_ratio = None
+    if len(amts) >= 21:
+        base = sum(amts[-21:-1]) / 20.0
+        if base > 0 and amts[-1] > 0:
+            amt_ratio = round(amts[-1] / base, 2)
+
+    ret1 = None
+    try:
+        ret1 = round(float(rows[-1].get("change_pct")), 2)
+    except (TypeError, ValueError):
+        pass
+
+    on_ma = bool(ma20 and cur > ma20)
+    # 回测最佳信号：站上 MA20 **且** 当日涨 ≥1.5%（放量不是必要条件）
+    signal = bool(on_ma and ret1 is not None and ret1 >= 1.5)
+
+    if signal:
+        note = "站上MA20 且当日涨≥1.5% —— 回测 T+20 +2.41% / 胜率 62%"
+    elif on_ma:
+        note = "在 MA20 上方，但当日涨幅不足 1.5%"
+    elif ret1 is not None and ret1 >= 1.5:
+        note = "当日反弹但仍在 MA20 下方 —— 按回测不构成有效信号"
+    else:
+        note = "MA20 下方且无有效反弹"
+
+    return {
+        "ok": True, "code": code, "kind": kind,
+        "name": rows[-1].get("name"),
+        "date": rows[-1].get("date"),
+        "bars": len(rows),
+        "level": round(cur, 2),          # 等价点位（最新=1000），**不是真实点位**
+        "ma20": round(ma20, 2),
+        "dist_pct": round(dist, 2) if dist is not None else None,
+        "amt_ratio": amt_ratio,
+        "ret1": ret1,
+        "on_ma20": on_ma,
+        "signal": signal,
+        "note": note,
+        "caliber": "等价点位口径（由 change_pct 累乘，最新=1000）；比例类指标与基准无关",
+    }
+
+
 def latest_date() -> str:
     """表内最新日期（无数据返回 None）。"""
     try:
