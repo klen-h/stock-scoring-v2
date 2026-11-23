@@ -104,6 +104,20 @@ def scenario_archive(tid: str, user: dict = Depends(get_current_user)) -> Dict:
     return {"ok": ts.archive(tid)}
 
 
+@router.put("/scenarios/{tid}/checks")
+def scenario_update_checks(tid: str, payload: Dict = Body(...),
+                           user: dict = Depends(get_current_user)) -> Dict:
+    """替换验证项 —— 不动情景/有效期，**历史对照全部保留**。
+
+    ★ 2026-11-23（用户："行情性质变了就要立刻换框架"）：换尺子不该重建推演，
+      重建会换 id，`thesis_daily` 的历史对照就断了。
+    """
+    r = ts.update_checks(tid, (payload or {}).get("checks"))
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "更新失败")
+    return r
+
+
 @router.get("/metrics")
 def list_metrics(user: dict = Depends(get_current_user)) -> Dict:
     """可用验证项清单（前端表单用，避免把 key 写死在两处）。"""

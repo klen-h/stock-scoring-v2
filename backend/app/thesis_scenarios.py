@@ -55,6 +55,11 @@ METRIC_LABELS = {
     "limit_up": "涨停家数",
     "down_ratio": "下跌占比",
     "breadth_gap": "广度背离(pp)",
+    # ★ 2026-11-23（用户周二清单⑥"工行建行若再跌 1%+ 而指数上涨 = 高切低动真格"）：
+    #   红利端是跷跷板另一头，必须能量化。用工行 601398 代表（日线在 backtest_prices）。
+    #   注意 pass 语义：`icbc_chg_pct <= -1` 成立 = 红利被抛售资金换成长，
+    #   对"V 型修复"情景是**支持**证据，不是失败。
+    "icbc_chg_pct": "工行涨跌%(红利端)",
 }
 # 比较符：只支持这四种（避免 eval / 注入）
 _OPS = ("<=", ">=", "<", ">", "==")
@@ -237,6 +242,23 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
             s = bd.snapshot(day)
             v = _f((s or {}).get("gap_pp")) if (s or {}).get("ok") else None
             return (v, "" if v is not None else "广度背离当日无数据")
+
+        if key == "icbc_chg_pct":
+            # 工行日线：当日收盘 vs **上一交易日**收盘（不用前收字段，避免口径不一致）
+            rows = db.fetch("""
+                SELECT date, close FROM backtest_prices
+                WHERE code='601398' AND date<=%s
+                ORDER BY date DESC LIMIT 2
+            """, (day,)) or []
+            if not rows:
+                return (None, "工行 601398 无日线")
+            if str(rows[0].get("date")) != day:
+                return (None, f"工行当日无日线（最近 {rows[0].get('date')}）")
+            cur = _f(rows[0].get("close"))
+            prev = _f(rows[1].get("close")) if len(rows) > 1 else None
+            if cur is None or not prev:
+                return (None, "工行收盘价缺失或不足两日")
+            return (round((cur - prev) / prev * 100, 2), "")
     except Exception as e:
         # 吞异常必须可见（GUARDRAILS #11）
         print(f"[thesis] metric {key} failed: {str(e)[:80]}")
@@ -247,6 +269,39 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
 # ══════════════════════════════════════════════════════════════════════════
 #  登记 / 查询 / 归档
 # ══════════════════════════════════════════════════════════════════════════
+def _norm_checks(checks) -> Tuple[Optional[List[Dict]], Optional[str]]:
+    """校验并规整验证项 → (norm, error)。
+
+    ★ 2026-11-23：`create()` 与 `update_checks()` **共用这一份口径**。
+      项目踩过 `_bench_code` / `SPREAD_THRESHOLD` 两处各写一份导致漂移的事故，
+      所以这里宁可多抽一层，也不让"能登记但改不了"这种事发生。
+    """
+    if not isinstance(checks, list) or not checks:
+        return None, "checks 不能为空"
+    out: List[Dict] = []
+    seen = set()
+    for c in checks:
+        if not isinstance(c, dict):
+            return None, "checks 每项需为对象"
+        key = str(c.get("key") or "").strip()
+        if key not in METRIC_LABELS:
+            return None, f"未知指标 {key}；可用: {', '.join(METRIC_LABELS)}"
+        if key in seen:
+            # 同一指标登记两次会让"命中 n 项"的统计失真
+            return None, f"指标 {key} 重复"
+        seen.add(key)
+        op = str(c.get("op") or "<=").strip()
+        if op not in _OPS:
+            return None, f"op 只支持 {_OPS}"
+        val = _f(c.get("value"))
+        if val is None:
+            return None, f"checks[{key}] 的 value 需为数字"
+        out.append({"key": key,
+                    "label": str(c.get("label") or METRIC_LABELS[key]),
+                    "op": op, "value": val})
+    return out, None
+
+
 def create(payload: Dict) -> Dict:
     """登记一份推演。返回 {ok, id} 或 {ok:False, error}。
 
@@ -287,26 +342,9 @@ def create(payload: Dict) -> Dict:
     if abs(total - 100) > 1:
         return {"ok": False, "error": f"情景概率合计需为 100（当前 {total:g}）"}
 
-    checks = payload.get("checks") or []
-    if not isinstance(checks, list) or not checks:
-        return {"ok": False, "error": "checks 不能为空"}
-    norm_ck = []
-    for c in checks:
-        if not isinstance(c, dict):
-            return {"ok": False, "error": "checks 每项需为对象"}
-        key = str(c.get("key") or "").strip()
-        if key not in METRIC_LABELS:
-            return {"ok": False,
-                    "error": f"未知指标 {key}；可用: {', '.join(METRIC_LABELS)}"}
-        op = str(c.get("op") or "<=").strip()
-        if op not in _OPS:
-            return {"ok": False, "error": f"op 只支持 {_OPS}"}
-        val = _f(c.get("value"))
-        if val is None:
-            return {"ok": False, "error": f"checks[{key}] 的 value 需为数字"}
-        norm_ck.append({"key": key,
-                        "label": str(c.get("label") or METRIC_LABELS[key]),
-                        "op": op, "value": val})
+    norm_ck, err = _norm_checks(payload.get("checks") or [])
+    if err:
+        return {"ok": False, "error": err}
 
     tid = uuid.uuid4().hex[:12]
     try:
@@ -387,6 +425,32 @@ def archive(tid: str) -> bool:
     except Exception as e:
         print(f"[thesis] archive failed: {str(e)[:80]}")
         return False
+
+
+def update_checks(tid: str, checks) -> Dict:
+    """替换验证项 —— **不重建推演，历史对照全部保留**。
+
+    ★ 2026-11-23（用户："验证框架必须匹配行情性质，性质变了要立刻换框架"）：
+      换尺子是常态，但重建推演会换 id ⇒ 历史对照就断了（`thesis_daily` 按 id 关联）。
+      所以单独给一个只改 checks 的口径。
+    只允许改 `status='active'` 的推演；已归档的拒改（避免改完又被日批捡起来）。
+    """
+    ensure_tables()
+    t = get_thesis(tid)
+    if not t:
+        return {"ok": False, "error": "推演不存在"}
+    if t.get("status") != "active":
+        return {"ok": False, "error": "已归档的推演不能改"}
+    norm, err = _norm_checks(checks)
+    if err:
+        return {"ok": False, "error": err}
+    try:
+        db.execute(f"UPDATE {_T_SCEN} SET checks_json=%s WHERE id=%s",
+                   (_dumps(norm), tid))
+    except Exception as e:
+        print(f"[thesis] update_checks failed: {str(e)[:90]}")
+        return {"ok": False, "error": f"落库失败: {str(e)[:60]}"}
+    return {"ok": True, "id": tid, "checks": norm}
 
 
 # ══════════════════════════════════════════════════════════════════════════
