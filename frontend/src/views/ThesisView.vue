@@ -110,7 +110,8 @@
             <div class="mt-4 space-y-2">
               <div class="text-[11px] text-muted">情景（登记时）</div>
               <div v-for="s in current.thesis.scenarios" :key="s.name" class="flex items-start gap-3">
-                <div class="w-28 shrink-0 text-xs text-gray-200">{{ s.name }}</div>
+                <!-- ★ 2026-11-23：情景名宽度 112px(w-28) 太窄，"A 指数补跌、广度修复" 会折行 ⇒ 定 150px -->
+                <div class="shrink-0 text-xs text-gray-200 leading-snug" style="width:150px">{{ s.name }}</div>
                 <div class="w-14 shrink-0 text-xs text-accent text-right">{{ s.prob }}%</div>
                 <div class="flex-1 min-w-0">
                   <div class="h-1.5 bg-bg rounded overflow-hidden">
@@ -708,13 +709,59 @@ async function doParse() {
   }
 }
 
+// ★ 2026-11-23 bug：点「复制」提示"复制失败，请手动选中文本"。
+//   根因：`navigator.clipboard` 只在**安全上下文**（https / localhost）才存在。
+//   线上是 `http://101.201.222.167`（明文 http）⇒ `navigator.clipboard` 为
+//   undefined，`navigator.clipboard.writeText` 直接抛 TypeError 被 catch 住。
+//   兜底：隐藏 textarea + `document.execCommand('copy')`。
+//   execCommand 虽已废弃，但它是非安全上下文下**唯一**能用的方案。
+async function copyToClipboard(text) {
+  const t = String(text || '')
+  if (!t) throw new Error('empty')
+
+  if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(t)
+      return
+    } catch (e) {
+      // 权限被拒 / 焦点丢失 —— 落到下面的兜底
+    }
+  }
+
+  const ta = document.createElement('textarea')
+  ta.value = t
+  ta.setAttribute('readonly', '')
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0'
+  document.body.appendChild(ta)
+
+  const prevSel = window.getSelection()
+  const prevRange = prevSel && prevSel.rangeCount ? prevSel.getRangeAt(0) : null
+
+  let ok = false
+  try {
+    ta.select()
+    ta.setSelectionRange(0, t.length)
+    ok = document.execCommand('copy')
+  } catch (e) {
+    ok = false
+  }
+  document.body.removeChild(ta)
+
+  // 恢复用户原来的选区（否则复制后光标会跳到页面顶部）
+  if (prevRange && prevSel) {
+    prevSel.removeAllRanges()
+    prevSel.addRange(prevRange)
+  }
+  if (!ok) throw new Error('copy failed')
+}
+
 async function copySample() {
   try {
-    await navigator.clipboard.writeText(SAMPLE_TEXT)
+    await copyToClipboard(SAMPLE_TEXT)
     sampleCopied.value = true
     setTimeout(() => { sampleCopied.value = false }, 1800)
   } catch (e) {
-    parseError.value = '复制失败，请手动选中'
+    parseError.value = '复制失败，请手动选中文本后按 Ctrl+C'
   }
 }
 
@@ -724,13 +771,13 @@ function toggleText(date) {
 
 async function copyText(d) {
   try {
-    await navigator.clipboard.writeText(d.report_text || '')
+    await copyToClipboard(d.report_text || '')
     textCopied.value = d.date
     setTimeout(() => {
       if (textCopied.value === d.date) textCopied.value = ''
     }, 1600)
   } catch (e) {
-    error.value = '复制失败，请手动选中文本'
+    error.value = '复制失败，请手动选中文本后按 Ctrl+C'
   }
 }
 
