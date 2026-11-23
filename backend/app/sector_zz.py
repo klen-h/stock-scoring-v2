@@ -29,6 +29,9 @@
   stats()                  快照表概况（已积累天数 / 最新日期）
 ================================================================================
 """
+import time
+from typing import Optional
+
 from app.database import db
 
 # plate_type 映射（zzshare 既定值，传错会 400）
@@ -156,10 +159,26 @@ def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
     if days < 21:
         return {"ok": False, "error": "days 至少 21（算 MA20 要 20 根 + 当日）"}
     rows = get_history(code, days)
-    if len(rows) < 21:
+    calc = _calc_ma(rows)
+    if not calc:
         return {"ok": False, "code": code,
                 "error": f"历史不足 21 天（当前 {len(rows)} 天，需每天落库积累）",
                 "bars": len(rows)}
+    out = {"ok": True, "code": code, "kind": kind,
+           "caliber": "等价点位口径（由 change_pct 累乘，最新=1000）；比例类指标与基准无关"}
+    out.update(calc)
+    return out
+
+
+def _calc_ma(rows: list) -> Optional[dict]:
+    """**纯计算**：给定按日期升序的板块序列，算 MA20 状态。不足 21 根返回 None。
+
+    ★ 2026-11-23：`ma_state`（单板块）与 `ma_scan`（全板块）**共用这一份**。
+      项目踩过 `_bench_code` / `SPREAD_THRESHOLD` 两处各写一份漂移的事故，
+      所以宁可多抽一层。
+    """
+    if not rows or len(rows) < 21:
+        return None
 
     # ── 等价点位：设最新 = 1000，从旧到新累乘 ──
     lvl = [1000.0]
@@ -170,12 +189,13 @@ def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
         except (TypeError, ValueError):
             pct = 0.0
         lvl.append(lvl[-1] * (1 + pct / 100.0))
-    k = 1000.0 / lvl[-1] if lvl[-1] else 1.0
+    if not lvl[-1]:
+        return None
+    k = 1000.0 / lvl[-1]
     lvl = [v * k for v in lvl]
 
     cur = lvl[-1]
     ma20 = sum(lvl[-20:]) / 20.0
-    dist = (cur / ma20 - 1) * 100 if ma20 else None
 
     # ── 量比：当日成交额 / 前 20 日均额 ──
     amts = []
@@ -196,6 +216,19 @@ def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
     except (TypeError, ValueError):
         pass
 
+    return _judge(cur, ma20, ret1, amt_ratio,
+                  name=rows[-1].get("name"), date=rows[-1].get("date"),
+                  bars=len(rows))
+
+
+def _judge(cur: float, ma20: float, ret1, amt_ratio,
+           name=None, date=None, bars: int = 0) -> dict:
+    """由**已算好的**点位/均线/涨幅/量比 → 判定结果。
+
+    ★ 2026-11-23：`_calc_ma`（内存逐根）与 `ma_scan`（SQL 聚合下推）**共用这一份**，
+      否则两条路径的 signal/note 会漂移（项目同类事故已发生过两次）。
+    """
+    dist = (cur / ma20 - 1) * 100 if ma20 else None
     on_ma = bool(ma20 and cur > ma20)
     # 回测最佳信号：站上 MA20 **且** 当日涨 ≥1.5%（放量不是必要条件）
     signal = bool(on_ma and ret1 is not None and ret1 >= 1.5)
@@ -210,10 +243,7 @@ def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
         note = "MA20 下方且无有效反弹"
 
     return {
-        "ok": True, "code": code, "kind": kind,
-        "name": rows[-1].get("name"),
-        "date": rows[-1].get("date"),
-        "bars": len(rows),
+        "name": name, "date": date, "bars": bars,
         "level": round(cur, 2),          # 等价点位（最新=1000），**不是真实点位**
         "ma20": round(ma20, 2),
         "dist_pct": round(dist, 2) if dist is not None else None,
@@ -222,8 +252,124 @@ def ma_state(code: str, kind: str = "industry", days: int = 60) -> dict:
         "on_ma20": on_ma,
         "signal": signal,
         "note": note,
-        "caliber": "等价点位口径（由 change_pct 累乘，最新=1000）；比例类指标与基准无关",
     }
+
+
+# ★★ 2026-11-23：全板块扫描缓存。
+#   【为什么必须缓存】104 个板块逐个 `ma_state()` = 104 次往返；
+#     1 次全表查询虽然行数相近（104×60≈6k 行），但**往返次数少 100 倍**，
+#     且加上 5 分钟缓存后，一天最多算 288 次 → 实际远低于此。
+#   【TTL 5 分钟】板块序列一天只变一次（收盘后日批落库），与 `sector_momentum._CACHE` 同口径。
+_SCAN_CACHE = {"ts": 0.0, "key": None, "val": None}
+_SCAN_TTL = 300.0
+
+
+def ma_scan(kind: str = "industry", days: int = 60) -> dict:
+    """**全板块 MA20 扫描** —— 一次查库、内存分组，返回触发/接近 MA20 的板块。
+
+    返回 {ok, kind, date, sectors, signals[], near[], rows[]}
+      signals  站上MA20 且当日涨≥1.5%（回测 T+20 +2.41% / 62%）
+      near     MA20 下方 3% 以内（即将收复，观察用）
+      rows     全部板块（按 dist_pct 降序）
+    """
+    if days < 21:
+        return {"ok": False, "error": "days 至少 21（算 MA20 要 20 根 + 当日）"}
+    now = time.time()
+    key = (kind, days)
+    if (_SCAN_CACHE["val"] and _SCAN_CACHE["key"] == key
+            and now - _SCAN_CACHE["ts"] < _SCAN_TTL):
+        return _SCAN_CACHE["val"]
+
+    mx = latest_date()
+    if not mx:
+        return {"ok": False, "error": "板块快照表为空"}
+
+    # ★★ 2026-11-23（实测带宽瓶颈）：Supabase 免费档下行**恒定 8.4 KB/s**
+    #   （100 行 430ms / 1000 行 5s / 6344 行 28.9s，完全线性）。
+    #   ⇒ 拉 6,344 行回来在 Python 里算，等于让用户等 29 秒。
+    #   改为**聚合下推**：SQL 里算好等价点位/MA20/量比，只返回 104 行（≈0.4s）。
+    #   等价点位 = 1000 / prod_{j>i}(1+pct_j/100) ⇒ 用 EXP(SUM(LN(...))) 逆序累乘。
+    _ensure_table()
+    # date 是 TEXT ⇒ 先算字符串下界（21 交易日 ≈ 30 自然日，放 60 天留足余量）
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    try:
+        cutoff = (_dt.strptime(mx, "%Y-%m-%d")
+                  - _td(days=60)).strftime("%Y-%m-%d")
+    except ValueError:
+        return {"ok": False, "error": f"最新日期格式异常: {mx}"}
+
+    rows = db.fetch("""
+        WITH src AS (
+            SELECT code, name, date, change_pct, trade_money
+            FROM plate_daily_zz
+            WHERE kind = %s AND date >= %s
+        ),
+        r AS (
+            SELECT code, name, date, change_pct, trade_money,
+                   ROW_NUMBER() OVER (PARTITION BY code ORDER BY date DESC) AS rn
+            FROM src
+        ),
+        f AS (
+            SELECT code, name, date, change_pct, trade_money, rn,
+                   COALESCE(
+                     EXP(SUM(LN(GREATEST(1 + COALESCE(change_pct, 0) / 100.0, 0.01)))
+                         OVER (PARTITION BY code ORDER BY date DESC
+                               ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)),
+                     1.0) AS fwd
+            FROM r WHERE rn <= 21
+        )
+        SELECT code,
+               MAX(name) AS name,
+               AVG(CASE WHEN rn <= 20 THEN 1000.0 / fwd END) AS ma20,
+               1000.0 / MAX(CASE WHEN rn = 1 THEN fwd END) AS cur_level,
+               MAX(CASE WHEN rn = 1 THEN change_pct END) AS ret1,
+               MAX(CASE WHEN rn = 1 THEN trade_money END) AS amt_now,
+               AVG(CASE WHEN rn BETWEEN 2 AND 21 THEN trade_money END) AS amt_base,
+               COUNT(*) AS bars
+        FROM f
+        GROUP BY code
+        HAVING COUNT(*) >= 21
+    """, (kind, cutoff)) or []
+
+    out = []
+    for r in rows:
+        try:
+            cur_v = float(r.get("cur_level") or 0)
+            ma20 = float(r.get("ma20") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not cur_v or not ma20:
+            continue
+        ret1 = r.get("ret1")
+        try:
+            ret1 = round(float(ret1), 2) if ret1 is not None else None
+        except (TypeError, ValueError):
+            ret1 = None
+        amt_now = float(r.get("amt_now") or 0)
+        amt_base = float(r.get("amt_base") or 0)
+        amt_ratio = (round(amt_now / amt_base, 2)
+                     if amt_base > 0 and amt_now > 0 else None)
+        j = _judge(cur_v, ma20, ret1, amt_ratio,
+                   name=r.get("name"), date=mx,
+                   bars=int(r.get("bars") or 0))
+        j["code"] = r.get("code")
+        out.append(j)
+
+    out.sort(key=lambda x: -(x.get("dist_pct")
+                             if x.get("dist_pct") is not None else -999))
+    res = {
+        "ok": True, "kind": kind, "date": mx, "sectors": len(out),
+        "bars_used": days,
+        "signals": [x for x in out if x.get("signal")],
+        "near": [x for x in out
+                 if x.get("dist_pct") is not None and -3.0 <= x["dist_pct"] < 0],
+        "rows": out,
+        "caliber": ("等价点位口径；signals=站上MA20且涨≥1.5%（回测 T+20 +2.41%/62%），"
+                    "不认缩量（缩量 T+20 -0.76%/43%，是负向信号）"),
+    }
+    _SCAN_CACHE.update(ts=now, key=key, val=res)
+    return res
 
 
 def latest_date() -> str:

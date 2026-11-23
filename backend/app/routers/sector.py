@@ -255,6 +255,17 @@ def zz_ma_state(code: str, kind: str = Query("industry"),
     return ma_state(code, kind, days)
 
 
+@router.get("/zz/ma-scan")
+def zz_ma_scan(kind: str = Query("industry"), days: int = Query(60, ge=21, le=250)):
+    """**全板块 MA20 扫描**：今天哪些板块站上了 MA20、哪些即将收复。
+
+    ★ 2026-11-23：一次查库 + 内存分组 + 5 分钟缓存（逐个板块查会放大 egress）。
+    返回 signals（触发有效信号）/ near（MA20 下方 3% 内）/ rows（全部，按 dist_pct 降序）。
+    """
+    from app.sector_zz import ma_scan
+    return ma_scan(kind, days)
+
+
 @router.get("/zz/stats")
 def zz_stats():
     """zzshare 板块快照表概况（已积累天数 / 最新日期）。"""
