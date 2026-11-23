@@ -4653,7 +4653,11 @@ const tailTitle = computed(() => {
 //     "0 开头=sz" 的兜底 ⇒ `000001` 会被当成**平安银行**（错的标的）。
 //   ⚠️ 前缀由后端 `indices[].prefix` 下发（唯一源 `routers/market.MAIN_INDICES`）；
 //     老数据/降级无该字段 ⇒ `href=''` ⇒ 模板退回纯文本（宁可不给链接也不指错）。
-const topIndices = computed(() => (overview.value.indices || []).slice(0, 3)
+// ★ 2026-11-23（用户："中证2000(CSI:932000) 加在顶部的创业板后面"）：
+//   原来只显示前 3 个（上证/上证50/创业板），新增的中证2000 排在第 4 位会被切掉
+//   ⇒ 3 → 4。它是**小盘极端**信号（用户："隔夜纳指大跌 5% 而 A 股放量上涨时，
+//   系统可能错过修复信号"），必须在顶栏一眼可见。
+const topIndices = computed(() => (overview.value.indices || []).slice(0, 4)
   .map(ix => ({ ...ix, href: xqIndexUrl(ix.prefix, ix.code) })))
 // ★ 2026-09-25 用户需求 1：大小盘风格 / 黄白线背离（框架 C5「9:30-10:00 定方向」）。
 //   `overview.style` 由后端在同一份内存行情缓存上算出 ⇒ **零新增请求**。

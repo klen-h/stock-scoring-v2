@@ -195,7 +195,9 @@ export function xqUrl(code) {
 export function xqIndexUrl(prefix, code) {
   const c = String(code || '').replace(/\D/g, '').slice(0, 6)
   const m = String(prefix || '').trim().toLowerCase()
-  if (!c || (m !== 'sh' && m !== 'sz' && m !== 'bj')) return ''
+  // ★ 2026-11-23：新增 `csi`（中证指数）—— 中证2000 指数据雪球口径是
+  //   `CSI932000`（`xueqiu.com/S/CSI932000`），写成 sh 会拼成 SH932000（雪球无此标的）。
+  if (!c || !['sh', 'sz', 'bj', 'csi'].includes(m)) return ''
   return `https://xueqiu.com/S/${m.toUpperCase()}${c}`
 }
 

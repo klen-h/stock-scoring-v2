@@ -54,6 +54,21 @@ MAIN_INDICES = [
     #   【下游】`amreview.py` 取 `snap[:3]` 并动态读 `name`，无硬编码"深证成指" ⇒ 安全。
     ("sh", "000016", "上证50"),     # 上证50（纯权重）
     ("sz", "399006", "创业板指"),   # 创业板（科技/成长股集中地）
+    # ★★ 2026-11-23（用户："中证2000(CSI:932000) 加在顶部的创业板后面"）：
+    #   【为什么要它】它代表**小盘极端**。用户原话：
+    #     "今天 A 股在隔夜纳指大跌 5% 的情况下竟能放量上涨，尤其是创业板和中证1000，
+    #      系统可能会错过修复的信号" ⇒ 顶栏必须能一眼看出**小盘是否在修复**。
+    #     （当日实测：中证2000 +3.91% > 创业板 +3.08% > 中证1000 +2.90%）
+    #   【数据源特殊，不要照抄其它行】
+    #     腾讯 / 东财 / 新浪 **全都取不到 932000 实时**：
+    #       · 腾讯 `sh932000` → `v_pv_none_match`（无该代码）
+    #       · 东财 secid `1.932000` / `0.932000` → `rc=100`
+    #       · 新浪 `s_sh932000` → 空串
+    #       · 中证指数官网只有**日线**（收盘后才有，盘中不可用）
+    #     ⇒ 只有雪球给（`CSI932000`）。取数见 `_csi_index_quote()`。
+    #   ⚠️ 前缀写 `csi` 而不是 `sh`：`xqIndexUrl` 据此拼 `xueqiu.com/S/CSI932000`，
+    #      写 sh 会拼成 `SH932000`（雪球无此标的，实测 quote=null）。
+    ("csi", "932000", "中证2000"),  # 中证2000（小盘极端；雪球取数）
     ("sh", "000300", "沪深300"),    # 沪深两市市值最大的 300 只
     ("sh", "000905", "中证500"),    # 中盘 500 只
     ("sh", "000688", "科创50"),     # 科创板 50 只
@@ -327,7 +342,10 @@ def _main_indices_quotes() -> Dict:
         return _IDX_SNAP_CACHE["val"]
     try:
         from app.tencent import _fetch_tencent
-        codes_str = ",".join(f"{p}{c}" for p, c, _ in MAIN_INDICES)
+        # ⚠️ 只拼 sh/sz —— `csi`（中证2000）腾讯没有该代码，混进去只会多一个空项，
+        #    更糟的是 `_fetch_tencent` 遇到无匹配代码可能整体返回异常。
+        codes_str = ",".join(f"{p}{c}" for p, c, _ in MAIN_INDICES
+                             if p in ("sh", "sz"))
         data = _fetch_tencent(codes_str) or {}
     except Exception as e:
         print(f"[market] main indices fetch failed: {e}")       # ASCII（铁律⑥）
@@ -335,6 +353,91 @@ def _main_indices_quotes() -> Dict:
     if data:
         _IDX_SNAP_CACHE.update(ts=now, val=data)
     return data
+
+
+# ★★ 2026-11-23：中证2000（932000）专用取数 —— **雪球优先，ETF 兜底**。
+_XQ_SESSION = None
+_XQ_IDX_CACHE = {"ts": 0.0, "val": None}
+_XQ_IDX_TTL = 10.0     # 比腾讯的 3 秒宽松：雪球有反爬，别 3 秒打一次
+# ★ 失败退避：`/market/overview` 每 3 秒被调一次，若雪球挂了**且**ETF 兜底也挂，
+#   下面的 `return _XQ_IDX_CACHE["val"]` 会变成"每 3 秒重试一次" ⇒ 把自己打成黑名单。
+#   失败后 60 秒内不再尝试，直接用上次值。
+_XQ_FAIL_UNTIL = 0.0
+
+
+def _csi_index_quote() -> Optional[Dict]:
+    """中证2000 实时行情：**雪球 → 中证2000ETF(563300) 涨跌幅兜底**。
+
+    【为什么必须单独一个函数】
+      腾讯/东财/新浪全都取不到 932000（实测记录见 `MAIN_INDICES` 里那一大段），
+      唯一免费实时源是雪球 `CSI932000`。
+
+    【ETF 兜底的口径偏差（必须知道）】
+      实测 2026-11-23 盘中：指数 **+3.91%** / ETF 563300 **+3.97%**，偏差 0.06pp。
+      判断"小盘强不强"够用；但 **ETF 的 1.125 不是指数点位 2443** ⇒
+      兜底时标 `proxy=True`，前端可据此提示，绝不能让用户把它当指数点位读。
+    """
+    import time as _t
+
+    global _XQ_FAIL_UNTIL
+    now = _t.time()
+    if now < _XQ_FAIL_UNTIL:
+        return _XQ_IDX_CACHE["val"]        # 退避中：直接用上次值，不发请求
+    if _XQ_IDX_CACHE["val"] and now - _XQ_IDX_CACHE["ts"] < _XQ_IDX_TTL:
+        return _XQ_IDX_CACHE["val"]
+
+    # ① 雪球（真实指数点位）
+    try:
+        global _XQ_SESSION
+        if _XQ_SESSION is None:
+            import requests as _rq
+            s = _rq.Session()
+            s.headers.update({
+                "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                               "AppleWebKit/537.36 (KHTML, like Gecko) "
+                               "Chrome/120.0 Safari/537.36"),
+                "Referer": "https://xueqiu.com/",
+            })
+            # 雪球要求先访问首页拿 cookie，否则 quote 接口一律返回 null
+            try:
+                s.get("https://xueqiu.com/", timeout=6)
+            except Exception:
+                pass
+            _XQ_SESSION = s
+        r = _XQ_SESSION.get(
+            "https://stock.xueqiu.com/v5/stock/quote.json"
+            "?symbol=CSI932000", timeout=8)
+        q = ((r.json() or {}).get("data") or {}).get("quote") or {}
+        price, pct = q.get("current"), q.get("percent")
+        if price and pct is not None:
+            val = {"price": float(price), "change_pct": float(pct),
+                   "change_amt": float(q.get("chg") or 0),
+                   "volume": 0, "amount": 0, "proxy": False}
+            _XQ_IDX_CACHE.update(ts=now, val=val)
+            return val
+        print("[market] xueqiu CSI932000 empty quote")
+    except Exception as e:
+        print(f"[market] xueqiu CSI932000 failed: {str(e)[:80]}")
+
+    # ② 兜底：中证2000ETF(563300) 涨跌幅（腾讯可取，零新依赖）
+    try:
+        from app.tencent import _fetch_tencent
+        etf = (_fetch_tencent("sz563300") or {}).get("sz563300") or {}
+        if etf.get("price"):
+            val = {"price": float(etf["price"]),
+                   "change_pct": float(etf.get("change_pct") or 0),
+                   "change_amt": 0.0,
+                   "volume": etf.get("volume") or 0,
+                   "amount": etf.get("amount") or 0,
+                   "proxy": True, "proxy_code": "563300"}
+            _XQ_IDX_CACHE.update(ts=now, val=val)
+            return val
+    except Exception as e:
+        print(f"[market] CSI932000 ETF fallback failed: {str(e)[:80]}")
+
+    # 全失败：回退上次成功值，并进入 60 秒退避（见 `_XQ_FAIL_UNTIL` 注释）
+    _XQ_FAIL_UNTIL = now + 60.0
+    return _XQ_IDX_CACHE["val"]
 
 
 @router.get("/overview")
@@ -353,11 +456,17 @@ def market_overview(background_tasks: BackgroundTasks):
     #   （原来这里**每次请求都 `_fetch_tencent`**，而 `/pulse` 也会调本函数）。
     try:
         data = _main_indices_quotes()
+        # 中证2000 走雪球（腾讯没有该代码）—— 一次取，循环里复用
+        csi = _csi_index_quote()
         for prefix, code, name in MAIN_INDICES:
-            qt_code = f"{prefix}{code}"
-            info = data.get(qt_code)
-            if info and info["price"] > 0:
-                result["indices"].append({
+            if prefix == "csi":
+                qt_code = f"csi{code}"
+                info = csi
+            else:
+                qt_code = f"{prefix}{code}"
+                info = data.get(qt_code)
+            if info and info.get("price", 0) > 0:
+                item = {
                     "name": name,
                     "code": code,
                     # ★ 2026-09-28（用户："顶部的指数点击能像雪球一样跳转到详情页吗？"）：
@@ -369,10 +478,16 @@ def market_overview(background_tasks: BackgroundTasks):
                     "qt_code": qt_code,      # 带前缀全码（如 sh000001），调试/其它消费方直接用
                     "price": info["price"],
                     "change_pct": info["change_pct"],   # 涨跌幅
-                    "change_amt": info["change_amt"],   # 涨跌点数
-                    "volume": info["volume"],
-                    "amount": info["amount"],
-                })
+                    "change_amt": info.get("change_amt") or 0,   # 涨跌点数
+                    "volume": info.get("volume") or 0,
+                    "amount": info.get("amount") or 0,
+                }
+                # ★ 2026-11-23：中证2000 走 ETF 兜底时 `price` 是 ETF 价（1.125），
+                #   不是指数点位（2443）⇒ 必须显式标注，前端据此提示，避免误读。
+                if info.get("proxy"):
+                    item["proxy"] = True
+                    item["proxy_code"] = info.get("proxy_code")
+                result["indices"].append(item)
     except Exception as e:
         print(f"指数数据失败: {e}")
 
