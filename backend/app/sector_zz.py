@@ -30,7 +30,7 @@
 ================================================================================
 """
 import time
-from typing import Optional
+from typing import List, Optional
 
 from app.database import db
 
@@ -370,6 +370,41 @@ def ma_scan(kind: str = "industry", days: int = 60) -> dict:
     }
     _SCAN_CACHE.update(ts=now, key=key, val=res)
     return res
+
+
+def format_lines_ma(limit: int = 5) -> List[str]:
+    """日报用事实行：站上 MA20 的板块 / 即将收复的。不可用 ⇒ 空列表（缺失不占位）。
+
+    ★ 2026-11-24（用户："ma_scan 结果接到日报"）：
+      口径与 `sector_momentum.format_lines` 一致 —— **只出事实、不进决策链**。
+      ⚠️ `ma_scan` 首次 5~8 秒（SQL 聚合），日报里调用会拖慢日批同等时间；
+         但它有 5 分钟缓存，且日批本来就要跑几分钟，可接受。
+    """
+    res = ma_scan("industry")
+    if not res.get("ok"):
+        return []
+    out = []
+    sig = res.get("signals") or []
+    near = res.get("near") or []
+
+    if sig:
+        out.append("**站上 MA20 且当日涨≥1.5%**（回测 T+20 +2.41% / 胜率 62%）：")
+        for x in sig[:limit]:
+            amt = x.get("amt_ratio")
+            out.append("　%s　距MA20 %+.1f%%　当日 %+.2f%%　量比 %s"
+                       % (x.get("name"), x.get("dist_pct") or 0,
+                          x.get("ret1") or 0,
+                          amt if amt is not None else "—"))
+    else:
+        out.append("今日**无**板块出现「站上MA20 + 涨≥1.5%」信号"
+                   "（缩量企稳不算信号：回测 T+20 -0.76% / 胜率 43%，是负向的）")
+
+    if near:
+        seg = "、".join("%s %+.1f%%" % (x.get("name"), x.get("dist_pct") or 0)
+                        for x in near[:limit])
+        out.append("即将收复（MA20 下方 3%% 内，共 %d 个）：%s"
+                   % (len(near), seg))
+    return out
 
 
 def latest_date() -> str:

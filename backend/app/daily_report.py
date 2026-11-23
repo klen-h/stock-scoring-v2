@@ -812,6 +812,26 @@ def build_data_md(date: str = None) -> str:
     except Exception as e:
         print(f"[daily_report] 板块动量小节失败: {e}")
 
+    # 2.x 板块 MA20 收复状态（★ 2026-11-24，用户："ma_scan 结果接到日报"）
+    #   【为什么加】11-23 用户让验证「缩量企稳 / 放量收复」是否构成反弹起点，
+    #     800 根回测结论：**缩量企稳是负向信号**（T+20 -0.76% / 胜率 43%），
+    #     而「站上 MA20 且当日涨≥1.5%」是**全场最佳**（T+20 +2.41% / 62%）。
+    #   ⇒ 日报直接给这个口径，替掉"缩量企稳"的直觉判断（那是把无人问津误读成抛压衰竭）。
+    #   ⚠️ `ma_scan` 首次 5~8 秒（量价聚合下推 SQL），有 5 分钟缓存；
+    #      日批本来就要跑几分钟，可接受。调用两次是**故意的**（第二次命中缓存）。
+    try:
+        from app import sector_zz
+        _ma = sector_zz.ma_scan("industry")
+        _ma_lines = sector_zz.format_lines_ma()
+        if _ma_lines:
+            add("")
+            add(f"**板块 MA20 状态**（zzshare {_ma.get('sectors')} 个板块，"
+                f"截至 {_ma.get('date')}）：")
+            for _ln in _ma_lines:
+                add(f"- {_ln}")
+    except Exception as e:
+        print(f"[daily_report] 板块 MA20 小节失败: {e}")
+
     # 2.x 个股级「放量拉升」（★ 2026-09-30，P1 续）
     #   【为什么加】上面板块层用 zzshare 104 **粗分**口径，会**掩盖个股**：实测 09-29
     #     工业金属板块仅 +2.02%，而云铝 +4.34%、赣锋 +3.53% —— 用户感知到的"金属拉升"
