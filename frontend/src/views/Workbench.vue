@@ -1373,6 +1373,20 @@
                 <!-- 口径说明移到 ⓘ（原来常显一大段"按板幅判定（ST 5% / 主板 10% …），不再是 >=9.5% 一刀切"） -->
                 <span class="text-[10px] cursor-help opacity-70"
                       :title="emotion.note || '涨跌停/连板按板幅判定：ST 5% / 主板 10% / 创业板·科创 20% / 北交所 30%（rt_k 精确优先）'">口径 ⓘ</span>
+                <!-- ★★ 2026-11-24（用户："想提前捕获市场异动，提前做预案"）：
+                     情绪跃迁观察 —— **观察项，不是信号**（不进决策链，不改「大涨日不追」）。
+                     只在「跃迁/退潮」时显示，常态不占位（避免天天报警）。
+                     样本量 n 必须露出来 —— 不写 n 会被当成确认信号（"缩量企稳"就是这么被误用的）。 -->
+                <span v-if="emotion?.leap?.ok && emotion.leap.level !== 'normal'"
+                      class="cursor-help font-medium"
+                      :class="emotion.leap.level === 'leap' ? 'text-red-400/90' : 'text-emerald-400/90'"
+                      :title="emotion.leap.note || '观察项，不是信号'">
+                  {{ emotion.leap.label }}
+                  <b class="font-mono">{{ emotion.leap.today_limit_up }}/{{ emotion.leap.prev_limit_up }}</b>
+                  <span class="opacity-80">{{ emotion.leap.ratio }}x</span>
+                  <span class="text-[10px] opacity-60">（观察 n={{ emotion.leap.hist?.n }}，
+                    对照 {{ emotion.leap.hist?.baseline?.up_rate_pct }}%）</span>
+                </span>
               </div>
             </div>
 

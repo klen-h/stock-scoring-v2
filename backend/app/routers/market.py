@@ -1979,6 +1979,110 @@ def auction_llm(force: bool = Query(False),
     return run_llm(force=force)
 
 
+def _emotion_leap(limit_up_now, p_day, d_prev) -> Dict:
+    """**情绪跃迁观察**：当前涨停 vs 上一交易日全天涨停 + 历史同型统计。
+
+    ★ 2026-11-24（用户："想提前捕获市场异动，提前做好预案"）：
+      实测 36 个交易日（见 memory 2026-11-24）—— 上午 11:30 涨停 **≥50** 的 3 例，
+      下午全部继续放大：
+        62 → 146（+135%）· 53 → 95（+79%）· 50 → 84（+68%）
+      而 <50 的多数持平或衰减：
+        46 → 37（-20%）· 31 → 30 · 24 → 29
+      ⚠️⚠️ **正例只有 3 个，统计上不显著**。
+      ⇒ 本字段是**观察项，不是信号**：不进决策链、不参与 `no_chase_rally` 判定，
+        且必须在返回值里带上 `n` 与 `caveat`，前端**必须显示样本量**，
+        否则会被当成确认信号（"缩量企稳"就是这么被误用的）。
+    """
+    if limit_up_now is None or not d_prev:
+        return {"ok": False, "note": "缺当日涨停数或昨日数据"}
+
+    from app.database import db          # 本文件惯例：函数内局部导入
+
+    try:
+        row = db.fetch_one(
+            "SELECT close_limit_up, limit_up FROM market_emotion_daily "
+            "WHERE date = %s", (d_prev,)) or {}
+    except Exception as e:
+        print(f"[market] leap prev failed: {str(e)[:80]}")      # ASCII（铁律⑥）
+        return {"ok": False, "note": f"取昨日涨停失败: {str(e)[:40]}"}
+
+    prev = _num_or_none(row.get("close_limit_up") or row.get("limit_up"))
+    if not prev:
+        return {"ok": False, "note": f"{d_prev} 无涨停记录"}
+
+    ratio = round(float(limit_up_now) / float(prev), 2) if prev else None
+
+    # 历史同型：上午涨停 ≥50 的样本，看收盘是否放大（列是 TEXT ⇒ 在 Python 里转）
+    # ★★ 必须同时算**对照组**（上午 <50）：没有它，"6/6 全放大"会被误读成预测力，
+    #    而其中一部分只是「上午只走了 2 小时、下午本来还会涨」的时间累积效应。
+    #    实测 2026-11-24：≥50 组 100%(6/6)，<50 组 44%(4/9) ⇒ 差 56pp，才说明有特异性。
+    hist_n, hist_up, hist_dec = 0, 0, 0
+    base_n, base_up = 0, 0
+    hist_seg = []
+    try:
+        rows = db.fetch(
+            "SELECT date, am_limit_up, close_limit_up FROM market_emotion_daily "
+            "WHERE date < %s", (p_day,)) or []
+        for r in rows:
+            try:
+                a = int(str(r.get("am_limit_up") or "").strip())
+                c = int(str(r.get("close_limit_up") or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if a >= 50:
+                hist_n += 1
+                if c > a:
+                    hist_up += 1
+                elif c < a:
+                    hist_dec += 1
+                hist_seg.append("%d→%d" % (a, c))
+            else:
+                base_n += 1
+                if c > a:
+                    base_up += 1
+    except Exception as e:
+        print(f"[market] leap hist failed: {str(e)[:80]}")
+
+    up_rate = round(hist_up / hist_n * 100) if hist_n else None
+    base_rate = round(base_up / base_n * 100) if base_n else None
+    edge = (up_rate - base_rate) if (up_rate is not None
+                                     and base_rate is not None) else None
+
+    # 判定：只在"明显跃迁"时给出提示，其余一律中性（避免天天报警）
+    if ratio is not None and ratio >= 1.7 and limit_up_now >= 50:
+        level, label = "leap", "跃迁"
+    elif ratio is not None and ratio <= 0.6:
+        level, label = "fade", "退潮"
+    else:
+        level, label = "normal", "常态"
+
+    return {
+        "ok": True, "level": level, "label": label,
+        "today_limit_up": int(limit_up_now),
+        "prev_limit_up": int(prev),
+        "prev_date": d_prev,
+        "ratio": ratio,
+        "hist": {
+            "n": hist_n,
+            "up": hist_up,
+            "down": hist_dec,
+            "up_rate_pct": up_rate,
+            "samples": hist_seg[-8:],
+            "rule": "上午 11:30 涨停 ≥50",
+            # ★ 对照组：没有它，上面的"全放大"分不清是预测力还是时间累积
+            "baseline": {
+                "rule": "上午涨停 <50",
+                "n": base_n,
+                "up_rate_pct": base_rate,
+            },
+            "edge_pp": edge,
+        },
+        "note": ("观察项，**不是信号**：≥50 组放大率 %s%%（n=%d）vs 对照组 %s%%（n=%d），"
+                 "差 %spp；样本仍不足，不进决策链，也不改变「大涨日不追」的判定。"
+                 % (up_rate, hist_n, base_rate, base_n, edge)),
+    }
+
+
 @router.get("/emotion")
 def market_emotion():
     """情绪快照 v0：涨停/跌停家数 + 昨日涨停赚钱效应 + 连板高度近似 + 三档判读。
@@ -2248,6 +2352,8 @@ def market_emotion():
         "auction": auction,
         "leader_name": (stocks.get(leader) or {}).get("name") if leader else None,
         "verdict": verdict,
+        # ★ 2026-11-24（用户："想提前捕获异动"）：情绪跃迁观察 —— **观察项，不是信号**
+        "leap": _emotion_leap(limit_up_n if has_live else None, _p_day, d_prev),
         "note": ("涨跌停/连板按**板幅**判定（ST 5% / 主板 10% / 创业板科创 20% / 北交所 30%，"
                  "rt_k 精确优先），不再是 >=9.5% 一刀切"),
     }
