@@ -265,12 +265,17 @@ _SCAN_TTL = 300.0
 
 
 def ma_scan(kind: str = "industry", days: int = 60) -> dict:
-    """**全板块 MA20 扫描** —— 一次查库、内存分组，返回触发/接近 MA20 的板块。
+    """**全板块 MA20 扫描** —— 一次查库、SQL 聚合下推，返回触发/接近 MA20 的板块。
 
     返回 {ok, kind, date, sectors, signals[], near[], rows[]}
       signals  站上MA20 且当日涨≥1.5%（回测 T+20 +2.41% / 62%）
       near     MA20 下方 3% 以内（即将收复，观察用）
       rows     全部板块（按 dist_pct 降序）
+
+    ⚠️ **`days` 只为接口兼容保留** —— MA20 固定用最近 **21 根**
+      （20 个点位算均线 + 当日算涨幅/量比）。传别的值不改变结果，
+      只做合法性校验；`bars_used` 恒为 21，不要拿它当"历史深度"。
+      （历史深度看 `ma_state()` 的 `bars`。）
     """
     if days < 21:
         return {"ok": False, "error": "days 至少 21（算 MA20 要 20 根 + 当日）"}
@@ -360,7 +365,8 @@ def ma_scan(kind: str = "industry", days: int = 60) -> dict:
                              if x.get("dist_pct") is not None else -999))
     res = {
         "ok": True, "kind": kind, "date": mx, "sectors": len(out),
-        "bars_used": days,
+        # ⚠️ 恒为 21（SQL 窗口固定 rn<=21）；**不是** `days`（见 docstring）
+        "bars_used": 21,
         "signals": [x for x in out if x.get("signal")],
         "near": [x for x in out
                  if x.get("dist_pct") is not None and -3.0 <= x["dist_pct"] < 0],

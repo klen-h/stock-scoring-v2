@@ -822,6 +822,11 @@ def build_data_md(date: str = None) -> str:
     try:
         from app import sector_zz
         _ma = sector_zz.ma_scan("industry")
+        if not _ma.get("ok"):
+            # ★ 2026-11-24：`ma_scan` 失败时**返回 ok=False 而不抛异常**
+            #   ⇒ 上面的 except 永远不触发 ⇒ 日报静默少一节、无人知晓。
+            #   必须显式留痕（本项目"吞异常必须可见"）。
+            print(f"[daily_report] 板块 MA20 小节不可用: {_ma.get('error')}")
         _ma_lines = sector_zz.format_lines_ma()
         if _ma_lines:
             add("")
