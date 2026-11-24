@@ -1502,7 +1502,15 @@
               <div class="min-w-0 lg:pl-5">
                 <div class="flex items-center justify-between mb-2">
                   <div class="text-xs font-semibold">持仓状态（{{ radarSummary.n || 0 }} 只 ·
-                    风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）</div>
+                    风险 {{ radarSummary.risk || 0 }} / 机会 {{ radarSummary.opportunity || 0 }}）
+                    <!-- ★ 2026-11-25：分级观察摘要（与左侧"风险"数**口径不同** ——
+                         雷达看盈亏，分级看箱体位置+上涨质量） -->
+                    <span v-if="tierCounts.alert" class="ml-1 font-normal text-red-400 cursor-help"
+                          :title="'分级观察进入警戒的只数（与左侧「风险」口径不同：那是盈亏，这是箱体位置+上涨质量）\n' + (tierNote || '')">
+                      · 分级警戒 {{ tierCounts.alert }}</span>
+                    <span v-if="tierLiveAt" class="ml-1 font-normal text-[10px] text-muted font-mono">
+                      {{ tierLiveAt.slice(11, 16) }}</span>
+                  </div>
                   <span v-if="radarQuote" class="text-[10px] font-mono shrink-0"
                         :class="radarQuote.stale ? 'text-amber-400' : 'text-muted'"
                         :title="radarQuoteTitle">行情 {{ radarQuote.text }}</span>
@@ -1543,6 +1551,14 @@
                         <span v-if="it.score != null">评分 <b class="text-gray-200 font-mono">{{ it.score }}</b></span>
                         <span v-if="it.ready_label">闸门 {{ it.ready_label }}</span>
                         <span v-if="it.in_watch" class="text-sky-400">观察池</span>
+                        <!-- ★ 2026-11-25：分级（箱体位置 + 上涨质量）。
+                             hover 给完整理由；只显示 alert/watch（safe 不占位，避免噪音） -->
+                        <span v-if="tierMap[it.code] && tierMap[it.code].tier !== 'safe'"
+                              class="px-1 rounded cursor-help font-medium"
+                              :class="tierBadgeCls(tierMap[it.code].tier)"
+                              :title="tierTip(tierMap[it.code])">
+                          {{ tierMap[it.code].tier_cn }}
+                        </span>
                         <!-- ★ 2026-10-26（第①步：消息面投影）：这只持仓被哪条快讯影响 ——
                              原来画在「快讯解读」卡里的「持仓影响」块，现在**长在持仓行上**。
                              唯一性：快讯列表 = 原始流；这里只放"方向 + 条数"，点开看原文。 -->
@@ -3956,7 +3972,10 @@ import {
  getCoachReviewSummary,
  // ★★ 2026-11-15：做T 看板（当日预案/汇总）
  getTTradeSummary, getTTradePlans,
-  getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
+ // ★ 2026-11-25：持仓分级观察（支撑/阻力 + 上涨质量）——
+ //   用户："只打开工作台页面会有这个提醒吗" ⇒ 补到工作台，不只持仓页有。
+ getTierWatch,
+ getPortfolioRadar, getGateWatch, getPushLog, getScoreTop,
   // ★ 2026-10-25：H2' 阴跌防御影子榜（工作台「防御 Top10」标签页的数据源，日批快照）
   getShadowDefensive,
   // ★ 2026-10-25（用户选"前端本地引擎算组内 100 只"）：宽防御组名单（小表 ≈15KB/日）
@@ -4190,6 +4209,59 @@ const radarItems = ref([])
 const radarSummary = ref({})
 const radarNote = ref('')
 const radarAsOf = ref('')
+
+// ── ★★ 2026-11-25 分级观察（工作台侧）──
+//   与 `radarItems`（组合雷达，-8%/-12% 阈值）**口径不同**：
+//     雷达 = 盈亏/风险面；tier = 箱体位置 + 上涨质量（缩量上涨/主力流出/长上影）。
+//   两者并存不矛盾，但要分开显示，不能互相覆盖。
+const tierMap = ref({})        // { [code]: item }
+const tierCounts = ref({})
+const tierNote = ref('')
+const tierLiveAt = ref('')
+
+async function loadTier() {
+  try {
+    const codes = (radarItems.value || []).map(x => x.code)
+    const { data } = await getTierWatch(codes)
+    tierMap.value = {}
+    for (const it of ((data && data.items) || [])) {
+      tierMap.value[it.code] = it
+    }
+    tierCounts.value = (data && data.counts) || {}
+    tierNote.value = (data && data.note) || ''
+    tierLiveAt.value = (data && data.live_as_of) || ''
+  } catch (e) {
+    // 附加信息，失败静默（不能拖垮工作台主链）
+    tierMap.value = {}
+    tierCounts.value = {}
+  }
+}
+
+function tierBadgeCls(t) {
+  const m = {
+    alert: 'bg-red-500/20 text-red-400',
+    watch: 'bg-amber-500/20 text-amber-400',
+    unknown: 'bg-white/10 text-muted',
+  }
+  return m[t] || 'bg-white/10 text-muted'
+}
+
+function tierTip(it) {
+  if (!it) return '分级观察'
+  const L = []
+  if (it.tier_reason) L.push(it.tier_reason)
+  if (it.support != null || it.resistance != null) {
+    const sup = it.support != null ? '支撑 ' + it.support : ''
+    const res = it.resistance != null ? '阻力 ' + it.resistance : ''
+    L.push([sup, res].filter(Boolean).join(' / '))
+  }
+  const rise = it.rise || {}
+  for (const s of (rise.signals || [])) {
+    if (s.side === 'bad') L.push('· ' + s.label + '：' + s.why)
+  }
+  L.push('⚠️ 观察器，不是买卖建议；阈值未回测校准')
+  return L.join('\n')
+}
 
 // ★★ 2026-10-26（第①步：动态盘面 × 消息面融合）——
 //   「消息面对持仓的影响」不再单列一块，而是**投影到持仓行**：
@@ -6019,6 +6091,9 @@ async function loadRadar() {
     radarQuoteDataDate.value = (data && data.quote_data_date) || ''
     radarRisk.value = (data && data.portfolio_risk) || null
     radarErr.value = ''
+    // ★ 2026-11-25：分级观察跟随雷达刷新（两者都依赖持仓列表；
+    //   不 await —— 附加信息晚到不影响主链渲染）
+    loadTier()
   } catch (e) {
     radarErr.value = (e && e.message) || '未知错误'   // 保留上次数据（铁律 11）
   }

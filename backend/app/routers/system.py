@@ -1522,6 +1522,19 @@ def tier_watch(codes: Optional[str] = Query(None, description="逗号分隔；�
     return tw.tier_view(cs or None, day=date, live=live)
 
 
+@router.get("/tier-alert/summary")
+def tier_alert_summary(date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+                       user: dict = Depends(get_current_user)) -> Dict:
+    """当天**已推过**的分级提醒（核对用：为什么这只票没再提醒 —— 因为今天推过了）。
+
+    ★ 2026-11-25（用户："需要推送企微"）：推送去重**落库**（`tier_alert_log`，
+      主键 `(date, code)`），不用进程内 dict —— 后者在进程重启后会重推
+      （项目在 2026-09-25 踩过这个坑："一直在发企微"）。
+    """
+    from app import tier_alert as ta
+    return ta.summary(date)
+
+
 @router.get("/people-watch")
 def people_watch(people: int = Query(83, description="people_org_id，默认 83=特朗普"),
                  days: int = Query(30, ge=1, le=180),

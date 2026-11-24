@@ -164,6 +164,31 @@ async def portfolio_alert_loop():
         await asyncio.sleep(60)
 
 
+async def tier_alert_loop():
+    """★★ 2026-11-25（用户："需要推送企微"）：持仓**分级观察**的盘中提醒。
+
+    与 `portfolio_alert_loop`（已停用）的分工：
+      · 那条是**当日浮亏**口径（-8% 之类）；
+      · 本条是**箱体位置 + 上涨质量**口径（顶到上沿/缩量上涨/主力流出/长上影）。
+    两者判据不同、可能同时命中 —— 那是信息冗余不是 bug。
+
+    ⚠️ 推送频率由 `tier_alert.check_once` 内部收紧：
+      只在 tier=alert 时推、每只票每天最多一次（落库主键去重）、多次合并成一条。
+      **绝不能**跟着前端 30s 轮询的频率推。
+    ⚠️ 检查间隔 5 分钟（`TIER_ALERT_INTERVAL_SEC`）：`tier_view` 会调 `get_stock`
+      取实时价（60s 缓存），10 只票 5 分钟一次 ≈ 2 次/分钟，成本可忽略。
+    """
+    from app import tier_alert
+    while True:
+        try:
+            m = rules.get_china_market_status()
+            if m.get("is_open"):
+                await asyncio.to_thread(tier_alert.check_once)
+        except Exception as e:
+            print(f"[scheduler] tier_alert: {e}")      # ASCII（铁律⑥）
+        await asyncio.sleep(tier_alert.CHECK_INTERVAL)
+
+
 
 _emotion_snap_day = {}           # {phase: "YYYY-MM-DD"} —— 进程内"今天已落快照"标记
 
@@ -3270,6 +3295,10 @@ async def start():
              #   （rules.yaml push:true）⇒ 两套告警并存即"唯一出口"破功；
              #   函数与 portfolio_alerts.py 保留（浮亏 vs 成本口径如需重启另有 env）。
              # asyncio.create_task(portfolio_alert_loop()),
+             # ★★ 2026-11-25（用户："需要推送企微"）：**持仓分级提醒** ——
+             #   与上面停用的那条**口径不同**（那条=当日浮亏，本条=箱体位置+上涨质量），
+             #   5 分钟一查、只在 tier 恶化到 alert 时推、每票每天最多一次（落库去重）。
+             asyncio.create_task(tier_alert_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
              # ★ 2026-11-01：11:30 早盘定稿（「早盘复盘」标签页的数据基础）。
