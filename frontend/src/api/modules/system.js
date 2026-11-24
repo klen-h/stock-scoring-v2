@@ -207,6 +207,22 @@ export const getEventThemes = () => http.get('/system/event-targets/themes', { t
 //   纯读 range_watch 表（日批产物）⇒ 零外部请求。返回含 `mine`（我的持仓切片）。
 
 export const getRangeWatch = (params) => http.get('/system/range-watch', { params, timeout: 20000 })
+// ★★ 2026-11-25（用户："每天都要盯好几个股票，顾不过来，也不知道支撑位和阻力位，
+//   上涨是正常的还是套人的"）：**持仓/指定个股的分级观察**。
+//   · 支撑/阻力 = 箱体下沿/上沿（`range_watch` 日批口径）
+//   · `pos_in_range` 用**实时价**重算 ⇒ 会随盘中变化，这是期望行为
+//   · `rise` = 上涨质量证据（量能/主力/位置/上影线）—— **观察项，不是买卖建议**
+//   · `codes` 为空 ⇒ 后端自动取当前持仓；传数组则只观察这些
+//   ⚠️ 与 `/user/exit-advice` 的分工：那边是**行动**（清仓/减仓/持有），
+//      这边是**证据**（涨得实不实、离支撑阻力多远）。两者不应互相覆盖。
+export const getTierWatch = (codes, live = true) =>
+  http.get('/system/tier-watch', {
+    params: {
+      ...((codes && codes.length) ? { codes: codes.join(',') } : {}),
+      live,
+    },
+    timeout: 30000,
+  })
 // ★★ 2026-11-05：人物立场时间线（金十「人物讲话」，T+1 更新，非实时）。
 //   ⚠️ 这是**历史**纵览；当日实时看快讯（flash_brief）。
 

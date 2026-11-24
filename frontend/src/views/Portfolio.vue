@@ -82,6 +82,97 @@
       </div>
     </div>
 
+    <!-- ★★ 2026-11-25 分级观察（用户："每天都要盯好几个股票，顾不过来，也不知道支撑位和
+         阻力位，上涨是正常的还是套人的"）
+       · 支撑/阻力 = 箱体下沿/上沿；位置用**实时价**重算
+       · `rise` 是上涨质量**证据**（量能/主力/位置/上影线），不是买卖建议
+       · 与下方「出场建议」分工：那边是行动（清仓/减仓/持有），这边是证据
+       · 只在有数据时显示，且按严重度排序（警戒→留意→正常） -->
+    <div v-if="tierRows.length" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-3">
+        <div class="flex items-center gap-2">
+          <h3 class="text-sm font-semibold">分级观察</h3>
+          <span v-if="tierCounts.alert" class="px-2 py-0.5 rounded-full text-[10px] bg-red-500/20 text-red-400">
+            {{ tierCounts.alert }} 警戒
+          </span>
+          <span v-if="tierCounts.watch" class="px-2 py-0.5 rounded-full text-[10px] bg-amber-500/20 text-amber-400">
+            {{ tierCounts.watch }} 留意
+          </span>
+          <span v-if="tierCounts.safe" class="px-2 py-0.5 rounded-full text-[10px] bg-emerald-500/15 text-emerald-400">
+            {{ tierCounts.safe }} 正常
+          </span>
+          <span v-if="tierCounts.unknown" class="text-[10px] text-muted">{{ tierCounts.unknown }} 无数据</span>
+        </div>
+        <span class="text-[10px] text-muted cursor-help" :title="tierNote">口径 ⓘ</span>
+      </div>
+
+      <div class="space-y-1.5">
+        <div v-for="r in tierRows" :key="r.code"
+          class="flex items-start gap-2 text-xs border-l-2 pl-2 py-1 hover:bg-white/[0.03] cursor-pointer"
+          :class="tierBorder(r.tier)" @click="goDetail(r.code)">
+          <!-- 分级徽章 -->
+          <span class="shrink-0 w-[3.2em] text-[10px] font-medium" :class="tierColor(r.tier)">
+            {{ r.tier_cn }}
+          </span>
+          <!-- 名称 + 价格 -->
+          <div class="shrink-0 w-32">
+            <div class="text-gray-200 truncate">{{ r.name }}</div>
+            <div class="font-mono text-[10px] text-muted">{{ r.code }}</div>
+          </div>
+          <div class="shrink-0 w-24 font-mono">
+            <span :class="pctCls(r.chg_pct)">{{ r.price != null ? r.price : '—' }}</span>
+            <span class="text-[10px] ml-1" :class="pctCls(r.chg_pct)">
+              {{ r.chg_pct != null ? (r.chg_pct >= 0 ? '+' : '') + r.chg_pct.toFixed(2) + '%' : '' }}
+            </span>
+          </div>
+          <!-- 位置：距支撑/阻力（措辞明确 —— "已破" 不能写成 "+1.9%"，那会被读成涨幅） -->
+          <div class="shrink-0 w-44 text-[10px] text-muted">
+            <span v-if="r.support != null">
+              支撑 {{ r.support }}
+              <span v-if="r.dist_support_pct != null"
+                :class="r.dist_support_pct < 0 ? 'text-red-400' : 'text-gray-300'">
+                {{ r.dist_support_pct < 0
+                  ? '已破 ' + Math.abs(r.dist_support_pct).toFixed(1) + '%'
+                  : '下方 ' + r.dist_support_pct.toFixed(1) + '%' }}
+              </span>
+            </span>
+            <span v-else>支撑 —</span>
+            <span class="mx-1 opacity-40">/</span>
+            <span v-if="r.resistance != null">
+              阻力 {{ r.resistance }}
+              <span v-if="r.dist_resistance_pct != null" class="text-gray-300">
+                {{ r.dist_resistance_pct < 0
+                  ? '已越 ' + Math.abs(r.dist_resistance_pct).toFixed(1) + '%'
+                  : '上方 ' + r.dist_resistance_pct.toFixed(1) + '%' }}
+              </span>
+            </span>
+            <span v-else>阻力 —</span>
+          </div>
+          <!-- 箱体位置条 -->
+          <div class="shrink-0 w-16">
+            <div class="h-1.5 bg-white/10 rounded-full overflow-hidden" title="箱体位置">
+              <div class="h-full rounded-full"
+                :class="posBarCls(r.pos_in_range)"
+                :style="{ width: posWidth(r.pos_in_range) }"></div>
+            </div>
+          </div>
+          <!-- 上涨质量 -->
+          <div class="flex-1 min-w-0 text-[10px]"
+            :title="riseTip(r)">
+            <span v-if="r.rise && r.rise.signals && r.rise.signals.length"
+              :class="r.rise.n_bad >= 2 && r.rise.n_good === 0 ? 'text-red-400/90' : (r.rise.n_bad ? 'text-amber-400/90' : 'text-emerald-400/80')">
+              {{ r.rise.verdict }}
+            </span>
+            <span v-else class="text-muted">上涨质量：无数据</span>
+            <span v-if="r.tier_reason" class="text-muted ml-2 truncate">{{ r.tier_reason }}</span>
+          </div>
+        </div>
+      </div>
+      <div v-if="tierLiveAt" class="text-[10px] text-muted mt-2">
+        实时价 {{ tierLiveAt }} · 箱体截至 {{ tierDate }} · 资金 {{ tierFundsDate || '—' }}
+      </div>
+    </div>
+
     <!-- 添加/编辑持仓表单 -->
     <div v-if="showAddForm" class="bg-card border border-border rounded-lg p-4 fade-in">
       <h3 class="text-sm font-semibold mb-3">{{ editingCode ? '编辑持仓' : '添加持仓' }}</h3>
@@ -419,7 +510,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { getStockRealtime, getStockScore, searchStock, getStockTechnical } from '../api'
+import { getStockRealtime, getStockScore, searchStock, getStockTechnical, getTierWatch } from '../api'
 import { useNewsBadges } from '../composables/useNewsBadges'
 import { useFastQuotes } from '../composables/useFastQuotes'
 import {
@@ -486,6 +577,74 @@ const { load: loadVer, statusOf: verStatus } = useVerification()
 const loading = ref(false)
 const countdown = ref(getRefreshInterval())
 const tradingNow = ref(isTradingTime())  // 当前是否交易时段（用于 UI 提示）
+
+// ── ★★ 2026-11-25 分级观察（支撑/阻力 + 上涨质量）──
+//   ⚠️ 与 `/user/exit-advice`（下方「出场建议」）分工不同：
+//      那边是**行动**（清仓/减仓/持有），这边是**证据**（涨得实不实、离支撑阻力多远）。
+//      两者同时展示不矛盾：证据变差时，行动栏通常也会随之变化，但判定口径各自独立。
+const tierRows = ref([])
+const tierCounts = ref({})
+const tierNote = ref('')
+const tierLiveAt = ref('')
+const tierDate = ref('')
+const tierFundsDate = ref('')
+
+async function loadTier() {
+  try {
+    const codes = (positions.value || []).map(p => p.code)
+    const { data } = await getTierWatch(codes)
+    tierRows.value = (data && data.items) || []
+    tierCounts.value = (data && data.counts) || {}
+    tierNote.value = (data && data.note) || ''
+    tierLiveAt.value = (data && data.live_as_of) || ''
+    tierDate.value = (data && data.date) || ''
+    tierFundsDate.value = (data && data.funds_date) || ''
+  } catch (e) {
+    // 失败静默：分级观察是附加信息，绝不能拖垮主流程（行情/评分照常刷新）
+    tierRows.value = []
+  }
+}
+
+function pctCls(v) {
+  if (v == null) return 'text-muted'
+  return v >= 0 ? 'text-rise' : 'text-fall'
+}
+function tierBorder(t) {
+  const m = {
+    alert: 'border-red-500/70',
+    watch: 'border-amber-500/60',
+    safe: 'border-emerald-500/30',
+    unknown: 'border-white/10',
+  }
+  return m[t] || 'border-white/10'
+}
+function tierColor(t) {
+  const m = {
+    alert: 'text-red-400',
+    watch: 'text-amber-400',
+    safe: 'text-emerald-400/80',
+    unknown: 'text-muted',
+  }
+  return m[t] || 'text-muted'
+}
+function posBarCls(p) {
+  if (p == null) return 'bg-white/20'
+  if (p <= 0.25) return 'bg-amber-500/70'   // 下沿
+  if (p >= 0.85) return 'bg-red-500/70'     // 上沿
+  return 'bg-emerald-500/60'
+}
+function posWidth(p) {
+  if (p == null) return '0%'
+  const v = Math.max(0, Math.min(1, p))
+  return (v * 100).toFixed(0) + '%'
+}
+function riseTip(r) {
+  const rise = r.rise || {}
+  const sigs = rise.signals || []
+  if (!sigs.length) return '无上涨质量证据（箱体/资金/行情数据缺失）'
+  const lines = sigs.map(s => '- ' + s.label + '：' + s.why)
+  return lines.join('\n') + '\n\n' + (rise.caveat || '')
+}
 let timer = null
 
 // ── 汇总统计（computed，依赖 realtimeMap）──
@@ -671,6 +830,9 @@ async function refresh() {
   loading.value = true
   countdown.value = 0
   loadNews(positions.value.map(p => p.code))
+  // ★ 2026-11-25：分级观察独立加载（不 await —— 它是附加信息，
+  //   晚到不影响主表的行情/盈亏渲染）
+  loadTier()
 
   // 并发拉取所有持仓的实时行情（allSettled 容错：单只失败不影响整体）
   const realtimePromises = positions.value.map(p =>

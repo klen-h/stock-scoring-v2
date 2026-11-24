@@ -1501,6 +1501,27 @@ def range_watch(date: Optional[str] = Query(None, description="YYYY-MM-DD，默�
     return rg.load(date, state=state, limit=limit)
 
 
+@router.get("/tier-watch")
+def tier_watch(codes: Optional[str] = Query(None, description="逗号分隔；空=取当前持仓"),
+               date: Optional[str] = Query(None, description="箱体日期，默认最新"),
+               live: bool = Query(True, description="是否用实时价重算箱体位置"),
+               user: dict = Depends(get_current_user)) -> Dict:
+    """持仓 / 指定个股的**分级观察**（含「上涨质量」证据）。
+
+    ★ 2026-11-25（用户："每天都要盯好几个股票，顾不过来，也不知道支撑位和阻力位，
+      上涨是正常的还是套人的"）：
+      · 支撑/阻力 = `range_watch` 的箱体下沿/上沿（日批口径，前 59 日高低点）
+      · 位置 `pos_in_range` 用**实时价**重算（箱体本身不重算）
+      · **上涨质量**是新能力：`washout_alert` 只回答"跌到下沿是洗盘还是破位"，
+        这里是它的镜像——"涨到上沿/上涨途中是正常还是诱多"，四条证据见模块 docstring。
+
+    ⚠️ 观察器：不改评分、不进闸门、不生成买卖指令；四条证据的阈值**未回测校准**。
+    """
+    from app import stock_tier_watch as tw
+    cs = [x.strip() for x in (codes or "").split(",") if x.strip()]
+    return tw.tier_view(cs or None, day=date, live=live)
+
+
 @router.get("/people-watch")
 def people_watch(people: int = Query(83, description="people_org_id，默认 83=特朗普"),
                  days: int = Query(30, ge=1, le=180),
