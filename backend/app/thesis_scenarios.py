@@ -60,6 +60,16 @@ METRIC_LABELS = {
     #   注意 pass 语义：`icbc_chg_pct <= -1` 成立 = 红利被抛售资金换成长，
     #   对"V 型修复"情景是**支持**证据，不是失败。
     "icbc_chg_pct": "工行涨跌%(红利端)",
+    # ★★ 2026-11-25（用户："标准③「盘中低点 ≥3520」用 EOD 快照的日低字段就能测，
+    #   数据现成，只差落库"）：
+    #   此前只有 close，导致"低开 0.5-1.5% 可承受""盘中低点 ≥3520 为 B 底线"
+    #   这两条**判不了** —— 而它们是区分 B（回踩确认）与 C（二次探底）的核心。
+    #   `key_level_watch` 已补 open/high/low 落库 ⇒ 现在可测。
+    #   ⚠️ 历史行这三列为 NULL ⇒ 回补跑旧日期会返回 None（不是 0）。
+    "sh_open": "上证开盘",
+    "sh_high": "上证最高",
+    "sh_low": "上证最低",
+    "sh_open_gap_pct": "上证开盘缺口%",
 }
 # 比较符：只支持这四种（避免 eval / 注入）
 _OPS = ("<=", ">=", "<", ">", "==")
@@ -139,6 +149,37 @@ def _dumps(v) -> str:
         return json.dumps(v, ensure_ascii=False)
     except (TypeError, ValueError):
         return "[]"
+
+
+def _prev_trading_day(day: str) -> Optional[str]:
+    """`day` 的上一个交易日（YYYY-MM-DD）；推不出返回 None。
+
+    ★ 2026-11-25（算"开盘缺口%"时必须先确定"上一交易日"）：
+      不能用 `date < day ORDER BY date DESC LIMIT 1` 随便取一条 ——
+      日批漏跑/长假/停牌时，取到的可能是 3~5 天前的收盘，
+      中间指数可能已涨跌 5% ⇒ 缺口失真成假数。
+      优先用 `flash.rules.is_trading_day`（含 fuyao 交易日历）；不可用时退化为只跳周末。
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    try:
+        d = _dt.strptime(str(day)[:10], "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+    _is_td = None
+    try:
+        from app.flash.rules import is_trading_day as _is_td
+    except Exception:
+        _is_td = None
+    for _ in range(20):          # 最长春节/国庆连休 + 前后周末，20 天足够
+        d -= _td(days=1)
+        try:
+            ok = bool(_is_td(d)) if _is_td else d.weekday() < 5
+        except Exception:
+            ok = d.weekday() < 5
+        if ok:
+            return d.strftime("%Y-%m-%d")
+    return None
 
 
 def _f(v) -> Optional[float]:
@@ -228,14 +269,48 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
                 return (None, "无收盘涨跌家数")
             return (round(up / (up + down), 4), "")
 
-        if key in ("sh_close", "sh_chg_pct"):
+        if key in ("sh_close", "sh_chg_pct", "sh_open", "sh_high", "sh_low",
+                   "sh_open_gap_pct"):
+            # ★ 2026-11-25（用户：'标准③「盘中低点 ≥3520」用 EOD 快照的日低字段就能测'）：
+            #   `key_level_watch` 已补 open/high/low 落库 ⇒ 开盘位与日内低点可测。
+            #   ⚠️ 历史行（11-25 之前）这三列是 NULL ⇒ 返回 None + 明确原因，
+            #      **不返回 0**（0 会被误读为"开在 0 点"，且会污染命中率统计）。
             r = db.fetch_one("""
-                SELECT close, chg_pct FROM key_level_watch
+                SELECT close, chg_pct, open, high, low FROM key_level_watch
                 WHERE date=%s AND code='000001'
             """, (day,)) or {}
-            v = _f(r.get("close") if key == "sh_close" else r.get("chg_pct"))
-            return (v, "" if v is not None
-                    else "无上证指数记录（key_level_watch 当日未落库）")
+            if key in ("sh_close", "sh_chg_pct"):
+                v = _f(r.get("close") if key == "sh_close" else r.get("chg_pct"))
+                return (v, "" if v is not None
+                        else "无上证指数记录（key_level_watch 当日未落库）")
+            col = {"sh_open": "open", "sh_high": "high", "sh_low": "low"}.get(key)
+            if col:
+                v = _f(r.get(col))
+                if v is not None:
+                    return (v, "")
+                if not r:
+                    return (None, "无上证指数记录（key_level_watch 当日未落库）")
+                return (None, f"上证 {col} 未落库（该字段 2026-11-25 起才有）")
+            # 开盘缺口% = (open / **上一交易日**收盘 - 1) * 100
+            #   用户标准③的"低开 0.5-1.5%"测的就是这个。
+            # ⚠️⚠️ **不能**用 `date < day ORDER BY date DESC LIMIT 1` 随便取一条：
+            #   若某几天日批没跑（或停牌/长假），取到的可能是 3~5 天前的收盘，
+            #   而中间指数可能已涨跌 5% ⇒ 算出来的"缺口"完全是假的。
+            #   ⇒ 先算**理论上的上一交易日**，再精确匹配那一天，缺了就返回 None。
+            op = _f(r.get("open"))
+            prev_td = _prev_trading_day(day)
+            if not prev_td:
+                return (None, f"无法确定 {day} 的上一交易日")
+            prev = db.fetch_one("""
+                SELECT close FROM key_level_watch
+                WHERE code='000001' AND date=%s
+            """, (prev_td,)) or {}
+            pc = _f(prev.get("close"))
+            if op is None:
+                return (None, "上证当日开盘价未落库")
+            if not pc:
+                return (None, f"上一交易日 {prev_td} 无收盘（该日日批未跑）")
+            return (round((op / pc - 1) * 100, 2), "")
 
         if key == "breadth_gap":
             from app import breadth_divergence as bd

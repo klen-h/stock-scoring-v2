@@ -77,6 +77,25 @@ def ensure_table() -> None:
             PRIMARY KEY (date, code)
         )
     """)
+    # ★★ 2026-11-25（用户：'标准③「盘中低点 ≥3520」用 EOD 快照的日低字段就能测，
+    #   数据现成，只差落库'）：
+    #   `key_level_watch` 原来只存 close / chg_pct，而**开盘位、日内高低点**
+    #   恰恰是判断"低开幅度""防区守没守住"的唯一依据。
+    #   `_load_index_kline()` 返回的 bars **本来就带 open/high/low**（腾讯与库兜底
+    #   两条路径都有），只是这里没取、没存。
+    #   ⚠️ `CREATE TABLE IF NOT EXISTS` 不会给已存在的表补列 ⇒ 老库必须 ALTER。
+    for _c in ("open", "high", "low"):
+        try:
+            if db.is_postgres:
+                db.execute(f"ALTER TABLE key_level_watch "
+                           f"ADD COLUMN IF NOT EXISTS {_c} REAL")
+            else:
+                _cols = [x.get("name") for x in
+                         (db.fetch("PRAGMA table_info(key_level_watch)") or [])]
+                if _c not in _cols:
+                    db.execute(f"ALTER TABLE key_level_watch ADD COLUMN {_c} REAL")
+        except Exception as e:
+            print(f"[keylevel] add column {_c} failed: {str(e)[:60]}")
     _READY = True
 
 
@@ -120,8 +139,14 @@ def _analyze(bars: List[dict]) -> Optional[Dict]:
         status = "正常"
     detail = (f"{stype} {support:.1f}（{status}）；"
               f"前低 {prev60:.1f} / 整数位 {round_level:.0f} / 年内低点 {year_low:.1f}")
+    # ★ 2026-11-25：取当日 bar 的开/高/低 —— 判断"低开幅度""日内最低离防区多远"
+    #   只能靠这三个字段（收盘价是结果，不是过程）。
+    _b = bars[-1] if bars else {}
     return {"close": round(c, 2),
             "chg_pct": round((c / prev - 1) * 100, 2),
+            "open": _num(_b.get("open")),
+            "high": _num(_b.get("high")),
+            "low": _num(_b.get("low")),
             "support": round(support, 2), "support_type": stype,
             "dist_pct": round(dist, 2) if dist is not None else None,
             "status": status,
@@ -179,6 +204,8 @@ def compute(day: str = None) -> Dict:
             db.upsert(_TABLE, {
                 "date": day, "code": r["code"], "name": r["name"],
                 "close": r["close"], "chg_pct": r["chg_pct"],
+                # ★ 2026-11-25：开/高/低一并落库（标准③「盘中低点≥3520」靠它测）
+                "open": r.get("open"), "high": r.get("high"), "low": r.get("low"),
                 "support": r["support"], "support_type": r["support_type"],
                 "dist_pct": r["dist_pct"], "status": r["status"],
                 "broke": 1 if r["broke"] else 0,
@@ -233,7 +260,14 @@ def _live_index_quotes() -> Dict[str, Dict]:
             q = get_index(_c) or {}
             _p = q.get("price")
             if _p:
+                # ★ 2026-11-25：把**日内开盘/最高/最低**一并带回来。
+                #   用户要的「盘中低点 ≥3520」是日内过程量，等到日批才算没有意义。
+                #   `get_index` 的返回本来就含 open/high/low（data[5]/[41]/[42]），
+                #   之前只取了 price —— 不是拿不到，是没取。
                 return _c, {"price": float(_p), "chg_pct": q.get("change_pct"),
+                            "open": _num(q.get("open")),
+                            "high": _num(q.get("high")),
+                            "low": _num(q.get("low")),
                             "time": str(q.get("time") or "")}
         except Exception:
             pass              # 单指数失败不影响其余（与 compute() 的 fail-open 同口径）
@@ -341,9 +375,18 @@ def load(day: str = None) -> Dict:
                 "broke": bool(close and close < L),
                 "reclaimed": bool(prev and close >= L > prev),
             })
+        # ★ 2026-11-25：开/高/低 —— **实时值优先**（盘中有意义），否则落库值。
+        #   ⚠️ 两者语义不同：实时值是"今天到现在为止"，落库值是"上一交易日收盘定稿"；
+        #      所以必须带 `live` 标记一起看（下面已返回）。
+        _lo = _num(_lq.get("low"))
+        _hi = _num(_lq.get("high"))
+        _op = _num(_lq.get("open"))
         out.append({
             "code": code, "name": x.get("name"),
             "close": close, "chg_pct": chg,
+            "open": _op if _op else _num(x.get("open")),
+            "high": _hi if _hi else _num(x.get("high")),
+            "low": _lo if _lo else _num(x.get("low")),
             "support": support, "support_type": x.get("support_type"),
             # 距离用实时价重算（支撑位一天只变一次，不重算）；
             # 支撑位量级可疑 或 无实时值 ⇒ 沿用落库的收盘口径
