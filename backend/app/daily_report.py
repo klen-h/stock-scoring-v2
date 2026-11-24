@@ -710,6 +710,7 @@ def build_data_md(date: str = None) -> str:
     try:
         _d = date or _today()
         row = None
+        _used = None
         for _cand in (_d, _yesterday_trading_day()):
             row = db.fetch_one(
                 "SELECT date, up_ratio, limit_up, limit_down, "
@@ -717,12 +718,21 @@ def build_data_md(date: str = None) -> str:
                 "FROM market_events WHERE date = %s",
                 (_cand,))
             if row:
+                _used = _cand
                 break
+        # ★★ 2026-11-24（用户指出："日报里的涨停 146 是昨日的"）：
+        #   回退到上一交易日时**必须显式标注数据日期** —— 原实现静默回退，
+        #   标题却在「一、今日市场脉冲」下，读起来就是当天数据 ⇒ 日期错位。
+        #   实测：11-24 日报显示 11-23 的涨停 146，用户一眼看出不对。
+        stale = (f"- ⚠️ **数据日期 {_used}**：{_d} 的事件快照尚未落库，"
+                 f"以下为上一交易日的信号\n") if (_used and _used != _d) else ""
         if row and row.get("e2_policy_surge"):
             from app.events.signal import E2_STATS, EXEC_STATS
             s = E2_STATS
             _dd = (s.get("by_regime") or {}).get("defensive") or {}
             add("\n### 1.5 事件信号（E2 政策脉冲）\n")
+            if stale:
+                add(stale)
             add(f"- ⚡ **触发**：涨家数占比 {row.get('up_ratio', 0):.1%}、"
                 f"涨停 {row.get('limit_up')} 家")
             add(f"- 历史同态（{s['n']} 天 / {s['n_clusters']} 个独立簇）：后 20 日全市场等权 "
@@ -737,6 +747,8 @@ def build_data_md(date: str = None) -> str:
         elif row and row.get("e4_limit_surge"):
             from app.events.signal import E4_STATS as _E4S
             add("\n### 1.5 事件信号（E4 涨停家数激增）\n")
+            if stale:
+                add(stale)
             add(f"- 🔥 **触发**：涨停 {row.get('limit_up')} 家 > 2.0×滚动20日均值"
                 f"（{row.get('limit_up_ma20')}）")
             add(f"- 历史同态（时间切分样本外）：**{_E4S['target']}** 持 {_E4S['hold_days']} 日 "
@@ -745,6 +757,8 @@ def build_data_md(date: str = None) -> str:
             add(f"- ⚠️ **历史统计参考，非投资建议**；本信号不进决策链（不改市况/仓位/闸门）")
         elif row and row.get("e1_capitulation"):
             add("\n### 1.5 事件信号（E1 冰点）\n")
+            if stale:
+                add(stale)
             add(f"- ❄️ 涨家数占比 {row.get('up_ratio', 0):.1%}、"
                 f"跌停 {row.get('limit_down')} 家 —— 历史上无额外 edge"
                 f"（已归档，仅作背景提示）")

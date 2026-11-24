@@ -1277,13 +1277,41 @@ def detect_trigger(p: Dict) -> List[str]:
 
 
 def maybe_auto_run() -> Optional[Dict]:
-    """调度器每 2 分钟调用：只有命中异动 + 冷却到期 + 未超日上限才真跑。
+    """调度器每 2 分钟调用。
 
-    非交易时段直接返回 None（不烧 token）。
+    ★★ 2026-11-24（用户："快讯三时段的盘后是不是一直没有内容"）：
+      **是的，一直是空的。** 原实现 `if not is_open: return None` 直接掐掉了
+      盘后 ⇒ 三时段复盘卡的「盘后」永远 null（实测 11-20/23/24 连续 3 天）。
+      ⇒ 增加**盘后 15:05–15:40 固定一次收盘定稿**：
+        · 这是唯一确定的复盘时点，**不需要异动闸门**（那是盘中防骚扰用的）；
+        · `_phase_of()` 按 15:05 切点自然标成「盘后」；
+        · 按 `phase='盘后'` 幂等，已有就不重复烧 LLM。
+      盘中逻辑完全不变。
     """
     try:
         from app.flash import rules
         st = rules.get_china_market_status() or {}
+        d = _today()
+
+        # ── ① 盘后收盘定稿：交易日 15:05–15:40，每天一次 ──
+        _now = rules.beijing_now()
+        _tmin = _now.hour * 60 + _now.minute
+        if 905 <= _tmin <= 940 and rules.is_trading_day(_now):
+            try:
+                _has = db.fetch_one(
+                    f"SELECT 1 AS x FROM {_RUN_TABLE} "
+                    f"WHERE date=%s AND phase='盘后' LIMIT 1", (d,)) or {}
+                if _has.get("x"):
+                    return None
+            except Exception as e:
+                print(f"[flash_brief] 盘后幂等检查失败: {str(e)[:70]}")
+            print("[flash_brief] 盘后收盘定稿触发")
+            _r = analyze(d, refresh=True, auto=True)
+            if _r.get("ok"):
+                mark_notified(d)
+            return _r
+
+        # ── ② 盘中：原异动闸门 + 冷却 + 日上限 ──
         if not st.get("is_open"):
             return None
         import time as _t
