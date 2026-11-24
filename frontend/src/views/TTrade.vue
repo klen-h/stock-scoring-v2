@@ -105,7 +105,8 @@
         <div class="text-[10px] text-muted">已开 {{ stats.open || 0 }} · 已平 {{ stats.closed || 0 }}</div>
       </div>
       <div class="bg-card border border-border rounded-lg p-3">
-        <div class="text-[11px] text-muted">今日盈亏（模拟）</div>
+        <div class="text-[11px] text-muted cursor-help"
+             title="已扣佣金（每笔最低 5 元）+ 印花税 + 过户费">今日盈亏（模拟·净）</div>
         <div class="text-xl font-semibold mt-0.5 font-mono"
              :class="Number(stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
           {{ Number(stats.pnl) > 0 ? '+' : '' }}{{ stats.pnl || 0 }}
@@ -386,9 +387,10 @@
               <td class="px-2 py-1">{{ t.direction === 'long_t' ? '正T' : '反T' }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ Number(t.open_price).toFixed(2) }}</td>
               <td class="px-2 py-1 text-right font-mono">{{ Number(t.close_price || 0).toFixed(2) }}</td>
-              <td class="px-2 py-1 text-right font-mono"
-                  :class="Number(t.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
-                {{ Number(t.pnl) > 0 ? '+' : '' }}{{ Number(t.pnl || 0).toFixed(2) }}
+              <td class="px-2 py-1 text-right font-mono cursor-help"
+                  :class="netOf(t) >= 0 ? 'text-rose-300' : 'text-emerald-300'"
+                  :title="feeTitle(t)">
+                {{ netOf(t) > 0 ? '+' : '' }}{{ netOf(t).toFixed(2) }}
                 <span class="opacity-70">（{{ Number(t.pnl_pct || 0).toFixed(2) }}%）</span>
               </td>
               <td class="px-2 py-1 text-muted truncate max-w-[280px]" :title="t.note">{{ t.note }}</td>
@@ -408,7 +410,8 @@
         <!-- 累计统计（只算已平，未平盈亏仍浮动） -->
         <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
           <div class="bg-card border border-border rounded-lg p-3">
-            <div class="text-[11px] text-muted">累计盈亏</div>
+            <div class="text-[11px] text-muted cursor-help"
+                 title="新记录已扣交易费用；历史记录（无 fee 列）显示的是毛利">累计盈亏（净）</div>
             <div class="text-lg font-semibold mt-0.5 font-mono"
                  :class="Number(historyData.stats.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300'">
               {{ Number(historyData.stats.pnl) > 0 ? '+' : '' }}{{ Number(historyData.stats.pnl || 0).toFixed(2) }}
@@ -484,11 +487,12 @@
                   {{ t.close_price == null ? '—' : Number(t.close_price).toFixed(2) }}
                 </td>
                 <td class="px-2 py-1 text-right font-mono">{{ t.open_shares }}</td>
-                <td class="px-2 py-1 text-right font-mono"
-                    :class="t.pnl == null ? 'text-muted' : (Number(t.pnl) >= 0 ? 'text-rose-300' : 'text-emerald-300')">
+                <td class="px-2 py-1 text-right font-mono cursor-help"
+                    :class="t.pnl == null ? 'text-muted' : (netOf(t) >= 0 ? 'text-rose-300' : 'text-emerald-300')"
+                    :title="t.pnl == null ? '' : feeTitle(t)">
                   <template v-if="t.pnl == null">—</template>
                   <template v-else>
-                    {{ Number(t.pnl) > 0 ? '+' : '' }}{{ Number(t.pnl).toFixed(2) }}
+                    {{ netOf(t) > 0 ? '+' : '' }}{{ netOf(t).toFixed(2) }}
                     <span class="opacity-70">（{{ Number(t.pnl_pct || 0).toFixed(2) }}%）</span>
                   </template>
                 </td>
@@ -567,6 +571,20 @@ import {
 //   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
 //   不在本页自己拼 URL —— 与评分榜/持仓页同款，避免两处各写一份。
 import { getXueqiuUrl } from '../composables/stockUtils'
+
+// ★ 2026-11-24（用户："把成本模型加进 t_trades 的盈亏计算"）：
+//   后端新记录带 `pnl_net`（毛利 − 佣金/印花税/过户费），
+//   历史记录没有该列（NULL）⇒ 回退 `pnl`（毛利），并在 hover 里说明是毛利。
+function netOf(t) {
+  const v = t?.pnl_net
+  return v == null ? Number(t?.pnl || 0) : Number(v)
+}
+function feeTitle(t) {
+  if (t?.fee == null) {
+    return '该笔无费用记录（历史数据）⇒ 显示的是毛利，实际更低'
+  }
+  return `毛利 ${Number(t.pnl || 0).toFixed(2)} − 费用 ${Number(t.fee).toFixed(2)} = 净利 ${Number(t.pnl_net || 0).toFixed(2)}`
+}
 
 const tabs = [
   { key: 'pool', label: '我的池子' },

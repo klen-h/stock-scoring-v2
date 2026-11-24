@@ -107,11 +107,28 @@ def ensure_tables() -> None:
                 close_time TEXT,
                 pnl REAL,
                 pnl_pct REAL,
+                fee REAL,
+                pnl_net REAL,
                 status TEXT DEFAULT 'open',
                 ratio REAL,
                 note TEXT DEFAULT '',
                 created_at TEXT, updated_at TEXT
             )""")
+        # ★ 2026-11-24（用户："把成本模型加进 t_trades 的盈亏计算"）：
+        #   `pnl` 是**毛利**（口径不变，历史行仍可比）；新增 `fee` / `pnl_net`。
+        #   ⚠️ `CREATE TABLE IF NOT EXISTS` **不会**给已存在的表加列 ⇒ 老库必须补 ALTER。
+        for _c in ("fee", "pnl_net"):
+            try:
+                if db.is_postgres:
+                    db.execute(f"ALTER TABLE {_T_TRADE_TABLE} "
+                               f"ADD COLUMN IF NOT EXISTS {_c} REAL")
+                else:
+                    _cols = [x.get("name") for x in
+                             (db.fetch("PRAGMA table_info(%s)" % _T_TRADE_TABLE) or [])]
+                    if _c not in _cols:
+                        db.execute(f"ALTER TABLE {_T_TRADE_TABLE} ADD COLUMN {_c} REAL")
+            except Exception as e:
+                print(f"[t-trade] add column {_c} failed: {str(e)[:60]}")
         db.execute(f"CREATE INDEX IF NOT EXISTS idx_t_trade_date "
                    f"ON {_T_TRADE_TABLE} (trade_date, status)")
         # ★ 2026-11-15：**做T 独立池**。
@@ -1180,16 +1197,36 @@ def close_trade(tid: str, price: float, status: str = "closed",
         return None
     # 正T 先买后卖 ⇒ (后−先)；反T 先卖后买 ⇒ (先−后)
     sign = 1 if r.get("direction") == "long_t" else -1
-    pnl = round(sign * (price - op) * sh, 2)
+    pnl = round(sign * (price - op) * sh, 2)          # **毛利**（口径不变）
     pnl_pct = round(sign * (price / op - 1) * 100, 3)
+
+    # ★★ 2026-11-24（用户："把成本模型加进 t_trades 的盈亏计算"）：
+    #   一次T = 一买一卖 ⇒ 佣金双边（**每笔最低 5 元**）+ 印花税（卖出单边）
+    #   + 过户费（双边）。小单被"最低 5 元"吃掉大半，这是做T 亏钱的根因。
+    #   ⚠️ 金额要分方向传：正T 买=open/卖=close；反T 卖=open/买=close。
+    if r.get("direction") == "long_t":
+        buy_amt, sell_amt = op * sh, price * sh
+    else:
+        buy_amt, sell_amt = price * sh, op * sh
+    try:
+        from app.t_trade import calc_fee
+        fee_detail = calc_fee(buy_amt, sell_amt)
+    except Exception as e:
+        print(f"[t-trade] calc_fee failed: {str(e)[:70]}")
+        fee_detail = {"total": 0.0}
+    fee = float(fee_detail.get("total") or 0)
+    pnl_net = round(pnl - fee, 2)
+
     try:
         db.execute(
             f"UPDATE {_T_TRADE_TABLE} SET close_price=%s, close_time=%s, pnl=%s, "
-            f"pnl_pct=%s, status=%s, note=%s, updated_at=%s WHERE id=%s",
-            (round(price, 3), _now(), pnl, pnl_pct, status,
+            f"pnl_pct=%s, fee=%s, pnl_net=%s, status=%s, note=%s, "
+            f"updated_at=%s WHERE id=%s",
+            (round(price, 3), _now(), pnl, pnl_pct, fee, pnl_net, status,
              (note or r.get("note") or ""), _now(), tid))
         return {"id": tid, "close_price": round(price, 3), "pnl": pnl,
-                "pnl_pct": pnl_pct, "status": status}
+                "pnl_pct": pnl_pct, "fee": fee, "pnl_net": pnl_net,
+                "fee_detail": fee_detail, "status": status}
     except Exception as e:
         print(f"[t-trade] close_trade {tid} failed: {str(e)[:80]}")
         return None
@@ -1204,6 +1241,27 @@ def open_trades(day: str = None) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+def _net_pnl(t: Dict) -> float:
+    """一笔T 的**净利**（毛利 − 费用）。
+
+    ★ 2026-11-24（用户："把成本模型加进 t_trades 的盈亏计算"）：
+      `pnl` 是毛利、`pnl_net` 是净利。`pnl_net` 是**新列**，历史行为 NULL
+      ⇒ 回退到 `pnl`（毛利），保证旧数据不变成 0 也不算错。
+    ⚠️ 因此统计口径是"新记录净利 / 旧记录毛利"，两者混算。
+      要统一必须回填历史（用 open_price/close_price/open_shares 重算 fee）。
+    """
+    v = t.get("pnl_net")
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(t.get("pnl") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def daily_summary(day: str = None) -> Dict:
     """当日做T 汇总：预案 + 未平 + 已平 + 统计（含模拟盈亏）。"""
     ensure_tables()
@@ -1214,8 +1272,8 @@ def daily_summary(day: str = None) -> Dict:
     trades = [dict(r) for r in rows]
     closed = [t for t in trades if t.get("status") in ("closed", "stopped")]
     opened = [t for t in trades if t.get("status") == "open"]
-    pnl = round(sum(float(t.get("pnl") or 0) for t in closed), 2)
-    win = sum(1 for t in closed if float(t.get("pnl") or 0) > 0)
+    pnl = round(sum(_net_pnl(t) for t in closed), 2)      # ★ 净利（含费用）
+    win = sum(1 for t in closed if _net_pnl(t) > 0)
     return {
         "date": d,
         "plans": list_plans(d, feasible_only=True),
@@ -1263,8 +1321,8 @@ def history(limit: int = 200, day_from: Optional[str] = None) -> Dict:
     trades = [dict(r) for r in rows]
     closed = [t for t in trades if t.get("status") in ("closed", "stopped")]
     opened = [t for t in trades if t.get("status") == "open"]
-    pnl = round(sum(float(t.get("pnl") or 0) for t in closed), 2)
-    win = sum(1 for t in closed if float(t.get("pnl") or 0) > 0)
+    pnl = round(sum(_net_pnl(t) for t in closed), 2)      # ★ 净利（含费用）
+    win = sum(1 for t in closed if _net_pnl(t) > 0)
     days = len({t.get("trade_date") for t in trades if t.get("trade_date")})
     return {
         "data": trades,

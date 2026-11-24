@@ -1383,7 +1383,7 @@
                       :title="emotion.leap.note || '观察项，不是信号'">
                   {{ emotion.leap.label }}
                   <b class="font-mono">{{ emotion.leap.today_limit_up }}/{{ emotion.leap.prev_limit_up }}</b>
-                  <span class="opacity-80">{{ emotion.leap.ratio }}x</span>
+                  <span class="ml-2 opacity-80">{{ emotion.leap.ratio }}x</span>
                   <span class="text-[10px] opacity-60">（观察 n={{ emotion.leap.hist?.n }}，
                     对照 {{ emotion.leap.hist?.baseline?.up_rate_pct }}%）</span>
                 </span>

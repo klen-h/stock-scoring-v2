@@ -64,6 +64,50 @@ T_ATR_PERIOD = int(os.environ.get("T_ATR_PERIOD") or 60)
 #     "先卖后买"在当前规则下不成立。
 _ALLOW_SHORT_T = str(os.environ.get("T_ALLOW_SHORT_T") or "").lower() in ("1", "true", "yes")
 
+# ══════════════════════════════════════════════════════════════════════════
+#  交易成本（★ 2026-11-24 用户："把成本模型加进 t_trades 的盈亏计算"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么必须加】原 `pnl = (close − open) × shares` 是**毛利**：
+#   · 一笔 +4.0 元的工行T（100 股 @9.15，来回约 1830 元），扣成本后 **≈ −8 元**；
+#   · 8 笔合计"毛利 +182 元"，按笔均约 12 元成本算，**实际约 +86 元** —— 差一倍。
+# 【A 股成本构成（2026 现行）】
+#   佣金  ：**双边**，费率万 2.5，**每笔最低 5 元**
+#   印花税：**卖出单边** 0.05%（2023-08-28 起由 0.1% 减半）
+#   过户费：**双边** 0.001%（沪深统一）
+# 【"最低 5 元"才是小资金做T 亏钱的根因】
+#   1408 元的单，万 2.5 = 0.35 元，但券商实收 5 元 ⇒ 实际费率 0.355%，
+#   是名义费率的 **14 倍**。见 2026-11-17 的成本测算。
+T_COMMISSION_RATE = float(os.environ.get("T_COMMISSION_RATE") or 0.00025)
+T_COMMISSION_MIN = float(os.environ.get("T_COMMISSION_MIN") or 5.0)
+T_STAMP_RATE = float(os.environ.get("T_STAMP_RATE") or 0.0005)
+T_TRANSFER_RATE = float(os.environ.get("T_TRANSFER_RATE") or 0.00001)
+
+
+def calc_fee(buy_amount: float, sell_amount: float) -> Dict:
+    """一次做T（**一买一卖**）的总费用与明细，单位元。
+
+    ⚠️ 参数是**成交金额**（价 × 股），不是股数。
+      正T：买 = `open_price × shares`，卖 = `close_price × shares`；
+      反T：卖 = `open_price × shares`，买 = `close_price × shares`。
+      **两边都要传对**，否则印花税/佣金会算错边。
+
+    ⚠️ 不含滑点：本项目直接按真实成交价记账，滑点已经体现在价格里，
+      再加一次就是**重复扣减**。
+    """
+    def _comm(a: float) -> float:
+        return max(a * T_COMMISSION_RATE, T_COMMISSION_MIN) if a > 0 else 0.0
+
+    cb, cs = _comm(buy_amount), _comm(sell_amount)
+    stamp = sell_amount * T_STAMP_RATE if sell_amount > 0 else 0.0
+    transfer = (buy_amount + sell_amount) * T_TRANSFER_RATE
+    return {
+        "commission_buy": round(cb, 2),
+        "commission_sell": round(cs, 2),
+        "stamp_tax": round(stamp, 2),
+        "transfer_fee": round(transfer, 2),
+        "total": round(cb + cs + stamp + transfer, 2),
+    }
+
 # ★★ 2026-11-16（用户："价格到位，系统自动处理"）：**建仓点命中时自动建模拟底仓**。
 #
 #   【它到底做了什么】建仓计划（`plan_type='t_build'`）的买价被触发时，
