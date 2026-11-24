@@ -327,6 +327,19 @@ def _tx_parse(code: str, val: str) -> Optional[dict]:
             t = cand
     if not price or not prev:
         return None
+    # ★★ 2026-11-24（同日 v5 口径修正时发现的真 bug）：
+    #   腾讯 `us*` 在**美股开盘前**返回占位包：`price == prev_close`、high=low=0、
+    #   `time=09:30:00` ⇒ `change_pct` 算出 **0.0**。
+    #   实测 us_ixic 24089.56/24089.56 +0.0% —— 这不是"纳指没涨跌"，
+    #   是**当日尚未开盘、腾讯拿昨收同时填了现价和昨收**。
+    #   ⚠️ 危害与 11-14 的国债残缺包完全同型：假 0 落在 (-0.7, 0.7) 中性带，
+    #      界面显示"未达阈值"看起来正常，实则真信号被永久漏掉。
+    #   ⇒ 返回 None 让上层走其他源（新浪 / 东财），而不是拿假 0 冒充有效数据。
+    #   ⚠️ 只拦"完全相等 + 无高低价"的确定特征，不误杀真实微幅变动。
+    if (price == prev and not hi and not lo
+            and (code.startswith("us") or code.startswith("gb"))):
+        print(f"[macro] {code} 腾讯盘前占位包(price==prev,无高低价)，改用备用源")
+        return None
     return {"price": round(price, 3), "prev_close": round(prev, 3),
             "change_pct": round(chg, 2), "high": round(hi, 3), "low": round(lo, 3),
             "time": t, "source": "tencent"}
@@ -953,7 +966,7 @@ def get_macro_panel() -> dict:
 #      `scripts/recalibrate_macro_thresholds.py` 重跑复核。
 # ⚠️ 两类阈值的**预测力校准仍未做**（触发偏多后次日上证上涨比例 ≥55% 保留 / 50~55% 降权 /
 #    <50% 删除）—— 那属研究改动，须预登记（PLAN §6.3），不在 P0-1 范围。
-RULES_VERSION = "macro-rules-v4"
+RULES_VERSION = "macro-rules-v5"
 
 # v3 新增（2026-09-13）：US10Y 日变化（>6bp 空）+ 水平（>4.6% 空），强度 1.5——
 #   10Y 4.92~4.93% 高位是近两周主要压制变量，us30y>5% 太远端；
@@ -967,6 +980,14 @@ RULES_VERSION = "macro-rules-v4"
 #     `us10y_surge` / `us_curve_flatten`，触发率 3~15% 仍具区分度）、`goldsilver_ratio`
 #     （±1% 触发 ~20-30%，敏感但 strength 仅 1.0，属设计意图）、VIX 三条（14/20/25 是
 #     真实分界线，非水位阈值）、`cny_cnh_basis` / `internal_temp`（结构性/归一化，不漂移）。
+#
+# v5（2026-11-24，用户指出"昨晚纳指大涨6个点，规则却显示未达阈值"）：
+#   `nasdaq_overnight.metric` 从 `nasdaq.change_pct`（纳指**期货** hf_NQ，24h 含夜盘）
+#   改为 `us_ixic.change_pct`（纳斯达克综合**现货**，已实现的收盘结果）。
+#   实测当日两者**方向相反**：期货 -2.02% 判"走弱"，现货 +6.51% 是"隔夜大涨"。
+#   "隔夜"语义应是现货收盘 ⇒ 与 `cross_market_watch` 的 T-1 口径对齐。
+#   ⚠️ 阈值 0.7 / -0.7 与 strength 1.5 **未动**（不是阈值校准，只是修数据口径）。
+#   ⚠️ 这是口径变更，历史 v4 快照不会被改写；用 version + 指纹分段回溯。
 
 
 # v2 调整（外部利率冲击成为主要矛盾）：global 上调、commodity 下调、internal 上调
@@ -1002,10 +1023,17 @@ RULES = [
      "why": "收益率快速下行=宽松预期利好估值；快速上行=流动性收紧担忧"},
 
     # ── 全球风险偏好 ──
-    {"id": "nasdaq_overnight", "group": "global", "metric": "nasdaq.change_pct",
+    # ★★ 2026-11-24（用户："昨晚纳指大涨6个点，规则却显示未达阈值"）：
+    #   原 metric = `nasdaq.change_pct` 是**纳指期货**（hf_NQ，24h 交易、含夜盘噪声），
+    #   而"隔夜"语义应是**已实现的收盘结果** = `us_ixic`（纳斯达克综合现货）。
+    #   实测当日两者方向相反：期货 -2.02% 判"走弱"，现货 +6.51% 是"隔夜大涨"。
+    #   ⇒ v5 改 metric 为 `us_ixic.change_pct`（与 `cross_market_watch` 的 T-1 口径对齐）。
+    #   ⚠️ 这是**口径变更**，影响历史打分 ⇒ 已 bump 到 macro-rules-v5，
+    #      指纹会变（历史 v4 快照仍标 v4，不会被污染）。
+    {"id": "nasdaq_overnight", "group": "global", "metric": "us_ixic.change_pct",
      "bull": {"op": ">", "v": 0.7}, "bear": {"op": "<", "v": -0.7}, "strength": 1.5,
      "tag_bull": "纳指隔夜走强", "tag_bear": "纳指隔夜走弱",
-     "why": "全球科技风险偏好，映射A股成长股情绪"},
+     "why": "全球科技风险偏好，映射A股成长股情绪（现货收盘口径）"},
     {"id": "vix_low", "group": "global", "metric": "vix.price",
      "bull": {"op": "<", "v": 14}, "bear": None, "strength": 1.0,
      "tag_bull": "VIX低位(低波动)", "tag_bear": None,
