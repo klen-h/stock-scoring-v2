@@ -1128,10 +1128,18 @@ def today_bought(code: str, day: str = None) -> float:
 # ══════════════════════════════════════════════════════════════════════════
 
 def has_traded(code: str, day: str = None) -> bool:
-    """今天这只票是否已经开过T（**每只每天最多 1 次**，防抖）。"""
+    """这只票**还能不能再开T** —— 有未平的、或今天已开过的，都算"不能再开"。
+
+    ★ 2026-11-24（T+1 修正的连带改动，**不改会重复开仓**）：
+      原实现只查 `trade_date = 今天`。而正T 因 T+1 会**跨日保持 open** ⇒
+      次日查当天查不到它 ⇒ 同一只票被再开一笔，两笔同时 open。
+      ⇒ 改为「**任何未平的** 或 今天已开过的」都算已交易。
+      ⚠️ 反T 不会跨日 open（当天买回），所以对反T 的行为完全不变。
+    """
     ensure_tables()
     row = db.fetch_one(
-        f"SELECT 1 AS x FROM {_T_TRADE_TABLE} WHERE code=%s AND trade_date=%s LIMIT 1",
+        f"SELECT 1 AS x FROM {_T_TRADE_TABLE} "
+        f"WHERE code=%s AND (status='open' OR trade_date=%s) LIMIT 1",
         (str(code), day or _today()))
     return bool(row)
 
@@ -1174,6 +1182,18 @@ def close_trade(tid: str, price: float, status: str = "closed",
     r = dict(row)
     if r.get("status") != "open":
         return None
+    # ★★ 2026-11-24（用户："做T 看板当天建的仓是做不到当天卖出的，因为是 T+1"）：
+    #   正T（`long_t`）= 今天**买入** ⇒ 当天**绝对不能卖**（A 股 T+1）。
+    #   反T（`short_t`）= 卖的是**昨仓** ⇒ 当天买回合规。
+    #   ⚠️ 必须在这里拦：`_t_trade_tick` 的「尾盘强制平」（`force`）会把当天买的
+    #      直接平掉 —— 实测 2026-11-19/23/24 的 **8 条记录全部是当天开平**，
+    #      那些盈亏（累计 +182 元、胜率 50%）在现实里一笔都不成立。
+    #   返回 None 而非抛异常：调用方 `if not r: continue`，自然跳过并留到下一交易日。
+    if str(r.get("direction")) == "long_t":
+        _ot = str(r.get("open_time") or "")[:10]
+        if _ot and _ot == _today():
+            print(f"[t-trade] close_trade {tid} 拒绝：正T 当日买入不可卖出（T+1）")
+            return None
     op = float(r.get("open_price") or 0)
     sh = int(r.get("open_shares") or 0)
     if op <= 0 or sh <= 0 or price <= 0:
@@ -1196,11 +1216,23 @@ def close_trade(tid: str, price: float, status: str = "closed",
 
 
 def open_trades(day: str = None) -> List[Dict]:
-    """当日**未平**的做T（盘中要盯的）。"""
+    """**待平的**做T（盘中要盯的）：当天的全部 + **往期仍 open 的正T**。
+
+    ★★ 2026-11-24（同 T+1 修正，**必须与 `close_trade` 一起改**）：
+      原实现 `WHERE trade_date=%s AND status='open'` **只取当天**。
+      而 T+1 下正T 当天不能卖 ⇒ 必然留到下一交易日
+      ⇒ 若仍只取当天，那笔正T 会变成**永远平不掉的孤儿单**（`status` 永远 open）。
+      ⇒ 改成：当天全部 + 往期未平的正T。
+      ⚠️ 反T 不加入跨日：它卖的是昨仓，**当天就该买回**；不买回等于减仓，
+         那是另一件事，不该挂在 `open` 状态里反复被扫。
+    """
+    d = day or _today()
     ensure_tables()
     rows = db.fetch(
-        f"SELECT * FROM {_T_TRADE_TABLE} WHERE trade_date=%s AND status='open' "
-        f"ORDER BY open_time", (day or _today(),)) or []
+        f"SELECT * FROM {_T_TRADE_TABLE} "
+        f"WHERE status='open' AND (trade_date=%s "
+        f"      OR (direction='long_t' AND trade_date<%s)) "
+        f"ORDER BY trade_date, open_time", (d, d)) or []
     return [dict(r) for r in rows]
 
 
