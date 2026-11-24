@@ -20,11 +20,37 @@ MANUAL = [{"code": "600009"}]
 
 
 def _run(fetch_side, execute_side=0, upsert=None, held=None):
-    """按调用顺序喂 db.fetch：t_plans → manual → pool_codes。"""
+    """喂 db.fetch —— ★ 按 **SQL 内容** 分发，不再按调用顺序。
+
+    ★★ 2026-11-24（CI 挂了 `StopIteration`）：原实现 `side_effect=fetch_side`
+      是**位置式**的（[PLANS, MANUAL, []] 对应 t_plans → manual → pool_codes）。
+      但 `ensure_tables()` 在 **SQLite**（conftest 强制）下会为新列做
+      `PRAGMA table_info(t_trades)` 探测 —— 11-24 成本模型新增 `fee`/`pnl_net`
+      两列 ⇒ 多 2 次 db.fetch ⇒ 位置式侧效被挤爆，**主查询拿到 []**。
+      （生产 PG 走 `ALTER ... IF NOT EXISTS`，没有这 2 次 fetch，所以是测试脆弱性问题，
+        不是线上功能 bug。）
+
+      改成按 SQL 关键字分发：PRAGMA 探测返回 []、主查询返回第 1 项、
+      manual 返回第 2 项、其余（pool_codes）返回第 3 项 —— 与调用次数/顺序解耦。
+    """
     ups = upsert or (lambda *a, **k: None)
+    plans = fetch_side[0] if fetch_side else []
+    manual = fetch_side[1] if len(fetch_side) > 1 else []
+    rest = fetch_side[2] if len(fetch_side) > 2 else []
+
+    def _by_sql(sql, params=None):
+        s = str(sql or "")
+        if "PRAGMA table_info" in s:
+            return []                       # 建表的列探测，与选池逻辑无关
+        if "FROM t_plans" in s:
+            return plans
+        if "t_watchlist" in s and "manual" in s:
+            return manual
+        return rest                         # pool_codes() 的 t_watchlist 全量
+
     with mock.patch("app.t_trade_exec.db.fetch_one",
                     return_value={"d": "2026-11-19"}), \
-            mock.patch("app.t_trade_exec.db.fetch", side_effect=fetch_side), \
+            mock.patch("app.t_trade_exec.db.fetch", side_effect=_by_sql), \
             mock.patch("app.t_trade_exec.db.execute", return_value=execute_side), \
             mock.patch("app.t_trade_exec.db.upsert", side_effect=ups), \
             mock.patch("app.t_trade_exec.holdings", return_value=held or {}), \
