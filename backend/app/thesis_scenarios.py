@@ -938,6 +938,12 @@ def _markdown(thesis: Dict, day: str, ev: Dict,
     lines.append("")
     lines.append("统计：命中 %d / 偏离 %d / 无数据 %d"
                  % (ev.get("n_pass", 0), ev.get("n_fail", 0), ev.get("n_nodata", 0)))
+    # ★ 2026-11-25（L4 失效检测）：**只在触发时出现**，平时不占位（避免天天报警）。
+    _inv = ev.get("invalidation") or {}
+    if _inv.get("suggest_switch"):
+        lines.append("")
+        lines.append("⚠️ **尺子可能已不准**：%s" % _inv.get("reason"))
+        lines.append("→ %s" % _inv.get("action"))
     if review:
         lines.append("")
         lines.append("**情景：%s**" % review.get("scenario_now", "—"))
@@ -961,6 +967,125 @@ def _markdown(thesis: Dict, day: str, ev: Dict,
     lines.append("")
     lines.append("口径：只对照已登记指标，无数据项标「—」，不推测。纯复盘，不进决策链。")
     return "\n".join(lines)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  失效检测器（★ 2026-11-25，用户贴的五层架构 L4 里唯一真缺的一块）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么需要它】
+#   已有的「换尺子」是**人工动作**（`PUT /scenarios/{tid}/checks`），
+#   而人不会天天主动问"我这把尺子还准吗" —— 缺的是**什么时候该问**的触发。
+#   这正是用户复盘出来的那条教训："验证框架必须匹配行情性质，性质变了就要立刻换框架"，
+#   但"立刻"靠人是做不到的，得有个东西在看。
+#
+# 【设计原则（三条都不能破）】
+#   ① **只报警，绝不自动改 checks / 自动归档** —— 换不换尺子取决于
+#      "这次不一样在哪"（磨底→派发→修复的元判断），规则写不出来。
+#      自动换等于用死规则替代判断，比不换更糟。
+#   ② **nodata 不算 fail** —— 数据缺失是"不知道"，不是"被证伪"。
+#      否则部署当天指标没落库就会误报"推演失效"。
+#   ③ **判据要能说清理由** —— 输出必须带"哪几天、哪几项、多少比例"，
+#      让人能一眼判断是"尺子错了"还是"行情真的这么走"。
+#
+# 【阈值依据】
+#   连续 2 天失败率 ≥40% + 累计 fail ≥2 项。
+#   为什么不是 1 天：单日可能被一个异常读数带偏（如 11-24 收盘 3548 差 32 点）；
+#   为什么不是 3 天：等到第 3 天，坏尺子已经污染了两天的记录。
+#   ⚠️ 这两个数是**经验初值**（和项目里其他阈值一样），要校准得靠历史推演积累。
+_INVALID_DAYS = int(os.environ.get("THESIS_INVALID_DAYS") or 2)
+_INVALID_FAIL_RATIO = float(os.environ.get("THESIS_INVALID_FAIL_RATIO") or 0.4)
+_INVALID_MIN_FAIL = int(os.environ.get("THESIS_INVALID_MIN_FAIL") or 2)
+
+
+def invalidation_check(tid: str, lookback: int = 5) -> Dict:
+    """检查某份推演的**尺子是否已经不准**（连续多日高失败率）。
+
+    返回 `{ok, thesis_id, days[], suggest_switch, reason, action}`。
+    ⚠️ **只读 + 只建议**：不改 checks、不改概率、不归档。
+    """
+    ensure_tables()
+    t = get_thesis(tid)
+    if not t:
+        return {"ok": False, "error": "推演不存在"}
+
+    try:
+        rows = db.fetch(
+            f"SELECT date, checked_json FROM {_T_DAILY} "
+            f"WHERE thesis_id=%s ORDER BY date DESC LIMIT %s",
+            (tid, max(1, min(int(lookback or 5), 30)))) or []
+    except Exception as e:
+        print(f"[thesis] invalidation query failed: {str(e)[:80]}")   # ASCII
+        return {"ok": False, "error": f"读取对照失败: {str(e)[:50]}"}
+
+    if not rows:
+        return {"ok": True, "thesis_id": tid, "days": [],
+                "suggest_switch": False,
+                "reason": "还没有任何每日对照记录（日批未跑或推演刚登记）",
+                "action": None}
+
+    days = []
+    for r in reversed(rows):                    # 旧 → 新，便于看趋势
+        chk = _loads(r.get("checked_json"))
+        n_pass = sum(1 for x in chk if x.get("verdict") == "pass")
+        n_fail = sum(1 for x in chk if x.get("verdict") == "fail")
+        n_nd = sum(1 for x in chk if x.get("verdict") == "nodata")
+        denom = n_pass + n_fail                 # ⚠️ nodata 不进分母（原则②）
+        rate = round(n_fail / denom, 3) if denom else None
+        days.append({
+            "date": r.get("date"),
+            "n_pass": n_pass, "n_fail": n_fail, "n_nodata": n_nd,
+            "fail_ratio": rate,
+            "bad": bool(rate is not None and rate >= _INVALID_FAIL_RATIO),
+        })
+
+    # 从最新往回数：连续"高失败率"的天数
+    consec = 0
+    for d in reversed(days):
+        if d["bad"]:
+            consec += 1
+        else:
+            break
+    total_fail = sum(d["n_fail"] for d in days[-_INVALID_DAYS:] if d["bad"])
+
+    suggest = bool(consec >= _INVALID_DAYS and total_fail >= _INVALID_MIN_FAIL)
+
+    if suggest:
+        seg = "、".join("%s(%d失败/%d项)" % (d["date"], d["n_fail"],
+                                            d["n_pass"] + d["n_fail"])
+                        for d in days[-consec:])
+        reason = (f"连续 {consec} 天失败率 ≥ {_INVALID_FAIL_RATIO:.0%}：{seg}"
+                  f"（阈值：连续 {_INVALID_DAYS} 天且累计失败 ≥{_INVALID_MIN_FAIL} 项）")
+        action = ("**人工复核**：行情性质是否已变（如磨底→派发、修复→破位）。"
+                  "若是，用 `PUT /api/thesis/scenarios/{id}/checks` **换尺子但保留 id**"
+                  "（不要重建推演，重建会换 id、`thesis_daily` 历史对照就断了）。"
+                  "若只是单日异常读数，可继续观察一天。")
+    elif consec > 0:
+        reason = (f"最近 {consec} 天失败率偏高，但未达触发线"
+                  f"（需连续 {_INVALID_DAYS} 天）")
+        action = None
+    else:
+        # ⚠️ 必须区分"正常"与"无数据" —— 全 nodata 时说"命中率正常"
+        #    等于把"不知道"说成"没问题"（项目铁律：缺失 ≠ 满足）。
+        _has_valid = any(d["fail_ratio"] is not None for d in days)
+        reason = ("最近一日命中率正常，尺子仍有效" if _has_valid
+                  else "最近几日全部无数据，**无法判断**（缺失 ≠ 证伪，等数据落库再看）")
+        action = None
+
+    return {
+        "ok": True, "thesis_id": tid, "title": t.get("title"),
+        "days": days,
+        "consecutive_bad": consec,
+        "suggest_switch": suggest,
+        "reason": reason,
+        "action": action,
+        "thresholds": {
+            "days": _INVALID_DAYS,
+            "fail_ratio": _INVALID_FAIL_RATIO,
+            "min_fail": _INVALID_MIN_FAIL,
+        },
+        "note": ("观察项：只提示'该复核尺子了'，**不自动改任何东西** —— "
+                 "换不换尺子取决于'这次不一样在哪'，那是人的判断。"),
+    }
 
 
 def push(thesis: Dict, day: str, ev: Dict, review: Optional[Dict]) -> bool:
@@ -990,6 +1115,13 @@ def run_daily(day: str = None) -> Dict:
         items = []
         for t in theses:
             ev = evaluate_day(t, d)
+            # ★ 2026-11-25：失效检测（L4）。**先算、后落库** —— 让当天的对照
+            #   也计入"连续失败"的判定（否则永远慢一天）。
+            try:
+                ev["invalidation"] = invalidation_check(t["id"])
+            except Exception as e:
+                print(f"[thesis] invalidation failed {t.get('id')}: {str(e)[:70]}")
+                ev["invalidation"] = {"ok": False, "error": str(e)[:60]}
             rv = llm_review(t, d, ev)
             ok_db = save_daily(t["id"], d, ev, rv, t)
             pushed = push(t, d, ev, rv) if ok_db else False
@@ -999,12 +1131,15 @@ def run_daily(day: str = None) -> Dict:
                                f"WHERE thesis_id=%s AND date=%s", (t["id"], d))
                 except Exception as e:
                     print(f"[thesis] mark pushed failed: {str(e)[:70]}")
+            _inv = ev.get("invalidation") or {}
             items.append({
                 "id": t["id"], "title": t.get("title"),
                 "n_pass": ev["n_pass"], "n_fail": ev["n_fail"],
                 "n_nodata": ev["n_nodata"],
                 "scenario_now": (rv or {}).get("scenario_now"),
                 "llm": bool(rv), "pushed": pushed,
+                "suggest_switch_rule": bool(_inv.get("suggest_switch")),
+                "invalidation_reason": _inv.get("reason"),
             })
         return {"ok": True, "date": d, "items": items}
     except Exception as e:

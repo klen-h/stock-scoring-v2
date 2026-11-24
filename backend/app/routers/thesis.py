@@ -75,6 +75,22 @@ def scenario_daily(tid: str, limit: int = Query(30, ge=1, le=200),
             "metrics": ts.METRIC_LABELS}
 
 
+@router.get("/scenarios/{tid}/invalidation")
+def scenario_invalidation(tid: str,
+                          lookback: int = Query(5, ge=1, le=30),
+                          user: dict = Depends(get_current_user)) -> Dict:
+    """**失效检测**：连续多日高失败率 ⇒ 建议复核尺子。
+
+    ★ 2026-11-25（用户贴的五层架构 L4 里唯一真缺的一块）：
+      已有「换尺子」是人工动作（`PUT /checks`），但人不会天天问"我这把尺子还准吗"。
+      本接口只回答"**该不该问**"，**不改任何东西** ——
+      换不换取决于"这次不一样在哪"，那是人的判断，规则写不出来。
+    """
+    if not ts.get_thesis(tid):
+        raise HTTPException(404, "推演不存在")
+    return ts.invalidation_check(tid, lookback=lookback)
+
+
 @router.post("/scenarios/{tid}/review")
 def scenario_review(tid: str,
                     date: Optional[str] = Query(None, description="YYYY-MM-DD"),
@@ -88,12 +104,14 @@ def scenario_review(tid: str,
         raise HTTPException(404, "推演不存在")
     day = str(date or _default_day())[:10]
     ev = ts.evaluate_day(t, day)
+    ev["invalidation"] = ts.invalidation_check(tid)
     rv = ts.llm_review(t, day, ev)
     saved = ts.save_daily(tid, day, ev, rv, t)
     pushed = ts.push(t, day, ev, rv) if saved else False
     return {"ok": saved, "date": day, "checked": ev["checked"],
             "n_pass": ev["n_pass"], "n_fail": ev["n_fail"],
             "n_nodata": ev["n_nodata"],
+            "invalidation": ev.get("invalidation"),
             "llm": rv, "pushed": pushed}
 
 
