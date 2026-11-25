@@ -70,6 +70,13 @@ METRIC_LABELS = {
     "sh_high": "上证最高",
     "sh_low": "上证最低",
     "sh_open_gap_pct": "上证开盘缺口%",
+    # ★★ 2026-11-26（用户新卡验证项："创业板以 2183.58 为锚不再新低"）：
+    #   创业板 399006 早已在 `key_level_watch` 里（含 open/high/low），此前无 metric。
+    "sz_cyb_close": "创业板收盘",
+    "sz_cyb_low": "创业板最低",
+    "sz_cyb_chg_pct": "创业板涨跌%",
+    # ★★ 2026-11-26：半导体板块当日涨跌（校准 SOX→A股 映射系数用）。
+    "bk_semi_chg_pct": "半导体板块涨跌%",
 }
 # 比较符：只支持这四种（避免 eval / 注入）
 _OPS = ("<=", ">=", "<", ">", "==")
@@ -311,6 +318,48 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
             if not pc:
                 return (None, f"上一交易日 {prev_td} 无收盘（该日日批未跑）")
             return (round((op / pc - 1) * 100, 2), "")
+
+        if key in ("sz_cyb_close", "sz_cyb_low", "sz_cyb_chg_pct"):
+            # ★★ 2026-11-26（用户："创业板以 2183.58 为锚不再新低"）：创业板指 399006。
+            #   `key_level_watch` 本来就把 399006 一起算并落库（含 open/high/low），
+            #   之前没有对应的 metric ⇒ 这条验证项只能靠人工看。
+            #   ⚠️ 与 sh_* 同口径：历史行 open/high/low 为 NULL ⇒ 返回 None + 原因。
+            r = db.fetch_one("""
+                SELECT close, chg_pct, open, high, low FROM key_level_watch
+                WHERE date=%s AND code='399006'
+            """, (day,)) or {}
+            if not r:
+                return (None, "无创业板指记录（key_level_watch 当日未落库）")
+            if key == "sz_cyb_close":
+                v = _f(r.get("close"))
+            elif key == "sz_cyb_chg_pct":
+                v = _f(r.get("chg_pct"))
+            else:
+                v = _f(r.get("low"))
+            if v is not None:
+                return (v, "")
+            return (None, f"创业板 {key} 未落库（low 字段 2026-11-25 起才有）")
+
+        if key == "bk_semi_chg_pct":
+            # ★★ 2026-11-26：半导体板块当日涨跌 —— 用来**校准 SOX→A股 的映射系数**。
+            #   11-25 实测：SOX -7.88% → 半导体 -7.86%（系数 0.997），
+            #   而"电子"口径只有 -6.12%（含消费电子拖累）⇒ 一刀切系数必然错。
+            #   ⇒ 单独拆出板块指标，攒够样本才能把"拍"的系数换成回测值。
+            row = db.fetch_one("""
+                SELECT change_pct FROM plate_daily_zz
+                WHERE date=%s AND kind='industry' AND name=%s
+            """, (day, "半导体")) or {}
+            v = _f(row.get("change_pct"))
+            if v is None:
+                # 板块名的口径可能因源变化（zzshare 104 粗分）⇒ 退一步模糊匹配
+                row = db.fetch_one("""
+                    SELECT change_pct FROM plate_daily_zz
+                    WHERE date=%s AND kind='industry' AND name LIKE %s
+                    ORDER BY change_pct ASC LIMIT 1
+                """, (day, "%半导体%")) or {}
+                v = _f(row.get("change_pct"))
+            return (v, "" if v is not None
+                    else "半导体板块当日无快照（plate_daily_zz 未落库）")
 
         if key == "breadth_gap":
             from app import breadth_divergence as bd
@@ -684,21 +733,33 @@ MAX_PARSE_CHARS = 8000
 _PARSE_SYSTEM = """你是"推演文本结构化解析器"。把用户粘贴的自然语言推演解析成 JSON。
 
 【唯一允许的指标 key】（不在列表里的一律不要硬塞，放进 unparsed）
-- sh_close       上证收盘（点数）
-- sh_chg_pct     上证涨跌%（百分数，跌为负，如 -1.2）
-- amount_yi      两市成交额（亿元）
-- limit_down     跌停家数
-- limit_up       涨停家数
-- down_ratio     下跌占比（0~1 的小数，如 0.95 表示 95% 在跌）
-- breadth_gap    广度背离（百分点 pp）
+- sh_close        上证收盘（点数）
+- sh_chg_pct      上证涨跌%（百分数，跌为负，如 -1.2）
+- sh_open         上证开盘（点数）
+- sh_high         上证最高（点数）
+- sh_low          上证最低（点数）
+- sh_open_gap_pct 上证开盘缺口%（正=高开，负=低开）
+- sz_cyb_close    创业板指收盘（点数）
+- sz_cyb_low      创业板指最低（点数）
+- sz_cyb_chg_pct  创业板指涨跌%（百分数）
+- bk_semi_chg_pct 半导体板块涨跌%（百分数）
+- amount_yi       两市成交额（亿元）
+- limit_down      跌停家数
+- limit_up        涨停家数
+- down_ratio      下跌占比（0~1 的小数，如 0.95 表示 95% 在跌）
+- breadth_gap     广度背离（百分点 pp）
+- icbc_chg_pct    工商银行涨跌%（红利端代理）
 
 【规则】
 1. 只输出 JSON，不要 markdown 代码块、不要解释。
 2. scenarios 的 prob 合计必须等于 100；原文没写概率就按你判断给一个合计 100 的分配，
    并在 unparsed 里注明"概率为自动分配"。
 3. checks 的 op 只能是 <= >= < > == 之一；value 必须是数字。
-4. 原文提到但无法映射到上面 7 个指标的（纳指、台股、汇率、北向、个股价格、政策等），
-   **放进 unparsed 数组**，不要塞进 checks。
+4. 原文提到但无法映射到上面这些指标的（纳指、SOX、英伟达、汇率、北向、个股价格、
+   PCE、地缘事件等），**放进 unparsed 数组**，不要塞进 checks。
+   ⚠️ "低开 0.5-1.5%" 映射成 sh_open_gap_pct <= -0.5 与 >= -1.5 两条；
+      "盘中低点 ≥3520" 映射成 sh_low >= 3520；
+      "创业板不再新低 2183.58" 映射成 sz_cyb_close >= 2183.58。
 5. 日期缺失：horizon_start 用今天，horizon_end 用今天+6 天。
 6. invalidators（证伪条件）是给复盘用的文字判据，**原样放进 invalidators 即可**，
    **不要**因为里面提到点位/成交额就把它塞进 unparsed —— 只有"验证项/判断依据"
