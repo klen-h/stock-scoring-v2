@@ -377,6 +377,39 @@ def _norm_checks(checks) -> Tuple[Optional[List[Dict]], Optional[str]]:
     return out, None
 
 
+def _norm_invalidators(v) -> List[str]:
+    """证伪条件规整 ⇒ **永远是字符串数组**。
+
+    ★★ 2026-11-25（真 BUG，用户实测）：原 `create()` 直接写
+      `[str(x).strip() for x in (payload.get("invalidators") or [])]`。
+      当调用方传**字符串**时（例如把一整段证伪说明当作单个条件传入），
+      `for x in "切A：放量..."` 会**逐字符迭代** ⇒ 落库成
+      `["切","A","：","放","量",...]`，LLM prompt 里变成每行一个字，
+      前端也显示成一列单字。
+
+      ⚠️ 契约：字符串 = **一个条件**（不要猜分隔符拆句，中文标点混排拆不准）；
+         数组 = 多个条件，逐项清洗。两种输入都收敛到 List[str]。
+    """
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        return [s] if s else []
+    if isinstance(v, (list, tuple)):
+        # ⚠️ 必须先判 None 再 str()：否则 null 元素会变成字符串 "None"
+        #    被当成一条有效证伪条件（LLM 输出的数组里确实可能有 null）
+        out = []
+        for x in v:
+            if x is None:
+                continue
+            s = str(x).strip()
+            if s:
+                out.append(s)
+        return out
+    s = str(v).strip()
+    return [s] if s else []
+
+
 def create(payload: Dict) -> Dict:
     """登记一份推演。返回 {ok, id} 或 {ok:False, error}。
 
@@ -420,6 +453,7 @@ def create(payload: Dict) -> Dict:
     norm_ck, err = _norm_checks(payload.get("checks") or [])
     if err:
         return {"ok": False, "error": err}
+    norm_inv = _norm_invalidators(payload.get("invalidators"))
 
     tid = uuid.uuid4().hex[:12]
     try:
@@ -428,9 +462,7 @@ def create(payload: Dict) -> Dict:
             "horizon_start": hs, "horizon_end": he,
             "scenarios_json": _dumps(norm_sc),
             "checks_json": _dumps(norm_ck),
-            "invalidators_json": _dumps([
-                str(x).strip() for x in (payload.get("invalidators") or [])
-                if str(x).strip()]),
+            "invalidators_json": _dumps(norm_inv),
             "status": "active",
             "source": str(payload.get("source") or "manual"),
             "created_at": _now(),
@@ -805,8 +837,9 @@ def parse_text(text: str) -> Dict:
     if not ck_out:
         return {"ok": False, "error": "解析不出可用验证项（指标需在 7 个内置项内）"}
 
-    inv = [str(x).strip() for x in (obj.get("invalidators") or [])
-           if str(x).strip()]
+    # ★ 2026-11-25：与 create() 共用同一份规整口径 —— LLM 偶尔会把
+    #   多个证伪条件写成一整段字符串，直接迭代会逐字符拆开。
+    inv = _norm_invalidators(obj.get("invalidators"))
 
     return {"ok": True,
             "draft": {"title": title, "horizon_start": hs, "horizon_end": he,
