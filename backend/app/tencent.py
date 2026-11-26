@@ -857,8 +857,26 @@ def sync_snapshot_if_newer() -> bool:
         return False
     new_d = str(meta.get("data_date") or str(meta.get("saved_at") or "")[:10])[:10]
     cur_d = str(_cache.get("data_date") or "")[:10]
-    if not new_d or (cur_d and new_d <= cur_d):
+    if not new_d:
         return False
+    if cur_d and new_d < cur_d:
+        return False                      # 库里数据日更老 ⇒ 绝不回退
+    if cur_d and new_d == cur_d:
+        # ★★ 2026-11-26（用户："持仓状态一直卡在行情 13:09"）——**同日必须用时刻比较**：
+        #   原逻辑 `new_d <= cur_d ⇒ return False` 只比「数据日」，粒度太粗。
+        #   实测当日：内存是 13:09 盘中实时（data_date=11-26），库里 18:22 写入的
+        #   收盘快照（data_date 同为 11-26）⇒ 被判"不更新"而拒绝采纳，
+        #   于是 21:56 还在用 13:09 的盘中价，且 from_snapshot=False（标成"实时"）。
+        #   价格差是实打实的：工行 9.19 vs 快照 9.23、高新发展 43.34 vs 44.66。
+        #   三层防线因此全失效：刷新循环盘后不拉、快照同步同日拒绝、
+        #   陈旧巡检也按 data_ts 的**日期**比（同日 ⇒ 不报警）。
+        #   ⇒ 同日时改比「快照写入时刻」与「内存数据时刻」：
+        #     18:22 > 13:09 ⇒ 采纳收盘快照；反向（盘中 13:09 > 盘前快照 08:45）
+        #     则不采纳，不会用旧快照覆盖更新的实时数据。
+        new_ts = _parse_ts(meta.get("saved_at"))
+        cur_ts = float(_cache.get("data_ts") or 0)
+        if not new_ts or (cur_ts and new_ts <= cur_ts):
+            return False
     # 只有**确实更新**时才整份加载（这一次 deepcopy 是必要成本，且一天只发生 1~2 次）
     try:
         snap = store.load_market_snapshot()
@@ -867,8 +885,17 @@ def sync_snapshot_if_newer() -> bool:
         return False
     if not snap or not snap.get("stocks"):
         return False
-    print(f"[snapshot] 检测到更新的收盘快照: 内存数据日 {cur_d or '空'} → {new_d}"
-          f"（saved_at={snap.get('saved_at') or meta.get('saved_at')}），采纳之")
+    # ★ 2026-11-26：同日采纳时若仍打印"数据日 11-26 → 11-26"会让人以为没变化，
+    #   改成同日显示**时刻**、跨日显示**日期**。
+    _same_day = bool(cur_d and new_d == cur_d)
+    if _same_day:
+        _from = (time.strftime("%H:%M", time.gmtime(cur_ts + 8 * 3600))
+                 if cur_ts else "空")
+        _to = time.strftime("%H:%M", time.gmtime(new_ts + 8 * 3600))
+    else:
+        _from, _to = cur_d or "空", new_d
+    print(f"[snapshot] 检测到更新的收盘快照: {_from} → {_to}"
+          f"（数据日 {new_d} / saved_at={snap.get('saved_at') or meta.get('saved_at')}），采纳之")
     return restore_market_snapshot(restore_stocks=True, _snap=snap)
 
 
