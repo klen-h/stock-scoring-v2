@@ -185,6 +185,33 @@ _cache = {"stocks": {}, "last_update": 0, "data_ts": 0.0, "from_snapshot": False
           "data_date": None,          # ★ 2026-10-14：**数据所属交易日**（YYYY-MM-DD）
           "lock": threading.Lock()}
 
+# ★★ 2026-11-27（用户："持仓状态一直卡在行情 09:37"）：
+#   `refresh_all_stocks` 有**三条静默退出路径**（内存高压跳过 / 刷新不完整 /
+#   异常），它们都 `return 旧缓存` 且**不更新 `last_update`**，也不留任何可查询的痕迹。
+#   线上实测：11-27 09:37:59 之后 11 小时零成功刷新，手动 force 触发 180s 也无变化，
+#   而 `refresh-status` 只能回答"上次成功是什么时候"，**回答不了"为什么没成功"**。
+#   ⇒ 记录每次尝试的结果，由 `/api/market/refresh-status` 暴露。
+#   （与本项目 11-24 的"盘前占位包假 0"同一教训：静默失效比错数据更难查。）
+_refresh_state = {
+    "last_attempt_ts": 0.0,     # 最近一次**尝试**刷新（不论成败）
+    "last_result": "",          # ok / skip_mem / incomplete / error / cooling
+    "last_detail": "",          # 人话原因（含数字）
+    "fail_streak": 0,           # 连续"没拿到新数据"的次数（ok 归零）
+    "last_ok_ts": 0.0,          # 最近一次成功写入缓存
+}
+
+
+def _mark_refresh(result: str, detail: str = "") -> None:
+    """记录一次刷新尝试的结果（供 `/market/refresh-status` 暴露，便于现场定位）。"""
+    _refresh_state["last_attempt_ts"] = time.time()
+    _refresh_state["last_result"] = result
+    _refresh_state["last_detail"] = (detail or "")[:200]
+    if result == "ok":
+        _refresh_state["fail_streak"] = 0
+        _refresh_state["last_ok_ts"] = time.time()
+    elif result in ("skip_mem", "incomplete", "error"):
+        _refresh_state["fail_streak"] = int(_refresh_state.get("fail_streak") or 0) + 1
+
 
 def _parse_ts(v) -> float:
     """把快照 `saved_at`（ISO 字符串 / 数字时间戳）转成 Unix 秒；无法解析返回 0.0。"""
@@ -497,6 +524,10 @@ def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
     这样既保证日常刷新快，又能在手动刷新时发现新股（IPO）。
     代价：后端重启后首次仍需全量扫描（_valid_codes 是内存缓存）。
     """
+    # ★ 2026-11-27：**入口即记时间戳**（不写 last_result）。若调用进来但卡在
+    #   `_cache["lock"]` 上，`last_attempt_ts` 会持续更新而 `last_result` 不推进
+    #   ⇒ "进来了但走不完"= 持锁卡死；两者都不动 = 根本没被调用。
+    _refresh_state["last_attempt_ts"] = time.time()
     if not _dedupe:
         return _refresh_all_stocks_inner(force)
 
@@ -537,6 +568,9 @@ def refresh_all_stocks(force: bool = False, _dedupe: bool = True):
 
     try:
         return _refresh_all_stocks_inner(force)
+    except Exception as e:
+        _mark_refresh("error", f"{type(e).__name__}: {e}")
+        raise
     finally:
         with _REFRESH_GATE:
             # ★ 只有自己仍是 owner 才复位：并发 force 路径换过 owner 时，
@@ -566,6 +600,9 @@ def _refresh_all_stocks_inner(force: bool = False):
     #   ⇒ 高压（默认 ≥70%）时**跳过本轮**，保留旧缓存（读路径不受影响），下一轮再试。
     from app.mem_guard import guard
     if guard("refresh_all_stocks"):
+        # ★ 2026-11-27：这是**静默退出**路径之一（内存高压时每轮都跳过，
+        #   `last_update` 永不前进 ⇒ 界面显示"行情 09:37"却毫无提示）。
+        _mark_refresh("skip_mem", "内存高压跳过（保留旧缓存，下一轮再试）")
         return _cache.get("stocks") or {}
     with _cache["lock"]:   # with 语法：进入时自动加锁，退出时自动释放（类似 try-finally）
         # 冷却判断：未强制且 60 秒内刷新过 → 直接返回旧数据
@@ -624,6 +661,10 @@ def _refresh_all_stocks_inner(force: bool = False):
         _old_n = len(_cache.get("stocks") or {})
         _incomplete = bool(_old_n and len(stocks) < _old_n * 0.9)
         if _incomplete:
+            _pct = len(stocks) / max(_old_n, 1) * 100
+            _mark_refresh("incomplete",
+                          f"{mode}仅 {len(stocks)}/{_old_n} 只（{_pct:.0f}%，"
+                          f"pool={pool_src}，低于 90%）⇒ 保留旧缓存")
             print(f"[tencent] {'全量扫描' if do_full_scan else '增量刷新'}仅得 "
                   f"{len(stocks)} 只（旧池 {_old_n} 只，低于 90%）"
                   f"⇒ 判定刷新不完整，**保留旧缓存**（宁陈旧勿清空，不覆盖池与有效代码）")
@@ -642,6 +683,7 @@ def _refresh_all_stocks_inner(force: bool = False):
         _cache["data_date"] = _price_date_now()      # ★ 数据所属交易日（展示层用）
         # ★★ 2026-10-08（P0）：搭车记录"涨速采样点"（腾讯快照无涨速字段，只能自算）
         _record_speed(stocks)
+        _mark_refresh("ok", f"{mode}刷新 {len(stocks)} 只（pool={pool_src}）")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {mode}刷新完成: {len(stocks)} 只股票")
         return stocks
 
@@ -951,12 +993,38 @@ def cache_meta() -> dict:
     `data_date`：休市日缓存里是**上一交易日收盘快照**，直接当"今日现价"展示会谎报。
     """
     ts = _cache.get("data_ts") or 0
+
+    def _hhmm(v):
+        if not v:
+            return None
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+        from datetime import timedelta as _tdd
+        return _dt.fromtimestamp(float(v), _tz(_tdd(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+
+    st = _refresh_state
     return {
         "n": len(_cache.get("stocks") or {}),
         "data_ts": ts,
         "data_date": _cache.get("data_date"),
         "from_snapshot": bool(_cache.get("from_snapshot")),
         "age_sec": (round(time.time() - ts) if ts else None),
+        # ★★ 2026-11-27（用户："持仓状态一直卡在行情 09:37"）：**刷新诊断三件**。
+        #   原 `cache_meta` 只能回答"数据是什么时候的"，回答不了"为什么不再更新"。
+        #   线上实测：09:37:59 后 11 小时零刷新，手动 force 也无效，全靠猜。
+        #   `last_result` 的取值含义：
+        #     ok         正常刷新
+        #     skip_mem   内存高压跳过（mem_guard）—— 每轮都可能是它
+        #     incomplete 拿到的只数 < 旧池 90%，护栏保留旧缓存
+        #     error      抛异常（网络/WAF/解析）
+        #     cooling    60s 冷却内（正常，不算失败）
+        #   判读法：`last_attempt` 在前进而 `last_result` 不变 ⇒ 卡在取锁上（死锁形态）。
+        "valid_codes": len(_valid_codes),
+        "last_attempt": _hhmm(st.get("last_attempt_ts")),
+        "last_ok": _hhmm(st.get("last_ok_ts")),
+        "last_result": st.get("last_result") or "",
+        "last_detail": st.get("last_detail") or "",
+        "fail_streak": int(st.get("fail_streak") or 0),
     }
 
 

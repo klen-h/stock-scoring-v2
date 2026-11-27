@@ -816,17 +816,35 @@ def index_kline(symbol: str, period: str = "day"):
 
 @router.get("/refresh-status")
 def refresh_status():
-    """查询缓存刷新状态（前端轮询这个接口判断数据是否就绪）"""
-    stocks = _cache.get("stocks", {})
+    """查询缓存刷新状态（前端轮询这个接口判断数据是否就绪）。
+
+    ★★ 2026-11-27（用户："持仓状态一直卡在行情 09:37"）：并入 `cache_meta()` 的
+      **刷新诊断**。原版只返回"上次成功是什么时候"，回答不了"为什么一直没成功" ——
+      线上 09:37:59 之后 11 小时零刷新、手动 force 触发 180s 也无变化，
+      而三条静默退出路径（内存高压 / 不完整 / 异常）**全都只 return 旧缓存不留痕**
+      ⇒ 只能靠猜。现在 `last_result` + `last_detail` + `fail_streak` 直接给出原因。
+    """
+    from app.tencent import cache_meta
+    m = cache_meta()
     last = _cache.get("last_update", 0)
     return {
-        "stock_count": len(stocks),
+        "stock_count": m.get("n", 0),
         # 时间戳转可读时间；last=0（未刷新）时显示"未刷新"
         # ★ 2026-10-24（BK-08）：fromtimestamp 不带 tz 走服务器本地时区（生产 UTC）⇒ 显示差 8h
         #   —— 同文件已两次裁决过此坑，显式给北京时间。
         "last_update": datetime.fromtimestamp(
             last, timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S") if last else "未刷新",
         "total_codes": len(_ALL_CODES),
+        # ★ 2026-11-27 新增：为什么没刷新
+        "valid_codes": m.get("valid_codes"),
+        "last_attempt": m.get("last_attempt"),
+        "last_ok": m.get("last_ok"),
+        "last_result": m.get("last_result"),
+        "last_detail": m.get("last_detail"),
+        "fail_streak": m.get("fail_streak"),
+        "from_snapshot": m.get("from_snapshot"),
+        "data_date": m.get("data_date"),
+        "age_sec": m.get("age_sec"),
     }
 
 
