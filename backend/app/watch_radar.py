@@ -106,7 +106,8 @@ def ensure_tables() -> None:
 
 
 # ────────────────────────── 盯盘清单（≤5） ──────────────────────────
-def list_targets() -> List[Dict]:
+def _manual_targets() -> List[Dict]:
+    """**只读表**（用户显式添加的），不含持仓兜底。"""
     ensure_tables()
     try:
         rows = db.fetch(f"SELECT * FROM {_T_TARGET} ORDER BY added_at") or []
@@ -116,13 +117,63 @@ def list_targets() -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+def _portfolio_targets(limit: int = None) -> List[Dict]:
+    """持仓兜底（★ 2026-11-28，用户："个股盯盘默认取我的持仓"）。
+
+    ⚠️ **必须走 `portfolio_where()`**：`user_portfolio` 是多用户表，
+       全表读会把别的账号持仓混进来（`coach/rules.py` 与 `daily_report.py`
+       都为此写过注释，属项目已知坑）。
+    ⚠️ 按 `created_at ASC`（先建的在前）+ code 去重，最多 `MAX_CODES` 只。
+    """
+    try:
+        from app.portfolio_scope import portfolio_where
+        w, p = portfolio_where()
+        rows = db.fetch(
+            f"SELECT code, name, shares, cost, created_at FROM user_portfolio {w} "
+            f"ORDER BY created_at ASC", p) or []
+    except Exception as e:
+        print(f"[watch-radar] portfolio read failed: {str(e)[:70]}")
+        return []
+    out, seen = [], set()
+    for r in rows:
+        c = str(r.get("code") or "").strip()[:6]
+        if not c or c in seen:
+            continue
+        seen.add(c)
+        out.append({"code": c, "name": str(r.get("name") or ""),
+                    "added_at": r.get("created_at"), "source": "portfolio"})
+        if len(out) >= (limit or MAX_CODES):
+            break
+    return out
+
+
+def list_targets() -> List[Dict]:
+    """盯盘清单。**手动清单为空时默认回退到持仓**（最多 5 只）。
+
+    语义（用户："默认取我的持仓"）：
+      · 表里有手动项  → 只盯手动项（用户一旦自定义就以他为准）
+      · 表里一条没有  → 盯持仓前 5 只（不落库，实时反映持仓变化）
+    """
+    rows = _manual_targets()
+    if rows:
+        for r in rows:
+            r["source"] = "manual"
+        return rows
+    return _portfolio_targets()
+
+
 def add_target(code: str, name: str = "") -> Dict:
-    """加入盯盘清单。**硬上限 5 只**，超出拒绝（低资源是前提，不是建议）。"""
+    """加入盯盘清单。**硬上限 5 只**，超出拒绝（低资源是前提，不是建议）。
+
+    ⚠️ 上限判定用**手动清单条数**（`_manual_targets`），不用回退后的 `list_targets`：
+       否则持仓 5 只时用户永远加不进自选 —— 而"加自选"本来就意味着
+       "我不想只看持仓了"（一旦加，就退出兜底模式）。
+    """
     ensure_tables()
     code = str(code or "").strip()[:6]
     if not code:
         return {"ok": False, "error": "code 必填"}
-    cur = list_targets()
+    cur = _manual_targets()
     if any(t.get("code") == code for t in cur):
         return {"ok": True, "code": code, "note": "已在清单中"}
     if len(cur) >= MAX_CODES:
@@ -132,7 +183,8 @@ def add_target(code: str, name: str = "") -> Dict:
         db.insert(_T_TARGET, {"code": code, "name": name or "", "added_at": _now()})
     except Exception as e:
         return {"ok": False, "error": f"落库失败: {str(e)[:60]}"}
-    return {"ok": True, "code": code, "n": len(cur) + 1}
+    return {"ok": True, "code": code, "n": len(cur) + 1,
+            "note": "已加入自定义清单（此后不再自动跟随持仓）"}
 
 
 def remove_target(code: str) -> bool:
@@ -371,13 +423,19 @@ def status(day: str = None) -> Dict:
         lv = get_levels(code, d)
         out.append({"code": code, "name": t.get("name") or "",
                     "support": lv.get("support"), "resistance": lv.get("resistance"),
-                    "s_src": lv.get("s_src"), "r_src": lv.get("r_src")})
+                    "s_src": lv.get("s_src"), "r_src": lv.get("r_src"),
+                    # ★ source: manual（用户自定义）/ portfolio（默认跟随持仓）
+                    "source": t.get("source") or "manual"})
     try:
         logs = [dict(r) for r in (db.fetch(
             f"SELECT * FROM {_T_LOG} WHERE date=%s ORDER BY pushed_at DESC", (d,)) or [])]
     except Exception:
         logs = []
-    return {"ok": True, "date": d, "max_codes": MAX_CODES,
+    # ★ 2026-11-28：告诉前端当前清单是"自定义"还是"持仓默认"（用户："默认取持仓"）
+    _n_manual = len(_manual_targets())
+    _mode = "manual" if _n_manual else ("portfolio" if out else "empty")
+    return {"ok": True, "date": d, "max_codes": MAX_CODES, "mode": _mode,
+            "n_manual": _n_manual,
             "n": len(out), "targets": out, "signals": logs,
             "rules": {
                 "resistance": "昨收价",

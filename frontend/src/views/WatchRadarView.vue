@@ -4,11 +4,25 @@
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 class="text-lg font-bold text-gray-100">个股盯盘</h1>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-lg font-bold text-gray-100">个股盯盘</h1>
+            <!-- ★ 2026-11-28：默认跟随持仓（清单为空时自动取持仓前 5 只） -->
+            <span v-if="status.mode === 'portfolio'"
+              class="px-1.5 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-300 border border-sky-500/30">
+              默认跟随持仓
+            </span>
+            <span v-else-if="status.mode === 'manual'"
+              class="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-muted border border-border">
+              自定义清单 {{ status.n_manual }}
+            </span>
+          </div>
           <p class="text-xs text-muted mt-0.5">
             最多 <b class="text-gray-300">{{ status.max_codes || 5 }}</b> 只 ·
             阻力=昨收 · 支撑=min(昨收, 近5日最低) · 盘中 60 秒一刷 ·
             突破/跌破/大额压单推企微
+          </p>
+          <p v-if="status.mode === 'portfolio'" class="text-[10px] text-muted mt-0.5">
+            清单为空时自动盯你的持仓（最多 5 只）；添加任意一只后转为自定义清单。
           </p>
         </div>
         <div class="flex items-center gap-2 flex-wrap">
@@ -35,8 +49,10 @@
     <!-- ② 空态 -->
     <div v-if="!loading && !(status.targets || []).length"
       class="bg-card border border-border rounded-lg p-8 text-center text-xs text-muted">
-      还没有盯盘标的<br />
-      <span class="text-[10px] mt-1 inline-block">输入 6 位代码后回车添加（最多 5 只）</span>
+      没有持仓，也没有自定义清单<br />
+      <span class="text-[10px] mt-1 inline-block">
+        输入 6 位代码后回车添加（最多 5 只）；有持仓时会自动跟随持仓
+      </span>
     </div>
 
     <!-- ③ 盯盘卡 -->
@@ -60,10 +76,12 @@
             {{ KIND_CN[k] || k }}
           </span>
         </div>
-        <button @click="remove(t.code)"
+        <!-- 跟随持仓的标的没有"移除"（移除的是持仓本身，不归这里管） -->
+        <button v-if="t.source === 'manual'" @click="remove(t.code)"
           class="text-[10px] px-2 py-0.5 rounded border border-border text-muted hover:text-fall hover:border-fall/40 transition-colors">
           移除
         </button>
+        <span v-else class="text-[10px] text-muted">来自持仓</span>
       </div>
 
       <!-- 关键位 -->
