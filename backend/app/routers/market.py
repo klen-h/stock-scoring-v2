@@ -3216,6 +3216,42 @@ def plate_chain_verify(
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  个股分时盯盘（★ 2026-11-28，用户："最多 5 只，自动标注支撑阻力，
+#             大额压单/突破/跌破要即时推送，别等突破完才想起没提醒"）
+# ══════════════════════════════════════════════════════════════════════════
+# 例：京东方Ａ（000725）11-26 收 4.50 有压单 → 11-27 突破 4.50 应即时推。
+@router.get("/watch-radar")
+def watch_radar_status(day: str = Query(None, description="YYYY-MM-DD，缺省=今天")):
+    """盯盘清单 + 当日支撑/阻力 + 已触发信号 + 规则说明（**规则随接口下发**）。"""
+    from app import watch_radar as wr
+    return wr.status(day=day)
+
+
+@router.post("/watch-radar/targets")
+def watch_radar_add(code: str = Query(..., description="6 位代码，如 000725"),
+                    name: str = Query("", description="名称（可选，仅展示）")):
+    """加入盯盘清单。**硬上限 5 只**，超出返回 400。"""
+    from app import watch_radar as wr
+    r = wr.add_target(code, name)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "添加失败")
+    return r
+
+
+@router.delete("/watch-radar/targets/{code}")
+def watch_radar_remove(code: str):
+    from app import watch_radar as wr
+    return {"ok": wr.remove_target(code)}
+
+
+@router.post("/watch-radar/scan")
+def watch_radar_scan(push: bool = Query(False, description="是否真推企微（手动调试默认不推）")):
+    """手动扫一次（盘后调试用）。**默认不推送**，避免调试时吵到自己。"""
+    from app import watch_radar as wr
+    return wr.scan_once(push=push)
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  政策脉冲（★ 2026-11-28，用户复盘 11-27："政策中午发文，午盘开盘猛拉，
 #            我当时不知所措" —— 13:24 政策 → 13:33 期货涨停，只有 9 分钟）
 # ══════════════════════════════════════════════════════════════════════════

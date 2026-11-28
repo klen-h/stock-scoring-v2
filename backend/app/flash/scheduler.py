@@ -190,6 +190,24 @@ async def tier_alert_loop():
 
 
 
+async def watch_radar_loop():
+    """★★ 2026-11-28（用户："个股分时盯盘，最多 5 只，突破/压单要即时提醒"）。
+
+    盘中每 60 秒扫一次；≤5 只拼**一个** HTTP 请求（低资源是硬要求）。
+    与 `tier_alert_loop` 分工：那条看**持仓**箱体位置，本条看**用户自选清单**
+    的关键位突破/跌破 + 盘口大单 —— 判据不同，可能同时命中，属信息冗余。
+    """
+    from app import watch_radar
+    while True:
+        try:
+            m = rules.get_china_market_status()
+            if m.get("is_open"):
+                await asyncio.to_thread(watch_radar.scan_once)
+        except Exception as e:
+            print(f"[scheduler] watch_radar: {e}")      # ASCII（铁律⑥）
+        await asyncio.sleep(watch_radar.CHECK_INTERVAL)
+
+
 _emotion_snap_day = {}           # {phase: "YYYY-MM-DD"} —— 进程内"今天已落快照"标记
 
 
@@ -3347,6 +3365,10 @@ async def start():
              #   与上面停用的那条**口径不同**（那条=当日浮亏，本条=箱体位置+上涨质量），
              #   5 分钟一查、只在 tier 恶化到 alert 时推、每票每天最多一次（落库去重）。
              asyncio.create_task(tier_alert_loop()),
+            # ★★ 2026-11-28（用户："个股分时盯盘，最多 5 只"）：**自选清单**的
+            #   关键位突破/跌破 + 盘口大单。与上一条口径不同（那条=持仓箱体），
+            #   60 秒一次、≤5 只拼一个请求（低资源是硬要求）。
+            asyncio.create_task(watch_radar_loop()),
              # ★ 2026-09-29：两市成交额日额落库（收盘后一次）——次日"环比昨日"的精确基准。
              asyncio.create_task(amount_save_loop()),
              # ★ 2026-11-01：11:30 早盘定稿（「早盘复盘」标签页的数据基础）。

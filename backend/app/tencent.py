@@ -963,6 +963,71 @@ def get_stocks_batch(codes: list) -> list:
     return list(data.values())
 
 
+def get_depth_batch(codes: list, timeout: int = 10) -> dict:
+    """批量取**买卖五档**（盘口）。★ 2026-11-28（用户：个股分时盯盘）。
+
+    【为什么单独一个函数】`_fetch_tencent` 只为全市场刷新服务（5260 只，每只多解析
+    10 个 float 会成为热点），而五档只有**盯盘的最多 5 只**要用 ⇒ 独立函数，
+    单次请求多 code（`q=sz000725,sh600000`），上游请求数 = 1。
+
+    返回 {纯数字code: {name, price, prev_close, high, low, limit_up, limit_down,
+                       avg_price, volume, amount, bid_diff,
+                       bids: [[价,量手]×5], asks: [[价,量手]×5]}}
+
+    ⚠️ 下标经实测核对（`tencent.py` 里 [50] 委差的推导已证明 [10..18]/[20..28]
+       是五档量）：[9]买一价 [10]买一量 … [17]买五价 [18]买五量；
+       [19]卖一价 [20]卖一量 … [27]卖五价 [28]卖五量。
+    """
+    if not codes:
+        return {}
+    parts = []
+    for c in codes:
+        s = str(c)
+        parts.append(f"{_CODE_TO_PREFIX.get(s, 'sz' if s[:1] in ('0', '3') else 'sh')}{s}")
+    try:
+        r = _session.get(f"https://qt.gtimg.cn/q={','.join(parts)}", timeout=timeout)
+        try:
+            r.encoding = "gbk"          # 腾讯返回 GBK，不显式设会中文乱码
+        except Exception:  # noqa: except_pass  编码设置失败不影响解析（仅名称可能乱码）
+            pass
+    except Exception as e:
+        print(f"[tencent] depth fetch failed: {str(e)[:80]}")
+        return {}
+
+    def _f(a, i):
+        try:
+            return float(a[i]) if a[i] else 0.0
+        except (IndexError, ValueError, TypeError):
+            return 0.0
+
+    out = {}
+    for line in r.text.strip().split(";"):
+        line = line.strip()
+        if not line or "~" not in line:
+            continue
+        try:
+            a = line.split('"')[1].split("~")
+            if len(a) < 52:                     # 至少要有到 [51] 均价
+                continue
+            code = a[2]
+            bids = [[_f(a, 9 + 2 * i), _f(a, 10 + 2 * i)] for i in range(5)]
+            asks = [[_f(a, 19 + 2 * i), _f(a, 20 + 2 * i)] for i in range(5)]
+            out[code] = {
+                "code": code, "name": a[1],
+                "price": _f(a, 3), "prev_close": _f(a, 4), "open": _f(a, 5),
+                "high": _f(a, 41), "low": _f(a, 42),
+                "volume": _f(a, 6), "amount": _f(a, 37) * 10000,
+                "turnover_rate": _f(a, 38),
+                "limit_up": _f(a, 47), "limit_down": _f(a, 48),
+                "volume_ratio": _f(a, 49),
+                "bid_diff": _f(a, 50), "avg_price": _f(a, 51),
+                "bids": bids, "asks": asks,
+            }
+        except (IndexError, ValueError, TypeError):
+            continue
+    return out
+
+
 def get_stocks_batch_cached(codes: list) -> dict:
     """**只读内存缓存**取批量行情（★ 2026-10-26 新增；**不发任何外部请求**）。
 
