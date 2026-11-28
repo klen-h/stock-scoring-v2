@@ -79,6 +79,11 @@ METRIC_LABELS = {
     "bk_semi_chg_pct": "半导体板块涨跌%",
     # ★★ 2026-11-28：布伦特原油（12 月剧本的"阴延长开关"：>92 打开 / <90 回基准）。
     "brent": "布伦特原油(美元)",
+    # ★★ 2026-11-28：两融三件套（数据源早已存在，只是没接线）。
+    #   ⚠️ T+1 口径：今天看到的是**上一交易日**的余额（margin_date 自证）。
+    "margin_total_yi": "两融余额(亿)",
+    "margin_add_yi": "两融单日变化(亿)",
+    "margin_up_days": "两融连续同向天数(+升/-降)",
 }
 # 比较符：只支持这四种（避免 eval / 注入）
 _OPS = ("<=", ">=", "<", ">", "==")
@@ -375,6 +380,48 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
             except Exception:
                 v = None
             return (v, "" if v is not None else "宏观面板无布油报价")
+
+        if key in ("margin_total_yi", "margin_add_yi", "margin_up_days"):
+            # ★★ 2026-11-28（用户："找"两融数据源）—— **系统早就有了**：
+            #   `flash.margin_sentiment.get_margin()`（金十 _vir_96，沪+深，T+1，1 天缓存），
+            #   另有东财 `RPTA_RZRQ_LSHJ` 兜底（沪深北口径，约 +70 亿台阶，见 liquidity_watch）。
+            #   实测 11-26 = **21276.5 亿**，与用户推演里的 21276.55 完全对上。
+            #   ⚠️ 这又是一次"数据现成、只是没接线"：`liquidity_watch` 一直在用，
+            #      但 `thesis_scenarios` 的 metric 没接 ⇒ 推演里 6 处两融验证项全不可测。
+            #   ⚠️ 我用 `LIKE '%margin%'` 搜表名所以误判"没有两融表"——表叫 `liquidity_daily`。
+            try:
+                from app.flash.margin_sentiment import get_margin
+                _m = get_margin(days=12) or {}
+            except Exception:
+                _m = {}
+            _hist = _m.get("hist") or []          # 倒序：[{date, fund_bal}]，最新在前
+            _vals = [_f(h.get("fund_bal")) for h in _hist]
+            _vals = [v for v in _vals if v is not None]
+            if not _vals:
+                return (None, "两融数据不可用（金十 margin 接口失败或未配置 FLASH_COOKIE）")
+            if key == "margin_total_yi":
+                return (round(_vals[0], 1), "")
+            if key == "margin_add_yi":
+                if len(_vals) < 2:
+                    return (None, "两融历史不足 2 天，无法算单日变化")
+                return (round(_vals[0] - _vals[1], 1), "")
+            # margin_up_days：连续同向天数（+3 = 连升 3 天；-2 = 连降 2 天）
+            _d = 0
+            for _i in range(len(_vals) - 1):
+                _diff = _vals[_i] - _vals[_i + 1]
+                if _diff > 0:
+                    if _d >= 0:
+                        _d += 1
+                    else:
+                        break
+                elif _diff < 0:
+                    if _d <= 0:
+                        _d -= 1
+                    else:
+                        break
+                else:
+                    break
+            return (_d, "")
 
         if key == "breadth_gap":
             from app import breadth_divergence as bd
@@ -765,6 +812,9 @@ _PARSE_SYSTEM = """你是"推演文本结构化解析器"。把用户粘贴的�
 - breadth_gap     广度背离（百分点 pp）
 - icbc_chg_pct    工商银行涨跌%（红利端代理）
 - brent           布伦特原油（美元/桶）
+- margin_total_yi 两融余额（亿元，T+1）
+- margin_add_yi   两融单日变化（亿元，正=增）
+- margin_up_days  两融连续同向天数（+3=连升3天，-2=连降2天）
 
 【规则】
 1. 只输出 JSON，不要 markdown 代码块、不要解释。
