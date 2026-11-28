@@ -442,20 +442,43 @@ def constituents(plate_code: str, plate_type: int = 17, day: str = None,
             d = str(r.get("d"))[:10]
         except Exception:
             d = ""
-    info: Dict[str, Dict] = {}
-    for i in range(0, len(codes), 500):        # 分批 IN，避免超长 SQL
-        chunk = codes[i:i + 500]
-        ph = ",".join(["%s"] * len(chunk))
+
+    def _facts(dd: str) -> Dict[str, Dict]:
+        """按日批量拉成分股行情（分批 IN 避免超长 SQL）"""
+        info: Dict[str, Dict] = {}
+        for i in range(0, len(codes), 500):
+            chunk = codes[i:i + 500]
+            ph = ",".join(["%s"] * len(chunk))
+            try:
+                rows = db.fetch(
+                    f"SELECT code, name, chg_pct, ret5, ret20, score_total, phase "
+                    f"FROM stock_facts_wide WHERE date=%s AND code IN ({ph})",
+                    tuple([dd] + chunk)) or []
+            except Exception as e:
+                print(f"[topic_rot] facts failed: {str(e)[:80]}")
+                rows = []
+            for r in rows:
+                info[str(r.get("code"))] = r
+        return info
+
+    info = _facts(d)
+    # ★ 2026-11-28 回退：指定日一条行情都查不到（日批落后/所连库旧）⇒
+    #   退回最近有行情的一天。否则页面"当日/5日/评分"全空等于没用。
+    #   回退会写进 date 与 note，绝不冒充指定日的行情。
+    if not info and d:
         try:
-            rows = db.fetch(
-                f"SELECT code, name, chg_pct, ret5, ret20, score_total, phase "
-                f"FROM stock_facts_wide WHERE date=%s AND code IN ({ph})",
-                tuple([d] + chunk)) or []
-        except Exception as e:
-            print(f"[topic_rot] facts failed: {str(e)[:80]}")
-            rows = []
-        for r in rows:
-            info[str(r.get("code"))] = r
+            r = db.fetch_one("SELECT MAX(date) AS d FROM stock_facts_wide") or {}
+            fb = str(r.get("d"))[:10]
+        except Exception:
+            fb = ""
+        if fb and fb != d:
+            info = _facts(fb)
+            d = fb
+            fallback_used = True
+        else:
+            fallback_used = False
+    else:
+        fallback_used = False
     out = []
     for m in members:
         r = info.get(m["code"])
@@ -477,8 +500,10 @@ def constituents(plate_code: str, plate_type: int = 17, day: str = None,
         "n_total": len(out),
         "n_with_quote": len(withp),
         "items": (withp + without)[:max(1, int(top))],
-        "note": f"该板块共 {len(out)} 只成分，按 {d} 涨跌幅降序取前 {top} 只；"
-                f"其中 {len(withp)} 只有当日行情（缺行情的不填 0，排在最后）。",
+        "note": (f"该板块共 {len(out)} 只成分，按 {d} 涨跌幅降序取前 {top} 只；"
+                 f"其中 {len(withp)} 只有当日行情（缺行情的不填 0，排在最后）。"
+                 + ("⚠️ 所选日期尚无个股行情（日批未落库），已回退到最近有行情的交易日。"
+                    if fallback_used else "")),
     }
 
 

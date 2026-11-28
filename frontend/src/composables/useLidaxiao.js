@@ -3,6 +3,7 @@
 // 进 tab 取一次（30min 复用）+ 手动「↻ 更新」。静默失败保留上次值。
 import { ref, computed, watch, nextTick } from 'vue'
 import { getLidaxiaoView } from '../api'
+import { refreshLidaxiao } from '../api'
 // ★ 2026-10-25：李大霄视角卡（xiaopage LLM 解读推送；**观察器，静默失败保留上次值**）。
 //   数据由 xiaopage 在 LLM 输出解读的时刻 POST /market/lidaxiao/push 落库（事件驱动，
 //   非"通知后回拉"——该时刻 GitHub raw 尚未 commit，回拉必拿旧数据），本卡只读。
