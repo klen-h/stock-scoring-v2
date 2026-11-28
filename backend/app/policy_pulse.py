@@ -124,6 +124,23 @@ def _primary_actor(text: str) -> str:
     return ""
 
 
+def is_policy(text: str) -> bool:
+    """是否为**政策级**快讯：命中政策主体 + 命中某个主题。
+
+    供 `flash.service.poll_flash_once` 做「分析分流」用 ——
+    2026-11-28 起快讯**全量入库**，但 LLM 只分析「热及以上 + 政策级」，
+    否则每个普通快讯簇都会触发一次 LLM，成本会失控。
+
+    ⚠️ 这里**不看 NEGATIVE_HINTS**：政策通稿本身就常含"坚决查处、违规减持"，
+      按负面词排除会把 11-27 的国常会通稿整条丢掉。负面词只在"是否算利好主题"时用。
+    """
+    if not text:
+        return False
+    if any(h in text for h in DIGEST_HINTS):
+        return False
+    return bool(_primary_actor(text)) and bool(_hit_themes(text))
+
+
 def _hit_themes(text: str) -> List[Tuple[str, List[str]]]:
     out = []
     for theme, (kws, sectors) in THEME_SECTOR.items():

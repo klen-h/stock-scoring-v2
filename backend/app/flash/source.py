@@ -61,16 +61,31 @@ _session.headers.update({
 
 def fetch_jin10() -> list:
     """
-    拉取金十快讯（爆/沸/热，频道 1+5）。
+    拉取金十快讯（频道 1+5，**不按热度过滤**）。
     返回 [{id, time, hot, content, source, source_link, important, channel, collectedAt}]。
     Cookie 缺失/失效/接口异常 → 返回 []（调用方静默降级，不影响其他模块）。
+
+    ★★ 2026-11-28（用户贴金十页面证伪 → 实测确认的**漏采 bug**）：
+      原参数 `{"hot": ["爆","沸","热"]}` 只拉已"炒热"的快讯。实测同一时刻：
+        带 hot   → 50 条（热25/沸16/爆9）
+        不带 hot → 50 条（hot 全为空，覆盖最近 3.7 小时）
+        两批**几乎完全不相交**（差 49 条）
+      ⇒ 政策通稿在**刚发布时热度还没起来**（金十 hot 按用户关注度算），
+        于是被过滤；等 13:24 被解读、热度上来时才采到 —— 11-27 的国常会通稿
+        12:23:26 发布，系统 13:24 才拿到**另一条**解读稿，原始通稿永久丢失。
+      ⇒ 而且 `get_new_items` 的游标只进不退（`lastId = 最大 id`），
+        漏掉的条目**不可追回**。
+      结论：**用"热度"过滤"重要性"方向错了**，政策通稿与热度无关。
+      改为全量拉取；LLM 分析侧另设门槛（见 `service.poll_flash_once`）——
+      入库要全，分析要省，两者不能混在一个过滤里。
     """
     from app import health
     if not FLASH_COOKIE:
         print("[flash] 未配置 FLASH_COOKIE，跳过金十抓取")
         health.record("jin10", False, "未配置 FLASH_COOKIE")
         return []
-    params = json.dumps({"hot": ["爆", "沸", "热"], "channel": [1, 5]})
+    # ★ 2026-11-28：去掉 hot 过滤（原 ["爆","沸","热"]，且实测还有"火"档位也没覆盖）
+    params = json.dumps({"channel": [1, 5]})
     out = []
     try:
         r = _session.get(JIN10_URL, params={"params": params}, timeout=30)
