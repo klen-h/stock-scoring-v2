@@ -77,6 +77,8 @@ METRIC_LABELS = {
     "sz_cyb_chg_pct": "创业板涨跌%",
     # ★★ 2026-11-26：半导体板块当日涨跌（校准 SOX→A股 映射系数用）。
     "bk_semi_chg_pct": "半导体板块涨跌%",
+    # ★★ 2026-11-28：布伦特原油（12 月剧本的"阴延长开关"：>92 打开 / <90 回基准）。
+    "brent": "布伦特原油(美元)",
 }
 # 比较符：只支持这四种（避免 eval / 注入）
 _OPS = ("<=", ">=", "<", ">", "==")
@@ -360,6 +362,19 @@ def metric_value(key: str, day: str) -> Tuple[Optional[float], str]:
                 v = _f(row.get("change_pct"))
             return (v, "" if v is not None
                     else "半导体板块当日无快照（plate_daily_zz 未落库）")
+
+        if key == "brent":
+            # ★★ 2026-11-28（用户："按财经日历做提前预案，先推演，如果xxx应该xxx"）：
+            #   12 月剧本里布油是"阴延长开关"（>92 打开 / <90 回基准），
+            #   宏观面板**早就有**这项，只是 `thesis_scenarios` 没接 —— 与 11-25
+            #   补 open/high/low、11-26 补创业板同款：数据现成，缺的是接线。
+            try:
+                from app.macro import get_macro_panel
+                _p = get_macro_panel() or {}
+                v = _f((_p.get("brent") or {}).get("price"))
+            except Exception:
+                v = None
+            return (v, "" if v is not None else "宏观面板无布油报价")
 
         if key == "breadth_gap":
             from app import breadth_divergence as bd
@@ -749,6 +764,7 @@ _PARSE_SYSTEM = """你是"推演文本结构化解析器"。把用户粘贴的�
 - down_ratio      下跌占比（0~1 的小数，如 0.95 表示 95% 在跌）
 - breadth_gap     广度背离（百分点 pp）
 - icbc_chg_pct    工商银行涨跌%（红利端代理）
+- brent           布伦特原油（美元/桶）
 
 【规则】
 1. 只输出 JSON，不要 markdown 代码块、不要解释。

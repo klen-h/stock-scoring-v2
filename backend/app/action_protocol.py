@@ -61,6 +61,8 @@ def ensure_tables() -> None:
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             trigger_json TEXT,
+            calendar_json TEXT,
+            branches_json TEXT,
             first_move TEXT,
             verdict TEXT,
             position_path TEXT,
@@ -70,6 +72,14 @@ def ensure_tables() -> None:
             created_at TEXT
         )
     """)
+    # ★★ 2026-11-28（用户："按财经日历做提前预案，先推演，如果 xxx 应该 xxx"）：
+    #   旧表（只有 keywords 触发）补两列 —— 日历事件触发 + 分支预案。
+    #   PG 支持 IF NOT EXISTS；SQLite 不支持 ⇒ 用 try 吞掉"列已存在"。
+    for _col in ("calendar_json", "branches_json"):
+        try:
+            db.execute(f"ALTER TABLE {_T_PROTO} ADD COLUMN {_col} TEXT")
+        except Exception:  # noqa: except_pass  列已存在（SQLite/PG 都会抛），属正常
+            pass
     db.execute(f"""
         CREATE TABLE IF NOT EXISTS {_T_HIT} (
             protocol_id TEXT NOT NULL,
@@ -153,6 +163,8 @@ def _row_to_dict(r: Dict) -> Dict:
         "id": r.get("id"),
         "name": r.get("name"),
         "trigger": _loads(r.get("trigger_json")) or {},
+        "calendar": _loads(r.get("calendar_json")) or {},
+        "branches": _loads(r.get("branches_json")) or [],
         "first_move": r.get("first_move") or "",
         "verdict": r.get("verdict") or "",
         "position_path": r.get("position_path") or "",
@@ -183,8 +195,31 @@ def create(payload: Dict) -> Dict:
     if isinstance(trig, str):
         trig = {"keywords": [x.strip() for x in trig.split(",") if x.strip()]}
     kws = [str(k).strip() for k in (trig.get("keywords") or []) if str(k).strip()]
-    if not kws:
-        return {"ok": False, "error": "trigger.keywords 不能为空（没有触发条件就不是协议）"}
+
+    # ★★ 2026-11-28（用户："按财经日历做提前预案，先推演，如果 xxx 应该 xxx，
+    #   这样就不会一脸懵"）：日历事件触发（与快讯关键词并列，二者有其一即可）。
+    cal = (payload or {}).get("calendar") or {}
+    cal_norm = {}
+    if isinstance(cal, dict) and str(cal.get("date") or "").strip():
+        cal_norm = {
+            "date": str(cal.get("date"))[:10],
+            "event": str(cal.get("event") or "").strip(),
+            "time": str(cal.get("time") or "").strip(),
+            "note": str(cal.get("note") or "").strip(),
+        }
+    if not kws and not cal_norm:
+        return {"ok": False,
+                "error": "trigger.keywords 与 calendar 至少填一个（没有触发器就不是协议）"}
+
+    # 分支预案：[{"if": "...", "then": "..."}] —— 这才是"如果 A 就做甲"的载体
+    branches = []
+    for b in ((payload or {}).get("branches") or []):
+        if not isinstance(b, dict):
+            continue
+        _if = str(b.get("if") or "").strip()
+        _then = str(b.get("then") or "").strip()
+        if _if and _then:
+            branches.append({"if": _if, "then": _then})
 
     first_move = str((payload or {}).get("first_move") or "").strip()
     if not first_move:
@@ -201,6 +236,10 @@ def create(payload: Dict) -> Dict:
                 "window": str(trig.get("window") or _TRADING_WINDOW),
                 "note": str(trig.get("note") or ""),
             }, ensure_ascii=False),
+            "calendar_json": (json.dumps(cal_norm, ensure_ascii=False)
+                              if cal_norm else None),
+            "branches_json": (json.dumps(branches, ensure_ascii=False)
+                              if branches else None),
             "first_move": first_move,
             "verdict": str((payload or {}).get("verdict") or "").strip(),
             "position_path": str((payload or {}).get("position_path") or "").strip(),
@@ -260,6 +299,90 @@ def archive(pid: str) -> bool:
 # ══════════════════════════════════════════════════════════════════════════
 #  盘中：快讯 → 命中 → 推送（每协议每日至多一次）
 # ══════════════════════════════════════════════════════════════════════════
+def match_calendar(today: str = None, days_ahead: int = 1,
+                   protocols: List[Dict] = None) -> List[Dict]:
+    """**日历事件匹配**：返回「今天 ~ N 天后」有 `calendar` 的协议卡。
+
+    这是用户要的核心："按财经日历做提前预案，如果 xxx 应该 xxx"。
+    与快讯匹配的区别：快讯是**事发后**才知道，日历是**事发前**就摆在那。
+    `days_ahead=1` = 今天和明天（提前一天预告，当天再推一次会被幂等挡掉）。
+    """
+    protocols = protocols if protocols is not None else list_protocols(active_only=True)
+    if not protocols:
+        return []
+    d0_str = str(today or datetime.now(_BJ).strftime("%Y-%m-%d"))[:10]
+    try:
+        d0 = datetime.strptime(d0_str, "%Y-%m-%d").date()
+    except ValueError:
+        d0 = datetime.now(_BJ).date()
+    end = d0 + timedelta(days=max(0, int(days_ahead or 0)))
+
+    out = []
+    for p in protocols:
+        cal = p.get("calendar") or {}
+        cd = str(cal.get("date") or "")[:10]
+        if not cd:
+            continue
+        try:
+            d = datetime.strptime(cd, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d0 <= d <= end:
+            out.append({**p, "_days_until": (d - d0).days})
+    out.sort(key=lambda x: (x["_days_until"],
+                            str((x.get("calendar") or {}).get("time") or "")))
+    return out
+
+
+def format_calendar_push(hits: List[Dict]) -> str:
+    """日历预案推送文本。**明确写"不是预测，是提前想好"** —— 防止被当成点位承诺。"""
+    lines = ["【事件预案】不是预测，是提前想好「如果…就…」"]
+    for h in hits:
+        cal = h.get("calendar") or {}
+        n = h.get("_days_until")
+        when = "今天" if n == 0 else (f"{n} 天后" if n else "")
+        lines.append("")
+        lines.append("■ %s（%s %s %s）"
+                     % (h.get("name"), when, cal.get("date") or "", cal.get("time") or ""))
+        if cal.get("event"):
+            lines.append("  事件：%s" % cal["event"])
+        if cal.get("note"):
+            lines.append("  说明：%s" % cal["note"])
+        for b in (h.get("branches") or []):
+            lines.append("  · 如果 %s → %s" % (b.get("if"), b.get("then")))
+        for label, key in (("首动作", "first_move"), ("裁决", "verdict"),
+                           ("仓位", "position_path"), ("失效", "invalidate")):
+            v = str(h.get(key) or "").strip()
+            if v:
+                lines.append("  %s：%s" % (label, v))
+    return "\n".join(lines)
+
+
+def check_calendar_push(today: str = None, days_ahead: int = 1,
+                        push: bool = True) -> Dict:
+    """到点检查日历协议并推送（幂等：每卡每日一次）。
+
+    调用方：`flash/service.poll_flash_once` 每轮调用（5 分钟一次，幂等挡重复）。
+    """
+    try:
+        hits = match_calendar(today=today, days_ahead=days_ahead)
+        if not hits:
+            return {"ok": True, "pushed": 0, "note": "近期无日历协议"}
+        d = str(today or datetime.now(_BJ).strftime("%Y-%m-%d"))[:10]
+        todo = [h for h in hits if not _already_pushed(h["id"], d)]
+        if not todo:
+            return {"ok": True, "pushed": 0, "note": "今日已推过", "hits": len(hits)}
+        text = format_calendar_push(todo)
+        if push:
+            _push(text)
+        for h in todo:
+            _record_hit(h["id"], d, "", 1, "", True)
+        return {"ok": True, "pushed": len(todo), "names": [h["name"] for h in todo]}
+    except Exception as e:
+        print(f"[protocol] calendar push failed: {str(e)[:100]}")
+        return {"ok": False, "pushed": 0, "error": str(e)[:80]}
+
+
 def _already_pushed(pid: str, day: str) -> bool:
     try:
         r = db.fetch_one(f"SELECT pushed FROM {_T_HIT} "

@@ -129,6 +129,18 @@ def poll_flash_once() -> dict:
         store.save_state(state)
         store.save_raw_data(items, new_items)
 
+        # ★★ 2026-11-28（用户："按财经日历做提前预案，如果 xxx 应该 xxx，
+        #   这样就不会一脸懵"）：日历事件预案。
+        #   **放在 `if new_items` 之外** —— 深夜常常没有新快讯，但"明天 21:30 非农"
+        #   照样该提前一天把预案推到手机上。幂等靠 action_protocol_hit（每卡每日一次）。
+        try:
+            from app import action_protocol as _ap
+            _cr = _ap.check_calendar_push()
+            if _cr.get("pushed"):
+                summary["calendar_pushed"] = _cr.get("names") or []
+        except Exception as e:
+            print(f"[flash] 日历预案检查失败（不影响轮询）: {str(e)[:80]}")
+
         # ★ 2026-11-07：观察词命中提醒（计划文档 §3.1a；用户自管词表，每词每日 1 条）。
         #   挂在轮询尾部、独立 try ⇒ 失败只打一行日志，**绝不影响轮询主链**
         #   （与 save_raw_data 的容错同级）。日批 policy_tone_watch 兜底停摆期漏网。

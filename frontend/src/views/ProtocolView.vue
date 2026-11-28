@@ -87,8 +87,17 @@
         </button>
       </div>
 
-      <!-- 触发器 -->
-      <div class="flex items-start gap-2 text-[11px] mb-3 flex-wrap">
+      <!-- 触发器：日历事件 或 快讯关键词（二者之一） -->
+      <div v-if="p.calendar && p.calendar.date"
+        class="flex items-center gap-2 text-[11px] mb-2 flex-wrap px-2 py-1.5 rounded bg-sky-500/10 border border-sky-500/25">
+        <span class="text-sky-300 shrink-0">📅 日历</span>
+        <span class="font-mono text-sky-200">{{ p.calendar.date }}</span>
+        <span class="text-gray-200">{{ p.calendar.event }}</span>
+        <span v-if="p.calendar.time" class="text-muted">{{ p.calendar.time }}</span>
+        <span v-if="p.calendar.note" class="text-[10px] text-muted w-full">{{ p.calendar.note }}</span>
+      </div>
+      <div v-if="(p.trigger.keywords || []).length"
+        class="flex items-start gap-2 text-[11px] mb-3 flex-wrap">
         <span class="text-muted shrink-0">触发</span>
         <span class="flex items-center gap-1 flex-wrap">
           <span v-for="k in (p.trigger.keywords || [])" :key="k"
@@ -98,7 +107,19 @@
           min_hits {{ p.trigger.min_hits || 1 }} · {{ p.trigger.window || '—' }}
         </span>
       </div>
-      <p v-if="p.trigger.note" class="text-[10px] text-muted mb-2 -mt-1">{{ p.trigger.note }}</p>
+      <p v-if="p.trigger && p.trigger.note" class="text-[10px] text-muted mb-2 -mt-1">{{ p.trigger.note }}</p>
+
+      <!-- ★ 分支预案：如果…就…（日历卡的核心，事件结果未知但动作已定） -->
+      <div v-if="(p.branches || []).length" class="mb-3 space-y-1">
+        <div v-for="(b, i) in p.branches" :key="i"
+          class="flex items-start gap-2 text-[11px] px-2 py-1.5 rounded bg-bg/70 border border-border/40">
+          <span class="shrink-0 px-1 py-0.5 rounded text-[10px] bg-sky-500/15 text-sky-300">如果</span>
+          <span class="text-gray-300 flex-1 leading-relaxed">{{ b.if }}</span>
+          <span class="shrink-0 text-muted">→</span>
+          <span class="shrink-0 px-1 py-0.5 rounded text-[10px] bg-emerald-500/15 text-emerald-300">则</span>
+          <span class="text-gray-200 flex-1 leading-relaxed">{{ b.then }}</span>
+        </div>
+      </div>
 
       <!-- 四段动作 -->
       <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
