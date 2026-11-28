@@ -210,6 +210,12 @@ def backfill(start: str, end: str = None, n_days_list: Tuple[int, ...] = (1, 5, 
         res["cost_sec"] = round(time.time() - t0, 1)
         return res
 
+    # ★ 2026-11-28：连续空熔断。zzshare 上游 500/429 时 `fetch()` 返回 []
+    #   （不抛异常 ⇒ 不会进 failed），原逻辑会"空 478 天"白跑几十分钟。
+    #   空日期**不会**写进 have ⇒ 重跑自动重试，熔断不丢数据。
+    #   阈值 5：容忍手工 HOLIDAYS 未覆盖年份的个别假日空行（春节等）。
+    MAX_EMPTY_STREAK = 5
+    streak = 0
     for i, day in enumerate(todo, 1):
         try:
             r = save(day, n_days_list=n_days_list, plate_type=plate_type)
@@ -217,12 +223,19 @@ def backfill(start: str, end: str = None, n_days_list: Tuple[int, ...] = (1, 5, 
             res["failed"].append(f"{day}: {str(ex)[:60]}")
             r = None
         if r is None:
-            continue
-        if r.get("written"):
+            streak += 1
+        elif r.get("written"):
+            streak = 0
             res["written"] += int(r["written"])
             res["done"] += 1
         else:
+            streak += 1
             res["empty"].append(day)
+        if streak >= MAX_EMPTY_STREAK:
+            res["aborted"] = (f"连续 {streak} 天无数据（疑似 zzshare 上游故障），已中止；"
+                              f"已写日期保留，恢复后重跑同一命令即可续传")
+            print(f"[topic_rot] {res['aborted']}")
+            break
         if i % 20 == 0 or i == len(todo):
             print(f"[topic_rot] 回补 {i}/{len(todo)} | 已写 {res['written']} 行 "
                   f"| 空 {len(res['empty'])} | 失败 {len(res['failed'])}")

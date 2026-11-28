@@ -91,8 +91,10 @@ def main():
                     skip_existing=not args.no_skip, max_days=args.max_days)
     print("\n=== 回补结果 ===")
     for k in ("ok", "start", "end", "n_days", "done", "written",
-              "empty", "failed", "cost_sec"):
+              "empty", "failed", "cost_sec", "aborted"):
         v = r.get(k)
+        if k == "aborted" and not v:
+            continue
         if k in ("empty", "failed") and isinstance(v, list):
             print(f"  {k:10s} = {len(v)} 天" + (f"  {v[:3]}" if v else ""))
         else:
