@@ -944,6 +944,42 @@ async def workbench_scan_loop():
         await asyncio.sleep(60)
 
 
+async def intraday_pulse_loop():
+    """分时**盘中增量**采集（2026-11-28）。
+
+    ★ 为什么不能只靠 15:55 的日批：分时是**当晚**才回补的（11-27 实测
+      `created_at` = 22:10）⇒ 当天盘中零数据 ⇒ "13:00 午盘开盘异动"这个
+      **比政策快讯早 19 分钟**的信号根本无从产生。
+    ★ 频率分两档（用户明确在意流量）：
+        · **13:00–13:10 每分钟** —— 午盘开盘是历史级信号的高发窗口
+          （11-27 创业板 13:00→13:01 单分钟 +1.82pct）
+        · 其余交易时段每 **15 分钟**
+      合计约 33 次/日 × 5 标的 ≈ 165 请求、**~1.2 MB/日**。
+    ★ 只读模式保留：它只写自己的归档表（`intraday_path`），不碰评分/策略；
+      与 `intraday_alert_loop` 同类，盘中功能不能用 Actions 替代。
+    ★ 幂等 + 只增不减：`save_intraday()` 内部用"库内点数 ≥ 本次点数 ⇒ 跳过"
+      防止盘中残缺序列覆盖收盘定稿。
+    """
+    while True:
+        try:
+            now = rules.beijing_now()
+            if rules.is_trading_day(now) and _trading_session_now():
+                hm = (now.hour, now.minute)
+                step = 60 if (13, 0) <= hm <= (13, 10) else 900
+                last_ts = status.get("_intraday_pulse_ts") or 0
+                if (now.timestamp() - last_ts) >= step:
+                    from app import intraday_path as ip
+                    r = await _run_sync(ip.save_intraday)
+                    if r and r.get("ok"):
+                        status["_intraday_pulse_ts"] = now.timestamp()
+                        status["last_intraday_pulse"] = now.isoformat()
+                        print(f"[scheduler] intraday pulse {r.get('date')}: "
+                              f"ok={r.get('ok')} skip={len(r.get('skip') or [])}")  # ASCII
+        except Exception as e:
+            print(f"[scheduler] intraday pulse failed: {e}")       # ASCII（铁律⑥）
+        await asyncio.sleep(60)
+
+
 async def portfolio_radar_warm_loop():
     """持仓雷达缓存预热（2026-09-23）。
 
@@ -3449,6 +3485,10 @@ async def start():
             #   内存行情，**零 Supabase 流量**；触发阈值才推企微（每类每档每日一次）
             #   ⇒ ≈230 指数请求/交易日（相对每 5 分钟刷 ~4000 只仍 <1%）。
             asyncio.create_task(intraday_alert_loop()),
+             # ★★ 2026-11-28：分时盘中增量采集（13:00–13:10 每分钟，其余 15 分钟）。
+             #   没有它 ⇒ 分时永远是"当晚才回补"，"午盘开盘异动"当天就用不上。
+             #   成本 ~1.2 MB/日、165 个请求，只写自己的归档表。
+             asyncio.create_task(intraday_pulse_loop()),
              # ★ 2026-10-21：工作台盘中变化检测（8 档/日，零 LLM）——
              #   为"是否值得上 LLM 盘面分析"积累证据；极轻量，只读模式保留。
              asyncio.create_task(workbench_scan_loop()),

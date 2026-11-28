@@ -277,8 +277,13 @@ def scan(day: Optional[str] = None, hours: int = 0, max_events: int = 8) -> Dict
         from app import market_breadth as mb
         _breadth = mb.breadth(day)
         _fut = mb.futures_limit(day=day, hours=hours)
+        # ★★ 2026-11-28：午盘开盘异动 —— 唯一**早于政策快讯**的信号。
+        #   11-27 实测：创业板 13:00→13:05 相对上午收盘再涨 +3.46%，
+        #   而首条政策快讯 13:24 才到（晚约 19 分钟）。
+        #   ⇒ 政策回答"为什么涨"，这个字段回答"已经在涨了"。
+        _open = mb.open_pulse(day)
     except Exception:
-        _breadth, _fut = None, []
+        _breadth, _fut, _open = None, [], None
 
     return {
         "ok": True,
@@ -296,6 +301,8 @@ def scan(day: Optional[str] = None, hours: int = 0, max_events: int = 8) -> Dict
         "breadth": _breadth,
         "futures_limit": _fut,
         "n_futures": len(_fut),
+        # ★★ 午盘开盘异动（分钟级）：**比政策快讯早**，盘中增量采集才有数据
+        "open_pulse": _open,
     }
 
 

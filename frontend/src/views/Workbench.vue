@@ -2265,6 +2265,19 @@
                         :class="f.kind === 'limit_up' ? 'bg-rise/15 text-rise' : 'bg-fall/15 text-fall'">
                     {{ f.name }}{{ f.kind === 'limit_up' ? '涨停' : '跌停' }}
                   </span>
+                  <!-- ★★ 午盘开盘异动：**比政策快讯更早**的信号（11-27 早 19 分钟）。
+                       政策回答"为什么涨"，这条回答"已经在涨了"。 -->
+                  <span v-if="dc.policy_pulse.open_pulse"
+                        class="px-1 py-0.5 rounded font-semibold"
+                        :class="['extreme', 'strong'].includes(dc.policy_pulse.open_pulse.level)
+                          ? 'bg-rise/20 text-rise' : 'bg-white/5 text-muted'"
+                        :title="dc.policy_pulse.open_pulse.caliber">
+                    {{ dc.policy_pulse.open_pulse.verdict }}
+                    {{ dc.policy_pulse.open_pulse.pm5_max }}%
+                    <span class="text-[9px] opacity-70">
+                      {{ ((dc.policy_pulse.open_pulse.indices || [])[0] || {}).name }}
+                    </span>
+                  </span>
                 </div>
                 <div v-for="e in (dc.policy_pulse.events || [])" :key="e.theme"
                      class="text-[11px] text-gray-300 mt-0.5 leading-relaxed">

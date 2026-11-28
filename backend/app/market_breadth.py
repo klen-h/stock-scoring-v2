@@ -176,6 +176,133 @@ def futures_limit(day: Optional[str] = None, hours: int = 0) -> List[Dict]:
     return out
 
 
+# ──────────────── ③ 午盘开盘异动（分钟级，唯一能抢先的信号） ────────────────
+# ★★ 2026-11-28 实测依据（11-27 分钟级分时）：
+#     创业板 11:30 +3.79% → 13:01 +5.68%（单分钟 +1.89pct）→ 13:05 +7.37%
+#     政策快讯 **13:24** 才到 ⇒ 主升浪比政策早约 **19 分钟**。
+#   ⇒ "政策脉冲"只能事后解释；**午盘开盘的瞬时斜率**才是事前可见的。
+OPEN_EXTREME = 2.0     # 13:00→13:05 相对 11:30 的收益率 ≥2.0% ⇒ 异动
+OPEN_STRONG = 1.2
+OPEN_MILD = 0.6
+
+
+def _last_intraday_day() -> str:
+    r = db.fetch_one("SELECT MAX(date) AS d FROM intraday_path")
+    return str((r or {}).get("d") or "")[:10]
+
+
+def open_pulse(day: Optional[str] = None) -> Optional[Dict]:
+    """午盘开盘异动：13:00→13:05 相对**上午收盘**的收益率。
+
+    为什么用"相对 11:30"而不是"相对昨收"：后者含了整个上午的涨幅，
+    无法区分"上午就在涨"和"午盘开盘才拉"。11-27 两者都要看：
+      · 上午已涨（创业板 11:30 +3.79%）⇒ 痕迹
+      · 午盘 5 分钟再涨 3.45%      ⇒ 异动（发令枪在 13:00，不在 13:24）
+
+    当日无分时数据返回 None（盘中未采集时属正常）。
+    """
+    import json as _json
+    day = (day or _last_intraday_day())[:10]
+    if not day:
+        return None
+    try:
+        rows = db.fetch(
+            "SELECT code, path_json FROM intraday_path WHERE date = %s", (day,)) or []
+    except Exception as e:
+        print(f"[breadth] open_pulse load failed: {str(e)[:80]}")      # ASCII
+        return None
+    if not rows:
+        return None
+
+    # 基准：前一交易日的收盘（没有则退回当日开盘价）
+    base: Dict[str, float] = {}
+    try:
+        prev = db.fetch(
+            """SELECT code, close_price FROM intraday_path
+               WHERE date = (SELECT MAX(date) FROM intraday_path WHERE date < %s)""",
+            (day,)) or []
+        base = {str(r.get("code")): _num(r.get("close_price")) for r in prev}
+    except Exception:
+        base = {}
+
+    from app.intraday_path import CODE_CN
+
+    out = []
+    for r in rows:
+        code = str(r.get("code") or "")
+        raw = r.get("path_json")
+        try:
+            path = _json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            continue
+        if not path:
+            continue
+        px = {}
+        for p in path:
+            try:
+                px[str(p[0])] = _num(p[1])
+            except (IndexError, TypeError):
+                continue
+        b0 = base.get(code) or px.get("0930")
+        am = px.get("1130") or px.get("1100")
+        p0 = px.get("1300")
+        p1 = px.get("1301")
+        p5 = px.get("1305")
+        p10 = px.get("1310")
+        last = px.get(sorted(px)[-1]) if px else None
+        if not (b0 and am and p5):
+            continue
+
+        def _pct(x, ref=b0):
+            return round((x / ref - 1) * 100, 2) if (x and ref) else None
+
+        out.append({
+            "code": code,
+            "name": CODE_CN.get(code, code),
+            "am_pct": _pct(am),                    # 上午收盘（相对昨收）
+            "pm_open_pct": _pct(p0, am),           # 13:00 相对 11:30（应为 0）
+            "pm1_pct": _pct(p1, am) if p1 else None,
+            "pm5_pct": _pct(p5, am),               # ★ 核心：午盘前 5 分钟
+            "pm10_pct": _pct(p10, am) if p10 else None,
+            "close_pct": _pct(last),
+            "n": len(path),
+            "last_hhmm": sorted(px)[-1],
+        })
+
+    if not out:
+        return None
+
+    vals = [o["pm5_pct"] for o in out if o["pm5_pct"] is not None]
+    if not vals:
+        return None
+    mx = max(vals)
+    if mx >= OPEN_EXTREME:
+        level, verdict = "extreme", "午盘开盘异动"
+    elif mx >= OPEN_STRONG:
+        level, verdict = "strong", "午盘开盘走强"
+    elif mx >= OPEN_MILD:
+        level, verdict = "mild", "午盘小幅走强"
+    else:
+        level, verdict = "quiet", "午盘开盘平稳"
+
+    out.sort(key=lambda x: -(x["pm5_pct"] if x["pm5_pct"] is not None else -99))
+    am_vals = [o["am_pct"] for o in out if o["am_pct"] is not None]
+    return {
+        "date": day,
+        "level": level,
+        "verdict": verdict,
+        "pm5_max": round(mx, 2),
+        "pm5_avg": round(sum(vals) / len(vals), 2),
+        "am_max": round(max(am_vals), 2) if am_vals else None,
+        "lead": [{"code": o["code"], "name": o["name"],
+                  "pm5_pct": o["pm5_pct"]} for o in out[:2]],
+        "indices": out,
+        "caliber": "分钟级分时（intraday_path）：13:00→13:05 相对 11:30 收盘",
+        "note": ("分时为盘中增量采集，最后一次采样 %s；收盘定稿以 15:55 日批为准"
+                 % (out[0].get("last_hhmm") or "")),
+    }
+
+
 def snapshot(day: Optional[str] = None, hours: int = 0) -> Dict:
     """广度确认快照：板块广度（收盘）+ 期货涨跌停（盘中）。"""
     b = breadth(day)

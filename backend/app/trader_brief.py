@@ -1275,7 +1275,13 @@ def build_decision_card() -> dict:
         from app import policy_pulse as _pp
         _p = _pp.scan(day=data.get("date"), max_events=4)
         _lv = (_p.get("breadth") or {}).get("level")
-        if _p.get("events") or _p.get("futures_limit") or _lv in ("extreme_up", "extreme_down"):
+        # ★ 2026-11-28：`open_pulse` 也纳入下发条件 —— 11-27 的事实是
+        #   "13:00 午盘开盘异动"早于"13:24 政策快讯"19 分钟；
+        #   若只按政策/期货/广度判，这个"唯一能抢先的信号"会被丢掉。
+        _ol = (_p.get("open_pulse") or {}).get("level")
+        if (_p.get("events") or _p.get("futures_limit")
+                or _lv in ("extreme_up", "extreme_down")
+                or _ol in ("extreme", "strong")):
             pulse = _p
     except Exception as e:
         print(f"[decision-card] policy_pulse failed: {e}")        # ASCII（铁律⑥）

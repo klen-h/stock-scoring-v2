@@ -62,7 +62,8 @@
     <div v-if="(pulse.events && pulse.events.length)
               || (pulse.futures_limit || []).length
               || (pulse.breadth && (pulse.breadth.level === 'extreme_up'
-                                    || pulse.breadth.level === 'extreme_down'))"
+                                    || pulse.breadth.level === 'extreme_down'))
+              || (pulse.open_pulse && ['extreme', 'strong'].includes(pulse.open_pulse.level))"
          class="bg-card border border-amber-500/30 rounded-lg p-3">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div class="flex items-center gap-2">
@@ -74,7 +75,7 @@
       <!-- ★ 2026-11-28 广度确认：11-27 的完整信号是「政策 + 期货涨停 + 全面暴涨」，
            只给政策不给广度仍然不完整。两条口径不同，分开标：
            广度=收盘定稿板块口径；期货涨跌停=盘中快讯识别。 -->
-      <div v-if="pulse.breadth || (pulse.futures_limit || []).length"
+      <div v-if="pulse.breadth || (pulse.futures_limit || []).length || pulse.open_pulse"
            class="flex items-center gap-2 text-[11px] mb-2 flex-wrap pb-2 border-b border-border/25">
         <span class="text-muted shrink-0">广度</span>
         <span v-if="pulse.breadth" class="px-1.5 py-0.5 rounded font-semibold"
@@ -89,6 +90,17 @@
               :title="f.text">
           {{ f.name }}{{ f.kind === 'limit_up' ? '涨停' : '跌停' }}
           <span class="text-[9px] opacity-70">{{ (f.time || '').slice(11, 16) }}</span>
+        </span>
+        <!-- ★★ 午盘开盘异动：11-27 实测比首条政策快讯早 19 分钟 -->
+        <span v-if="pulse.open_pulse"
+              class="px-1.5 py-0.5 rounded font-semibold"
+              :class="['extreme', 'strong'].includes(pulse.open_pulse.level)
+                ? 'bg-rise/20 text-rise' : 'bg-white/5 text-muted'"
+              :title="pulse.open_pulse.caliber">
+          {{ pulse.open_pulse.verdict }} {{ pulse.open_pulse.pm5_max }}%
+          <span class="text-[9px] opacity-70">
+            {{ ((pulse.open_pulse.indices || [])[0] || {}).name }}
+          </span>
         </span>
       </div>
       <div v-if="pulse.events && pulse.events.length" class="space-y-1.5">

@@ -56,6 +56,10 @@ _GAP = 0.25                 # 请求间隔（5 个请求，温和限速，别惹
 _BJ = timezone(timedelta(hours=8))
 # 自动落库窗口：15:55 之后（收盘定稿；15:00 收盘后还要等数据源收敛）
 _AUTO_FROM = (15, 55)
+# ★ 2026-11-28：盘中增量采集窗口 —— 09:31 起（09:30 那一刻序列只有 1 点，
+#   且盘前调用返回的是**昨日**完整序列，会把昨天写到今天名下）。
+_SESSION_FROM = (9, 31)
+_SESSION_TO = (15, 0)
 
 
 def ensure_table() -> None:
@@ -169,6 +173,90 @@ def save_day(date: str = None, codes=None, gap: float = _GAP) -> Dict:
             fail.append("%s:%s" % (c, str(e)[:40]))
         time.sleep(gap)
     return {"ok": ok, "fail": fail, "date": date, "codes": len(codes or CODES)}
+
+
+def _in_session(now: Optional[datetime] = None) -> bool:
+    """是否在**盘中采集窗口**（交易日 09:31–15:00）。"""
+    now = now or datetime.now(_BJ)
+    if now.weekday() >= 5:
+        return False
+    hm = (now.hour, now.minute)
+    return _SESSION_FROM <= hm <= _SESSION_TO
+
+
+def save_intraday(now: Optional[datetime] = None, codes=None, gap: float = _GAP) -> Dict:
+    """盘中**增量**落库（2026-11-28）。
+
+    ★ 为什么必须与 `save_day()` 分开（两者不能合并）：
+      · `save_day()` —— 15:55 后整段落库，允许 `date=None` 自动；
+        **盘中调用会被拒**（它的窗口保护就是为了防"盘前把昨日序列写成今天"）。
+      · `save_intraday()` —— 只在 **09:31–15:00** 之间写当日，且**只增不减**：
+        库内点数 ≥ 本次返回点数 ⇒ 跳过（防盘中残缺序列覆盖收盘定稿）。
+
+    ★ 为什么需要它：11-27 实测主升发生在 **13:00–13:10**
+      （创业板 13:00 +3.79% → 13:01 +5.68% → 13:05 +7.37%），
+      而政策快讯 **13:24** 才到 —— 早 19 分钟。但分时是当晚 22:10 才回补的
+      ⇒ 当天盘中**根本没有数据可用**，这个信号等于不存在。
+
+    ★ 成本：5 个 code ≈ 36 KB/次。按调度器时点密度约 33 次/日 ⇒ **~1.2 MB/日**。
+    """
+    now = now or datetime.now(_BJ)
+    if not _in_session(now):
+        return {"ok": 0, "fail": [], "date": "",
+                "error": "非盘中窗口（交易日 09:31–15:00）；补录请用 save_day(date=...)"}
+    date = now.strftime("%Y-%m-%d")
+    ensure_table()
+
+    # 已有各 code 点数（只增不减的判据）
+    have: Dict[str, int] = {}
+    try:
+        for r in (db.fetch("SELECT code, n FROM intraday_path WHERE date = %s", (date,)) or []):
+            have[str(r.get("code"))] = int(r.get("n") or 0)
+    except Exception as e:
+        print(f"[intraday] intraday existing load failed: {str(e)[:80]}")    # ASCII
+
+    ok, skip, fail = 0, [], []
+    for c in (codes or CODES):
+        try:
+            path = _fetch(c)
+            if not path:
+                fail.append("%s:空" % c)
+                continue
+            # ★ 只增不减：盘中残缺序列不许覆盖已完整的当日记录
+            if len(path) <= have.get(c, 0):
+                skip.append("%s:%d<=%d" % (c, len(path), have.get(c, 0)))
+                continue
+            prices = [p[1] for p in path]
+            payload = json.dumps(path, ensure_ascii=False)
+            if db._use_postgres:
+                db.execute("""
+                    INSERT INTO intraday_path (date, code, n, first_hhmm, last_hhmm,
+                                               open_price, close_price, high_price,
+                                               low_price, path_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (date, code) DO UPDATE SET
+                        n=EXCLUDED.n, first_hhmm=EXCLUDED.first_hhmm,
+                        last_hhmm=EXCLUDED.last_hhmm, open_price=EXCLUDED.open_price,
+                        close_price=EXCLUDED.close_price, high_price=EXCLUDED.high_price,
+                        low_price=EXCLUDED.low_price, path_json=EXCLUDED.path_json
+                """, (date, c, len(path), path[0][0], path[-1][0], prices[0],
+                      prices[-1], max(prices), min(prices), payload))
+            else:
+                db.execute("""
+                    INSERT OR REPLACE INTO intraday_path
+                    (date, code, n, first_hhmm, last_hhmm, open_price, close_price,
+                     high_price, low_price, path_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (date, c, len(path), path[0][0], path[-1][0], prices[0],
+                      prices[-1], max(prices), min(prices), payload,
+                      datetime.now(_BJ).isoformat()))
+            have[c] = len(path)
+            ok += 1
+        except Exception as e:
+            fail.append("%s:%s" % (c, str(e)[:40]))
+        time.sleep(gap)
+    return {"ok": ok, "skip": skip, "fail": fail, "date": date,
+            "codes": len(codes or CODES)}
 
 
 def load(date: str, code: str) -> List[list]:
