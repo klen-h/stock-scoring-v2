@@ -2983,6 +2983,44 @@ async def sector_snapshot_loop():
         await asyncio.sleep(600)
 
 
+# ── 题材轮动每日快照（收盘后记录，积累轮动序列）──
+TOPIC_ROTATION_WINDOW = (915, 1000)   # 北京时间 15:15-16:40
+
+
+async def topic_rotation_loop():
+    """每个交易日收盘后记录题材轮动快照（1/5/20 日三档口径，幂等）。
+
+    ★★ 2026-11-28（用户："zzshare 有个题材轮动的功能，项目需要加入"）：
+      为什么必须每天落库 —— `plates_rank_days_new` 是**实时排名接口**，
+      不落就没法算"昨天谁在榜、今天谁掉队"，而轮动的全部价值就在这个**变化量**上。
+      历史可用 `scripts/backfill_topic_rotation.py` 回补（实测可回溯到 2023 年）。
+
+    ⚠️ 只存 `n_days=1` 是不够的：1=当日涨幅（算次日收益）、5=排名主口径、
+      20=加速度基准（5日 vs 20日日均）。三档缺一，页面上的"启动/主升/高位/退潮"
+      判定就会大面积失效（缺 20 档时 accel 为 None，`stage()` 会跳过判定）。
+    """
+    while True:
+        now = rules.beijing_now()
+        t = now.hour * 60 + now.minute
+        task_key = "topic_rotation_daily"
+        if (rules.is_trading_day(now)
+                and TOPIC_ROTATION_WINDOW[0] <= t < TOPIC_ROTATION_WINDOW[1]
+                and not store.is_schedule_done(task_key)):
+            day = now.strftime("%Y-%m-%d")
+            try:
+                from app.topic_rotation import save as _save_rotation
+                r = await asyncio.to_thread(_save_rotation, day)
+                if r.get("written"):
+                    store.mark_schedule_done(task_key)
+                    status["last_topic_rotation"] = now.isoformat()
+                    print(f"[scheduler] 题材轮动快照: {r['written']} 条 {r.get('kinds')}")
+                else:
+                    print("[scheduler] 题材轮动快照未写入，窗口内稍后重试")
+            except Exception as e:
+                print(f"[scheduler] 题材轮动快照失败: {e}")
+        await asyncio.sleep(600)
+
+
 # ── 财务数据更新（每天凌晨检查，新报告期出现才拉取）──
 FINANCE_WINDOW = (200, 260)   # 北京时间 03:20-04:20
 
@@ -3402,6 +3440,7 @@ async def start():
              *_heavy(industry_map_loop),
              *_heavy(mainline_loop),
              *_heavy(sector_snapshot_loop),
+             *_heavy(topic_rotation_loop),
              *_heavy(finance_loop)]
     if READ_ONLY:
         print("[scheduler] ★ 只读模式（RENDER_READ_ONLY / DEPLOY_READ_ONLY 任一=1）："

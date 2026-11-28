@@ -176,13 +176,17 @@ def backfill(start: str, end: str = None, n_days_list: Tuple[int, ...] = (1, 5, 
     if d0 > d1:
         return {"ok": False, "error": "start 晚于 end"}
 
+    # ★ 2026-11-28：断点续传按 **(日期, 累计档)** 判断，不是只看日期 ——
+    #   否则"先补了 1/5 档、后来想补 20 档"会被全部跳过（实测踩到）。
     have = set()
     if skip_existing:
         try:
             ensure_table()
-            rows = db.fetch(f"SELECT DISTINCT date FROM {_TABLE} "
+            rows = db.fetch(f"SELECT DISTINCT date, n_days FROM {_TABLE} "
                             f"WHERE plate_type=%s", (plate_type,)) or []
-            have = {str(r.get("date"))[:10] for r in rows if r.get("date")}
+            for r in rows:
+                if r.get("date") is not None and r.get("n_days") is not None:
+                    have.add((str(r.get("date"))[:10], int(r.get("n_days"))))
         except Exception as ex:
             print(f"[topic_rot] 已存在日期读取失败: {str(ex)[:60]}")
 
@@ -194,7 +198,7 @@ def backfill(start: str, end: str = None, n_days_list: Tuple[int, ...] = (1, 5, 
             ok = bool(is_trading_day(cur))
         except Exception:
             ok = cur.weekday() < 5
-        if ok and day not in have:
+        if ok and not all((day, nd) in have for nd in n_days_list):
             todo.append(day)
         cur += _td(days=1)
     if max_days and len(todo) > max_days:
@@ -337,8 +341,148 @@ def view(day: str = None, n_days: int = 5, plate_type: int = 17,
 # ================================================================
 #  三、可验证性（`is_new` 到底有没有预测力）
 # ================================================================
+def _regime(day: str) -> Dict:
+    """当日市场环境（用 104 个行业板块的横截面判定）。
+
+    为什么不用指数涨跌：题材轮动关心的是"**钱在不在场内**"，
+      而"多少板块在涨"（广度）比指数点位更能反映人气 ——
+      指数被权重股拉红、但 80% 板块在跌的日子，做题材是亏钱的。
+    返回 `{label, avg_pct, up_ratio, n, level}`：
+      level = +1 强势 / 0 中性 / -1 弱势
+    """
+    try:
+        rows = db.fetch("SELECT change_pct FROM plate_daily_zz "
+                        "WHERE date=%s AND kind='industry'", (day,)) or []
+    except Exception:
+        return {"label": "未知", "avg_pct": None, "up_ratio": None,
+                "n": 0, "level": 0}
+    vals = [_f(r.get("change_pct")) for r in rows]
+    vals = [v for v in vals if v is not None]
+    if not vals:
+        return {"label": "未知", "avg_pct": None, "up_ratio": None,
+                "n": 0, "level": 0}
+    avg = sum(vals) / len(vals)
+    up = sum(1 for v in vals if v > 0) / len(vals)
+    if avg >= 0.5 and up >= 0.6:
+        return {"label": "强势", "avg_pct": round(avg, 2),
+                "up_ratio": round(up, 3), "n": len(vals), "level": 1}
+    if avg <= -0.5 or up <= 0.35:
+        return {"label": "弱势", "avg_pct": round(avg, 2),
+                "up_ratio": round(up, 3), "n": len(vals), "level": -1}
+    return {"label": "中性", "avg_pct": round(avg, 2),
+            "up_ratio": round(up, 3), "n": len(vals), "level": 0}
+
+
+def stage(day: str, plate_type: int = 17) -> Dict[str, List[Dict]]:
+    """**阶段判定** —— 页面"方向标"的核心（回答"这个题材走到哪一步了"）。
+
+    四档规则（全部基于可观测的排名/加速度/新进，不含预测）：
+      emerging 启动  ：is_new=1 且 accel>0 且 rank<=30（刚进榜、在加速、名次还不高）
+      leading  主升  ：rank<=10 且 accel>0 且 非新进（榜单前列且还在加速）
+      crowded  高位  ：rank<=10 且 accel<=0（前排但加速度转负 ⇒ 可能见顶）
+      fading   退潮  ：rank 较前一日跌 >=10 位，或 accel<=-5 且 rank>30
+    ⚠️ 名称是**状态描述**，不是买卖建议。`crowded` 不等于"要跌"，
+       只是"已经涨到前排且不再加速"，这类位置风险收益比通常变差。
+    """
+    v = view(day, n_days=5, plate_type=plate_type, top=100)
+    if not v.get("ok"):
+        return {"emerging": [], "leading": [], "crowded": [], "fading": []}
+    accel_map = {x["code"]: x.get("accel") for x in (v.get("accel") or [])}
+    accel_map.update({x["code"]: x.get("accel")
+                      for x in (v.get("drop_accel") or [])})
+    rank_chg = {}
+    for x in (v.get("surge") or []) + (v.get("drop") or []):
+        rank_chg[x["code"]] = x.get("rank_change")
+    out = {"emerging": [], "leading": [], "crowded": [], "fading": []}
+    for x in (v.get("top") or []):
+        code = x.get("code")
+        rank = x.get("rank") or 999
+        ac = accel_map.get(code)
+        rc = rank_chg.get(code)
+        item = {**x, "accel": ac, "rank_change": rc,
+                "sum_rate_20d": next((a.get("sum_rate_20d")
+                                      for a in (v.get("accel") or [])
+                                      if a["code"] == code), None)}
+        # ⚠️ 缺 20 日档（`n_days=20` 没回补）时 `ac` 为 None ⇒ **不判阶段**，
+        #   而不是当成 0 塞进 `crowded`（那会把"数据缺失"显示成"涨到顶了"）。
+        if rc is not None and rc <= -10:
+            out["fading"].append(item)
+        elif ac is not None and ac <= -5 and rank > 30:
+            out["fading"].append(item)
+        elif ac is None:
+            continue
+        elif x.get("is_new") and ac > 0 and rank <= 30:
+            out["emerging"].append(item)
+        elif rank <= 10 and ac > 0 and not x.get("is_new"):
+            out["leading"].append(item)
+        elif rank <= 10 and ac <= 0:
+            out["crowded"].append(item)
+    for k in out:
+        out[k] = out[k][:15]
+    return out
+
+
+def dashboard(day: str = None, plate_type: int = 17) -> Dict:
+    """页面主接口：环境 + 统计 + 阶段 + 榜单，一次给全。"""
+    v = view(day, n_days=5, plate_type=plate_type, top=20)
+    if not v.get("ok"):
+        return v
+    d = v["date"]
+    return {
+        "ok": True,
+        "date": d,
+        "prev_date": v.get("prev_date"),
+        "regime": _regime(d),
+        "counts": v.get("counts"),
+        "top": v.get("top"),
+        "new_in": v.get("new_in"),
+        "surge": v.get("surge"),
+        "drop": v.get("drop"),
+        "accel": v.get("accel"),
+        "drop_accel": v.get("drop_accel"),
+        "stages": stage(d, plate_type),
+        "note": ("本页是**风向标**：看哪个方向有人气（资金在流入）、"
+                 "处在启动/主升/高位/退潮哪一步，用来避免在没人气且在下行的方向硬扛。"
+                 "⚠️ 阶段是状态描述不是买卖建议；is_new 的可交易性已验证为 False"
+                 "（胜率 48.6%、超额 +0.157% 覆盖不了成本）。"),
+    }
+
+
+def _regime_map() -> Dict[str, Dict]:
+    """一次性算所有交易日的市场环境（避免 `_regime()` 逐日查库）。
+
+    返回 `{date: {label, level, avg_pct, up_ratio}}`。
+    """
+    from collections import defaultdict
+    try:
+        rows = db.fetch("SELECT date, change_pct FROM plate_daily_zz "
+                        "WHERE kind='industry'") or []
+    except Exception:
+        return {}
+    buckets: Dict[str, List[float]] = defaultdict(list)
+    for r in rows:
+        v = _f(r.get("change_pct"))
+        if v is None:
+            continue
+        buckets[str(r.get("date"))[:10]].append(v)
+    out = {}
+    for d, vals in buckets.items():
+        avg = sum(vals) / len(vals)
+        up = sum(1 for v in vals if v > 0) / len(vals)
+        if avg >= 0.5 and up >= 0.6:
+            lv, lb = 1, "强势"
+        elif avg <= -0.5 or up <= 0.35:
+            lv, lb = -1, "弱势"
+        else:
+            lv, lb = 0, "中性"
+        out[d] = {"label": lb, "level": lv,
+                  "avg_pct": round(avg, 2), "up_ratio": round(up, 3)}
+    return out
+
+
 def verify(plate_type: int = 17, horizon: int = 1,
-           min_days: int = 30, day_from: str = None, day_to: str = None) -> Dict:
+           min_days: int = 30, day_from: str = None, day_to: str = None,
+           regime_level: int = None) -> Dict:
     """**事件研究**：`is_new=1` 的题材，其后 `horizon` 日涨幅 vs 全体均值。
 
     口径：
@@ -362,9 +506,19 @@ def verify(plate_type: int = 17, horizon: int = 1,
         ds = [x for x in ds if x >= day_from[:10]]
     if day_to:
         ds = [x for x in ds if x <= day_to[:10]]
+    # ★★ 2026-11-28（用户："看他在牛市以及熊市的表现"）：
+    #   按市场环境（104 板块横截面广度）把交易日分组，分别检验 is_new 的有效性。
+    #   这一步比总体均值有用得多 —— 题材轮动是"人气驱动"，熊市里人气本身就不存在，
+    #   同一个信号在两种环境下的表现可能完全相反。
+    rmap = _regime_map()
+    if regime_level is not None:
+        ds = [x for x in ds if (rmap.get(x) or {}).get("level") == regime_level]
     if len(ds) < 2:
-        return {"ok": False, "error": "样本不足（至少需要 2 个交易日）",
-                "n_days_total": len(ds)}
+        return {"ok": False,
+                "error": "样本不足（至少需要 2 个交易日）"
+                         + ("（已按市场环境过滤）" if regime_level is not None else ""),
+                "n_days_total": len(ds),
+                "regime_level": regime_level}
 
     # 一次性把所有 (date, code) 的单日涨幅读进来（n_days=1）
     try:
@@ -424,6 +578,9 @@ def verify(plate_type: int = 17, horizon: int = 1,
     return {
         "ok": True,
         "plate_type": plate_type, "horizon": horizon,
+        "regime_level": regime_level,
+        "regime_label": ({1: "强势", 0: "中性", -1: "弱势"}.get(regime_level)
+                         if regime_level is not None else "全部环境"),
         "n_events": n, "n_days": used_days,
         "avg_excess_pct": round(avg_ex, 3),
         "win_rate": round(win, 4),

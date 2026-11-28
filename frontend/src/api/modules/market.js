@@ -5,6 +5,15 @@
 import { http } from '../http'
 
 export const getMarketOverview = () => http.get('/market/overview')
+
+// 题材轮动（★ 2026-11-28，独立页面 /rotation）
+//   dashboard = 单次聚合（市场环境 + 四阶段 + 各榜单），页面只打这一个接口
+//   verify 要扫全表 ⇒ 只在"有效性"面板展开时手动调，不进轮询
+export const getTopicRotationDashboard = (params) =>
+  http.get('/market/topic-rotation/dashboard', { params, timeout: 30000 })
+
+export const getTopicRotationVerify = (params) =>
+  http.get('/market/topic-rotation/verify', { params, timeout: 60000 })
 // ★ 2026-11-01（「早盘复盘」标签页）：**单一聚合端点**。
 //   盘面 / 宏观 / 消息 / 午后研判一次取回（后端并发查询 + 5 分钟按日缓存）。
 //   刻意不拆成 5 个请求：Supabase 在 ap-southeast-1，每次往返约 570ms，

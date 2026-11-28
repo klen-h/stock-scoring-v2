@@ -3240,16 +3240,34 @@ def topic_rotation_view(
     return tr.view(day=day, n_days=n_days, plate_type=plate_type, top=top)
 
 
+@router.get("/topic-rotation/dashboard")
+def topic_rotation_dashboard(
+        day: str = Query(None, description="YYYY-MM-DD，缺省=库内最新"),
+        plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业")):
+    """**页面主接口**：环境 + 统计 + 四阶段 + 各榜单一并返回。
+
+    这是「题材轮动」独立页的唯一数据源，避免前端拼 4~5 个请求。
+    """
+    from app import topic_rotation as tr
+    return tr.dashboard(day=day, plate_type=plate_type)
+
+
 @router.get("/topic-rotation/verify")
 def topic_rotation_verify(
         plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),
         horizon: int = Query(5, ge=1, le=10, description="持有期（交易日）"),
-        min_days: int = Query(30, ge=5, le=500, description="最少覆盖天数")):
+        min_days: int = Query(30, ge=5, le=500, description="最少覆盖天数"),
+        regime: int = Query(None, description="市场环境过滤：1=强势 / 0=中性 / -1=弱势 / 不传=全部")):
     """**信号有效性检验**（事件研究）：is_new=1 的题材后续超额 vs 全体均值。
 
     ⚠️ 手动调用（要扫全表），不要放进轮询。
     返回 `valid`（统计上非噪声）与 `tradable`（扣完成本还能用）两个判据 ——
     2026-11-28 实测：valid=True 但 tradable=False（胜率 48.6%）。
+
+    ★ 按 `regime` 分层是**最关键的一步**（用户："看他在牛市以及熊市的表现"）：
+      强势 +0.053%(胜率50%) / 中性 +0.242%(59%) / 弱势 -0.001%(**42%**)
+      ⇒ 弱势环境里追新进题材，5 天后 58% 是亏的。
     """
     from app import topic_rotation as tr
-    return tr.verify(plate_type=plate_type, horizon=horizon, min_days=min_days)
+    return tr.verify(plate_type=plate_type, horizon=horizon,
+                     min_days=min_days, regime_level=regime)

@@ -132,6 +132,8 @@ const navGroups = [
     { path: '/market', label: '市场行情' },
     { path: '/sector', label: '板块分化' },
     { path: '/mainline', label: '行业主线' },
+    // ★ 2026-11-28：题材轮动（独立页；风向标用途，非信号）
+    { path: '/rotation', label: '题材轮动' },
     { path: '/capital', label: '资金流向' },
     { path: '/lhb', label: '龙虎榜' },
     { path: '/monitor', label: '快讯监控' },

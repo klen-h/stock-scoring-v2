@@ -9,6 +9,8 @@ const routes = [
   { path: '/market', name: 'Market', component: () => import('../views/MarketView.vue') },
   { path: '/sector', name: 'Sector', component: () => import('../views/SectorView.vue') },
   { path: '/mainline', name: 'Mainline', component: () => import('../views/MainlineView.vue') },
+  // ★ 2026-11-28：题材轮动（风向标：哪个方向有人气、处在启动/主升/高位/退潮哪一步）
+  { path: '/rotation', name: 'TopicRotation', component: () => import('../views/TopicRotation.vue') },
   { path: '/stock/:code', name: 'StockDetail', component: () => import('../views/StockDetail.vue') },
   { path: '/score', name: 'ScoreRank', component: () => import('../views/ScoreRank.vue') },
   { path: '/screener', name: 'Screener', component: () => import('../views/Screener.vue') },
