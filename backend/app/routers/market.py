@@ -3252,6 +3252,33 @@ def topic_rotation_dashboard(
     return tr.dashboard(day=day, plate_type=plate_type)
 
 
+@router.get("/topic-rotation/history")
+def topic_rotation_history(
+        days: int = Query(8, ge=3, le=30, description="回看几个交易日"),
+        top: int = Query(20, ge=5, le=50, description="图上最多画几条"),
+        plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业")):
+    """最近 N 日的**排名序列**（ECharts 排名流图数据）。
+
+    `ranks` 中 `null` = 当日不在榜 ⇒ 图上断开（不画到地板）。
+    """
+    from app import topic_rotation as tr
+    return tr.ranks_history(days=days, top=top, plate_type=plate_type)
+
+
+@router.get("/topic-rotation/constituents")
+def topic_rotation_constituents(
+        code: str = Query(..., description="板块代码，如 803041"),
+        plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),
+        day: str = Query(None, description="YYYY-MM-DD，缺省=stock_facts_wide 最新日"),
+        top: int = Query(12, ge=1, le=50)):
+    """板块 → **相关个股**（按当日涨跌幅降序）。
+
+    ⚠️ 首次调用会外呼 zzshare 拿成分名单（之后进程缓存 1 天）。
+    """
+    from app import topic_rotation as tr
+    return tr.constituents(code, plate_type=plate_type, day=day, top=top)
+
+
 @router.get("/topic-rotation/verify")
 def topic_rotation_verify(
         plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),

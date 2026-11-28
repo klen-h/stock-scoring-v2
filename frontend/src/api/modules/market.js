@@ -14,6 +14,14 @@ export const getTopicRotationDashboard = (params) =>
 
 export const getTopicRotationVerify = (params) =>
   http.get('/market/topic-rotation/verify', { params, timeout: 60000 })
+
+// 排名序列（画排名流图用；ranks 里的 null = 当日不在榜）
+export const getTopicRotationHistory = (params) =>
+  http.get('/market/topic-rotation/history', { params, timeout: 30000 })
+
+// 板块 → 相关个股（首次会外呼拿成分名单，之后进程缓存 1 天）
+export const getTopicRotationConstituents = (params) =>
+  http.get('/market/topic-rotation/constituents', { params, timeout: 60000 })
 // ★ 2026-11-01（「早盘复盘」标签页）：**单一聚合端点**。
 //   盘面 / 宏观 / 消息 / 午后研判一次取回（后端并发查询 + 5 分钟按日缓存）。
 //   刻意不拆成 5 个请求：Supabase 在 ap-southeast-1，每次往返约 570ms，

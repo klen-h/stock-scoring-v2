@@ -338,6 +338,150 @@ def view(day: str = None, n_days: int = 5, plate_type: int = 17,
     }
 
 
+def ranks_history(days: int = 8, top: int = 20, plate_type: int = 17,
+                  n_days: int = 5) -> Dict:
+    """最近 `days` 个交易日的**排名序列**（供 ECharts 排名流图用）。
+
+    返回 `{ok, dates, items:[{code,name,ranks:[...],last}]}`
+      · `dates` 正序（旧 → 新），与每条的 `ranks` 一一对应
+      · 只保留「最近一天进过 top N」或「期间曾进过 top N」的题材，
+        否则 100 条全画出来是一团乱麻（图的目的是看**换人**，不是看全名单）
+      · `ranks` 里为 None 表示那天不在榜（掉出去了）
+    """
+    ensure_table()
+    try:
+        ds = [str(r.get("date"))[:10] for r in
+              (db.fetch(f"SELECT DISTINCT date FROM {_TABLE} WHERE plate_type=%s "
+                        f"AND n_days=%s ORDER BY date DESC LIMIT %s",
+                        (plate_type, n_days, days)) or [])
+              if r.get("date")]
+    except Exception as e:
+        return {"ok": False, "error": f"读取日期失败: {str(e)[:80]}"}
+    if not ds:
+        return {"ok": False, "error": "无数据"}
+    ds = sorted(ds)
+    per_day = {d: _rows(d, n_days, plate_type) for d in ds}
+    latest = per_day.get(ds[-1]) or {}
+    keep = {c for c, r in latest.items() if (r.get("rank") or 999) <= top}
+    for d in ds:
+        for c, r in (per_day.get(d) or {}).items():
+            if (r.get("rank") or 999) <= top:
+                keep.add(c)
+    name_of = {}
+    for d in ds:
+        for c, r in (per_day.get(d) or {}).items():
+            if c in keep and r.get("plate_name"):
+                name_of[c] = r["plate_name"]
+    items = []
+    for c in keep:
+        ranks, rates = [], []
+        for d in ds:
+            r = (per_day.get(d) or {}).get(c)
+            # 不在榜 = 掉出（用 None，不填 999 —— 图上要断开而不是画到地板）
+            ranks.append((r.get("rank") if r else None))
+            rates.append((_f(r.get("sum_rate")) if r else None))
+        last = ranks[-1]
+        # 只画"最新仍在 top"或"期间曾冲到前 10"的，避免几十条无意义的线
+        if last is None and all((x or 999) > 10 for x in ranks):
+            continue
+        items.append({"code": c, "name": name_of.get(c) or c,
+                      "ranks": ranks, "rates": rates, "last": last})
+    items.sort(key=lambda x: (x["last"] if x["last"] else 999))
+    return {"ok": True, "dates": ds, "items": items[:top * 2],
+            "plate_type": plate_type, "n_days": n_days,
+            "note": "排名为 5 日累计口径下的位次；null = 当日不在榜。"}
+
+
+# ★ 成分股名单进程缓存：变动极慢（按季度调仓），且每次要外呼，
+#   与 `sector_zz._SCAN_CACHE` 同口径（一次取一份，TTL 1 天）。
+_MEMBERS_CACHE: Dict[Tuple[int, str], Tuple[float, List[Dict]]] = {}
+_MEMBERS_TTL = 24 * 3600.0
+
+
+def _fetch_members(plate_type: int, plate_code: str) -> List[Dict]:
+    """某板块的成分股名单（`[{code, name}]`），进程缓存 1 天，失败返回 []。"""
+    key = (plate_type, plate_code)
+    now = time.time()
+    hit = _MEMBERS_CACHE.get(key)
+    if hit and now - hit[0] < _MEMBERS_TTL:
+        return hit[1]
+    from app.zzshare_client import get_api
+    try:
+        rows = get_api().plates_stocks(plate_type=plate_type,
+                                       plate_code=plate_code) or []
+    except Exception as e:
+        print(f"[topic_rot] members failed {plate_code}: {str(e)[:80]}")
+        return []
+    out = []
+    for r in rows:
+        c = str(r.get("stock_code") or "").strip()
+        if c:
+            out.append({"code": c, "name": str(r.get("stock_name") or "")})
+    _MEMBERS_CACHE[key] = (now, out)
+    return out
+
+
+def constituents(plate_code: str, plate_type: int = 17, day: str = None,
+                 top: int = 12) -> Dict:
+    """题材/板块 → **相关个股**（按当日涨跌幅降序取前 `top` 只）。
+
+    数据来源：
+      · 名单 ← zzshare `plates_stocks`（外呼一次，进程缓存 1 天）
+      · 涨跌/5日/评分 ← `stock_facts_wide`（日批产物，零外呼）
+    ⚠️ `plates_stocks` **只给名单、不给行情** ⇒ 必须自己补涨跌幅，
+       否则页面只能列出一堆没有涨跌的代码，等于没用（实测确认）。
+    """
+    members = _fetch_members(plate_type, plate_code)
+    if not members:
+        return {"ok": False, "error": "成分股为空（外呼失败或该板块无成分）"}
+    codes = [m["code"] for m in members]
+    d = str(day or "")[:10]
+    if not d:
+        try:
+            r = db.fetch_one("SELECT MAX(date) AS d FROM stock_facts_wide") or {}
+            d = str(r.get("d"))[:10]
+        except Exception:
+            d = ""
+    info: Dict[str, Dict] = {}
+    for i in range(0, len(codes), 500):        # 分批 IN，避免超长 SQL
+        chunk = codes[i:i + 500]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = db.fetch(
+                f"SELECT code, name, chg_pct, ret5, ret20, score_total, phase "
+                f"FROM stock_facts_wide WHERE date=%s AND code IN ({ph})",
+                tuple([d] + chunk)) or []
+        except Exception as e:
+            print(f"[topic_rot] facts failed: {str(e)[:80]}")
+            rows = []
+        for r in rows:
+            info[str(r.get("code"))] = r
+    out = []
+    for m in members:
+        r = info.get(m["code"])
+        out.append({
+            "code": m["code"],
+            "name": m["name"] or (r or {}).get("name") or m["code"],
+            "chg_pct": _f((r or {}).get("chg_pct")),
+            "ret5": _f((r or {}).get("ret5")),
+            "ret20": _f((r or {}).get("ret20")),
+            "score": _f((r or {}).get("score_total")),
+            "phase": (r or {}).get("phase"),
+        })
+    # 有行情的排前面（按当日涨跌降序），无行情的按名字兜底放最后
+    withp = [x for x in out if x["chg_pct"] is not None]
+    without = [x for x in out if x["chg_pct"] is None]
+    withp.sort(key=lambda x: -x["chg_pct"])
+    return {
+        "ok": True, "plate_code": plate_code, "date": d,
+        "n_total": len(out),
+        "n_with_quote": len(withp),
+        "items": (withp + without)[:max(1, int(top))],
+        "note": f"该板块共 {len(out)} 只成分，按 {d} 涨跌幅降序取前 {top} 只；"
+                f"其中 {len(withp)} 只有当日行情（缺行情的不填 0，排在最后）。",
+    }
+
+
 # ================================================================
 #  三、可验证性（`is_new` 到底有没有预测力）
 # ================================================================
