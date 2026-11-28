@@ -2245,6 +2245,81 @@
                 </ul>
                 <div v-else class="text-[11px] text-muted mt-0.5">该期无 tomorrow_watch 条目</div>
               </div>
+              <!-- ★★ 2026-11-28（用户："今天的功能有哪些是可以加到工作台的"）：
+                   三个新观察器并入决策卡。后端**只在有内容时下发**（null ⇒ 整块不渲染），
+                   所以这里不需要再判空数组，页面不会被日常噪音撑大。 -->
+              <div v-if="dc.policy_pulse"
+                   class="mb-2 rounded border border-amber-500/25 bg-amber-500/5 px-2 py-1.5">
+                <div class="flex items-center gap-2 flex-wrap text-[11px]">
+                  <span class="text-amber-300 font-semibold">⚡ 政策脉冲</span>
+                  <span v-if="dc.policy_pulse.breadth"
+                        class="px-1 py-0.5 rounded font-semibold"
+                        :class="['extreme_up', 'up'].includes(dc.policy_pulse.breadth.level)
+                          ? 'bg-rise/20 text-rise' : 'bg-fall/20 text-fall'">
+                    {{ dc.policy_pulse.breadth.verdict }}
+                    {{ Math.round((dc.policy_pulse.breadth.up_ratio || 0) * 100) }}% 上涨
+                  </span>
+                  <span v-for="f in (dc.policy_pulse.futures_limit || [])"
+                        :key="f.product + f.kind"
+                        class="px-1 py-0.5 rounded font-mono"
+                        :class="f.kind === 'limit_up' ? 'bg-rise/15 text-rise' : 'bg-fall/15 text-fall'">
+                    {{ f.name }}{{ f.kind === 'limit_up' ? '涨停' : '跌停' }}
+                  </span>
+                </div>
+                <div v-for="e in (dc.policy_pulse.events || [])" :key="e.theme"
+                     class="text-[11px] text-gray-300 mt-0.5 leading-relaxed">
+                  <span class="font-mono text-muted">{{ (e.first_time || '').slice(11, 16) }}</span>
+                  <span class="text-amber-300 ml-1">{{ e.actor || '政策' }}</span>
+                  <b class="ml-1">{{ e.theme }}</b>
+                  <span class="text-muted ml-1">
+                    → {{ (e.sectors || []).slice(0, 4).map(s => s.name).join('、') }}
+                  </span>
+                </div>
+              </div>
+
+              <div v-if="dc.watch_radar"
+                   class="mb-2 rounded border border-sky-500/25 bg-sky-500/5 px-2 py-1.5">
+                <div class="flex items-center gap-2 flex-wrap text-[11px]">
+                  <span class="text-sky-300 font-semibold">📈 盯盘</span>
+                  <span class="text-muted">
+                    {{ dc.watch_radar.mode === 'portfolio' ? '跟随持仓' : '自定义' }}
+                    {{ dc.watch_radar.n }} 只
+                  </span>
+                </div>
+                <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 text-[11px]">
+                  <span v-for="it in (dc.watch_radar.items || [])" :key="it.code">
+                    <StockName :code="it.code" :name="it.name" />
+                    <span class="text-muted font-mono ml-1">
+                      R{{ it.resistance != null ? it.resistance : '—' }}/S{{ it.support != null ? it.support : '—' }}
+                    </span>
+                  </span>
+                </div>
+                <div v-for="(s, i) in (dc.watch_radar.signals || [])" :key="i"
+                     class="text-[11px] mt-0.5 text-gray-300">
+                  <span class="font-mono text-muted">{{ (s.pushed_at || '').slice(11, 16) }}</span>
+                  <span class="ml-1 px-1 py-0.5 rounded text-[10px]"
+                        :class="s.kind === 'breakout' ? 'bg-rise/15 text-rise'
+                              : s.kind === 'breakdown' ? 'bg-fall/15 text-fall'
+                              : 'bg-amber-500/15 text-amber-300'">{{ s.kind }}</span>
+                  <span class="ml-1">{{ s.detail }}</span>
+                </div>
+              </div>
+
+              <div v-if="dc.protocols"
+                   class="mb-2 rounded border border-border bg-white/[0.02] px-2 py-1.5 text-[11px]">
+                <span class="text-gray-300 font-semibold">🃏 动作协议</span>
+                <span class="text-muted ml-2">
+                  今日重要快讯 {{ dc.protocols.n_news }} 条 · 有卡 {{ dc.protocols.n_matched }}
+                </span>
+                <span v-if="dc.protocols.n_gap" class="text-amber-300 ml-1">
+                  · 缺口 {{ dc.protocols.n_gap }}（没卡可翻）
+                </span>
+                <div v-for="(u, i) in (dc.protocols.unmatched || [])" :key="i"
+                     class="text-[11px] text-muted mt-0.5 truncate">
+                  · {{ (u.time || '').slice(11, 16) }} {{ u.content }}
+                </div>
+              </div>
+
               <!-- 做不做（★ 2026-09-25：dc.stance 可能缺失 ⇒ 必须局部保护。
                    此前 dbdb3cf 给 dc.do/how_much/if_wrong/environment 都加了 `?.`，唯独漏了
                    stance ⇒ 模板渲染即抛 TypeError: Cannot read properties of undefined
@@ -3921,6 +3996,8 @@ import { useObsAIReview } from '../composables/useObsAIReview'
 import { useScenarioEvents } from '../composables/useScenarioEvents'
 import { _dayCache, _dayCached, _dayMark } from '../utils/dayCache'
 import TodoCard from '../components/workbench/TodoCard.vue'
+// ★ 2026-11-28：决策卡新增「政策脉冲 / 盯盘 / 协议」三块里要展示个股（名称带代码）
+import StockName from '../components/StockName.vue'
 // ★ 2026-09-25（用户："观察池…跟现项目观察池的颜色逻辑一致…战法名称用中文"）：
 //   与榜单页**共用同一份**展示元数据（主力阶段配色 / 战法中文名 / 闸门就绪配色）。
 //   ⚠️ 本文件已有一个同名 `PHASE_STYLE` —— 那是**时段**配色（盘前/竞价/盘中…），

@@ -1263,10 +1263,55 @@ def build_decision_card() -> dict:
     except Exception as e:
         print(f"[decision-card] tomorrow_watch failed: {e}")        # ASCII（铁律⑥）
 
+    # ★★ 2026-11-28（用户："今天的功能有哪些是可以加到工作台的"）：
+    #   把当天新增的三个观察器并入决策卡。全部**只查库、零外呼**，
+    #   单块失败只让该块为 None（前端不渲染），绝不拖垮整卡 ——
+    #   与工作台既有"单源失败按缺该源处理"同一条纪律。
+    #
+    # ① 政策脉冲：盘中回答"这是什么级别的利好、影响哪些板块"
+    #    只在**真有政策事件 / 期货涨跌停 / 广度极端**时下发，否则每天都有 ⇒ 噪音
+    pulse = None
+    try:
+        from app import policy_pulse as _pp
+        _p = _pp.scan(day=data.get("date"), max_events=4)
+        _lv = (_p.get("breadth") or {}).get("level")
+        if _p.get("events") or _p.get("futures_limit") or _lv in ("extreme_up", "extreme_down"):
+            pulse = _p
+    except Exception as e:
+        print(f"[decision-card] policy_pulse failed: {e}")        # ASCII（铁律⑥）
+
+    # ② 个股盯盘：清单为空时自动跟持仓 ⇒ 这天然就是"持仓关键位"看板
+    watch = None
+    try:
+        from app import watch_radar as _wr
+        _w = _wr.status(day=data.get("date"))
+        if _w.get("n"):
+            watch = {"mode": _w.get("mode"), "n": _w.get("n"),
+                     "items": _w.get("targets") or [],
+                     "signals": (_w.get("signals") or [])[:5]}
+    except Exception as e:
+        print(f"[decision-card] watch_radar failed: {e}")         # ASCII
+
+    # ③ 动作协议：今天有几条重要快讯**没卡可翻**（缺口就是该补的规则）
+    protos = None
+    try:
+        from app import action_protocol as _ap
+        _n = _ap.news_pool(day=data.get("date"), limit=200)
+        if _n.get("n"):
+            protos = {"n_news": _n.get("n"), "n_matched": _n.get("n_matched"),
+                      "n_gap": _n.get("n_gap"),
+                      "unmatched": (_n.get("unmatched") or [])[:3]}
+    except Exception as e:
+        print(f"[decision-card] protocol news failed: {e}")       # ASCII
+
     return {
         "date": data.get("date"),
         "prev_tomorrow_watch": data.get("prev_tomorrow_watch"),
         "regime": reg,
+        # ★ 2026-11-28：三个新观察器（为 None 时前端整块不渲染）
+        "policy_pulse": pulse,
+        "watch_radar": watch,
+        "protocols": protos,
         "stance": {"level": stance[0], "total_cap": stance[1],
                    "single_cap": stance[2], "why": stance[3]},
         "environment": {"temperature": temp,
