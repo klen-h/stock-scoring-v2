@@ -57,27 +57,6 @@ def _update_state_after_push(state: dict, to_analyze: list) -> None:
             })
 
 
-# ★★ 2026-11-28：全量采集后的**分析分流**门槛。
-#   热度档位实测有：爆 / 沸 / 热 / 火 / 空 —— 原代码只认前三档，
-#   连"火"都漏了（`fetch_jin10` 原参数 ["爆","沸","热"]）。
-_HOT_FOR_LLM = ("爆", "沸", "热", "火")
-
-
-def _worth_analyze(cluster: dict) -> bool:
-    """该簇是否值得送 LLM：热度「热」及以上，或政策级正文。
-
-    不进这个门槛的簇仍然**照常入库**（`store.save_raw_data` 落全量），
-    只是不触发分析/推送 —— 「入库要全、分析要省」。
-    """
-    if str(cluster.get("hot") or "") in _HOT_FOR_LLM:
-        return True
-    try:
-        from app import policy_pulse as pp
-        return pp.is_policy(cluster.get("content") or "")
-    except Exception:
-        return False
-
-
 def poll_flash_once() -> dict:
     """
     快讯轮询一轮。返回执行摘要（供 /status 与手动触发展示）。
@@ -111,17 +90,12 @@ def poll_flash_once() -> dict:
             existing = next((p for p in state.get("pushedClusters", [])
                              if p["cluster"] == cluster["_cluster"]), None)
             if existing is None:
-                # ★★ 2026-11-28（漏采修复的配套改动）：
-                #   采集侧已改为**全量拉取**（不再按 hot 过滤），入库必须全，
-                #   否则政策通稿会在热度起来之前被永久漏掉（见 source.fetch_jin10 注释）。
-                #   但 LLM 分析侧**必须设门槛** —— 原版能无脑 `to_analyze.append`，
-                #   是因为进来之前已被 hot 过滤过一遍；现在全量进来，不加门槛
-                #   等于每条普通快讯簇都触发一次 LLM，成本失控。
-                #   门槛：热度「热」及以上（含实测发现的「火」档），或政策级正文。
-                if _worth_analyze(cluster):
-                    to_analyze.append(cluster)
-                else:
-                    to_update.append(cluster)      # 只入库，不分析（save_raw_data 已落全量）
+                # ★ 2026-11-28：此前的「分析分流」改动已随采集侧回滚一并撤销 ——
+                #   线上库证实 12:23 的政策通稿 `hot="沸"`，从未被过滤，
+                #   ⇒ 入口已是「爆/沸/热」过滤后的高价值子集，这里无需再加门槛。
+                #   （若将来真的放宽采集，必须同时在此处加 `_worth_analyze` 类分流，
+                #     否则每个普通快讯簇都会触发一次 LLM。）
+                to_analyze.append(cluster)
             elif cluster.get("hot") == "爆" and existing.get("pushCount") == 0:
                 to_analyze.append(cluster)          # 升级为"爆"，补推
             elif rules.is_major_update(cluster.get("content") or "", existing):
