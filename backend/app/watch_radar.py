@@ -309,6 +309,16 @@ def scan_once(day: str = None, push: bool = True) -> Dict:
             continue
         fresh.append(s)
 
+    # ★★ 2026-11-28 审查修（真 bug）：`push=False` 是**页面查看**，绝不能写日志 ——
+    #   否则用户打开页面看一眼，信号就被写进 watch_signal_log，
+    #   后端的 watch_radar_loop 会判定"今日已推"而**不再推企微**，
+    #   正好违背用户"避免突破关键价位后没收到提醒"的初衷。
+    if not push:
+        return {"ok": True, "date": d, "n": len(codes),
+                "n_signal": len(signals), "n_fresh": len(fresh), "pushed": 0,
+                "signals": signals, "snapshots": list(snapshots.values()),
+                "note": "push=False（仅查看），不写日志、不影响后续推送"}
+
     pushed = 0
     if fresh and push and PUSH_ENABLED:
         text = format_push(fresh)

@@ -217,8 +217,15 @@ function barW(v, max) {
   return Math.max(2, Math.min(100, (n / (max || 1)) * 100)) + '%'
 }
 
+// 本次扫描得到的信号（push=false 不落库，只在本页展示）
+const liveSignals = ref([])
+
 function sigOf(code) {
-  return (status.value.signals || []).filter(s => s.code === code)
+  const saved = (status.value.signals || []).filter(s => s.code === code)
+  // 已落库的优先；本次新扫出的补在后面（按 kind 去重，避免同一信号重复两行）
+  const extra = liveSignals.value.filter(
+    s => s.code === code && !saved.some(x => x.kind === s.kind))
+  return [...saved, ...extra]
 }
 function hitKinds(code) {
   return [...new Set(sigOf(code).map(s => s.kind))]
@@ -249,6 +256,10 @@ async function scan(silent = false) {
       const m = {}
       for (const s of (d.snapshots || [])) m[s.code] = s
       snaps.value = m
+      // 本次信号（后端 push=false 时不落库，这里本地留一份用于展示）
+      liveSignals.value = (d.signals || []).map(s => ({
+        ...s, pushed_at: s.first_time || new Date().toISOString().slice(0, 19).replace('T', ' '),
+      }))
       if (!silent) {
         scanMsg.value = d.n_signal
           ? `本次命中 ${d.n_signal} 个信号（已落库去重，盘中自动推企微）`

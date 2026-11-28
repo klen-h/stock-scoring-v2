@@ -395,14 +395,17 @@ def _already_pushed(pid: str, day: str) -> bool:
 def _record_hit(pid: str, day: str, first_time: str, n: int, sample: str,
                 pushed: bool) -> None:
     try:
-        old = db.fetch_one(f"SELECT hits FROM {_T_HIT} "
+        old = db.fetch_one(f"SELECT hits, pushed FROM {_T_HIT} "
                            f"WHERE protocol_id=%s AND date=%s", (pid, day)) or {}
         db.upsert(_T_HIT, {
             "protocol_id": pid, "date": day,
             "first_time": first_time,
             "hits": int(old.get("hits") or 0) + n,
             "sample": (sample or "")[:200],
-            "pushed": 1 if pushed else 0,
+            # ★ 2026-11-28 审查修（真 bug）：`pushed` **只升不降**。
+            #   `check_push` 会对"非待推"的命中传 pushed=False，
+            #   直接覆盖会把已推过的记录打回 0 ⇒ 同一张卡下一轮又推一遍。
+            "pushed": 1 if (pushed or old.get("pushed")) else 0,
             "created_at": _now(),
         }, conflict_columns=["protocol_id", "date"])
     except Exception as e:
