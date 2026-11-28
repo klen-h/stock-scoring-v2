@@ -2265,8 +2265,8 @@
                         :class="f.kind === 'limit_up' ? 'bg-rise/15 text-rise' : 'bg-fall/15 text-fall'">
                     {{ f.name }}{{ f.kind === 'limit_up' ? '涨停' : '跌停' }}
                   </span>
-                  <!-- ★★ 午盘开盘异动：**比政策快讯更早**的信号（11-27 早 19 分钟）。
-                       政策回答"为什么涨"，这条回答"已经在涨了"。 -->
+                  <!-- ★★ 午盘开盘异动：**盘面确认**（政策 12:23 已到，13:00 开盘才表态）。
+                       政策回答"为什么涨"，这条回答"市场认不认"。 -->
                   <span v-if="dc.policy_pulse.open_pulse"
                         class="px-1 py-0.5 rounded font-semibold"
                         :class="['extreme', 'strong'].includes(dc.policy_pulse.open_pulse.level)
