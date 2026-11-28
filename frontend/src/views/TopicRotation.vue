@@ -134,12 +134,23 @@
     <div class="grid grid-cols-1 xl:grid-cols-[1.55fr_1fr] gap-3">
       <!-- 卡片网格 -->
       <div class="bg-card border border-border rounded-lg p-4">
-        <div class="flex items-center justify-between mb-2">
+        <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
           <h2 class="text-sm font-bold text-gray-200">全部在榜题材</h2>
-          <span class="text-[10px] text-muted">点任意题材查看相关个股</span>
+          <div class="flex items-center gap-1">
+            <button v-for="s in SORTS" :key="s.v"
+                    class="px-2 py-0.5 rounded text-[10px] border transition-colors"
+                    :class="sortBy === s.v
+                      ? 'border-accent/40 bg-accent/15 text-accent'
+                      : 'border-border text-muted hover:text-gray-200'"
+                    @click="sortBy = s.v">{{ s.label }}</button>
+          </div>
         </div>
+        <p class="text-[10px] text-muted mb-1.5">
+          点任意题材查看相关个股。按<b class="text-gray-300">资金</b>排 = 谁在真金白银流入；
+          按<b class="text-gray-300">加速度</b>排 = 谁刚启动（5 日明显强于 20 日）。
+        </p>
         <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
-          <button v-for="x in (data.top || [])" :key="x.code"
+          <button v-for="x in sortedTop" :key="x.code"
                   class="text-left rounded border px-2 py-1.5 transition-colors"
                   :class="cardCls(x)"
                   @click="pick(x)">
@@ -195,6 +206,86 @@
       </div>
     </div>
 
+    <!-- ⑤·五 细分题材库（zzshare topic_table，官方阶段 + 驱动逻辑 + 个股相关性） -->
+    <div class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div>
+          <h2 class="text-sm font-bold text-gray-200">细分题材库</h2>
+          <p class="text-[11px] text-muted mt-0.5">
+            {{ lib.n || 0 }} 个细分题材 · 阶段由 zzshare 官方算法给出（topic_stage_v2）。
+            <b class="text-gray-300">与上方板块榜是两套口径</b>（名称只重合 9/140，不强行匹配）。
+          </p>
+        </div>
+        <div class="flex items-center gap-1 flex-wrap">
+          <button v-for="g in libGroups" :key="g.key"
+                  class="px-2 py-0.5 rounded text-[10px] border transition-colors"
+                  :class="libFilter === g.key
+                    ? 'border-accent/40 bg-accent/15 text-accent'
+                    : 'border-border text-muted hover:text-gray-200'"
+                  @click="libFilter = g.key">{{ g.label }} {{ g.count }}</button>
+        </div>
+      </div>
+      <div class="grid grid-cols-1 xl:grid-cols-[1fr_1.25fr] gap-3">
+        <!-- 左：题材列表 -->
+        <div class="space-y-0.5 max-h-[430px] overflow-y-auto pr-1">
+          <button v-for="x in libFiltered" :key="x.unique_key"
+                  class="w-full text-left px-2 py-1 rounded transition-colors"
+                  :class="libSel && libSel.unique_key === x.unique_key
+                    ? 'bg-accent/10' : 'hover:bg-white/5'"
+                  @click="pickLib(x)">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-[11px] truncate"
+                    :class="libSel && libSel.unique_key === x.unique_key ? 'text-accent' : 'text-gray-300'">
+                {{ x.name }}
+              </span>
+              <span class="text-[10px] font-mono shrink-0" :class="pctCls(x.today_pct)">
+                {{ fmt(x.today_pct, 2) }}%
+              </span>
+            </div>
+            <div class="flex items-center justify-between text-[9px] text-muted mt-0.5">
+              <span>{{ x.stage_tag }} · {{ x.continuity_state }}</span>
+              <span class="font-mono">{{ x.stock_count }}只</span>
+            </div>
+          </button>
+          <div v-if="!libFiltered.length" class="text-[11px] text-muted px-2 py-4">该类暂无</div>
+        </div>
+
+        <!-- 右：详情（驱动逻辑 + 个股相关性） -->
+        <div class="border border-border/50 rounded-lg p-3">
+          <p v-if="!libSel" class="text-[11px] text-muted py-8 text-center">
+            左侧点一个题材，这里显示它的<b class="text-gray-300">驱动逻辑</b>和
+            <b class="text-gray-300">相关个股（含相关性原文）</b>。
+          </p>
+          <div v-else-if="libLoading" class="text-[11px] text-muted py-8 text-center">加载中…</div>
+          <p v-else-if="libErr" class="text-[11px] text-fall py-8 text-center">⚠️ {{ libErr }}</p>
+          <template v-else>
+            <div class="flex items-center justify-between gap-2 mb-1.5">
+              <span class="text-xs font-semibold text-gray-200 truncate">{{ libSel.name }}</span>
+              <span class="text-[11px] font-mono shrink-0" :class="pctCls(libDetail.today_pct)">
+                {{ fmt(libDetail.today_pct, 2) }}%
+              </span>
+            </div>
+            <div class="text-[10px] text-muted mb-2">
+              {{ libSel.stage_tag }} · {{ libSel.continuity_state }}
+              <template v-if="libSel.confidence"> · 置信度 {{ libSel.confidence }}</template>
+            </div>
+            <div class="text-[10px] text-gray-400 leading-relaxed max-h-[120px] overflow-y-auto
+                        bg-black/20 rounded p-2 mb-2 whitespace-pre-line">{{ libDetail.content }}</div>
+            <div class="text-[10px] text-muted mb-1">
+              相关个股 <b class="text-gray-300">{{ libDetail.n_rows || 0 }}</b> 条
+            </div>
+            <div class="max-h-[190px] overflow-y-auto">
+              <div v-for="(r, i) in (libDetail.rows || [])" :key="i"
+                   class="flex items-start gap-2 text-[10px] py-0.5 border-b border-border/15">
+                <span class="w-6 text-right shrink-0 text-gray-300 font-medium">{{ r.stock }}</span>
+                <span class="flex-1 text-muted leading-snug" :title="r.rel">{{ r.rel }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+
     <!-- ⑥ 牛熊分层（折叠，需要时再算） -->
     <div class="bg-card border border-border rounded-lg p-4">
       <div class="flex items-center justify-between mb-2">
@@ -246,9 +337,16 @@ import * as echarts from 'echarts'
 import {
   getTopicRotationDashboard, getTopicRotationVerify,
   getTopicRotationHistory, getTopicRotationConstituents,
+  getTopicLib, getTopicDetail,
 } from '../api/modules/market'
 
 const TYPES = [{ v: 17, label: '题材' }, { v: 15, label: '概念' }, { v: 14, label: '行业' }]
+// 卡片区三种排序：涨幅（名次）/ 资金（谁在真金白银流入）/ 加速度（谁刚启动）
+const SORTS = [
+  { v: 'rank', label: '涨幅' },
+  { v: 'money', label: '资金' },
+  { v: 'accel', label: '加速度' },
+]
 const STAGES = [
   { key: 'emerging', label: '🚀 启动', cls: 'text-rise', box: 'border-rise/30 bg-rise/5' },
   { key: 'leading', label: '📈 主升', cls: 'text-accent', box: 'border-accent/30 bg-accent/5' },
@@ -342,6 +440,80 @@ function cardCls(x) {
 const stageMap = ref({})
 function stageOf(code) {
   return stageMap.value[code] || ''
+}
+
+// ── 卡片排序（三种维度）──
+const sortBy = ref('rank')
+const sortedTop = computed(() => {
+  const arr = (data.value.top || []).slice()
+  if (sortBy.value === 'money') {
+    arr.sort((a, b) => (b.money_yi ?? -1e18) - (a.money_yi ?? -1e18))
+  } else if (sortBy.value === 'accel') {
+    // accel 为 null 的排最后（缺 20 日档），不能当 0
+    arr.sort((a, b) => {
+      const x = a.accel, y = b.accel
+      if (x === null || x === undefined) return 1
+      if (y === null || y === undefined) return -1
+      return y - x
+    })
+  } else {
+    arr.sort((a, b) => (a.rank || 999) - (b.rank || 999))
+  }
+  return arr
+})
+
+// ── 细分题材库（zzshare topic_table）──
+const lib = ref({ items: [], n: 0 })
+const libFilter = ref('all')
+const libSel = ref(null)
+const libDetail = ref({})
+const libLoading = ref(false)
+const libErr = ref('')
+
+const libGroups = computed(() => {
+  const items = lib.value.items || []
+  const cnt = {}
+  for (const x of items) {
+    const k = x.stage_tag || '未标注'
+    cnt[k] = (cnt[k] || 0) + 1
+  }
+  const out = [{ key: 'all', label: '全部', count: items.length }]
+  // 按数量降序，保证 🔥高潮 / ⚡主升 这类重点排在前面
+  Object.entries(cnt)
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([k, v]) => out.push({ key: k, label: k, count: v }))
+  return out
+})
+const libFiltered = computed(() => {
+  const items = lib.value.items || []
+  if (libFilter.value === 'all') return items
+  return items.filter(x => (x.stage_tag || '未标注') === libFilter.value)
+})
+
+async function loadLib() {
+  try {
+    const { data: d } = await getTopicLib()
+    if (d && d.ok) lib.value = d
+  } catch (e) {
+    // 题材库是补充信息，失败不打断主页面
+    console.warn('[rotation] lib load failed', e?.message)
+  }
+}
+
+async function pickLib(x) {
+  libSel.value = x
+  libDetail.value = {}
+  libErr.value = ''
+  libLoading.value = true
+  try {
+    const { data: d } = await getTopicDetail({ unique_key: x.unique_key })
+    if (d && d.ok) libDetail.value = d
+    else libErr.value = (d && d.error) || '无数据'
+  } catch (e) {
+    libErr.value = e?.response?.data?.detail || e.message || '加载失败'
+  } finally {
+    libLoading.value = false
+  }
 }
 
 async function load() {
@@ -524,7 +696,7 @@ async function reload() {
 function onResize() { chart && chart.resize() }
 
 onMounted(async () => {
-  await reload()
+  await Promise.all([reload(), loadLib()])
   window.addEventListener('resize', onResize)
 })
 onBeforeUnmount(() => {

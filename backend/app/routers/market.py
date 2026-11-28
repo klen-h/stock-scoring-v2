@@ -3279,6 +3279,28 @@ def topic_rotation_constituents(
     return tr.constituents(code, plate_type=plate_type, day=day, top=top)
 
 
+@router.get("/topic-rotation/lib")
+def topic_rotation_lib():
+    """**细分题材库**（zzshare `topic_table`，140 个，含官方阶段与驱动逻辑摘要）。
+
+    与 `/topic-rotation`（板块级）是**两套口径**：前者细分且更锐，后者宽泛且更钝，
+    实测名称只能对上 9/140 ⇒ 刻意不做匹配，两块并列展示。
+    """
+    from app import topic_rotation as tr
+    return tr.topic_lib()
+
+
+@router.get("/topic-rotation/detail")
+def topic_rotation_detail(
+        unique_key: str = Query(..., description="题材的 unique_key（**不是数字 id**）")):
+    """单个细分题材详情：驱动逻辑全文 + `rows`（个股 + zzshare 给的相关性说明）。
+
+    ⚠️ 参数必须是 `unique_key`；传数字 id 会返回 `API Error: None`（实测）。
+    """
+    from app import topic_rotation as tr
+    return tr.topic_detail(unique_key)
+
+
 @router.get("/topic-rotation/verify")
 def topic_rotation_verify(
         plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),

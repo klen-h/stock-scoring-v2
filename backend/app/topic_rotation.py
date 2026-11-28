@@ -483,6 +483,120 @@ def constituents(plate_code: str, plate_type: int = 17, day: str = None,
 
 
 # ================================================================
+#  二·五、细分题材库（zzshare `topic_table`）—— 与板块榜**互补**，不强行匹配
+# ================================================================
+# ★★ 2026-11-28 实测：`topic_table` 的 140 个题材名 与 `plates_rank` 的板块名
+#   只重合 **9 个 / 140**（"光通信/光模块/光纤" vs "光通信"、"华为昇腾/超节点" 等）。
+#   前者是**细分题材+日期后缀**（更早、更锐），后者是**宽口径板块**（更晚、更钝）。
+#   ⇒ **不强行做名称匹配**（那会产出大量错误关联），改为两块并列展示：
+#       · 上半部分 = 板块级轮动（谁在涨、名次怎么变）
+#       · 下半部分 = 细分题材库（哪个具体逻辑在驱动 + 官方阶段 + 相关个股）
+#   zzshare 自带 `stage_tag` / `continuity_state` / `stage_confidence`
+#   （算法版本 `topic_stage_v2`）—— 比本模块的 `stage()` 规则成熟，**直接采用官方判定**。
+_LIB_CACHE: Dict[str, Dict] = {"ts": 0.0, "val": None}
+_LIB_TTL = 600.0           # 10 分钟：题材库变动慢
+_DETAIL_CACHE: Dict[str, Tuple[float, Dict]] = {}
+_DETAIL_TTL = 6 * 3600.0   # 详情（含个股 rows）6 小时
+
+
+def topic_lib(max_items: int = 200) -> Dict:
+    """细分题材库（含官方阶段与驱动逻辑摘要），进程缓存 10 分钟。
+
+    返回 `{ok, n, items:[{unique_key, name, stage_tag, continuity_state,
+                          confidence, today_pct, stock_count, brief}], note}`
+    """
+    now = time.time()
+    if _LIB_CACHE["val"] is not None and now - _LIB_CACHE["ts"] < _LIB_TTL:
+        return _LIB_CACHE["val"]
+    from app.zzshare_client import get_api
+    api = get_api()
+    items, total = [], 0
+    try:
+        for pg in (1, 2, 3):
+            r = api.topic_table_list(page=pg, limit=100, brief=False) or {}
+            if isinstance(r, dict):
+                total = int(r.get("total") or 0)
+                rows = r.get("items") or []
+            else:
+                rows = r or []
+            if not rows:
+                break
+            items.extend(rows)
+            if len(items) >= total:
+                break
+    except Exception as e:
+        print(f"[topic_rot] topic_lib failed: {str(e)[:80]}")
+        return {"ok": False, "error": "题材库拉取失败", "items": []}
+    out = []
+    for it in items[:max_items]:
+        content = str(it.get("content") or "")
+        out.append({
+            "unique_key": str(it.get("unique_key") or ""),
+            "name": str(it.get("name") or ""),
+            "stage_tag": str(it.get("stage_tag") or ""),
+            "continuity_state": str(it.get("continuity_state") or ""),
+            "confidence": it.get("stage_confidence"),
+            "today_pct": _f(it.get("today_pct")),
+            "stock_count": it.get("stock_count"),
+            "total_count": it.get("total_count"),
+            "brief": content.replace("\n", " ")[:110],
+        })
+    # 排序：有涨幅的按涨幅降序，无的排后
+    out.sort(key=lambda x: (x["today_pct"] is None, -(x["today_pct"] or 0)))
+    val = {"ok": True, "n": len(out), "total": total, "items": out,
+           "note": "zzshare 细分题材库（自 stage_tag/continuity_state/confidence，"
+                   "算法 topic_stage_v2）。与上方板块榜是**两套口径**，不做名称匹配。"}
+    _LIB_CACHE.update({"ts": now, "val": val})
+    return val
+
+
+def topic_detail(unique_key: str) -> Dict:
+    """单个细分题材的详情：驱动逻辑全文 + `rows`（个股 + 相关性说明）。
+
+    ⚠️ `topic_table_detail` 的 `tid` **必须是 `unique_key`**（传数字 id 会报
+       `API Error: None`，实测确认）。
+    """
+    uk = str(unique_key or "").strip()
+    if not uk:
+        return {"ok": False, "error": "unique_key 为空"}
+    now = time.time()
+    hit = _DETAIL_CACHE.get(uk)
+    if hit and now - hit[0] < _DETAIL_TTL:
+        return hit[1]
+    from app.zzshare_client import get_api
+    try:
+        d = get_api().topic_table_detail(tid=uk)
+    except Exception as e:
+        return {"ok": False, "error": f"拉取失败: {str(e)[:80]}"}
+    if not isinstance(d, dict):
+        return {"ok": False, "error": "返回格式异常"}
+    rows = d.get("rows") or []
+    clean = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        clean.append({
+            "l1": str(r.get("一级大类") or ""),
+            "l2": str(r.get("二级小类") or ""),
+            "l3": str(r.get("三级细分") or ""),
+            "stock": str(r.get("个股") or ""),
+            "rel": str(r.get("相关性") or ""),
+        })
+    val = {
+        "ok": True,
+        "name": str(d.get("name") or ""),
+        "content": str(d.get("content") or ""),
+        "today_pct": _f(d.get("today_pct")),
+        "rows": clean[:80],
+        "n_rows": len(clean),
+        "note": "`相关性` 是 zzshare 给出的「该公司与该题材的关系」原文，"
+                "不是本系统判断；个股顺序为原始顺序（未按涨跌排）。",
+    }
+    _DETAIL_CACHE[uk] = (now, val)
+    return val
+
+
+# ================================================================
 #  三、可验证性（`is_new` 到底有没有预测力）
 # ================================================================
 def _regime(day: str) -> Dict:
@@ -567,8 +681,13 @@ def stage(day: str, plate_type: int = 17) -> Dict[str, List[Dict]]:
 
 
 def dashboard(day: str = None, plate_type: int = 17) -> Dict:
-    """页面主接口：环境 + 统计 + 阶段 + 榜单，一次给全。"""
-    v = view(day, n_days=5, plate_type=plate_type, top=20)
+    """页面主接口：环境 + 统计 + 阶段 + 榜单，一次给全。
+
+    ★ 2026-11-28：`top` 从 20 提到 **100**（全部在榜），因为前端要支持
+      「涨幅 / 资金 / 加速度」三种排序切换 —— 只给前 20 的话，
+      按资金排序时会出现"资金最多但涨幅排第 30"的题材不在列表里，切了也看不到。
+    """
+    v = view(day, n_days=5, plate_type=plate_type, top=100)
     if not v.get("ok"):
         return v
     d = v["date"]
