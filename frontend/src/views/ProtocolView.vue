@@ -54,6 +54,41 @@
       </div>
     </div>
 
+    <!-- ②·五 今日重要快讯留账（★ 2026-11-28，用户："自动收集快讯重要内容"）
+         unmatched = 有大事但没卡可翻，就是最该补卡的地方 -->
+    <div v-if="news.n" class="bg-card border border-border rounded-lg p-4">
+      <div class="flex items-center justify-between flex-wrap gap-2 mb-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <h2 class="text-sm font-bold text-gray-200">今日重要快讯</h2>
+          <span class="text-[11px] text-muted">
+            {{ news.n }} 条 · 有卡
+            <b class="text-emerald-400 font-mono">{{ news.n_matched }}</b>
+            · 缺口
+            <b class="font-mono" :class="news.n_gap ? 'text-amber-300' : 'text-muted'">{{ news.n_gap }}</b>
+          </span>
+        </div>
+        <span class="text-[10px] text-muted">口径：important 或 热度 爆/沸/热</span>
+      </div>
+      <p v-if="news.n_gap" class="text-[11px] text-amber-300 mb-2">⚠️ {{ news.hint }}</p>
+      <div class="space-y-1 max-h-72 overflow-y-auto">
+        <div v-for="(n, i) in newsList" :key="n.news_id || i"
+          class="flex items-start gap-2 text-[11px] px-2 py-1.5 rounded border"
+          :class="n.protocol_ids.length
+            ? 'bg-bg/60 border-border/40'
+            : 'bg-amber-500/5 border-amber-500/25'">
+          <span class="font-mono text-muted shrink-0">{{ (n.time || '').slice(11, 16) }}</span>
+          <span class="shrink-0 px-1 py-0.5 rounded text-[10px]"
+            :class="n.hot === '爆' || n.hot === '沸'
+              ? 'bg-rise/15 text-rise' : 'bg-white/5 text-muted'">{{ n.hot || '—' }}</span>
+          <span class="flex-1 text-gray-300 leading-relaxed">{{ n.content }}</span>
+          <span v-if="n.protocol_ids.length" class="shrink-0 text-[10px] text-emerald-400">
+            → {{ n.protocol_names }}
+          </span>
+          <span v-else class="shrink-0 text-[10px] text-amber-300">缺口</span>
+        </div>
+      </div>
+    </div>
+
     <!-- ③ 协议卡列表 -->
     <div v-if="err" class="text-xs text-fall px-1">⚠️ {{ err }}</div>
 
@@ -142,7 +177,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import {
-  getActionProtocols, matchActionProtocol, archiveActionProtocol,
+  getActionProtocols, matchActionProtocol, archiveActionProtocol, getProtocolNews,
 } from '../api/modules/system'
 
 // 四段动作的展示顺序与配色：裁决最重要（它是打破规则冲突的那一条），用琥珀强调
@@ -164,6 +199,24 @@ const matchMsg = ref('')
 const matchHits = ref([])
 const hitIds = computed(() => new Set(matchHits.value.map(h => h.id)))
 
+// ★ 2026-11-28：今日重要快讯留账（缺口 = 没卡可翻的大事）
+const news = ref({})
+const newsList = computed(() => {
+  const m = news.value.matched || []
+  const u = news.value.unmatched || []
+  // 缺口排前面（最该看），组内按时间倒序
+  return [...u, ...m].sort((a, b) => (b.time || '').localeCompare(a.time || ''))
+})
+
+async function loadNews() {
+  try {
+    const { data: d } = await getProtocolNews()
+    news.value = (d && d.ok) ? d : {}
+  } catch {
+    news.value = {}
+  }
+}
+
 async function loadList() {
   loading.value = true
   err.value = ''
@@ -180,6 +233,7 @@ async function loadList() {
 
 function reload() {
   loadList()
+  loadNews()
 }
 
 async function doMatch() {
@@ -214,5 +268,8 @@ async function archive(p) {
   }
 }
 
-onMounted(loadList)
+onMounted(() => {
+  loadList()
+  loadNews()
+})
 </script>

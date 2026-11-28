@@ -41,6 +41,10 @@ from app.database import db
 
 _T_PROTO = "action_protocol"
 _T_HIT = "action_protocol_hit"      # 命中账本（每协议每日至多推 1 次）
+_T_NEWS = "action_protocol_news"    # ★ 重要快讯留账（含未命中 = 缺口）
+
+# "重要快讯"口径：显式 important，或热度 爆/沸/热（与 flash.service._worth_analyze 同源）
+_NEWS_HOT = ("爆", "沸", "热")
 _BJ = timezone(timedelta(hours=8))
 _READY = False
 
@@ -90,6 +94,23 @@ def ensure_tables() -> None:
             pushed INTEGER DEFAULT 0,
             created_at TEXT,
             PRIMARY KEY (protocol_id, date)
+        )
+    """)
+    # ★★ 2026-11-28（用户："动作协议也改为自动收集快讯重要内容"）：
+    #   此前协议卡**只处理关键词命中的快讯**，没命中的重要快讯悄悄丢掉 ⇒
+    #   用户看不到"今天有大事，但我没有卡可翻"。本表把**全部重要快讯**留账：
+    #     matched=1 → 有协议可翻；matched=0 → **缺口**（该补哪张卡一目了然）。
+    db.execute(f"""
+        CREATE TABLE IF NOT EXISTS {_T_NEWS} (
+            news_id TEXT PRIMARY KEY,
+            date TEXT,
+            news_time TEXT,
+            hot TEXT,
+            content TEXT,
+            matched INTEGER DEFAULT 0,
+            protocol_ids TEXT,
+            protocol_names TEXT,
+            created_at TEXT
         )
     """)
     _READY = True
@@ -412,6 +433,103 @@ def _record_hit(pid: str, day: str, first_time: str, n: int, sample: str,
         print(f"[protocol] record hit failed: {str(e)[:80]}")
 
 
+def collect(items: List[Dict], day: str = None) -> Dict:
+    """**自动收集重要快讯**并记录是否命中协议。
+
+    用户："动作协议也改为自动收集快讯重要内容" —— 此前协议卡只处理
+    **关键词命中**的快讯，没命中的重要快讯直接丢掉 ⇒ 用户永远不知道
+    "今天有件大事，但我没有卡可翻"。
+
+    本函数把**全部重要快讯**留账（`matched=0` 即协议缺口）。
+
+    items 字段：{id, time, hot, important, text|content}
+    口径：`important=1` 或 `hot ∈ 爆/沸/热`（与 `flash.service._worth_analyze` 同源）。
+    """
+    ensure_tables()
+    d = str(day or datetime.now(_BJ).strftime("%Y-%m-%d"))[:10]
+    protocols = list_protocols(active_only=True)
+    n_new, n_matched, n_skip_digest = 0, 0, 0
+    for it in (items or []):
+        text = str((it or {}).get("text") or (it or {}).get("content") or "").strip()
+        if not text:
+            continue
+        hot = str((it or {}).get("hot") or "")
+        try:
+            imp = int((it or {}).get("important") or 0)
+        except (TypeError, ValueError):
+            imp = 0
+        if not imp and hot not in _NEWS_HOT:
+            continue
+        # ★ 2026-11-28 实测修：媒体**汇总条**（"金十数据整理：欧盘美盘汇总"）
+        #   含"证监会/央行"字样 ⇒ 会误命中「事件脉冲协议」，且它本身是二手滞后信息，
+        #   既不该算"命中"也不该算"缺口" ⇒ 直接跳过（与 `policy_pulse` 同口径）。
+        try:
+            from app import policy_pulse as _pp
+            if any(h in text for h in _pp.DIGEST_HINTS):
+                n_skip_digest += 1
+                continue
+        except Exception:  # noqa: except_pass  取不到口径就照收（宁可多收不漏收）
+            pass
+        t = str((it or {}).get("time") or "")
+        nid = str((it or {}).get("id") or "").strip() \
+            or ("%s|%s" % (t[:19], text[:40]))
+        hits = match_text(text, protocols)
+        if hits:
+            n_matched += 1
+        try:
+            db.upsert(_T_NEWS, {
+                "news_id": nid, "date": d, "news_time": t, "hot": hot,
+                "content": text[:500],
+                "matched": 1 if hits else 0,
+                "protocol_ids": ",".join(h["id"] for h in hits),
+                "protocol_names": "、".join(h["name"] for h in hits),
+                "created_at": _now(),
+            }, conflict_columns=["news_id"])
+            n_new += 1
+        except Exception as e:
+            print(f"[protocol] collect failed: {str(e)[:70]}")
+    return {"ok": True, "date": d, "n": n_new, "n_matched": n_matched,
+            "n_gap": n_new - n_matched, "n_skipped_digest": n_skip_digest}
+
+
+def news_pool(day: str = None, limit: int = 60) -> Dict:
+    """今日重要快讯 + 命中情况（前端"快讯留账"区用）。
+
+    `unmatched` 就是**协议缺口** —— 有大事但没卡可翻，是最该补卡的地方。
+    """
+    ensure_tables()
+    d = str(day or datetime.now(_BJ).strftime("%Y-%m-%d"))[:10]
+    try:
+        rows = db.fetch(
+            f"SELECT * FROM {_T_NEWS} WHERE date=%s "
+            f"ORDER BY news_time DESC LIMIT %s", (d, limit)) or []
+    except Exception as e:
+        print(f"[protocol] news pool failed: {str(e)[:80]}")
+        return {"ok": False, "error": str(e)[:80], "matched": [], "unmatched": []}
+
+    def _row(r):
+        return {
+            "news_id": r.get("news_id"),
+            "time": r.get("news_time") or "",
+            "hot": r.get("hot") or "",
+            "content": r.get("content") or "",
+            "protocol_ids": [x for x in str(r.get("protocol_ids") or "").split(",") if x],
+            "protocol_names": str(r.get("protocol_names") or ""),
+        }
+
+    matched, unmatched = [], []
+    for r in rows:
+        (matched if r.get("matched") else unmatched).append(_row(r))
+    return {
+        "ok": True, "date": d, "n": len(rows),
+        "n_matched": len(matched), "n_gap": len(unmatched),
+        "matched": matched, "unmatched": unmatched,
+        "hint": (f"今天 {len(unmatched)} 条重要快讯**没有对应协议卡** —— 这就是缺口，"
+                 f"可照着它补一张「如果…就…」"
+                 if unmatched else "今日重要快讯都有协议覆盖"),
+    }
+
+
 def check_push(items: List[Dict], day: str = None, push: bool = True) -> Dict:
     """快讯批次 → 命中协议 → 推送（幂等：每协议每日至多 1 条）。
 
@@ -419,6 +537,13 @@ def check_push(items: List[Dict], day: str = None, push: bool = True) -> Dict:
     失败必须静默 —— 协议提醒是辅助层，绝不能拖垮快讯主链。
     """
     try:
+        # ★★ 2026-11-28：**先自动收集**（含没命中的重要快讯 = 缺口），
+        #   再匹配推送。收集与推送解耦 —— 收集失败不影响推送，反之亦然。
+        try:
+            collect(items or [], day=day)
+        except Exception as e:
+            print(f"[protocol] collect hook failed: {str(e)[:70]}")
+
         protocols = list_protocols(active_only=True)
         if not protocols:
             return {"ok": True, "pushed": 0, "note": "无启用协议"}

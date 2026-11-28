@@ -162,8 +162,13 @@ def poll_flash_once() -> dict:
             #   两者并列挂在轮询尾部，各自独立 try —— 协议层失败绝不拖垮快讯主链。
             try:
                 from app import action_protocol as _ap
+                # ★ 2026-11-28：带上 id/hot/important —— 协议侧要按热度
+                #   把"重要快讯"全部留账（含未命中的缺口），缺这几个字段就收不全。
                 _pr = _ap.check_push([
-                    {"src": "flash", "time": str(i.get("time") or ""),
+                    {"src": "flash", "id": str(i.get("id") or ""),
+                     "time": str(i.get("time") or ""),
+                     "hot": str(i.get("hot") or ""),
+                     "important": i.get("important") or 0,
                      "text": str(i.get("content") or "")}
                     for i in new_items])
                 if _pr.get("pushed"):

@@ -94,6 +94,22 @@ def match_protocol(text: str = Query(..., description="待匹配文本（快讯/
     return {"ok": True, "n": len(hits), "data": hits}
 
 
+@router.get("/protocols/news")
+def protocol_news(day: str = Query(None, description="YYYY-MM-DD，缺省=今天"),
+                  limit: int = Query(60, ge=1, le=300),
+                  user: dict = Depends(get_current_user)) -> Dict:
+    """今日**重要快讯留账**：哪些有协议可翻、哪些是**缺口**。
+
+    ★ 2026-11-28（用户："动作协议也改为自动收集快讯重要内容"）：
+      此前协议卡只处理关键词命中的快讯，没命中的重要快讯直接丢掉 ⇒
+      用户看不到"今天有大事，但我没有卡可翻"。
+
+    口径：`important=1` 或热度 ∈ 爆/沸/热。`unmatched` 就是最该补卡的地方。
+    """
+    from app import action_protocol as ap
+    return ap.news_pool(day=day, limit=limit)
+
+
 @router.post("/protocols/{pid}/archive")
 def archive_protocol(pid: str, user: dict = Depends(get_current_user)) -> Dict:
     from app import action_protocol as ap
