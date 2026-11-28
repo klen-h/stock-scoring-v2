@@ -195,7 +195,7 @@
                   class="border-t border-border hover:bg-white/5 transition-colors">
                   <td class="px-3 py-2">
                     <div class="font-medium">{{ r.name }}</div>
-                    <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener"
+                    <a :href="xqUrl(r.code)" target="_blank" rel="noopener"
                       @click.stop class="text-xs text-muted hover:text-accent hover:underline transition-colors"
                       title="在雪球查看">{{ r.code }}</a>
                   </td>
@@ -300,7 +300,7 @@
                   class="border-t border-border hover:bg-white/5 transition-colors">
                   <td class="px-3 py-2">
                     <div class="font-medium">{{ w.name }}</div>
-                    <a :href="getXueqiuUrl(w.code)" target="_blank" rel="noopener"
+                    <a :href="xqUrl(w.code)" target="_blank" rel="noopener"
                       @click.stop class="text-xs text-muted hover:text-accent hover:underline transition-colors"
                       title="在雪球查看">{{ w.code }}</a>
                   </td>
@@ -995,7 +995,7 @@ import {
 } from '../api'
 import { addWatch } from '../composables/useWatchlist'
 import { addPlan } from '../composables/useTradePlans'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 // ── 状态 ──
 const strategies = ref([])

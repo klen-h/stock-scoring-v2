@@ -17,10 +17,8 @@ export function getMarketPrefix(code) {
 }
 
 /**
- * 生成雪球个股页面 URL。
- * 雪球格式：https://xueqiu.com/S/{SH|SZ}{代码}
- * 例：getXueqiuUrl('600578') → 'https://xueqiu.com/S/SH600578'
+ * @deprecated 2026-11-28：旧版雪球 helper（漏 BJ）。
+ *   现改为 re-export `displayMeta.xqUrl`，让两套调用方行为一致。
+ *   ✅ 新代码请直接 `import { xqUrl } from '../composables/displayMeta'`。
  */
-export function getXueqiuUrl(code) {
-  return `https://xueqiu.com/S/${getMarketPrefix(code)}${code}`
-}
+export { xqUrl as getXueqiuUrl } from './displayMeta'

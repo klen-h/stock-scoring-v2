@@ -34,7 +34,7 @@
               class="border-b border-border/50 hover:bg-white/3 cursor-pointer transition-colors"
               @click="$router.push(`/stock/${row.code}`)">
               <td class="px-3 py-2 text-muted font-mono">
-                <a :href="getXueqiuUrl(row.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(row.code)" target="_blank" rel="noopener"
                    @click.stop
                    class="hover:text-accent hover:underline"
                    title="在雪球查看">{{ row.code }}</a>
@@ -77,7 +77,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getMarketRealtime } from '../api'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 const tableData = ref([])
 const total = ref(0)

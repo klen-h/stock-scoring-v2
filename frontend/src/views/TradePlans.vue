@@ -155,7 +155,7 @@
             <td class="py-2 px-3">
               <div class="cursor-pointer hover:text-accent inline-block" @click="goDetail(row.plan.code)">{{ row.plan.name }}</div>
               <div class="text-muted font-mono text-xs">
-                <a :href="getXueqiuUrl(row.plan.code)" target="_blank" rel="noopener" class="hover:text-accent hover:underline">{{ row.plan.code }}</a>
+                <a :href="xqUrl(row.plan.code)" target="_blank" rel="noopener" class="hover:text-accent hover:underline">{{ row.plan.code }}</a>
               </div>
             </td>
             <!-- 现价 -->
@@ -265,7 +265,7 @@ import {
   enabled as notifEnabled, requestPermission, disable as disableNotification,
   checkPlansNotify,
 } from '../composables/useNotifications'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 const router = useRouter()
 const { plans } = useTradePlans()

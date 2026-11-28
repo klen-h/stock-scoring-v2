@@ -139,7 +139,7 @@
             <td class="py-2 px-3">
               <div class="cursor-pointer hover:text-accent transition-colors inline-block" @click="goDetail(row.item.code)">{{ row.item.name }}</div>
               <div class="text-muted font-mono text-xs">
-                <a :href="getXueqiuUrl(row.item.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(row.item.code)" target="_blank" rel="noopener"
                    class="hover:text-accent hover:underline" title="在雪球查看">{{ row.item.code }}</a>
               </div>
               <span v-if="newsScores[row.item.code]" class="inline-block mt-0.5 px-1.5 py-0.5 rounded text-[10px]"
@@ -242,7 +242,7 @@ import {
   enabled as notifEnabled, requestPermission, disable as disableNotification,
   checkWatchlistNotify,
 } from '../composables/useNotifications'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 import { useNewsBadges } from '../composables/useNewsBadges'
 
 const router = useRouter()

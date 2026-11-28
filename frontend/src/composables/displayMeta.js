@@ -193,11 +193,15 @@ export function xqUrl(code) {
  *   ⚠️ `prefix` 缺失时返回 `''`（调用方退回纯文本）—— **宁可不给链接，也不指错标的**。
  */
 export function xqIndexUrl(prefix, code) {
-  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
   const m = String(prefix || '').trim().toLowerCase()
   // ★ 2026-11-23：新增 `csi`（中证指数）—— 中证2000 指数据雪球口径是
   //   `CSI932000`（`xueqiu.com/S/CSI932000`），写成 sh 会拼成 SH932000（雪球无此标的）。
-  if (!c || !['sh', 'sz', 'bj', 'csi'].includes(m)) return ''
+  // ★ 2026-11-28：新增 `hk` —— 恒生科技等港股指数代码含字母（HSTECH），
+  //   原 `replace(/\D/g,'')` 会把它清空 ⇒ 只能保留字母数字，且允许更长代码。
+  const c = m === 'hk'
+    ? String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12)
+    : String(code || '').replace(/\D/g, '').slice(0, 6)
+  if (!c || !['sh', 'sz', 'bj', 'csi', 'hk'].includes(m)) return ''
   return `https://xueqiu.com/S/${m.toUpperCase()}${c}`
 }
 

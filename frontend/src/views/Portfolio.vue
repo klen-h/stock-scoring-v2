@@ -256,7 +256,7 @@
             <td class="py-2 px-3">
               <div class="cursor-pointer hover:text-accent transition-colors inline-block" @click="goDetail(row.position.code)">{{ row.position.name }}</div>
               <div class="text-muted font-mono text-xs">
-                <a :href="getXueqiuUrl(row.position.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(row.position.code)" target="_blank" rel="noopener"
                    class="hover:text-accent hover:underline"
                    title="在雪球查看">{{ row.position.code }}</a>
               </div>
@@ -527,7 +527,7 @@ import {
   enabled as notifEnabled, requestPermission, disable as disableNotification,
   checkAndNotify,
 } from '../composables/useNotifications'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 import { generatePrediction } from '../utils/predictionEngine'
 import { calcTrendHealth } from '../utils/trendHealth'
 

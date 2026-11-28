@@ -173,7 +173,7 @@
           <template v-for="r in list" :key="r.id">
             <tr class="border-t border-border hover:bg-white/[0.02]">
               <td class="px-3 py-2 font-mono">
-                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                <a :href="xqUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
                   class="text-accent hover:underline">{{ r.code }}</a>
               </td>
               <td class="px-3 py-2">
@@ -225,7 +225,7 @@
           <template v-for="r in list" :key="r.id">
             <tr class="border-t border-border hover:bg-white/[0.02]">
               <td class="px-3 py-2 font-mono">
-                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                <a :href="xqUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
                   class="text-accent hover:underline">{{ r.code }}</a>
               </td>
               <td class="px-3 py-2">
@@ -280,7 +280,7 @@
           <template v-for="r in list" :key="r.id">
             <tr class="border-t border-border hover:bg-white/[0.02]">
               <td class="px-3 py-2 font-mono">
-                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
+                <a :href="xqUrl(r.code)" target="_blank" rel="noopener" title="在雪球查看"
                   class="text-accent hover:underline">{{ r.code }}</a>
               </td>
               <td class="px-3 py-2">
@@ -328,7 +328,7 @@ import {
   getPaperRisk, unfreezePaperRisk,
   getCoachPlans,
 } from '../api'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 import CoachPlanDetail from '../components/CoachPlanDetail.vue'
 
 const router = useRouter()

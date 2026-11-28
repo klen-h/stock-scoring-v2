@@ -148,7 +148,7 @@
                     <div class="cursor-pointer hover:text-accent transition-colors inline-block"
                          @click="goDetail(t.code)" :title="'查看详情：' + t.name">{{ t.name }}</div>
                     <div class="text-muted font-mono text-xs">
-                      <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                      <a :href="xqUrl(t.code)" target="_blank" rel="noopener"
                          class="hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
                     </div>
                   </td>
@@ -195,7 +195,7 @@ import { useRouter } from 'vue-router'
 // ★ 2026-10-11（L1）：markdown 渲染器收拢为全站唯一实例（`composables/markdown`）
 import { renderMd } from '../composables/markdown'
 import { getBacktestStrategy, getBacktestReports, getBacktestReportContent } from '../api'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 const router = useRouter()
 

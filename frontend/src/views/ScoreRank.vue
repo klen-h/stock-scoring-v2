@@ -333,7 +333,7 @@
                 @click="goDetail(r.code)">
                 <td class="py-1.5 px-2 text-muted font-mono text-xs">{{ r.rank_pos }}</td>
                 <td class="py-1.5 px-2 font-mono text-xs text-accent">
-                  <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener" @click.stop
+                  <a :href="xqUrl(r.code)" target="_blank" rel="noopener" @click.stop
                     class="hover:underline" :title="r.name">{{ r.code }}</a>
                 </td>
                 <td class="py-1.5 px-2 text-xs truncate max-w-[80px]">{{ r.name }}</td>
@@ -412,7 +412,7 @@
               <tr v-for="p in portfolioRadar.items" :key="p.code"
                 class="border-t border-border hover:bg-white/[0.02]">
                 <td class="py-2 px-3">
-                  <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
+                  <a :href="xqUrl(p.code)" target="_blank" rel="noopener"
                     class="text-accent hover:underline font-mono">{{ p.code }}</a>
                   <div class="text-muted">{{ p.name }}</div>
                 </td>
@@ -592,7 +592,7 @@
                  冒泡，否则会同时触发行的 goDetail）—— 整行点击 = 本页详情，
                  点代码 = 雪球新标签，两个入口并存。 -->
             <td class="py-2 px-3 font-mono text-xs text-accent">
-              <a :href="getXueqiuUrl(g.code)" target="_blank" rel="noopener" @click.stop
+              <a :href="xqUrl(g.code)" target="_blank" rel="noopener" @click.stop
                 class="hover:underline" title="在雪球查看（新标签）">{{ g.code }}</a>
             </td>
             <td class="py-2 px-3 text-xs">{{ g.name }}</td>
@@ -690,7 +690,7 @@
           <tbody>
             <tr v-for="it in patternScan.items" :key="it.code" class="border-b border-border/50">
               <td class="py-2 px-3 font-mono text-accent">
-                <a :href="getXueqiuUrl(it.code)" target="_blank" rel="noopener" class="hover:underline">{{ it.code }}</a>
+                <a :href="xqUrl(it.code)" target="_blank" rel="noopener" class="hover:underline">{{ it.code }}</a>
                 <span class="ml-1 px-1 rounded text-[10px]" :class="PATTERN_CHIP">缩量启动</span>
               </td>
               <td class="py-2 px-3">{{ it.board }}</td>
@@ -836,7 +836,7 @@
                 @click="goDetail(it.code)">
               <td class="py-2 px-3 text-muted font-mono text-xs">{{ it.rank_pos }}</td>
               <td class="py-2 px-3 font-mono text-xs text-accent">
-                <a :href="getXueqiuUrl(it.code)" target="_blank" rel="noopener" @click.stop
+                <a :href="xqUrl(it.code)" target="_blank" rel="noopener" @click.stop
                    class="hover:underline" title="在雪球查看">{{ it.code }}</a>
               </td>
               <td class="py-2 px-3">{{ it.name }}</td>
@@ -896,7 +896,7 @@
             @click="goDetail(item.code)">
             <td class="py-2 px-3 text-muted font-mono text-xs">{{ activeTab === 'bottom' ? stats.total - idx : idx + 1 }}</td>
             <td class="py-2 px-3 font-mono text-xs text-accent">
-              <a :href="getXueqiuUrl(item.code)" target="_blank" rel="noopener"
+              <a :href="xqUrl(item.code)" target="_blank" rel="noopener"
                  @click.stop
                  class="hover:underline"
                  title="在雪球查看">{{ item.code }}</a>
@@ -1498,7 +1498,7 @@ import { getScoreTop, getScoreBottom, getScoreBySignal, getMarketTemperature, ge
   getMarketOverview,
   getPatternScan, getPatternWatch, addPatternWatch, updatePatternWatch, deletePatternWatch,
   getPatternConfig, getPatternHighlightCodes, getSectorStrength } from '../api'
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 // ★ 2026-10-08 P3：异动分析入口（共享组件；工作台观察池 import 同一份，防两处漂移）
 import AnomalyEntry from '../components/AnomalyEntry.vue'
 // ★ 2026-09-25：主力阶段配色 / 战法中文名 / 闸门就绪配色**抽到共享模块** ——

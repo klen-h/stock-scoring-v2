@@ -145,7 +145,7 @@
               @click="activeTab === 'stock' ? goDetail(item.code) : null">
               <td class="py-2 px-3 text-muted font-mono text-xs">{{ idx + 1 }}</td>
               <td class="py-2 px-3 font-mono text-xs" :class="activeTab === 'stock' ? 'text-accent' : 'text-muted'">
-                <a v-if="activeTab === 'stock'" :href="getXueqiuUrl(item.code)" target="_blank" rel="noopener"
+                <a v-if="activeTab === 'stock'" :href="xqUrl(item.code)" target="_blank" rel="noopener"
                    @click.stop class="hover:underline" title="在雪球查看">{{ item.code }}</a>
                 <span v-else>{{ item.code }}</span>
               </td>
@@ -185,7 +185,6 @@ import {  ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getIndustryFlow, getConceptFlow, getMainFlow, getNorthboundFlow, getIndustryMainflow, getEtfBoard } from '../api'
 import { xqUrl } from '../composables/displayMeta'
-import { getXueqiuUrl } from '../composables/stockUtils'
 
 const router = useRouter()
 

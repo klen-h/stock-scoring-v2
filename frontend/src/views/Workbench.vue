@@ -3559,7 +3559,7 @@
                      <div v-for="p in tWatchPlans.slice(0, 3)" :key="p.code"
                           class="flex gap-1.5 pt-0.5 items-baseline"
                           :title="`支撑 ${p.support_type} / 阻力 ${p.resistance_type}；空间 ${p.space_pct}%`">
-                       <a :href="getXueqiuUrl(p.code)" target="_blank" rel="noopener"
+                       <a :href="xqUrl(p.code)" target="_blank" rel="noopener"
                           class="font-mono shrink-0 text-muted hover:text-accent hover:underline"
                           title="在雪球查看">{{ p.code }}</a>
                        <router-link :to="'/stock/' + p.code"
@@ -3927,7 +3927,7 @@ import TodoCard from '../components/workbench/TodoCard.vue'
 //      语义完全不同 ⇒ 主力阶段配色必须**重命名导入**（`MF_PHASE_STYLE`），避免撞名。
 import {
   PHASE_STYLE as MF_PHASE_STYLE, strategyShort,
-  stockHref, xqUrl, xqIndexUrl, hhmm, pctClass, signNum, scoreClass,
+  stockHref, xqIndexUrl, hhmm, pctClass, signNum, scoreClass,
   dirColor, levelColor,
 } from '../composables/displayMeta'
 // ★ 2026-09-28：「评分榜 Top10 / 观察池」两卡抽成子组件（盘后 + 盘中/午盘复用同一份）
@@ -4057,7 +4057,7 @@ import {
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
 //   雪球链接用项目唯一实现，**不在本页自己拼 URL**（与榜单/持仓/回测同款）。
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 // （渲染器 `mdRenderer` 已于 2026-10-11 收拢到 `composables/markdown`）
 
@@ -4841,11 +4841,11 @@ function saveTOpen() {
 const globalsRow = computed(() => {
   const defs = [
     { key: 'a50', label: 'A50期货' },
-    // ★★ 2026-11-15（用户："其中跳转雪球地址：恒生科技指数：
-    //   https://www.xueqiu.com/S/HKHSTECH"）：外盘行原本整列纯文本、不可点。
-    //   恒生科技用**用户指定的完整 URL**（HK 指数不是 6 位数字，不能走 xqIndexUrl），
+    // ★★ 2026-11-15（用户："其中跳转雪球地址：恒生科技指数"）：外盘行原本整列纯文本、不可点。
+    //   ★ 2026-11-28：原先这里硬编码完整 URL（当时 `xqIndexUrl` 不支持 hk），
+    //   现已给 `xqIndexUrl` 加 `hk` 支持 ⇒ 改走 helper，消除全站最后一处硬编码雪球地址。
     //   其余外盘项没有给地址 ⇒ 保持纯文本（宁可不给链接，也不猜代码指错标的）。
-    { key: 'hstech', label: '恒生科技', href: 'https://www.xueqiu.com/S/HKHSTECH' },
+    { key: 'hstech', label: '恒生科技', href: xqIndexUrl('hk', 'HSTECH') },
     // ★ 2026-11-04（用户："少了个日经225，想把韩国指数也加上去"）：
     //   两项都由**东财现货指数**提供（新浪的 `hf_NK` 是日经**期货**，且服务器 IP 被新浪封）。
     //   ⚠️ 标签写「日经225」「韩国KOSPI」**不带"期货"**——数据口径是现货，别让人误读。

@@ -173,7 +173,7 @@
           <tr v-for="r in poolRows" :key="r.code" class="border-b border-border/50 hover:bg-white/5">
             <!-- ★ 代码 → 雪球；名称 → 个股详情页（用户 2026-11-15 明确要求） -->
             <td class="px-3 py-1.5">
-              <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener"
+              <a :href="xqUrl(r.code)" target="_blank" rel="noopener"
                  class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ r.code }}</a>
             </td>
             <td class="px-3 py-1.5">
@@ -283,7 +283,7 @@
           <tbody>
             <tr v-for="r in pagedMarket" :key="r.code" class="border-b border-border/50 hover:bg-white/5">
               <td class="px-3 py-1.5">
-                <a :href="getXueqiuUrl(r.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(r.code)" target="_blank" rel="noopener"
                    class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ r.code }}</a>
               </td>
               <td class="px-3 py-1.5">
@@ -343,7 +343,7 @@
           <tbody>
             <tr v-for="t in summary.open" :key="t.id" class="border-b border-border/50">
               <td class="px-2 py-1">
-                <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(t.code)" target="_blank" rel="noopener"
                    class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
               </td>
               <td class="px-2 py-1">
@@ -378,7 +378,7 @@
           <tbody>
             <tr v-for="t in summary.closed" :key="t.id" class="border-b border-border/50">
               <td class="px-2 py-1">
-                <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                <a :href="xqUrl(t.code)" target="_blank" rel="noopener"
                    class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
               </td>
               <td class="px-2 py-1">
@@ -475,7 +475,7 @@
               <tr v-for="t in historyData.data" :key="t.id" class="border-b border-border/50">
                 <td class="px-2 py-1 text-muted font-mono">{{ t.trade_date }}</td>
                 <td class="px-2 py-1">
-                  <a :href="getXueqiuUrl(t.code)" target="_blank" rel="noopener"
+                  <a :href="xqUrl(t.code)" target="_blank" rel="noopener"
                      class="font-mono hover:text-accent hover:underline" title="在雪球查看">{{ t.code }}</a>
                 </td>
                 <td class="px-2 py-1">
@@ -568,9 +568,9 @@ import {
   getTTradeSim, delTTradeSim, autoTTradePool, getTTradeHistory,
 } from '../api'
 // ★ 2026-11-15（用户："点击代码跳转雪球，名称跳转个股详情页"）：
-//   雪球链接复用项目唯一实现 `getXueqiuUrl`（`composables/stockUtils`），
+//   雪球链接复用项目唯一实现 `xqUrl`（`composables/displayMeta`），
 //   不在本页自己拼 URL —— 与评分榜/持仓页同款，避免两处各写一份。
-import { getXueqiuUrl } from '../composables/stockUtils'
+import { xqUrl } from '../composables/displayMeta'
 
 // ★ 2026-11-24（用户："把成本模型加进 t_trades 的盈亏计算"）：
 //   后端新记录带 `pnl_net`（毛利 − 佣金/印花税/过户费），
