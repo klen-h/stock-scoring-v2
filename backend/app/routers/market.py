@@ -3128,16 +3128,88 @@ def uplimit_reasons(date: str = None):
     """涨停原因归类（G7，纯事后描述）：{code: {reason_kind, themes, evidence}}。
 
     读 `uplimit_reason` 表（日批 uplimit_reason 落库）；缺日=空 map（缺失≠0）。零外呼。
+
+    ★ 2026-11-28 顺手修复：本函数原为**完全重复的两份**（同路径同函数名），
+      第二份会静默覆盖第一份。虽不影响行为，但会让人以为"有两套实现"。
     """
     from app.uplimit_reason import load
     return {"ok": True, "date": date, "reasons": load(date)}
 
 
-@router.get("/uplimit-reasons")
-def uplimit_reasons(date: str = None):
-    """涨停原因归类（G7，纯事后描述）：{code: {reason_kind, themes, evidence}}。
+# ══════════════════════════════════════════════════════════════════════════
+#  板块产业链传导（★ 2026-11-28，落地"万物沙盘"框架的**可验证子集**）
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么只有 3 层、且只做对账不做预测】
+#   用户提供的 8 层沙漏里，`74 单品` / `反应转化`（螺纹钢、PTA、高炉炼钢）在 A 股
+#   没有对应标的 ⇒ 只保留 上游→中游→下游（板块级）。
+#   而 50 个交易日、627 个样本的回测显示：**全局方向命中率 0.526，接近随机**，
+#   但**链级差异极大**（医药 0.786 / 石化 0.625 vs 航运 0.333 / 军工 0.333）。
+#   ⇒ 结论：传导是"链级现象"而非全局规律，**现在没有资格做预测**；
+#     先把「事件后链条实际发生了什么」逐日对账，让样本自己长出来。
+#   ⚠️ 红线：不预测、不给强度系数、不进评分、不进闸门、不构成投资建议。
+@router.get("/plate-chain")
+def plate_chain_table():
+    """产业链关系表：链 → 节点序列（上游→下游）+ 跨链影响。
 
-    读 `uplimit_reason` 表（日批 uplimit_reason 落库）；缺日=空 map（缺失≠0）。零外呼。
+    `calibrated=False` 恒为 False —— 传导强度未校准（样本不足），只给方向不给力度。
     """
-    from app.uplimit_reason import load
-    return {"ok": True, "date": date, "reasons": load(date)}
+    from app import plate_chain as pc
+    v = pc.validate()
+    chains = [{
+        "chain": name,
+        "nodes": spec.get("nodes") or [],
+        "lag": spec.get("lag"),
+        "no_edges": bool(spec.get("no_edges")),
+        "note": spec.get("note") or "",
+    } for name, spec in pc.CHAINS.items()]
+    return {
+        "ok": v.get("ok"),
+        "chains": chains,
+        "cross": pc.CROSS,
+        "n_edges": v.get("edges"),
+        "n_covered": v.get("used"),
+        "n_known": v.get("known"),
+        "uncovered": v.get("uncovered") or [],
+        "missing": v.get("missing") or [],
+        "calibrated": False,
+    }
+
+
+@router.get("/plate-chain/reconcile")
+def plate_chain_reconcile(
+        seed: str = Query(..., description="种子板块名，如 油气开采及服务"),
+        day: str = Query(None, description="YYYY-MM-DD，缺省=板块表最近交易日"),
+        hops: int = Query(2, ge=1, le=3, description="沿链走几跳"),
+        windows: str = Query("1,3,5", description="观察窗口，逗号分隔的交易日数")):
+    """**事后对账**：`day` 当天 `seed` 板块异动后，链条上各节点的实际 D+n 涨跌。
+
+    只陈述事实（各节点涨了多少、方向与"成本传导"假设是否吻合），
+    不含预测、不含系数、不构成投资建议。
+    """
+    from app import plate_chain as pc
+    d = str(day or "").strip()[:10]
+    if not d:
+        seq = pc._dates()
+        d = seq[-1] if seq else ""
+    try:
+        ws = tuple(int(x) for x in str(windows).split(",") if str(x).strip())
+    except ValueError:
+        ws = (1, 3, 5)
+    if not ws:
+        ws = (1, 3, 5)
+    return pc.reconcile(d, seed, windows=ws, hops=hops)
+
+
+@router.get("/plate-chain/verify")
+def plate_chain_verify(
+        threshold: float = Query(1.5, ge=0.3, le=10,
+                                 description="上游**超额**涨跌触发阈值(%)"),
+        window: int = Query(1, ge=1, le=10, description="下游观察窗口(交易日)")):
+    """**关系表自检**：逐链方向命中率（随机基线 0.5）。
+
+    ⚠️ 用途是"持续积累样本、逐步筛掉不成立的链"，**不是策略回测**。
+      样本 <20 的链请勿单独下结论（50 个交易日的数据量撑不起横截面检验）。
+    """
+    from app import plate_chain as pc
+    return pc.backtest(threshold=threshold, window=window,
+                       min_samples=5, demean=True)
