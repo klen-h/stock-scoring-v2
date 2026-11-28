@@ -190,16 +190,15 @@
             <span class="w-12 text-right">5日</span>
             <span class="w-12 text-right">评分</span>
           </div>
-          <a v-for="s in (stk.items || [])" :key="s.code"
-             :href="'/stock/' + s.code" target="_blank" rel="noopener"
-             class="flex items-center gap-2 text-[11px] py-0.5 hover:bg-white/5 rounded px-1">
-            <span class="flex-1 truncate text-gray-300" :title="s.code">
-              {{ s.name }} <span class="text-[9px] text-muted font-mono">{{ s.code }}</span>
+          <div v-for="s in (stk.items || [])" :key="s.code"
+               class="flex items-center gap-2 text-[11px] py-0.5 hover:bg-white/5 rounded px-1">
+            <span class="flex-1 truncate">
+              <StockName :code="s.code" :name="s.name" />
             </span>
             <span class="w-14 text-right font-mono" :class="pctCls(s.chg_pct)">{{ fmt(s.chg_pct, 2) }}%</span>
             <span class="w-12 text-right font-mono text-muted">{{ fmt(s.ret5, 1) }}</span>
             <span class="w-12 text-right font-mono text-muted">{{ fmt(s.score, 0) }}</span>
-          </a>
+          </div>
         </div>
         <p v-if="sel && !stkLoading && !stkErr && stk.note"
            class="text-[10px] text-muted mt-2 leading-relaxed">{{ stk.note }}</p>
@@ -288,17 +287,19 @@
               </span>
             </div>
             <div class="flex items-center gap-2 text-[9px] text-muted border-b border-border/30 pb-0.5 mb-0.5">
-              <span class="w-16 text-right">个股</span>
+              <span class="w-32 text-right">个股</span>
               <span class="w-12 text-right">当日</span>
               <span class="flex-1">相关性</span>
             </div>
             <div class="max-h-[190px] overflow-y-auto">
               <div v-for="(r, i) in (libDetail.rows || [])" :key="i"
                    class="flex items-start gap-2 text-[10px] py-0.5 border-b border-border/15">
-                <a v-if="r.code" :href="'/stock/' + r.code" target="_blank" rel="noopener"
-                   class="w-16 shrink-0 text-right text-gray-300 font-medium hover:text-accent"
-                   :title="r.code">{{ r.stock }}</a>
-                <span v-else class="w-16 shrink-0 text-right text-gray-300 font-medium">{{ r.stock }}</span>
+                <!-- ★ 2026-11-28：原版代码只藏在 :title 里、链接硬编码 '/stock/'。
+                     改用 StockName 后名称与代码都可见且分别跳转；列宽 16→32 容纳"名称（代码）"。 -->
+                <div v-if="r.code" class="w-32 shrink-0 flex justify-end font-medium overflow-hidden">
+                  <StockName :code="r.code" :name="r.stock" />
+                </div>
+                <span v-else class="w-32 shrink-0 text-right text-gray-300 font-medium">{{ r.stock }}</span>
                 <span class="w-12 text-right font-mono shrink-0" :class="pctCls(r.chg_pct)">
                   {{ fmt(r.chg_pct, 2) }}%
                 </span>
@@ -358,6 +359,8 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as echarts from 'echarts'
+// ★ 2026-11-28：个股展示统一走共享组件（名称带代码 + 名称跳详情 + 代码跳雪球）
+import StockName from '../components/StockName.vue'
 import {
   getTopicRotationDashboard, getTopicRotationVerify,
   getTopicRotationHistory, getTopicRotationConstituents,

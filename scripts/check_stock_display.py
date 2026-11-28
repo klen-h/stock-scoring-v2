@@ -42,7 +42,14 @@ PATTERNS: List[Tuple[str, re.Pattern, set]] = [
     ),
     (
         "hardcoded_detail_href",
-        re.compile(r"href\s*=\s*['\"](?:#/|/)?stock/"),
+        # ★ 2026-11-28：原正则 `href\s*=\s*['\"](?:#/|/)?stock/` 漏掉了
+        #   `:href="'/stock/' + code"` 这种 **Vue 表达式包字符串字面量** 的写法
+        #   （`TopicRotation.vue` 两处就是这么漏过去的）。
+        #   ⇒ 允许引号后再出现一层引号（`['\"]?`），两种写法都抓。
+        #   ⚠️ 必须锚定 `href=`：不能裸扫 `'/stock/'`，否则会误伤
+        #     `router-link :to="'/stock/'+code"`（hash 路由下这是正确写法，
+        #     换成 stockHref 反而会生成双 #）以及 API 路径 `/stock/search`。
+        re.compile(r"\bhref\s*=\s*['\"]\s*['\"]?#?/stock/"),
         set(),
     ),
     (

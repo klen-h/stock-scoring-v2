@@ -7,7 +7,7 @@
       <span class="font-semibold">{{ alert.label }}</span>
       <span v-if="alert.code" class="text-muted">
         <a :href="xqUrl(alert.code)" target="_blank" class="hover:text-accent" title="雪球">{{ alert.code }}</a>
-        <a :href="'#/stock/' + alert.code" target="_blank" class="hover:text-accent">{{ alert.name }}</a>
+        <a :href="stockHref(alert.code)" target="_blank" class="hover:text-accent">{{ alert.name }}</a>
       </span>
       <!-- 状态徽标：**已决策的永远显示结果**（用户："决策的结果展示在那里即可，无需消失"）；
            未决策 + 回放/只读时显示"未决策"。 -->
@@ -64,14 +64,10 @@
 //      并让"决策结果"留在原地不消失（用户要求）。
 import { computed, ref } from 'vue'
 
-// 雪球链接（A股代码前缀 SH/SZ/BJ）——与 Workbench.vue 同口径
-function xqUrl(code) {
-  const c = String(code || '').replace(/\D/g, '').slice(0, 6)
-  const pfx = c.startsWith('6') || c.startsWith('9') ? 'SH' : (c.startsWith('4') || c.startsWith('8') ? 'BJ' : 'SZ')
-  return `https://xueqiu.com/S/${pfx}${c}`
-}
 import { executeCoachAlert } from '../../api'
-import { hhmm } from '../../composables/displayMeta'
+// ★ 2026-11-28：删除本文件内的 `function xqUrl()` —— 它与 displayMeta.xqUrl **同名却是第三份实现**。
+//   三套雪球 helper 并存正是"股票展示反复遗漏/口径漂移"的根因 ⇒ 统一走唯一共享源。
+import { hhmm, stockHref, xqUrl } from '../../composables/displayMeta'
 
 const props = defineProps({
   alert: { type: Object, required: true },
