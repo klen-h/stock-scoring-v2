@@ -729,6 +729,25 @@ def task_intraday_path():
     return f"分时归档: {r['date']} 成功 {r['ok']}/{r['codes']}{tail}"
 
 
+def task_topic_rotation():
+    """题材轮动当日落库（`topic_rotation`，2026-11-28）。
+
+    ★ 为什么必须进日批：`/rotation` 页报"无数据（先跑 backfill 或等日批落库）"，
+      但 `DEFAULT_ORDER` 里**原本根本没有这个任务** ⇒ 只能手跑 backfill，
+      隔天又是空的。页面那句提示里的"等日批落库"此前是一句空话。
+    ★ 成本：每天 3 档（n_days=1/5/20）× 100 条 ≈ 3 次请求、2 秒。
+      幂等 upsert（主键含 date/plate_type/plate_code/n_days），重跑只覆盖同日。
+    ★ 必须含 `n_days=1`：`verify()` 算次日收益全靠当日涨幅，只有 5 日累计无法还原。
+    """
+    from app.flash.rules import latest_completed_trading_day
+    from app import topic_rotation as tr
+    d = str(latest_completed_trading_day())[:10]
+    r = tr.save(d, n_days_list=(1, 5, 20))
+    if not r.get("ok"):
+        return f"题材轮动: {d} 落库失败（{r.get('kinds')}）"
+    return f"题材轮动: {d} 写入 {r['written']} 行 {r.get('kinds')}"
+
+
 def task_earnings_pressure():
     """盈利承压监测（P2-2，PLAN_RESERVE_SIGNALS §6.6）—— 周度出摘要 + 企微推送。
 
@@ -2072,6 +2091,8 @@ TASKS = {
     # ★ 2026-10-10（P2-1）：指数日内分时路径归档 —— 与 lhb 同属"盘后数据同步"类，紧随其后。
     #   为什么必须进日批：分时**只有当日**（时钟属性），不每天归档就永远没有日内历史。
     "intraday_path": (task_intraday_path, "指数分时路径归档（日内研究底座）"),
+    # ★ 2026-11-28：题材轮动日增量 —— /rotation 页提示"等日批落库"，但此前**没有这个任务**
+    "topic_rotation": (task_topic_rotation, "题材轮动当日落库（/rotation 数据底座）"),
     # ★ 2026-10-10（P2-2）：盈利承压监测清单（滞胀 → 盈利端）—— 纯只读分析，
     #   排进"周期性复核"区（在 data_gap 之前）；每日跑但**只在周五推企微**（周度摘要）。
     "earnings_pressure": (task_earnings_pressure, "盈利承压监测清单（监测口径，非信号）"),
@@ -2183,6 +2204,8 @@ DEFAULT_ORDER = ["backfill",
                  #   原位置写在 zz_daily 之前 ⇒ 读到空 payload ⇒ 涨停归类永远 0 只，且不报错
                  #   （静默失效：日志显示"涨停归类: 0 只"，看起来像当天没涨停股）。
                  "lhb", "holdings_lhb_digest", "holdings_news_digest", "intraday_path",
+                 # ★ 2026-11-28：题材轮动（3 次 zzshare 请求 / ~2 秒，紧随分时归档）
+                 "topic_rotation",
                  "zz_finance", "zz_daily",
                  "uplimit_reason",
                  "weekly_report", "subfactor_ic",
