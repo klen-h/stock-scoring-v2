@@ -143,6 +143,21 @@ def poll_flash_once() -> dict:
                     summary["watch_pushed"] = sorted(_r.get("hits") or {})
             except Exception as e:
                 print(f"[flash] 观察词检查失败（不影响轮询）: {str(e)[:80]}")
+
+            # ★★ 2026-11-28（用户复盘 11-27："12:32 企微就收到平准基金命中，
+            #   到开盘还有 28 分钟，我却不知所措"）：
+            #   观察词只回答"提到了什么"，**协议卡才回答"第一步做什么"**。
+            #   两者并列挂在轮询尾部，各自独立 try —— 协议层失败绝不拖垮快讯主链。
+            try:
+                from app import action_protocol as _ap
+                _pr = _ap.check_push([
+                    {"src": "flash", "time": str(i.get("time") or ""),
+                     "text": str(i.get("content") or "")}
+                    for i in new_items])
+                if _pr.get("pushed"):
+                    summary["protocol_pushed"] = _pr.get("names") or []
+            except Exception as e:
+                print(f"[flash] 协议命中检查失败（不影响轮询）: {str(e)[:80]}")
     except Exception as e:
         summary["error"] = str(e)[:300]
         print(f"[flash] 轮询异常: {e}")

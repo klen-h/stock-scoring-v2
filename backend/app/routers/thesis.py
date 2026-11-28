@@ -58,6 +58,50 @@ def parse_draft(payload: Dict = Body(...),
     return r
 
 
+# ══════════════════════════════════════════════════════════════════════════
+#  动作协议卡（★ 2026-11-28）：回答"怎么办"，与情景卡"会怎样"并列
+# ══════════════════════════════════════════════════════════════════════════
+# 【为什么单列】用户复盘 11-27："12:32 企微就收到了平准基金命中，到开盘还有
+#   28 分钟，我却不知所措" —— 不是信息失败，是**没有卡可翻**。
+#   情景卡的 checks 是事后验证，缺的正是"触发后第一步做什么"。
+@router.post("/protocols")
+def create_protocol(payload: Dict = Body(...),
+                    user: dict = Depends(get_current_user)) -> Dict:
+    """登记动作协议卡。缺 first_move 或 trigger.keywords 直接拒（不可执行的卡等于没有）。"""
+    from app import action_protocol as ap
+    r = ap.create(payload or {})
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "登记失败")
+    return r
+
+
+@router.get("/protocols")
+def list_protocols(active_only: bool = Query(False),
+                   user: dict = Depends(get_current_user)) -> Dict:
+    from app import action_protocol as ap
+    return {"data": ap.list_protocols(active_only=active_only)}
+
+
+@router.get("/protocols/match")
+def match_protocol(text: str = Query(..., description="待匹配文本（快讯/通稿）"),
+                   user: dict = Depends(get_current_user)) -> Dict:
+    """**纯匹配**：给一段文本，返回命中的协议卡。不落库、不推送、不调 LLM。
+
+    用于人工核对"这条通稿到底会翻哪张卡"。
+    """
+    from app import action_protocol as ap
+    hits = ap.match_items([{"text": text, "time": ""}])
+    return {"ok": True, "n": len(hits), "data": hits}
+
+
+@router.post("/protocols/{pid}/archive")
+def archive_protocol(pid: str, user: dict = Depends(get_current_user)) -> Dict:
+    from app import action_protocol as ap
+    if not ap.get(pid):
+        raise HTTPException(404, "协议不存在")
+    return {"ok": ap.archive(pid)}
+
+
 @router.get("/scenarios")
 def list_scenarios(active_only: bool = Query(False),
                    date: Optional[str] = Query(None, description="YYYY-MM-DD"),
