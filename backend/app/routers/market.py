@@ -3213,3 +3213,43 @@ def plate_chain_verify(
     from app import plate_chain as pc
     return pc.backtest(threshold=threshold, window=window,
                        min_samples=5, demean=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  题材轮动（★ 2026-11-28，用户："zzshare 有个题材轮动的功能，项目需要加入"）
+# ══════════════════════════════════════════════════════════════════════════
+# 【核心】轮动的价值在**变化量**（新进/跃升/掉队/加速），不在涨幅榜本身。
+#   只展示排名 = 把轮动做成了"涨幅榜"，那是最没有增量的一种做法。
+# 【已验证】`is_new` 究竟有没有预测力（122 个交易日 / 455 个事件）：
+#   D+1 +0.032%(t=0.76) / D+3 +0.101%(t=2.17) / D+5 +0.157%(t=3.24)
+#   ⇒ D+5 统计显著，但**胜率仅 48.6%**（均值被少数大涨拉高），
+#     且 +0.157% 扣掉双边成本后为负 ⇒ `tradable=False`。
+#   ⚠️ 所以本接口只做**事实展示**，不把 is_new 包装成入场信号。
+@router.get("/topic-rotation")
+def topic_rotation_view(
+        day: str = Query(None, description="YYYY-MM-DD，缺省=库内最新"),
+        n_days: int = Query(5, ge=1, le=60, description="排名主口径（累计天数）"),
+        plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),
+        top: int = Query(15, ge=1, le=50)):
+    """题材轮动视图：`top` / `new_in` / `surge` / `drop` / `accel`。
+
+    只陈述变化（谁进榜、谁掉队、谁在加速），不含买卖建议。
+    信号有效性见 `/topic-rotation/verify`（当前 tradable=False）。
+    """
+    from app import topic_rotation as tr
+    return tr.view(day=day, n_days=n_days, plate_type=plate_type, top=top)
+
+
+@router.get("/topic-rotation/verify")
+def topic_rotation_verify(
+        plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),
+        horizon: int = Query(5, ge=1, le=10, description="持有期（交易日）"),
+        min_days: int = Query(30, ge=5, le=500, description="最少覆盖天数")):
+    """**信号有效性检验**（事件研究）：is_new=1 的题材后续超额 vs 全体均值。
+
+    ⚠️ 手动调用（要扫全表），不要放进轮询。
+    返回 `valid`（统计上非噪声）与 `tradable`（扣完成本还能用）两个判据 ——
+    2026-11-28 实测：valid=True 但 tradable=False（胜率 48.6%）。
+    """
+    from app import topic_rotation as tr
+    return tr.verify(plate_type=plate_type, horizon=horizon, min_days=min_days)

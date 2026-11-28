@@ -418,7 +418,8 @@ def seed(force: bool = False) -> Dict:
         return {"ok": False, "error": "板块名校验未通过，拒绝入库",
                 "missing": v["missing"], "edges": 0}
     edges = _edges_from_chains()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    from app.flash.rules import beijing_now as _bj
+    now = _bj().strftime("%Y-%m-%d %H:%M:%S")
     written = 0
     try:
         if force:
