@@ -33,6 +33,9 @@ const routes = [
   { path: '/contradictions', name: 'Contradictions', component: () => import('../views/ContradictionsView.vue') },
   // ★ 2026-11-22：推演登记 + 逐日对照（P1 前端，后端 API 已于 11-22 上线）
   { path: '/thesis', name: 'Thesis', component: () => import('../views/ThesisView.vue') },
+  // ★ 2026-11-28：动作协议卡（规则层，回答"怎么办"）。与 /thesis 并列：
+  //   那张是"会怎样"（情景+概率+事后验证），这张是"触发后第一步做什么"。
+  { path: '/protocols', name: 'Protocols', component: () => import('../views/ProtocolView.vue') },
   { path: '/performance', name: 'Performance', component: () => import('../views/Performance.vue') },
 ]
 

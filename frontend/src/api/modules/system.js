@@ -193,6 +193,19 @@ export const rerunThesisReview = (id, date) =>
     null, { params: date ? { date } : {}, timeout: 120000 })
 export const archiveThesisScenario = (id) =>
   http.post(`/thesis/scenarios/${id}/archive`)
+
+// ★★ 2026-11-28：动作协议卡（规则层，回答"怎么办"，与推演"会怎样"并列）。
+//   起因：用户 11-27 复盘 —— 12:32 企微就收到了「平准基金」，到开盘还有 28 分钟，
+//   却"不知所措"。不是信息失败，是**没有卡可翻**。
+export const getActionProtocols = (activeOnly = false) =>
+  http.get('/thesis/protocols', { params: { active_only: activeOnly } })
+// 纯匹配：贴一段快讯/通稿，看会翻哪张卡（不落库、不推送、不调 LLM）
+export const matchActionProtocol = (text) =>
+  http.get('/thesis/protocols/match', { params: { text }, timeout: 20000 })
+export const createActionProtocol = (payload) =>
+  http.post('/thesis/protocols', payload)
+export const archiveActionProtocol = (id) =>
+  http.post(`/thesis/protocols/${id}/archive`)
 // ★★ 2026-11-16：铜裁决器 —— 油跌时区分"供给驱动(D1)"与"需求驱动(D2)"。
 //   把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出。
 export const getCopperWatch = () => http.get('/system/copper-watch', { timeout: 20000 })
