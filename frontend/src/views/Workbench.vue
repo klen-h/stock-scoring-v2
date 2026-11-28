@@ -2299,29 +2299,13 @@
                     {{ dc.watch_radar.n }} 只
                   </span>
                 </div>
-                <!-- ★ 2026-11-28：两只股票**左右并排**成小卡片（最多 5 只自动换行），
-                     比原来一只一行省一半纵向空间。名称带代码、跳转口径由 StockName 保证。 -->
-                <div class="grid grid-cols-2 gap-1.5 mt-1">
-                  <div v-for="it in (dc.watch_radar.items || [])" :key="it.code"
-                       class="rounded border border-border/40 bg-white/[0.02] px-1.5 py-1 min-w-0">
-                    <div class="flex items-center justify-between gap-1 text-[11px]">
-                      <span class="truncate min-w-0">
-                        <StockName :code="it.code" :name="it.name" />
-                      </span>
-                      <span class="text-[9px] text-muted shrink-0"
-                            :title="it.source === 'portfolio' ? '跟随持仓' : '手动登记'">
-                        {{ it.source === 'portfolio' ? '持仓' : '自选' }}
-                      </span>
-                    </div>
-                    <div class="flex items-center gap-2 mt-0.5 text-[10px] font-mono">
-                      <span class="text-rise" :title="it.r_src || '阻力'">
-                        R {{ it.resistance != null ? it.resistance : '—' }}
-                      </span>
-                      <span class="text-fall" :title="it.s_src || '支撑'">
-                        S {{ it.support != null ? it.support : '—' }}
-                      </span>
-                    </div>
-                  </div>
+                <div class="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 text-[11px]">
+                  <span v-for="it in (dc.watch_radar.items || [])" :key="it.code">
+                    <StockName :code="it.code" :name="it.name" />
+                    <span class="text-muted font-mono ml-1">
+                      R{{ it.resistance != null ? it.resistance : '—' }}/S{{ it.support != null ? it.support : '—' }}
+                    </span>
+                  </span>
                 </div>
                 <div v-for="(s, i) in (dc.watch_radar.signals || [])" :key="i"
                      class="text-[11px] mt-0.5 text-gray-300">

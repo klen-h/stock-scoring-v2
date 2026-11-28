@@ -55,12 +55,14 @@
       </span>
     </div>
 
-    <!-- ③ 盯盘卡 -->
+    <!-- ③ 盯盘卡：★ 2026-11-28 两只股票**左右并排**（最多 5 只自动换行）。
+         原来每张卡占满整行，2 只要滚两屏；现在一行两张，盘口卖/买仍并排、高度不变。 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
     <div v-for="t in (status.targets || [])" :key="t.code"
-      class="bg-card border rounded-lg p-4"
+      class="bg-card border rounded-lg p-3 min-w-0"
       :class="hitKinds(t.code).length ? 'border-amber-500/50' : 'border-border'">
       <!-- 头部：名称（代码）+ 现价 + 移除 -->
-      <div class="flex items-center justify-between gap-3 flex-wrap mb-2">
+      <div class="flex items-center justify-between gap-2 flex-wrap mb-2">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-sm font-bold"><StockName :code="t.code" :name="t.name" /></span>
           <template v-if="snapOf(t.code)">
@@ -85,7 +87,7 @@
       </div>
 
       <!-- 关键位 -->
-      <div class="flex items-center gap-4 text-[11px] mb-3 flex-wrap">
+      <div class="flex items-center gap-2 text-[11px] mb-3 flex-wrap">
         <span class="text-muted">阻力
           <b class="font-mono text-rise">{{ fmtP(t.resistance) }}</b>
           <span class="text-[10px]">（{{ t.r_src || '—' }}）</span>
@@ -102,7 +104,7 @@
       </div>
 
       <!-- 五档盘口 -->
-      <div v-if="snapOf(t.code) && (snapOf(t.code).asks || []).length" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div v-if="snapOf(t.code) && (snapOf(t.code).asks || []).length" class="grid grid-cols-2 gap-2">
         <!-- 卖盘：卖5 在上，卖1 在下 -->
         <div class="space-y-0.5">
           <div class="text-[10px] text-muted mb-1">卖盘（压单阈值 {{ fmtVol(snapOf(t.code).wall_thr) }} 手）</div>
@@ -148,6 +150,7 @@
           {{ s.detail }}
         </div>
       </div>
+    </div>
     </div>
 
     <!-- ④ 规则说明（随接口下发，前端不硬编码口径） -->
