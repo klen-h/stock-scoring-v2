@@ -84,8 +84,73 @@
           <span v-if="n.protocol_ids.length" class="shrink-0 text-[10px] text-emerald-400">
             → {{ n.protocol_names }}
           </span>
-          <span v-else class="shrink-0 text-[10px] text-amber-300">缺口</span>
+          <!-- 缺口 → 一键 LLM 起草（只起草不登记，人工改完再存） -->
+          <button v-else @click="draftNews(n)" :disabled="!!drafting"
+            class="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition-colors disabled:opacity-50">
+            {{ drafting === n.news_id ? '起草中…' : '起草' }}
+          </button>
         </div>
+      </div>
+    </div>
+
+    <!-- ②·六 协议草案（LLM 起草 · 人工审阅后登记） -->
+    <div v-if="draftForm" class="bg-card border border-accent/40 rounded-lg p-4">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <h2 class="text-sm font-bold text-accent">协议草案</h2>
+          <span class="text-[11px] text-muted">LLM 起草 · 审阅修改后登记</span>
+        </div>
+        <button @click="draftForm = null"
+          class="text-[10px] px-2 py-0.5 rounded border border-border text-muted hover:text-gray-200">取消</button>
+      </div>
+      <p v-if="draftSource" class="text-[10px] text-muted mb-2 leading-relaxed">来源：{{ draftSource }}</p>
+      <div v-for="(w, i) in draftWarns" :key="i" class="text-[11px] text-amber-300 mb-1">⚠️ {{ w }}</div>
+
+      <div class="grid grid-cols-1 gap-2 mt-2">
+        <div>
+          <div class="text-[10px] text-muted mb-1">名称</div>
+          <input v-model="draftForm.name"
+            class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none" />
+        </div>
+        <div>
+          <div class="text-[10px] text-muted mb-1">触发关键词（逗号分隔，至少 2 个）</div>
+          <input v-model="draftForm.keywords"
+            class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none" />
+        </div>
+        <div>
+          <div class="text-[10px] text-muted mb-1">分支预案（每行一条，格式：如果 X → 则 Y）</div>
+          <textarea v-model="draftForm.branches" rows="4"
+            class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none resize-y"></textarea>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div>
+            <div class="text-[10px] text-muted mb-1">首动作（T+0）</div>
+            <textarea v-model="draftForm.first_move" rows="3"
+              class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none resize-y"></textarea>
+          </div>
+          <div>
+            <div class="text-[10px] text-muted mb-1">裁决条款</div>
+            <textarea v-model="draftForm.verdict" rows="3"
+              class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none resize-y"></textarea>
+          </div>
+          <div>
+            <div class="text-[10px] text-muted mb-1">仓位路径（可空）</div>
+            <textarea v-model="draftForm.position_path" rows="2"
+              class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none resize-y"></textarea>
+          </div>
+          <div>
+            <div class="text-[10px] text-muted mb-1">失效条件</div>
+            <textarea v-model="draftForm.invalidate" rows="2"
+              class="w-full px-2 py-1 rounded text-xs bg-bg border border-border text-gray-200 focus:border-accent/40 focus:outline-none resize-y"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 mt-3">
+        <button @click="confirmDraft" :disabled="savingDraft"
+          class="px-3 py-1.5 rounded text-xs bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 transition-colors disabled:opacity-50">
+          {{ savingDraft ? '登记中…' : '登记这张卡' }}
+        </button>
+        <span v-if="draftErr" class="text-[11px] text-fall">{{ draftErr }}</span>
       </div>
     </div>
 
@@ -178,6 +243,7 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   getActionProtocols, matchActionProtocol, archiveActionProtocol, getProtocolNews,
+  createActionProtocol, draftProtocolFromNews,
 } from '../api/modules/system'
 
 // 四段动作的展示顺序与配色：裁决最重要（它是打破规则冲突的那一条），用琥珀强调
@@ -214,6 +280,82 @@ async function loadNews() {
     news.value = (d && d.ok) ? d : {}
   } catch {
     news.value = {}
+  }
+}
+
+// ── 从缺口快讯起草协议卡（LLM 只起草，人工改完再登记）──
+const drafting = ref('')          // 正在起草的 news_id
+const draftForm = ref(null)       // 扁平化表单（branches 用「如果 X → 则 Y」每行一条）
+const draftSource = ref('')
+const draftWarns = ref([])
+const savingDraft = ref(false)
+const draftErr = ref('')
+
+async function draftNews(n) {
+  drafting.value = n.news_id
+  draftErr.value = ''
+  try {
+    const { data: d } = await draftProtocolFromNews({ news_id: n.news_id })
+    if (!d || !d.ok) {
+      draftErr.value = (d && d.error) || '起草失败'
+      return
+    }
+    const x = d.draft || {}
+    draftForm.value = {
+      name: x.name || '',
+      keywords: ((x.trigger && x.trigger.keywords) || []).join('、'),
+      branches: (x.branches || []).map(b => `如果 ${b.if} → 则 ${b.then}`).join('\n'),
+      first_move: x.first_move || '',
+      verdict: x.verdict || '',
+      position_path: x.position_path || '',
+      invalidate: x.invalidate || '',
+      note: (x.trigger && x.trigger.note) || '',
+    }
+    draftSource.value = d.source || ''
+    draftWarns.value = d.warnings || []
+  } catch (e) {
+    draftErr.value = e?.response?.data?.detail || e.message || '起草失败'
+  } finally {
+    drafting.value = ''
+  }
+}
+
+async function confirmDraft() {
+  const f = draftForm.value
+  if (!f) return
+  const kws = f.keywords.split(/[,，、]/).map(s => s.trim()).filter(Boolean)
+  if (kws.length < 2) { draftErr.value = '关键词至少 2 个'; return }
+  if (!f.first_move.trim()) { draftErr.value = '首动作必填（触发器命中了总得先做点什么）'; return }
+  const branches = f.branches.split('\n').map(line => {
+    const t = line.trim()
+    if (!t) return null
+    const m = t.split(/→|->/)
+    if (m.length < 2) return null
+    return {
+      if: m[0].replace(/^如果\s*/, '').trim(),
+      then: m.slice(1).join('→').replace(/^则\s*/, '').trim(),
+    }
+  }).filter(Boolean)
+
+  savingDraft.value = true
+  draftErr.value = ''
+  try {
+    await createActionProtocol({
+      name: f.name.trim(),
+      trigger: { keywords: kws, min_hits: 2, note: f.note || '' },
+      branches,
+      first_move: f.first_move.trim(),
+      verdict: f.verdict.trim(),
+      position_path: f.position_path.trim(),
+      invalidate: f.invalidate.trim(),
+    })
+    draftForm.value = null
+    draftWarns.value = []
+    await reload()
+  } catch (e) {
+    draftErr.value = e?.response?.data?.detail || e.message || '登记失败'
+  } finally {
+    savingDraft.value = false
   }
 }
 

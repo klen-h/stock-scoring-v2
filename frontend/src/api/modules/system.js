@@ -210,6 +210,10 @@ export const archiveActionProtocol = (id) =>
 //   unmatched = 有大事但没卡可翻，就是该补的缺口。
 export const getProtocolNews = (params = {}) =>
   http.get('/thesis/protocols/news', { params })
+// ★ 2026-11-28：从缺口快讯起草协议卡（**只起草不落库**，人工审阅后登记）。
+//   ⚠️ 会调 1 次 LLM ⇒ 给 90s
+export const draftProtocolFromNews = (payload) =>
+  http.post('/thesis/protocols/draft', payload, { timeout: 90000 })
 // ★★ 2026-11-16：铜裁决器 —— 油跌时区分"供给驱动(D1)"与"需求驱动(D2)"。
 //   把 prompt 里只写给 LLM 的 D1/D2 判据显式化成确定性输出。
 export const getCopperWatch = () => http.get('/system/copper-watch', { timeout: 20000 })

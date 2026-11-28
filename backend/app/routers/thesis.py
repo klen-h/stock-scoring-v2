@@ -110,6 +110,25 @@ def protocol_news(day: str = Query(None, description="YYYY-MM-DD，缺省=今天
     return ap.news_pool(day=day, limit=limit)
 
 
+@router.post("/protocols/draft")
+def draft_protocol(payload: Dict = Body(...),
+                   user: dict = Depends(get_current_user)) -> Dict:
+    """从「缺口快讯」起草协议卡。**只起草，不落库。**
+
+    ★ 2026-11-28（用户确认可引入 LLM）：`unmatched` 的快讯就是缺口，
+      点一下让 LLM 按「如果…就…」起草，人工改完再登记。
+    ⚠️ 与 `thesis/parse` 同纪律：LLM 写的动作框架必须经人审阅 ——
+      否则等于让模型替你定交易纪律。
+    ⚠️ 会调 1 次 LLM（约十几秒），前端给 60s 超时。
+    """
+    from app import action_protocol as ap
+    p = payload or {}
+    r = ap.draft_from_news(news_id=p.get("news_id"), text=p.get("text"))
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "起草失败")
+    return r
+
+
 @router.post("/protocols/{pid}/archive")
 def archive_protocol(pid: str, user: dict = Depends(get_current_user)) -> Dict:
     from app import action_protocol as ap

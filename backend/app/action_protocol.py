@@ -593,3 +593,132 @@ def _push(text: str) -> None:
         wechat.push_markdown_batched("动作协议命中", text, category="alert")
     except Exception as e:
         print(f"[protocol] push failed: {str(e)[:80]}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  从「缺口快讯」起草协议卡（★ 2026-11-28，用户确认可引入 LLM）
+# ══════════════════════════════════════════════════════════════════════════
+# 【纪律】只起草，**绝不落库**（与 `thesis_scenarios.parse_text` 同一条）：
+#   LLM 写出的动作框架必须经人审阅，否则等于让模型替你定纪律。
+_DRAFT_SYSTEM = """你是交易纪律助手。给定一条重要财经快讯，起草一张「动作协议卡」。
+
+【什么是动作协议卡】
+它回答"触发后第一步做什么"，不是预测涨跌。核心是「如果…就…」：
+事件结果未知，但动作提前定好。
+
+【输出 JSON，字段如下】
+{
+  "name": "协议名（≤20 字，一眼看出是什么事件）",
+  "trigger": {
+    "keywords": ["2-6 个能从正文稳定复现的关键词"],
+    "min_hits": 2,
+    "note": "为什么这几个词能稳定触发（一句话）"
+  },
+  "branches": [
+    {"if": "事件结果 A（具体可判）", "then": "该做什么（具体动作）"},
+    {"if": "事件结果 B", "then": "该做什么"}
+  ],
+  "first_move": "T+0 第一动作（多数情况是：不交易，只做读数）",
+  "verdict": "裁决条款：两条规则冲突时谁优先（这是卡的核心）",
+  "position_path": "仓位路径（没有就填空字符串）",
+  "invalidate": "什么情况说明这张卡失效了"
+}
+
+【硬规则】
+1. keywords 必须是正文里会**反复出现**的词（机构名/事件名/政策名），
+   不要写"可能/或将/预计"这类空词，也**禁止写人名**（分析师/官员姓名——
+   实测 LLM 会写出"施尼德"这种只在单条快讯里出现一次的名字，导致永不触发），
+   更不要写只有这条快讯才有的句子。
+2. branches 给 2-3 条，必须覆盖事件的不同结果（正面/负面/无结论），
+   每条 then 要是**可执行的判断或动作**，不是"注意风险"这种废话。
+3. 不预测点位、不给具体买卖价、不说"建议买入/卖出"。
+4. first_move 通常是"不交易，先读数"——事件当天反应往往是情绪。
+5. 只输出 JSON，不要 markdown 代码块、不要解释。"""
+
+
+def draft_from_news(news_id: str = None, text: str = None) -> Dict:
+    """从一条重要快讯起草协议卡。**只返回草案，不落库。**
+
+    返回 {ok, source, draft, warnings} 或 {ok:False, error}。
+    """
+    body = str(text or "").strip()
+    if not body and news_id:
+        ensure_tables()
+        try:
+            r = db.fetch_one(f"SELECT content FROM {_T_NEWS} WHERE news_id=%s",
+                             (str(news_id),))
+            body = str((r or {}).get("content") or "").strip()
+        except Exception as e:
+            print(f"[protocol] draft read news failed: {str(e)[:70]}")
+    if not body:
+        return {"ok": False, "error": "找不到该快讯内容（news_id 无效或 text 为空）"}
+    if len(body) > 3000:
+        body = body[:3000]
+
+    try:
+        from app.flash import llm
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 模块不可用: {str(e)[:60]}"}
+
+    try:
+        txt = llm.call_llm(_DRAFT_SYSTEM, body, temperature=0.2,
+                           json_mode=True, tier="slow")
+    except Exception as e:
+        return {"ok": False, "error": f"LLM 调用失败: {str(e)[:80]}"}
+    if not txt:
+        return {"ok": False, "error": "LLM 返回空（provider 未配置/熔断）"}
+
+    s = str(txt).strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        s = s[s.find("{"):] if "{" in s else s
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return {"ok": False, "error": "LLM 返回不是合法 JSON"}
+
+    # 规整 + 校验（不合法只给 warning，不直接拒 —— 要让人看到问题在哪）
+    warns: List[str] = []
+    name = str((obj or {}).get("name") or "").strip()
+    if not name:
+        warns.append("缺少 name，已用正文前 20 字兜底")
+        name = body[:20]
+
+    trig = (obj or {}).get("trigger") or {}
+    if isinstance(trig, str):
+        trig = {"keywords": [x.strip() for x in trig.replace("，", ",").split(",")
+                             if x.strip()]}
+    kws = [str(k).strip() for k in (trig.get("keywords") or []) if str(k).strip()][:8]
+    if len(kws) < 2:
+        warns.append("关键词少于 2 个，可能无法触发")
+
+    branches = []
+    for b in ((obj or {}).get("branches") or []):
+        if not isinstance(b, dict):
+            continue
+        _if = str(b.get("if") or "").strip()
+        _then = str(b.get("then") or "").strip()
+        if _if and _then:
+            branches.append({"if": _if, "then": _then})
+    if not branches:
+        warns.append("没有有效分支（if/then 都非空才算）")
+
+    first_move = str((obj or {}).get("first_move") or "").strip()
+    if not first_move:
+        warns.append("缺少 first_move（首动作），登记前必须补")
+
+    draft = {
+        "name": name[:40],
+        "trigger": {
+            "keywords": kws,
+            "min_hits": int(trig.get("min_hits") or 2),
+            "window": str(trig.get("window") or _TRADING_WINDOW),
+            "note": str(trig.get("note") or "").strip()[:200],
+        },
+        "branches": branches[:4],
+        "first_move": first_move,
+        "verdict": str((obj or {}).get("verdict") or "").strip(),
+        "position_path": str((obj or {}).get("position_path") or "").strip(),
+        "invalidate": str((obj or {}).get("invalidate") or "").strip(),
+    }
+    return {"ok": True, "source": body[:200], "draft": draft, "warnings": warns}
