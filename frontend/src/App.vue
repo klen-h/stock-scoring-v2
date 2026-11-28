@@ -147,6 +147,7 @@ const navGroups = [
   ]},
   { label: '交易', items: [
     { path: '/watchlist', label: '自选股' },
+    { path: '/watch-radar', label: '个股盯盘' },
     { path: '/trade-plans', label: '交易计划' },
     { path: '/portfolio', label: '我的持仓' },
     { path: '/paper', label: '模拟盘' },

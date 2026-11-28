@@ -6,6 +6,18 @@ import { http } from '../http'
 
 export const getMarketOverview = () => http.get('/market/overview')
 
+// 个股分时盯盘（★ 2026-11-28）：最多 5 只，自动标注支撑/阻力 + 盘口大单提醒。
+//   规则随接口下发（resistance/support/阈值），前端不硬编码口径。
+export const getWatchRadar = (params = {}) =>
+  http.get('/market/watch-radar', { params, timeout: 30000 })
+export const addWatchTarget = (code, name = '') =>
+  http.post('/market/watch-radar/targets', null, { params: { code, name } })
+export const removeWatchTarget = (code) =>
+  http.delete(`/market/watch-radar/targets/${code}`)
+// ⚠️ 手动扫描会拉一次实时行情（5 只 1 个请求）；push=false 只回数据不推企微
+export const scanWatchRadar = (push = false) =>
+  http.post('/market/watch-radar/scan', null, { params: { push }, timeout: 30000 })
+
 // 政策脉冲（★ 2026-11-28）：政策快讯 → 受益板块。
 //   用户复盘 11-27："政策中午发文，午盘开盘猛拉，我当时不知所措" —— 13:24 政策到
 //   13:33 期货涨停只有 9 分钟，必须让系统**立刻说一句"这是政策级利好"**。

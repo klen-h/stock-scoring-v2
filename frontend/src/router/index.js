@@ -36,6 +36,8 @@ const routes = [
   // ★ 2026-11-28：动作协议卡（规则层，回答"怎么办"）。与 /thesis 并列：
   //   那张是"会怎样"（情景+概率+事后验证），这张是"触发后第一步做什么"。
   { path: '/protocols', name: 'Protocols', component: () => import('../views/ProtocolView.vue') },
+  // ★ 2026-11-28：个股分时盯盘（最多 5 只，自动标支撑阻力 + 盘口大单提醒）
+  { path: '/watch-radar', name: 'WatchRadar', component: () => import('../views/WatchRadarView.vue') },
   { path: '/performance', name: 'Performance', component: () => import('../views/Performance.vue') },
 ]
 
