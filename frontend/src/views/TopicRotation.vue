@@ -53,6 +53,39 @@
       </div>
     </div>
 
+    <!-- ①·五 政策脉冲（★ 2026-11-28）：政策快讯 → 受益板块。
+         用户复盘 11-27："政策中午发文，午盘开盘猛拉，我当时不知所措" ——
+         实测 13:24 政策 → 13:33 中证1000期货涨停，只有 9 分钟。
+         本卡只回答"什么级别、影响哪些板块"，**不回答买什么**（纯观察器）。 -->
+    <div v-if="pulse.events && pulse.events.length"
+         class="bg-card border border-amber-500/30 rounded-lg p-3">
+      <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-sm font-bold text-amber-300">⚡ 政策脉冲</span>
+          <span class="text-[11px] text-muted">{{ pulse.date }} · {{ pulse.events.length }} 条</span>
+        </div>
+        <span class="text-[10px] text-muted">{{ pulse.note }}</span>
+      </div>
+      <div class="space-y-1.5">
+        <div v-for="e in pulse.events" :key="e.theme"
+             class="flex items-start gap-2 text-[11px] flex-wrap">
+          <span class="font-mono text-muted shrink-0">{{ (e.first_time || '').slice(11, 16) }}</span>
+          <span class="shrink-0 px-1.5 py-0.5 rounded text-[10px] bg-amber-500/15 text-amber-300">
+            {{ e.actor || '政策' }}
+          </span>
+          <span class="shrink-0 font-medium text-gray-200">{{ e.theme }}</span>
+          <span class="text-muted truncate max-w-[300px]" :title="e.title">{{ e.title }}</span>
+          <span class="flex items-center gap-1 flex-wrap">
+            <span v-for="s in e.sectors" :key="s.name"
+                  class="px-1.5 py-0.5 rounded bg-white/5 font-mono"
+                  :class="pctCls(s.chg_pct)">
+              {{ s.name }}<template v-if="s.chg_pct !== null && s.chg_pct !== undefined"> {{ fmt(s.chg_pct, 1) }}%</template>
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+
     <!-- ② Tab1 盘中决策：热力图→流图→阶段→卡片/个股，一条决策链（联动强关联，必须同屏）。
          ★ 2026-11-28 两图互换：热力图（全局格局）在前、流图（单题材轨迹）在后，
          复盘动线 = 先扫全局再追细节 -->
@@ -444,6 +477,7 @@ import {
   getTopicRotationDashboard, getTopicRotationVerify,
   getTopicRotationHistory, getTopicRotationConstituents,
   getTopicLib, getTopicDetail, getTopicLibHistory,
+  getPolicyPulse,
 } from '../api/modules/market'
 
 const TYPES = [{ v: 17, label: '题材' }, { v: 15, label: '概念' }, { v: 14, label: '行业' }]
@@ -472,6 +506,8 @@ const activeTab = ref('trade')
 const data = ref({})
 const loading = ref(false)
 const error = ref('')
+// ★ 2026-11-28 政策脉冲：政策快讯 → 受益板块（纯观察器，只给线索、不给买卖建议）
+const pulse = ref({})
 
 // 切回决策 tab 时容器从 display:none 恢复，echarts 需要重算尺寸
 watch(activeTab, (t) => {
@@ -771,6 +807,18 @@ async function pickLib(x) {
     const { data: h } = await getTopicLibHistory({ unique_key: x.unique_key, days: 20 })
     if (h && h.ok) libHist.value = h
   } catch { /* 历史尚在积累，忽略 */ }
+}
+
+// ★ 2026-11-28：政策脉冲 —— 盘中回答"这是什么级别的利好、影响哪些板块"，
+//   不回答"买什么"。失败静默（辅助块，不拖垮主页面）。
+async function loadPulse() {
+  try {
+    const params = day.value ? { day: day.value } : {}
+    const { data: d } = await getPolicyPulse(params)
+    pulse.value = (d && d.ok) ? d : {}
+  } catch {
+    pulse.value = {}
+  }
 }
 
 async function load() {
@@ -1083,7 +1131,7 @@ function verdictCls(r) {
 }
 
 async function reload() {
-  await Promise.all([load(), loadHistory()])
+  await Promise.all([load(), loadHistory(), loadPulse()])
   if (sel.value) {
     const cur = (data.value.top || []).find(x => x.code === sel.value.code)
     if (cur) pick(cur)

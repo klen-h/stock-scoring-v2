@@ -6,6 +6,13 @@ import { http } from '../http'
 
 export const getMarketOverview = () => http.get('/market/overview')
 
+// 政策脉冲（★ 2026-11-28）：政策快讯 → 受益板块。
+//   用户复盘 11-27："政策中午发文，午盘开盘猛拉，我当时不知所措" —— 13:24 政策到
+//   13:33 期货涨停只有 9 分钟，必须让系统**立刻说一句"这是政策级利好"**。
+//   `hours>0` 取最近 N 小时（盘中用）；不传按交易日（收盘定稿含板块涨跌）。
+export const getPolicyPulse = (params) =>
+  http.get('/market/policy-pulse', { params, timeout: 30000 })
+
 // 题材轮动（★ 2026-11-28，独立页面 /rotation）
 //   dashboard = 单次聚合（市场环境 + 四阶段 + 各榜单），页面只打这一个接口
 //   verify 要扫全表 ⇒ 只在"有效性"面板展开时手动调，不进轮询
