@@ -123,6 +123,109 @@ def take_snapshot(date: str = None, kinds: tuple = ("industry", "concept")) -> d
     return out
 
 
+def backfill(start: str, end: str = None, kinds: tuple = ("industry",),
+             sleep_sec: float = 0.6, skip_existing: bool = True,
+             max_days: int = 0) -> dict:
+    """★ 2026-11-28：**逐日回补板块历史**（幂等、可中断、默认跳过已有日期）。
+
+    【为什么需要】`plate_daily_zz` 原来只有约 50 个交易日（2026-08-21 起），
+      导致 `plate_chain.backtest()` 的横截面检验完全不可用（627 个样本、
+      方向命中率 0.526 ≈ 随机）。用户 2026-11-28 决定"先解决历史数据"。
+
+    【数据源实测（2026-11-28，别信文档，以实测为准）】
+      · `plates_rank(plate_type=14, date1=D)` 支持任意历史日：
+          2025-06-30 → 104 个板块（完整）
+          2024-06-28 → 77 个（板块未长全，正常）
+          2023-06-30 → 82 个
+          2021-06-30 → 0 个（无数据）
+        ⇒ 有效回溯到 **2023 年年中**，2025 年起才是完整 104 个。
+      · `plate_kline(b_code=...)` **不适用**：它只认同花顺板块代码（如 883957），
+        而我们的 104 个板块是申万代码 881xxx ⇒ 传进去返回空 DataFrame（实测）。
+      · 早期（2024 及以前）`trade_money` / `money_leader` / `market_cap_cir` 为 None，
+        **只有 `rate`（涨跌幅）与 `score` 可靠** ⇒ 回测只用涨跌幅，不受影响。
+
+    【成本】实测 0.4~1.3 秒/天（含限流 sleep）。回补 2 年 ≈ 500 个交易日 ≈ 8~15 分钟。
+
+    参数：
+      start/end      YYYY-MM-DD（end 缺省=最近已完成交易日）
+      kinds          默认只回补 industry（concept 有 400+ 个，与产业链无关）
+      sleep_sec      每日之间的间隔（防限流；实测 0.6 秒较稳）
+      skip_existing  跳过库里已有数据的日期（断点续传关键）
+      max_days       >0 时最多回补这么多天（试跑用）
+
+    返回 `{ok, start, end, n_days, written, skipped, failed[], empty[], cost_sec}`
+    """
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+
+    from app.flash.rules import is_trading_day, latest_completed_trading_day
+
+    t0 = time.time()
+    s = str(start or "")[:10]
+    e = str(end or "").strip()[:10] or str(latest_completed_trading_day())[:10]
+    try:
+        d0 = _dt.strptime(s, "%Y-%m-%d")
+        d1 = _dt.strptime(e, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "start/end 需为 YYYY-MM-DD"}
+    if d0 > d1:
+        return {"ok": False, "error": "start 晚于 end"}
+
+    have = set()
+    if skip_existing:
+        try:
+            _ensure_table()
+            rows = db.fetch(
+                "SELECT DISTINCT date FROM plate_daily_zz WHERE kind = %s",
+                (kinds[0] if kinds else "industry",)) or []
+            have = {str(r.get("date"))[:10] for r in rows if r.get("date")}
+        except Exception as ex:
+            print(f"[sector_zz] 已存在日期读取失败（继续回补）: {str(ex)[:80]}")
+
+    todo = []
+    cur = d0
+    while cur <= d1:
+        day = cur.strftime("%Y-%m-%d")
+        try:
+            ok = bool(is_trading_day(cur))
+        except Exception:
+            ok = cur.weekday() < 5          # 日历不可用时退化为只跳周末
+        if ok and day not in have:
+            todo.append(day)
+        cur += _td(days=1)
+    if max_days and len(todo) > max_days:
+        todo = todo[:max_days]
+
+    res = {"ok": True, "start": s, "end": e, "n_days": len(todo),
+           "written": 0, "done": 0, "skipped": 0,
+           "failed": [], "empty": [], "cost_sec": 0.0}
+    if not todo:
+        res["cost_sec"] = round(time.time() - t0, 1)
+        return res
+
+    for i, day in enumerate(todo, 1):
+        try:
+            r = take_snapshot(day, kinds=kinds)
+        except Exception as ex:
+            res["failed"].append(f"{day}: {str(ex)[:60]}")
+            r = None
+        if r is None:
+            continue
+        w = int(r.get("written") or 0)
+        if w:
+            res["written"] += w
+            res["done"] += 1
+        else:
+            # 空返回 = 该日无数据（非交易日判断失误 / 源端缺失）
+            res["empty"].append(day)
+        if i % 20 == 0 or i == len(todo):
+            print(f"[sector_zz] 回补进度 {i}/{len(todo)} | 已写 {res['written']} 行 "
+                  f"| 空 {len(res['empty'])} | 失败 {len(res['failed'])}")
+        time.sleep(max(0.0, sleep_sec))
+    res["cost_sec"] = round(time.time() - t0, 1)
+    return res
+
+
 def get_snapshot(date: str, kind: str = "industry", limit: int = 500) -> list:
     """某交易日全部板块快照（按涨跌幅降序）。"""
     _ensure_table()
