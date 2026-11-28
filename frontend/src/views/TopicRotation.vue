@@ -57,7 +57,12 @@
          用户复盘 11-27："政策中午发文，午盘开盘猛拉，我当时不知所措" ——
          实测 13:24 政策 → 13:33 中证1000期货涨停，只有 9 分钟。
          本卡只回答"什么级别、影响哪些板块"，**不回答买什么**（纯观察器）。 -->
-    <div v-if="pulse.events && pulse.events.length"
+    <!-- 显示条件：有政策事件 / 有期货涨跌停 / 广度极端（全面暴涨或暴跌）。
+         平时的"分化/普涨"不弹卡 —— 否则每天都有，变成噪音。 -->
+    <div v-if="(pulse.events && pulse.events.length)
+              || (pulse.futures_limit || []).length
+              || (pulse.breadth && (pulse.breadth.level === 'extreme_up'
+                                    || pulse.breadth.level === 'extreme_down'))"
          class="bg-card border border-amber-500/30 rounded-lg p-3">
       <div class="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div class="flex items-center gap-2">
@@ -66,7 +71,27 @@
         </div>
         <span class="text-[10px] text-muted">{{ pulse.note }}</span>
       </div>
-      <div class="space-y-1.5">
+      <!-- ★ 2026-11-28 广度确认：11-27 的完整信号是「政策 + 期货涨停 + 全面暴涨」，
+           只给政策不给广度仍然不完整。两条口径不同，分开标：
+           广度=收盘定稿板块口径；期货涨跌停=盘中快讯识别。 -->
+      <div v-if="pulse.breadth || (pulse.futures_limit || []).length"
+           class="flex items-center gap-2 text-[11px] mb-2 flex-wrap pb-2 border-b border-border/25">
+        <span class="text-muted shrink-0">广度</span>
+        <span v-if="pulse.breadth" class="px-1.5 py-0.5 rounded font-semibold"
+              :class="breadthCls(pulse.breadth.level)"
+              :title="'板块口径：' + pulse.breadth.n_sectors + ' 个，中位 ' + pulse.breadth.median_chg + '%'">
+          {{ pulse.breadth.verdict }} {{ fmt((pulse.breadth.up_ratio || 0) * 100, 0) }}% 上涨
+          · 暴涨 {{ pulse.breadth.strong_up }} 个
+        </span>
+        <span v-for="f in (pulse.futures_limit || [])" :key="f.product + f.kind"
+              class="px-1.5 py-0.5 rounded font-mono"
+              :class="f.kind === 'limit_up' ? 'bg-rise/15 text-rise' : 'bg-fall/15 text-fall'"
+              :title="f.text">
+          {{ f.name }}{{ f.kind === 'limit_up' ? '涨停' : '跌停' }}
+          <span class="text-[9px] opacity-70">{{ (f.time || '').slice(11, 16) }}</span>
+        </span>
+      </div>
+      <div v-if="pulse.events && pulse.events.length" class="space-y-1.5">
         <div v-for="e in pulse.events" :key="e.theme"
              class="flex items-start gap-2 text-[11px] flex-wrap">
           <span class="font-mono text-muted shrink-0">{{ (e.first_time || '').slice(11, 16) }}</span>
@@ -1124,6 +1149,17 @@ function verdictText(r) {
   if (r.valid) return '显著'
   return '无'
 }
+// ★ 2026-11-28：广度分档配色（红涨绿跌，与全站一致）
+function breadthCls(level) {
+  return {
+    extreme_up: 'bg-rise/20 text-rise',
+    up: 'bg-rise/10 text-rise',
+    mixed: 'bg-white/5 text-muted',
+    down: 'bg-fall/10 text-fall',
+    extreme_down: 'bg-fall/20 text-fall',
+  }[level] || 'bg-white/5 text-muted'
+}
+
 function verdictCls(r) {
   if (r.tradable) return 'bg-rise/15 text-rise'
   if (r.valid) return 'bg-amber-500/15 text-amber-400'

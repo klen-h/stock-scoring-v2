@@ -270,6 +270,16 @@ def scan(day: Optional[str] = None, hours: int = 0, max_events: int = 8) -> Dict
     has_snapshot = bool(db.fetch_one(
         "SELECT 1 AS x FROM plate_daily_zz WHERE date=%s AND kind='industry' LIMIT 1", (day,)))
 
+    # ★ 2026-11-28：并入「广度确认」—— 11-27 的完整信号是
+    #   13:24 政策 + 13:33 期货涨停 + 13:36 创业板+10%，只给政策不给广度仍然不完整。
+    #   两段口径不同（广度=收盘定稿、期货=盘中快讯），各自带说明，不混为一谈。
+    try:
+        from app import market_breadth as mb
+        _breadth = mb.breadth(day)
+        _fut = mb.futures_limit(day=day, hours=hours)
+    except Exception:
+        _breadth, _fut = None, []
+
     return {
         "ok": True,
         "date": day,
@@ -282,6 +292,10 @@ def scan(day: Optional[str] = None, hours: int = 0, max_events: int = 8) -> Dict
         "note": ("板块涨跌为**收盘定稿**口径（plate_daily_zz 已落库）" if has_snapshot
                  else "当日板块快照未落库 ⇒ 涨跌幅为 null（盘中只给板块名单，涨跌请看实时行情）"),
         "events": events,
+        # ★ 广度确认（见 market_breadth.py）：政策是"利好"，广度是"市场认不认"
+        "breadth": _breadth,
+        "futures_limit": _fut,
+        "n_futures": len(_fut),
     }
 
 
