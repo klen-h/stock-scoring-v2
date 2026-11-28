@@ -265,19 +265,43 @@
                 {{ fmt(libDetail.today_pct, 2) }}%
               </span>
             </div>
-            <div class="text-[10px] text-muted mb-2">
+            <div class="text-[10px] text-muted mb-1">
               {{ libSel.stage_tag }} · {{ libSel.continuity_state }}
               <template v-if="libSel.confidence"> · 置信度 {{ libSel.confidence }}</template>
             </div>
+            <!-- 阶段变化（源端无历史接口 ⇒ 从上线日起逐日积累） -->
+            <div v-if="(libHist.points || []).length > 1"
+                 class="text-[10px] mb-2 flex items-center gap-1 flex-wrap">
+              <span class="text-muted">阶段变化</span>
+              <template v-for="(p, i) in libHist.points" :key="p.date">
+                <span class="px-1 rounded bg-white/5 text-gray-400">{{ p.date.slice(5) }}</span>
+                <span class="text-gray-300">{{ p.stage_tag }}</span>
+                <span v-if="i < libHist.points.length - 1" class="text-muted">→</span>
+              </template>
+            </div>
             <div class="text-[10px] text-gray-400 leading-relaxed max-h-[120px] overflow-y-auto
                         bg-black/20 rounded p-2 mb-2 whitespace-pre-line">{{ libDetail.content }}</div>
-            <div class="text-[10px] text-muted mb-1">
-              相关个股 <b class="text-gray-300">{{ libDetail.n_rows || 0 }}</b> 条
+            <div class="flex items-center justify-between text-[10px] text-muted mb-1">
+              <span>相关个股 <b class="text-gray-300">{{ libDetail.n_rows || 0 }}</b> 条</span>
+              <span v-if="libDetail.n_with_quote">
+                {{ libDetail.n_with_quote }} 只有行情 · 按当日涨跌排
+              </span>
+            </div>
+            <div class="flex items-center gap-2 text-[9px] text-muted border-b border-border/30 pb-0.5 mb-0.5">
+              <span class="w-16 text-right">个股</span>
+              <span class="w-12 text-right">当日</span>
+              <span class="flex-1">相关性</span>
             </div>
             <div class="max-h-[190px] overflow-y-auto">
               <div v-for="(r, i) in (libDetail.rows || [])" :key="i"
                    class="flex items-start gap-2 text-[10px] py-0.5 border-b border-border/15">
-                <span class="w-6 text-right shrink-0 text-gray-300 font-medium">{{ r.stock }}</span>
+                <a v-if="r.code" :href="'/stock/' + r.code" target="_blank" rel="noopener"
+                   class="w-16 shrink-0 text-right text-gray-300 font-medium hover:text-accent"
+                   :title="r.code">{{ r.stock }}</a>
+                <span v-else class="w-16 shrink-0 text-right text-gray-300 font-medium">{{ r.stock }}</span>
+                <span class="w-12 text-right font-mono shrink-0" :class="pctCls(r.chg_pct)">
+                  {{ fmt(r.chg_pct, 2) }}%
+                </span>
                 <span class="flex-1 text-muted leading-snug" :title="r.rel">{{ r.rel }}</span>
               </div>
             </div>
@@ -337,7 +361,7 @@ import * as echarts from 'echarts'
 import {
   getTopicRotationDashboard, getTopicRotationVerify,
   getTopicRotationHistory, getTopicRotationConstituents,
-  getTopicLib, getTopicDetail,
+  getTopicLib, getTopicDetail, getTopicLibHistory,
 } from '../api/modules/market'
 
 const TYPES = [{ v: 17, label: '题材' }, { v: 15, label: '概念' }, { v: 14, label: '行业' }]
@@ -469,6 +493,7 @@ const libSel = ref(null)
 const libDetail = ref({})
 const libLoading = ref(false)
 const libErr = ref('')
+const libHist = ref({ points: [] })
 
 const libGroups = computed(() => {
   const items = lib.value.items || []
@@ -503,6 +528,7 @@ async function loadLib() {
 async function pickLib(x) {
   libSel.value = x
   libDetail.value = {}
+  libHist.value = { points: [] }
   libErr.value = ''
   libLoading.value = true
   try {
@@ -514,6 +540,11 @@ async function pickLib(x) {
   } finally {
     libLoading.value = false
   }
+  // 阶段历史单独拉（可能为空，失败不打断）
+  try {
+    const { data: h } = await getTopicLibHistory({ unique_key: x.unique_key, days: 20 })
+    if (h && h.ok) libHist.value = h
+  } catch { /* 历史尚在积累，忽略 */ }
 }
 
 async function load() {

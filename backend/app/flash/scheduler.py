@@ -3008,7 +3008,7 @@ async def topic_rotation_loop():
                 and not store.is_schedule_done(task_key)):
             day = now.strftime("%Y-%m-%d")
             try:
-                from app.topic_rotation import save as _save_rotation
+                from app.topic_rotation import save as _save_rotation, save_lib as _save_lib
                 r = await asyncio.to_thread(_save_rotation, day)
                 if r.get("written"):
                     store.mark_schedule_done(task_key)
@@ -3016,6 +3016,16 @@ async def topic_rotation_loop():
                     print(f"[scheduler] 题材轮动快照: {r['written']} 条 {r.get('kinds')}")
                 else:
                     print("[scheduler] 题材轮动快照未写入，窗口内稍后重试")
+                # ★ 2026-11-28：顺带落"细分题材库"快照（源端无历史接口 ⇒ 只能逐日攒）。
+                #   幂等键独立（`topic_lib_daily`），轮动失败不影响它。
+                if not store.is_schedule_done("topic_lib_daily"):
+                    rl = await asyncio.to_thread(_save_lib, day)
+                    if rl.get("written"):
+                        store.mark_schedule_done("topic_lib_daily")
+                        status["last_topic_lib"] = now.isoformat()
+                        print(f"[scheduler] 细分题材库快照: {rl['written']} 条 ({rl.get('date')})")
+                    else:
+                        print(f"[scheduler] 细分题材库快照未写入: {rl.get('error')}")
             except Exception as e:
                 print(f"[scheduler] 题材轮动快照失败: {e}")
         await asyncio.sleep(600)

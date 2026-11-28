@@ -27,10 +27,14 @@ export const getTopicRotationConstituents = (params) =>
 export const getTopicLib = () =>
   http.get('/market/topic-rotation/lib', { timeout: 60000 })
 
-// 单个细分题材详情（驱动逻辑全文 + rows：个股 + 相关性原文）
+// 单个细分题材详情（驱动逻辑全文 + rows：个股 + 相关性原文 + 当日行情）
 //   ⚠️ 参数必须传 unique_key，不是数字 id
 export const getTopicDetail = (params) =>
   http.get('/market/topic-rotation/detail', { params, timeout: 60000 })
+
+// 细分题材的阶段历史（源端无历史接口 ⇒ 从上线日起逐日积累）
+export const getTopicLibHistory = (params) =>
+  http.get('/market/topic-rotation/lib-history', { params, timeout: 30000 })
 // ★ 2026-11-01（「早盘复盘」标签页）：**单一聚合端点**。
 //   盘面 / 宏观 / 消息 / 午后研判一次取回（后端并发查询 + 5 分钟按日缓存）。
 //   刻意不拆成 5 个请求：Supabase 在 ap-southeast-1，每次往返约 570ms，

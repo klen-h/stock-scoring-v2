@@ -550,11 +550,89 @@ def topic_lib(max_items: int = 200) -> Dict:
     return val
 
 
+def _quotes_by_name(names: List[str], day: str = None) -> Dict[str, Dict]:
+    """按**股票名称**批量查当日行情（`{name: {code, chg_pct, ret5, score}}`）。
+
+    ★ 2026-11-28：zzshare 的 `rows[].个股` 只给**中文名**、不给代码，
+      所以只能靠名称反查。⚠️ A 股存在极少数同名（如"ST 股改名"），
+      这里以当日 `stock_facts_wide` 为准，重名时取第一条 —— 不追求 100% 严谨，
+      但**查不到就返回空、绝不填 0**。
+    """
+    want = [n for n in dict.fromkeys(names or []) if n]
+    if not want:
+        return {}
+    d = str(day or "")[:10]
+    if not d:
+        try:
+            r = db.fetch_one("SELECT MAX(date) AS d FROM stock_facts_wide") or {}
+            d = str(r.get("d"))[:10]
+        except Exception:
+            return {}
+    out: Dict[str, Dict] = {}
+    for i in range(0, len(want), 400):
+        chunk = want[i:i + 400]
+        ph = ",".join(["%s"] * len(chunk))
+        try:
+            rows = db.fetch(
+                f"SELECT code, name, chg_pct, ret5, score_total "
+                f"FROM stock_facts_wide WHERE date=%s AND name IN ({ph})",
+                tuple([d] + chunk)) or []
+        except Exception as e:
+            print(f"[topic_rot] quotes_by_name failed: {str(e)[:80]}")
+            continue
+        for r in rows:
+            nm = str(r.get("name") or "")
+            if nm and nm not in out:
+                out[nm] = {"code": str(r.get("code") or ""),
+                           "chg_pct": _f(r.get("chg_pct")),
+                           "ret5": _f(r.get("ret5")),
+                           "score": _f(r.get("score_total"))}
+    return out
+
+
+def _with_quotes(base: Dict) -> Dict:
+    """给 `rows` 补当日行情并按涨跌排序（**每次都算，不进缓存** —— 行情每天变）。
+
+    缓存里只存"结构"（题材/个股/相关性），行情每次现查，保证不会拿昨天的涨跌当今天。
+    """
+    rows = [dict(x) for x in (base.get("rows") or [])]
+    if not rows:
+        return base
+    q = _quotes_by_name([x.get("stock") for x in rows])
+    for x in rows:
+        m = q.get(x.get("stock"))
+        if m:
+            x["code"] = m.get("code")
+            x["chg_pct"] = m.get("chg_pct")
+            x["ret5"] = m.get("ret5")
+            x["score"] = m.get("score")
+        else:
+            # 查不到 ⇒ 保持 None（前端显示 —），**绝不填 0**
+            x.setdefault("code", None)
+            x.setdefault("chg_pct", None)
+            x.setdefault("ret5", None)
+            x.setdefault("score", None)
+    withq = [x for x in rows if x.get("chg_pct") is not None]
+    without = [x for x in rows if x.get("chg_pct") is None]
+    withq.sort(key=lambda x: -x["chg_pct"])
+    ordered = (withq + without)[:80]
+    return {
+        **base,
+        "rows": ordered,
+        "n_with_quote": len(withq),
+        "note": "`相关性` 是 zzshare 给出的「该公司与该题材的关系」原文，不是本系统判断。"
+                f"行情按**股票名称**反查 `stock_facts_wide`（{len(withq)}/{len(rows)} 只有数据）；"
+                "查不到的保持空值、不填 0。已按当日涨跌降序。",
+    }
+
+
 def topic_detail(unique_key: str) -> Dict:
-    """单个细分题材的详情：驱动逻辑全文 + `rows`（个股 + 相关性说明）。
+    """单个细分题材的详情：驱动逻辑全文 + `rows`（个股 + 相关性 + **当日行情**）。
 
     ⚠️ `topic_table_detail` 的 `tid` **必须是 `unique_key`**（传数字 id 会报
        `API Error: None`，实测确认）。
+    ★ zzshare 的 `rows[].个股` 只有中文名没有代码 ⇒ 用 `_quotes_by_name` 反查补
+      代码/涨跌/5日/评分。查不到的保持 None（不填 0），前端显示 `—`。
     """
     uk = str(unique_key or "").strip()
     if not uk:
@@ -562,7 +640,7 @@ def topic_detail(unique_key: str) -> Dict:
     now = time.time()
     hit = _DETAIL_CACHE.get(uk)
     if hit and now - hit[0] < _DETAIL_TTL:
-        return hit[1]
+        return _with_quotes(hit[1])
     from app.zzshare_client import get_api
     try:
         d = get_api().topic_table_detail(tid=uk)
@@ -589,11 +667,112 @@ def topic_detail(unique_key: str) -> Dict:
         "today_pct": _f(d.get("today_pct")),
         "rows": clean[:80],
         "n_rows": len(clean),
-        "note": "`相关性` 是 zzshare 给出的「该公司与该题材的关系」原文，"
-                "不是本系统判断；个股顺序为原始顺序（未按涨跌排）。",
     }
-    _DETAIL_CACHE[uk] = (now, val)
-    return val
+    _DETAIL_CACHE[uk] = (now, val)      # 缓存只存结构，行情由 _with_quotes 现补
+    return _with_quotes(val)
+
+
+# ================================================================
+#  二·六、题材库按日落库（看「细分题材的阶段怎么变」）
+# ================================================================
+# ★★ 2026-11-28（用户："题材库只读不存，想看某个细分题材的阶段怎么变"）：
+#   `topic_table_list` **只返回当前状态**（无 date 参数）⇒ **无法回补历史**，
+#   只能从今天起每天落一次。攒够之后才能回答"这个题材是从蓄势走到高潮的，
+#   还是本来就在高潮" —— 而后者才是判断"现在是接力还是接盘"的关键。
+_LIB_TABLE_READY = False
+
+
+def _ensure_lib_table() -> None:
+    global _LIB_TABLE_READY
+    if _LIB_TABLE_READY:
+        return
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS topic_lib_daily (
+            date TEXT NOT NULL,
+            unique_key TEXT NOT NULL,
+            name TEXT,
+            stage_tag TEXT,
+            continuity_state TEXT,
+            confidence INTEGER,
+            today_pct REAL,
+            stock_count INTEGER,
+            created_at TEXT,
+            PRIMARY KEY (date, unique_key)
+        )
+    """)
+    _LIB_TABLE_READY = True
+
+
+def save_lib(day: str = None) -> Dict:
+    """把当前题材库快照落库（幂等，同一天重复跑只覆盖）。
+
+    ⚠️ 只能用"今天"的库：源端没有历史接口，传历史日期会存成错误的数据
+      ⇒ 这里**强制取最近已完成交易日**，不信任调用方传入的日期。
+    """
+    _ensure_lib_table()
+    lib = topic_lib()
+    if not lib.get("ok"):
+        return {"ok": False, "error": lib.get("error") or "题材库拉取失败", "written": 0}
+    try:
+        from app.flash.rules import latest_completed_trading_day
+        d = str(latest_completed_trading_day())[:10]
+    except Exception:
+        d = str(day or "")[:10]
+    if not d:
+        return {"ok": False, "error": "无法确定落库日期", "written": 0}
+    from app.flash.rules import beijing_now as _bj
+    now = _bj().strftime("%Y-%m-%d %H:%M:%S")
+    batch = []
+    for x in (lib.get("items") or []):
+        if not x.get("unique_key"):
+            continue
+        batch.append({
+            "date": d, "unique_key": x["unique_key"], "name": x.get("name") or "",
+            "stage_tag": x.get("stage_tag") or "",
+            "continuity_state": x.get("continuity_state") or "",
+            "confidence": x.get("confidence"),
+            "today_pct": x.get("today_pct"),
+            "stock_count": x.get("stock_count"),
+            "created_at": now,
+        })
+    if not batch:
+        return {"ok": False, "error": "题材库为空", "written": 0}
+    try:
+        n = db.upsert_many("topic_lib_daily", batch,
+                           conflict_columns=["date", "unique_key"], page_size=200)
+    except Exception as e:
+        return {"ok": False, "error": f"写库失败: {str(e)[:80]}", "written": 0}
+    return {"ok": True, "date": d, "written": int(n or len(batch))}
+
+
+def lib_history(unique_key: str, days: int = 30) -> Dict:
+    """某个细分题材的阶段历史（正序，最新在后）。
+
+    返回 `{ok, name, points:[{date, stage_tag, continuity_state, today_pct}]}`
+    ⚠️ 数据从本轮上线那天开始积累（源端无历史接口），前几天只有 1~2 个点。
+    """
+    uk = str(unique_key or "").strip()
+    if not uk:
+        return {"ok": False, "error": "unique_key 为空"}
+    _ensure_lib_table()
+    try:
+        rows = db.fetch(
+            "SELECT date, stage_tag, continuity_state, today_pct, name "
+            "FROM topic_lib_daily WHERE unique_key=%s "
+            "ORDER BY date DESC LIMIT %s", (uk, max(1, int(days)))) or []
+    except Exception as e:
+        return {"ok": False, "error": f"读取失败: {str(e)[:80]}"}
+    if not rows:
+        return {"ok": True, "name": "", "points": [],
+                "note": "尚无历史（该表从 2026-11-28 起每天落一次）"}
+    pts = [{"date": str(r.get("date"))[:10],
+            "stage_tag": r.get("stage_tag") or "",
+            "continuity_state": r.get("continuity_state") or "",
+            "today_pct": _f(r.get("today_pct"))} for r in rows]
+    pts.reverse()
+    return {"ok": True, "name": rows[-1].get("name") or "",
+            "points": pts, "n": len(pts),
+            "note": "源端无历史接口 ⇒ 该序列从本功能上线起逐日积累，越早的数据越少。"}
 
 
 # ================================================================

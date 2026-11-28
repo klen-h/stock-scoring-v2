@@ -3301,6 +3301,18 @@ def topic_rotation_detail(
     return tr.topic_detail(unique_key)
 
 
+@router.get("/topic-rotation/lib-history")
+def topic_rotation_lib_history(
+        unique_key: str = Query(..., description="题材的 unique_key"),
+        days: int = Query(30, ge=1, le=200)):
+    """某个细分题材的**阶段历史**（stage_tag 怎么变）。
+
+    ⚠️ 源端无历史接口 ⇒ 本序列从 2026-11-28 起逐日积累，早期只有 1~2 个点。
+    """
+    from app import topic_rotation as tr
+    return tr.lib_history(unique_key, days=days)
+
+
 @router.get("/topic-rotation/verify")
 def topic_rotation_verify(
         plate_type: int = Query(17, description="17=题材 / 15=概念 / 14=行业"),
